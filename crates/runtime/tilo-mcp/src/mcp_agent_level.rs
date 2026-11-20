@@ -517,27 +517,49 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         provider: &str,
         levels: &mut Levels,
     ) -> Result<Level, String> {
-        self.app_children_reading(provider, levels, false).await
+        self.app_children_reading(provider, levels, None).await
     }
 
-    /// [`Self::app_children`] for a listing: what each container and chain holds is read as
-    /// far as a listing shows ([`Self::level_near`]), not the whole of it. A
-    /// tracker of thousands of issues read whole took several pages, each waiting behind
-    /// whatever the workspace was writing, and while an import wrote between every two of
-    /// them the read never held one revision and the listing failed.
+    /// [`Self::app_children`] for a listing: what each container and chain
+    /// holds is read as far as one page of the listing reaches, `reaching`
+    /// resources and one past them so that the page and whether more follow
+    /// are whole ([`Self::listed_level`]), not the whole of it. A tracker of
+    /// thousands of issues read whole took several pages, each waiting behind
+    /// whatever the workspace was writing, and while an import wrote between
+    /// every two of them the read never held one revision and the listing
+    /// failed.
     pub(super) async fn app_children_listed(
         &self,
         provider: &str,
         levels: &mut Levels,
+        reaching: usize,
     ) -> Result<Level, String> {
-        self.app_children_reading(provider, levels, true).await
+        self.app_children_reading(provider, levels, Some(reaching))
+            .await
+    }
+
+    /// The level under `parent` a listing shows: read near first, so a
+    /// level it does not page past costs a page ([`Self::level_near`]), then
+    /// on until it holds more than `reaching` resources ([`Self::level_reaching`]).
+    /// A listing of an app's own page merges what its containers hold and
+    /// pages it by offset: the rows it merges are the ones up to the page's
+    /// end, one past it saying more follow, and no resource later is built.
+    async fn listed_level(
+        &self,
+        provider: &str,
+        parent: &str,
+        levels: &mut Levels,
+        reaching: usize,
+    ) -> Result<Level, String> {
+        let near = self.level_near(provider, parent, levels).await?;
+        self.level_reaching(provider, parent, near, reaching).await
     }
 
     async fn app_children_reading(
         &self,
         provider: &str,
         levels: &mut Levels,
-        listed: bool,
+        listing: Option<usize>,
     ) -> Result<Level, String> {
         let mut root = self.level(provider, "", levels).await?;
         let containers: Vec<Node> = root
@@ -548,10 +570,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .cloned()
             .collect();
         for node in containers {
-            let inside = if listed {
-                self.level_near(provider, &node.id, levels).await?
-            } else {
-                self.level(provider, &node.id, levels).await?
+            let inside = match listing {
+                Some(reaching) => {
+                    self.listed_level(provider, &node.id, levels, reaching)
+                        .await?
+                }
+                None => self.level(provider, &node.id, levels).await?,
             };
             for child in inside.whole_children() {
                 if !root.children.iter().any(|seen| seen.id == child.id) {
@@ -582,10 +606,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
             }
             if chain.container {
-                let inside = if listed {
-                    self.level_near(provider, &chain.id, levels).await?
-                } else {
-                    self.level(provider, &chain.id, levels).await?
+                let inside = match listing {
+                    Some(reaching) => {
+                        self.listed_level(provider, &chain.id, levels, reaching)
+                            .await?
+                    }
+                    None => self.level(provider, &chain.id, levels).await?,
                 };
                 for child in inside.whole_children() {
                     if !root.children.iter().any(|seen| seen.id == child.id) {

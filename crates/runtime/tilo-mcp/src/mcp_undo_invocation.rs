@@ -192,6 +192,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 provider.clone(),
                 true,
                 None,
+                usize::MAX,
             )
             .await?;
         // History is the document's: any of its resources that offers `undo` takes back its steps.

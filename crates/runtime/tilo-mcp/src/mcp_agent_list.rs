@@ -131,8 +131,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         parsed: &super::ParsedPath,
         forms: &super::ProgramForms,
+        reaching: usize,
     ) -> Result<super::Resolved, String> {
-        let mut resolved = self.folder_resolved(parsed, forms).await?;
+        let mut resolved = self.folder_resolved(parsed, forms, reaching).await?;
         resolved.children.retain(|node| {
             node.kind == tilo_actions::remote::FOUND_FILE
                 || node.kind == fs_protocol::tree::FOLDER_KIND
@@ -143,11 +144,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `parsed` resolved in the workspace's own folder, wherever its tree is kept — never in a
     /// window of Files, whose rows are that device's own folder: the workspace's files and
     /// folders are the rows the workspace's listing offers, and its reads are answered by
-    /// whoever keeps the tree.
+    /// whoever keeps the tree. `reaching` is how many of the folder's entries to read for a
+    /// listing's page and one past it ([`super::McpServer::files_resolved`]), or every one.
     pub(super) async fn folder_resolved(
         &self,
         parsed: &super::ParsedPath,
         forms: &super::ProgramForms,
+        reaching: usize,
     ) -> Result<super::Resolved, String> {
         self.resolve_in(
             parsed,
@@ -155,6 +158,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             tilo_actions::remote::workspace_provider(&self.workspace),
             true,
             Some(forms),
+            reaching,
         )
         .await
     }
