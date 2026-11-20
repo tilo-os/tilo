@@ -581,6 +581,94 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     governor.stop().await;
 }
 
+/// A server of the owner's that serves no site, only its Iroh endpoint, is
+/// named by its Iroh address (`iroh:<device key>@<endpoint id>`, as
+/// `tilo-enroll device-key` prints it): the owner's device adds it as a holder
+/// of their workspace over Iroh alone, it then admits the owner's devices, and
+/// named the same way it is let go. An address whose device is not the one at
+/// that endpoint is refused by the handshake, and the workspace stays where it
+/// was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn a_server_that_serves_no_site_is_added_and_removed_by_its_iroh_address() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = governor.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    let headless = serve_on(&alice, &nas, WorkSetting::own_person()).await;
+
+    // Named with another device's key at its endpoint, it is not reached.
+    let impostor = tilo_server::workspaces::IrohHolder {
+        device: laptop.device_pubkey(),
+        addr: headless.host.node_addr(),
+    }
+    .to_string();
+    let refused = workspaces
+        .add_server(&workspace.workspace, &impostor, CopyRole::KeyHolder)
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(
+        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
+        1
+    );
+
+    let named = tilo_server::workspaces::IrohHolder {
+        device: nas.device_pubkey(),
+        addr: headless.host.node_addr(),
+    }
+    .to_string();
+    assert!(
+        named.starts_with(&format!(
+            "{}{}@",
+            tilo_server::workspaces::IROH_HOLDER,
+            hex::encode(nas.device_pubkey())
+        )),
+        "{named}"
+    );
+    let hint = workspaces
+        .add_server(&workspace.workspace, &named, CopyRole::KeyHolder)
+        .await
+        .unwrap();
+    assert_eq!(hint.host, nas.cert);
+    assert!(
+        workspaces
+            .keeping_devices(&workspace.workspace)
+            .await
+            .unwrap()
+            .iter()
+            .any(|kept| kept.device == hex::encode(nas.device_pubkey()) && kept.reads),
+        "the server keeps the workspace and reads it"
+    );
+    let on_headless = session_to(&alice, &laptop, &headless).await;
+    tilo_test_env::within("the server admits the owner's device", async {
+        while !admitted(&on_headless, workspace.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    drop(on_headless);
+
+    // Named by the same address, it lets the workspace go.
+    assert!(
+        workspaces
+            .remove_server(&workspace.workspace, &named)
+            .await
+            .unwrap(),
+        "the server confirmed it let the workspace go"
+    );
+    assert_eq!(
+        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
+        1
+    );
+    headless.stop().await;
+    governor.stop().await;
+}
+
 /// A holder of another person whose operator takes the workspace holds it once
 /// its governor grants it ownership: from then on a change made through either
 /// holder reaches the other with its author, also after that holder restarts, and
