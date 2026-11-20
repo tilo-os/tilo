@@ -163,3 +163,78 @@ async fn put_and_list() {
         Some(workspace.as_str())
     );
 }
+
+/// Put `files` into the workspace at `base` as `tilo files put` does: their bytes, then one open
+/// listing them all.
+async fn put_folder(key: &Key<'_>, workspace: &str, files: &[(&str, Vec<u8>)]) -> Value {
+    let contents = uploaded(key, workspace, files).await;
+    let entries: Vec<Value> = files
+        .iter()
+        .zip(&contents)
+        .map(|((name, _), content)| {
+            let (dir, name) = name.rsplit_once('/').unwrap();
+            json!({"content": content, "name": name, "dir": dir})
+        })
+        .collect();
+    let (status, answered) = key
+        .post(
+            &format!("/v1/workspaces/{workspace}/resources/files/actions/open"),
+            &json!({"files": entries}),
+            &[],
+        )
+        .await;
+    assert_eq!(status, 200, "the open: {answered}");
+    answered
+}
+
+/// A folder put after the server restarted lands in the folder the workspace already has: the
+/// restarted server holds none of the workspace's tree until it reads it, and a put that took
+/// the tree's parts for ones nobody wrote founded them again over the workspace's own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_folder_put_after_the_server_restarts_lands_beside_what_is_there() {
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let computer = enrol(&ada, "Ada's computer", DeviceCapabilities::member());
+    let token = approved_key(&on_server, &ada, &computer, "Ada's backend").await;
+    let workspace = {
+        let key = Key {
+            api: &on_server.api,
+            token: token.clone(),
+        };
+        let (status, made) = key
+            .post("/v1/workspaces", &json!({"name": "Company"}), &[])
+            .await;
+        assert_eq!(status, 201, "{made}");
+        let workspace = made["id"].as_str().unwrap().to_owned();
+        put_folder(&key, &workspace, &folder()).await;
+        workspace
+    };
+
+    let on_server = Box::pin(on_server.restart(false)).await;
+    let key = Key {
+        api: &on_server.api,
+        token,
+    };
+    let more = vec![
+        ("Quarterly/report-1.txt", b"the first quarter\n".to_vec()),
+        ("Quarterly/report-2.txt", b"the second quarter\n".to_vec()),
+        ("Reports/report-004.txt", b"the fourth report\n".to_vec()),
+    ];
+    let answered = put_folder(&key, &workspace, &more).await;
+    assert_eq!(
+        answered.pointer("/result/count"),
+        Some(&json!(3)),
+        "{answered}"
+    );
+    let base = format!("/v1/workspaces/{workspace}");
+    let inside = listed_whole(&key, &base, "files/Reports").await;
+    for path in ["Reports/report-001.txt", "Reports/report-004.txt"] {
+        let id = format!("file:{path}");
+        assert!(
+            inside.iter().any(|row| row["id"] == id),
+            "{path} is not in the folder's listing after the restart: {inside:#?}"
+        );
+    }
+    let quarterly = listed_whole(&key, &base, "files/Quarterly").await;
+    assert_eq!(quarterly.len(), 2, "{quarterly:#?}");
+}

@@ -867,6 +867,9 @@ pub(super) fn merge_writes(
     policy: LeftOut,
     signers: Option<&Signers<'_>>,
 ) -> Result<(AutoCommit, Vec<LeftWrite>), String> {
+    if merged_at_once(&mut merged, &writes) {
+        return Ok((merged, Vec::new()));
+    }
     let mut left = Vec::new();
     let mut waiting = writes;
     let mut stuck = Vec::new();
@@ -961,6 +964,54 @@ pub(super) fn merge_writes(
     }
     left.sort_by_key(|(index, _, _)| *index);
     Ok((merged, left))
+}
+
+/// Merge every one of `writes` over `document` in one go, when they all merge: none waiting for
+/// a change the document and the others lack, none writing a sequence the document already
+/// holds under another change. Whether they did; when they did not, `document` is left as it
+/// was and each is decided on its own ([`merge_writes`]).
+///
+/// Merged one by one, every write was checked on its own against the document as it stood, each
+/// a round trip to the isolate that decodes untrusted changes: a mailbox's part of a hundred
+/// and thirty messages took seconds to open, and a server that restarted opened every part
+/// of the mailbox before it answered the import's next delivery.
+fn merged_at_once(document: &mut AutoCommit, writes: &[(usize, DocumentMutation)]) -> bool {
+    if writes.len() < 2 {
+        return false;
+    }
+    let merges = |candidate: &mut AutoCommit, mutation: DocumentMutation| {
+        matches!(
+            crate::document::merge_committed_with_status(candidate, &mutation),
+            Ok(crate::document::MergeOutcome::Changed(_))
+        )
+    };
+    let mut candidate = document.clone();
+    let mut changes = Vec::new();
+    for (_, mutation) in writes {
+        match mutation {
+            DocumentMutation::Incremental(bytes) => changes.extend_from_slice(bytes),
+            // A whole document (the write that founded it) is merged on its own, after
+            // the changes before it.
+            DocumentMutation::Snapshot(_) => {
+                if !changes.is_empty()
+                    && !merges(
+                        &mut candidate,
+                        DocumentMutation::Incremental(std::mem::take(&mut changes)),
+                    )
+                {
+                    return false;
+                }
+                if !merges(&mut candidate, mutation.clone()) {
+                    return false;
+                }
+            }
+        }
+    }
+    if !changes.is_empty() && !merges(&mut candidate, DocumentMutation::Incremental(changes)) {
+        return false;
+    }
+    *document = candidate;
+    true
 }
 
 /// The changes `mutation`'s changes build on that are in neither `record` nor `mutation` itself,

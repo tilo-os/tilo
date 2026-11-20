@@ -498,7 +498,10 @@ impl Worker {
             ))) => Ok(Since::Changed(bytes, at)),
             Ok(None) if since.is_some() => Ok(Since::Unchanged),
             Ok(None) | Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(Since::Missing),
-            Ok(None) => Ok(Since::Unchanged),
+            // Held, and not readable yet (its keys, or the rest of its history, on their way):
+            // read as unchanged with nothing taken, a put founded it again over the
+            // workspace's own, which the workspace refused as one it holds already.
+            Ok(None) => Err(Outcome::Rejected(ActionCallError::NotReady)),
             Err(why) => Err(Outcome::Rejected(ActionCallError::Unavailable {
                 reason: why,
             })),

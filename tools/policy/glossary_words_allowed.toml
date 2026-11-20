@@ -1938,3 +1938,8 @@ reason = "The sealed-history tests' fixture, whose replica field and resource co
 words = ["host", "record"]
 identifiers = ["host", "RECORD"]
 paths = ["crates/collab/tilo-peer-state/src/state/kept_open_tests.rs"]
+
+[[allow]]
+reason = "The workspace service's test fixture that starts the service on a state directory with the device's group keys, as a restart does."
+words = ["host"]
+identifiers = ["test_host_holding"]

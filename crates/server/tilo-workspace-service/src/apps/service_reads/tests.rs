@@ -436,3 +436,88 @@ fn a_session_with_no_service_open_reads_nothing() {
 async fn a_read_inside_a_runtime_waits_off_it() {
     assert_eq!(on_its_own(async { 7_u8 }), 7);
 }
+
+/// How many writes the document read below holds: a third of what a part of a mailbox an import
+/// fills holds, which is plenty to tell a read of every write from a read of one.
+const WRITTEN: usize = 40;
+
+/// A part of `APP` holding a message of about the size of a mail's, written as its `at`th.
+fn message(doc: &mut automerge::AutoCommit, at: usize) -> Result<(), String> {
+    let text = doc
+        .put_object(
+            automerge::ROOT,
+            format!("message {at}"),
+            automerge::ObjType::Text,
+        )
+        .map_err(|error| error.to_string())?;
+    let body = format!(
+        "Message {at}. {}",
+        "The venue is booked for the offsite. ".repeat(100)
+    );
+    doc.splice_text(&text, 0, 0, &body)
+        .map_err(|error| error.to_string())
+}
+
+/// After the service restarted, a sealed document is opened from its first write once, and every
+/// read after that opens only what was written since. Opened whole on every read, a part of a
+/// mailbox an import writes every message into cost a full replay of its history per delivery,
+/// and after a restart every retry of a delivery opened every part of the mailbox again, longer
+/// than the call may wait, so the import never went on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn after_a_restart_a_document_read_again_opens_only_what_was_written_since() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
+    let server = crate::workspaces::fixtures::test_host_holding(
+        scratch.path(),
+        &key,
+        &cert,
+        Arc::clone(&keys),
+    )
+    .await;
+    let workspace = server
+        .workspaces()
+        .create("Reads again")
+        .await
+        .unwrap()
+        .workspace;
+    for at in 0..WRITTEN {
+        server
+            .workspaces()
+            .author_workspace_document(&workspace, &cert, (APP, RESOURCE), move |doc| {
+                message(doc, at)
+            })
+            .await
+            .unwrap();
+    }
+    server.shutdown().await;
+
+    let server =
+        crate::workspaces::fixtures::test_host_holding(scratch.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces();
+    let read = || async {
+        let started = std::time::Instant::now();
+        let read = workspaces
+            .own_read(&workspace, (APP, RESOURCE), &[], MAXIMUM)
+            .await
+            .unwrap();
+        assert!(matches!(read, DocumentRead::Whole { .. }), "{read:?}");
+        started.elapsed()
+    };
+    let first = read().await;
+    workspaces
+        .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
+            message(doc, WRITTEN)
+        })
+        .await
+        .unwrap();
+    let again = read().await;
+    eprintln!(
+        "after the restart the first read took {first:?}, one after one more write {again:?}"
+    );
+    assert!(
+        again * 4 < first,
+        "a read after one write took {again:?}, the first read of {WRITTEN} writes {first:?}"
+    );
+    server.shutdown().await;
+}
