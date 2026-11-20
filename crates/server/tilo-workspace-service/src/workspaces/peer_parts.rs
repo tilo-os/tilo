@@ -256,7 +256,7 @@ impl PeerParts {
 
 impl PartFiles {
     /// The files, held as a write holds them: a test's slow disk.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "agents"))]
     pub(super) fn busy(&self) -> impl Drop + '_ {
         self.held()
     }

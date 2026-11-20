@@ -325,6 +325,13 @@ async fn keys_of(
 /// # Errors
 ///
 /// As [`GovernedWorkspace::readable_document`].
+#[cfg_attr(
+    not(any(feature = "agents", feature = "web")),
+    allow(
+        dead_code,
+        reason = "sealed documents are read only where a page or an agent reads them"
+    )
+)]
 pub(super) async fn readable_now(
     reading: &super::readings::Reading,
     (app, resource): (&str, &str),

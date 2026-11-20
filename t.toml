@@ -826,15 +826,17 @@ run = "cargo check --locked -p tilo-ui --no-default-features --lib\ncargo check 
 on = ["dispatch", "idle"]
 heavy = true
 
-# A host that runs agents serves no apps to devices: `tilo-server`'s `agents`
-# build links the workspace service with `agents` and `web` alone
-# (crates/server/tilo-server/Cargo.toml). That build and its tests compile, so
-# code behind the `apps` feature cannot slip into what it leaves out. No
-# `unify`: this build's features are the point, so its units are its own.
+# Every feature set an embedder builds the workspace service with, each alone:
+# a device serving apps (`apps`, the runtime and the session), a host that runs
+# agents (`agents`, which carries `web` and no apps), the server embedding it
+# for pages (`web`), a build with no feature at all, and the test features the
+# embedders' dev-dependencies add. Each compiles with its tests, so code behind
+# one feature cannot slip into a build that leaves it out. No `unify`: these
+# builds' features are the point, so their units are their own.
 [[check]]
-name = "workspace-service-agents"
+name = "workspace-service-features"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo check --locked -p tilo-workspace-service --features agents --all-targets\n"
+run = "for features in '' web apps agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
 
 [[check]]
 name = "android"

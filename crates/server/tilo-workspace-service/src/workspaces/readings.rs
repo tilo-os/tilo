@@ -18,6 +18,15 @@ use super::{DeviceKeys, GovernedWorkspace, Workspaces};
 pub(super) struct Reading {
     pub(super) replica: Replica,
     pub(super) workspace: String,
+    /// The keys a sealed document is opened with; a build that opens none
+    /// reads only what is in the clear.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        allow(
+            dead_code,
+            reason = "sealed documents are read only where a page or an agent reads them"
+        )
+    )]
     pub(super) device: Option<DeviceKeys>,
 }
 

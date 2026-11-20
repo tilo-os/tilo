@@ -10,7 +10,8 @@
 # the shipped-default builds of packages tested with extra features), which also
 # type-checks every target, then the library builds t checks besides: tilo-ui
 # without its default features (portable), tilo-app without them (headless) and
-# the workspace service under `agents` alone (workspace-service-agents). The shipped-default builds (tools/ci/package_features.py
+# the workspace service under each feature set its embedders build it with
+# (workspace-service-features). The shipped-default builds (tools/ci/package_features.py
 # --default-builds) are a run of their own, `--default-builds NAME...`, which
 # local_affected.py starts beside the main one. `--check-only` type-checks every
 # target instead, with the same features (tools/ci/check-all-targets.sh), for an
