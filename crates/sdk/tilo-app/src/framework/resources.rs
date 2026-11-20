@@ -79,6 +79,8 @@ pub struct Held<P: Resource> {
     /// locale's revision it was built at: published again only when one
     /// moved.
     published: RefCell<Option<(Published, tilo_actions::ResourceSpec)>>,
+    /// [`Self::publish_head`] as last built, as `published` is.
+    published_head: RefCell<Option<(Published, tilo_actions::ResourceSpec)>>,
 }
 
 /// The record's revision and loads ([`Live::loads`]), the locale's
@@ -104,6 +106,7 @@ impl<P: Resource> Held<P> {
             apply: Box::new(apply),
             read: None,
             published: RefCell::new(None),
+            published_head: RefCell::new(None),
         }
     }
 
@@ -172,22 +175,51 @@ impl<P: Resource> Held<P> {
     /// through [`RESOURCE_ACTION_TYPE`], open to the person whatever their
     /// role in the workspace; nothing to change where it is read only.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
-        self.sync();
-        // Reading it again changes no revision — the state stays the last
-        // one that read — so whether it reads is part of what the
-        // publication is for.
-        let revision = (
-            self.live.revision(),
-            self.live.loads(),
-            ui_core::i18n::I18nManager::revision(),
-            self.live.unreadable().map(|why| why.reason),
-        );
+        let revision = self.published_at();
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
         {
             return published.clone();
         }
-        let published = if let Some(state) = self.live.get_checked() {
+        let published = self.finish(self.build());
+        *self.published.borrow_mut() = Some((revision, published.clone()));
+        published
+    }
+
+    /// [`Self::publish`] without its children, built without routing or keeping them: what a
+    /// table of the resource's own actions reads, which a resource of many items (an issue list)
+    /// answers without carrying each item's actions.
+    pub(crate) fn publish_head(&self) -> tilo_actions::ResourceSpec {
+        let revision = self.published_at();
+        if let Some((at, head)) = self.published_head.borrow().as_ref()
+            && *at == revision
+        {
+            return head.clone();
+        }
+        let mut head = self.build();
+        head.children = Vec::new();
+        let head = self.finish(head);
+        *self.published_head.borrow_mut() = Some((revision, head.clone()));
+        head
+    }
+
+    /// What a publication is built at, read now: the same answer is the same publication.
+    fn published_at(&self) -> Published {
+        self.sync();
+        // Reading it again changes no revision — the state stays the last
+        // one that read — so whether it reads is part of what the
+        // publication is for.
+        (
+            self.live.revision(),
+            self.live.loads(),
+            ui_core::i18n::I18nManager::revision(),
+            self.live.unreadable().map(|why| why.reason),
+        )
+    }
+
+    /// The publication as its resource type builds it, before it is routed here.
+    fn build(&self) -> tilo_actions::ResourceSpec {
+        if let Some(state) = self.live.get_checked() {
             tilo_resource::publish::<P>(&self.id, &self.label, &state)
         } else {
             // Read here, never meant to change here: say why its actions do
@@ -197,7 +229,11 @@ impl<P: Resource> Held<P> {
                 .unreadable()
                 .map_or_else(|| "the record does not read".to_owned(), |why| why.reason);
             tilo_resource::resource::unreadable_parts::<P>(&self.id, &self.label, &why)
-        };
+        }
+    }
+
+    /// `published` carried out here: its actions routed to this resource, and the read offered.
+    fn finish(&self, published: tilo_actions::ResourceSpec) -> tilo_actions::ResourceSpec {
         let mut published = if self.granted {
             route_granted(published, &self.id, self.editable)
         } else {
@@ -210,7 +246,6 @@ impl<P: Resource> Held<P> {
                 .actions
                 .push(tilo_resource::read::resource_spec(&self.id));
         }
-        *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
 }
@@ -256,6 +291,7 @@ fn route_granted(
 
 /// The document action `spec` carried out on the record `record`.
 pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
+    let _phase = tilo_resource::profiling::Phase::start("app.route_spec");
     let mut spec = route_operation(spec, RESOURCE_ACTION_TYPE, record);
     // The workspace's roles do not reach a record of the person's own: the host
     // lets only its person change it. It keeps its kind, so a change Undo
@@ -401,6 +437,10 @@ impl<P: Resource> ResourceApi for Held<P> {
 
     fn publish(&self) -> tilo_actions::ResourceSpec {
         Held::publish(self)
+    }
+
+    fn publish_head(&self) -> tilo_actions::ResourceSpec {
+        Held::publish_head(self)
     }
 
     fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
