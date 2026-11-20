@@ -69,7 +69,9 @@ const bench = () => new Promise((resolve, reject) => {
     const lines = (rest + chunk).split('\n');
     rest = lines.pop();
     for (const line of lines) {
-      const bench = /^BENCH \S+ (\S+) (\S+) (\S+)/.exec(line);
+      // A pass line, wherever it sits: the test harness prints its own "test <name> ..." on the
+      // same line as a pass's first output, so anchoring to the start drops those lines.
+      const bench = /(?:^|\s)BENCH \S+ (\S+) (\S+) (\S+)/.exec(line);
       if (bench) {
         metrics[bench[1]] = Number(bench[2]);
         console.log(line);

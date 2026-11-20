@@ -630,7 +630,10 @@ impl Pair {
             None,
         );
         // A serving host prints its ticket and then mounts; only a joining device says it joined.
-        self.host.wait_ticket();
+        // It is a new process on a new address, so the ticket that reached the first one no
+        // longer names it: every later join is handed this one, as a device that came back finds
+        // its peers again.
+        self.ticket = self.host.wait_ticket();
         self.host.wait_serving();
         started.elapsed()
     }
