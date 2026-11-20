@@ -368,12 +368,15 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         until(&mut session, |session| {
             session.shell_control("Notes").is_some()
         });
-        // Enter opens the first app: the layout starts Notes, through its own `open-app`.
+        // Enter opens the first app: the layout starts Notes, through its own `open-app`, and
+        // holds the place its window takes. The window list names the windows a person can walk
+        // to, not the place a launch holds while its window comes, and this session starts no app
+        // here: the place showing Notes is what says the launch was asked for.
         tap(&mut session, KEY_ENTER);
         until(&mut session, |session| {
-            crate::common::windows(session)
+            crate::common::places(session)
                 .iter()
-                .any(|window| window.app_key == "so.tilo.lang.notes")
+                .any(|place| place.shows == "so.tilo.lang.notes")
         });
         assert!(
             session.shell_refusals().is_empty(),
