@@ -78,6 +78,9 @@ async function openedAt({site, secret, deps}) {
  * with: the invitation is the approval of whoever made it, so the host
  * admits it at once and nobody in the workspace answers for it. */
 async function viaInvitation({origin, invitation, offered = null, id = null, deep = false, secrets, runtime, deps, onProgress}) {
+  // Reading the invitation asks the workspace's server: the page is connecting to it now, and
+  // says so rather than that it is still loading.
+  if (!offered) onProgress({phase: 'connecting'});
   const offer = offered ?? await deps.inspectInvitation(origin, invitation);
   if (!runtime.admittedAsAsked(id ?? undefined, offer.workspace ?? undefined)) {
     throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');

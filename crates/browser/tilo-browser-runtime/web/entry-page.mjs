@@ -909,7 +909,7 @@ export async function startEntryPage({mode}) {
   // the desktop, `draw`ing its first frame (GPU set up), `done` once it
   // drew, `stopped` when it cannot go on. Each step says itself in the
   // status line, unless something else (admission, a visit) is said there;
-  // the screen shows a step's note only to screen readers (arrival.mjs).
+  // the arrival screen's line shows that note (arrival.mjs).
   const root = document.documentElement.dataset;
   const opening = mode === 'app' ? 'Opening the app…' : 'Opening the workspace…';
   const drawing = 'Starting graphics…';

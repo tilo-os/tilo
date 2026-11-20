@@ -202,6 +202,14 @@ test('the home workspace, whose workspace is not known yet, is entered through i
   assert.deepEqual(calls, [['enterViaHost', {workspace: commons}]], 'the bare entry names no workspace');
 });
 
+test('reading an invitation says the page is connecting, before the workspace\'s server answers', async () => {
+  const seen = [];
+  const {deps} = entries({inspectInvitation: async () => { seen.push('inspect'); return null; }});
+  await admit({scope: target, secrets: {invite: 'AAEC'}, runtime: rules(['invitation']).runtime, deps,
+    onProgress: event => seen.push(event.phase)}).catch(() => {});
+  assert.deepEqual(seen.slice(0, 2), ['connecting', 'inspect']);
+});
+
 test('a person let in through the entry is not taken to another workspace on the host than the one they were admitted to', async () => {
   let disposed = false;
   const {deps} = entries({workspaceAt: () => commons,
