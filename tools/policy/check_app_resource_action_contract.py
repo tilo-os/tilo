@@ -145,6 +145,8 @@ CONTROL_CALLBACKS = frozenset(
 NOT_CONTROL_CALLBACKS = {
     "on_asked": "wakes the host's loop when an invocation arrives: it runs the app's own "
     "frame, and activates no control",
+    "on_cancel": "drops an edit in progress and puts back what the label showed: what this "
+    "window shows, no edit",
     "on_effect": "activates a published native effect action",
     "on_choose": "publishes the row's own press as its view action `choose`, which a person, "
     "a screen reader, a script and an agent all reach",
