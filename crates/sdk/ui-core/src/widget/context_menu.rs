@@ -1431,7 +1431,9 @@ impl ContextMenu {
                 | WindowEvent::MouseWheel { .. }
         );
         if let Some(key) = key {
-            if !self.submenu_focused {
+            // The keys go where the person is: the nested menu once the keyboard moved into it,
+            // or once the pointer went over it, as a row it hovers there is the one they act on.
+            if !self.submenu_focused && !over {
                 return false;
             }
             // Left or Escape steps back out to this menu's row.
@@ -1441,13 +1443,13 @@ impl ContextMenu {
                 return true;
             }
         } else if !(pointer && over) {
+            if pointer {
+                self.submenu_focused = false;
+            }
             return false;
         }
         if let Some((_, menu)) = self.submenu.as_mut() {
             menu.handle_event(event, ctx);
-        }
-        if pointer {
-            self.submenu_focused = false;
         }
         self.drain_submenu();
         *ctx.handled |= !matches!(event, WindowEvent::CursorMoved { .. });
@@ -2455,6 +2457,49 @@ mod nested_and_anchored_tests {
             assert_eq!(fired.load(Ordering::SeqCst), 1);
             assert_eq!(m.take_submenu_selection(), Some((1, 1)));
             assert!(!m.is_open(), "the whole menu closes");
+        }
+
+        // The pointer in a nested menu hands it the keys: its row is lit where the pointer is,
+        // and the arrows move on from there, past a rule, to the row Enter chooses.
+        phase a_nested_menu_under_the_pointer_takes_the_arrows;
+        {
+            let _settled = crate::motion::testing::settled();
+            let fired = Arc::new(AtomicU32::new(0));
+            let other = Arc::clone(&fired);
+            let mut m = ContextMenu::with_items(vec![
+                MenuItem::action("Open", || {}),
+                MenuItem::submenu(
+                    "Open with",
+                    vec![
+                        MenuItem::action("Text Editor", || {}),
+                        MenuItem::separator(),
+                        MenuItem::action("Other application…", move || {
+                            other.fetch_add(1, Ordering::SeqCst);
+                        }),
+                    ],
+                ),
+                MenuItem::action("Delete", || {}),
+            ]);
+            m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            paint(&mut m);
+            let row = m.item_rect(1).unwrap();
+            dispatch(&mut m, &cursor_at(row.center()));
+            paint(&mut m);
+            let first = m
+                .submenu
+                .as_ref()
+                .and_then(|(_, menu)| menu.item_rect(0))
+                .expect("hover opens the nested menu");
+            dispatch(&mut m, &cursor_at(first.center()));
+            let nested = |m: &ContextMenu| m.submenu.as_ref().and_then(|(_, menu)| menu.hovered());
+            assert_eq!(nested(&m), Some(0), "the row under the pointer is lit");
+            dispatch(&mut m, &named_key(NamedKey::ArrowDown));
+            assert_eq!(nested(&m), Some(2), "Down moves past the rule in the nested menu");
+            assert_eq!(m.hovered(), Some(1), "the outer menu keeps its row");
+            dispatch(&mut m, &named_key(NamedKey::Enter));
+            assert_eq!(fired.load(Ordering::SeqCst), 1);
+            assert_eq!(m.take_submenu_selection(), Some((1, 2)));
+            assert!(!m.is_open());
         }
 
         // A filter's value lists how many results share it at the row's end,
