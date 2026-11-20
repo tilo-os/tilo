@@ -365,7 +365,7 @@ fn made_issue_landed(
 /// The window over the whole tracker: the sidebar, the list, the board and
 /// the issue pages.
 fn tracker_window(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element {
-    let sidebar = sidebar(cx, nav, &window.tasks);
+    let sidebar = sidebar(cx, nav, window);
     let content_nav = nav.clone();
     let shown = window.clone();
     let content = cx.switch(&nav.open, move |cx, open| {
@@ -430,15 +430,27 @@ fn tracker_window(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element {
 }
 
 /// The sidebar's rows: what narrows the tracker, and the labels it carries.
-fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> Vec<NavSection> {
+fn sidebar_sections(
+    tasks: &Tasks,
+    me: Option<&ui::tilo_resource::MemberId>,
+    loading: bool,
+) -> Vec<NavSection> {
     let issues = tasks.issues();
+    // What a row counts: nothing while parts of the tracker are still on their way.
+    let counted = |count: usize| {
+        if loading {
+            0
+        } else {
+            u32::try_from(count).unwrap_or(u32::MAX)
+        }
+    };
     let filters = Filter::ALL
         .into_iter()
         .map(|filter| {
             let count = filter.count(&issues, me);
             NavItem::new(filter.key(), filter.title())
                 .icon(filter.icon())
-                .count(u32::try_from(count).unwrap_or(u32::MAX))
+                .count(counted(count))
                 .without_actions()
         })
         .collect();
@@ -450,7 +462,7 @@ fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> 
             let filter = Filter::Label(label.to_owned());
             NavItem::new(filter.key(), label.to_owned())
                 .icon(ui::icons::Icon::Tag)
-                .count(u32::try_from(count).unwrap_or(u32::MAX))
+                .count(counted(count))
                 .without_actions()
         })
         .collect();
@@ -468,7 +480,7 @@ fn sidebar_sections(tasks: &Tasks, me: Option<&ui::tilo_resource::MemberId>) -> 
                     model::Kind::Project => ui::icons::Icon::Folder,
                     model::Kind::Area => ui::icons::Icon::Layers,
                 })
-                .count(u32::try_from(held).unwrap_or(u32::MAX))
+                .count(counted(held))
                 .without_actions()
         })
         .collect();
@@ -631,14 +643,24 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) {
 /// The sidebar: what narrows the tracker, the labels in use, and the
 /// projects and areas the work goes towards. It is built again as the
 /// tracker gains issues, labels or projects.
-fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, tasks: &LocalState<Tasks>) -> Element {
+fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element {
     let chosen = nav.clone();
     let selection = nav.filter.clone();
     let me = cx.me().cloned();
-    cx.switch(tasks, move |_cx, tasks| {
+    let chain = window.chain.clone();
+    cx.switch(&window.tasks, move |_cx, tasks| {
         let chosen = chosen.clone();
+        // A count counts the issues this device holds. While parts of the tracker are still on
+        // their way, that is fewer than the tracker has, so the sidebar shows no counts rather
+        // than a number that is about to grow.
+        let loading = chain.as_ref().is_some_and(|chain| {
+            chain
+                .waited()
+                .iter()
+                .any(|(_, arrival)| *arrival == ui::framework::PartArrival::Arriving)
+        });
         Box::new(
-            ui::widget::NavList::new(sidebar_sections(tasks, me.as_ref()))
+            ui::widget::NavList::new(sidebar_sections(tasks, me.as_ref(), loading))
                 // Named for what it narrows, not the app: the sidebar's
                 // heading and the window's tab already say "Tasks".
                 .with_accessible_name(tr("tasks-filters"))

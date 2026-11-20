@@ -72,6 +72,29 @@ fn fill(app: &mut TestApp<App>, count: usize) {
 }
 
 #[test]
+fn a_tracker_kept_in_parts_opens_at_its_first_issue() {
+    // The tracker's issues are kept in parts, and the list reads them as one: the older part's
+    // issues stand above the newer part's, and the list opens on the first issue of them all.
+    let _parts = ui::framework::PartLimits::scoped(500, usize::MAX);
+    let mut app = open();
+    // A list of calls: one call takes 200 issues, and the first part takes 500.
+    for count in [200, 200, 100] {
+        fill(&mut app, count);
+    }
+    fill(&mut app, 3);
+    assert_eq!(app.chain_parts::<tasks::IssueList>().len(), 2);
+    assert_eq!(
+        top_row(&mut app).as_deref(),
+        Some("key:1"),
+        "the list opens on the tracker's first issue"
+    );
+    assert!(
+        !on_screen(&mut app, "503"),
+        "the newest issue stands below the screenful"
+    );
+}
+
+#[test]
 fn an_issue_typed_in_the_field_is_shown_where_it_lands() {
     let mut app = open();
     fill(&mut app, 100);

@@ -689,6 +689,41 @@ tilo_test_env::scenario! {
             assert_eq!(list.scroll_offset(), 0.0, "the top stays the top");
             assert_eq!(list.model().key_at(0), Some(1_000));
         }
+
+        {
+            // The same through the changes a model that follows the app's state reports: an
+            // older part arriving after the newest inserts its rows above the ones shown, and
+            // the list read from its start stays at the first row of the whole tracker.
+            let keys = Rc::new(RefCell::new((3_210_u64..4_011).collect::<Vec<_>>()));
+            let changes = Rc::new(RefCell::new(Vec::new()));
+            let mut list = VirtualList::new(
+                NotifyingOrder {
+                    keys: Rc::clone(&keys),
+                    changes: Rc::clone(&changes),
+                },
+                20.0,
+                |_, _, key| {
+                    Box::new(ProbeRow::new(
+                        key.to_string(),
+                        20.0,
+                        false,
+                        Rc::new(Cell::new(0)),
+                    ))
+                },
+            )
+            .with_viewport_height(40.0);
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(list.scroll_offset(), 0.0);
+
+            keys.borrow_mut().splice(0..0, 1..=3_209);
+            changes.borrow_mut().push(ListModelChange::RowsInserted {
+                index: 0,
+                count: 3_209,
+            });
+            let _ = lay_out(&mut list, 300.0);
+            assert_eq!(list.scroll_offset(), 0.0, "the top stays the top");
+            assert_eq!(list.model().key_at(0), Some(1));
+        }
     }
 }
 
