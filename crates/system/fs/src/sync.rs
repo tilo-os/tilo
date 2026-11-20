@@ -639,9 +639,18 @@ pub(crate) async fn certify_to_peer(
     )
     .await?;
     let _ = send.finish();
+    // The provider records this device before it ends its side of the exchange, and closes the
+    // connection with an error if it did not finish. Wait for that end: closing here first can
+    // reach it before it read the proof, and the content request that follows is then refused at
+    // connect because the provider never learnt whose device it is.
+    let _ = tokio::time::timeout(CERTIFY_ACK_TIMEOUT, recv.read_to_end(4096)).await;
     connection.close(0u32.into(), b"certified");
     Ok(())
 }
+
+/// How long a device waits for the provider to finish recording it before asking for content
+/// anyway: a provider that does not answer must not stop the read, only lose it its shortcut.
+const CERTIFY_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Answer a peer's certification: prove this device to it and remember its person, so a request
 /// arriving on another connection from the same device is admitted.
