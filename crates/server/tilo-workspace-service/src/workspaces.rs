@@ -76,6 +76,7 @@ mod run_admission;
 pub use run_admission::{Refusal, SessionAdmission};
 mod host_invitations;
 mod hosts;
+pub use hosts::{IROH_HOLDER, IrohHolder};
 mod link_follow;
 mod session_carry;
 pub(crate) use link_follow::carry_admitted;
