@@ -95,7 +95,8 @@ pub struct AccountsModel {
 enum Asked {
     Find,
     Add,
-    SignIn,
+    /// A sign-in on this provider's page.
+    SignIn(Provider),
 }
 
 impl AccountsModel {
@@ -221,11 +222,12 @@ impl AccountsModel {
                     account: String::new(),
                 };
                 self.ask(
-                    Asked::SignIn,
+                    Asked::SignIn(provider),
                     person_accounts::BEGIN_SIGN_IN,
                     json_argument(&begin)?,
                 );
             }
+            PersonSettingsEffect::SignInAgain { account } => self.sign_in_again(&account)?,
             PersonSettingsEffect::FindServers => {
                 let find = FindServers {
                     address: self.address.get().trim().to_owned(),
@@ -262,6 +264,33 @@ impl AccountsModel {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// Sign in again to a kept account whose sign-in stopped working, on its
+    /// provider's page, for what it already feeds.
+    fn sign_in_again(&mut self, account: &str) -> Result<(), String> {
+        let kept = self
+            .listed
+            .accounts
+            .iter()
+            .find(|kept| kept.id == account)
+            .ok_or_else(|| t("settings-web-accounts-unknown-account"))?;
+        if !signs_in_again(kept.provider) {
+            return Err(t("settings-web-accounts-unknown-provider"));
+        }
+        let begin = BeginSignIn {
+            provider: kept.provider,
+            server: String::new(),
+            services: kept.services,
+            account: kept.id.clone(),
+        };
+        let provider = kept.provider;
+        self.ask(
+            Asked::SignIn(provider),
+            person_accounts::BEGIN_SIGN_IN,
+            json_argument(&begin)?,
+        );
         Ok(())
     }
 
@@ -390,7 +419,7 @@ impl AccountsModel {
                 }
                 Err(_) => self.step_error = Some(t("settings-web-accounts-unreadable")),
             },
-            Asked::SignIn => match serde_json::from_value::<SignInStep>(value) {
+            Asked::SignIn(_) => match serde_json::from_value::<SignInStep>(value) {
                 Ok(step) => {
                     ui::widget::open_external_url(&step.open);
                     self.back_to_choosing();
@@ -510,7 +539,7 @@ impl AccountsModel {
             Adding::Manual => self.manual_step(cx),
         };
         if let Some((asked, _)) = &self.asking {
-            items.push(note(&self.asking_note(*asked)));
+            items.push(note(&Self::asking_note(*asked)));
         } else if let Some(line) = &self.step_error {
             items.push(error_row(&t("settings-web-accounts-add-title"), line));
         }
@@ -518,21 +547,14 @@ impl AccountsModel {
     }
 
     /// What the step shows while its request is under way.
-    fn asking_note(&self, asked: Asked) -> String {
+    fn asking_note(asked: Asked) -> String {
         match asked {
             Asked::Find => t("settings-web-accounts-finding"),
             Asked::Add => t("settings-web-accounts-checking"),
-            Asked::SignIn => {
-                let provider = match &self.adding {
-                    Adding::With(provider) => *provider,
-                    Adding::Found(found) => found.provider,
-                    Adding::Choosing | Adding::Manual => Provider::Other,
-                };
-                translated(
-                    "settings-web-accounts-opening",
-                    &[("provider", provider_name(provider).into())],
-                )
-            }
+            Asked::SignIn(provider) => translated(
+                "settings-web-accounts-opening",
+                &[("provider", provider_name(provider).into())],
+            ),
         }
     }
 
@@ -755,13 +777,29 @@ fn account_rows(cx: &ViewCx<Settings>, account: &MailAccount) -> Vec<Item> {
             account: account.id.clone(),
         },
     );
+    let trailing: El = if account.has_secret || !signs_in_again(account.provider) {
+        Box::new(remove)
+    } else {
+        let again = bind(
+            cx,
+            Button::new(
+                &format!("settings.web.accounts.sign-in-again.{}", account.id),
+                &t("settings-web-accounts-sign-in-again"),
+            )
+            .role(ButtonRole::Primary),
+            PersonSettingsEffect::SignInAgain {
+                account: account.id.clone(),
+            },
+        );
+        Box::new(Row::new().push(Box::new(again)).push(Box::new(remove)))
+    };
     let mut items = vec![row(Box::new(
         ListRow::new(format!("settings.web.accounts.{}", account.id), title)
             .avatar(provider_name(account.provider), account.provider.key())
             .avatar_glyph(provider_icon(account.provider))
             .square()
             .secondary(detail)
-            .trailing(Box::new(remove) as El),
+            .trailing(trailing),
     ))];
     let offered = account.provider.offers();
     for (service, offers, on, label) in [
@@ -799,6 +837,12 @@ fn account_rows(cx: &ViewCx<Settings>, account: &MailAccount) -> Vec<Item> {
         ));
     }
     items
+}
+
+/// Whether an account of `provider` signs in again on the provider's own
+/// page; the others are kept with a password the person types.
+fn signs_in_again(provider: Provider) -> bool {
+    matches!(provider, Provider::Google | Provider::Microsoft)
 }
 
 /// A sign-in on a provider's page that has made no account yet.
@@ -1170,6 +1214,43 @@ mod tests {
         );
         accounts.poll();
         assert_eq!(accounts.adding, Adding::Choosing);
+    }
+
+    /// A Google account whose sign-in stopped working signs in again to
+    /// the same account, asking for what it already feeds; one kept with a
+    /// password is not sent to a provider's page.
+    #[test]
+    fn a_stopped_sign_in_signs_in_again_to_the_same_account() {
+        en();
+        let provider = provider(None);
+        let mut accounts = model(&provider);
+        accounts.poll();
+        let kept = &mut accounts.listed.accounts[0];
+        kept.provider = Provider::Google;
+        kept.has_secret = false;
+        kept.services = Services {
+            mail: true,
+            calendar: false,
+            files: false,
+        };
+        accounts
+            .apply(PersonSettingsEffect::SignInAgain {
+                account: "ada@example.test".into(),
+            })
+            .unwrap();
+        let begin: BeginSignIn = asked(&provider, person_accounts::BEGIN_SIGN_IN);
+        assert_eq!(begin.provider, Provider::Google);
+        assert_eq!(begin.account, "ada@example.test");
+        assert!(begin.services.mail && !begin.services.calendar);
+
+        accounts.listed.accounts[0].provider = Provider::Other;
+        assert!(
+            accounts
+                .apply(PersonSettingsEffect::SignInAgain {
+                    account: "ada@example.test".into(),
+                })
+                .is_err()
+        );
     }
 
     /// An account's switch sets what it feeds and keeps the rest.

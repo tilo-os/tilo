@@ -67,6 +67,14 @@ pub enum PersonSettingsEffect {
     #[effect(kind = "outside")]
     #[effect(job)]
     SignIn,
+    /// Sign in to an account again on its provider's page, when the sign-in
+    /// it was kept with stopped working.
+    #[effect(kind = "outside")]
+    #[effect(job)]
+    SignInAgain {
+        #[param("The account's id, as the list names it")]
+        account: String,
+    },
     /// Look up the mail servers of the address typed.
     #[effect(kind = "outside")]
     #[effect(job)]
