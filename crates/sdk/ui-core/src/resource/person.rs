@@ -197,6 +197,7 @@ impl PersonResources {
 
     /// Allow a test profile to construct records from the previous storage model.
     #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
     pub fn with_legacy_member_fixture(mut self) -> Self {
         self.legacy_fixture = true;
         self
