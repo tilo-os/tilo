@@ -316,6 +316,14 @@ fn request_limit_row(profile: &ProviderProfile, selected: &ModelDescriptor) -> L
 }
 
 fn provider_row(profile: &ProviderProfile) -> LiveRow {
+    provider_row_with(profile, &ui::tilo_resource::RowBindings::new())
+}
+
+/// The row of `profile`, offering its type's effects and the ones `extra`
+/// binds beside them: an effect the surface declares on a provider (Settings'
+/// sign-in offers) is given to the row as it is built, not chained onto a
+/// row handed out.
+fn provider_row_with(profile: &ProviderProfile, extra: &ui::tilo_resource::RowBindings) -> LiveRow {
     let id = profile.id.clone();
     let model = profile.default_model.clone().unwrap_or_default();
     let bindings = ui::tilo_resource::RowBindings::new()
@@ -373,7 +381,8 @@ fn provider_row(profile: &ProviderProfile) -> LiveRow {
                 ("tool_calling", serde_json::Value::Null),
             ],
             &["model", "vision", "tool_calling"],
-        );
+        )
+        .extended(extra);
     LiveRow::typed_with::<AgentProvider>(
         format!("settings.agent-provider:{}", profile.id),
         profile.display_label(),
@@ -599,11 +608,21 @@ impl<H: PanelBindings> ProviderPanel<H> {
         }))
     }
     pub fn rows(&self) -> Vec<LiveRow> {
+        self.rows_with(|_| ui::tilo_resource::RowBindings::new())
+    }
+
+    /// [`Self::rows`] with `extra`'s bindings offered on each provider's row:
+    /// a surface that declares effects of its own on a provider gives them to
+    /// the row it publishes rather than adding them to one already built.
+    pub fn rows_with(
+        &self,
+        extra: impl Fn(&ProviderProfile) -> ui::tilo_resource::RowBindings,
+    ) -> Vec<LiveRow> {
         self.provider_config()
             .profiles
             .iter()
             .flat_map(|profile| {
-                let mut rows = vec![provider_row(profile)];
+                let mut rows = vec![provider_row_with(profile, &extra(profile))];
                 rows.extend(request_limit_rows(profile));
                 rows
             })

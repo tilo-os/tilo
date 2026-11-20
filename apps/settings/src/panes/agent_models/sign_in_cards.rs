@@ -3,8 +3,8 @@
 //! offers to add one.
 
 use agent_provider_config::{ProviderProfile, vertex_target};
-use ui::framework::{Actions, LiveRow};
-use ui::tilo_resource::Effect as _;
+use ui::framework::Actions;
+use ui::tilo_resource::{Effect as _, RowBindings};
 use ui::widget::{Button, Row, Text};
 
 use super::{AgentModelsEffect, AgentModelsModel, invoking};
@@ -17,9 +17,16 @@ use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, semantic_status_pill, value_row,
 };
 
-pub(super) fn sign_in_provider_row(row: LiveRow, profile: &ProviderProfile) -> LiveRow {
+/// The sign-in offers a provider's row carries, given to the row as it is
+/// built: the service it signs in with, or Google's sign-in and the project
+/// (and Vertex AI's location and model) it asks for.
+pub(super) fn sign_in_bindings(profile: &ProviderProfile) -> RowBindings {
+    let bindings = RowBindings::new();
+    if profile.sign_in.is_none() {
+        return bindings;
+    }
     if let Some(service) = agent_sign_in::Service::of(profile) {
-        return row.operation(
+        return bindings.spec(
             SettingsEffect::from(AgentModelsEffect::SignInToProvider {
                 service: service.slug().into(),
                 provider: Some(profile.id.clone()),
@@ -28,17 +35,17 @@ pub(super) fn sign_in_provider_row(row: LiveRow, profile: &ProviderProfile) -> L
         );
     }
     if !profile.signs_in_with_google() {
-        return row;
+        return bindings;
     }
     if vertex_target(&profile.endpoint).is_none() {
-        return row
-            .operation(
+        return bindings
+            .spec(
                 SettingsEffect::from(AgentModelsEffect::SignInWithGoogle {
                     provider: Some(profile.id.clone()),
                 })
                 .bound(),
             )
-            .operation(
+            .spec(
                 SettingsEffect::from(AgentModelsEffect::SetGeminiProvider {
                     provider: Some(profile.id.clone()),
                     project: String::new(),
@@ -46,21 +53,22 @@ pub(super) fn sign_in_provider_row(row: LiveRow, profile: &ProviderProfile) -> L
                 .bound_asking(&["project"]),
             );
     }
-    row.operation(
-        SettingsEffect::from(AgentModelsEffect::SignInWithGoogle {
-            provider: Some(profile.id.clone()),
-        })
-        .bound(),
-    )
-    .operation(
-        SettingsEffect::from(AgentModelsEffect::SetVertexProvider {
-            provider: Some(profile.id.clone()),
-            project: String::new(),
-            location: None,
-            model: None,
-        })
-        .bound_asking(&["project", "location", "model"]),
-    )
+    bindings
+        .spec(
+            SettingsEffect::from(AgentModelsEffect::SignInWithGoogle {
+                provider: Some(profile.id.clone()),
+            })
+            .bound(),
+        )
+        .spec(
+            SettingsEffect::from(AgentModelsEffect::SetVertexProvider {
+                provider: Some(profile.id.clone()),
+                project: String::new(),
+                location: None,
+                model: None,
+            })
+            .bound_asking(&["project", "location", "model"]),
+        )
 }
 
 impl AgentModelsModel {

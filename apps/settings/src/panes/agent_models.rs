@@ -1080,22 +1080,7 @@ impl AgentModelsArea {
             ));
         }
         rows.extend(model.hub.rows());
-        rows.extend(model.panel.rows().into_iter().map(|row| {
-            let profile = model
-                .panel
-                .provider_config()
-                .profiles
-                .iter()
-                .find(|profile| {
-                    profile.sign_in.is_some()
-                        && row.id() == format!("settings.agent-provider:{}", profile.id)
-                });
-            if let Some(profile) = profile {
-                sign_in_cards::sign_in_provider_row(row, profile)
-            } else {
-                row
-            }
-        }));
+        rows.extend(model.panel.rows_with(sign_in_cards::sign_in_bindings));
         rows
     }
 }

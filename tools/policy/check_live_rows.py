@@ -23,11 +23,12 @@ This refuses, in production Rust of every crate but the framework's own
 
 * `untyped-live-row`: `LiveRow::new`, a row that names no declared type;
 * `row-operation`: `.operation(...)` or `.effect(...)` chained onto a
-  `LiveRow` construction (including `LiveRow::typed::<…>`) or added to a row
+  `LiveRow` construction (including `LiveRow::typed::<…>`), added to a row
   a variable holds, whether the variable is the construction itself or what a
-  helper that returns a row built (`item.kind.row(…)`, a `…_row` function) —
-  an effect offered on a row the app shaped rather than one its type
-  declares;
+  helper that returns a row built (`item.kind.row(…)`, a `…_row` function),
+  or added to a row the file was handed: a parameter, closure parameter or
+  spelled-out binding typed `LiveRow` — an effect offered on a row the app
+  shaped rather than one its type declares;
 * `hand-built-tree`: `ResourceSpec::new`, a resource tree an app built;
 * `hand-bound-action`: `ActionSpec::typed`, an action an app bound itself.
 
@@ -91,6 +92,21 @@ LET_BINDING = re.compile(r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]+)?=([^;]*?);")
 ROW_BUILDER = re.compile(
     r"\bLiveRow\s*::|(?:\b|\.)(?:\w*_row|row)\s*\("
 )
+# A call that answers a row, chained with an operation before anything holds
+# it: `provider_row(profile).operation(spec)`, `item.kind.row(id).effect(…)`.
+ROW_CALL = re.compile(r"(?:\b|\.)(?:\w*_row|row)\s*\(")
+# A name the file types as a row it was handed rather than built: a
+# parameter (`fn patch(row: LiveRow)`), a closure's parameter (`|row:
+# LiveRow|`), or a binding whose type is spelled (`let row: LiveRow = …`).
+# Only the type says it is a row, so no builder in the file leads to it.
+LIVE_ROW_TYPE = re.compile(
+    r"\b(\w+)\s*:\s*&?\s*(?:'\w+\s*)?(?:\w+\s*::\s*)*LiveRow\b"
+)
+FN_SIGNATURE = re.compile(r"\bfn\s+[A-Za-z_]\w*\s*(?:<[^(){};]*>)?\s*\(")
+CLOSURE_PARAMS = re.compile(r"\|([^|\n]*)\|")
+TYPED_BINDING = re.compile(
+    r"\blet\s+(?:mut\s+)?(\w+)\s*:\s*&?\s*(?:'\w+\s*)?(?:\w+\s*::\s*)*LiveRow\b"
+)
 
 ADVICE = {
     "untyped-live-row": (
@@ -132,35 +148,65 @@ def sources(root: Path) -> list[Path]:
     return sorted(found)
 
 
+def chained_operations(code: str, open_paren: int) -> int:
+    """The `.operation(…)` and `.effect(…)` of the dot chain that follows the
+    call whose argument list opens at `open_paren`."""
+    count = 0
+    index = rust_source.matching(code, open_paren)
+    while True:
+        while index < len(code) and code[index] in " \t\r\n":
+            index += 1
+        if index >= len(code) or code[index] != ".":
+            break
+        index += 1
+        while index < len(code) and code[index] in " \t\r\n":
+            index += 1
+        start = index
+        while index < len(code) and (code[index].isalnum() or code[index] == "_"):
+            index += 1
+        name = code[start:index]
+        while index < len(code) and code[index] in " \t\r\n":
+            index += 1
+        if name in ROW_METHODS:
+            count += 1
+        if index < len(code) and code[index] == "(":
+            index = rust_source.matching(code, index)
+    return count
+
+
+def row_names(code: str) -> set[str]:
+    """The names the file itself types as a row it was handed: a function's
+    parameter, a closure's parameter, or a binding whose type is spelled."""
+    names = {match.group(1) for match in TYPED_BINDING.finditer(code)}
+    for signature in FN_SIGNATURE.finditer(code):
+        close = rust_source.matching(code, signature.end() - 1)
+        names.update(
+            match.group(1)
+            for match in LIVE_ROW_TYPE.finditer(code[signature.end() : close])
+        )
+    for closure in CLOSURE_PARAMS.finditer(code):
+        names.update(
+            match.group(1) for match in LIVE_ROW_TYPE.finditer(closure.group(1))
+        )
+    return names
+
+
 def row_operations(code: str) -> int:
     """`.operation(...)` and `.effect(...)` chained onto a row construction,
-    which declares nothing: the row's type should offer them itself."""
-    count = 0
-    for match in ROW.finditer(code):
-        index = rust_source.matching(code, match.end() - 1)
-        while True:
-            while index < len(code) and code[index] in " \t\r\n":
-                index += 1
-            if index >= len(code) or code[index] != ".":
-                break
-            index += 1
-            while index < len(code) and code[index] in " \t\r\n":
-                index += 1
-            start = index
-            while index < len(code) and (code[index].isalnum() or code[index] == "_"):
-                index += 1
-            name = code[start:index]
-            while index < len(code) and code[index] in " \t\r\n":
-                index += 1
-            if name in ROW_METHODS:
-                count += 1
-            if index < len(code) and code[index] == "(":
-                index = rust_source.matching(code, index)
+    which declares nothing: the row's type should offer them itself. A row
+    the file was handed (a parameter or a spelled-out binding) counts too,
+    as does a helper call chained before anything holds it."""
+    count = sum(
+        chained_operations(code, match.end() - 1) for match in ROW.finditer(code)
+    )
+    count += sum(
+        chained_operations(code, match.end() - 1) for match in ROW_CALL.finditer(code)
+    )
     rows = {
         match.group(1)
         for match in LET_BINDING.finditer(code)
         if ROW_BUILDER.search(match.group(2))
-    }
+    } | row_names(code)
     for ident in rows:
         count += len(re.findall(
             rf"\b{re.escape(ident)}\s*\.\s*(?:{'|'.join(sorted(ROW_METHODS))})\s*\(",

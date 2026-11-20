@@ -62,6 +62,54 @@ fn publish(plan: Plan) {
 }
 """
 
+# A row handed to a helper as a parameter: nothing here builds it, and only
+# its type says it is one.
+BOUND_AS_PARAMETER = """
+pub(super) fn sign_in_provider_row(row: LiveRow, profile: &ProviderProfile) -> LiveRow {
+    if let Some(service) = Service::of(profile) {
+        return row.operation(effect.bound());
+    }
+    row.effect(&provider.sign_in)
+}
+"""
+
+# A row the helper only borrows, and a closure's typed parameter.
+BOUND_AS_REFERENCE = """
+fn patch(row: &LiveRow) {
+    row.effect(&SignIn::google());
+}
+
+fn all(rows: Vec<LiveRow>) -> Vec<LiveRow> {
+    rows.into_iter().map(|row: LiveRow| row.operation(spec)).collect()
+}
+"""
+
+# A binding whose type is spelled: the row was built elsewhere.
+BOUND_AS_TYPED_LOCAL = """
+fn publish(row: LiveRow) -> LiveRow {
+    let mut row: LiveRow = row;
+    row = row.operation(spec);
+    row
+}
+"""
+
+# A helper's call chained before anything holds it.
+BOUND_AS_EXPRESSION = """
+fn published(profile: &ProviderProfile) -> LiveRow {
+    provider_row(profile).operation(effect.bound())
+}
+"""
+
+# A field typed as a row is not a row handed to this code.
+FIELD_NOT_A_ROW = """
+struct Held { row: LiveRow }
+
+fn patch(held: Held) {
+    let row = held.row;
+    row.presentation(format());
+}
+"""
+
 
 class LiveRowsTests(unittest.TestCase):
     def fixture(self, files: dict[str, str]) -> Path:
@@ -93,6 +141,26 @@ class LiveRowsTests(unittest.TestCase):
     def test_an_operation_on_something_that_is_not_a_row_is_not_counted(self):
         self.assertEqual(live_rows.count_file(NOT_A_ROW), {},
                          "only a binding a row builder made is a row's variable")
+
+    def test_an_effect_on_a_row_handed_in_as_a_parameter_is_counted(self):
+        self.assertEqual(live_rows.count_file(BOUND_AS_PARAMETER), {"row-operation": 2},
+                         "a row the file was handed is shaped here all the same")
+
+    def test_a_row_borrowed_or_a_closures_row_parameter_is_counted(self):
+        self.assertEqual(live_rows.count_file(BOUND_AS_REFERENCE), {"row-operation": 2},
+                         "a reference and a closure's parameter are rows too")
+
+    def test_an_operation_on_a_binding_typed_as_a_row_is_counted(self):
+        self.assertEqual(live_rows.count_file(BOUND_AS_TYPED_LOCAL), {"row-operation": 1},
+                         "a bound row's type is its declaration")
+
+    def test_an_operation_on_a_helper_call_is_counted(self):
+        self.assertEqual(live_rows.count_file(BOUND_AS_EXPRESSION), {"row-operation": 1},
+                         "a row is a row before anything holds it")
+
+    def test_a_field_typed_as_a_row_is_not_a_row_handed_in(self):
+        self.assertEqual(live_rows.count_file(FIELD_NOT_A_ROW), {},
+                         "a struct field is not a parameter")
 
     def test_an_untyped_row_is_counted_and_tests_are_not(self):
         code = (
