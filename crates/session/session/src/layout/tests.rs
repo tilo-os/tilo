@@ -442,7 +442,7 @@ struct HeldWrites {
     person: String,
 }
 
-impl tilo_workspace_service::workspace_documents::DeviceWrites for HeldWrites {
+impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
     fn write(
         &self,
         workspace: &str,
@@ -451,7 +451,7 @@ impl tilo_workspace_service::workspace_documents::DeviceWrites for HeldWrites {
         _changes: &[u8],
         _founding: bool,
         _sealed: Option<&key_group::ContentKeys>,
-    ) -> tilo_workspace_service::workspace_documents::DocumentWrite {
+    ) -> tilo_peer_state::workspace_documents::DocumentWrite {
         let hold = Arc::clone(&self.hold);
         let person = self.person.clone();
         let (workspace, app, document) =
@@ -604,8 +604,8 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
     let writes = Arc::new(HeldWrites {
         hold: Arc::clone(&hold),
         person: person.clone(),
-    }) as Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>;
-    let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> = Arc::new(
+    }) as Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>;
+    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = Arc::new(
         crate::records::testing::EngineDocuments(Arc::clone(&engine)),
     );
     desktops.attach(&engine, &reads, &writes);
@@ -781,9 +781,9 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     );
     let (wake, _heard) = woken();
     let desktops = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
-    let writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> =
+    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
         Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)));
-    let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> = Arc::new(
+    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = Arc::new(
         crate::records::testing::EngineDocuments(Arc::clone(&engine)),
     );
     desktops.attach(&engine, &reads, &writes);
@@ -812,9 +812,9 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     // are here.
     let (wake, _heard) = woken();
     let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
-    let writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> =
+    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
         Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)));
-    let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> = Arc::new(
+    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = Arc::new(
         crate::records::testing::EngineDocuments(Arc::clone(&engine)),
     );
     next.attach(&engine, &reads, &writes);
@@ -1139,9 +1139,9 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
 /// Attach `layouts` to read and write the workspaces' documents through `engine`'s own copy, as the
 /// device's workspace service holds them in a session.
 fn attach_through_engine(layouts: &Layouts, engine: &Arc<crate::engine::Engine>) {
-    let writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> =
+    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
         Arc::new(crate::records::testing::EngineWrites(Arc::clone(engine)));
-    let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> =
+    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> =
         Arc::new(crate::records::testing::EngineDocuments(Arc::clone(engine)));
     layouts.attach(engine, &reads, &writes);
 }

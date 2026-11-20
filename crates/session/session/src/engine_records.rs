@@ -37,10 +37,10 @@ struct Inner {
     engine: RefCell<Option<Arc<Engine>>>,
     /// The documents of the workspaces this device's service holds, once the session opened it:
     /// what the workspace holds of a record reads from there.
-    reads: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>>>,
+    reads: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>>>,
     /// What this device's service writes into a workspace's documents: where a write of the
     /// session's reaches the workspace, signed, sealed and kept as this device's.
-    writes: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>>>,
+    writes: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>>>,
     /// Where a write reaches this device's apps, as a member's write does.
     apps: RefCell<Option<crate::sync::PeerDocuments>>,
     /// The store of each app's records in each workspace, by workspace and app, as handed out.
@@ -137,8 +137,8 @@ impl EngineRecords {
     pub(crate) fn attach(
         &self,
         engine: Arc<Engine>,
-        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
-        writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
+        reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+        writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
         changes: &crate::platform::records::Changes,
         apps: Option<crate::sync::PeerDocuments>,
     ) {
@@ -323,7 +323,7 @@ impl Inner {
     }
 
     /// What this device's service writes into a workspace's documents, once the session opened it.
-    fn writes(&self) -> Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>> {
+    fn writes(&self) -> Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>> {
         self.writes.borrow().clone()
     }
 
@@ -381,7 +381,7 @@ impl Inner {
                 .get(&key)
                 .and_then(|replica| replica.revision);
             let bytes = match reads.read(workspace, app, &record, None) {
-                Ok(tilo_workspace_service::workspace_documents::DocumentRead::Whole {
+                Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole {
                     revision,
                     bytes,
                     ..
@@ -481,7 +481,7 @@ impl Inner {
             .get(key)
             .and_then(|document| document.revision);
         let (bytes, revision) = match reads.read(workspace, app, record, None) {
-            Ok(tilo_workspace_service::workspace_documents::DocumentRead::Whole {
+            Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole {
                 revision,
                 bytes,
                 ..

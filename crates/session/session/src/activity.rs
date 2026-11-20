@@ -86,8 +86,8 @@ pub trait History {
     fn attach(
         &self,
         engine: &std::sync::Arc<crate::engine::Engine>,
-        reads: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
-        writes: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
+        reads: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+        writes: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     );
 }
 
@@ -330,7 +330,7 @@ impl Activity {
     #[cfg(target_os = "linux")]
     fn attach_documents(
         &self,
-        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+        reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     ) {
         *self.0.held.borrow_mut() = Some(Arc::new(crate::platform::records::Held::over(
             reads,
@@ -372,8 +372,8 @@ impl Activity {
         &self,
         options: &crate::Options,
         handle: &tilo_desktop_surface::DesktopHandle,
-        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
-        writes: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
+        reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+        writes: &Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     ) -> Option<Arc<crate::engine::Engine>> {
         let engine = crate::options::open_engine(options, handle)?;
         self.0.layouts.attach(&engine, &reads, writes);
@@ -1773,10 +1773,8 @@ mod tests {
         fn attach(
             &self,
             _engine: &std::sync::Arc<crate::engine::Engine>,
-            _reads: &std::sync::Arc<
-                dyn tilo_workspace_service::workspace_documents::DeviceDocuments,
-            >,
-            _writes: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
+            _reads: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+            _writes: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
         ) {
         }
     }

@@ -1,0 +1,9 @@
+# What the desktop's start module measures past the budget above, which was set
+# before the window began restyling inside its one solve and before the session
+# read and wrote its own documents through the paths the page links. The excess
+# is the layout solver, the action policy and the workspace model they pull into
+# the module the page loads first.
+reason = "the window's restyle in one solve and the session's own document paths link more of the layout solver and the workspace model into the start module than the budget, set before them, allows"
+run = "rc7ee44a361"
+measured = 17245406
+bytes = 196608

@@ -5,8 +5,8 @@
 //! the workspace's other devices as any member's write does.
 
 use crate::service::ServiceSlot;
-use crate::workspace_documents::{DeviceWrites, DocumentWrite};
 use crate::workspaces::Workspaces;
+use tilo_peer_state::workspace_documents::{DeviceWrites, DocumentWrite};
 
 /// [`DeviceWrites`] over the service's own copy of the workspaces it holds, resolved from
 /// [`ServiceSlot`] on every call: what this session's own roles write on this device.

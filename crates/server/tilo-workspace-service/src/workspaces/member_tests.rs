@@ -264,9 +264,9 @@ async fn a_members_write_reaches_the_device_serving_the_workspace() {
 /// The front `workspace`'s layout stands on, as its member copy reads it now.
 #[cfg(feature = "apps")]
 async fn front(copies: &super::Workspaces, workspace: &str) -> Option<String> {
-    use crate::workspace_documents::DocumentRead;
     use automerge::ReadDoc as _;
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+    use tilo_peer_state::workspace_documents::DocumentRead;
 
     let read = copies
         .own_read(

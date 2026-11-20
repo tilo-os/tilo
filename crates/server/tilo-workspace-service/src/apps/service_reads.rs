@@ -18,8 +18,8 @@ use super::collab_app_broker::{
     NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
 };
 use crate::service::ServiceSlot;
-use crate::workspace_documents::{DeviceDocuments, DocumentRead};
 use crate::workspaces::Workspaces;
+use tilo_peer_state::workspace_documents::{DeviceDocuments, DocumentRead};
 
 /// The workspaces a service holds, as their resources are read: the service itself, or where its
 /// embedder installs it once it opens.

@@ -353,7 +353,7 @@ impl Save {
     async fn write(
         self,
         engine: &Engine,
-        writes: &dyn tilo_workspace_service::workspace_documents::DeviceWrites,
+        writes: &dyn tilo_peer_state::workspace_documents::DeviceWrites,
         person: &str,
         closed: &BTreeSet<u64>,
     ) -> Laid {
@@ -640,10 +640,10 @@ pub(crate) struct Layouts {
     engine: RefCell<Option<Arc<Engine>>>,
     /// Where the workspaces' documents are read, once the session opened this device's service: a
     /// layout and its views are read from the workspace's own copy, as they are written to it.
-    reads: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>>>,
+    reads: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>>>,
     /// What this device's workspace service writes into the workspaces' documents, once the
     /// session opened it: where a layout's write reaches the workspace.
-    writes: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>>>,
+    writes: RefCell<Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>>>,
     /// The workspace's own document as this device holds it, and the engine revision it was read
     /// at: its governance is read from there, never from a device's copy of it.
     governing: RefCell<HashMap<WorkspaceId, (u64, Option<automerge::AutoCommit>)>>,
@@ -908,7 +908,7 @@ impl Layouts {
         key: &Key,
         known: Option<[u8; 32]>,
     ) -> Result<Option<(automerge::AutoCommit, [u8; 32])>, String> {
-        use tilo_workspace_service::workspace_documents::DocumentRead;
+        use tilo_peer_state::workspace_documents::DocumentRead;
         let Some(reads) = self.reads() else {
             return Ok(None);
         };
@@ -1070,8 +1070,8 @@ impl Layouts {
     pub(crate) fn attach(
         &self,
         engine: &Arc<Engine>,
-        reads: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
-        writes: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
+        reads: &Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+        writes: &Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     ) {
         *self.engine.borrow_mut() = Some(Arc::clone(engine));
         *self.reads.borrow_mut() = Some(Arc::clone(reads));
@@ -1079,14 +1079,12 @@ impl Layouts {
     }
 
     /// Where the workspaces' documents are read, once the session opened its service.
-    fn reads(
-        &self,
-    ) -> Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>> {
+    fn reads(&self) -> Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>> {
         self.reads.borrow().clone()
     }
 
     /// The writes into the workspaces' documents, once the session opened its service.
-    fn writes(&self) -> Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>> {
+    fn writes(&self) -> Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>> {
         self.writes.borrow().clone()
     }
 
@@ -2823,8 +2821,8 @@ impl crate::activity::History for LayoutHistory {
     fn attach(
         &self,
         engine: &Arc<Engine>,
-        reads: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
-        writes: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
+        reads: &Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+        writes: &Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     ) {
         self.layouts.attach(engine, reads, writes);
     }

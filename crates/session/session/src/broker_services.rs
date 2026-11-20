@@ -185,12 +185,12 @@ pub(crate) fn document_reads(
 /// the workspaces it holds from.
 pub(crate) fn session_documents() -> (
     tilo_workspace_service::service::ServiceSlot,
-    Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
 ) {
     let service = tilo_workspace_service::service::ServiceSlot::default();
     let reads = Arc::new(
         tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
-    ) as Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>;
+    ) as Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>;
     (service, reads)
 }
 
@@ -198,7 +198,7 @@ pub(crate) fn session_documents() -> (
 /// holds: the same workspaces its reads answer from.
 pub(crate) fn session_writes(
     service: tilo_workspace_service::service::ServiceSlot,
-) -> Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> {
+) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> {
     Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(service))
 }
 

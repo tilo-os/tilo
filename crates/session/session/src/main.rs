@@ -906,6 +906,7 @@ fn start_session(
 
 /// The descriptor the login's wrapper opened for the handover between a desktop that ends for an
 /// in-place restart and the one that follows, when it named one.
+#[cfg(target_os = "linux")]
 fn restart_handover() -> Option<std::os::fd::RawFd> {
     let value = std::env::var_os("TILO_SESSION_RESTART_HANDOVER")?;
     let Some(text) = value.to_str() else {

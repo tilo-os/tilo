@@ -14,7 +14,7 @@ use tilo_actions::remote::{
     ActionCallError, CHANGE_FEED_UNAVAILABLE, Caller, ChangeFeed, ChangePage, Pending,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::workspace_documents::{DeviceDocuments, DocumentRead};
+use tilo_peer_state::workspace_documents::{DeviceDocuments, DocumentRead};
 use ui::history_source::feed::{ChangeLog, DocumentKey};
 
 /// The documents of the workspaces this device's service holds, and each workspace's log.

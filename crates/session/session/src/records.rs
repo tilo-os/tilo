@@ -129,7 +129,7 @@ impl Records {
     #[cfg(target_os = "linux")]
     pub(crate) fn read_from(
         &self,
-        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+        reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         named: crate::engine_records::EngineRecords,
         person: String,
     ) {
@@ -417,15 +417,15 @@ pub(crate) mod testing {
     /// them in production; these tests have no endpoint to open it on.
     pub(crate) struct EngineDocuments(pub(crate) Arc<Engine>);
 
-    impl tilo_workspace_service::workspace_documents::DeviceDocuments for EngineDocuments {
+    impl tilo_peer_state::workspace_documents::DeviceDocuments for EngineDocuments {
         fn read(
             &self,
             workspace: &str,
             app: &str,
             resource: &str,
             since: Option<&[[u8; 32]]>,
-        ) -> Result<tilo_workspace_service::workspace_documents::DocumentRead, String> {
-            use tilo_workspace_service::workspace_documents::DocumentRead;
+        ) -> Result<tilo_peer_state::workspace_documents::DocumentRead, String> {
+            use tilo_peer_state::workspace_documents::DocumentRead;
             match self.0.record_update(workspace, app, resource, since)? {
                 crate::engine::ResourceReading::Captured {
                     revision,
@@ -474,7 +474,7 @@ pub(crate) mod testing {
     /// them in production; these tests have no endpoint to open it on.
     pub(crate) struct EngineWrites(pub(crate) Arc<Engine>);
 
-    impl tilo_workspace_service::workspace_documents::DeviceWrites for EngineWrites {
+    impl tilo_peer_state::workspace_documents::DeviceWrites for EngineWrites {
         fn write(
             &self,
             workspace: &str,
@@ -483,7 +483,7 @@ pub(crate) mod testing {
             changes: &[u8],
             founding: bool,
             sealed: Option<&key_group::ContentKeys>,
-        ) -> tilo_workspace_service::workspace_documents::DocumentWrite {
+        ) -> tilo_peer_state::workspace_documents::DocumentWrite {
             let engine = Arc::clone(&self.0);
             let workspace = workspace.to_owned();
             let (app, document) = (app.to_owned(), document.to_owned());

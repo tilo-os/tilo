@@ -967,7 +967,7 @@ mod loaded {
 /// they land.
 #[cfg(target_os = "linux")]
 pub struct Held {
-    reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     changes: Changes,
 }
 
@@ -976,7 +976,7 @@ impl Held {
     /// What `reads` answers, with `changes` saying what moved in it.
     #[must_use]
     pub fn over(
-        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+        reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         changes: Changes,
     ) -> Self {
         Self { reads, changes }
@@ -990,7 +990,7 @@ impl Held {
         &self,
         (app, workspace, route): (&str, &str, &str),
         heads: Option<&[automerge::ChangeHash]>,
-    ) -> Option<tilo_workspace_service::workspace_documents::DocumentRead> {
+    ) -> Option<tilo_peer_state::workspace_documents::DocumentRead> {
         if !self.reads.workspaces().iter().any(|held| held == workspace) {
             return None;
         }
@@ -1012,9 +1012,8 @@ impl Records for Held {
     }
 
     fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
-        let Some(tilo_workspace_service::workspace_documents::DocumentRead::Whole {
-            bytes, ..
-        }) = self.read((app, workspace, route), None)
+        let Some(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) =
+            self.read((app, workspace, route), None)
         else {
             return None;
         };
@@ -1030,7 +1029,7 @@ impl Records for Held {
         route: &str,
         heads: &[automerge::ChangeHash],
     ) -> Since {
-        use tilo_workspace_service::workspace_documents::DocumentRead;
+        use tilo_peer_state::workspace_documents::DocumentRead;
         match self.read((app, workspace, route), Some(heads)) {
             Some(DocumentRead::Unchanged(_)) => Since::Unchanged,
             Some(DocumentRead::Changes { heads, bytes, .. }) => Since::Changes {

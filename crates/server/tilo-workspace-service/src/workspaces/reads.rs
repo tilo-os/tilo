@@ -15,7 +15,7 @@ use tilo_peer_state::{
 use tilo_user_identity::DeviceCert;
 
 use super::{DeviceKeys, GovernedWorkspace, SystemTime, Workspaces};
-use crate::workspace_documents::DocumentRead;
+use tilo_peer_state::workspace_documents::DocumentRead;
 
 impl Workspaces {
     /// `app`'s `resource` of `workspace` as this service's own device reads it: the document

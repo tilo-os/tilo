@@ -51,7 +51,7 @@ pub(crate) trait DocumentSource: Send + Sync + 'static {
 /// [`DocumentSource`] over the documents of the workspaces this device's service holds: what
 /// search reads, with no app of theirs running.
 pub(crate) struct ServiceSource(
-    pub(crate) Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    pub(crate) Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
 );
 
 impl DocumentSource for ServiceSource {
@@ -64,7 +64,7 @@ impl DocumentSource for ServiceSource {
     }
 
     fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
-        use tilo_workspace_service::workspace_documents::DocumentRead;
+        use tilo_peer_state::workspace_documents::DocumentRead;
         match self.0.read(workspace, app, record, None) {
             Ok(DocumentRead::Whole { bytes, .. }) => Ok(Some(bytes)),
             Ok(_) => Ok(None),
@@ -79,7 +79,7 @@ impl DocumentSource for ServiceSource {
 /// of one the service does not hold is no news to any role that follows it, and is taken when the
 /// service holds the workspace.
 pub(crate) fn start(
-    reads: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    reads: &Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     content: Arc<tilo_desktop_search::content_index::AppContentIndex>,
     changes: crate::platform::records::Changes,
 ) -> Arc<RecordIndex> {

@@ -1404,7 +1404,7 @@ impl SessionServices {
     /// woken by what `changes` notes.
     pub(crate) fn keep_records(
         &self,
-        reads: std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+        reads: std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         changes: crate::platform::records::Changes,
     ) {
         self.changes.keep(reads, changes);

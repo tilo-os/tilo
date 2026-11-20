@@ -11,7 +11,7 @@
 //!    its channels get keys of their own the first time a record of it is sealed.
 //! 2. Every record the source holds here is read whole, with its history, and written into the
 //!    branch as its founding write, through this device's workspace service
-//!    ([`tilo_workspace_service::workspace_documents::DeviceWrites`]), forked under a writer of its own and
+//!    ([`tilo_peer_state::workspace_documents::DeviceWrites`]), forked under a writer of its own and
 //!    naming the branch as its workspace ([`ui::resource::transfer::branch`]). A record an app keeps on
 //!    this device too is the same document there: the local copy's changes are merged in first,
 //!    and the branch's local copy is the very document the branch's engine holds.
@@ -176,7 +176,7 @@ fn events(engine: &Engine) -> Vec<tokio::sync::watch::Receiver<u64>> {
 /// device, the branch's only member, makes, waiting for them until `until`.
 async fn found(
     engine: &Engine,
-    writes: &dyn tilo_workspace_service::workspace_documents::DeviceWrites,
+    writes: &dyn tilo_peer_state::workspace_documents::DeviceWrites,
     workspace: WorkspaceId,
     (app, document): (&str, &str),
     changes: &[u8],
@@ -223,8 +223,8 @@ async fn moved(events: &mut [tokio::sync::watch::Receiver<u64>], until: Instant)
 /// its copies run off the loop.
 pub(crate) async fn copy(
     engine: Option<&Engine>,
-    writes: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
-    reads: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    writes: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
+    reads: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     places: Places,
     from: WorkspaceId,
     to: WorkspaceId,
@@ -341,7 +341,7 @@ fn make_copies(
 
 /// Every record of `from` this device reads, but those that stay behind.
 fn read_resources(
-    reads: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    reads: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     from: WorkspaceId,
     branched: &mut Branched,
 ) -> Sources {
@@ -363,9 +363,9 @@ fn read_resources(
         let read = reads
             .read(&from.to_string(), &app, &record, None)
             .map(|read| match read {
-                tilo_workspace_service::workspace_documents::DocumentRead::Whole {
-                    bytes, ..
-                } => Some(AutoCommit::load(&bytes)),
+                tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. } => {
+                    Some(AutoCommit::load(&bytes))
+                }
                 _ => None,
             });
         match read {
@@ -1547,7 +1547,7 @@ mod tests {
     /// workspaces finds.
     struct NoWrites;
 
-    impl tilo_workspace_service::workspace_documents::DeviceWrites for NoWrites {
+    impl tilo_peer_state::workspace_documents::DeviceWrites for NoWrites {
         fn write(
             &self,
             _: &str,
@@ -1556,7 +1556,7 @@ mod tests {
             _: &[u8],
             _: bool,
             _: Option<&key_group::ContentKeys>,
-        ) -> tilo_workspace_service::workspace_documents::DocumentWrite {
+        ) -> tilo_peer_state::workspace_documents::DocumentWrite {
             Box::pin(async {
                 Err(tilo_peer_state::owner::WriteRefusal::Refused(
                     "no workspace service is open".to_owned(),
@@ -1569,14 +1569,14 @@ mod tests {
     /// workspaces finds.
     struct NoDocuments;
 
-    impl tilo_workspace_service::workspace_documents::DeviceDocuments for NoDocuments {
+    impl tilo_peer_state::workspace_documents::DeviceDocuments for NoDocuments {
         fn read(
             &self,
             _: &str,
             _: &str,
             _: &str,
             _: Option<&[[u8; 32]]>,
-        ) -> Result<tilo_workspace_service::workspace_documents::DocumentRead, String> {
+        ) -> Result<tilo_peer_state::workspace_documents::DocumentRead, String> {
             Err("no workspace service is open".to_owned())
         }
 
@@ -1600,15 +1600,11 @@ mod tests {
         from: WorkspaceId,
         to: WorkspaceId,
     ) -> Branched {
-        let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> =
-            match held {
-                Some(engine) => {
-                    Arc::new(crate::records::testing::EngineDocuments(Arc::clone(engine)))
-                }
-                None => Arc::new(NoDocuments),
-            };
-        let writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> = match held
-        {
+        let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = match held {
+            Some(engine) => Arc::new(crate::records::testing::EngineDocuments(Arc::clone(engine))),
+            None => Arc::new(NoDocuments),
+        };
+        let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> = match held {
             Some(engine) => Arc::new(crate::records::testing::EngineWrites(Arc::clone(engine))),
             None => Arc::new(NoWrites),
         };
@@ -1667,7 +1663,7 @@ mod tests {
         (app, record): (&str, &str),
         doc: &mut AutoCommit,
     ) {
-        use tilo_workspace_service::workspace_documents::DeviceWrites as _;
+        use tilo_peer_state::workspace_documents::DeviceWrites as _;
         // The keys of the source and of the branch, as the key service hands them to a member.
         for held in [ids().0, ids().1] {
             engine.hand_keys(held, keys.clone());

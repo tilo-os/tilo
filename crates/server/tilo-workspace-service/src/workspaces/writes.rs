@@ -162,7 +162,7 @@ mod tests {
         TestGroupKeys, device_cert, enter_key, governor_with, test_host_holding,
     };
     use super::super::{MemberDevice, Workspaces};
-    use crate::workspace_documents::DocumentRead;
+    use tilo_peer_state::workspace_documents::DocumentRead;
 
     /// The front `workspace`'s layout stands on, as its document reads now.
     async fn front(workspaces: &Workspaces, workspace: &str) -> Option<String> {
