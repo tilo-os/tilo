@@ -1171,8 +1171,15 @@ declare_owner() {
 # The person is kept as a Tilo session keeps one (its identity under .config,
 # this device's key under .local/share/tilo): a session given this home is them.
 as_owner() {
-  local home=$state/owner/home
+  local home=$state/owner/home run
   mkdir -p "$home"
+  # Their own runtime directory, where the holder of their device listens: one this account
+  # makes private, since tilo refuses a temporary directory's tilo-UID someone else made (a
+  # build container's temporary directory is every container's), and short, since a socket's
+  # path is.
+  run=${TMPDIR:-/tmp}/tilo-sh-$(printf '%s' "$home" | sha256sum | cut -c1-12)
+  mkdir -p -m 700 "$run"
+  XDG_RUNTIME_DIR=$run \
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
     TILO_IDENTITY_ROOT=$home/.local/share/tilo \
