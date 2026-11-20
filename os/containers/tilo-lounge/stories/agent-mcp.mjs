@@ -94,7 +94,7 @@ try {
   });
 
   await story.step('Ada connects their agent to the workspace', async () => {
-    await search(ada.tab, adaKeys, 'connect an agent', 'Connect an agent or computer');
+    await search(ada.tab, adaKeys, 'connect an agent or computer', 'Connect an agent or computer');
     const prompt = await until(ada.tab, `(() => {
       const offer = document.getElementById('first-screen-offer')?.textContent ?? '';
       return /login [2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}/.test(offer) ? offer : '';

@@ -202,7 +202,7 @@ try {
 
   await story.step('Ada runs `tilo login` and copies a document into the workspace folder', async () => {
     // Her page hands the computer a login code, as `tilo login` asks for.
-    await search(ada.tab, adaKeys, 'connect an agent', 'Connect an agent or computer');
+    await search(ada.tab, adaKeys, 'connect an agent or computer', 'Connect an agent or computer');
     const prompt = await until(ada.tab, `(() => {
       const offer = document.getElementById('first-screen-offer')?.textContent ?? '';
       return /login [2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4}/.test(offer) ? offer : '';
