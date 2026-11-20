@@ -160,7 +160,7 @@ mod tests {
     const WORKSPACE: &str = ui::framework::testing::TEST_WORKSPACE;
 
     /// The folders this device remembers for the workspace.
-    fn recent(app: &mut TestApp<DiskUsageShell>) -> Vec<PathBuf> {
+    fn recent(app: &TestApp<DiskUsageShell>) -> Vec<PathBuf> {
         app.settings::<crate::view::DiskUsageRecents>()
             .get()
             .in_workspace(WORKSPACE)
@@ -182,8 +182,8 @@ mod tests {
         previous.record().flush();
         drop(previous);
 
-        let mut app = app.reopen().unwrap();
-        assert_eq!(recent(&mut app), [path.clone()]);
+        let app = app.reopen().unwrap();
+        assert_eq!(recent(&app), std::slice::from_ref(&path));
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(answer["path"], folder.to_string_lossy().as_ref());
         assert!(answer["bytes"].as_u64().unwrap() >= 4096, "{answer}");
         app.settle();
-        assert_eq!(recent(&mut app), std::slice::from_ref(&folder));
+        assert_eq!(recent(&app), std::slice::from_ref(&folder));
         assert_eq!(
             app.versions().len(),
             versions,
@@ -274,7 +274,7 @@ mod tests {
             folder.to_string_lossy().as_ref()
         );
         app.settle();
-        assert_eq!(recent(&mut app), std::slice::from_ref(&folder));
+        assert_eq!(recent(&app), std::slice::from_ref(&folder));
         let _ = std::fs::remove_dir_all(&folder);
     }
 
@@ -349,7 +349,7 @@ mod tests {
 
         let mut home = TestApp::<DiskUsageShell>::capture(Some("home-narrow")).unwrap();
         assert_eq!(home.harness().inspection().viewport, [560, 720]);
-        assert!(recent(&mut home).is_empty(), "a capture remembers nothing");
+        assert!(recent(&home).is_empty(), "a capture remembers nothing");
         let frame = home.harness().inspection_json().unwrap();
         assert!(frame.contains("\"tilo\""), "{frame}");
 
@@ -358,7 +358,7 @@ mod tests {
         let frame = analysis.harness().inspection_json().unwrap();
         assert!(frame.contains("Projects"), "{frame}");
         assert!(
-            recent(&mut analysis).is_empty(),
+            recent(&analysis).is_empty(),
             "a staged scan is not one this person made"
         );
 

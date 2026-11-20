@@ -53,16 +53,20 @@ impl PageJob {
 }
 
 /// A page the service holds: whose it is and what it shows.
-pub(super) enum HeldPage {
-    /// An app's page: the record it shows, and who opened it.
-    App {
-        workspace_id: WorkspaceId,
-        who: bounded::Bounded,
-        route: DocumentRoute,
-    },
+enum HeldPage {
+    App(Box<HeldAppPage>),
     /// The workspace's front page: the apps a member opens here. Nothing is
     /// acted on it and it never changes.
-    Home { workspace_id: WorkspaceId },
+    Home {
+        workspace_id: WorkspaceId,
+    },
+}
+
+/// An app's page: the record it shows, and who opened it.
+struct HeldAppPage {
+    workspace_id: WorkspaceId,
+    who: bounded::Bounded,
+    route: DocumentRoute,
 }
 
 /// The pages the service holds, by number.
@@ -79,7 +83,7 @@ impl Pages {
         match job {
             PageJob::Open { caller, .. } => Some(&**caller),
             PageJob::Act { page, .. } | PageJob::Close { page, .. } => match self.held.get(page) {
-                Some(HeldPage::App { who, .. }) => Some(&who.caller),
+                Some(HeldPage::App(app)) => Some(&app.who.caller),
                 Some(HeldPage::Home { .. }) | None => None,
             },
         }
@@ -195,7 +199,7 @@ impl Worker {
                 .page_app(&address.app)
                 .map_or(super::keys::Keys::Joined, |app| document(app.app_id(), "")),
             PageJob::Act { page, .. } => match self.pages.held.get(page) {
-                Some(HeldPage::App { route, .. }) => document(&route.app_id, &route.document),
+                Some(HeldPage::App(app)) => document(&app.route.app_id, &app.route.document),
                 Some(HeldPage::Home { .. }) | None => super::keys::Keys::Joined,
             },
             PageJob::Close { .. } => super::keys::Keys::Joined,
@@ -278,11 +282,11 @@ impl Worker {
         self.save_page(workspace_id, &key, (&who, &route, &state))?;
         self.pages.held.insert(
             page,
-            HeldPage::App {
+            HeldPage::App(Box::new(HeldAppPage {
                 workspace_id,
                 who,
                 route,
-            },
+            })),
         );
         let (title, css, body) = shown;
         Ok(OpenedPage {
@@ -313,15 +317,13 @@ impl Worker {
              <h1 class=\"tilo-home-title\">Tilo</h1><ul class=\"tilo-home-apps\">",
         );
         for app in apps {
-            let name = app
-                .app_id()
-                .rsplit_once('.')
-                .map_or(app.app_id(), |(_, last)| last);
+            let app_id = app.app_id();
+            let name = app_id.rsplit_once('.').map_or(app_id, |(_, last)| last);
             let icon = match &app.icon {
                 ui::IconDescriptor::Named(icon) => {
                     ui::icons::Icon::from_name(icon).map_or_else(String::new, ui::icons::icon_svg)
                 }
-                _ => String::new(),
+                ui::IconDescriptor::Glyph(_) => String::new(),
             };
             let _ = write!(
                 body,
@@ -352,28 +354,21 @@ impl Worker {
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
         // What the page holds, taken by value so the workspace is read next.
-        let (home, app) = match self
+        let (workspace_id, who, route) = match self
             .pages
             .held
             .get(&page)
             .ok_or_else(|| unavailable("the page was closed"))?
         {
-            HeldPage::App {
-                workspace_id,
-                who,
-                route,
-            } => (None, Some((*workspace_id, who.clone(), route.clone()))),
-            HeldPage::Home { workspace_id } => (Some(*workspace_id), None),
+            HeldPage::App(app) => (app.workspace_id, app.who.clone(), app.route.clone()),
+            HeldPage::Home { workspace_id } => {
+                // The front page has no document to act on. Verify that the workspace
+                // is still readable before reporting that nothing changed.
+                self.refresh(*workspace_id, Needs::Workspace)
+                    .map_err(refused)?;
+                return Ok(Vec::new());
+            }
         };
-        // The workspace's front page holds no document and nothing acts on
-        // it: a pass over it answers that nothing changed. It is read again
-        // first, so a workspace no longer readable here is refused.
-        if let Some(workspace_id) = home {
-            self.refresh(workspace_id, Needs::Workspace)
-                .map_err(refused)?;
-            return Ok(Vec::new());
-        }
-        let (workspace_id, who, route) = app.ok_or_else(|| unavailable("the page was closed"))?;
         let started = std::time::Instant::now();
         // Others' writes since are merged before the person acts, as they
         // would have seen them in a window.

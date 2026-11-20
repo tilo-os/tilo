@@ -228,6 +228,9 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
     )]
     fn a_member_reads_mail_another_member_fetched_and_loses_access_on_revocation() {
         use ui::collaboration::document_content::ContentLink;
+        use ui::tilo_actions::policy::{
+            Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
+        };
 
         let person = "c7".repeat(32);
         let mut first_host =
@@ -235,9 +238,6 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         let reader = "b9".repeat(32);
         let mut second_host =
             ui::framework::testing::TestApp::<crate::MailShell>::for_person(&reader).unwrap();
-        use ui::tilo_actions::policy::{
-            Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
-        };
         let workspace = ui::framework::testing::TEST_WORKSPACE;
         let mut policy = WorkspacePolicy::new(workspace, &person);
         policy.members.insert(reader.clone(), Role::Viewer);

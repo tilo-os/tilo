@@ -1,6 +1,7 @@
 //! Read imported apps through their own packages.
 
 use std::collections::HashSet;
+use tilolang_tilo::MetaExt as _;
 use tilolang_tilo::instance::document::{InstanceDocument, ReadDocument};
 use tilolang_tilo::used::UsedApp;
 

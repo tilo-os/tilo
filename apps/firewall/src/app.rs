@@ -205,7 +205,7 @@ impl Store {
     fn attach(&mut self, cx: &ViewCx<Firewall>) {
         self.dispatcher = Some(cx.dispatcher());
         if cx.mode().is_live() {
-            let workspace = cx.workspace().unwrap_or_default().to_owned();
+            let workspace = cx.workspace().unwrap_or_default();
             self.applied = Some((AppliedOnDevice::open(cx, &workspace), workspace));
         }
         self.host_writes = cx.mode() == RunMode::Live || cfg!(test);
