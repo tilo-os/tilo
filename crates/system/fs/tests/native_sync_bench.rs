@@ -1317,9 +1317,13 @@ fn copying_a_folder_in_and_restarting() {
                 ));
             }
         }
+        let root = std::fs::read_dir(&pair.host.mount).map(|entries| entries.count());
+        let inside = std::fs::read_dir(pair.host.mount.join("in")).map(|entries| entries.count());
         eprintln!(
-            "copy: {missing_after} missing after the restart ({first_after}); kept tree files:\n\
+            "copy: {missing_after} missing after the restart ({first_after}); the mount at {} \
+             lists {root:?} at its root and {inside:?} under in/; kept tree files:\n\
              {listing}writer's log:\n{}",
+            pair.host.mount.display(),
             pair.host.dump()
         );
     }
