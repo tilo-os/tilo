@@ -270,6 +270,19 @@ fn published_kind(
     }
 }
 
+/// Whether `path` lies inside `unit`: a write to what it holds (an entry of
+/// an outbox, and what is inside such an entry), never to the unit itself.
+fn inside_unit(unit: &[PathStep], path: &[PathStep]) -> bool {
+    let matches = |(step, want): (&PathStep, &PathStep)| match (want, step) {
+        (PathStep::Item(any), PathStep::Item(_)) if any == crate::surface::ANY_ITEM => true,
+        (want, step) => want == step,
+    };
+    let under = path.len() > unit.len() && unit.iter().zip(path).all(matches);
+    let entry = matches!(unit.last(), Some(PathStep::Item(item)) if item == crate::surface::ANY_ITEM)
+        && crate::surface::covers(unit, path);
+    under || entry
+}
+
 fn unit_label(unit: &[PathStep]) -> String {
     if unit.is_empty() {
         return "(document)".into();
@@ -346,9 +359,19 @@ pub fn check_claims(
                 ClaimedAction::History(_) | ClaimedAction::Framework(_)
             )
         });
+        // A sealed op's claim names what its action may write, not what it
+        // queued. An edit whose path lies inside an entry writes there, and a
+        // claim cannot tell that from a push on units alone: any other write
+        // of the outbox may have put an entry in it.
+        let inside = match &claim.action {
+            ClaimedAction::Edit { path, .. } => {
+                outboxes.iter().any(|outbox| inside_unit(outbox, path))
+            }
+            _ => false,
+        };
         let queues = match &read {
             Some(read) => in_outbox(&read.added),
-            None if claims_any_unit => false,
+            None if claims_any_unit || inside => false,
             None => in_outbox(&claim.units),
         };
         let queued_nothing = !queues && !outboxes.is_empty();

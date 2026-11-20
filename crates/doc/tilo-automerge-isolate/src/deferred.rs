@@ -1,9 +1,9 @@
 //! A copy of a document that admits changes at once and applies them only
 //! where it is read.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use automerge::{AutoCommit, ChangeHash};
+use automerge::{AutoCommit, Change, ChangeHash};
 
 use crate::{Applied, Dependencies, Isolate, Rejected, engine};
 
@@ -31,8 +31,10 @@ pub struct Deferred {
     /// Some of `pending` was admitted unapplied ([`Self::admit_unapplied`]): no worker process
     /// applied it yet.
     unchecked: bool,
-    /// The hash of each change in `pending`.
-    hashes: HashSet<ChangeHash>,
+    /// The changes of `pending` by hash, as their admission parsed them: what reads a change
+    /// by its own operations takes them from here rather than parsing them again
+    /// ([`Self::admitted`]).
+    parsed: HashMap<ChangeHash, Change>,
     /// The heads with `pending` applied, while any wait.
     heads: Vec<ChangeHash>,
 }
@@ -61,7 +63,7 @@ impl Deferred {
     fn settle_in(&mut self, isolate: &Isolate) -> Result<&mut AutoCommit, Rejected> {
         if !self.pending.is_empty() {
             let pending = std::mem::take(&mut self.pending);
-            self.hashes.clear();
+            self.parsed.clear();
             self.heads.clear();
             if std::mem::take(&mut self.unchecked) {
                 // What waits unapplied is applied in a worker process first, as any untrusted
@@ -90,6 +92,14 @@ impl Deferred {
         (&self.doc, &self.pending)
     }
 
+    /// The changes `hashes` name, in that order, as they were parsed when they were admitted:
+    /// `None` unless each still waits to be applied. A list of a few hundred changes costs a
+    /// tenth of a second to parse, and what reads what they write needs them parsed.
+    #[must_use]
+    pub fn admitted(&self, hashes: &[ChangeHash]) -> Option<Vec<&Change>> {
+        hashes.iter().map(|hash| self.parsed.get(hash)).collect()
+    }
+
     /// The heads the document stands at, every admitted change counted.
     pub fn heads(&mut self) -> Vec<ChangeHash> {
         if self.pending.is_empty() {
@@ -101,7 +111,7 @@ impl Deferred {
 
     /// Whether the document holds the change `hash` names, applied or not.
     pub fn holds(&mut self, hash: &ChangeHash) -> bool {
-        self.hashes.contains(hash) || self.doc.get_change_meta_by_hash(hash).is_some()
+        self.parsed.contains_key(hash) || self.doc.get_change_meta_by_hash(hash).is_some()
     }
 
     /// Admit `incoming` as [`Isolate::apply`] does. Changes that are all new
@@ -141,7 +151,7 @@ impl Deferred {
         };
         crate::precheck::check(incoming, Isolate::shared().limits())?;
         self.pending.extend_from_slice(incoming);
-        self.hashes.extend(carried);
+        self.keep_parsed(carried);
         self.heads = after;
         self.unchecked = true;
         Ok(Applied::Changed(true))
@@ -167,11 +177,18 @@ impl Deferred {
         }
     }
 
-    /// The heads after `incoming` and the hash of each change it carries, when it is a sequence of new changes that build
-    /// only on what the document holds and the document waits on nothing:
-    /// the changes that stand at its heads now or arrive, less every change
-    /// one of them builds on.
-    fn heads_after(&mut self, incoming: &[u8]) -> Option<(Vec<ChangeHash>, Vec<ChangeHash>)> {
+    /// Keep `carried`, changes just added to `pending`, as they were parsed.
+    fn keep_parsed(&mut self, carried: Vec<Change>) {
+        for change in carried {
+            self.parsed.insert(change.hash(), change);
+        }
+    }
+
+    /// The heads after `incoming` and the changes it carries, parsed, when it is a sequence of
+    /// new changes that build only on what the document holds and the document waits on
+    /// nothing: the changes that stand at its heads now or arrive, less every change one of
+    /// them builds on.
+    fn heads_after(&mut self, incoming: &[u8]) -> Option<(Vec<ChangeHash>, Vec<Change>)> {
         if self.pending.is_empty() && !self.doc.get_missing_deps(&[]).is_empty() {
             return None;
         }
@@ -190,11 +207,10 @@ impl Deferred {
                 below.insert(*dependency);
             }
         }
-        let carried: Vec<ChangeHash> = changes.iter().map(automerge::Change::hash).collect();
         let mut heads = self.heads();
-        heads.extend(carried.iter().copied());
+        heads.extend(changes.iter().map(Change::hash));
         heads.retain(|head| !below.contains(head));
-        Some((heads, carried))
+        Some((heads, changes))
     }
 }
 
@@ -225,7 +241,7 @@ impl Isolate {
                 self.pool.check(&before, deferred, incoming, dependencies)?;
             if let Applied::Changed(changed) = applied {
                 deferred.pending.extend_from_slice(incoming);
-                deferred.hashes.extend(carried);
+                deferred.keep_parsed(carried);
                 deferred.heads = after;
                 self.pool
                     .remember(engine::Key::complete(&deferred.heads), worker_at);

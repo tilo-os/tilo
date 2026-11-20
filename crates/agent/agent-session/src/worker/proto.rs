@@ -35,7 +35,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 13;
+pub(crate) const PROTOCOL_VERSION: u32 = 14;
 
 /// What a worker is started to do, and what each of its slots does. The
 /// process's mode decides what it prepares before it confines itself (a

@@ -101,10 +101,7 @@ impl ReceiptSurface for Mailbox {
         vec![Vec::new()]
     }
     fn outboxes(&self) -> Vec<UnitPath> {
-        vec![vec![
-            PathStep::Field("outbox".into()),
-            PathStep::Item(collab_types::surface::ANY_ITEM.into()),
-        ]]
+        vec![vec![PathStep::Field("outbox".into())]]
     }
 }
 
@@ -151,7 +148,7 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
         }
     }
     body.put_object(ROOT, "comments", ObjType::Map).unwrap();
-    if units.contains(&"outbox/*") {
+    if units.contains(&"outbox") {
         // A resource that queues work for a device: one entry waiting to be
         // carried out.
         let outbox = body.put_object(ROOT, "outbox", ObjType::Map).unwrap();
@@ -396,6 +393,82 @@ fn signed_write_stamped(
     }
 }
 
+/// The write `message` carries, sealed: its claims name `units`, what its
+/// action may write as the app's surface declares it, and no receiver reads
+/// its changes, as a receiver that holds no key for them decides it.
+fn sealed(message: NeighbourMsg, key: &SigningKey, units: &[UnitPath]) -> NeighbourMsg {
+    let NeighbourMsg::AppDocument {
+        peer,
+        app_id,
+        cluster_id,
+        document_id,
+        mut envelope,
+        own,
+        readers,
+    } = message
+    else {
+        panic!("a document write")
+    };
+    let payload = envelope.payload.clone();
+    let changes = collab_types::parse_changes(
+        collab_types::DocumentMutation::decode(&payload)
+            .unwrap()
+            .data(),
+    )
+    .unwrap();
+    envelope.claims = collab_types::claim::claims_of(&changes, |_| units.to_vec()).unwrap();
+    envelope.encryption = Some(collab_types::op::EncryptionMetadata::content_key(
+        1,
+        collab_types::ContentRetention::of_frame(&payload),
+    ));
+    envelope.payload = vec![0; 16];
+    // Signed by hand: a debug build will not sign such an op.
+    let signature = ed25519_dalek::Signer::sign(key, &envelope.signing_bytes().unwrap());
+    envelope.signature = collab_types::Signature::from_bytes(signature.to_bytes());
+    NeighbourMsg::AppDocument {
+        peer,
+        app_id,
+        cluster_id,
+        document_id,
+        envelope,
+        own,
+        readers,
+    }
+}
+
+/// What a device writes settling the entry it carried out: its state, inside
+/// the entry.
+fn settled_entry() -> impl FnOnce(&mut AutoCommit) {
+    |doc| {
+        let Some((_, outbox)) = doc.get(ROOT, "outbox").unwrap() else {
+            panic!("the resource queues work")
+        };
+        let Some((_, entry)) = doc.get(&outbox, "m1").unwrap() else {
+            panic!("the outbox holds m1")
+        };
+        let Some((_, value)) = doc.get(&entry, "v").unwrap() else {
+            panic!("m1 keeps its value")
+        };
+        doc.put(&value, "settled", "done").unwrap();
+    }
+}
+
+/// The edit [`settled_entry`] commits as.
+fn settle_entry() -> Did {
+    Did::Edit(FieldEdit {
+        ty: KIND.into(),
+        field: "outbox".into(),
+        path: vec![
+            PathStep::Field("outbox".into()),
+            PathStep::Item("m1".into()),
+        ],
+        op: EditOp::Settle,
+        old: None,
+        new: None,
+        args: std::collections::BTreeMap::new(),
+    })
+}
+
 fn comment_on(id: &'static str) -> impl FnOnce(&mut AutoCommit) {
     move |doc| {
         let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
@@ -621,39 +694,26 @@ tilo_test_env::scenario! {
     // carried out writes inside it, not a new one, so its edit is what its
     // author may make of the resource, not a reach outside.
     {
-        let (mut peer, key, guest) = workspace_keeping(Role::Editor, &["outbox/*"]);
+        let (mut peer, key, guest) = workspace_keeping(Role::Editor, &["outbox"]);
         peer.set_surfaces(Surfaces::from_source(Arc::new(MailboxSource)));
-        let settle = Did::Edit(FieldEdit {
-            ty: KIND.into(),
-            field: "outbox".into(),
-            path: vec![
-                PathStep::Field("outbox".into()),
-                PathStep::Item("m1".into()),
-            ],
-            op: EditOp::Settle,
-            old: None,
-            new: None,
-            args: std::collections::BTreeMap::new(),
-        });
-        let recorded = guest_write(
-            &peer,
-            &key,
-            |doc| {
-                let Some((_, outbox)) = doc.get(ROOT, "outbox").unwrap() else {
-                    panic!("the resource queues work")
-                };
-                let Some((_, entry)) = doc.get(&outbox, "m1").unwrap() else {
-                    panic!("the outbox holds m1")
-                };
-                let Some((_, value)) = doc.get(&entry, "v").unwrap() else {
-                    panic!("m1 keeps its value")
-                };
-                doc.put(&value, "settled", "done").unwrap();
-            },
-            settle,
-            None,
-        );
+        let recorded = guest_write(&peer, &key, settled_entry(), settle_entry(), None);
         receive(&mut peer, &guest, recorded).expect("settling an entry queues nothing");
+    }
+
+    phase a_sealed_settled_outbox_entry_is_no_reach_outside;
+    // A receiver that holds no key for the change decides it by its claim, which
+    // names what its action may write: the outbox is one unit, so a claim
+    // naming it cannot tell an entry settled from one put in. The edit names
+    // where it wrote, inside the entry, and that queued nothing.
+    {
+        let (mut peer, key, guest) = workspace_keeping(Role::Editor, &["outbox"]);
+        peer.set_surfaces(Surfaces::from_source(Arc::new(MailboxSource)));
+        let recorded = sealed(
+            guest_write(&peer, &key, settled_entry(), settle_entry(), None),
+            &key,
+            &[vec![PathStep::Field("outbox".into())]],
+        );
+        receive(&mut peer, &guest, recorded).expect("a settled entry is no reach outside");
     }
 
     phase an_item_stored_as_its_order_key_writes_its_own_unit;

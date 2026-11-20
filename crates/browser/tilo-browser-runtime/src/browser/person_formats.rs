@@ -7,7 +7,8 @@
 //! the page shows them too; with none kept, the page's own become theirs. It then tells the
 //! server the zone the browser is in, when that is not the one the server has, and from then on
 //! sends the formats again whenever the person changes them in Region & Formats. A zone the
-//! person chose themselves is kept by the server and wins over the browser's.
+//! person chose themselves is kept by the server and wins over the browser's: the page reads its
+//! dates in it too, so what the person and their agent read agrees.
 
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_formats::{self, BrowserZone, PersonFormats, SetFormats};
@@ -73,6 +74,7 @@ async fn agree(api: &SessionActions, caller: &Caller) -> Option<RegionFormats> {
         &serde_json::json!({}),
     )
     .await?;
+    show_chosen_zone(kept.chosen_zone.as_deref());
     let browser = tilo_clock::local_zone_name();
     if let Some(zone) = browser.filter(|zone| kept.browser_zone.as_ref() != Some(zone)) {
         let _: PersonFormats = ask(
@@ -94,6 +96,15 @@ async fn agree(api: &SessionActions, caller: &Caller) -> Option<RegionFormats> {
             Some(formats)
         }
         None => send(api, caller, page_formats()).await,
+    }
+}
+
+/// Read the page's dates in the zone the person chose, or in the browser's where they chose
+/// none, as the server reads them for their agent; a change redraws every window, as new
+/// formats do.
+fn show_chosen_zone(chosen: Option<&str>) {
+    if ui::format::region::install_zone_here(ui::format::region::chosen_zone(chosen)) {
+        crate::browser::wake_mounts();
     }
 }
 

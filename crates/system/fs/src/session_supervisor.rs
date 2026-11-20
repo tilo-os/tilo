@@ -200,7 +200,9 @@ mod tests {
                 .recv_timeout(tilo_test_env::hang_bound())
                 .expect("an unmount request was not served")
                 .unwrap();
-            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+            let deadline = std::time::Instant::now()
+                .checked_add(tilo_test_env::hang_bound())
+                .expect("the hang bound is a time from now");
             while !finished.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -225,7 +227,9 @@ mod tests {
                 .expect("an aborted connection is the end of the session");
             // The unmount ends the session; the supervisor does not wait for its thread, so the
             // test allows it the usual hang bound.
-            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+            let deadline = std::time::Instant::now()
+                .checked_add(tilo_test_env::hang_bound())
+                .expect("the hang bound is a time from now");
             while !finished.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }

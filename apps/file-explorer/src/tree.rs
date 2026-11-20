@@ -137,6 +137,8 @@ struct Shown {
     /// The tree's revision when the rows were built: it moves when a chunk's nodes do.
     revision: u64,
     names: u64,
+    /// The language, formats and zone the rows' dates were written in.
+    formats: u64,
     /// Whether the tree had arrived.
     arrived: bool,
     /// What kind of node was being named, while one was.
@@ -632,6 +634,7 @@ impl TreeBrowser {
         self.declare_bar(&folder);
         let shown = Shown {
             names: self.people.revision().get(),
+            formats: ui::i18n::I18nManager::revision(),
             revision: self.tree.as_ref().map_or(0, |tree| tree.revision),
             arrived: self.arrived(),
             naming: self.naming.as_ref().map(|(kind, _)| *kind),

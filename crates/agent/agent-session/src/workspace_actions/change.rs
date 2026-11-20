@@ -93,7 +93,8 @@ impl Workspace {
         let mut landed: Vec<DocumentRoute> = Vec::new();
         // Of those, the documents a write landed in that this service did not make.
         let mut from_others: HashSet<DocumentRoute> = HashSet::new();
-        let own = self.peer.engine().identity().device_cert.device_public_key;
+        // Of those, the documents one of this service's own writes landed in.
+        let mut landed_own: HashSet<DocumentRoute> = HashSet::new();
         for event in self.member.take(workspace_id) {
             match event {
                 Event::HostReady {
@@ -138,18 +139,38 @@ impl Workspace {
                     if WorkspaceId::parse(&route.cluster_id) != Some(workspace_id) {
                         continue;
                     }
-                    // One of this service's own writes landing, counted off what it handed
-                    // ([`Workspace::unlanded`]); a write too large for one frame lands a
-                    // segment at a time, each its own. A count of zero names no write of ours
-                    // still to land: the next landing there is merged like any other's. The
-                    // entry waits for a refresh to take it, so reading a zero as ours would
-                    // swallow the server's own writes to that document until then.
-                    let ours = author == Some(own)
-                        && self.unlanded.get_mut(&route).is_some_and(|handed| {
-                            let ours = *handed > 0;
-                            *handed = handed.saturating_sub(1);
-                            ours
-                        });
+                    // One of this service's own writes landing, its own or one it made for an
+                    // agent, counted off what it handed ([`Workspace::unlanded`]); a write too
+                    // large for one frame lands a segment at a time, each its own. A count of
+                    // zero names no write of ours still to land: the next landing there is
+                    // merged like any other's. The entry waits for a refresh to take it, so
+                    // reading a zero as ours would swallow the server's own writes to that
+                    // document until then.
+                    let ours = match author {
+                        Some(author) => self
+                            .unlanded
+                            .get_mut(&(route.clone(), author))
+                            .is_some_and(|handed| {
+                                let ours = *handed > 0;
+                                *handed = handed.saturating_sub(1);
+                                ours
+                            }),
+                        // What the replica held sealed opened as its keys arrived: a document
+                        // this service just started lands so after its first write did, and
+                        // what opens is that write. Read as another's, the part was read out
+                        // whole and every replica took it up again, a second for each part an
+                        // import started.
+                        None => {
+                            landed_own.contains(&route)
+                                || self
+                                    .unlanded
+                                    .iter()
+                                    .any(|((handed, _), count)| handed == &route && *count > 0)
+                        }
+                    };
+                    if ours && author.is_some() {
+                        landed_own.insert(route.clone());
+                    }
                     if !ours {
                         from_others.insert(route.clone());
                     }

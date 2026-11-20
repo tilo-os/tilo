@@ -10,12 +10,14 @@ use ui::framework::{Actions, ViewCx};
 use ui::widget::Element;
 
 use crate::effects::effect;
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
 pub mod language;
+#[cfg(any(test, not(feature = "tilo-os")))]
+pub mod zone;
 use provider_settings_ui::widgets::{Item, SettingsSection, note, page_of, rows, section};
 use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
 use ui::clock::TimeStyle;
@@ -89,7 +91,23 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
         &t("settings-region-shared-card"),
         rows(vec![note(&t("settings-region-shared-body"))]),
     );
-    Some(page_of(vec![language, formats, explainer.into_element()]))
+    let mut cards = vec![language, formats];
+    // On a page the person's zone is kept by their server; a computer of their own keeps its
+    // zone in Time & date.
+    #[cfg(any(test, not(feature = "tilo-os")))]
+    if let Some(zone) = zone::area(app) {
+        zone.read();
+        let actions = cx.actions();
+        let app = Rc::clone(app);
+        cards.push(cx.switch(&zone.shown, move |_, _| {
+            zone::area(&app).map_or_else(
+                || page_of(Vec::new()),
+                |zone| zone.card(&actions).into_element(),
+            )
+        }));
+    }
+    cards.push(explainer.into_element());
+    Some(page_of(cards))
 }
 
 fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::Model>(
@@ -236,6 +254,27 @@ pub(crate) fn first_day(cx: &ViewCx<Locale>) -> Item {
             FirstDayOfWeek::ALL.iter().copied(),
             |day: &FirstDayOfWeek| weekday_label(*day),
         )
+}
+
+/// A zone's name as a person reads it: its city and region (`Vienna (Europe)`).
+#[must_use]
+pub(crate) fn zone_name(zone: &str) -> Option<String> {
+    if zone.is_empty() {
+        return None;
+    }
+    Some(match zone.split_once('/') {
+        Some((region, place)) => {
+            let city = place.rsplit('/').next().unwrap_or(place).replace('_', " ");
+            t_args(
+                "time-zone-name",
+                &[
+                    ("city", city.as_str().into()),
+                    ("region", region.replace('_', " ").as_str().into()),
+                ],
+            )
+        }
+        None => zone.replace('_', " "),
+    })
 }
 
 fn preview_line(label: &str, value: &str) -> Item {

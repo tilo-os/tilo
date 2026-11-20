@@ -25,11 +25,30 @@ pub mod local {
         /// it is read on, where it was handed one.
         #[must_use]
         pub fn here() -> Self {
-            #[cfg(not(target_family = "wasm"))]
             if let Some(zone) = told::installed() {
                 return zone;
             }
             Self(platform::Zone::here())
+        }
+
+        /// The zone `name` (`Europe/Vienna`) names, as this device or page knows it: a device
+        /// from its zone database, a page from the browser, which knows every zone's offsets
+        /// without one. `None` where neither knows the name.
+        #[must_use]
+        pub fn named(name: &str) -> Option<Self> {
+            if !crate::is_zone_name(name) {
+                return None;
+            }
+            #[cfg(all(target_family = "wasm", not(tilo_no_js)))]
+            {
+                platform::Zone::named(name).map(Self)
+            }
+            #[cfg(any(not(target_family = "wasm"), tilo_no_js))]
+            {
+                jiff::tz::TimeZone::get(name)
+                    .ok()
+                    .map(|zone| Self(platform::Zone::of(zone)))
+            }
         }
 
         /// The zone `name` names, read from its `TZif` `data`: what a process that opens no file
@@ -68,18 +87,32 @@ pub mod local {
         }
     }
 
+    pub use told::install;
     #[cfg(not(target_family = "wasm"))]
-    pub use told::{install, tzif};
+    pub use zone_data::tzif;
+
+    /// The names of the zones this device or page knows (`Europe/Vienna`), sorted: a device's
+    /// zone database, a page's browser.
+    #[must_use]
+    pub fn zone_names() -> Vec<String> {
+        #[cfg(all(target_family = "wasm", not(tilo_no_js)))]
+        let mut names = crate::page::zone_names();
+        #[cfg(any(not(target_family = "wasm"), tilo_no_js))]
+        let mut names: Vec<String> = jiff::tz::db()
+            .available()
+            .map(|name| name.as_str().to_owned())
+            .filter(|name| crate::is_zone_name(name))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
 
     /// A zone a thread is told rather than reads from its system: a worker that renders a
-    /// view for a person whose clock is elsewhere, and that opens no file once it confined
-    /// itself, is handed the person's zone as its `TZif` data.
-    #[cfg(not(target_family = "wasm"))]
+    /// view for a person whose clock is elsewhere, or a page whose person chose a zone other
+    /// than the browser's.
     mod told {
         use std::cell::RefCell;
-        use std::collections::HashMap;
-        use std::path::PathBuf;
-        use std::sync::{Arc, Mutex, PoisonError};
 
         use super::Zone;
 
@@ -87,13 +120,6 @@ pub mod local {
             /// The zone [`install`] handed this thread, if any.
             static INSTALLED: RefCell<Option<Zone>> = const { RefCell::new(None) };
         }
-
-        /// The zones [`tzif`] read, by name, and the names it found none for.
-        type Read = HashMap<String, Option<Arc<[u8]>>>;
-        static READ: Mutex<Option<Read>> = Mutex::new(None);
-
-        /// Most names [`tzif`] remembers; past it, it reads again rather than grow.
-        const MAX_REMEMBERED: usize = 1_024;
 
         pub(super) fn installed() -> Option<Zone> {
             INSTALLED.with(|installed| installed.borrow().clone())
@@ -105,6 +131,24 @@ pub mod local {
         pub fn install(zone: Option<Zone>) {
             INSTALLED.with(|installed| *installed.borrow_mut() = zone);
         }
+    }
+
+    /// The zone data a confined worker, which opens no file once it confined itself, is
+    /// handed: the person's zone as its `TZif` data.
+    #[cfg(not(target_family = "wasm"))]
+    mod zone_data {
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        use std::sync::{Arc, Mutex, PoisonError};
+
+        use super::Zone;
+
+        /// The zones [`tzif`] read, by name, and the names it found none for.
+        type Read = HashMap<String, Option<Arc<[u8]>>>;
+        static READ: Mutex<Option<Read>> = Mutex::new(None);
+
+        /// Most names [`tzif`] remembers; past it, it reads again rather than grow.
+        const MAX_REMEMBERED: usize = 1_024;
 
         /// The `TZif` data of the zone `name` (`Pacific/Auckland`), from the system's zone
         /// database: what [`Zone::from_tzif`] reads it from in a process that opens no file.
@@ -296,42 +340,71 @@ pub mod local {
         }
     }
 
-    /// The browser's zone: the offset it reports for each instant, and its name for the zone.
+    /// The browser's zone, or a zone the person chose that the browser reads for them: the offset
+    /// the browser reports for each instant, and the zone's name.
     #[cfg(all(target_family = "wasm", not(tilo_no_js)))]
     mod platform {
+        use std::rc::Rc;
+
         use jiff::civil::DateTime;
         use jiff::tz::Offset;
         use jiff::{Timestamp, Zoned};
 
-        #[derive(Clone, Copy, Debug)]
-        pub(super) struct Zone;
+        /// A zone's offset in seconds at an instant in milliseconds, as the browser reads it.
+        type Offsets = Box<dyn Fn(i64) -> Option<i32>>;
 
-        #[expect(
-            clippy::unused_self,
-            reason = "the browser holds the zone; the methods keep the native zone's signatures"
-        )]
-        impl Zone {
-            pub(super) fn here() -> Self {
-                Self
-            }
+        #[derive(Clone)]
+        pub(super) enum Zone {
+            /// The browser's own.
+            Browser,
+            /// A zone by its name, and its offsets.
+            Named(Rc<(String, Offsets)>),
+        }
 
-            pub(super) fn at(self, at: Timestamp) -> Zoned {
-                super::read(at, offset)
-            }
-
-            pub(super) fn name(self) -> Option<String> {
-                crate::page::zone_name()
-            }
-
-            pub(super) fn instant_of(self, local: DateTime) -> Option<Timestamp> {
-                super::resolve(local, offset)
+        impl std::fmt::Debug for Zone {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::Browser => f.write_str("Browser"),
+                    Self::Named(named) => f.debug_tuple("Named").field(&named.0).finish(),
+                }
             }
         }
 
-        /// The browser's offset from UTC at `at`.
-        fn offset(at: Timestamp) -> Offset {
-            Offset::from_seconds(crate::page::offset_seconds(at.as_millisecond()))
-                .unwrap_or(Offset::UTC)
+        impl Zone {
+            pub(super) const fn here() -> Self {
+                Self::Browser
+            }
+
+            pub(super) fn named(name: &str) -> Option<Self> {
+                let offsets = crate::page::zone_offsets(name)?;
+                Some(Self::Named(Rc::new((name.to_owned(), Box::new(offsets)))))
+            }
+
+            pub(super) fn at(&self, at: Timestamp) -> Zoned {
+                super::read(at, |at| self.offset(at))
+            }
+
+            pub(super) fn name(&self) -> Option<String> {
+                match self {
+                    Self::Browser => crate::page::zone_name(),
+                    Self::Named(named) => Some(named.0.clone()),
+                }
+            }
+
+            pub(super) fn instant_of(&self, local: DateTime) -> Option<Timestamp> {
+                super::resolve(local, |at| self.offset(at))
+            }
+
+            /// The zone's offset from UTC at `at`.
+            fn offset(&self, at: Timestamp) -> Offset {
+                let seconds = match self {
+                    Self::Browser => Some(crate::page::offset_seconds(at.as_millisecond())),
+                    Self::Named(named) => (named.1)(at.as_millisecond()),
+                };
+                seconds
+                    .and_then(|seconds| Offset::from_seconds(seconds).ok())
+                    .unwrap_or(Offset::UTC)
+            }
         }
     }
 
@@ -398,6 +471,34 @@ pub mod local {
             assert_eq!((wall(before).hour(), wall(before).minute()), (2, 59));
             assert_eq!(wall(autumn()).hour(), 2, "02:00 comes twice");
             assert_eq!(read(autumn(), offsets).offset().seconds(), 3600);
+        }
+
+        /// A zone a person chose reads by its name, as the database the device or page has
+        /// knows it, and a thread told it reads its clock there until told otherwise.
+        #[test]
+        fn a_zone_is_read_by_its_name_and_a_thread_told_it_reads_there() {
+            let Some(vienna) = super::Zone::named("Europe/Vienna") else {
+                // A system without a zone database knows no zone by its name.
+                return;
+            };
+            assert!(
+                super::zone_names()
+                    .iter()
+                    .any(|name| name == "Europe/Vienna")
+            );
+            assert!(super::Zone::named("../../etc/passwd").is_none());
+            assert!(super::Zone::named("Nowhere/Atlantis").is_none());
+            let winter = instant(Date::new(2026, 1, 15).unwrap().at(12, 0, 0, 0));
+            assert_eq!(vienna.at(winter).offset().seconds(), 3600);
+            std::thread::spawn(move || {
+                super::install(Some(vienna));
+                assert_eq!(super::Zone::here().name().as_deref(), Some("Europe/Vienna"));
+                assert_eq!(super::at(winter).datetime().hour(), 13);
+                super::install(None);
+                assert!(super::told::installed().is_none());
+            })
+            .join()
+            .unwrap();
         }
 
         #[test]
@@ -934,6 +1035,99 @@ mod page {
         js_sys::Reflect::get(&resolved, &JsValue::from_str("timeZone"))
             .ok()?
             .as_string()
+    }
+
+    /// The offsets of the zone `name` (`Europe/Vienna`) as the browser reads them: a function
+    /// from an instant in milliseconds to the offset then, in seconds east of UTC. `None` where
+    /// the browser knows no such zone.
+    #[cfg(feature = "local")]
+    pub(crate) fn zone_offsets(name: &str) -> Option<impl Fn(i64) -> Option<i32> + use<>> {
+        use wasm_bindgen::JsCast as _;
+        let intl = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Intl")).ok()?;
+        let make = js_sys::Reflect::get(&intl, &JsValue::from_str("DateTimeFormat"))
+            .ok()?
+            .dyn_into::<js_sys::Function>()
+            .ok()?;
+        let options = js_sys::Object::new();
+        js_sys::Reflect::set(
+            &options,
+            &JsValue::from_str("timeZone"),
+            &JsValue::from_str(name),
+        )
+        .ok()?;
+        // "GMT+05:45", "GMT-03:00", or "GMT" at UTC itself: the offset, whatever the language.
+        js_sys::Reflect::set(
+            &options,
+            &JsValue::from_str("timeZoneName"),
+            &JsValue::from_str("longOffset"),
+        )
+        .ok()?;
+        let arguments = js_sys::Array::of2(&js_sys::Array::of1(&"en-US".into()), &options);
+        // A zone the browser does not know is a RangeError, which the constructor throws.
+        let format: js_sys::Intl::DateTimeFormat = js_sys::Reflect::construct(&make, &arguments)
+            .ok()?
+            .unchecked_into();
+        Some(move |unix_ms: i64| {
+            let date = js_sys::Date::new(&millis(unix_ms));
+            let parts = format.format_to_parts(&date);
+            parts.iter().find_map(|part| {
+                let kind = js_sys::Reflect::get(&part, &JsValue::from_str("type")).ok()?;
+                if kind.as_string().as_deref() != Some("timeZoneName") {
+                    return None;
+                }
+                let value = js_sys::Reflect::get(&part, &JsValue::from_str("value")).ok()?;
+                offset_named(&value.as_string()?)
+            })
+        })
+    }
+
+    /// The browser's names for the zones it knows.
+    #[cfg(feature = "local")]
+    pub(crate) fn zone_names() -> Vec<String> {
+        let names = (|| {
+            let intl = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Intl")).ok()?;
+            let list: js_sys::Function = wasm_bindgen::JsCast::dyn_into(
+                js_sys::Reflect::get(&intl, &JsValue::from_str("supportedValuesOf")).ok()?,
+            )
+            .ok()?;
+            let names = list.call1(&intl, &JsValue::from_str("timeZone")).ok()?;
+            Some(
+                js_sys::Array::from(&names)
+                    .iter()
+                    .filter_map(|name| name.as_string())
+                    .collect::<Vec<_>>(),
+            )
+        })();
+        names.unwrap_or_default()
+    }
+
+    /// Seconds east of UTC in a long offset the browser wrote (`GMT+05:45`, `GMT-03:00`, `GMT`).
+    #[cfg(feature = "local")]
+    fn offset_named(written: &str) -> Option<i32> {
+        let offset = written.strip_prefix("GMT")?;
+        if offset.is_empty() {
+            return Some(0);
+        }
+        let mut chars = offset.chars();
+        let sign = match chars.next()? {
+            '+' => 1,
+            '-' | '\u{2212}' => -1,
+            _ => return None,
+        };
+        let offset = chars.as_str();
+        let mut parts = offset.split(':');
+        let hours: i32 = parts.next()?.parse().ok()?;
+        let minutes: i32 = parts
+            .next()
+            .map_or(Some(0), |minutes| minutes.parse().ok())?;
+        let seconds: i32 = parts
+            .next()
+            .map_or(Some(0), |seconds| seconds.parse().ok())?;
+        hours
+            .checked_mul(3600)?
+            .checked_add(minutes.checked_mul(60)?)?
+            .checked_add(seconds)?
+            .checked_mul(sign)
     }
 
     /// The zone's offset from UTC at `unix_ms`, in seconds east of it.

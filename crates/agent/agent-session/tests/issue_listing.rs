@@ -93,6 +93,24 @@ fn fill(page: &mut Replica, size: usize) {
     }
 }
 
+/// Fill `page` with `size` issues of a title alone, a list at a time, as an
+/// import of a tracker's titles makes them: a part holds more of them than the
+/// page it publishes, so most are listed from past the parts' pages.
+fn fill_titles(page: &mut Replica, size: usize) {
+    let address = ActionAddress::new(issues(), "create-many");
+    for start in (0..size).step_by(LIST) {
+        let list: Vec<serde_json::Value> = (start..(start + LIST).min(size))
+            .map(|at| serde_json::json!({"title": format!("Issue {at}")}))
+            .collect();
+        page.invoke(
+            &address,
+            serde_json::json!({"issues": list}).as_object().unwrap(),
+            false,
+        )
+        .expect("the issues are filed");
+    }
+}
+
 fn quantile(took: &[Duration], quantile: f64) -> Duration {
     let mut sorted = took.to_vec();
     sorted.sort();
@@ -361,7 +379,7 @@ fn a_page_asked_for_a_number_of_issues_builds_about_that_many() {
         Seed::New,
     )
     .unwrap();
-    fill(&mut page, 600);
+    fill_titles(&mut page, 600);
     let whole = CatalogueQuery {
         parent_resource: Some(issues()),
         max_results: u32::try_from(ROWS).unwrap(),
@@ -383,18 +401,28 @@ fn a_page_asked_for_a_number_of_issues_builds_about_that_many() {
         ..whole
     };
     let ((_, second), observed) = observe(|| page.survey_page(&bounded, (false, (next, ROWS))));
-    let built: usize = observed
-        .iter()
-        .filter(|sample| sample.phase == "resource.published")
-        .map(|sample| sample.calls)
-        .sum();
+    let calls = |name: &str| -> usize {
+        observed
+            .iter()
+            .filter(|sample| sample.phase == name)
+            .map(|sample| sample.calls)
+            .sum()
+    };
     assert_eq!(
         resources(&second).len(),
         41,
         "the page holds the 40 issues asked for and the first row of the next"
     );
+    let built = calls("resource.published");
     assert!(
         built <= 2 * 41,
         "a page of 40 issues published {built} resources"
+    );
+    // The issues past the parts' pages are laid out where the chain is one
+    // by one: as many as the page holds, not as many as its rows guess.
+    let carried = calls("framework.past_item");
+    assert!(
+        (41..=2 * 41).contains(&carried),
+        "a page of 40 issues carried out {carried} of the issues past the parts' pages"
     );
 }

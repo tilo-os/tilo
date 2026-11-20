@@ -563,8 +563,10 @@ fn a_dialog_floats_centred_over_its_parent_without_a_tab() {
     assert!(info.parent.is_some(), "the compositor tells its parent");
 }
 
+/// A window that keeps one size — a program's own top-level window, as an X11 settings window is
+/// under Proton — takes a tab on the display with focus, and the keyboard with it.
 #[test]
-fn a_fixed_size_window_floats_on_the_display_with_focus() {
+fn a_fixed_size_window_takes_a_tab_and_the_keyboard() {
     let _settled = ui::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
@@ -579,21 +581,32 @@ fn a_fixed_size_window_floats_on_the_display_with_focus() {
             toplevel.set_max_size(400, 240);
         },
     );
-    let (x, y, w, h) = rect(&mut session, "org.example.Prompt");
-    assert_eq!((w, h), (400, 240));
-    assert_eq!(
-        (x, y),
-        (WIDTH + (WIDTH - w) / 2, (HEIGHT - h) / 2),
-        "centred on the focused display"
+    let (_, _, w, h) = rect(&mut session, "org.example.Prompt");
+    assert!(
+        w >= 400 && h >= 240,
+        "its tab is at least the size the window keeps: {w}x{h}"
     );
-    assert!(window_tabs(&session).is_empty(), "no tab for a dialog");
+    assert_eq!(
+        window_tabs(&session),
+        [shell_name("org.example.Prompt")],
+        "it takes a tab"
+    );
+    assert_eq!(
+        display_of(&mut session, "org.example.Prompt"),
+        Some(1),
+        "on the display with focus"
+    );
+    assert_eq!(
+        focused(&mut session).as_deref(),
+        Some("org.example.Prompt"),
+        "the tab has the keyboard"
+    );
 }
 
-/// A program whose first window has a fixed size (an X11 program's settings dialog, through the
-/// X11 server's toplevel) names no parent: it floats on the display, and a tab the person opens
-/// or focuses afterwards never covers it.
+/// A fixed-size window is a tab like any other: opening it beside a tab gives it its own, every
+/// pass leaves the keyboard with it, and a tab opened after it comes in front as any tab does.
 #[test]
-fn a_fixed_size_window_stays_in_front_of_the_tabs() {
+fn a_fixed_size_window_takes_its_own_tab_beside_the_tabs() {
     let _settled = ui::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
@@ -608,7 +621,30 @@ fn a_fixed_size_window_stays_in_front_of_the_tabs() {
             toplevel.set_max_size(400, 240);
         },
     );
+    assert_eq!(
+        window_tabs(&session),
+        [
+            shell_name("org.example.Manager"),
+            shell_name("org.example.Prompt")
+        ],
+        "it takes a tab of its own"
+    );
+    // The keyboard stays with its tab, pass after pass.
+    for _ in 0..4 {
+        client.exchange();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert_eq!(
+        focused(&mut session).as_deref(),
+        Some("org.example.Prompt"),
+        "what the person types goes to the window in front"
+    );
     tab(&mut session, &mut client, "org.example.Later");
+    assert_eq!(
+        focused(&mut session).as_deref(),
+        Some("org.example.Later"),
+        "a tab opened after it comes in front"
+    );
     let stack: Vec<Option<String>> = session
         .compositor()
         .windows()
@@ -617,8 +653,8 @@ fn a_fixed_size_window_stays_in_front_of_the_tabs() {
         .collect();
     assert_eq!(
         stack.last().cloned().flatten().as_deref(),
-        Some("org.example.Prompt"),
-        "the dialog stands in front of every tab, bottom first: {stack:?}"
+        Some("org.example.Later"),
+        "the newest tab stands in front, bottom first: {stack:?}"
     );
 }
 

@@ -19,6 +19,7 @@ use crate::area::AreaContext;
 use crate::device_read::Reading;
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
+use crate::panes::region::zone_name;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{Item, block, error_row, note, rows, section, value_row};
@@ -632,25 +633,6 @@ fn formats(locale: Locale) -> ui::format::Formats {
         time: locale.time_format,
         number: Some(locale.number_style),
         first_day: locale.first_day_of_week,
-    })
-}
-
-fn zone_name(zone: &str) -> Option<String> {
-    if zone.is_empty() {
-        return None;
-    }
-    Some(match zone.split_once('/') {
-        Some((region, place)) => {
-            let city = place.rsplit('/').next().unwrap_or(place).replace('_', " ");
-            t_args(
-                "time-zone-name",
-                &[
-                    ("city", ArgValue::from(city.as_str())),
-                    ("region", ArgValue::from(region.replace('_', " ").as_str())),
-                ],
-            )
-        }
-        None => zone.replace('_', " "),
     })
 }
 

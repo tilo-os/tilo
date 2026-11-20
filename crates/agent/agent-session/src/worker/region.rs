@@ -27,6 +27,9 @@ pub struct PersonRegion {
 pub(crate) struct Region {
     pub(crate) formats: RegionFormats,
     pub(crate) zone: Option<(String, Vec<u8>)>,
+    /// Whether a person is named: else the request is for nobody in particular (keeping a
+    /// document in step, surveying it), and these are the device's own.
+    pub(crate) person: bool,
 }
 
 thread_local! {
@@ -57,17 +60,18 @@ pub(crate) fn scope(region: Option<PersonRegion>) -> Scope {
 /// What a request this thread sends carries: the region in scope, else the device's own (the
 /// formats its settings hold, and the zone it is in).
 pub(crate) fn wire() -> Region {
-    let region = SCOPED
-        .with(|scoped| scoped.borrow().clone())
-        .unwrap_or_else(|| PersonRegion {
-            formats: ui::format::region::current(),
-            zone: tilo_clock::local_zone_name(),
-        });
+    let scoped = SCOPED.with(|scoped| scoped.borrow().clone());
+    let person = scoped.is_some();
+    let region = scoped.unwrap_or_else(|| PersonRegion {
+        formats: ui::format::region::current(),
+        zone: tilo_clock::local_zone_name(),
+    });
     Region {
         formats: region.formats,
         zone: region
             .zone
             .and_then(|name| tilo_clock::local::tzif(&name).map(|data| (name, data.to_vec()))),
+        person,
     }
 }
 
@@ -76,6 +80,8 @@ pub(crate) fn wire() -> Region {
 #[derive(Default)]
 pub(super) struct Installed {
     zones: HashMap<String, Option<ui::clock::Zone>>,
+    /// Whether what it installed last was a person's.
+    person: bool,
 }
 
 /// Most zones a worker keeps read; past it, it reads them again rather than grow.
@@ -83,8 +89,14 @@ const MAX_ZONES: usize = 64;
 
 impl Installed {
     /// Render what comes next on this thread in `region`: its formats, and its zone, or the
-    /// worker's own where it names none or its data is no zone's.
+    /// worker's own where it names none or its data is no zone's. A request for nobody in
+    /// particular keeps the person's a view was last rendered for: the windows it holds stay
+    /// in their dates rather than being written again in the device's between their reads.
     pub(super) fn install(&mut self, region: Region) {
+        if self.person && !region.person {
+            return;
+        }
+        self.person = region.person;
         let zone = region.zone.and_then(|(name, data)| {
             if self.zones.len() >= MAX_ZONES && !self.zones.contains_key(&name) {
                 self.zones.clear();
@@ -153,9 +165,11 @@ mod tests {
             "another thread keeps the device's formats"
         );
         assert_ne!(beside.1.as_deref(), Some("Pacific/Auckland"));
-        installed.install(Region {
-            formats: before,
-            zone: None,
-        });
+        // A request for nobody in particular, keeping the document in step, leaves the person's
+        // dates where their windows read them.
+        assert!(!wire().person);
+        installed.install(wire());
+        assert_eq!(ui::format::time_of(&at), "03:05");
+        ui::format::region::install_here(None, None);
     }
 }

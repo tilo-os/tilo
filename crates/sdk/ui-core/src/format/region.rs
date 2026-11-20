@@ -52,7 +52,6 @@ pub fn install(formats: RegionFormats) -> bool {
     !first
 }
 
-#[cfg(not(target_family = "wasm"))]
 std::thread_local! {
     /// The formats and the zone, by its name, [`install_here`] handed this thread: none for the
     /// person's own.
@@ -66,7 +65,6 @@ std::thread_local! {
 /// ([`tilo_clock::local::install`]). `None` goes back to the person's and the device's. Changes
 /// the [`revision`], as new formats do, and answers `true`, when either differs from the
 /// thread's.
-#[cfg(not(target_family = "wasm"))]
 pub fn install_here(formats: Option<RegionFormats>, zone: Option<crate::clock::Zone>) -> bool {
     let next = (formats, zone.as_ref().and_then(crate::clock::Zone::name));
     tilo_clock::local::install(zone);
@@ -80,6 +78,25 @@ pub fn install_here(formats: Option<RegionFormats>, zone: Option<crate::clock::Z
         REVISION.fetch_add(1, Ordering::AcqRel);
     }
     changed
+}
+
+/// Read local times on this thread in `zone` from now on, keeping the formats it reads dates
+/// in, as [`install_here`] does. `None` goes back to the device's or the browser's own zone.
+pub fn install_zone_here(zone: Option<crate::clock::Zone>) -> bool {
+    let formats = HERE.with(|here| here.borrow().0);
+    install_here(formats, zone)
+}
+
+/// The zone a person who chose `chosen` reads their dates in, where it is not the one this
+/// device or browser is in: `None` for none chosen, for this device's own zone, and for a name
+/// it does not know, each of which reads in the device's own.
+#[must_use]
+pub fn chosen_zone(chosen: Option<&str>) -> Option<crate::clock::Zone> {
+    let chosen = chosen?;
+    if tilo_clock::local_zone_name().as_deref() == Some(chosen) {
+        return None;
+    }
+    crate::clock::Zone::named(chosen)
 }
 
 /// Changes whenever the person's formats change.
