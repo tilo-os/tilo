@@ -320,6 +320,8 @@ pub mod parts;
 mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
+mod person_vault;
+#[cfg(target_os = "linux")]
 mod personal;
 #[cfg(target_os = "linux")]
 pub mod portal_link;

@@ -1397,13 +1397,17 @@ fn broker_services(
                     std::sync::Arc::new(crate::identity_admin::BrokerApi {
                         layout: layout_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
-                        hosting,
+                        hosting: hosting.clone(),
                         engine: engine.clone(),
                     }),
                     // The person's account with the host the session runs
                     // on: what Settings and the overview of their Tilo show,
                     // followed as the host's plans change.
                     crate::server_account::ServerAccountApi::session(),
+                    // The entries of the person's Passwords: on the server that takes the
+                    // workspace's work, where every device of theirs reads them, else in this
+                    // device's own vault.
+                    std::sync::Arc::new(crate::person_vault::PersonVaultSteps::session(hosting)),
                 ],
                 // An agent's task writes its programs; this session's links runs them as the
                 // steps of the run the task is in. An agent whose turn is worked in its own
@@ -2286,10 +2290,10 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            6,
+            7,
             "the steps this session serves are the workspace's activity, device \
              pairing, identity administration, the person's hosting account, the machines they \
-             planned and its own actions"
+             planned, the entries of their Passwords and its own actions"
         );
         let providers: Vec<&str> = services
             .host_steps
@@ -2316,6 +2320,10 @@ mod tests {
             (
                 tilo_actions::remote::machines::PROVIDER,
                 "the installer's window and the command plan a machine",
+            ),
+            (
+                tilo_actions::remote::person_vault::PROVIDER,
+                "Passwords reads and keeps the person's entries",
             ),
         ] {
             assert!(

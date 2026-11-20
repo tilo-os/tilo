@@ -1484,17 +1484,22 @@ identifiers = ["run_address"]
 paths = ["crates/system/tilo-cli/src/machine.rs"]
 
 [[allow]]
-reason = "The action API's own name for reading one invocation's arguments from the one string a host step is handed (`InvokeArgument::from_slot`)."
+reason = "The action API's own names for writing and reading one invocation's arguments as the one string a host step is handed (`InvokeArgument::to_slot`, `InvokeArgument::from_slot`)."
 words = ["slot"]
-identifiers = ["from_slot"]
-paths = ["crates/session/session/src/machine_steps.rs"]
+identifiers = ["from_slot", "to_slot"]
+paths = [
+    "crates/session/session/src/machine_steps.rs",
+    "crates/session/session/src/person_vault.rs",
+]
 
 [[allow]]
 reason = "The broker's own name for the steps a host runs itself (`HostStepServices`, `HostStepRequest`, `HostStepOutcome`) and the session's reach to them (`ask_host`, `ask_own_host`, `hosts_itself`), under the `tilo.host` provider a device's workspace service answers."
 words = ["host"]
 paths = [
+    "crates/server/tilo-workspace-service/src/apps/collab_app_broker/action_provider.rs",
     "crates/session/client/src/engine.rs",
     "crates/session/session/src/machine_steps.rs",
+    "crates/session/session/src/person_vault.rs",
     "crates/session/session/src/pair_device.rs",
     "crates/session/session/src/sync/client/own_service.rs",
 ]

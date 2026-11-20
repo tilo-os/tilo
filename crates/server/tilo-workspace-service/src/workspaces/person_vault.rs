@@ -77,16 +77,16 @@ impl Workspaces {
                     argument(request, "an item to forget is named by its reference")?;
                 answer(remove(&root, &removing.item))
             }
-            person_vault::ENTRIES => said(entries(&root)),
+            person_vault::ENTRIES => said(passwords(&root).and_then(|store| entries(&store))),
             person_vault::KEEP_ENTRY => {
                 let keeping: KeepEntry =
                     argument(request, "an entry to keep is an entry of Passwords")?;
-                said(keep_entry(&root, keeping))
+                said(passwords(&root).and_then(|mut store| keep_entry(&mut store, keeping)))
             }
             person_vault::FORGET_ENTRY => {
                 let forgetting: ForgetEntry =
                     argument(request, "an entry to forget is named by its id")?;
-                said(forget_entry(&root, forgetting))
+                said(passwords(&root).and_then(|mut store| forget_entry(&mut store, forgetting)))
             }
             person_vault::USES => {
                 let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
@@ -366,9 +366,13 @@ fn passwords(root: &Path) -> Result<accounts::SecretStore, String> {
     }
 }
 
-/// Every entry of the person's Passwords, secrets included.
-fn entries(root: &Path) -> Result<Entries, String> {
-    let entries = passwords(root)?
+/// Every entry of the person's Passwords kept in `store`, secrets included.
+///
+/// # Errors
+///
+/// An entry that could not be read.
+pub fn entries(store: &accounts::SecretStore) -> Result<Entries, String> {
+    let entries = store
         .list()
         .iter()
         .map(serde_json::to_value)
@@ -377,25 +381,39 @@ fn entries(root: &Path) -> Result<Entries, String> {
     Ok(Entries { entries })
 }
 
-/// Keep `keeping`'s entry, a new one or the edit of one kept, answering
-/// every entry then. What was handed is never echoed in a refusal.
-fn keep_entry(root: &Path, keeping: KeepEntry) -> Result<Entries, String> {
+/// Keep `keeping`'s entry in `store`, a new one or the edit of one kept,
+/// answering every entry then. What was handed is never echoed in a refusal.
+///
+/// # Errors
+///
+/// What was handed is no entry, or the store did not keep it.
+pub fn keep_entry(
+    store: &mut accounts::SecretStore,
+    keeping: KeepEntry,
+) -> Result<Entries, String> {
     let mut entry: accounts::SecretItem = serde_json::from_value(keeping.entry)
         .map_err(|_| "That is no entry of Passwords".to_owned())?;
-    passwords(root)?
+    store
         .put(&mut entry)
         .map_err(|error| format!("The entry could not be kept: {error}"))?;
-    entries(root)
+    entries(store)
 }
 
-/// Forget the entry `forgetting` names, answering every entry left. One
-/// already gone is no refusal: another device of the person's may have
-/// forgotten it first.
-fn forget_entry(root: &Path, forgetting: ForgetEntry) -> Result<Entries, String> {
-    passwords(root)?
+/// Forget the entry `forgetting` names in `store`, answering every entry
+/// left. One already gone is no refusal: another device of the person's may
+/// have forgotten it first.
+///
+/// # Errors
+///
+/// The store did not forget it.
+pub fn forget_entry(
+    store: &mut accounts::SecretStore,
+    forgetting: ForgetEntry,
+) -> Result<Entries, String> {
+    store
         .remove(&accounts::SecretId(forgetting.id))
         .map_err(|error| format!("The entry could not be forgotten: {error}"))?;
-    entries(root)
+    entries(store)
 }
 
 /// What the caller reads of a use's outcome, or the reason it was refused.

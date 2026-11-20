@@ -773,6 +773,14 @@ impl AppBrokerState {
         {
             return true;
         }
+        // A step this device serves for the person is the app's whose controls reach it, listed
+        // in a catalogue or not: the person's own Passwords entries are offered in none. A turn's or
+        // an agent session's steps are the agent's, never an app's.
+        if let Some(steps) = super::host_steps::for_provider(&self.services, &target.provider)
+            .filter(|steps| !steps.for_turns() && !steps.for_agent_sessions())
+        {
+            return steps.app_id() == app_id;
+        }
         if let Some(row) = self
             .eager_catalogue(person, RowScope::Provider(&target.provider))
             .0

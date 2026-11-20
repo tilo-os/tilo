@@ -132,6 +132,12 @@ pub mod person_asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_vault;
+// The entries of the person's Passwords, read and kept in a store of theirs: the one their
+// workspace's server keeps, or the one a device of theirs keeps when no server takes its work.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod passwords {
+    pub use super::person_vault::{entries, forget_entry, keep_entry};
+}
 // A secret used by reference by a turn this server carries out itself.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted_use;
