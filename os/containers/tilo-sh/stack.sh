@@ -1360,16 +1360,19 @@ find_enroll() {
 }
 
 # The tilo command to drive the stack with: TILO_SH_TILO_BIN, else this
-# checkout's release build the site serves at /releases, else a local build.
+# checkout's release build the site serves at /releases, else the command the
+# stack built for itself (the same one, before the site packs it), else a build
+# left here. The stack's own build is where it runs; a build left here is not on
+# the build server, so a command that acts on a stack there finds its command
+# beside the stack.
 find_tilo() {
   if [[ -n ${TILO_SH_TILO_BIN:-} ]]; then printf '%s' "$TILO_SH_TILO_BIN"; return; fi
-  local tarball=$state/releases/tilo-cli/latest/tilo-linux-x86_64.tar.gz
+  local tarball=$state/releases/tilo-cli/latest/tilo-linux-x86_64.tar.gz candidate
   if [[ -s $tarball ]]; then
     mkdir -p "$state/cli"
     tar -xzf "$tarball" -C "$state/cli" tilo && { printf '%s' "$state/cli/tilo"; return; }
   fi
-  local candidate
-  for candidate in "$repo/target/release/tilo" "$repo/target/debug/tilo"; do
+  for candidate in "$programs/tilo" "$repo/target/release/tilo" "$repo/target/debug/tilo"; do
     [[ -x $candidate ]] && { printf '%s' "$candidate"; return; }
   done
   die 'no tilo command: set TILO_SH_TILO_BIN, or build one (os/containers/tilo-sh/cargo.sh build -p tilo-cli --bin tilo)'
@@ -2755,13 +2758,14 @@ cancel_forwards() {
 # The environment the stack on the build server runs with: the caller's
 # TILO_SH_* (they configure the stack), with this side's state and mode
 # replaced, and the container's own cargo, which needs no drop-in there. The
-# command the drop-in starts is handed them with `env`, so a drop-in need not
-# forward anything itself.
+# paths this machine keeps a program at do not go: the stack there has its own
+# state, its own build and its own tilo command. The command the drop-in starts
+# is handed them with `env`, so a drop-in need not forward anything itself.
 remote_env() {
   local line
   while IFS= read -r line; do
     case ${line%%=*} in
-      TILO_SH_STATE|TILO_SH_PORT_BASE|TILO_SH_REMOTE|TILO_SH_CARGO|TILO_SH_REMOTE_STATE|TILO_SH_STACK_TOKEN) continue ;;
+      TILO_SH_STATE|TILO_SH_PORT_BASE|TILO_SH_REMOTE|TILO_SH_CARGO|TILO_SH_REMOTE_STATE|TILO_SH_STACK_TOKEN|TILO_SH_TILO_BIN) continue ;;
       TILO_SH_*) printf '%s\n' "$line" ;;
     esac
   done < <(env | grep '^TILO_SH_' || true)
