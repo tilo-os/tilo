@@ -483,6 +483,12 @@ use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
 pub use write_stage::{Stage, WriteStage};
 
+/// A directory listing as the mount's identity sees it, with the revision it was taken at.
+struct ReaddirCache {
+    key: (u64, u64, String),
+    entries: Vec<(u64, FileType, fs_protocol::FileNameV1)>,
+}
+
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
@@ -516,6 +522,10 @@ pub struct QuickFS {
     document_index_cursors: Mutex<HashMap<String, DocumentIndexCursor>>,
     document_index_initial_cursors: Mutex<HashMap<(String, String, u64), String>>,
     acl_visible_document_index: Arc<Mutex<Option<Arc<AclVisibleDocumentIndex>>>>,
+    /// The last directory listing served, and the revision it was taken at: one `readdir` is
+    /// many requests, and building the folder again for each of its pages costs the folder on
+    /// every page.
+    readdir_cache: Mutex<Option<ReaddirCache>>,
     /// Rich facts extracted while current-version bytes are already local; peers consume
     /// them without hydrating the payload.
     rich_metadata: Mutex<
@@ -594,6 +604,7 @@ impl QuickFS {
             document_index_cursors: Mutex::new(HashMap::new()),
             document_index_initial_cursors: Mutex::new(HashMap::new()),
             acl_visible_document_index: Arc::new(Mutex::new(None)),
+            readdir_cache: Mutex::new(None),
             rich_metadata: Mutex::new(HashMap::new()),
             enforcement: None,
             thumbs: None,
@@ -2982,28 +2993,43 @@ impl QuickFS {
     /// The entries of `ino` that belong in the view, as `readdir` would report them; `None`
     /// when `ino` is not a directory in the view. `.` and `..` always survive.
     fn visible_entries(&self, ino: u64) -> Option<Vec<(u64, FileType, fs_protocol::FileNameV1)>> {
-        let (entries, dir_path) = {
+        let (entries, dir_path, revision) = {
             let mut ns = self.ns();
-            (ns.readdir(ino), ns.path_for(ino))
+            (
+                ns.readdir(ino),
+                ns.path_for(ino),
+                ns.indexed_document_revision().to_owned(),
+            )
         };
         let entries = entries?;
         let Some((acl, identity)) = &self.enforcement else {
             return Some(entries);
         };
+        // A listing is good while nothing in the tree or the ACL changed: a folder's pages then
+        // pay for it once, not once per page.
+        let key = (ino, acl.revision(), revision);
+        if let Some(cached) = self.readdir_cache.lock_recover().as_ref()
+            && cached.key == key
+        {
+            return Some(cached.entries.clone());
+        }
         let dir_path = dir_path?;
         if !acl.visible(identity, &dir_path) {
             return None;
         }
-        Some(
-            entries
-                .into_iter()
-                .filter(|(_, _, name)| {
-                    name == "."
-                        || name == ".."
-                        || acl.visible(identity, &child_path(&dir_path, name.as_bytes()))
-                })
-                .collect(),
-        )
+        let visible: Vec<_> = entries
+            .into_iter()
+            .filter(|(_, _, name)| {
+                name == "."
+                    || name == ".."
+                    || acl.visible(identity, &child_path(&dir_path, name.as_bytes()))
+            })
+            .collect();
+        self.readdir_cache.lock_recover().replace(ReaddirCache {
+            key,
+            entries: visible.clone(),
+        });
+        Some(visible)
     }
 
     /// Hand what an authorised open of `ino` predicts to the predictive worker, after the open
