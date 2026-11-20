@@ -107,8 +107,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
-# shellcheck source=os/scratch-registry.env
-. "$TILO_OS_DIR/scratch-registry.env"
 
 # Root podman runs bootc out of the image, so it holds a copy of it: by default
 # in /var/lib/containers, staged through /var/tmp.
@@ -540,75 +538,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- an install source the composefs backend can read -------------------------
-# The install source has to be a registry when the composefs backend is in play.
-# Installing from containers-storage — including an image moved into root storage
-# with `podman save | sudo podman load`, which is what os/build.sh used to do —
-# fails inside the composefs pull with "Opening stream '': Creating new
-# splitstream reader: Invalid splitstream content type". The same image pulled
-# over HTTP installs. So a local registry is started and the image published to
-# it; this is a new requirement of dropping bib.
+# --- the install source --------------------------------------------------------
+# bootc installs out of root's container storage, as tilo-install does on a device:
+# root podman runs the image, and bootc reads it from the storage mounted into that
+# run. A sealed registry source (--sealed-source-imgref) is read from its registry.
 REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=(); SOURCE_POLICY=""
-# Ready only when this answers. A container named tilo-disk-registry can be
-# exited while its port mapping still exists, and that name used to count as
-# success even though 127.0.0.1:5000 was refusing connections.
-registry_v2_up() {
-  curl --connect-timeout 2 --max-time 4 -sf "http://127.0.0.1:$1/v2/" >/dev/null 2>&1
-}
-start_registry() {
-  local want="${TILO_DISK_REG_PORT:-5000}" port running started=false
-  if podman container exists tilo-disk-registry 2>/dev/null; then
-    running="$(podman inspect -f '{{.State.Running}}' tilo-disk-registry 2>/dev/null)" || running=false
-    if [ "$running" != true ]; then
-      podman start tilo-disk-registry >/dev/null 2>&1 || true
-      running="$(podman inspect -f '{{.State.Running}}' tilo-disk-registry 2>/dev/null)" || running=false
-      started=true
-    fi
-    port="$(podman port tilo-disk-registry 5000/tcp 2>/dev/null | head -1)" || true
-    port="${port##*:}"
-    [ -n "$port" ] || port="$want"
-    # Only a container we just started needs a moment to accept connections.
-    # One that was already up, or that stayed exited, is checked once.
-    if [ "$started" = true ] && [ "$running" = true ]; then
-      for _ in $(seq 1 30); do
-        registry_v2_up "$port" && break
-        sleep 1
-      done
-    fi
-    if registry_v2_up "$port"; then
-      echo "localhost:$port"
-      return
-    fi
-    msg "replacing tilo-disk-registry; http://127.0.0.1:$port/v2/ is not answering" >&2
-    podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
-  fi
-  # Someone else's registry already listening (the composefs spike leaves one on
-  # :5000) is fine to push to — one local registry is as good as another.
-  if registry_v2_up "$want"; then
-    msg "reusing the registry already listening on :$want" >&2
-    echo "localhost:$want"
-    return
-  fi
-  for port in $(seq "$want" $(( want + 9 ))); do
-    podman run -d --name tilo-disk-registry -p "$port:5000" \
-      "$SCRATCH_REGISTRY_IMAGE" >/dev/null 2>&1 || {
-        podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
-        continue
-      }
-    for _ in $(seq 1 30); do
-      registry_v2_up "$port" && break
-      sleep 1
-    done
-    if registry_v2_up "$port"; then
-      msg "started a registry on :$port for the install source" >&2
-      echo "localhost:$port"
-      return
-    fi
-    podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
-  done
-  return 1
-}
-
 # A policy for the install's own run of the image that admits REPOSITORY alone. The image's
 # runtime policy trusts its signed authoritative repository, not the transport the install
 # reads it from, and bootc evaluates the running reference against it before installing; the
@@ -650,58 +584,13 @@ if [ -n "$SEALED_SOURCE_IMGREF" ]; then
   source_policy "$source_repository"
   fi
   msg "using verified sealed registry source $SRC_REF (no local import or republish)"
-elif [ "$COMPOSEFS" = yes ]; then
-  REG="$(start_registry)" || die "could not bring up a local registry, and the composefs
-  backend cannot install from container storage: pulling an image out of
-  containers-storage (or one moved across with \`podman save | sudo podman load\`)
-  fails with \"Invalid splitstream content type\". The disk step therefore needs a
-  registry it can reach over HTTP. Start one and set TILO_DISK_REG_PORT, or install
-  its image ($SCRATCH_REGISTRY_IMAGE) so this can start its own."
-  # The source may be digest-pinned (`registry/owner/tilo@sha256:...`). Splitting
-  # at the first colon turns that into the invalid repository `tilo@sha256`.
-  # Isolate the final path component first, then remove either digest or tag.
-  repo="$(basename "$IMAGE")"
-  repo="${repo%%@*}"
-  repo="${repo%%:*}"
-  [ -n "$repo" ] || die "cannot derive a local registry repository from $IMAGE"
-  # TILO_DISK_PUBLISHED_DIGEST: the caller put the image in this registry already, under
-  # that tag and with this manifest digest (as `skopeo copy` from its OCI layout does, which
-  # copies only the blobs the registry lacks and compresses nothing). A push from storage
-  # compresses every layer again before it can tell the registry has it.
-  published="${TILO_DISK_PUBLISHED_DIGEST:-}"
-  if [ -n "$published" ] && [ "$(skopeo inspect --tls-verify=false --format '{{.Digest}}' \
-         "docker://$REG/$repo:disk-install" 2>/dev/null)" = "$published" ]; then
-    msg "$IMAGE is in $REG/$repo:disk-install already ($published)"
-  else
-    msg "publishing $IMAGE to $REG/$repo:disk-install"
-    # A layer the registry already holds, known to podman from pulling it there, is not sent
-    # again (tools/ci/publish/installer-medium.sh loads its image that way); any other layer
-    # is compressed from storage, minutes for a desktop image whatever the format. No format is
-    # forced, so the blobs already there count.
-    podman push --tls-verify=false "$IMAGE" "$REG/$repo:disk-install" \
-      || die "pushing $IMAGE to $REG failed. The composefs backend has to install from a
-  registry (see the note above), so there is no local-storage fallback to take."
-  fi
-  SRC_REF="docker://$REG/$repo:disk-install"
-  # bootc runs *out of* the image being installed, so root podman needs a copy
-  # too. Running the one already in the registry avoids save|load — which is the
-  # transfer that breaks the composefs pull — and makes one reference serve as
-  # both the container to run and the install source.
-  RUNREF="$REG/$repo:disk-install"
-  # A dev image's policy admits only its published repository, not this scratch one.
-  source_policy "$REG/$repo"
-  TLS_ARGS=(--tls-verify=false)
-  REGCONF="$OUTDIR/.registries.conf"
-  printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
 elif ! root_podman image exists "$IMAGE" 2>/dev/null; then
   msg "transfer $IMAGE into root container storage"
   podman save "$IMAGE" | root_podman load
 fi
 
 # The installed system updates from the image it was built from, not from the
-# scratch registry this step published to. Without this the qcow2 would carry
-# `localhost:5000/...:disk-install` as its update source and `bootc upgrade`
-# would look for a registry that only existed during the build.
+# source this step read it from (a sealed registry mirror, for one).
 [ -n "$TARGET_IMGREF" ] || TARGET_IMGREF="$IMAGE"
 
 # --- partition ----------------------------------------------------------------
@@ -1020,15 +909,6 @@ if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
   if [ "$ROOTFS" = btrfs ]; then
     sudo -n btrfs filesystem usage "$MNT" >&2 || true
   fi
-  # The two failures that are specific to dropping bib get named, because
-  # neither message says what to do about it.
-  if grep -q 'Invalid splitstream content type' "$LOG"; then
-    die "the composefs pull rejected the install source.
-  That is containers-storage: the composefs backend can only pull from a registry
-  (\`podman save | sudo podman load\` produces exactly this error). This script
-  publishes to a local registry for that reason — check the push above succeeded.
-  Full log: $LOG"
-  fi
   want="$(composefs_expected_digest "$LOG")"
   if [ -n "$want" ]; then
     die "the UKI's sealed composefs digest is not the one install computed (bootc#2334).
@@ -1107,10 +987,8 @@ if [ -n "$USERSPEC" ]; then
   # lock rather than like a read-only filesystem.
   sudo -n mount -o remount,rw "$MNT"
   msg "creating user $u_name (groups: ${u_groups:-none}) in $t_etc"
-  # $RUNREF, not $IMAGE: on the composefs path the image was never copied into
-  # ROOT container storage — only pushed to the local registry, which is where
-  # the install pulled it from — so root podman resolves the rootless-storage
-  # name as a registry reference and fails "pinging container registry localhost".
+  # $RUNREF, not $IMAGE: a sealed registry source was never copied into root
+  # container storage.
   user_run_args=(--rm --privileged
     -v "$t_etc:/target-etc" -v "$t_var:/target-var")
   if [ -n "$SRC_REF" ]; then

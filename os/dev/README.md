@@ -32,9 +32,7 @@ Note that `qemu-img` may resolve to an Android SDK copy earlier on `$PATH`;
 Host needs: rootless `podman`, **passwordless `sudo`** (for the loopback mounts
 `disk-image.sh` needs and for offline journal extraction), `/dev/kvm`, and a GPU
 render node under `/dev/dri` (a Mesa iGPU is strongly preferred for GL — see
-gotchas). The disk-image step also needs a **local registry** it can push to
-(`os/scratch-registry.env`'s image, started on demand): the composefs backend
-refuses to install from container storage.
+gotchas).
 
 If your host has qemu + tools natively, set `TILO_DISTROBOX=""` to skip the box.
 
@@ -475,4 +473,4 @@ developer explicitly sets `TILO_ALLOW_LOCAL_PCR_SIGNING=1`; exporting a signer
 path alone never invokes it. `use-published-image.sh` verifies a digest-pinned
 Tilo release and its provenance, loads it as `TILO_IMAGE`, and prints its verified
 embedded generation for installer-media builds.
-Disk image: `TILO_DISK_REG_PORT` (registry port), `TILO_RETAINED_GENERATIONS`.
+Disk image: `TILO_RETAINED_GENERATIONS`.

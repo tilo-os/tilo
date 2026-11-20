@@ -36,7 +36,7 @@ if [[ $(cat "$dev/revision") == development-loop ]]; then
 else
   revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
 fi
-id=$(load_for_disk "$dev/oci" tilo-vm)
+id=$(load_for_disk "$dev/oci")
 [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dev/digest")" ]] || die "$dev/oci is not the image $dev/digest names"
 podman tag "$id" localhost/tilo-vm:ci
 if [[ $revision == development-loop ]]; then

@@ -74,9 +74,7 @@ modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true
 
 phase load-image
-# Loaded through the disk step's scratch registry, under the repository the installer image is
-# pushed to, so that push sends only the installer's own layers.
-id=$(load_for_disk "$in/oci" tilo-installer)
+id=$(load_for_disk "$in/oci")
 actual_digest=$(podman image inspect --format '{{.Digest}}' "$id")
 [[ $actual_digest == "$expected_digest" ]] || die "$in/oci is not the image its digest names"
 [[ $(podman image inspect --format '{{.Architecture}}' "$id") == "$oci_arch" ]] \
