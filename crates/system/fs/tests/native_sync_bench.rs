@@ -478,6 +478,14 @@ impl Daemon {
             .map_or(0, |kb| kb.saturating_mul(1024))
     }
 
+    /// End the daemon the way a crash does: no signal it can act on, no flushing.
+    fn kill9(&mut self) -> Duration {
+        let started = Instant::now();
+        self.signal(libc::SIGKILL);
+        let _ = self.child.wait();
+        started.elapsed()
+    }
+
     /// Stop the daemon as a service manager would and wait for it to exit.
     fn stop(&mut self, timeout: Duration) -> Duration {
         let timeout = std::env::var("TILO_FS_BENCH_STOP_SECS")
@@ -1142,6 +1150,9 @@ fn mib(bytes: u64) -> f64 {
 /// `cp -r`, reads back what the copy wrote, then restarts the daemon: every file
 /// is there, with its bytes, before and after the restart.
 ///
+/// `TILO_FS_COPY_KILL=1` ends the daemon with SIGKILL past one content window
+/// instead: what a person's copy must survive when the machine goes down.
+///
 /// Tunables: `TILO_FS_COPY_FILES` (default 10000), `TILO_FS_COPY_BYTES`
 /// (default 2048), and the same selection and backend as the ladder
 /// (`TILO_FS_SYNC_BENCH=1`, `TILO_FS_BENCH_BACKEND`).
@@ -1184,8 +1195,11 @@ fn copying_a_folder_in_and_restarting() {
     let copy = started.elapsed();
     assert!(copied.success(), "cp -r into the mount failed: {copied:?}");
 
-    let mut check = |root: &Path| -> (u64, u64) {
+    // Every file, and for the first one that fails, whether its name is there at all: a name
+    // whose bytes are absent is a lost content entry, not a lost directory entry.
+    let mut check = |root: &Path| -> (u64, u64, String) {
         let (mut missing, mut wrong) = (0_u64, 0_u64);
+        let mut first = String::new();
         for i in 0..files {
             let path = root.join("in").join(folder(i)).join(name(i));
             match std::fs::read(&path) {
@@ -1193,17 +1207,30 @@ fn copying_a_folder_in_and_restarting() {
                     fill(i, 0, &mut buf);
                     if read != buf {
                         wrong = wrong.saturating_add(1);
+                        if first.is_empty() {
+                            first = format!("{} has wrong bytes", path.display());
+                        }
                     }
                 }
-                Err(_) => missing = missing.saturating_add(1),
+                Err(error) => {
+                    missing = missing.saturating_add(1);
+                    if first.is_empty() {
+                        let entry = if std::fs::metadata(&path).is_ok() {
+                            "its name is there and its bytes are not"
+                        } else {
+                            "its name is gone"
+                        };
+                        first = format!("{}: {entry}: {error}", path.display());
+                    }
+                }
             }
         }
-        (missing, wrong)
+        (missing, wrong, first)
     };
-    let (missing, wrong) = check(&pair.host.mount);
+    let (missing, wrong, first) = check(&pair.host.mount);
     if missing + wrong > 0 {
         eprintln!(
-            "copy: {} missing and {} wrong after the copy; writer's log:\n{}",
+            "copy: {} missing and {} wrong after the copy ({first}); writer's log:\n{}",
             missing,
             wrong,
             pair.host.dump()
@@ -1234,9 +1261,18 @@ fn copying_a_folder_in_and_restarting() {
         files as f64 / copy.as_secs_f64()
     );
 
-    let stopped = pair.stop_host();
+    // A crash is the real bar: the kernel is not told to flush, the process ends at once, and
+    // whatever the daemon committed within its window must be there when it starts again.
+    let crashed = std::env::var("TILO_FS_COPY_KILL").as_deref() == Ok("1");
+    let stopped = if crashed {
+        // Past one content window, so the barrier that makes a copy durable has run.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        pair.host.kill9()
+    } else {
+        pair.stop_host()
+    };
     let restarted = pair.restart_host();
-    let (missing_after, wrong_after) = check(&pair.host.mount);
+    let (missing_after, wrong_after, first_after) = check(&pair.host.mount);
     report(
         &rung_name(scenario, files),
         "restart_s",
@@ -1245,7 +1281,11 @@ fn copying_a_folder_in_and_restarting() {
     );
     report(
         &rung_name(scenario, files),
-        "missing_after_restart",
+        if crashed {
+            "missing_after_kill"
+        } else {
+            "missing_after_restart"
+        },
         missing_after as f64,
         "files",
     );
@@ -1256,8 +1296,9 @@ fn copying_a_folder_in_and_restarting() {
         "files",
     );
     eprintln!(
-        "copy: after restarting the writer ({stopped:?} to stop, {restarted:?} to serve), \
-         {missing_after} missing, {wrong_after} with wrong bytes"
+        "copy: after restarting the writer ({} in {stopped:?}, {restarted:?} to serve), \
+         {missing_after} missing, {wrong_after} with wrong bytes ({first_after})",
+        if crashed { "killed" } else { "stopped" }
     );
     assert_eq!(
         (missing, wrong),
@@ -1267,7 +1308,8 @@ fn copying_a_folder_in_and_restarting() {
     assert_eq!(
         (missing_after, wrong_after),
         (0, 0),
-        "every file the copy wrote is still there after a restart"
+        "every file the copy wrote is still there after {} ({first_after})",
+        if crashed { "a crash" } else { "a restart" }
     );
 }
 

@@ -1489,11 +1489,20 @@ async fn serve(
     let keeper = kept
         .clone()
         .map(|kept| spawn_keeper(namespace.clone(), kept));
+    let shutdown = kept.clone().map(|kept| {
+        let namespace = Arc::clone(&namespace);
+        let store = Arc::clone(&store);
+        Arc::new(move || {
+            let _ = store.sync_pending();
+            keep_now(&namespace, &kept);
+        }) as Arc<dyn Fn() + Send + Sync>
+    });
     let mount_outcome = run_mount(
         MountConfig {
             workspace_id,
             mount_point,
             kept: kept.clone(),
+            shutdown,
             predictive_cache_root: cache_dir.clone(),
             thumb_dir,
             storage_sock,
@@ -1628,11 +1637,20 @@ async fn mount(
     let keeper = kept
         .clone()
         .map(|kept| spawn_keeper(namespace.clone(), kept));
+    let shutdown = kept.clone().map(|kept| {
+        let namespace = Arc::clone(&namespace);
+        let store = Arc::clone(&store);
+        Arc::new(move || {
+            let _ = store.sync_pending();
+            keep_now(&namespace, &kept);
+        }) as Arc<dyn Fn() + Send + Sync>
+    });
     run_mount(
         MountConfig {
             workspace_id,
             mount_point,
             kept: kept.clone(),
+            shutdown,
             predictive_cache_root: cache_dir,
             thumb_dir,
             storage_sock,
@@ -1878,6 +1896,9 @@ struct MountConfig {
     /// The tree's documents kept on disk, if anywhere: every change is journaled there before
     /// the request that made it is answered.
     kept: Option<Arc<KeptTree>>,
+    /// Makes what the mount has already done durable before it stops, so nothing it answered is
+    /// lost by the stop itself.
+    shutdown: Option<Arc<dyn Fn() + Send + Sync>>,
     predictive_cache_root: Option<PathBuf>,
     thumb_dir: Option<PathBuf>,
     storage_sock: Option<PathBuf>,
@@ -1904,6 +1925,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         workspace_id,
         mount_point,
         kept,
+        shutdown,
         predictive_cache_root,
         thumb_dir,
         storage_sock,
@@ -2238,6 +2260,10 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         },
         signal = stop.recv() => {
             println!("{signal}, exiting...");
+            // What the mount has already answered reaches the disk before it stops answering.
+            if let Some(shutdown) = &shutdown {
+                shutdown();
+            }
             let _ = unmount_tx.send(session_supervisor::SessionEvent::Unmount);
             let _ = (&mut mount_task).await;
             MountOutcome::Unmounted
@@ -2249,6 +2275,9 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             }
         } => {
             println!("Content peer registration requested a clean workspace rebind.");
+            if let Some(shutdown) = &shutdown {
+                shutdown();
+            }
             let _ = unmount_tx.send(session_supervisor::SessionEvent::Unmount);
             let _ = (&mut mount_task).await;
             MountOutcome::RebindRequested
