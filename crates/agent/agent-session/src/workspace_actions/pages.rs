@@ -53,6 +53,10 @@ impl PageJob {
 }
 
 /// A page the service holds: whose it is and what it shows.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a service holds a page per open tab, few enough that boxing saves nothing"
+)]
 pub(super) enum HeldPage {
     /// An app's page: the record it shows, and who opened it.
     App {
