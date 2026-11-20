@@ -566,9 +566,10 @@ impl Workspaces {
             .collect())
     }
 
-    /// Have the holder whose site is at `origin` (`https://tilo.sh`) hold
-    /// `workspace` as well, as `role`: the holder says who it is and where it
-    /// is dialed at its origin, and is then handed the workspace
+    /// Have the holder at `origin` hold `workspace` as well, as `role`: a
+    /// site (`https://tilo.sh`), where the holder says who it is and where it
+    /// is dialed, or the holder's own Iroh address ([`IrohHolder`]), for one
+    /// that serves no site. It is then handed the workspace
     /// ([`Self::attach_server`]), which it takes as its own rules for whom it
     /// keeps workspaces say.
     ///
@@ -581,7 +582,7 @@ impl Workspaces {
         origin: &str,
         role: CopyRole,
     ) -> Result<TransportHint, String> {
-        let (device, addr) = host_at(origin, self.site_reach()).await?;
+        let (device, addr) = holder_at(origin, self.site_reach()).await?;
         self.attach_server(workspace, device, addr, role).await
     }
 
@@ -611,7 +612,7 @@ impl Workspaces {
         let (device, addr) = if let Some(device) = device_key(named) {
             (device, None)
         } else {
-            let (device, addr) = host_at(named, self.site_reach()).await?;
+            let (device, addr) = holder_at(named, self.site_reach()).await?;
             (device, Some(addr))
         };
         if !self.names_server(workspace, device).await {
@@ -631,9 +632,9 @@ impl Workspaces {
         let from = from.trim();
         let old = match device_key(from) {
             Some(device) => device,
-            None => host_at(from, self.site_reach()).await?.0,
+            None => holder_at(from, self.site_reach()).await?.0,
         };
-        let (new, addr) = host_at(to, self.site_reach()).await?;
+        let (new, addr) = holder_at(to, self.site_reach()).await?;
         self.move_holder(workspace, old, new, addr)
             .await
             .map_err(|error| {
@@ -852,6 +853,108 @@ where
     }
 }
 
+/// What an owner names a holder by that serves no site: its device key and
+/// the Iroh endpoint it is dialed at, as `tilo-enroll device-key` prints them
+/// (`iroh:<device key>@<endpoint id>`), with the packet relay it is reached
+/// through (`?relay=<url>`) and addresses it answers at directly
+/// (`&addr=<ip:port>`) when the dialing host's own lookup does not find it.
+/// The handshake then proves the device holds that key, wherever the
+/// endpoint is.
+pub const IROH_HOLDER: &str = "iroh:";
+
+/// A holder named by its Iroh address ([`IROH_HOLDER`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrohHolder {
+    /// The holder's device key, which its handshake proves.
+    pub device: [u8; 32],
+    /// Where its endpoint is dialed.
+    pub addr: EndpointAddr,
+}
+
+impl IrohHolder {
+    /// `named` as an Iroh holder's address, or why it is none. Answers
+    /// `None` for anything not spelled as one ([`IROH_HOLDER`]): a site.
+    ///
+    /// # Errors
+    ///
+    /// It is spelled as one and does not read.
+    pub fn parse(named: &str) -> Option<Result<Self, String>> {
+        let named = named.trim();
+        named.strip_prefix(IROH_HOLDER)?;
+        let malformed = |why: &str| {
+            format!(
+                "{named:?} is no holder's Iroh address ({why}): name it as                  iroh:<device key>@<endpoint id>, as `tilo-enroll device-key` prints them"
+            )
+        };
+        let read = || -> Result<Self, String> {
+            let url = tilo_net::Url::parse(named).map_err(|_| malformed("it does not read"))?;
+            let (device, endpoint) = url
+                .path()
+                .split_once('@')
+                .ok_or_else(|| malformed("no @ between its device and its endpoint"))?;
+            let device = device_key(device).ok_or_else(|| malformed("its device key"))?;
+            let endpoint = endpoint
+                .parse::<iroh_base::EndpointId>()
+                .map_err(|_| malformed("its endpoint id"))?;
+            let mut addr = EndpointAddr::new(endpoint);
+            for (key, value) in url.query_pairs() {
+                addr = match &*key {
+                    "relay" => addr.with_relay_url(
+                        value
+                            .parse::<iroh_base::RelayUrl>()
+                            .map_err(|_| malformed("its relay"))?,
+                    ),
+                    "addr" => addr.with_ip_addr(
+                        value
+                            .parse::<std::net::SocketAddr>()
+                            .map_err(|_| malformed("an address it answers at"))?,
+                    ),
+                    _ => return Err(malformed("it says what no holder's address says")),
+                };
+            }
+            Ok(Self { device, addr })
+        };
+        Some(read())
+    }
+}
+
+impl std::fmt::Display for IrohHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let named = format!(
+            "{IROH_HOLDER}{}@{}",
+            hex::encode(self.device),
+            hex::encode(self.addr.id.as_bytes())
+        );
+        let Ok(mut url) = tilo_net::Url::parse(&named) else {
+            return f.write_str(&named);
+        };
+        let has_query =
+            self.addr.relay_urls().next().is_some() || self.addr.ip_addrs().next().is_some();
+        if has_query {
+            let mut query = url.query_pairs_mut();
+            for relay in self.addr.relay_urls() {
+                query.append_pair("relay", relay.as_str());
+            }
+            for ip in self.addr.ip_addrs() {
+                query.append_pair("addr", &ip.to_string());
+            }
+        }
+        f.write_str(url.as_str())
+    }
+}
+
+/// The holder `named` names: by its Iroh address ([`IrohHolder`]), dialed
+/// as it is named, or by its site ([`host_at`]).
+async fn holder_at(
+    named: &str,
+    destinations: Destinations,
+) -> Result<([u8; 32], EndpointAddr), String> {
+    match IrohHolder::parse(named) {
+        Some(holder) => holder.map(|holder| (holder.device, holder.addr)),
+        None => host_at(named, destinations).await,
+    }
+}
+
 /// The holder whose site is at `origin`, as it says there: its device and
 /// where it is dialed.
 ///
@@ -869,7 +972,8 @@ async fn host_at(
     let no_site = || {
         format!(
             "{origin:?} is no holder's address: name its site by its https address, like \
-             https://tilo.sh"
+             https://tilo.sh, or a holder that serves no site by its Iroh address, \
+             iroh:<device key>@<endpoint id>"
         )
     };
     let url = tilo_net::Url::parse(origin).map_err(|_| no_site())?;
