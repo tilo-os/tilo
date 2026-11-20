@@ -55,6 +55,11 @@ case "$layer" in
     servers=$crate/tests/servers.sh
     trap 'bash "$servers" stop' EXIT
     eval "$(bash "$servers" start)"
+    # The seed is the server a person setting one up would have: an address,
+    # calendars, and the files they keep there. It is seeded here so the user
+    # stories' checks' seed is exercised (and kept working) by a check t
+    # starts on every schedule, not only where the stories are walked.
+    eval "$(bash "$servers" seed)"
     # Without a server's variables the suite fails instead of skipping.
     export TILO_REQUIRE_CLOUD_SERVERS=1
     run_layer container_

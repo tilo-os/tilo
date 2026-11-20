@@ -152,6 +152,55 @@ export const nodesOf = tab => tab.evaluate(`(() => {
   walk(globalThis.tiloMount?.state()?.semantics?.root);
   return JSON.stringify(out);
 })()`).then(JSON.parse).catch(() => []);
+/** [`pressNamed`] for a node a caller already has: one [`find`] answered. */
+export const pressNode = (tab, node, presses = null) =>
+  pressBox(tab, node.bounds, presses && {name: node.name, node, presses});
+/** Every field the page lays a mirror of, as JSON `[{label, rect, style,
+ * tiloRect, display, visibility}]`: what a press at a field is taken from, and
+ * what says why none was found. */
+export const mirroredFields = () => `(() => {
+  const fields = [...document.querySelectorAll('input, textarea')].map(field => {
+    const box = field.getBoundingClientRect();
+    const style = getComputedStyle(field);
+    return {
+      label: field.getAttribute('aria-label') ?? '',
+      rect: [box.left, box.top, box.width, box.height],
+      style: [parseFloat(field.style.left), parseFloat(field.style.top),
+        parseFloat(field.style.width), parseFloat(field.style.height)],
+      tiloRect: field.tiloRect ?? null,
+      display: style.display, visibility: style.visibility, opacity: style.opacity,
+    };
+  });
+  return JSON.stringify(fields);
+})()`;
+
+/** Press the field the page publishes as `name`, at the place the page lays
+ * its own field for it: a field's pointer belongs to the canvas, which hands
+ * it to the field drawn under it, so a person's press is a press there.
+ * Answers whether the field was there to press. */
+export const pressFieldNamed = async (tab, name) => {
+  const place = await tab.evaluate(`(() => {
+    const wanted = ${JSON.stringify(name)};
+    const fields = JSON.parse(${mirroredFields()}).filter(field => field.label.includes(wanted));
+    const point = field => {
+      const [left, top, width, height] = field.rect[2] > 0 && field.rect[3] > 0
+        ? field.rect : field.style;
+      return [left + width / 2, top + height / 2];
+    };
+    const field = fields.find(candidate => candidate.rect[2] > 0 && candidate.rect[3] > 0)
+      ?? fields.find(candidate => candidate.style[2] > 0 && candidate.style[3] > 0);
+    return field ? JSON.stringify(point(field)) : '';
+  })()`).catch(() => '');
+  if (!place) return false;
+  const [x, y] = JSON.parse(place);
+  await click(tab, x, y);
+  // The page keeps one editor for the keyboard and moves it to the field a
+  // press focuses, so the browser's active element is never the field's own
+  // mirror: what became focused is read from the page's tree by the caller
+  // that types, and a press that did not take is given again.
+  await sleep(400);
+  return true;
+};
 // A page-side clock around the person's Enter. What a person waits for is the
 // shell showing the app's window, and this shell paints into one canvas: the
 // window is on screen when the frame that carries it is presented. So both
@@ -352,20 +401,27 @@ export const searcher = ({until, failed, dump}) => {
     const shellSearch = scope => scope === 'workspace' || scope === 'everywhere';
     // The shell keeps the search up until what it opened has arrived, and the
     // chord toggles the shell's own: it is pressed only when the shell's is down.
-    if (!shellSearch(await openScope())) {
-      // A press on the shell's empty place gives the page the keyboard; a page
-      // a window already fills takes the chord as it is.
+    // A chord the page took while it was mounting a window (the workspace it
+    // just opened) is given again, as a person presses again what did not take.
+    const openShellSearch = `(() => { const s = globalThis.tiloMount?.state?.() ?? null;
+      return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); })()`;
+    let chorded = 0;
+    for (let tries = 0; tries < 3; tries++) {
+      const scope = await openScope();
+      if (shellSearch(scope)) break;
+      // Something is open but not the shell's search (a window's own): its
+      // chord was given, and pressing again would close what just opened.
+      if (scope !== null && tries > 0) break;
       if (focus) await click(tab, SHELL.empty.x, SHELL.empty.y);
+      chorded = Date.now();
       await key(tab, 'k', command);
+      if (await tab.waitFor(openShellSearch, {timeout: 3000}).catch(() => false)) break;
     }
-    const chorded = Date.now();
+    chorded ||= Date.now();
     // What the chord did, said before the long wait: a key the page took and the
     // shell did not answer is the shell's, not the key's, and a failure that
     // waited a minute to say "closed" never said which it was.
-    const opened = await tab.waitFor(`(() => { const s = globalThis.tiloMount?.state?.() ?? null;
-      return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); })()`, {timeout: 3000})
-      .catch(() => false);
-    if (!opened) {
+    if (!await tab.waitFor(openShellSearch, {timeout: 3000}).catch(() => false)) {
       const card = await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null');
       console.error(`the search chord opened nothing after ${Date.now() - chorded} ms (scope=${await openScope()}, card=${card})`);
     }
@@ -427,6 +483,83 @@ export const searcher = ({until, failed, dump}) => {
     return chosen;
   };
   return {search, emptyCard};
+};
+
+/** Ctrl+K, the shell's search chord: Meta on a Mac, as the desktop reads it. */
+export const searchChord = async tab => (await tab.evaluate('/Mac/.test(navigator.platform)')) ? 4 : 2;
+
+/** Wait until the page's `expression` holds, or fail saying `what` never
+ * happened, with what the page showed then: what the drivers' waits share. */
+export const waitUntil = async (tab, expression, what, timeout = stepLimit(3)) => {
+  const value = await tab.waitFor(expression, {timeout}).catch(() => false);
+  if (value) return value;
+  const shown = await tab.evaluate(`JSON.stringify({
+    arrival: document.documentElement.dataset.arrival ?? null,
+    first: document.documentElement.dataset.firstScreen ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
+    status: document.getElementById('status')?.textContent?.trim().slice(0, 200) ?? null,
+    windows: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => entry.label),
+  })`).catch(() => 'unreadable');
+  throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s (the page: ${shown})`);
+};
+
+/** The person's name, typed in the card the shell asks it with: the caller
+ * has opened search and chosen "Set your name". */
+export const giveName = async (tab, name) => {
+  await waitUntil(tab, `!!document.querySelector('input[name=display-name]')`, 'the name form');
+  await tab.evaluate(`(() => {
+    const input = document.querySelector('input[name=display-name]');
+    input.value = ${JSON.stringify(name)};
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.closest('form').querySelector('button[type=submit]').click();
+  })()`);
+  await waitUntil(tab, `!document.querySelector('input[name=display-name]')`, 'the name kept', stepLimit(4));
+};
+
+/** A new workspace named `name`, made from the shell's card: the caller has
+ * opened search and chosen "New workspace". */
+export const makeWorkspace = async (tab, name) => {
+  await waitUntil(tab, `document.querySelector('.tilo-entry-card input') !== null`, 'the card asking what to name it');
+  const pressed = await tab.evaluate(`(() => {
+    const input = document.querySelector('.tilo-entry-card input');
+    input.value = ${JSON.stringify(name)};
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    const button = [...document.querySelectorAll('.tilo-entry-card button')]
+      .find(candidate => candidate.textContent.trim() === 'Create' && !candidate.disabled);
+    button?.click();
+    return !!button;
+  })()`);
+  if (!pressed) throw new Error('the card offers no Create');
+};
+
+/** [`openWorkspace`] as the page-side expression a wait reads: the open
+ * workspace's id once it is open under `name`, else ''. */
+export const openWorkspace = name => `(() => {
+  const chosen = JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null');
+  const entered = JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]');
+  const kept = (Array.isArray(entered) ? entered : []).find(entry => entry.workspace === chosen?.workspace);
+  const open = document.documentElement.dataset.entry === 'open'
+    && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
+  return open && kept?.name === ${JSON.stringify(name)} ? chosen.workspace : '';
+})()`;
+
+/** Wait until the desktop publishes a node named `name`, then press it, as a
+ * person reaches a control the window draws. */
+export const pressWhen = async (tab, name, what, timeout = stepLimit(3)) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  await waitUntil(tab, found(name), what, timeout);
+  if (!await pressNamed(tab, name)) throw new Error(`${what} is not where a person can press it`);
+};
+
+/** The text the desktop shows, as a person would read it. */
+export const shows = (tab, text, what, timeout) => tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {})
+  .then(() => waitUntil(tab, `(${TREE_TEXT}).includes(${JSON.stringify(text)})`, what, timeout));
+
+/** Type `text` into the field the window publishes as `field`, as a person
+ * would: press the field, then type into it. */
+export const typeInto = async (tab, field, text) => {
+  if (!await pressNamed(tab, field)) throw new Error(`no ${field} field to type into`);
+  await type(tab, text);
 };
 
 /** Every name and value in the page's semantic tree, as one text: what a

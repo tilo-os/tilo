@@ -534,10 +534,12 @@ export async function launch({args = [], media = false} = {}) {
 
   /** A tab: navigate, evaluate (awaiting promises), collect errors. In
    * `context` (from `context()`) when given, else the browser's own profile.
-   * The entry page's first screen counts as seen unless `firstScreen`. */
-  async function tab({context, firstScreen = false} = {}) {
-    const {result: {targetId}} = await send('Target.createTarget',
-      {url: 'about:blank', ...(context ? {browserContextId: context} : {})});
+   * The entry page's first screen counts as seen unless `firstScreen`.
+   * `target` drives a page the browser already holds, such as one a press
+   * opened, instead of making a tab: `Target.getTargets` names it. */
+  async function tab({context, firstScreen = false, target = null} = {}) {
+    const targetId = target ?? (await send('Target.createTarget',
+      {url: 'about:blank', ...(context ? {browserContextId: context} : {})})).result.targetId;
     const {result: {sessionId}} = await send('Target.attachToTarget', {targetId, flatten: true});
     const log = [];
     // A renderer that died answers nothing: every command on it would wait

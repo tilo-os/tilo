@@ -6353,6 +6353,42 @@ timeout_secs = 1800
 [check.matrix]
 story = ["invite-live", "wait-list-sign-up", "mail-password"]
 
+# The user stories whose people meet a server of their own: a Nextcloud that
+# serves a person's files over WebDAV and their calendar over CalDAV. Each
+# story walks on a fresh stack of its own, in fresh browser profiles, every
+# step recorded and held to its budget as the other stories' are; the
+# difference is the real Nextcloud image (crates/system/cloud-source-dav/tests/
+# servers.sh, seeded with the person's files, calendars and a second person to
+# invite) on the check's own loopback.
+#
+# A VM, not a nested sandbox: podman starts the Nextcloud and PostgreSQL
+# containers as root, which a job's sandbox refuses, and the story's people
+# still run as an unprivileged user beside them (cloud-stories-in-vm.sh), as
+# the stack's checks do in theirs.
+[[check]]
+name = "user-stories-cloud/{story}"
+on = ["schedule:0 6 * * *", "dispatch"]
+# dnf, podman's image pulls and the judge's model: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash os/containers/tilo-lounge/cloud-stories-in-vm.sh /target/user-stories/{story} {story}"
+needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+# Its setup is not pinned, as the stories' is not; podman is what starts the
+# servers, and ffmpeg the people's recordings.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman python3-httpx python3-pip openssl ffmpeg-free && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
+# The judge reads ANTHROPIC_API_KEY, as every story's does; without it a story
+# whose steps pass is "passed, not judged".
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_VM_HOST = "0" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+cache = false
+# The story's page, its recording and verdict, the stack's logs, and what the
+# Nextcloud beside it said. A red story keeps them too.
+outputs = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
+evidence = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
+timeout_secs = 3600
+[check.matrix]
+story = ["calendar-invite", "nextcloud-files"]
+
 # The big-folder user story: a person copies a photo library and a few long videos into their
 # workspace through its mounted folder, browses it, joins from a second computer and restarts the
 # first, on the fs daemons and their FUSE mounts, each step held to a person's budget
