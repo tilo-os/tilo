@@ -193,15 +193,15 @@ mod running_surface_tests {
     #[test]
     fn a_package_surface_this_process_runs_is_served_by_its_hash_only() {
         let app = "so.tilo.test.running-surface";
-        let surface = b"[kinds]\nnote = \"so.tilo.test.running-surface.note\"\n";
+        let file = b"[[resources]]\nkind = \"so.tilo.test.running-surface.note\"\nlabel = \"Note\"\nversion = 1\nfields = []\n";
+        // A package's surface is kept, and named by the changes it signs, in its canonical form.
+        let (_, kept) = collab_types::surface::SurfaceFile::kept(file).unwrap();
+        let hash = hex::encode(blake3::hash(kept.as_bytes()).as_bytes());
+        assert_eq!(running_surface(app, &hash), None);
+        super::register_package_surface(app, file);
         assert_eq!(
-            running_surface(app, &hex::encode(blake3::hash(surface).as_bytes())),
-            None
-        );
-        super::register_package_surface(app, surface);
-        assert_eq!(
-            running_surface(app, &hex::encode(blake3::hash(surface).as_bytes())).as_deref(),
-            Some(surface.as_slice()),
+            running_surface(app, &hash).as_deref(),
+            Some(kept.as_bytes()),
             "the change this process signs names this surface, so it must decide it"
         );
         assert_eq!(
@@ -213,10 +213,7 @@ mod running_surface_tests {
             "a surface the process does not run is the content store's to serve"
         );
         assert_eq!(
-            running_surface(
-                "so.tilo.test.other-app",
-                &hex::encode(blake3::hash(surface).as_bytes())
-            ),
+            running_surface("so.tilo.test.other-app", &hash),
             None,
             "a surface is served only for the app that runs it"
         );
