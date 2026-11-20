@@ -1097,7 +1097,7 @@ impl Workspaces {
     }
 
     /// End the agents `people` kept in `workspace`: an agent acts for its keeper,
-    /// so one whose keeper stops being a member does not stay live. Chat's list of
+    /// so one whose keeper stops being a member does not stay live. Assistant's list of
     /// the workspace's agents says what `retire-agent` makes it say, written by the
     /// workspace's governance as it removes them rather than by a keeper who may
     /// act here no more.
@@ -1113,7 +1113,7 @@ impl Workspaces {
             return;
         }
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let app = tilo_app_id::apps::CHAT;
+        let app = tilo_workspace_agent::OWNER;
         let keepers: Vec<String> = people.iter().map(hex::encode).collect();
         let retired = self
             .author_workspace_document(workspace, self.governor(), (app, &list), move |doc| {

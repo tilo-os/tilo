@@ -23,6 +23,7 @@ pub use actions::{CANCEL_INVITATION, INVITATIONS};
 mod admissions;
 #[cfg(feature = "agents")]
 mod agent_members;
+mod agent_roster;
 pub mod app_files;
 mod appended;
 #[cfg(feature = "agents")]
@@ -1294,6 +1295,9 @@ impl Workspaces {
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
         this.serve_kept(this.served_kept().await).await?;
+        // Before any member's session reaches them: what a member reads of
+        // the workspace's agents is already all of them.
+        this.move_agent_rosters().await;
         this.serve_kept_members().await;
         this.adopt_listings_file().await?;
         this.start_following();

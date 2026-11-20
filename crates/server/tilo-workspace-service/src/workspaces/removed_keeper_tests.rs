@@ -54,12 +54,12 @@ async fn removing_a_member_retires_the_agents_they_kept_there() {
         &workspace,
         &cert,
         &keeper,
-        tilo_app_id::apps::CHAT,
+        tilo_workspace_agent::OWNER,
     )
     .await;
     let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let before = workspaces
-        .read_resource::<WorkspaceAgents>(&workspace, (tilo_app_id::apps::CHAT, &list))
+        .read_resource::<WorkspaceAgents>(&workspace, (tilo_workspace_agent::OWNER, &list))
         .await
         .unwrap()
         .unwrap();
@@ -79,7 +79,7 @@ async fn removing_a_member_retires_the_agents_they_kept_there() {
         .unwrap();
 
     let after = workspaces
-        .read_resource::<WorkspaceAgents>(&workspace, (tilo_app_id::apps::CHAT, &list))
+        .read_resource::<WorkspaceAgents>(&workspace, (tilo_workspace_agent::OWNER, &list))
         .await
         .unwrap()
         .unwrap();
@@ -139,7 +139,7 @@ async fn a_questions_asker_is_named_by_the_workspaces_list() {
     server.shutdown().await;
 }
 
-/// The agent `helper` that `keeper` keeps in `workspace`, written into Chat's
+/// The agent `helper` that `keeper` keeps in `workspace`, written into the
 /// list of the workspace's agents by their own device and worked by the
 /// workspace's governor: the list a member's own device starts, and their own
 /// device edits.
