@@ -148,9 +148,13 @@ objc2-media-player = { version = "0.3", default-features = false, features = ["s
 # pinned to the versions the browser runtime links.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "=0.2.108"
+# The page recorder's encoder callbacks and its clip module's JS glue.
+js-sys = "=0.3.85"
 
 [dev-dependencies]
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
+# The clip tests encode and decode a real JPEG.
+image = { workspace = true, features = ["jpeg"] }
 tempfile.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 

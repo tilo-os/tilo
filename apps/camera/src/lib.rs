@@ -34,8 +34,6 @@ pub mod resource;
 pub(crate) mod row_types;
 pub mod scan;
 pub mod video;
-#[cfg(any(test, target_arch = "wasm32"))]
-mod webm;
 pub mod worker;
 
 #[cfg(feature = "live-capture")]

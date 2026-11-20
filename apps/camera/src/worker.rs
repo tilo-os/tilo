@@ -162,8 +162,8 @@ struct WorkerLoop {
     scan_results: SyncSender<ScanResult>,
     content: ContentStore,
     /// Wakes the window when a clip settles on a later task, which only the
-    /// page's asynchronous encoder needs.
-    #[cfg(target_arch = "wasm32")]
+    /// page's asynchronous encoder needs; a desktop's encoder settles in the
+    /// worker and the wake has nothing to do.
     wake: ui::wake::WakeHandle,
 }
 
@@ -174,12 +174,19 @@ impl WorkerLoop {
             Err(_) => return false,
         };
         if start {
-            self.recorder = Some(crate::video::Recorder::new(crate::video::FPS));
+            self.recorder = Some(crate::video::Recorder::new(
+                crate::video::FPS,
+                crate::video::encode_jpeg,
+            ));
         }
         if let (Some(recorder), Some(frame)) = (&mut self.recorder, frame) {
             // This is deliberately the only Recorder::push call: RGBA
             // conversion, encoding and muxing never touch UI.
-            recorder.push(&frame);
+            recorder.push(&crate::video::Frame {
+                width: frame.w,
+                height: frame.h,
+                rgba: &frame.rgba,
+            });
         }
         let Some(job) = finish else {
             return true;
@@ -188,34 +195,23 @@ impl WorkerLoop {
             return self.send_video(&job, Err("nothing recorded".to_string()));
         };
         let (w, h) = recorder.dimensions();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let dur_ms = recorder.duration_ms();
-            let result = recorder
-                .finish()
-                .ok_or_else(|| "nothing recorded".to_string())
-                .and_then(|bytes| save_clip(&self.content, &job, &bytes, w, h, dur_ms));
-            self.send_video(&job, result)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            // The page's encoder flushes on a later task: the clip is saved
-            // and settled from that callback, which then wakes the window.
-            let content = self.content.clone();
-            let results = self.video_results.clone();
-            let wake = self.wake.clone();
-            recorder.finish(Box::new(move |clip| {
-                let result = clip
-                    .and_then(|(bytes, dur_ms)| save_clip(&content, &job, &bytes, w, h, dur_ms));
-                let _ = results.send(VideoResult {
-                    invocation: job.invocation,
-                    generation: job.generation,
-                    result,
-                });
-                wake.wake();
-            }));
-            true
-        }
+        // A desktop's encoder flushes here and now; the page's on a later
+        // task. Either way the clip is saved and settled from this callback,
+        // which then wakes the window.
+        let content = self.content.clone();
+        let results = self.video_results.clone();
+        let wake = self.wake.clone();
+        recorder.finish(Box::new(move |clip| {
+            let result =
+                clip.and_then(|(bytes, dur_ms)| save_clip(&content, &job, &bytes, w, h, dur_ms));
+            let _ = results.send(VideoResult {
+                invocation: job.invocation,
+                generation: job.generation,
+                result,
+            });
+            wake.wake();
+        }));
+        true
     }
 
     fn send_video(&self, job: &VideoJob, result: Result<VideoSaved, String>) -> bool {
@@ -295,10 +291,6 @@ impl WorkerLoop {
 
 impl CameraWorker {
     pub fn new(content: ContentStore, wake: &ui::wake::WakeHandle) -> Self {
-        // A native worker finishes a clip synchronously, so it never wakes
-        // the window; only the page's later task does.
-        #[cfg(not(target_arch = "wasm32"))]
-        let _ = wake;
         // Every ingress and result queue is bounded. One sleeping event loop
         // replaces the former eager per-feature worker set.
         let threads = ui::rt::available(ui::rt::Feature::Threads);
@@ -319,14 +311,12 @@ impl CameraWorker {
             video_results,
             scan_results,
             content,
-            #[cfg(target_arch = "wasm32")]
             wake: wake.clone(),
         };
-        // A page has no threads, and its recorder holds the browser's own
-        // objects, so only a native build keeps the worker off the UI.
-        #[cfg(not(target_arch = "wasm32"))]
+        // Where the target has threads the worker keeps off the UI; a page
+        // has none, and runs its work inline from `run_inline`.
         if threads {
-            let started = ui::rt::spawn_thread("camera-bounded-worker", move || {
+            let started = ui::rt::spawn_worker("camera-bounded-worker", move || {
                 let mut worker = worker;
                 // Inspect recording state before blocking and after all jobs.
                 // A full unified queue can coalesce a recording wake, so this

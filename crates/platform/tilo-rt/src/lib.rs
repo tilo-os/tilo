@@ -289,6 +289,40 @@ where
     std::thread::Builder::new().name(name.into()).spawn(body)
 }
 
+/// Run `body` on a worker thread where the target has them, and inline where
+/// it has none (a browser page). A caller that owns one long-lived loop for
+/// its own work keeps one shape on every target without selecting by target
+/// itself.
+///
+/// # Errors
+///
+/// As [`spawn_thread`]; the inline path has none.
+#[cfg(not(target_family = "wasm"))]
+pub fn spawn_worker<F>(name: impl Into<String>, body: F) -> std::io::Result<()>
+where
+    F: FnOnce() + Send + 'static,
+{
+    spawn_thread(name, body).map(|_| ())
+}
+
+/// Run `body` inline: this target has no threads.
+///
+/// # Errors
+///
+/// Never; the signature answers as the target that has threads does.
+#[cfg(target_family = "wasm")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "it answers as the target that has threads does, so a caller compiles once"
+)]
+pub fn spawn_worker<F>(_name: impl Into<String>, body: F) -> std::io::Result<()>
+where
+    F: FnOnce(),
+{
+    body();
+    Ok(())
+}
+
 /// How far below an ordinary thread [`spawn_background_thread`] runs, as a
 /// Linux nice value.
 pub const BACKGROUND_NICE: i32 = 10;

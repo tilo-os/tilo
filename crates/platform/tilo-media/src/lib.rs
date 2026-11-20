@@ -33,6 +33,7 @@ pub mod cache;
 pub mod calibration;
 pub mod calibration_fusion;
 mod caps;
+pub mod clip;
 pub mod dmabuf;
 pub mod edit;
 pub mod encode;

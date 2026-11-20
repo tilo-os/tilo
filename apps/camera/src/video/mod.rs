@@ -1,31 +1,14 @@
-//! Video recording, one recorder per platform: the desktop encodes
-//! Motion-JPEG into an AVI of its own ([`avi`]), and the page encodes VP8
-//! through the browser and muxes `WebM` (the `web` module), a container every browser
-//! plays. Both name their clip by what its bytes are, so the capture a
-//! person hands to Video Player is called `VID_<time>.webm` on the page and
-//! `VID_<time>.avi` on the desktop.
+//! Video recording, one recorder per platform inside the platform layer:
+//! [`tilo_media::clip`] encodes Motion-JPEG into an AVI of its own on the
+//! desktop, and on the page hands frames to the browser's encoder and muxes
+//! the result into `WebM`, a container every browser plays. Both name their clip
+//! by what its bytes are, so the capture a person hands to Video Player is
+//! called `VID_<time>.webm` on the page and `VID_<time>.avi` on the desktop.
 
 use std::io;
 use std::path::Path;
 
-/// Frames per second written into the container timing. A clip plays back
-/// whatever rate frames actually arrive; 30 is the standard assumption used
-/// for the containers' rate and duration maths.
-pub const FPS: u32 = 30;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod avi;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use avi::Recorder;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub use avi::probe_avi;
-
-#[cfg(target_arch = "wasm32")]
-mod web;
-
-#[cfg(target_arch = "wasm32")]
-pub use web::Recorder;
+pub use tilo_media::clip::{CONTAINER, FPS, Frame, Recorder, probe_avi};
 
 /// The name a recorded clip is saved under: the container its bytes are, so
 /// the name the handoff carries says what the clip is before it is opened.
@@ -33,13 +16,7 @@ pub fn clip_name(stamp: &str, bytes: &[u8]) -> String {
     let (extension, _) = tilo_content::opened_as(bytes);
     let extension = match extension {
         "avi" | "webm" | "mp4" => extension,
-        _ => {
-            if cfg!(target_arch = "wasm32") {
-                "webm"
-            } else {
-                "avi"
-            }
-        }
+        _ => CONTAINER,
     };
     format!("VID_{stamp}.{extension}")
 }
@@ -50,6 +27,12 @@ pub fn write_clip(dir: &Path, bytes: &[u8], stamp: &str) -> io::Result<String> {
     let name = clip_name(stamp, bytes);
     crate::files::write(&dir.join(&name), bytes)?;
     Ok(name)
+}
+
+/// The JPEG encoder a desktop build records frames with: the shared encoder
+/// its toolkit carries, so no second one is compiled into the app.
+pub fn encode_jpeg(rgb: &[u8], width: u32, height: u32, quality: u8) -> Option<Vec<u8>> {
+    ui::jpeg::encode_rgb8(width, height, rgb, quality).ok()
 }
 
 #[cfg(test)]
@@ -74,12 +57,6 @@ mod tests {
 
         // Anything else keeps the platform's own container name rather than
         // claiming a type it is not.
-        assert!(
-            clip_name("x", &[]).starts_with(if cfg!(target_arch = "wasm32") {
-                "VID_x.webm"
-            } else {
-                "VID_x.avi"
-            })
-        );
+        assert_eq!(clip_name("x", &[]), format!("VID_x.{CONTAINER}"));
     }
 }

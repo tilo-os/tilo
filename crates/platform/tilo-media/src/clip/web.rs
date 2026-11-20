@@ -1,5 +1,5 @@
 //! The page recorder: the browser's `WebCodecs` VP8 encoder (`web/webm-clip.mjs`)
-//! with its chunks muxed into `WebM` by [`crate::webm`].
+//! with its chunks muxed into `WebM` by [`super::webm`].
 //!
 //! A page has no encoding thread for Rust to drive, and the browser's encoder
 //! is asynchronous: [`Recorder::push`] hands a picture over and
@@ -13,12 +13,8 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
 
-use crate::frame::FrameBuf;
-use crate::webm::Muxer;
-
-/// The muxed clip with its duration in milliseconds, or why it could not be
-/// muxed.
-type ClipResult = Result<(Vec<u8>, i64), String>;
+use super::webm::Muxer;
+use super::{ClipResult, Frame, JpegFrame};
 
 #[wasm_bindgen(module = "/web/webm-clip.mjs")]
 extern "C" {
@@ -92,7 +88,7 @@ impl Drop for Clip {
 }
 
 impl Recorder {
-    pub fn new(fps: u32) -> Self {
+    pub fn new(fps: u32, _jpeg: JpegFrame) -> Self {
         // A browser without WebCodecs cannot encode: say so when the clip is
         // asked for instead of capturing frames that go nowhere.
         let failed = (!encoder_available())
@@ -109,26 +105,27 @@ impl Recorder {
     /// Hand one frame to the encoder. Returns `false` when the frame was not
     /// recorded: nothing usable, a size change mid-clip, or an encoder that
     /// refused (see [`Recorder::finish`], which reports why).
-    pub fn push(&mut self, fb: &FrameBuf) -> bool {
-        if self.failed.is_some() || fb.w == 0 || fb.h == 0 {
+    pub fn push(&mut self, frame: &Frame<'_>) -> bool {
+        let (width, height) = (frame.width, frame.height);
+        if self.failed.is_some() || width == 0 || height == 0 {
             return false;
         }
-        let expected = usize::try_from(fb.w)
+        let expected = usize::try_from(width)
             .ok()
             .and_then(|width| {
-                usize::try_from(fb.h)
+                usize::try_from(height)
                     .ok()
                     .and_then(|height| width.checked_mul(height))
             })
             .and_then(|pixels| pixels.checked_mul(4));
-        if expected != Some(fb.rgba.len()) {
+        if expected != Some(frame.rgba.len()) {
             self.failed = Some("Camera sent a frame that is not a whole picture".to_string());
             return false;
         }
         if self.clip.is_none() {
-            self.width = fb.w;
-            self.height = fb.h;
-            match Clip::new(fb.w, fb.h, self.fps) {
+            self.width = width;
+            self.height = height;
+            match Clip::new(width, height, self.fps) {
                 Ok(clip) => self.clip = Some(clip),
                 Err(error) => {
                     self.failed = Some(error);
@@ -136,13 +133,13 @@ impl Recorder {
                 }
             }
         }
-        if (fb.w, fb.h) != (self.width, self.height) {
+        if (width, height) != (self.width, self.height) {
             return false;
         }
         let Some(clip) = &self.clip else {
             return false;
         };
-        if let Some(error) = clip.encoder.push(&fb.rgba) {
+        if let Some(error) = clip.encoder.push(frame.rgba) {
             self.failed = Some(error);
             return false;
         }

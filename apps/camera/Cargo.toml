@@ -58,6 +58,9 @@ tilo-ocr = { path = "../../crates/media/ocr" }
 tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 # Cameras (live-capture) and SANE document scanners.
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
+# Clip recording: Motion-JPEG/AVI on the desktop, the browser's encoder and WebM
+# on the page, behind one API.
+tilo-media = { path = "../../crates/platform/tilo-media" }
 
 # Pure-Rust QR/barcode fixtures and detection for scanner flows.
 qrcode.workspace = true
@@ -78,9 +81,3 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-
-# The page's video encoder (WebCodecs), reached through `web/webm-clip.mjs`,
-# pinned to the versions the browser runtime links.
-[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-wasm-bindgen = "=0.2.108"
-js-sys = "=0.3.85"
