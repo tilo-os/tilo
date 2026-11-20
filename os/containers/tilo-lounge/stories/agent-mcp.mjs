@@ -13,8 +13,8 @@
 // step failed or ran over its budget.
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit} from '../integration/waits.mjs';
-import {found, pressNamed, searcher, settled, showsText as shows, TREE_TEXT, waitUntil}
-  from '../integration/shell.mjs';
+import {canvasTopLeft, found, nodesOf, pressBox, pressNamed, searcher, settled, showsText as shows, TREE_TEXT,
+  waitUntil} from '../integration/shell.mjs';
 import {computerAt} from './computer.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
 
@@ -31,6 +31,56 @@ const pressWhen = async (tab, name, what, timeout = stepLimit(3)) => {
   await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
   await until(tab, found(name), what, timeout);
   if (!await press(tab, name)) fail(`${what} is not where a person can press it`);
+};
+// The control named `name` among those the list named `list` holds, as its
+// four edges: every window's bar offers a History of its own, so Activity's
+// place is the one its own list of places holds.
+const heldBy = (list, name) => `(() => {
+  const edges = b => Array.isArray(b)
+    ? [b[0], b[1], b[2], b[3]]
+    : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
+  const sized = r => Array.isArray(r) ? [r[0], r[1], r[0] + r[2], r[1] + r[3]] : [r.x, r.y, r.x + r.width, r.y + r.height];
+  let hit = '';
+  const node = (n, under) => {
+    const here = under || n.name === ${JSON.stringify(list)};
+    const box = n.bounds ? edges(n.bounds) : n.rect ? sized(n.rect) : null;
+    if (!hit && here && n.name === ${JSON.stringify(name)} && box) hit = JSON.stringify(box);
+    (n.children || []).forEach(child => node(child, here));
+  };
+  const walk = (n, under) => {
+    const here = under || n.semantics?.name === ${JSON.stringify(list)};
+    if (n.semantics) node(n.semantics, under);
+    (n.children || []).forEach(child => walk(child, here));
+  };
+  const root = globalThis.tiloMount?.state()?.semantics?.root;
+  if (root) walk(root, false);
+  return hit;
+})()`;
+// A press on one of Activity's places. A window too narrow for its list of
+// places beside the place it shows has that list one press of Back away, the
+// Back beside the place's own title, as a person goes back to choose another.
+const pressActivityPlace = async (tab, name) => {
+  const place = async () => {
+    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    const box = await tab.evaluate(heldBy('Activity views', name)).catch(() => '');
+    return box ? JSON.parse(box) : null;
+  };
+  const first = await place();
+  if (first && await pressBox(tab, first)) return true;
+  const canvas = JSON.parse(await canvasTopLeft(tab));
+  const shown = ({bounds: b}) => b && (b.x0 + b.x1) / 2 >= 0 && (b.x0 + b.x1) / 2 <= canvas.width
+    && (b.y0 + b.y1) / 2 >= 0 && (b.y0 + b.y1) / 2 <= canvas.height;
+  const nodes = (await nodesOf(tab)).filter(shown);
+  const title = nodes.find(node => node.name === 'What’s new' || node.name === 'What\'s new');
+  if (!title) return false;
+  const back = nodes
+    .filter(node => node.name === 'Back' && node.bounds.y0 < title.bounds.y1 && node.bounds.y1 > title.bounds.y0
+      && node.bounds.x1 <= title.bounds.x0 + 4)
+    .sort((a, b) => b.bounds.x1 - a.bounds.x1)[0];
+  if (!back || !await pressBox(tab, back.bounds)) return false;
+  await sleep(800);
+  const again = await place();
+  return Boolean(again && await pressBox(tab, again));
 };
 const chord = async tab => (await tab.evaluate('/Mac/.test(navigator.platform)')) ? 4 : 2;
 const arrived = `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`;
@@ -165,12 +215,11 @@ try {
     if (!await ada.tab.evaluate(open).catch(() => false)) await search(ada.tab, adaKeys, 'activity', 'Activity', 'so.tilo.activity');
     await until(ada.tab, open, 'Activity on Ada’s screen', stepLimit(4));
     await ada.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-    // Its places are beside its title: History lists every change.
-    const places = await ada.tab.waitFor(found('History'), {timeout: stepLimit(3)}).catch(() => false);
-    if (places) {
-      if (!await press(ada.tab, 'History')) fail('History among Activity’s places is not where a person can press it');
-    } else {
-      await pressWhen(ada.tab, 'See history', 'Activity’s See history');
+    // History is one of its places: beside the place it shows in a wide
+    // window, one press of Back away in a narrow one.
+    await ada.tab.waitFor(heldBy('Activity views', 'History'), {timeout: stepLimit(3)}).catch(() => false);
+    if (!await pressActivityPlace(ada.tab, 'History')) {
+      fail('History among Activity’s places is not where a person can press it');
     }
     await shows(ada.tab, FILE, 'History listing the agent’s file', stepLimit(8));
     await shows(ada.tab, TASK, `History listing ${TASK}`, stepLimit(6));
