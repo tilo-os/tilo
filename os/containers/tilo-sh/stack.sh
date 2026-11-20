@@ -1664,20 +1664,29 @@ made_from() {
 
 # The server's files as the image's context lays them out (lounge-context.sh,
 # the image's own build step): the programs, the bots, the app surfaces from
-# the apps' history and the product font catalog (lounge-fonts.sh, once).
+# the apps' history and the product font catalog (lounge-fonts.sh, made again when its sources change).
 # TILO_SH_LOUNGE names a context laid out already, which is what a check hands
 # the stack: laying it out reads the apps' history and the catalog, seconds a
 # check has no reason to spend twice.
 lay_out_lounge() {
   if [[ -z $lounge ]]; then
     # The catalog t's lounge-fonts check fetched with the programs, else made
-    # here once.
+    # here, and made again whenever what it is made from changed: a build
+    # refuses a catalog whose manifest is not its own ("manifest differs from
+    # this Tilo build"), so one made for an older checkout leaves text unlaid.
     local fonts=$native/fonts
     if from_t; then
       fonts=$t_fetched/target/publish/lounge/fonts
-    elif [[ ! -f $native/fonts/manifest.toml ]]; then
-      say 'fetching the product font catalog (tools/ci/publish/lounge-fonts.sh, once)'
-      bash "$repo/tools/ci/publish/lounge-fonts.sh" "$native/fonts" >&2 || die 'could not prepare the fonts'
+    else
+      local made sources
+      sources=$(cd "$repo" && find crates/sdk/ui-core/assets/fonts tools/font-catalog.py \
+        tools/ci/publish/lounge-fonts.sh -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
+      made=$(cat "$native/fonts.made-from" 2>/dev/null || true)
+      if [[ ! -f $native/fonts/manifest.toml || $made != "$sources" ]]; then
+        say 'preparing the product font catalog for this checkout (tools/ci/publish/lounge-fonts.sh)'
+        bash "$repo/tools/ci/publish/lounge-fonts.sh" "$native/fonts" >&2 || die 'could not prepare the fonts'
+        printf '%s\n' "$sources" > "$native/fonts.made-from"
+      fi
     fi
     # Laid out again only when what it is made from changed: the server's
     # programs, the catalog, the files the image's context takes and this
