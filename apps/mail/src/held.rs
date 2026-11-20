@@ -1582,26 +1582,41 @@ pub(crate) fn answer(
 }
 
 /// What a delivery kept, answered to its caller: the message by id and
-/// item, read from the part it was kept in.
+/// item, read from the part it was kept in. Only the message the delivery
+/// added is read, never the rest of the part: reading the whole part made
+/// every delivery cost more the fuller the part it landed in was.
 pub(crate) fn answer_part(
     doc: &tilo_resource::Doc,
     action: &str,
     changes: &[automerge::Patch],
 ) -> Option<serde_json::Value> {
+    use automerge::ReadDoc as _;
     if action != "deliver-message" {
         return None;
     }
-    let part = <MessageStates as tilo_resource::Resource>::read(doc).ok()?;
+    let (_, held) = doc
+        .get(automerge::ROOT, "held")
+        .ok()
+        .flatten()
+        .filter(|(value, _)| matches!(value, automerge::Value::Object(automerge::ObjType::Map)))?;
     changes.iter().find_map(|patch| {
         let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
             return None;
         };
-        let (id, held) = part.held.iter().find(|(id, _)| id.as_str() == key)?;
+        if patch.obj != held {
+            return None;
+        }
+        let value = tilo_resource::stored_item(doc, &held, key)??;
+        let text = |field: &str| {
+            let (stored, at) = doc.get(&value, field).ok()??;
+            <String as Model>::load(doc, &stored, &at).ok()
+        };
+        let (message_id, conversation) = (text("message_id")?, text("conversation")?);
         Some(serde_json::json!({
-            "id": id.as_str(),
-            "item": format!("mail.message:{}", id.as_str()),
-            "message_id": held.message_id,
-            "conversation": held.conversation,
+            "id": key,
+            "item": format!("mail.message:{key}"),
+            "message_id": message_id,
+            "conversation": conversation,
         }))
     })
 }

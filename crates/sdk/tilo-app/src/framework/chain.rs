@@ -1042,6 +1042,8 @@ impl ChainCore {
             .workspace
             .store
             .with_history(&id, |doc, history| {
+                // Its diff from the change log: from the heads alone, a scan of the whole part.
+                doc.update_diff_cursor();
                 let before = doc.get_heads();
                 // Nothing minted by whatever ran before belongs to this write.
                 drop(tilo_resource::take_minted());
@@ -1070,6 +1072,7 @@ impl ChainCore {
                     items
                 })
                 .map_err(|error| ActionError::Refused(error.to_string()));
+                doc.reset_diff_cursor();
                 // Nobody's undo step: a part's edits are kept in its
                 // history, not the app's undo.
                 history.rebase(doc);
