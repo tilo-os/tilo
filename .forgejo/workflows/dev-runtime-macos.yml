@@ -11,6 +11,11 @@ name: Dev / runtime-macos
 # checked by that script's step in the repository policy suite: the one Mac only
 # sees changes that can break it, and a dependency added to the runtime cannot
 # leave this job behind by being forgotten here.
+#
+# The Swift client in `dist/apple` is tested here too (`dist/apple/build.sh test`):
+# it is the macOS app no Linux job builds or tests, and its source is no Cargo
+# package, so it stands beside the closure rather than in it. Its tests run only
+# for a change under `dist/apple`; a manual run always runs them.
 on:
   push:
     branches: ["main"]
@@ -19,6 +24,7 @@ on:
       - ".forgejo/workflows/dev-runtime-macos.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "dist/apple/**"
       - "rust-toolchain.toml"
       # Generated: the package's dependency closure (tools/policy/check_workflow_package_paths.py --write)
       - "crates/agent/agent-turn/**"
@@ -260,6 +266,36 @@ jobs:
           echo "TMPDIR=$fallback" >> "$GITHUB_ENV"
           df -h / "$fallback"
 
+      # The runtime check and the Swift client's tests are independent: each runs
+      # though the other failed.
+      - name: Whether the Swift client changed
+        id: apple
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != push ] || [ -z "$BEFORE" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The commit the push started from: a push may carry any number of commits.
+          if ! git fetch --quiet --no-tags --depth=1 origin "$BEFORE"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "$BEFORE" HEAD -- dist/apple | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test the Swift client on macOS
+        if: ${{ !cancelled() && steps.apple.outputs.changed == 'true' }}
+        working-directory: ${{ env.SRC }}
+        run: dist/apple/build.sh test
+
       - name: Check the runtime, its tests and executable on macOS
+        if: ${{ !cancelled() }}
         working-directory: ${{ env.SRC }}
         run: cargo check -p tilo-runtime --all-targets --locked
