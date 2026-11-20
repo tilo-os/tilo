@@ -13,8 +13,14 @@ use super::{Presentation, Shared};
 impl Shared {
     /// A change a host saves and shares: the revision, and a wake for the host holding this shell.
     pub(super) fn changed(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
+        self.note_change();
         self.wake.wake();
+    }
+
+    /// A change of what a peer reads of this shell that nothing draws again for: a window's name,
+    /// which its app's bar names ([`super::DesktopSurface::publish_window_names`]).
+    pub(super) fn note_change(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Say `notice` over the windows for a while ([`super::DesktopHandle::notice`]): a notice with
@@ -35,7 +41,7 @@ impl Shared {
         &mut self,
         tab: tilo_desktop_model::TabId,
     ) -> Option<tilo_desktop_model::RemovedTab> {
-        let removed = self.tree.edit().close_tab(tab)?;
+        let removed = self.tree.close_tab(tab)?;
         let said = crate::i18n::t_args(
             "shell-window-closed",
             &[(
@@ -70,7 +76,7 @@ impl Shared {
         search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
     ) -> Self {
         Self {
-            tree: tilo_desktop_model::edited::Edited::new(tree),
+            tree,
             dock: super::floats::Dock::default(),
             asked_floats: Vec::new(),
             holders: HashMap::new(),

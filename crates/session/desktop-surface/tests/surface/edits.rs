@@ -1,6 +1,5 @@
-//! A page sends its shell to the workspace only when the shell's tree was changed
-//! ([`DesktopHandle::tree_edits`]): every change a peer sees counts as one, and a frame that changes
-//! nothing counts none.
+//! A page sends its shell to the workspace only when the shell changed ([`DesktopHandle::revision`]):
+//! every change a peer sees counts as one, and a frame that changes nothing counts none.
 
 use super::*;
 
@@ -75,19 +74,19 @@ fn each_window_change_counts_and_an_idle_frame_counts_none() {
         ),
     ];
     for (what, change) in changes {
-        let (edits, seen) = (handle.tree_edits(), shared(&handle));
+        let (edits, seen) = (handle.revision(), shared(&handle));
         dispatch(&mut driver, &handle, change());
-        assert!(handle.tree_edits() > edits, "{what} counts as a change");
+        assert!(handle.revision() > edits, "{what} counts as a change");
         if shared(&handle) == seen {
             // Only this device's view moved (focus, width): a peer sees the same tree, which the
             // page finds out by reading it once.
             continue;
         }
-        let edits = handle.tree_edits();
+        let edits = handle.revision();
         driver.relayout();
         driver.relayout();
         assert_eq!(
-            handle.tree_edits(),
+            handle.revision(),
             edits,
             "the frames after {what} count none"
         );
@@ -96,15 +95,15 @@ fn each_window_change_counts_and_an_idle_frame_counts_none() {
     // A tree another member changed, renamed here, is counted as its own change.
     let mut tree = handle.read(Clone::clone);
     tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "Renamed".into();
-    let edits = handle.tree_edits();
+    let edits = handle.revision();
     handle.replace_tree(tree);
     driver.relayout();
-    assert!(handle.tree_edits() > edits, "a tree from a peer counts");
+    assert!(handle.revision() > edits, "a tree from a peer counts");
     assert!(shared(&handle).to_string().contains("Renamed"));
 
-    let edits = handle.tree_edits();
+    let edits = handle.revision();
     for _ in 0..5 {
         driver.relayout();
     }
-    assert_eq!(handle.tree_edits(), edits, "an idle shell counts nothing");
+    assert_eq!(handle.revision(), edits, "an idle shell counts nothing");
 }

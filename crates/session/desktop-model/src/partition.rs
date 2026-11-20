@@ -212,20 +212,16 @@ impl OutputPartition {
 
     /// Record that `group` on `strip` has keyboard focus: it becomes its
     /// display's last focused group and that display the focused one.
-    /// Returns whether that changed anything.
-    pub fn note_focus(&mut self, strip: StripId, group: GroupId) -> bool {
+    pub fn note_focus(&mut self, strip: StripId, group: GroupId) {
         let Some(monitor) = self
             .display_of(group)
             .and_then(|d| self.monitor_of(d))
             .map(str::to_owned)
         else {
-            return false;
+            return;
         };
-        let refocused = self.focused.as_deref() != Some(monitor.as_str());
-        if refocused {
-            self.focused = Some(monitor.clone());
-        }
-        self.last_active.insert((monitor, strip), group) != Some(group) || refocused
+        self.last_active.insert((monitor.clone(), strip), group);
+        self.focused = Some(monitor);
     }
 
     /// The strip `display` was last showing in `workspace`, if any.

@@ -30,7 +30,6 @@ pub(super) fn open_tab_beside(
     let tab = tiles.launch(workspace, tab_id, app, Some(ids.tab))?;
     let group = shared
         .tree
-        .edit()
         .workspaces
         .iter_mut()
         .find(|workspace| workspace.id() == ids.workspace)?
@@ -55,7 +54,7 @@ pub(super) fn open_tab_beside(
     if !background {
         // The person asked for this window: bring its group into view on the strip and focus it,
         // even when the tab it opens beside stands past the strip's edge.
-        shared.tree.edit().set_active_group(ids.strip, ids.group);
+        shared.tree.set_active_group(ids.strip, ids.group);
         shared.queue.push(Admitted::Select(RouteIds {
             workspace: ids.workspace,
             strip: ids.strip,
@@ -63,7 +62,7 @@ pub(super) fn open_tab_beside(
             tab: tab.id,
         }));
     }
-    shared.tree.edit().external_revision = shared.tree.external_revision.wrapping_add(1);
+    shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
     Some(RowOp::TabInGroup {
         strip: ids.strip,
         group: ids.group,

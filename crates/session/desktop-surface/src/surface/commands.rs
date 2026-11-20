@@ -82,7 +82,7 @@ impl DesktopSurface {
                 let live = |tree: &Layout, ids: RouteIds| navigation::locate(tree, ids).is_some();
                 match command {
                     Admitted::Select(ids) if live(&shared.tree, ids) => {
-                        let tree = shared.tree.edit();
+                        let tree = &mut shared.tree;
                         tree.active = ids.workspace;
                         tree.active_strip.insert(ids.workspace, ids.strip);
                         tree.set_active_group(ids.strip, ids.group);
@@ -104,14 +104,14 @@ impl DesktopSurface {
                         }
                     }
                     Admitted::Width(ids, permille) if live(&shared.tree, ids) => {
-                        if let Some(group) = find_group(shared.tree.edit(), ids.strip, ids.group) {
+                        if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group) {
                             group.width = WindowWidth::Fraction(permille);
                             ops.push(RowOp::Width(ids.strip, ids.group, group.width));
                             shared.followed = Some(ids.group);
                         }
                     }
                     Admitted::Maximize(ids, maximized) if live(&shared.tree, ids) => {
-                        if let Some(group) = find_group(shared.tree.edit(), ids.strip, ids.group)
+                        if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
                             && group.maximized != maximized
                         {
                             group.maximized = maximized;
@@ -121,10 +121,7 @@ impl DesktopSurface {
                     Admitted::Fullscreen(ids, fullscreen) if live(&shared.tree, ids) => {
                         // The row reads this in `present` ; the window taken across the display
                         // takes the whole strip with it.
-                        shared
-                            .tree
-                            .edit()
-                            .set_fullscreen(ids.strip, ids.group, fullscreen);
+                        shared.tree.set_fullscreen(ids.strip, ids.group, fullscreen);
                     }
                     Admitted::Float(ids, on) if live(&shared.tree, ids) => {
                         // A chord, a menu row or an agent floats the window — a card back to the
@@ -138,7 +135,7 @@ impl DesktopSurface {
                             None => false,
                         };
                         if lifted {
-                            shared.tree.edit().set_active_group(ids.strip, ids.group);
+                            shared.tree.set_active_group(ids.strip, ids.group);
                         }
                         // A card back in the column shows the window beside it, clear of it.
                         if lifted && shared.dock.cards.contains_key(&ids.group) {
@@ -150,7 +147,7 @@ impl DesktopSurface {
                         }
                     }
                     Admitted::Rename(ids, name) if live(&shared.tree, ids) => {
-                        if let Some(group) = find_group(shared.tree.edit(), ids.strip, ids.group)
+                        if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group)
                             && let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == ids.tab)
                             && tab.rename(&name)
                         {
@@ -177,8 +174,7 @@ impl DesktopSurface {
                     // takes: the row takes it in as it takes a window a peer added, and the strip
                     // comes to it as it does to a launched one.
                     Admitted::Reopen(workspace, app) => {
-                        let Some(reopened) =
-                            shared.tree.edit().reopen_closed(workspace, app.as_deref())
+                        let Some(reopened) = shared.tree.reopen_closed(workspace, app.as_deref())
                         else {
                             continue;
                         };
@@ -194,10 +190,10 @@ impl DesktopSurface {
                         }
                     }
                     Admitted::Strip(workspace, strip) => {
-                        shared.tree.edit().active = workspace;
-                        shared.tree.edit().active_strip.insert(workspace, strip);
+                        shared.tree.active = workspace;
+                        shared.tree.active_strip.insert(workspace, strip);
                     }
-                    Admitted::Workspace(workspace) => shared.tree.edit().active = workspace,
+                    Admitted::Workspace(workspace) => shared.tree.active = workspace,
                     Admitted::Launch(app, float) => {
                         match launch::open(self.tiles.as_mut(), &mut shared, &app, float, None) {
                             Some(op) => ops.push(op),
@@ -263,7 +259,7 @@ impl DesktopSurface {
                     Admitted::CloseActivity(_) => {
                         while let Some(ids) = navigation::window_of_app(&shared.tree, ACTIVITY_APP)
                         {
-                            let Some(removed) = shared.tree.edit().close_tab(ids.tab) else {
+                            let Some(removed) = shared.tree.close_tab(ids.tab) else {
                                 break;
                             };
                             ops.push(RowOp::Close {

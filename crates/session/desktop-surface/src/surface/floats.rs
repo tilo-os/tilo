@@ -74,7 +74,7 @@ impl super::DesktopHandle {
         let asked = self.take_asked_floats();
         let mut shared = self.shared.borrow_mut();
         for asked in asked {
-            for workspace in &mut shared.tree.edit().workspaces {
+            for workspace in &mut shared.tree.workspaces {
                 if workspace.tabs().any(|tab| tab.id == asked.tab) {
                     workspace.layout.set_float(asked.group, asked.float);
                 }
@@ -139,7 +139,7 @@ pub(super) fn set(
         return false;
     };
     if float.is_some() {
-        shared.tree.edit().active_strip.insert(workspace_id, strip);
+        shared.tree.active_strip.insert(workspace_id, strip);
     }
     if shared.float_of(strip, group) == float {
         return false;
@@ -234,7 +234,6 @@ pub(super) fn dock(shared: &mut Shared, strip: StripId, row: &GroupRow, group: u
     // only the host that turns the ask into an arranging action.
     if let Some(workspace) = shared
         .tree
-        .edit()
         .workspaces
         .iter_mut()
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
@@ -342,6 +341,6 @@ pub(super) fn carry_out(
     };
     // The window the hand let go of is the one the person works in: it takes the keyboard, floating
     // or back in its strip.
-    shared.tree.edit().set_active_group(strip, group);
+    shared.tree.set_active_group(strip, group);
     true
 }

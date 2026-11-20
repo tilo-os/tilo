@@ -460,52 +460,55 @@ impl DesktopSurface {
         let (changed, renamed) = {
             let mut shared = self.shared.borrow_mut();
             let named_before = shared.bars.names.clone();
-            let mut changed = shared.bars.take_names(names.clone());
+            let changed = shared.bars.take_names(names.clone());
             if changed {
                 shared.changed();
             }
-            // A person's own name for a tab, where they gave one, stands in front of the app's: the
-            // tab keeps it and holds the app's for when the person clears theirs. Every frame
-            // passes here; the tree counts a change only when a title changed.
-            let mut renamed = Vec::new();
-            changed |= shared.tree.edit_when(|tree| {
-                let mut titled = false;
-                let tabs = tree.workspaces.iter_mut().flat_map(|workspace| {
-                    workspace
-                        .strips
-                        .iter_mut()
-                        .flat_map(|strip| strip.window_groups.iter_mut())
-                        .flat_map(|group| group.tabs.iter_mut())
-                });
-                for tab in tabs {
-                    // A tab that shows one thing of the app is the person's place of that thing: it
-                    // names itself by what it shows, and no window's name is written into it.
-                    if tilo_desktop_model::apps::shows_a_view(tab) {
-                        continue;
-                    }
-                    let before = tab.title.clone();
-                    if let Some(name) = names.get(&tab.id) {
-                        titled |= tab.set_window_title(name);
-                    } else if sections.contains(&tab.id)
-                        && let Some(app) = app_name_of(tab)
-                    {
-                        titled |= tab.set_window_title(&app);
-                    } else if named_before
-                        .get(&tab.id)
-                        .is_some_and(|name| tab.title == *name)
-                        && let Some(app) = app_name_of(tab)
-                    {
-                        // The app names nothing any more — the note it showed is closed — so the window
-                        // goes back to its app's name rather than keeping a place it has left.
-                        titled |= tab.set_window_title(&app);
-                    }
-                    if tab.title != before {
-                        renamed.push(descriptor(tab));
-                    }
-                }
-                titled
+            let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
+                workspace
+                    .strips
+                    .iter_mut()
+                    .flat_map(|strip| strip.window_groups.iter_mut())
+                    .flat_map(|group| group.tabs.iter_mut())
             });
-            (changed, renamed)
+            // A person's own name for a tab, where they gave one, stands in front of the app's: the
+            // tab keeps it and holds the app's for when the person clears theirs. A window's name
+            // is what a peer reads, so a name that changed counts a change of the shell.
+            let mut renamed = Vec::new();
+            let mut titled = false;
+            for tab in tabs {
+                // A tab that shows one thing of the app is the person's place of that thing: it
+                // names itself by what it shows, and no window's name is written into it.
+                if tilo_desktop_model::apps::shows_a_view(tab) {
+                    continue;
+                }
+                let before = tab.title.clone();
+                if let Some(name) = names.get(&tab.id) {
+                    titled |= tab.set_window_title(name);
+                } else if sections.contains(&tab.id)
+                    && let Some(app) = app_name_of(tab)
+                {
+                    titled |= tab.set_window_title(&app);
+                } else if named_before
+                    .get(&tab.id)
+                    .is_some_and(|name| tab.title == *name)
+                    && let Some(app) = app_name_of(tab)
+                {
+                    // The app names nothing any more — the note it showed is closed — so the window
+                    // goes back to its app's name rather than keeping a place it has left.
+                    titled |= tab.set_window_title(&app);
+                }
+                if tab.title != before {
+                    renamed.push(descriptor(tab));
+                }
+            }
+            if titled {
+                // A window's name is what a peer reads of the shell, so a name that changed is a
+                // change of it: the page publishes the new name. Nothing is drawn again for a
+                // name, so nothing is woken for one.
+                shared.note_change();
+            }
+            (changed | titled, renamed)
         };
         // A window's name is what it shows, not a window the shell gained or lost: the rows rename
         // their pills in place, and the shell's layout stands as it was.

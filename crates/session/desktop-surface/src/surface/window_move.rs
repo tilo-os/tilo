@@ -48,14 +48,13 @@ pub(super) fn carry_out(
     let group = shared.minter.mint();
     if shared
         .tree
-        .edit()
         .move_tab_across_strips(strip, dest, tab, group, DropTarget::GroupGap { gap_index })
         .is_none()
     {
         return false;
     }
-    shared.tree.edit().active_strip.insert(workspace, dest);
-    shared.tree.edit().set_active_group(dest, group);
+    shared.tree.active_strip.insert(workspace, dest);
+    shared.tree.set_active_group(dest, group);
     shared.replaced = true;
     true
 }
