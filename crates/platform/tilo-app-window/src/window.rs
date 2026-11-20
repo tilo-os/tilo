@@ -1307,6 +1307,7 @@ impl AppWindow {
     #[must_use]
     pub fn owes(&self) -> bool {
         !self.out.is_empty()
+            || !self.events.is_empty()
             || self
                 .rows
                 .borrow()

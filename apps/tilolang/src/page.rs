@@ -367,7 +367,10 @@ impl ui::widget::Decorator for PageWindow {
         // What the person did runs before what it shows is read.
         let moved = self.exchange();
         let child = Widget::update(&mut self.view, state, path);
-        moved || child
+        // A control may report while the window updates (a sidebar's pick): the instance answers
+        // it in this frame, so the page it picked shows now, not after the next input.
+        let answered = self.view.owes() && self.exchange();
+        moved || child || answered
     }
 
     fn handle_event(
@@ -393,7 +396,7 @@ impl ui::widget::Decorator for PageWindow {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.instance.owes_a_frame() || Widget::needs_idle_sync(&self.view)
+        self.instance.owes_a_frame() || self.view.owes() || Widget::needs_idle_sync(&self.view)
     }
 
     fn has_pending_visual_work(&self) -> bool {
