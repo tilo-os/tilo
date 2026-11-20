@@ -225,7 +225,12 @@ impl Caller {
     /// borrows none of the first's.
     #[must_use]
     pub fn continues(&self, owner: &Self) -> bool {
-        if self == owner {
+        // The name an agent goes by is presentation only ([`Self::named`]): a client that
+        // names its session names the calls it makes, and the caller following them names
+        // nothing, so ownership reads the callers without their names. The name is display
+        // only and grants nothing either way.
+        let (mine, theirs) = (self.unnamed(), owner.unnamed());
+        if mine == theirs {
             return true;
         }
         let replaced = match (&self.execution, &owner.execution) {
@@ -233,10 +238,19 @@ impl Caller {
             _ => false,
         };
         replaced && {
-            let mut same = self.clone();
+            let mut same = mine;
             same.execution.clone_from(&owner.execution);
-            same == *owner
+            same == theirs
         }
+    }
+
+    /// This caller without the name it goes by, which is presentation only
+    /// ([`Self::named`]): what ownership compares.
+    #[must_use]
+    fn unnamed(&self) -> Self {
+        let mut bare = self.clone();
+        bare.agent_name = None;
+        bare
     }
 
     /// A transport ends its own run; retained caller clones cannot reopen it.
@@ -606,6 +620,28 @@ mod tests {
         let ada = Caller::local_person("ada")
             .in_session_of(&call_in(AGENT_SESSION_GROUP, Some("Release prep")));
         assert_eq!(ada.agent_called(), None);
+    }
+
+    /// A call that names its session names the caller, and the connection following the
+    /// invocation it started names nothing of it: what an agent is called is presentation
+    /// only, so both continue the same invocations. Another session borrows none of them.
+    #[test]
+    fn an_agents_session_name_does_not_change_who_continues_its_invocations() {
+        let caller = || Caller::local_agent("claude-code").named("Claude Code");
+        let named = caller().in_session_of(&call_in(AGENT_SESSION_GROUP, Some("Release prep")));
+        assert_eq!(named.agent_called(), Some("Release prep"));
+        assert!(
+            caller().continues(&named),
+            "the connection follows what it started"
+        );
+        assert!(named.continues(&caller()));
+        let another = Caller::local_agent("claude-code")
+            .in_new_execution()
+            .named("Claude Code");
+        assert!(
+            !another.continues(&named),
+            "another live connection of the same agent borrows nothing"
+        );
     }
 
     /// An agent session names itself by what it was asked, and by the agent's name where it was
