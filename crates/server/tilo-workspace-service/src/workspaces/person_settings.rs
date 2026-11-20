@@ -764,8 +764,9 @@ pub(crate) fn account_secret_for_test(root: &Path, id: &str) -> Result<accounts:
 }
 
 /// Keep `tokens` as `account`'s sign-in, as a sign-in on its provider's page
-/// does: a test's hand on a grant it cannot fetch through a browser.
-#[cfg(test)]
+/// does: a test's hand on a grant it cannot fetch through a browser. Only the calendar tests
+/// take it, and they build with the agents.
+#[cfg(all(test, feature = "agents"))]
 pub(crate) fn seal_grant_for_test(
     root: &Path,
     account: &accounts::Account,
