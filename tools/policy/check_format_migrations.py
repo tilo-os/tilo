@@ -43,14 +43,29 @@ or writes it differently. And ``against BASE`` fails when a golden file of a ver
 build still declares changed: what a version wrote never changes, so a layout
 change is a new version, with its own golden file. The golden file of a
 version no declaration names any more goes with its step.
+
+A format's golden bytes pin what its loader reads first, not every type written
+beside it. A journal appended beside a snapshot, a frame a store keeps as a
+file: each is a Rust type serialized to disk, and a field added in its middle
+reads the bytes an earlier build wrote as something else (a device's journal
+did, and every write after its snapshot was dropped). Such a type is listed in
+``tools/policy/stored_layouts.toml`` under the format whose version covers it,
+with a digest of its definition at that version. ``check`` fails when a listed
+type's definition no longer matches the digest recorded for the format's
+current version: a layout that changed is a new version of its format, with
+the step that brings up what the version before wrote. ``pin`` writes the
+digest of the current version once that version is declared. ``against BASE``
+fails when the digest a still-declared version had at BASE changed.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -308,6 +323,196 @@ def sources_since(root: Path, base: str, before: dict[str, str]) -> dict[str, st
     return texts
 
 
+LAYOUTS = Path("tools/policy/stored_layouts.toml")
+
+
+def item_definition(text: str, name: str) -> str | None:
+    """The definition of struct or enum `name` in `text`, with the serde
+    attributes on it and its fields, without comments or doc text, its
+    whitespace collapsed: what decides the bytes it is stored as."""
+    code = without_tests("lib.rs", text)
+    code = re.sub(r"/\*.*?\*/", " ", code, flags=re.S)
+    code = re.sub(r"(?m)//[^\n]*$", "", code)
+    found = re.search(
+        rf"(?m)^(?P<attrs>(?:[ \t]*#\[[^\n]*\]\s*\n)*)[ \t]*(?:pub(?:\([^)]*\))?\s+)?"
+        rf"(?P<kind>struct|enum)\s+{re.escape(name)}\b",
+        code,
+    )
+    if not found:
+        return None
+    depth, end = 0, None
+    for at in range(found.end(), len(code)):
+        char = code[at]
+        if char in "<({[":
+            depth += 1
+        elif char in ">)}]":
+            depth -= 1
+            if depth == 0 and char in ")}":
+                end = at + 1
+                break
+        elif char == ";" and depth == 0:
+            end = at + 1
+            break
+    if end is None:
+        return None
+    attrs = " ".join(
+        attr for attr in re.findall(r"#\[[^\n]*\]", found.group("attrs")) if "serde" in attr
+    )
+    body = code[found.start("kind") : end]
+    return re.sub(r"\s+", " ", f"{attrs} {body}").strip()
+
+
+def layout_digest(types: list[str], read) -> tuple[str | None, list[str]]:
+    """The digest of `types` (each `path:Type`) as `read(path)` holds them, or
+    `None` with what was not found."""
+    parts, missing = [], []
+    for entry in types:
+        path, _, name = entry.partition(":")
+        text = read(path)
+        definition = item_definition(text, name) if text is not None else None
+        if definition is None:
+            missing.append(entry)
+            continue
+        parts.append(f"{entry}={definition}")
+    if missing:
+        return None, missing
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16], []
+
+
+def layouts(text: str) -> list[dict]:
+    return tomllib.loads(text).get("layout", [])
+
+
+def current_versions(root: Path, texts: dict[str, str]) -> dict[str, int]:
+    """Each declared format's version now, by name."""
+    found: dict[str, int] = {}
+    cache: dict[Path, dict[str, str]] = {}
+    for path, text in texts.items():
+        for match in VERSIONED.finditer(without_tests(path, text)):
+            crate = crate_of(root, path)
+            version = version_of(match.group("version"), crate_sources(crate, root, cache))
+            if version is not None:
+                found[match.group("name")] = version
+    return found
+
+
+def read_file(root: Path):
+    def read(path: str) -> str | None:
+        file = root / path
+        return file.read_text(errors="replace") if file.is_file() else None
+
+    return read
+
+
+def stored_layouts(root: Path, texts: dict[str, str]) -> list[str]:
+    """Each listed stored layout whose definition changed under its format's
+    current version, or that names a format or type there is not."""
+    file = root / LAYOUTS
+    if not file.is_file():
+        return []
+    problems = []
+    versions = current_versions(root, texts)
+    newest: dict[str, int] = {}
+    for layout in layouts(file.read_text()):
+        name, version = layout["format"], int(layout["version"])
+        newest[name] = max(newest.get(name, 0), version)
+        if name not in versions:
+            problems.append(
+                f"{LAYOUTS}: names format {name!r}, which nothing declares: list a stored "
+                "type under the `migration::Format` whose version covers it"
+            )
+            continue
+        if version > versions[name]:
+            problems.append(
+                f"{LAYOUTS}: lists format {name!r} version {version}, newer than the "
+                f"{versions[name]} it declares"
+            )
+        if version != versions[name]:
+            continue
+        digest, missing = layout_digest(layout["types"], read_file(root))
+        if missing:
+            problems.append(
+                f"{LAYOUTS}: format {name!r} version {version} lists {', '.join(missing)}, "
+                "which its file does not define"
+            )
+        elif digest != layout["digest"]:
+            problems.append(
+                f"{LAYOUTS}: a type stored under format {name!r} changed while the format is "
+                f"still version {version} ({', '.join(layout['types'])}). Bytes an earlier "
+                "build wrote would read as something else: give the format a new version with "
+                "a step that brings up what this one wrote, then pin the new layout with "
+                "`python3 tools/policy/check_format_migrations.py pin`"
+            )
+    for name, version in sorted(versions.items()):
+        if name in newest and newest[name] < version:
+            problems.append(
+                f"{LAYOUTS}: format {name!r} is version {version} and its stored types are "
+                f"pinned only up to version {newest[name]}: pin it with "
+                "`python3 tools/policy/check_format_migrations.py pin`"
+            )
+    return problems
+
+
+def pin(root: Path = ROOT) -> list[str]:
+    """Pin the digest of each listed format's current version: a new
+    entry, from the types its newest one lists, for a version not recorded
+    yet. A version already recorded keeps its digest."""
+    file = root / LAYOUTS
+    text = file.read_text()
+    versions = current_versions(root, sources(root))
+    listed = layouts(text)
+    added = []
+    for name in sorted({layout["format"] for layout in listed}):
+        mine = [layout for layout in listed if layout["format"] == name]
+        newest = max(mine, key=lambda layout: int(layout["version"]))
+        version = versions.get(name)
+        if version is None or any(int(layout["version"]) == version for layout in mine):
+            continue
+        digest, missing = layout_digest(newest["types"], read_file(root))
+        if missing:
+            return [f"{name}: {', '.join(missing)} not found"]
+        types = "".join(f'  "{entry}",\n' for entry in newest["types"])
+        added.append(
+            f'\n[[layout]]\nformat = "{name}"\nversion = {version}\ndigest = "{digest}"\n'
+            f'what = """{newest["what"]}"""\ntypes = [\n{types}]\n'
+        )
+    if added:
+        file.write_text(text.rstrip("\n") + "\n" + "".join(added))
+    return []
+
+
+def changed_layouts(root: Path, base: str, now_texts: dict[str, str]) -> list[str]:
+    """Each digest `base` recorded for a version still declared that is
+    another now: what a version wrote never changes."""
+    try:
+        then = subprocess.check_output(
+            ["git", "show", f"{base}:{LAYOUTS.as_posix()}"],
+            cwd=root,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    file = root / LAYOUTS
+    if not file.is_file():
+        return []
+    versions = current_versions(root, now_texts)
+    now = {(layout["format"], int(layout["version"])): layout for layout in layouts(file.read_text())}
+    problems = []
+    for layout in layouts(then):
+        key = (layout["format"], int(layout["version"]))
+        oldest = declarations(now_texts).get(layout["format"])
+        still = oldest is not None and oldest[1].isdigit() and int(oldest[1]) <= key[1]
+        if not still or key[1] > versions.get(key[0], 0):
+            continue
+        if key not in now or now[key]["digest"] != layout["digest"]:
+            problems.append(
+                f"{LAYOUTS}: the layout format {key[0]!r} version {key[1]} stored changed; "
+                "what a version wrote never changes, so a layout change is a new version"
+            )
+    return problems
+
+
 def check(root: Path = ROOT) -> list[str]:
     problems = []
     texts = sources(root)
@@ -319,6 +524,7 @@ def check(root: Path = ROOT) -> list[str]:
             )
     problems.extend(loaders(root, texts))
     problems.extend(goldens(root, texts))
+    problems.extend(stored_layouts(root, texts))
     return problems
 
 
@@ -411,8 +617,10 @@ def against(base: str, root: Path = ROOT) -> list[str]:
     writes. A format may bring up fewer older versions, gone with their steps."""
     then = sources_at(root, base)
     now = sources_since(root, base, then)
-    return changed_goldens(base, root, declared_goldens(root, now)) + dropped_versions(
-        root, base, then, now
+    return (
+        changed_goldens(base, root, declared_goldens(root, now))
+        + dropped_versions(root, base, then, now)
+        + changed_layouts(root, base, now)
     )
 
 
@@ -420,10 +628,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check")
+    sub.add_parser("pin")
     base = sub.add_parser("against")
     base.add_argument("base")
     args = parser.parse_args(argv)
-    if args.command == "check":
+    if args.command == "pin":
+        problems = pin()
+        for problem in problems:
+            print(problem)
+    elif args.command == "check":
         problems = check()
         for problem in problems:
             print(problem)

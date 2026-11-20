@@ -195,6 +195,70 @@ class FormatMigrationTests(unittest.TestCase):
             (crate / "golden/fixture-state/v3.hex").write_text("03\n")
             self.assertEqual(formats.against("main", root), [])
 
+    def test_a_type_stored_beside_a_format_changes_only_with_its_version(self):
+        loader = "fn open(p: &Path, b: Vec<u8>, v: u32) { STATE.bring_up(p, b, v); }\n"
+        entry = "#[derive(Serialize, Deserialize)]\nstruct Entry {\n    revision: u64,\n    fields: Vec<u8>,\n}\n"
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            crate = root / "crates/x"
+            (crate / "src").mkdir(parents=True)
+            (crate / "src/lib.rs").write_text(declaration(1) + loader)
+            (crate / "src/journal.rs").write_text(entry)
+            keep_golden(crate)
+            (root / "tools/policy").mkdir(parents=True)
+            layouts = root / "tools/policy/stored_layouts.toml"
+            digest, missing = formats.layout_digest(
+                ["crates/x/src/journal.rs:Entry"], formats.read_file(root)
+            )
+            self.assertEqual(missing, [])
+            layouts.write_text(
+                f'[[layout]]\nformat = "fixture state"\nversion = 2\ndigest = "{digest}"\n'
+                'what = "a journal"\ntypes = ["crates/x/src/journal.rs:Entry"]\n'
+            )
+            self.assertEqual(formats.check(root), [])
+            # Comments and doc text are no layout.
+            (crate / "src/journal.rs").write_text("/// The entry.\n" + entry.replace("u64,", "u64, // its revision"))
+            self.assertEqual(formats.check(root), [])
+            # A field added in the middle, as a device's journal took one: the
+            # bytes an earlier build wrote read as something else.
+            (crate / "src/journal.rs").write_text(entry.replace("u64,", "u64,\n    unanswered: Vec<u8>,"))
+            found = formats.check(root)
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("changed while the format is still version 2", found[0])
+            # A new version of the format, pinned, is the change.
+            (crate / "src/lib.rs").write_text(
+                declaration(2).replace("const STATE_VERSION: u32 = 2;", "const STATE_VERSION: u32 = 3;")
+                + loader
+            )
+            (crate / "golden/fixture-state/v3.hex").write_text("03\n")
+            (crate / "tests/golden3.rs").write_text(READS_GOLDEN.replace("v2.hex", "v3.hex"))
+            self.assertIn("pinned only up to version 2", formats.check(root)[0])
+            self.assertEqual(formats.pin(root), [])
+            self.assertEqual(formats.check(root), [])
+            self.assertIn("version = 3", layouts.read_text())
+
+    def test_a_stored_layout_a_version_kept_never_changes(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.git(root, "init", "-q", "-b", "main")
+            self.git(root, "config", "user.email", "t@example.com")
+            self.git(root, "config", "user.name", "t")
+            crate = root / "crates/x"
+            (crate / "src").mkdir(parents=True)
+            (crate / "src/lib.rs").write_text(declaration(1))
+            keep_golden(crate)
+            (root / "tools/policy").mkdir(parents=True)
+            layouts = root / "tools/policy/stored_layouts.toml"
+            listed = '[[layout]]\nformat = "fixture state"\nversion = 2\ndigest = "{}"\nwhat = "a journal"\ntypes = []\n'
+            layouts.write_text(listed.format("aaaa"))
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "base")
+            self.assertEqual(formats.against("main", root), [])
+            layouts.write_text(listed.format("bbbb"))
+            found = formats.against("main", root)
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("version 2 stored changed", found[0])
+
 
 if __name__ == "__main__":
     unittest.main()

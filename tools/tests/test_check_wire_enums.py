@@ -139,6 +139,21 @@ class WireEnumTests(unittest.TestCase):
             self.judged(lifetime("Once", "Task"), lifetime("Once"), breaks), []
         )
 
+    def test_a_break_is_no_waiver_for_an_enum_that_is_stored(self):
+        breaks = (
+            '[[break]]\nfile = "crates/x/src/lib.rs"\nenum = "Lifetime"\n'
+            'reason = "never stored"\n'
+        )
+        with self.repository(lifetime("Once", "Task"), lifetime("Once"), breaks) as root:
+            (root / "tools/policy/stored_layouts.toml").write_text(
+                '[[layout]]\nformat = "a journal"\nversion = 1\ndigest = ""\nwhat = ""\n'
+                'types = ["crates/x/src/lib.rs:Lifetime"]\n'
+            )
+            found = wire.against("main", root)
+        self.assertTrue(any("lists as stored" in problem for problem in found), found)
+        # The waiver does not hold, so the removal itself is judged too.
+        self.assertGreaterEqual(len(found), 2, found)
+
     def test_a_removal_staged_fails(self):
         problems = self.staged_change(
             lifetime("Once", "Task", "Until"), lifetime("Once", "Until")

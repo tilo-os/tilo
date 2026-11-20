@@ -352,7 +352,44 @@ def against(base: str, root: Path = ROOT, head: str | None = None) -> list[str]:
             text = current.read_text(errors="replace") if current.is_file() else None
         if text is not None:
             now[target] = wire_enums(text)
-    return diff_problems(before, now, breaks(root), renamed)
+    allowed = breaks(root)
+    return stored_breaks(root, allowed, base) + diff_problems(
+        before, now, allowed - stored_types(root), renamed
+    )
+
+
+LAYOUTS = Path("tools/policy/stored_layouts.toml")
+
+
+def stored_types(root: Path) -> set[tuple[str, str]]:
+    """(file, type) pairs ``stored_layouts.toml`` lists as written to disk and
+    read back by a later build."""
+    path = root / LAYOUTS
+    if not path.is_file():
+        return set()
+    found = set()
+    for layout in tomllib.loads(path.read_text()).get("layout", []):
+        for entry in layout.get("types", []):
+            file, _, name = entry.partition(":")
+            found.add((file, name))
+    return found
+
+
+def stored_breaks(
+    root: Path, allowed: set[tuple[str, str]], base: str | None = None
+) -> list[str]:
+    """A break waived since `base` for an enum that is stored: its bytes are
+    read back by a later build, so its variants move only with a new version of
+    its format. A waiver `base` already held was judged then."""
+    if base is not None:
+        before = _revision_text(root, f"{base}:{BREAKS.as_posix()}")
+        allowed = allowed - (allowed_breaks(before) if before is not None else set())
+    return [
+        f"{BREAKS}: waives {name} in {file}, which {LAYOUTS} lists as stored: bytes an "
+        "earlier build kept read back by position, so its variants move only with a new "
+        "version of its format and the step that brings up what the version before wrote"
+        for file, name in sorted(allowed & stored_types(root))
+    ]
 
 
 def staged(root: Path = ROOT) -> list[str]:
@@ -365,7 +402,10 @@ def staged(root: Path = ROOT) -> list[str]:
         target = renamed.get(path, path)
         if (text := _revision_text(root, f":{target}")) is not None:
             now[target] = wire_enums(text)
-    return diff_problems(before, now, breaks(root), renamed)
+    allowed = breaks(root)
+    return stored_breaks(root, allowed, "HEAD") + diff_problems(
+        before, now, allowed - stored_types(root), renamed
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

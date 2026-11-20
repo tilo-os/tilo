@@ -1,0 +1,32 @@
+# Rust types a build writes to disk and a later build reads back, beside the
+# bytes a format's golden file pins, read by
+# tools/policy/check_format_migrations.py. Each is listed under the
+# `migration::Format` whose version covers it, with a digest of its definition
+# at that version: a change to one is a new version of that format, with the
+# step that brings up what the version before wrote. Pin the digest of a
+# new version with `python3 tools/policy/check_format_migrations.py pin`.
+#
+# [[layout]]
+# format = "<the Format's name>"
+# version = <the version this layout is>
+# digest = "<written by `pin`>"
+# what = "what is stored, and where"
+# types = ["crates/<crate>/src/<file>.rs:Type", ...]
+
+[[layout]]
+format = "owner workspace document"
+version = 8
+digest = "6e92419b1e9484e9"
+what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left"""
+types = [
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:Entry",
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:Stretch",
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:DocumentOps",
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:Op",
+  "crates/collab/tilo-peer-state/src/owner/journal.rs:JournalAnswer",
+  "crates/collab/tilo-peer-state/src/owner/publication.rs:StoredOutgoing",
+  "crates/collab/tilo-peer-state/src/owner/answers.rs:AnswerSignature",
+  "crates/collab/tilo-peer-state/src/state.rs:Route",
+  "crates/collab/tilo-peer-state/src/owner_commit.rs:CommitBinding",
+  "crates/collab/tilo-peer-state/src/owner_commit.rs:CommitTarget",
+]
