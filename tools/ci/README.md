@@ -94,8 +94,8 @@ publications build from.
 - `t`'s `lint-head` check runs the wide lint of every commit on `main`
   (`tools/ci/pre_push_lint.py --wide`): the changed packages, the packages that
   name what they changed, and the page's wasm32 target, so a break only the web
-  build sees is named on the head that introduced it. hooks refuse a push
-  inline.
+  build sees is named on the head that introduced it. A push's own hook refuses
+  that lint before it leaves.
 - `lint.yml` runs for every push: its format, commit-message and unused
   dependency checks check exactly the commits the push added, so no push's run
   stands in for another's.
