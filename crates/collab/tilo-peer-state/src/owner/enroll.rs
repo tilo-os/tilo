@@ -217,7 +217,7 @@ pub async fn prepare_and_complete(
                 &host.endpoint_addr,
                 grant.workspace_id,
                 &device,
-                &identity,
+                identity.signer.as_ref(),
             )
             .await?;
             current(&identity, identity_topic, &device)?;
@@ -245,7 +245,7 @@ pub async fn prepare_and_complete(
                 &host.endpoint_addr,
                 grant.workspace_id,
                 &device,
-                &identity,
+                identity.signer.as_ref(),
             )
             .await?;
             current(&identity, identity_topic, &device)?;
@@ -320,13 +320,17 @@ fn expired(code: u16, message: &str) -> bool {
 /// the device's key and presenting `device`, the certificate it is a member
 /// with or the renewal of it. The answer is checked by whoever takes it in
 /// ([`VerifiedNativeEnrollment::finalize`],
-/// [`NativeWorkspaceOwner::renew_membership`]).
-async fn prove_membership(
+/// [`NativeWorkspaceOwner::renew_membership`]); a device's workspace service takes the same
+/// answer in as its member copy.
+///
+/// # Errors
+/// The serving device cannot be reached, or refuses the proof.
+pub async fn prove_membership(
     client: &WorkspaceJoinClient,
     host: &iroh::EndpointAddr,
     workspace_id: WorkspaceId,
     device: &DeviceCert,
-    identity: &DeviceIdentity,
+    signer: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<join::JoinBootstrap, String> {
     let mut request_id = [0; 32];
     rand_core::Rng::fill_bytes(
@@ -349,7 +353,7 @@ async fn prove_membership(
         JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
         _ => return Err("the host answered no membership challenge".into()),
     };
-    let proof = join::sign_membership_proof(challenge, identity.signer.as_ref())?;
+    let proof = join::sign_membership_proof(challenge, signer)?;
     match client
         .request(
             host.clone(),
@@ -390,7 +394,7 @@ pub async fn admit_as_member(
         &host.endpoint_addr,
         workspace_id,
         &device,
-        &identity,
+        identity.signer.as_ref(),
     )
     .await?;
     current(&identity, workspace_id, &device)?;
@@ -419,10 +423,16 @@ pub async fn renew_membership(
     if !crate::owner::renewal::renews(&renewed, &held) {
         return Ok(false);
     }
-    let (host, _) =
+    let (serving, _) =
         WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
-    let bootstrap =
-        prove_membership(&client, &host.endpoint_addr, topic, &renewed, &identity).await?;
+    let bootstrap = prove_membership(
+        &client,
+        &serving.endpoint_addr,
+        topic,
+        &renewed,
+        identity.signer.as_ref(),
+    )
+    .await?;
     current(&identity, topic, &renewed)?;
     owner.renew_membership(workspace, &renewed, &bootstrap, tilo_clock::wall())?;
     Ok(true)

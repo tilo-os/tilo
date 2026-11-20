@@ -801,6 +801,26 @@ impl Engine {
             .map(|hosting| hosting.host)
     }
 
+    /// Where the device hosting `workspace` is reached, when this device is an admitted member of
+    /// it and another device hosts it: what this device's workspace service holds its member copy
+    /// of `workspace` by. `None` for a workspace hosted here, not admitted yet, or not held.
+    #[must_use]
+    pub fn member_of(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<tilo_peer_state::join::TransportHint> {
+        let own = self.identity.device_public_key();
+        self.owner
+            .with_current(workspace, |view| {
+                let hint = view.transport_hint().ok().cloned();
+                Ok(hint.filter(|hint| {
+                    !hint.host.is_of_device(&own) && Admission::of(view, own) == Admission::Admitted
+                }))
+            })
+            .ok()
+            .flatten()
+    }
+
     /// Who hosts `workspace` as this device's record of it says, whether that is this device,
     /// and whether this device is admitted to it yet ([`Self::awaited_host`]). `None` for a
     /// workspace this device does not hold.

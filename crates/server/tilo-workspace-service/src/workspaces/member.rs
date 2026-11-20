@@ -68,6 +68,14 @@ impl LocalDocumentAdmission {
 pub(super) struct Members {
     /// The link of each member copy, while it is up.
     links: std::sync::Mutex<std::collections::HashMap<WorkspaceId, DirectSync>>,
+    /// What syncs each member copy now: its link's dialling and the reader of
+    /// what the serving device sends. A copy held again is synced by its new
+    /// enrollment alone.
+    syncing:
+        std::sync::Mutex<std::collections::HashMap<WorkspaceId, [tokio::task::AbortHandle; 2]>>,
+    /// Held while a copy is taken in: a workspace joined while the session holds what it took
+    /// part in before is kept once.
+    holding: tokio::sync::Mutex<()>,
     /// The device the copies act as, once the embedder hands it to the
     /// service ([`Workspaces::set_member_device`]).
     device: std::sync::OnceLock<Arc<MemberDevice>>,
@@ -91,6 +99,8 @@ impl Default for Members {
     fn default() -> Self {
         Self {
             links: std::sync::Mutex::default(),
+            syncing: std::sync::Mutex::default(),
+            holding: tokio::sync::Mutex::default(),
             device: std::sync::OnceLock::default(),
             up: std::sync::Mutex::default(),
             materials: std::sync::Mutex::default(),
@@ -442,6 +452,36 @@ impl Workspaces {
         self.hold_member(&device, bootstrap, hint).await
     }
 
+    /// Hold `workspace`, which this device is a member of, as a member copy synced with the
+    /// device `hint` names: this device proves its membership there and takes the workspace as
+    /// that device answers it. What a device's session asks for each workspace it takes part in
+    /// that its service does not hold yet, such as one it joined before its service held the
+    /// workspaces it joins.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::join_admitted`], or the device `hint` names refuses this device's membership or
+    /// cannot be reached.
+    pub async fn hold_as_member(
+        &self,
+        workspace: WorkspaceId,
+        hint: &TransportHint,
+    ) -> Result<WorkspaceId, String> {
+        let device = self.member_identity()?;
+        let (address, _) =
+            WorkspaceDeviceHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
+        let client = WorkspaceJoinClient::new(self.inner.host.endpoint.clone());
+        let bootstrap = tilo_peer_state::owner::enroll::prove_membership(
+            &client,
+            &address.endpoint_addr,
+            workspace,
+            &device.cert,
+            device.signer.as_ref(),
+        )
+        .await?;
+        self.hold_member(&device, &bootstrap, hint).await
+    }
+
     /// Hold `bootstrap` as a member copy of the workspace it answers, synced
     /// with the device `hint` names, as `device` certifies. Asked again, the
     /// copy takes in what the answer carries.
@@ -470,9 +510,10 @@ impl Workspaces {
         let workspace = bootstrap.workspace_id;
         let name = workspace.to_string();
         let now = tilo_clock::wall();
+        let _holding = self.inner.member.holding.lock().await;
         let held = self.inner.workspaces.lock().await.get(&name).cloned();
         let mut enrolled = 1;
-        let state = if let Some(held) = held {
+        if let Some(held) = held {
             let mut governed = held.lock().await;
             // A disk copied from the machine that serves this workspace kept the workspace as
             // that machine does, and served it here while no link to the machine reached this
@@ -511,7 +552,9 @@ impl Workspaces {
                      holds it as a member copy of it from now on"
                 );
             }
-            held
+            // Synced again however often it is held: a copy held once more takes in what the
+            // serving device sends under its new enrollment.
+            self.serve_member(&held, device).await?;
         } else {
             let path = self.inner.dir.join(format!("{name}.workspace"));
             let keys = self.device_keys();
@@ -546,9 +589,9 @@ impl Workspaces {
                 .lock()
                 .await
                 .insert(name.clone(), Arc::clone(&state));
-            state
-        };
-        self.serve_member(&state, device).await?;
+            // Synced once it is held: what the serving device sends from the start is kept in it.
+            self.serve_member(&state, device).await?;
+        }
         if let Ok(mut materials) = self.inner.member.materials.lock() {
             materials.insert(workspace, (hint.clone(), enrolled));
         }
@@ -1221,11 +1264,10 @@ impl Workspaces {
             }
         };
         for state in members {
-            if state
-                .try_lock()
-                .is_ok_and(|governed| governed.member.is_some())
-                && let Err(error) = self.serve_member(&state, &device).await
-            {
+            if state.lock().await.member.is_none() {
+                continue;
+            }
+            if let Err(error) = self.serve_member(&state, &device).await {
                 tracing::warn!(%error, "a member copy is not synced with its device");
             }
         }
@@ -1276,8 +1318,9 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Sync `governed`, a member copy, with the device serving it, as `device`:
-    /// take in what that device sends, and answer it as a member answers.
+    /// Sync the member copy `state` holds with the device serving it, as `device`:
+    /// take in what that device sends, and answer it as a member answers. Asked
+    /// again for a copy already synced, the copy's new enrollment alone syncs it.
     pub(super) async fn serve_member(
         &self,
         state: &Arc<tokio::sync::Mutex<GovernedWorkspace>>,
@@ -1288,6 +1331,11 @@ impl Workspaces {
             .member
             .clone()
             .ok_or("the workspace is not a member copy")?;
+        // The serving device answers on its service's key, which the hint's signature binds to
+        // that device: what its history names no author for is that device's.
+        let (address, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&member.hint)
+            .map_err(|e| e.to_string())?;
+        let serving = address.device_certificate.device_public_key;
         let workspace_id = governed.workspace_id();
         let name = governed.workspace().to_owned();
         let link = DirectSync::over(governed.peer.clone(), Arc::clone(&device.signer))
@@ -1298,15 +1346,14 @@ impl Workspaces {
         if let Ok(mut links) = self.inner.member.links.lock() {
             links.insert(workspace_id, link.clone());
         }
-        self.follow_member(&name, &link);
+        let following = self.follow_member(&name, &link);
         let (up, waiting) = tokio::sync::watch::channel(false);
         drop(waiting);
         if let Ok(mut ups) = self.inner.member.up.lock() {
             ups.insert(workspace_id, up.clone());
         }
         let endpoint = self.inner.host.endpoint.clone();
-        let serving = device.device();
-        tokio::spawn(async move {
+        let dialing = tokio::spawn(async move {
             loop {
                 match link.dial(&endpoint, member.addr.clone(), serving).await {
                     Ok(dialed) => {
@@ -1323,6 +1370,14 @@ impl Workspaces {
                 tokio::time::sleep(REDIAL).await;
             }
         });
+        let syncing = [dialing.abort_handle(), following];
+        if let Ok(mut all) = self.inner.member.syncing.lock()
+            && let Some(before) = all.insert(workspace_id, syncing)
+        {
+            for task in before {
+                task.abort();
+            }
+        }
         Ok(())
     }
 
@@ -1366,7 +1421,7 @@ impl Workspaces {
     /// handed to the apps following it; group governance goes to this device's
     /// key service; content pieces and asks are handled as the workspace's link
     /// handles them.
-    fn follow_member(&self, workspace: &str, link: &DirectSync) {
+    fn follow_member(&self, workspace: &str, link: &DirectSync) -> tokio::task::AbortHandle {
         let name = workspace.to_owned();
         let workspaces = self.downgrade();
         let mut reader = link.reader();
@@ -1423,7 +1478,8 @@ impl Workspaces {
                     }
                 }
             }
-        });
+        })
+        .abort_handle()
     }
 
     /// Take `message`, `author`'s frame the serving device sent this member

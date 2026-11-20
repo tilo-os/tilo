@@ -713,6 +713,13 @@ async fn listening(
     if let (true, Some(engine)) = (opened, engine) {
         let noting = Arc::clone(engine);
         tokio::spawn(async move { super::own_service::note_open_links(&noting).await });
+        // The workspaces this device took part in before its service held them are held there too.
+        if let Some(service) = own_service.clone() {
+            let holding = Arc::clone(engine);
+            tokio::spawn(
+                async move { super::adopt::hold_every_workspace(&holding, &service).await },
+            );
+        }
     }
     Some(Listening {
         endpoint,

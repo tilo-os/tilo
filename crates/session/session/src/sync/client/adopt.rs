@@ -1,5 +1,8 @@
 //! A workspace taken in: entered through its entry or redeemed from an invitation the shell made for
-//! it, or entered as a further device of the person at the device hosting it.
+//! it, or entered as a further device of the person at the device hosting it. However this device
+//! came to take part in a workspace another device serves, its own workspace service holds a member
+//! copy of it, synced with that device: the copy every read and write of the workspace goes
+//! through.
 
 use std::sync::Arc;
 
@@ -377,6 +380,38 @@ async fn hold_on_service(
             tracing::warn!(
                 "the workspace's member copy did not arrive on this device's service in time"
             );
+        }
+    }
+}
+
+/// Hold every workspace `engine` takes part in on this device's own service, `own_service`, as a
+/// member copy synced with the device hosting it: those this device joined before its service held
+/// the workspaces it joins, or while the service was not open, and those a copy of another device's
+/// state brought. A copy the service kept from before is synced already as it opens.
+pub(super) async fn hold_every_workspace(engine: &Engine, own_service: &OwnService) {
+    let Some(service) = own_service.get() else {
+        return;
+    };
+    let copies = service.workspaces();
+    for workspace in engine.workspaces() {
+        let Some(hint) = engine.member_of(workspace) else {
+            continue;
+        };
+        if copies
+            .is_member(&workspace.to_string())
+            .await
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        match tokio::time::timeout(SETTLE_WITHIN, copies.hold_as_member(workspace, &hint)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, %workspace, "a workspace this device takes part in is not held on its service");
+            }
+            Err(_) => {
+                tracing::warn!(%workspace, "a workspace's member copy did not arrive on this device's service in time");
+            }
         }
     }
 }
