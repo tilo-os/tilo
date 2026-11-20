@@ -535,7 +535,7 @@ fn assert_recovered_mail(member: &Member) {
         panic!("the recovered conversation holds messages");
     };
     assert_eq!(messages.len(), 3);
-    let Value::Ref(message) = &messages[0] else {
+    let Some(Value::Ref(message)) = messages.first() else {
         panic!("a recovered message");
     };
     assert!(
