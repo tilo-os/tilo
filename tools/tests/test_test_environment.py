@@ -41,15 +41,47 @@ def recorders(directory: Path, *more: str) -> tuple[Path, Path]:
     return programs, started
 
 
+def effective_capabilities() -> int:
+    """The capabilities this shell holds. CAP_CHOWN (0) gives the tree, CAP_SETGID (6) and
+    CAP_SETUID (7) become the user: tools/as-test-user.sh needs all three."""
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("CapEff:"):
+                return int(line.split()[1], 16)
+    except OSError:
+        pass
+    return 0
+
+
+def initial_user_namespace() -> bool:
+    """Whether this shell is root of the initial user namespace, whose capabilities reach the
+    files a job inherits. A namespace of its own maps some range and no other, and its root can
+    name neither an id outside the map nor a file its parent namespace owns."""
+    for kind in ("uid_map", "gid_map"):
+        try:
+            maps = [line.split() for line in
+                    Path(f"/proc/self/{kind}").read_text().splitlines() if line.strip()]
+        except OSError:
+            return False
+        if maps != [["0", "0", "4294967295"]]:
+            return False
+    return True
+
+
 def handover_user() -> pwd.struct_passwd | None:
     """The image's test user, where this suite is itself a job that hands tests over to one.
 
-    That is a job that starts as root in an image naming its test user (TILO_TEST_USER). An
-    ordinary account hands nothing over, and neither does a root that may not change owners
-    (a job sandbox with one user id), whose image names no test user for that reason.
+    That is a job that starts as root in an image naming its test user (TILO_TEST_USER), holding
+    the capabilities to become it and give it the tree, in the initial user namespace. An
+    ordinary account hands nothing over, and neither does a root that may not change owners (a
+    job sandbox with one user id, or a check's own `unshare --user --map-root-user`): its tests
+    keep its user.
     """
     name = os.environ.get("TILO_TEST_USER")
     if os.geteuid() != 0 or not name:
+        return None
+    caps = effective_capabilities()
+    if (caps & 1) == 0 or ((caps >> 6) & 3) != 3 or not initial_user_namespace():
         return None
     return pwd.getpwnam(name)
 
@@ -1180,16 +1212,61 @@ class TestUserTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), str(os.geteuid()))
             return
-        # Told it is an ordinary account, root still hands the command over: it runs as the
-        # test user, or not at all where this root may not become another user.
+        # Told it is an ordinary account, root still knows it started as root: it hands the
+        # command over where it can become the test user, and keeps its user where it cannot
+        # (a sandbox with one user id, no capability), as every start does there.
         user = handover_user()
-        name = user.pw_name if user else "nobody"
-        result = subprocess.run(helper, env=env | {"TILO_TEST_USER": name, "EUID": "4242", "UID": "4242"},
+        if user is None:
+            self.skipTest("this root may not become another user, so it keeps its user")
+        result = subprocess.run(helper, env=env | {"TILO_TEST_USER": user.pw_name,
+                                                   "EUID": "4242", "UID": "4242"},
                                 capture_output=True, text=True, check=False)
-        self.assertNotEqual(result.stdout.strip(), "0", "the command ran as root")
-        if user is not None:
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(user.pw_uid), "the command ran as root")
+
+    def test_only_the_initial_namespace_s_root_hands_the_tree_over(self) -> None:
+        # A check that mounts FUSE runs `unshare --user --map-root-user`: root holding every
+        # capability, in a namespace whose map is one id. The image's test user is outside it,
+        # so handing the tree over makes chown say "Invalid argument" for every entry and no
+        # test binary starts.
+        with tempfile.TemporaryDirectory() as work:
+            uid, gid = Path(work) / "uid_map", Path(work) / "gid_map"
+            script = f'. "{ROOT}/tools/as-test-user.sh"; tilo_test_initial_namespace "$1" "$2"'
+            initial = "         0          0 4294967295\n"
+            for maps, expected in [
+                ((initial, initial), 0),
+                (("         0       1000          1\n", "         0       1000          1\n"), 1),
+                (("         0 1883832320      65536\n", "         0 1883832320      65536\n"), 1),
+                ((initial + "         1          1          1\n", initial), 1),
+                ((initial, initial + "         1          1          1\n"), 1),
+                ((initial, "         0          0          1\n"), 1),
+            ]:
+                uid.write_text(maps[0])
+                gid.write_text(maps[1])
+                result = subprocess.run(["bash", "-c", script, "_", str(uid), str(gid)],
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, expected, f"{maps}: {result.stderr}")
+
+    def test_a_root_in_a_check_s_namespace_keeps_its_user(self) -> None:
+        # The check's own `unshare --user --map-root-user` can name neither the image's test
+        # user (outside its map) nor the parent's files: it gives nothing away, and its tests
+        # run as its root, which is what mounting FUSE needs.
+        if subprocess.run(["unshare", "--user", "--map-root-user", "--", "true"],
+                          capture_output=True, check=False).returncode != 0:
+            self.skipTest("this sandbox may not make a user namespace")
+        with tempfile.TemporaryDirectory() as work:
+            tree = Path(work) / "target"
+            (tree / "debug").mkdir(parents=True)
+            (tree / "debug/file").write_text("x")
+            result = subprocess.run(
+                ["unshare", "--user", "--map-root-user", "--", "bash",
+                 str(ROOT / "tools/as-test-user.sh"), "--own-tree", str(tree)],
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/",
+                     "TILO_TEST_USER": "nobody"},
+                capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), str(user.pw_uid))
+            self.assertEqual(result.stderr, "", "root in a namespace of its own handed the tree over")
+            self.assertEqual(list(tree.glob(".handed-to-*")), [])
 
     def test_the_helpers_read_into_a_shell_only_define_their_functions(self) -> None:
         # tools/cargo-runner.sh reads both into its own shell: they must start nothing there,
