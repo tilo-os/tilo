@@ -253,7 +253,7 @@ paths = ["os/tests/native_atspi_smoke.sh"]
 
 [[allow]]
 reason = "polkit's unix-session subject: the process identity a request is checked as."
-words = ["subject"]
+words = ["subject", "principal"]
 paths = ["os/tests/native_atspi_smoke.sh"]
 
 [[allow]]
@@ -269,7 +269,7 @@ identifiers = ["APP_HOST_SERVICE"]
 
 [[allow]]
 reason = "An email's subject line."
-words = ["subject"]
+words = ["subject", "principal"]
 paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
@@ -287,7 +287,7 @@ paths = [
 
 [[allow]]
 reason = "An X.509 certificate's subject."
-words = ["subject"]
+words = ["subject", "principal"]
 identifiers = ["SubjectAltName", "SubjectKeyIdentifier", "subject_alt_names", "SubjectPublicKeyInfo"]
 
 [[allow]]
@@ -1727,3 +1727,8 @@ reason = "The session's `records` module, whose test stand-in writes a workspace
 words = ["record"]
 identifiers = ["records"]
 paths = ["crates/session/session/src/layout/tests.rs"]
+
+[[allow]]
+reason = "The field an older image's capability list named its grantee with; the test reads such a list as it was written."
+words = ["subject", "principal"]
+paths = ["crates/system/fs/src/caps_file.rs"]
