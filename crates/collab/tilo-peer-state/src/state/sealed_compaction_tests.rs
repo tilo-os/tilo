@@ -278,7 +278,7 @@ pub(super) fn write(
 }
 
 /// `key`'s sealed checkpoint of `peer`'s record: the whole record as the key
-/// holder saved it, the first thing a host keeps at the head of a sealed
+/// holder saved it, the first thing the workspace keeps at the head of a sealed
 /// channel and replays to a device joining the workspace.
 fn checkpoint(
     peer: &StatePeer,
@@ -2672,6 +2672,8 @@ fn noise(len: usize, seed: u64) -> Vec<u8> {
         .collect()
 }
 
+#[path = "founding_tests.rs"]
+mod founding;
 #[path = "kept_open_tests.rs"]
 mod kept_open;
 

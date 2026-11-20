@@ -778,8 +778,8 @@ impl StatePeer {
             // mark per writer, the compaction's own included. This goes first,
             // so the compaction's number is covered by that mark rather than
             // taken as free.
-            if let Some(mut folded) = folded {
-                folded.push(own);
+            if let Some(folded) = &folded {
+                let folded = folded.iter().copied().chain([own]).collect::<Vec<_>>();
                 self.core
                     .exact_admissions
                     .cover((&self.core.workspace, &route.app, &route.record), folded)?;
@@ -795,6 +795,14 @@ impl StatePeer {
             self.forget_gathered(&route);
         }
         self.core.documents.insert(route, candidate);
+        // A compaction folds the writes it covers for good: each writer's next write is numbered
+        // past the fold, as it is at one a replica takes from its holder
+        // ([`PeerPublicationMut::take_sealed_compaction`]). A replica that founded this route from
+        // the fold and kept none of those writes as themselves otherwise numbers its own next
+        // write under one the fold decided, which its owner could only refuse for good.
+        if folded.is_some() {
+            self.raise_floors_to_marks();
+        }
         Ok(AdmissionReport::new(
             primary,
             ReceiveOutcome {

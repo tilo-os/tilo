@@ -742,7 +742,7 @@ impl StatePeer {
     /// its mark. A record whose floor fell below a mark took no write of that author again,
     /// each one numbered under writes it decided already; it comes back with its floor at the
     /// mark.
-    fn raise_floors_to_marks(&mut self) {
+    pub(super) fn raise_floors_to_marks(&mut self) {
         let marks: Vec<(Route, [u8; 32], u64)> = self
             .core
             .exact_admissions
