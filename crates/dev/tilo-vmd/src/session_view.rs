@@ -262,6 +262,9 @@ pub(crate) fn prepare(
             "account views must be prepared in the service manager mount namespace".into(),
         ));
     }
+    // The extensions are mounted, and earlier ones let go, under the views' root: on a computer's
+    // first account it does not exist yet.
+    directory(root)?;
     let mut stacked = merged_extensions(root)?;
     stacked.extend_from_slice(layers);
     prepare_from(root, account, &stacked, Path::new("/"))

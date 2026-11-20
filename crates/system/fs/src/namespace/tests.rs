@@ -430,10 +430,10 @@ tilo_test_env::scenario! {
             let before = ns.document_index_rebuild_count();
             let page = ns.indexed_document_page(100_000, 128);
             assert_eq!(page.len(), 1);
-            assert_eq!(
-                ns.path_for_document(&page[0]).as_deref(),
-                Some("/synthetic-100001")
-            );
+            assert_eq!(page[0].document_id, FileDocumentId(Uuid::from_u128(100_001)));
+            // The path is derived from where the node is now, and the tree holds no node for a
+            // row inserted straight into the catalogue: there is no path to name.
+            assert_eq!(ns.path_for_document(&page[0]), None);
             assert_eq!(ns.document_index_rebuild_count(), before);
         }
         {
@@ -456,6 +456,11 @@ tilo_test_env::scenario! {
             assert!(a.lookup(ROOT_INO, "f1").is_none());
             assert!(a.lookup(dir, "moved").is_some());
             assert!(a.lookup(ROOT_INO, "f2").is_none());
+            // A row the tree does hold derives the path its node moved to.
+            let moved = a.lookup(dir, "moved").unwrap().ino.0;
+            let moved_id = a.document_id_for(moved).expect("the moved file is a document");
+            let row = a.indexed_document(moved_id).expect("its catalogue row");
+            assert_eq!(a.path_for_document(&row).as_deref(), Some("/dir/moved"));
 
             let mut b = a.clone_doc();
             b.author = "b".into();
