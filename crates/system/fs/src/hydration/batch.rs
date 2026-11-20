@@ -14,6 +14,7 @@
 //! it is stored, one durability barrier per batch.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use iroh::endpoint::Connection;
 use iroh_blobs::get::fsm::{self, EndBlobNext, RequestCounters};
@@ -102,6 +103,17 @@ impl Hydrator {
     /// and reused for every later request until it closes.
     pub async fn blob_connection(&self, peer: &EndpointAddr) -> Result<Connection> {
         self.pooled_blob_connection(peer, 0).await
+    }
+
+    /// Prepare the route to `peer` before anything is asked of it: certify this device and open
+    /// the connection a first read would otherwise set up itself, in the background. A person's
+    /// first open of a file they have never fetched should not also pay for the handshake. What
+    /// fails here the first read retries, so nothing depends on it having worked.
+    pub fn warm_peer(self: &Arc<Self>, peer: EndpointAddr) {
+        let hydrator = Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = hydrator.blob_connection(&peer).await;
+        });
     }
 
     /// The pooled connection number `number` to `peer`. One QUIC connection is
