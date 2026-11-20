@@ -39,6 +39,9 @@ for crate, destination in [(ROOT, 'source'), (ROOT.parent / 'tilo-ntfs-protocol'
     manifest=re.sub(r'(?m)^'+re.escape(name)+r' = \{ workspace = true',name+' = { version = "='+version+'"',manifest)
    manifest=re.sub(r'(?m)^workspace-hack = .*\n','',manifest)
    manifest=manifest.replace('path = "../../system/wire-frame"','path = "../wire-frame"')
+   # The sealed source builds the binary alone: dev-dependencies (a workspace member's test
+   # helpers) are outside the bundle and cannot resolve in it.
+   manifest=re.sub(r'(?ms)^\[dev-dependencies\][^[]*?(?=^\[|\Z)','',manifest)
    manifest=manifest.replace('license.workspace = true','license = "AGPL-3.0-only"').replace('repository.workspace = true','repository = "https://code.tilo.so/tilo/tilo"').replace('homepage.workspace = true','homepage = "https://tilo.so"')
    manifest=manifest.replace('[lints]\nworkspace = true','[workspace]')
    data=manifest.encode()
