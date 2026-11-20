@@ -61,17 +61,24 @@ fi
 # image build removes them after its checks.
 ( cd "$root/" && find usr etc -xdev -path usr/local -prune -o -type f -printf '/%p\n' 2>/dev/null ) \
   | LC_ALL=C sort -u >"$present"
-allowed_files="$(awk 'NF { print $1 }' <<<"$shipped_exceptions")"
+# The image holds tens of thousands of unowned files: the loop below reads
+# each one's first line without starting a process, so it takes seconds.
+declare -A allowed_files=()
+while read -r allowed _; do
+  [ -n "$allowed" ] && allowed_files[$allowed]=1
+done <<<"$shipped_exceptions"
 python_files=()
 while IFS= read -r path; do
   [ -n "$path" ] || continue
-  grep -Fqx -- "$path" <<<"$allowed_files" && continue
+  [ -z "${allowed_files[$path]:-}" ] || continue
   file="$root$path"
   case "$path" in
     *.pyc) continue ;;
     *.py) python_files+=("$path: a Python source file"); continue ;;
   esac
-  first="$(head -c 256 -- "$file" 2>/dev/null | head -n 1 | tr -d '\0' || true)"
+  # The first line, at most 256 bytes; bash drops NUL bytes as it reads.
+  first=
+  { LC_ALL=C IFS= read -r -n 256 first || true; } 2>/dev/null <"$file" || first=
   if [[ $first =~ ^#![[:space:]]*([^[:space:]]*/)?(env[[:space:]]+(-[^[:space:]]*[[:space:]]+)*)?python ]]; then
     python_files+=("$path: a Python program")
     continue
