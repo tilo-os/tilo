@@ -2825,7 +2825,10 @@ impl QuickFS {
             return Some(out);
         }
 
-        let bytes = self.local_content_blocking(content_hash)?;
+        // A preview comes from a bounded prefix: decoding more would not make a better
+        // thumbnail, and a huge file must never be read whole to preview it.
+        let bytes =
+            self.local_content_blocking(content_hash, thumbnail::MAX_SOURCE_BYTES as u64)?;
         self.remember_rich_metadata(ino, &bytes);
         let png = provider.generate(ch, category, &bytes)?;
 
@@ -2842,11 +2845,11 @@ impl QuickFS {
         Some(png)
     }
 
-    /// Full content of `hash` only if every chunk is local; `None` otherwise, so making a
-    /// preview never pulls content from the network.
-    fn local_content_blocking(&self, hash: Hash) -> Option<Vec<u8>> {
+    /// Up to `max` bytes of `hash`'s content, only if they are local; `None` otherwise, so making
+    /// a preview never pulls content from the network and never reads a file whole.
+    fn local_content_blocking(&self, hash: Hash, max: u64) -> Option<Vec<u8>> {
         self.hydrator
-            .block_on(self.hydrator.read_local(hash, 0, u64::MAX))
+            .block_on(self.hydrator.read_local(hash, 0, max))
     }
 
     /// Read a raw blob (the thumbnail), serving it locally or hydrating it from a peer: the
