@@ -1,6 +1,8 @@
 use super::*;
+use collab_types::caps::{Access, CapOverride, Scope};
 use ed25519_dalek::{Signer as _, SigningKey};
 use package_store::{Catalog, InstalledPackage, Layout};
+use tilo_action_policy::Grantee;
 use tilo_app_package::{BlobHash, Collection, SignedRoot};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -142,6 +144,84 @@ fn apps(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
         root.join("support"),
         candidates,
     )
+}
+
+/// The same manifest, declaring `mode` for `hosts` instead of no network.
+fn reachable_manifest(id: &str, mode: &str, hosts: &[&str]) -> String {
+    let hosts = hosts
+        .iter()
+        .map(|host| format!("{host:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    manifest(id, "gui", "").replace(
+        "[sandbox.net]\nmode = \"off\"",
+        &format!("[sandbox.net]\nmode = \"{mode}\"\nhosts = [{hosts}]"),
+    )
+}
+
+/// What the workspace service answers about launches into a workspace: the
+/// person's grants, in place of the service that holds the governance.
+struct Granted(Vec<CapOverride>);
+
+impl LaunchGrantsSource for Granted {
+    fn launch_grants(&self, _workspace: &str) -> collab_types::caps::LaunchGrants {
+        collab_types::caps::LaunchGrants {
+            author: false,
+            sandbox: self.0.clone(),
+        }
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_launch_reaches_what_the_manifest_declares_and_the_workspace_granted;
+
+    phase a_granted_app_reaches_its_declared_hosts_and_un_granted_ones_stay_shut;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(
+            VIEWER,
+            &reachable_manifest(VIEWER, "allowlist", &["mail.example.com", "calendar.example.com"]),
+            &[("probe", b"binary")],
+        );
+        let apps = Arc::new(apps(&store, &root, Vec::new()));
+        let granted = CapOverride::grant(
+            Grantee::person("person-7"),
+            Scope::NetHost("mail.example.com".into()),
+            Access::Write,
+        )
+        .through(VIEWER);
+        apps.keep_launch_grants(Arc::new(Granted(vec![granted])));
+        let app = apps.launchable(VIEWER).unwrap();
+        let manifest = launcher::manifest::read_manifest(&app.manifest_path).unwrap();
+        let (plan, egress) = apps.launch_capabilities(&app, &manifest);
+        assert_eq!(plan.net_hosts, vec!["mail.example.com".to_owned()]);
+        let policy = egress
+            .policy()
+            .expect("a granted app reaches the hosts it declares");
+        assert!(policy.permits("mail.example.com"));
+        // Declared but not granted: nobody reaches it.
+        assert!(!policy.permits("calendar.example.com"));
+    }
+
+    phase an_app_nobody_granted_reaches_no_network;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(
+            VIEWER,
+            &reachable_manifest(VIEWER, "allowlist", &["mail.example.com"]),
+            &[("probe", b"binary")],
+        );
+        let apps = apps(&store, &root, Vec::new());
+        let app = apps.launchable(VIEWER).unwrap();
+        let manifest = launcher::manifest::read_manifest(&app.manifest_path).unwrap();
+        let (_, egress) = apps.launch_capabilities(&app, &manifest);
+        assert!(
+            matches!(egress, launcher::egress_proxy::EgressDecision::Blocked),
+            "a launch without a grant reaches nothing, got {egress:?}"
+        );
+    }
 }
 
 tilo_test_env::scenario! {
@@ -509,7 +589,7 @@ tilo_test_env::scenario! {
 /// A real launch through `launcher-macos`: a signed, verified package whose
 /// probe checks it inherited its service descriptors and its file chooser,
 /// then waits on the
-/// collaboration connection until the host goes away.
+/// collaboration connection until the runtime goes away.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_verified_app_launches_confined_with_its_services_on_macos() {

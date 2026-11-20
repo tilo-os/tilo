@@ -66,6 +66,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         OsString::from(tilo_capture::broker::CAPTURE_FD_ENV),
         OsString::from(capture.app_end.as_raw_fd().to_string()),
     ));
+    let (capabilities, egress) = apps.launch_capabilities(app, &manifest);
     let request = launcher_macos::LaunchRequest {
         package_id: app.app_id.to_string(),
         executable: app.payload_root.join(executable),
@@ -73,13 +74,8 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         payload_dir: app.payload_root.clone(),
         runtime_dylib_dir: None,
         container_dir: container,
-        capabilities: launcher::capabilities::CapabilityPlan::empty(),
-        egress: launcher::egress_proxy::EgressDecision::resolve(
-            &manifest.sandbox.net.mode,
-            &manifest.sandbox.net.hosts,
-            &[],
-            package_store::layout::image_shipped(&app.payload_root),
-        ),
+        capabilities,
+        egress,
         inherit_fds,
         env,
         trust: launcher_macos::TrustRequirement::DeveloperId,

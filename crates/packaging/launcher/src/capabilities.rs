@@ -5,6 +5,7 @@
 //! reachable, and the absence of a capability is enforced by the absence of the mount.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// The devices a plan names, as the launchers on every platform read them.
@@ -640,6 +641,55 @@ pub fn load_capability_file(path: &Path) -> LaunchGrants {
     }
 }
 
+/// Write what a launch of `app` is granted where [`load_capability_file`]
+/// reads it, under `directory`: the file's path, or `None` when there is
+/// nothing to grant.
+///
+/// # Errors
+/// The directory or the file could not be written.
+pub fn write_capability_file(
+    directory: &Path,
+    app: &str,
+    grants: &LaunchGrants,
+) -> std::io::Result<Option<PathBuf>> {
+    // Reverse-DNS in principle, but this arrives from a registry file: refuse
+    // anything that could escape the directory.
+    if app.is_empty() || app.contains('/') || app.contains("..") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to write a capability file for app {app:?}"),
+        ));
+    }
+    if grants.is_empty() {
+        return Ok(None);
+    }
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)?;
+    }
+    let json = serde_json::to_vec(grants).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("serialising capabilities: {error}"),
+        )
+    })?;
+    let path = directory.join(format!("launch-{app}.json"));
+    // Created at 0600 rather than written and chmod-ed after: the window
+    // between the two is exactly when another process could open it. Not
+    // synced: the launcher reads it through the page cache, and this runs on
+    // the session's loop, where a sync under I/O pressure freezes the desktop.
+    let mut file = std::fs::File::create(&path).and_then(|file| {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        Ok(file)
+    })?;
+    file.write_all(&json)?;
+    Ok(Some(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,7 +944,6 @@ mod tests {
             }
             {
                 let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("caps.json");
                 let caps = vec![fs_grant(
                     "so.tilo.books",
                     "/var/workspace/books",
@@ -904,8 +953,20 @@ mod tests {
                     author: true,
                     sandbox: caps,
                 };
-                std::fs::write(&path, serde_json::to_vec(&grants).unwrap()).unwrap();
+                let path = write_capability_file(dir.path(), "so.tilo.books", &grants)
+                    .unwrap()
+                    .expect("a grant writes a file");
                 assert_eq!(load_capability_file(&path), grants);
+                assert_eq!(
+                    write_capability_file(dir.path(), "so.tilo.books", &LaunchGrants::default())
+                        .unwrap(),
+                    None,
+                    "nothing granted writes nothing"
+                );
+                assert!(
+                    write_capability_file(dir.path(), "../escape", &grants).is_err(),
+                    "an app id that leaves the directory is refused"
+                );
             }
         }
 

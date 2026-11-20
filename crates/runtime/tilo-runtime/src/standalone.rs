@@ -191,6 +191,10 @@ impl Standalone {
         let workspaces = opened.workspaces;
         let group_keys = opened.keys;
         let key_sessions = opened.key_sessions;
+        // What the person granted apps in this profile's workspace, as the
+        // service that holds its governance answers: what every launch here
+        // hands the app it starts.
+        apps.keep_launch_grants(Arc::clone(&workspaces) as Arc<dyn apps::LaunchGrantsSource>);
         workspaces.follow_member_writes(Arc::clone(&channels), Arc::clone(&fanout));
         // The member copies' files, once the broker that carries their records
         // runs: where a member taking a workspace's work runs it.

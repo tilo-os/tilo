@@ -616,7 +616,9 @@ pub fn build_bwrap_argv_for_entry(
     // anything more specific keeps the empty namespace and uses the egress proxy, since `--share-net`
     // is all-or-nothing.
     argv.push("--unshare-all".to_string());
-    if egress_decision(manifest, capabilities, payload_root).shares_host_network() {
+    if crate::egress_proxy::egress_decision(manifest, capabilities, payload_root)
+        .shares_host_network()
+    {
         argv.push("--share-net".to_string());
     }
     argv.push("--die-with-parent".to_string());
@@ -670,7 +672,8 @@ pub fn build_bwrap_argv_for_entry(
     // The system read profile: fixed, identical for every package, fed by no manifest field.
     crate::profile::push_system_profile(
         &mut argv,
-        egress_decision(manifest, capabilities, payload_root).shares_host_network(),
+        crate::egress_proxy::egress_decision(manifest, capabilities, payload_root)
+            .shares_host_network(),
     );
 
     // User-granted capabilities after the system profile (read-write wins over read-only).
@@ -725,35 +728,6 @@ pub fn build_bwrap_argv_for_entry(
     argv.push(entry_abs.display().to_string());
 
     argv
-}
-
-/// The outbound access this launch of the package at `payload_root` resolves to.
-pub fn egress_decision(
-    manifest: &ManifestView,
-    capabilities: &CapabilityPlan,
-    payload_root: &Path,
-) -> crate::egress_proxy::EgressDecision {
-    let decision = crate::egress_proxy::EgressDecision::resolve(
-        &manifest.sandbox.net.mode,
-        &manifest.sandbox.net.hosts,
-        &capabilities.net_hosts,
-        package_store::layout::image_shipped(payload_root),
-    );
-    // Applied here, not at the check: the namespace decision and the check must come from the same
-    // answer, or the app gets an empty namespace with nothing to reach through it.
-    if matches!(decision, crate::egress_proxy::EgressDecision::Filtered(_))
-        && package_store::dev_env::dev_override(crate::dev_env::EGRESS_PROXY_ENV)
-            .is_some_and(|v| v == "off")
-    {
-        tracing::warn!(
-            hosts = ?decision.policy().map(super::egress_proxy::EgressPolicy::describe),
-            "{}=off: launching with UNRESTRICTED outbound network access even though this app \
-             was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
-            crate::run::EGRESS_PROXY_ENV,
-        );
-        return crate::egress_proxy::EgressDecision::Unrestricted;
-    }
-    decision
 }
 
 /// Where the egress proxy socket is on each side of the sandbox boundary, and the loopback port the
@@ -2594,7 +2568,7 @@ mod tests {
                 // the argv above.
                 let plan =
                     CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1_000), |_| Vec::new());
-                let decision = egress_decision(&asks_anything, &plan, Path::new("/host/pkg"));
+                let decision = crate::egress_proxy::egress_decision(&asks_anything, &plan, Path::new("/host/pkg"));
                 let policy = decision.policy().unwrap_or_else(|| {
                     panic!("a named host must resolve to a filtered egress policy, got {decision:?}")
                 });
@@ -2605,7 +2579,7 @@ mod tests {
                 );
                 // A manifest that asks for no network is not given any by a grant.
                 assert_eq!(
-                    egress_decision(&mk_manifest("off"), &plan, Path::new("/host/pkg")),
+                    crate::egress_proxy::egress_decision(&mk_manifest("off"), &plan, Path::new("/host/pkg")),
                     crate::egress_proxy::EgressDecision::Blocked
                 );
             }

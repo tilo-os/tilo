@@ -20,7 +20,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -60,6 +60,17 @@ pub struct Apps {
     /// The person's answers about this device's camera and microphone, kept in their own store
     /// once the runtime opened it.
     device_grants: tilo_peer_state::DeviceGrants,
+    /// What a launch into this profile's workspace is granted, once the
+    /// workspace service that holds the person's grants is open.
+    grants: OnceLock<Arc<dyn LaunchGrantsSource>>,
+}
+
+/// Where a launch reads what the person granted the app it starts: the
+/// workspace's own sandbox, as its governance keeps it.
+pub(crate) trait LaunchGrantsSource: Send + Sync {
+    /// What a launch into `workspace` hands its apps
+    /// ([`tilo_desktop_model::Workspace::launch_grants`]).
+    fn launch_grants(&self, workspace: &str) -> collab_types::caps::LaunchGrants;
 }
 
 impl Apps {
@@ -104,6 +115,7 @@ impl Apps {
             launched: Arc::default(),
             own: Mutex::default(),
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
+            grants: OnceLock::new(),
         }
     }
 
@@ -135,6 +147,51 @@ impl Apps {
     /// The person's device answers: what the capture this runtime brokers asks.
     pub(crate) const fn device_grants(&self) -> &tilo_peer_state::DeviceGrants {
         &self.device_grants
+    }
+
+    /// Read what a launch into this runtime's workspace is granted from
+    /// `source` from now on: the workspace service, once it is open.
+    pub(crate) fn keep_launch_grants(&self, source: Arc<dyn LaunchGrantsSource>) {
+        let _ = self.grants.set(source);
+    }
+
+    /// What a launch into this runtime's workspace is granted: the
+    /// workspace's own sandbox, and nothing until a source is open.
+    fn launch_grants(&self) -> collab_types::caps::LaunchGrants {
+        self.grants
+            .get()
+            .map_or_else(collab_types::caps::LaunchGrants::default, |source| {
+                source.launch_grants(&self.workspace)
+            })
+    }
+
+    /// What this runtime's launch of `app` hands it: the workspace's grants
+    /// that name the app, as `tilo-launcher`'s capability file carries them.
+    fn app_grants(&self, app: &InstalledApp) -> collab_types::caps::LaunchGrants {
+        self.launch_grants().for_app(app.app_id.as_str())
+    }
+
+    /// The sandbox plan and outbound decision for launching `app`: what its
+    /// manifest declares, narrowed by what the workspace granted it, through
+    /// the launcher's own capability and egress rules — the same ones
+    /// `tilo-launcher` applies to a launch on Linux.
+    #[cfg(any(target_os = "macos", test))]
+    fn launch_capabilities(
+        &self,
+        app: &InstalledApp,
+        manifest: &launcher::manifest::ManifestView,
+    ) -> (
+        launcher::capabilities::CapabilityPlan,
+        launcher::egress_proxy::EgressDecision,
+    ) {
+        let declared = launcher::capabilities::declared(manifest, self.app_grants(app).sandbox);
+        let plan = launcher::capabilities::CapabilityPlan::for_app(
+            app.app_id.as_str(),
+            &declared,
+            Some(tilo_clock::unix_now()),
+        );
+        let egress = launcher::egress_proxy::egress_decision(manifest, &plan, &app.payload_root);
+        (plan, egress)
     }
 
     /// Every installed package, GUI or not; empty without an app store or

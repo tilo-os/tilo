@@ -13,7 +13,6 @@
 //! else; that is the safe default, so a workspace is only ever passed when the
 //! desktop knows which workspace the launch belongs to.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, LaunchGrants, Scope};
@@ -181,44 +180,11 @@ impl Workspace {
     /// # Errors
     /// The directory or the file could not be written.
     pub fn write_grants(&self, app: &str) -> std::io::Result<Option<PathBuf>> {
-        // Reverse-DNS in principle, but this arrives from a registry file:
-        // refuse anything that could escape the directory.
-        if app.is_empty() || app.contains('/') || app.contains("..") {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("refusing to write a capability file for app {app:?}"),
-            ));
-        }
-        let grants = self.grants_for_launch(app, tilo_paths::home());
-        if grants.is_empty() {
-            return Ok(None);
-        }
-        {
-            use std::os::unix::fs::DirBuilderExt as _;
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(&self.directory)?;
-        }
-        let json = serde_json::to_vec(&grants).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("serialising capabilities: {error}"),
-            )
-        })?;
-        let path = self.directory.join(format!("launch-{app}.json"));
-        // Created at 0600 rather than written and chmod-ed after: the
-        // window between the two is exactly when another process could open
-        // it. Not synced: the launcher reads it through the page cache, and
-        // this runs on the session's loop, where a sync under I/O pressure
-        // freezes the desktop.
-        let mut file = std::fs::File::create(&path).and_then(|file| {
-            use std::os::unix::fs::PermissionsExt as _;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-            Ok(file)
-        })?;
-        file.write_all(&json)?;
-        Ok(Some(path))
+        launcher::capabilities::write_capability_file(
+            &self.directory,
+            app,
+            &self.grants_for_launch(app, tilo_paths::home()),
+        )
     }
 }
 

@@ -3039,7 +3039,7 @@ pub(crate) fn launch_with_context(
     }
 
     // Connect only after cold runtime verification, loader preflight and host preparation.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities, payload_root);
+    let egress = crate::egress_proxy::egress_decision(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let resolved = if let Some((services, _)) = enrolled.as_mut() {
         let binding = services.binding().clone();
@@ -3785,7 +3785,7 @@ fn launch_with_capture_spawn<T>(
         dbus_proxy::media_player_for(manifest).as_deref(),
     );
     // As in `launch_with_context`, cold runtime checks precede service handoff.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities, payload_root);
+    let egress = crate::egress_proxy::egress_decision(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
         &manifest.sandbox.services,

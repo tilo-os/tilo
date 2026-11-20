@@ -111,6 +111,37 @@ fn decision_of(policy: EgressPolicy) -> EgressDecision {
     }
 }
 
+/// The outbound access this launch of the package at `payload_root` resolves
+/// to: what its manifest declares and what the person granted it, read through
+/// [`EgressDecision::resolve`], whichever launcher enforces it.
+pub fn egress_decision(
+    manifest: &crate::manifest::ManifestView,
+    capabilities: &crate::capabilities::CapabilityPlan,
+    payload_root: &Path,
+) -> EgressDecision {
+    let decision = EgressDecision::resolve(
+        &manifest.sandbox.net.mode,
+        &manifest.sandbox.net.hosts,
+        &capabilities.net_hosts,
+        package_store::layout::image_shipped(payload_root),
+    );
+    // Applied here, not at the check: the namespace decision and the check must come from the same
+    // answer, or the app gets an empty namespace with nothing to reach through it.
+    if matches!(decision, EgressDecision::Filtered(_))
+        && package_store::dev_env::dev_override(crate::dev_env::EGRESS_PROXY_ENV)
+            .is_some_and(|v| v == "off")
+    {
+        tracing::warn!(
+            hosts = ?decision.policy().map(EgressPolicy::describe),
+            "{}=off: launching with UNRESTRICTED outbound network access even though this app \
+             was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
+            crate::dev_env::EGRESS_PROXY_ENV,
+        );
+        return EgressDecision::Unrestricted;
+    }
+    decision
+}
+
 /// Counts of what the proxy decided, so a test can assert on the decision the production path actually
 /// took rather than on argv.
 #[derive(Debug, Default)]

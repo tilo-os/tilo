@@ -52,6 +52,17 @@ pub(super) fn launch(
     if let Some(identity) = identity {
         command.arg("--identity").arg(identity);
     }
+    // The person's grants for this app, in the file the launcher reads them
+    // from: the same one a desktop session writes.
+    let capabilities = launcher::capabilities::write_capability_file(
+        &apps.root.join("tilo/capabilities"),
+        app.app_id.as_str(),
+        &apps.app_grants(app),
+    )
+    .map_err(|error| format!("refusing to launch {}: its grants: {error}", app.app_id))?;
+    if let Some(path) = capabilities {
+        command.arg("--capabilities").arg(path);
+    }
     command
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env(launcher::services::BLOB_SOCKET_ENV, &sockets.blobs)

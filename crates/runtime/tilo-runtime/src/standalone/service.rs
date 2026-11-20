@@ -470,6 +470,26 @@ fn describe(workspace: WorkspaceId, name: &str, peer: &StatePeer) -> Option<Work
     Some(described)
 }
 
+impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
+    /// What a launch into `workspace` hands its apps: the sandbox its
+    /// governance records, whether this device governs it or holds it as a
+    /// member copy.
+    fn launch_grants(&self, workspace: &str) -> collab_types::caps::LaunchGrants {
+        let Some(id) = WorkspaceId::parse(workspace) else {
+            return collab_types::caps::LaunchGrants::default();
+        };
+        let Some(sandbox) = self
+            .peer(id)
+            .and_then(|peer| peer.governance().governed_sandbox().ok())
+        else {
+            return collab_types::caps::LaunchGrants::default();
+        };
+        let mut held = Workspace::new(id, String::new());
+        held.sandbox = sandbox;
+        held.launch_grants()
+    }
+}
+
 /// The workspace replicas the runtime's own services read: the profile's own
 /// workspace through the service that governs it, and each member copy.
 pub(super) struct Reads {
