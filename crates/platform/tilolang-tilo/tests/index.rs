@@ -773,6 +773,20 @@ fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
     assert_same(&ada, &lock, "after the redo");
 }
 
+/// Take in the index file `window` opens off the frame once it is open, as its frame does when
+/// woken, without waiting for the index to catch up.
+fn opened_off_the_frame(window: &Host) {
+    let began = std::time::Instant::now();
+    while !window.index_answers() {
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(30),
+            "the index file opens"
+        );
+        std::thread::park_timeout(std::time::Duration::from_secs(1));
+        window.poll_index();
+    }
+}
+
 tilo_test_env::scenario! {
     fn a_kept_index_catches_up_with_its_document;
 
@@ -943,34 +957,36 @@ tilo_test_env::scenario! {
             );
             ada.apply(&action);
         }
-        let host = Host::open(
+        let frame = std::thread::current();
+        let window = Host::open(
             Opening {
                 record: Some(&ada.doc),
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
                 // A window with frames: what the document gained is derived off the frame.
-                wake: Some(Arc::new(|| {})),
+                wake: Some(Arc::new(move || frame.unpark())),
             },
             Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
-        host.load_builtin(TODO, &lock).unwrap();
-        assert!(!host.index_ready(), "the index catches up off the frame");
-        let meta = host.packages()[0].meta.clone();
+        window.load_builtin(TODO, &lock).unwrap();
+        opened_off_the_frame(&window);
+        assert!(!window.index_ready(), "the index catches up off the frame");
+        let meta = window.packages()[0].meta.clone();
         let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
         let spec = tilolang_runtime::store::FieldSpec {
             id: field_id(&meta, "TodoList", "items"),
             kind: tilolang_runtime::meta::FieldKind::Collection,
         };
         let listed = || {
-            tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
+            tilolang_runtime::store::Store::listing(window.store(), &list, &spec)
                 .unwrap()
                 .ids()
         };
         let before = listed();
         let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
-        host.runtime()
+        window.runtime()
             .invoke_action(
                 &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
@@ -988,8 +1004,8 @@ tilo_test_env::scenario! {
             1,
             "the item just written is listed while the index catches up"
         );
-        host.wait_index();
-        assert!(host.index_ready());
+        window.wait_index();
+        assert!(window.index_ready());
         let after = listed();
         assert!(after.contains(&written[0]), "and once the index caught up");
         assert_eq!(after.len(), 4, "beside the three the document gained");
@@ -1013,27 +1029,29 @@ tilo_test_env::scenario! {
             );
             ada.apply(&action);
         }
-        let host = Host::open(
+        let frame = std::thread::current();
+        let window = Host::open(
             Opening {
                 record: Some(&ada.doc),
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
-                wake: Some(Arc::new(|| {})),
+                wake: Some(Arc::new(move || frame.unpark())),
             },
             Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
-        host.load_builtin(TODO, &lock).unwrap();
-        assert!(!host.index_ready(), "the index catches up off the frame");
-        let meta = host.packages()[0].meta.clone();
+        window.load_builtin(TODO, &lock).unwrap();
+        opened_off_the_frame(&window);
+        assert!(!window.index_ready(), "the index catches up off the frame");
+        let meta = window.packages()[0].meta.clone();
         let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
         let spec = tilolang_runtime::store::FieldSpec {
             id: field_id(&meta, "TodoList", "items"),
             kind: tilolang_runtime::meta::FieldKind::Collection,
         };
         let listed = || {
-            tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
+            tilolang_runtime::store::Store::listing(window.store(), &list, &spec)
                 .unwrap()
                 .ids()
         };
@@ -1043,7 +1061,7 @@ tilo_test_env::scenario! {
         // derived: no frame has taken that step in, so the index holds none of them.
         let mut written: Vec<String> = Vec::new();
         for step in 0..WRITES {
-            host.runtime()
+            window.runtime()
                 .invoke_action(
                     &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                     (
@@ -1061,11 +1079,11 @@ tilo_test_env::scenario! {
                 .collect();
             assert_eq!(new.len(), 1, "the item just written is listed");
             written.extend(new);
-            for committed in host.take_committed() {
+            for committed in window.take_committed() {
                 ada.apply(&committed.action);
             }
-            assert!(host.sync_from(&ada.doc));
-            assert!(!host.index_ready(), "the index still catches up");
+            assert!(window.sync_from(&ada.doc));
+            assert!(!window.index_ready(), "the index still catches up");
             let now = listed();
             for id in &written {
                 assert_eq!(
@@ -1076,11 +1094,11 @@ tilo_test_env::scenario! {
             }
         }
         assert!(
-            !host.store().overlay_empty(),
+            !window.store().overlay_empty(),
             "the overlay keeps them meanwhile"
         );
-        host.wait_index();
-        assert!(host.index_ready());
+        window.wait_index();
+        assert!(window.index_ready());
         let after = listed();
         for id in &written {
             assert_eq!(
@@ -1095,7 +1113,7 @@ tilo_test_env::scenario! {
             "beside the three the document gained"
         );
         assert!(
-            host.store().overlay_empty(),
+            window.store().overlay_empty(),
             "the index holds them, and the overlay no more"
         );
     }

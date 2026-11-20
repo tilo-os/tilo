@@ -670,9 +670,14 @@ impl Index {
     }
 
     /// Empty the index for a build: no heads, so it is not read until the build commits.
+    ///
+    /// The commit is not waited on to reach the disk: a process that ends before the build's
+    /// first step reached it ([`Self::persist`]) leaves the index the disk held before, which
+    /// the next one reads or builds anew as it would have. A frame that starts a build never
+    /// waits for the disk.
     fn clear(&self, schema: &str) -> Result<(), IndexError> {
         let mut txn = self.db.begin_write()?;
-        txn.set_quick_repair(self.path.is_some());
+        txn.set_durability(Durability::None)?;
         txn.delete_table(META)?;
         txn.delete_table(DOCS)?;
         txn.delete_table(FIELDS)?;
@@ -691,8 +696,9 @@ impl Index {
         Ok(())
     }
 
-    /// Empty the index for a build from the document: until the build commits it reflects no
-    /// heads, so a process that ends in the middle of it finds nothing to trust.
+    /// Empty the index for a build from the document: until the build's first step commits it
+    /// reflects no heads, and a process that ends before that step reached the disk finds the
+    /// index the disk held before it.
     pub fn clear_for_build(&self) -> Result<(), IndexError> {
         self.clear(&self.schema)
     }

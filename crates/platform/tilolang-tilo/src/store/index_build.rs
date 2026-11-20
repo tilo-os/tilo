@@ -37,6 +37,9 @@ enum Theirs<'a> {
 
 /// Where a package's index is in being had.
 pub(super) enum IndexState {
+    /// Its file is being opened off the frame: opening one waits for the disk, which a frame
+    /// must not. Read from once it is taken in ([`Inner::take_opened`]).
+    Opening(Pending<Result<Opened, IndexError>>),
     /// Read from: it reflects `heads`, with what the store wrote over it in the overlay.
     Ready,
     /// A step is being derived from the document off the frame, reflecting the heads given once
@@ -50,6 +53,7 @@ pub(super) enum IndexState {
 /// Where an index is in being had, without what is being built for it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
+    Opening,
     Ready,
     Building,
     Missing,
@@ -83,6 +87,7 @@ impl AppIndex {
 
     fn stage(&self) -> Stage {
         match self.state {
+            IndexState::Opening(..) => Stage::Opening,
             IndexState::Ready => Stage::Ready,
             IndexState::Building(..) => Stage::Building,
             IndexState::Missing => Stage::Missing,
@@ -104,44 +109,40 @@ impl TiloStore {
             return;
         }
         inner.apps.remove(app);
-        let opened = match inner.index_dir.as_deref() {
-            Some(dir) => Index::open(&idx::file_of(dir, app), app, schema),
-            None => in_memory(app, schema).map(Opened::Empty),
-        };
-        // A file that cannot be had (another process holds it, or a window of another version of
-        // the package reads it) leaves an index in memory.
-        let opened = opened.or_else(|_| in_memory(app, schema).map(Opened::Empty));
-        let Ok(opened) = opened else {
-            return;
-        };
-        let (index, heads) = match opened {
-            Opened::Ready(index, heads) => (index, Some(heads)),
-            Opened::Empty(index) => (index, None),
-        };
-        let Ok(snapshot) = index.snapshot() else {
-            return;
-        };
-        let held = AppIndex {
-            index,
-            snapshot,
-            heads: heads.clone().unwrap_or_default(),
-            schema: schema.to_owned(),
-            state: if heads.is_some() {
-                IndexState::Ready
-            } else {
-                IndexState::Missing
-            },
-            readable: heads.is_some(),
-        };
-        inner.apps.insert(AppId::from(app), held);
-        if inner.chunks.has_document() {
-            // The documents under ids the app had before are its own from now on.
-            if !crate::schema::previously(app).is_empty() {
-                inner.rescan();
+        let file = inner.index_dir.as_deref().map(|dir| idx::file_of(dir, app));
+        match file {
+            // Opened off the frame wherever a frame can be woken to take it in: opening a file
+            // waits for the disk, a fraction of a second on a slow one. Until it is in, the
+            // window shows the platform's loading state, as for an index being built.
+            Some(path) if inner.wake.is_some() => {
+                let Ok(placeholder) = in_memory(app, schema) else {
+                    return;
+                };
+                let Ok(snapshot) = placeholder.snapshot() else {
+                    return;
+                };
+                let (opening, schema_of) = (app.to_owned(), schema.to_owned());
+                let pending = Pending::start(
+                    move || Index::open(&path, &opening, &schema_of),
+                    inner.wake.clone(),
+                );
+                inner.apps.insert(
+                    AppId::from(app),
+                    AppIndex {
+                        index: placeholder,
+                        snapshot,
+                        heads: Stamps::new(),
+                        schema: schema.to_owned(),
+                        state: IndexState::Opening(pending),
+                        readable: false,
+                    },
+                );
             }
-            inner.bring_up(app);
-        } else {
-            inner.index_docs();
+            Some(path) => {
+                let opened = Index::open(&path, app, schema);
+                inner.take_opened(app, schema, opened);
+            }
+            None => inner.take_opened(app, schema, in_memory(app, schema).map(Opened::Empty)),
         }
         inner.changed();
         drop(inner);
@@ -184,6 +185,14 @@ impl TiloStore {
     #[must_use]
     pub fn index_pending(&self) -> bool {
         let held = self.held();
+        // An index file being opened off the frame is read from once it is in.
+        if held
+            .apps
+            .values()
+            .any(|held| matches!(held.state, IndexState::Opening(..)))
+        {
+            return true;
+        }
         if !held.chunks.has_document() {
             return false;
         }
@@ -234,10 +243,12 @@ impl TiloStore {
 
     /// Whether an index is being derived off the frame.
     fn building(&self) -> bool {
-        self.held()
-            .apps
-            .values()
-            .any(|held| matches!(held.state, IndexState::Building(..)))
+        self.held().apps.values().any(|held| {
+            matches!(
+                held.state,
+                IndexState::Building(..) | IndexState::Opening(..)
+            )
+        })
     }
 
     fn take_in_builds(&self, wait: bool) -> bool {
@@ -270,7 +281,16 @@ impl TiloStore {
             reopened = true;
             inner.reopen_broken(&app);
         }
+        // An index taken in now catches up from the next pass on: a frame takes one step of it.
+        let opened = inner.take_in_opened(&apps, wait);
+        if !opened.is_empty() {
+            any = true;
+            reopened = true;
+        }
         for app in apps {
+            if opened.contains(&app) {
+                continue;
+            }
             let Some(held) = inner.apps.get_mut(&app) else {
                 continue;
             };
@@ -493,8 +513,9 @@ impl Inner {
         };
         let stage = held.stage();
         match stage {
-            // The build derives the rest itself when its step ends ([`Inner::after_step`]).
-            Stage::Building => {}
+            // The build derives the rest itself when its step ends ([`Inner::after_step`]), and
+            // an index being opened is brought up once it is in ([`Inner::take_opened`]).
+            Stage::Building | Stage::Opening => {}
             // The document names chunks the store does not hold yet, and it can read them: an
             // index built now would cover the document's own chunk alone, with no row of what the
             // window's first screen shows. The chunks are read first, and the build starts over
@@ -697,6 +718,73 @@ impl Inner {
             self.rebuild(&app);
         }
         built
+    }
+
+    /// Take in the index files of `apps` opened off the frame since the last pass, waiting for
+    /// them with `wait`. The apps whose index came in.
+    fn take_in_opened(&mut self, apps: &[AppId], wait: bool) -> BTreeSet<AppId> {
+        let mut opened = BTreeSet::new();
+        for app in apps {
+            let Some(held) = self.apps.get_mut(app) else {
+                continue;
+            };
+            let IndexState::Opening(pending) = &mut held.state else {
+                continue;
+            };
+            let poll = if wait {
+                Some(pending.wait())
+            } else {
+                pending.poll()
+            };
+            let Some(result) = poll else {
+                continue;
+            };
+            let schema = held.schema.clone();
+            self.take_opened(app, &schema, result);
+            opened.insert(app.clone());
+        }
+        opened
+    }
+
+    /// Read from the index of `app` that `opened` opened, whose type schemas are `schema`, and
+    /// bring it up to the document. A file that cannot be had (another process holds it, or a
+    /// window of another version of the package reads it) leaves an index in memory.
+    fn take_opened(&mut self, app: &str, schema: &str, opened: Result<Opened, IndexError>) {
+        let opened = opened.or_else(|_| in_memory(app, schema).map(Opened::Empty));
+        let Ok(opened) = opened else {
+            self.apps.remove(app);
+            return;
+        };
+        let (index, heads) = match opened {
+            Opened::Ready(index, heads) => (index, Some(heads)),
+            Opened::Empty(index) => (index, None),
+        };
+        let Ok(snapshot) = index.snapshot() else {
+            self.apps.remove(app);
+            return;
+        };
+        let held = AppIndex {
+            index,
+            snapshot,
+            heads: heads.clone().unwrap_or_default(),
+            schema: schema.to_owned(),
+            state: if heads.is_some() {
+                IndexState::Ready
+            } else {
+                IndexState::Missing
+            },
+            readable: heads.is_some(),
+        };
+        self.apps.insert(AppId::from(app), held);
+        if self.chunks.has_document() {
+            // The documents under ids the app had before are its own from now on.
+            if !crate::schema::previously(app).is_empty() {
+                self.rescan();
+            }
+            self.bring_up(app);
+        } else {
+            self.index_docs();
+        }
     }
 
     /// Put a fresh index in place of the broken one of `app`, built from the document (once it

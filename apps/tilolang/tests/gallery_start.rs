@@ -1,8 +1,8 @@
 //! The gallery (`apps/tl/gallery`) started again on the profile an earlier process kept, as
 //! `tilolang dev` starts it: each start is a process of its own, so what the last one left on disk
 //! is all the next one has. A start after the process ended and one after it was killed in the
-//! middle of its work both open over the indexes kept, building none anew, and their first frame
-//! shows the gallery rather than the loading state of an index being built again.
+//! middle of its work both open over the indexes kept, building none anew. No start opens an
+//! index file on a frame: that waits for the disk, which on a slow one is a fraction of a second.
 
 use std::path::Path;
 use std::process::Command;
@@ -16,19 +16,25 @@ const PROFILE_ENV: &str = "TILO_GALLERY_START_PROFILE";
 /// Set when the started process is to die before it closes anything, as a killed one does.
 const KILL_ENV: &str = "TILO_GALLERY_START_KILL";
 
-/// What one start of the gallery said: how often its opening ran each scope, and its log.
+/// One scope a start ran on its frames: its name, calls and milliseconds.
+type Scope = (String, usize, u64);
+
+/// What one start of the gallery said: the scopes its opening and first frame took, those of
+/// the frames that took in what was read off them, and its log.
 struct Start {
-    scopes: Vec<(String, usize)>,
+    /// Whether the gallery's sidebar came to list its pages.
+    shown: bool,
+    opening: Vec<Scope>,
+    settling: Vec<Scope>,
     log: String,
 }
 
-impl Start {
-    fn calls(&self, scope: &str) -> usize {
-        self.scopes
-            .iter()
-            .find(|(name, _)| name == scope)
-            .map_or(0, |(_, calls)| *calls)
-    }
+fn calls(scopes: &[Scope], scope: &str) -> usize {
+    scopes
+        .iter()
+        .filter(|(name, ..)| name == scope)
+        .map(|(_, calls, _)| *calls)
+        .sum()
 }
 
 /// Start the gallery in a process of its own on the profile `profile`: this test's binary, asked
@@ -53,14 +59,23 @@ fn start(profile: &Path, kill: bool) -> Start {
         kill || output.status.success(),
         "the gallery started and stopped: {stdout}\n{log}"
     );
-    let scopes = stdout
-        .lines()
-        .filter_map(|line| {
-            let (name, calls) = line.strip_prefix("START-SCOPE ")?.split_once(' ')?;
-            Some((name.to_owned(), calls.parse().ok()?))
-        })
-        .collect();
-    Start { scopes, log }
+    let scopes = |when: &str| -> Vec<Scope> {
+        stdout
+            .lines()
+            .filter_map(|line| {
+                let mut words = line.strip_prefix(when)?.split_whitespace();
+                let (name, calls, ms) = (words.next()?, words.next()?, words.next()?);
+                Some((name.to_owned(), calls.parse().ok()?, ms.parse().ok()?))
+            })
+            .collect()
+    };
+    Start {
+        // The harness puts the test's name before the first line the test prints.
+        shown: stdout.lines().any(|line| line.ends_with("SHOWN true")),
+        opening: scopes("OPENING "),
+        settling: scopes("SETTLING "),
+        log,
+    }
 }
 
 /// The started role: open the gallery on the profile, print the scopes its opening and first
@@ -72,14 +87,45 @@ fn started(profile: &Path) {
         .with_writer(std::io::stderr)
         .try_init();
     crate::support::installed("gallery");
-    let (app, scopes) = observe(|| HeadlessApp::<TlApp>::open_data_dir(profile));
+    let (app, opening) = observe(|| HeadlessApp::<TlApp>::open_data_dir(profile));
     let mut app = app.expect("the gallery opens");
-    for sample in &scopes {
-        println!("START-SCOPE {} {}", sample.phase, sample.calls);
+    // What the window reads off the frame lands, and its pages are listed, as they are by the
+    // time a person closes the window or the process is killed.
+    let listed = |app: &mut HeadlessApp<TlApp>| {
+        app.harness()
+            .targets()
+            .keys()
+            .any(|name| name.contains("/NavRow["))
+    };
+    let (shown, settling) = observe(|| {
+        // Each pass takes in what was read off the frame, then waits for the next wake: a first
+        // start builds every index from the document, which on a busy machine takes seconds.
+        let began = std::time::Instant::now();
+        while began.elapsed() < std::time::Duration::from_secs(120) {
+            app.settle();
+            if listed(&mut app) {
+                return true;
+            }
+            app.harness()
+                .wait_until(ui::time::Duration::from_millis(50), |_| false);
+        }
+        false
+    });
+    println!("SHOWN {shown}");
+    if !shown {
+        let targets: Vec<String> = app.harness().targets().keys().take(40).cloned().collect();
+        eprintln!("the window shows only: {targets:?}");
     }
-    // What the window derives off the frame lands, as it has by the time a person closes the
-    // window or the process is killed.
-    app.settle();
+    for (when, scopes) in [("OPENING", &opening), ("SETTLING", &settling)] {
+        for sample in scopes {
+            println!(
+                "{when} {} {} {}",
+                sample.phase,
+                sample.calls,
+                sample.elapsed_ns / 1_000_000
+            );
+        }
+    }
     if std::env::var_os(KILL_ENV).is_some() {
         // Nothing closes: no destructor is called, as none is in a killed process.
         std::process::abort();
@@ -95,10 +141,42 @@ fn a_started_gallery_opens_over_what_the_last_process_kept() {
     }
     let profile = std::env::temp_dir().join(format!("tilo-gallery-start-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&profile);
-    let _first = start(&profile, false);
+    let first = start(&profile, false);
     let again = start(&profile, false);
     let _killed = start(&profile, true);
     let after_kill = start(&profile, false);
+    for (what, start) in [
+        ("the first start", &first),
+        ("a start again", &again),
+        ("a start after a kill", &after_kill),
+    ] {
+        // Where the opening's time went on this machine, for whoever reads the test's output.
+        let mut costliest = start.opening.clone();
+        costliest.sort_by_key(|(_, _, ms)| std::cmp::Reverse(*ms));
+        let costliest: Vec<String> = costliest
+            .iter()
+            .take(12)
+            .map(|(name, calls, ms)| format!("{name}={ms}ms/{calls}"))
+            .collect();
+        eprintln!("{what}: {}", costliest.join(" "));
+        // Opening an index file waits for the disk: a frame never does.
+        assert_eq!(
+            calls(&start.opening, "tl.index.open") + calls(&start.settling, "tl.index.open"),
+            0,
+            "{what} opens its indexes off the frame"
+        );
+        let tail: String = start
+            .log
+            .lines()
+            .rev()
+            .take(40)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            start.shown,
+            "{what} shows the gallery once its indexes are in; its log, newest first: {tail}"
+        );
+    }
     for (what, start) in [
         ("a start again", &again),
         ("a start after a kill", &after_kill),
@@ -107,13 +185,6 @@ fn a_started_gallery_opens_over_what_the_last_process_kept() {
             !start.log.contains("could not be opened"),
             "{what} opens the indexes the last process kept: {}",
             start.log
-        );
-        // An index built anew opens the window on the loading state, and its views only once
-        // the build's first step lands, frames later.
-        assert_eq!(
-            start.calls("tl.view.open_root"),
-            1,
-            "{what} shows the gallery in its first frame, read from the indexes kept"
         );
     }
     let _ = std::fs::remove_dir_all(&profile);
