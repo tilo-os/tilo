@@ -1266,7 +1266,7 @@ mod tests {
                 workspace: "<Ada & Bo>",
                 ..Values::default()
             };
-            let mail = Templates::baked().render(Kind::Removed, "en", "x@example.org", &values);
+            let mail = Templates::baked().render(Kind::Invite, "en", "x@example.org", &values);
             assert!(mail.html.contains("&lt;Ada &amp; Bo&gt;"));
             assert!(!mail.html.contains("<Ada"));
             assert!(mail.text.contains("<Ada & Bo>"));
@@ -1282,7 +1282,7 @@ mod tests {
                 entry: "https://tilo.example/",
                 inviter: "",
             };
-            let mail = Templates::baked().render(Kind::Confirm, "en", "ada@example.org", &values);
+            let mail = Templates::baked().render(Kind::Invite, "en", "ada@example.org", &values);
             // As text it stays as typed, in the HTML escaped, and neither takes
             // the link's place.
             assert!(mail.text.contains("{{link}} <{{entry}}>"));

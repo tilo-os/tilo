@@ -76,6 +76,8 @@ desktop:launchpad desktop (Launchpad)
     launchpad Notes
   desktop:launchpad:tasks desktop.launchpad-card (Tasks)
     launchpad Tasks
+  desktop:launchpad:agent desktop.launchpad-card (Connect an agent)
+    launchpad Connect an agent
   desktop:launchpad:meet desktop.launchpad-card (Start a call)
     launchpad Start a call
   desktop:launchpad:invite desktop.launchpad-card (Invite people)

@@ -1849,9 +1849,16 @@ impl BrowserShell {
     /// and its resource action all ask for it: the app action the verb
     /// declares, what only the page can do, and else the app itself.
     fn launchpad(&self, action: LaunchpadAction) {
+        let connect_agent = tilo_actions::remote::session_actions::CONNECT_AGENT;
         match action {
             LaunchpadAction::Invite => self.invite(),
             LaunchpadAction::Activity => self.activity(),
+            // A page connects an agent with its own setup, the prompt that installs Tilo and signs
+            // in as this person: Console's Connect place needs a server's actions a page has not.
+            LaunchpadAction::Agent => self
+                .requests
+                .borrow_mut()
+                .push(HostRequest::Action(connect_agent.to_owned())),
             other => {
                 // A card that names an action of its app does it in one
                 // step, as on a native desktop: the session opens the app

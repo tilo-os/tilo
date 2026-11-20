@@ -42,7 +42,7 @@ type Arguments = serde_json::Map<String, serde_json::Value>;
 
 /// An action host that keeps what it was asked to run.
 #[derive(Default)]
-struct Host {
+struct Asked {
     invoked: RefCell<Vec<(RemoteActionTarget, Arguments)>>,
     /// The uris it was asked to open, by the workspace it was asked for.
     opened: RefCell<Vec<(String, String)>>,
@@ -52,7 +52,7 @@ struct Host {
     publishing: RefCell<Vec<PublishedActions>>,
 }
 
-impl AppActions for Host {
+impl AppActions for Asked {
     fn published(&self, workspace: &str) -> Vec<PublishedActions> {
         self.publishing
             .borrow()
@@ -88,14 +88,14 @@ impl AppActions for Host {
     }
 }
 
-fn session(host: Rc<Host>) -> Session {
-    session_over(host, None, None)
+fn session(asked: Rc<Asked>) -> Session {
+    session_over(asked, None, None)
 }
 
 /// A session whose search also lists the records `records` keeps current and what apps published
 /// into `content` .
 fn session_over(
-    host: Rc<Host>,
+    asked: Rc<Asked>,
     records: Option<tilo_session::Records>,
     content: Option<Arc<AppContentIndex>>,
 ) -> Session {
@@ -117,7 +117,7 @@ fn session_over(
             records,
             ..SearchOptions::default()
         },
-        apps: Some(host),
+        apps: Some(asked),
         collab: false,
         ..Options::default()
     })
@@ -125,7 +125,7 @@ fn session_over(
 
 /// A session on a device that has `apps` installed, by the id and the name this device lists them
 /// under: what the shell offers a card for, and what search lists as an app.
-fn session_installing(host: Rc<Host>, apps: &[(&str, &str)]) -> Session {
+fn session_installing(asked: Rc<Asked>, apps: &[(&str, &str)]) -> Session {
     crate::common::headless(Options {
         lists: Lists::fixed(AppLists {
             applications: apps
@@ -138,7 +138,7 @@ fn session_installing(host: Rc<Host>, apps: &[(&str, &str)]) -> Session {
                 .collect(),
             ..AppLists::default()
         }),
-        apps: Some(host),
+        apps: Some(asked),
         collab: false,
         ..Options::default()
     })
@@ -150,8 +150,8 @@ fn session_installing(host: Rc<Host>, apps: &[(&str, &str)]) -> Session {
 #[test]
 fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
     let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = session(Rc::clone(&host));
+    let asked = Rc::new(Asked::default());
+    let mut session = session(Rc::clone(&asked));
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = session.handle().read(|tree| {
         tree.active_workspace()
@@ -184,8 +184,8 @@ fn settings_search_finds_the_appearance_theme_and_enter_opens_it() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    until(&mut session, |_| !host.invoked.borrow().is_empty());
-    let (target, arguments) = host.invoked.borrow()[0].clone();
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
+    let (target, arguments) = asked.invoked.borrow()[0].clone();
     assert_eq!(
         target,
         application_action_target(&workspace, SETTINGS_APP, "settings.root", "open")
@@ -285,7 +285,7 @@ fn query(session: &Session) -> Option<String> {
 /// A session with key repeat pushed past the test's own steps: a held key repeats, and a step of a
 /// headless session can take longer than a repeat waits, so these keys are tapped instead.
 fn with_slow_keys() -> Session {
-    let mut session = session(Rc::new(Host::default()));
+    let mut session = session(Rc::new(Asked::default()));
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
         rate: 0,
@@ -393,7 +393,7 @@ fn typing_after_deleting_the_whole_query_reaches_it_again() {
 #[test]
 fn the_search_chord_closes_the_open_search_and_opens_it_again() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
+    let mut session = session(Rc::new(Asked::default()));
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
         rate: 0,
@@ -419,7 +419,7 @@ fn the_search_chord_closes_the_open_search_and_opens_it_again() {
 #[test]
 fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
+    let mut session = session(Rc::new(Asked::default()));
     session.step(Duration::from_millis(1)).expect("step");
     invoke(
         &mut session,
@@ -473,7 +473,7 @@ fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
 #[test]
 fn searching_for_the_person_lists_no_action_of_the_shells_own() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
+    let mut session = session(Rc::new(Asked::default()));
     session.step(Duration::from_millis(1)).expect("step");
     search_for(&mut session, "person");
     let titles: Vec<String> = rows(&session)
@@ -505,7 +505,7 @@ fn searching_for_the_person_lists_no_action_of_the_shells_own() {
 fn the_empty_search_offers_the_shells_welcome_verbs_and_typing_finds_them_all() {
     let _settled = ui::motion::testing::settled();
     let mut session = session_installing(
-        Rc::new(Host::default()),
+        Rc::new(Asked::default()),
         &[
             ("so.tilo.sheets", "Sheets"),
             ("so.tilo.chat", "Chat"),
@@ -566,7 +566,8 @@ fn the_empty_search_offers_the_shells_welcome_verbs_and_typing_finds_them_all() 
 
     // Starting a call is Chat's: on a shell without Chat it is no row, neither offered before
     // anything is typed nor found by its name.
-    let mut without = session_installing(Rc::new(Host::default()), &[("so.tilo.sheets", "Sheets")]);
+    let mut without =
+        session_installing(Rc::new(Asked::default()), &[("so.tilo.sheets", "Sheets")]);
     without.step(Duration::from_millis(1)).expect("step");
     invoke(
         &mut without,
@@ -598,15 +599,19 @@ fn the_empty_search_offers_the_shells_welcome_verbs_and_typing_finds_them_all() 
 /// A welcome card, the verb an agent reads in the catalogue and the row
 /// search lists are one declaration: what the card does, the published verb
 /// does. Starting a call opens Chat on the workspace and asks it to call;
-/// inviting opens the workspace's settings, where people are added.
+/// connecting an agent opens Console where agents are let in; inviting opens
+/// the invite sheet, where the link is made.
 #[test]
 fn a_welcome_card_does_what_its_published_action_does() {
     use tilo_sheets::SheetState as _;
     use ui::window_targets::TargetAction;
 
     let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = session_installing(Rc::clone(&host), &[("so.tilo.chat", "Chat")]);
+    let asked = Rc::new(Asked::default());
+    let mut session = session_installing(
+        Rc::clone(&asked),
+        &[("so.tilo.chat", "Chat"), ("so.tilo.console", "Console")],
+    );
     session.step(Duration::from_millis(1)).expect("step");
 
     // The verb published for agents: Meet's own card, by the resource action the catalogue lists.
@@ -616,8 +621,8 @@ fn a_welcome_card_does_what_its_published_action_does() {
         "launchpad",
         serde_json::json!({}),
     );
-    until(&mut session, |_| !host.invoked.borrow().is_empty());
-    let published = host.invoked.borrow().clone();
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
+    let published = asked.invoked.borrow().clone();
     let [(target, _)] = published.as_slice() else {
         panic!("one invocation, not {published:?}");
     };
@@ -634,25 +639,53 @@ fn a_welcome_card_does_what_its_published_action_does() {
         "Chat starts a call in the workspace: {target:?}"
     );
 
-    // The card on the shell, pressed, asks Chat for the same thing. The empty shell and its cards are
-    // the desktop surface's own: the session's API names them as the controls an assistive
-    // technology presses.
+    // Someone alone in their workspace has nobody to call, so the shell shows no call card, while
+    // the verb stays published. The card it shows in its place, pressed, asks Console for what its
+    // own published verb asks. The empty shell and its cards are the desktop surface's own: the
+    // session's API names them as the controls an assistive technology presses.
+    assert!(
+        !session
+            .controls()
+            .into_iter()
+            .any(|control| control.name == "Start a call"),
+        "someone alone is not offered a call"
+    );
+    asked.invoked.borrow_mut().clear();
+    invoke(
+        &mut session,
+        &launchpad_card_id("agent"),
+        "launchpad",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
+    let published = asked.invoked.borrow().clone();
+    let [(target, _)] = published.as_slice() else {
+        panic!("one invocation, not {published:?}");
+    };
+    assert_eq!(
+        (
+            target.address.resource.as_str(),
+            target.address.action.as_str()
+        ),
+        ("console.effects", "view-connect"),
+        "Console opens where agents are let in: {target:?}"
+    );
     let card = session
         .controls()
         .into_iter()
-        .find_map(|control| (control.name == "Start a call").then_some(control.rect))
+        .find_map(|control| (control.name == "Connect an agent").then_some(control.rect))
         .expect("the shell shows the card its verb is named on");
     assert!(
         card.2 > 0.0 && card.3 > 0.0,
         "the card stands somewhere the person can reach: {card:?}"
     );
-    host.invoked.borrow_mut().clear();
+    asked.invoked.borrow_mut().clear();
     session
-        .press_action("Start a call", TargetAction::Activate)
+        .press_action("Connect an agent", TargetAction::Activate)
         .expect("the card is pressed");
-    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
     assert_eq!(
-        host.invoked.borrow().clone(),
+        asked.invoked.borrow().clone(),
         published,
         "the card runs the verb it declares"
     );
@@ -697,7 +730,7 @@ fn an_app_card_opens_the_app_it_names() {
         ("tasks", "so.tilo.tasks", "Tasks"),
     ] {
         let _settled = ui::motion::testing::settled();
-        let mut session = session_installing(Rc::new(Host::default()), &[(app, name)]);
+        let mut session = session_installing(Rc::new(Asked::default()), &[(app, name)]);
         session.step(Duration::from_millis(1)).expect("step");
         invoke(
             &mut session,
@@ -724,8 +757,8 @@ fn an_app_card_opens_the_app_it_names() {
 fn the_shell_offers_the_tasks_that_are_installed_and_no_card_for_the_app_that_is_not() {
     const TASKS: &str = "so.tilo.lang.tasks";
     let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = session_installing(Rc::clone(&host), &[(TASKS, "Tasks")]);
+    let asked = Rc::new(Asked::default());
+    let mut session = session_installing(Rc::clone(&asked), &[(TASKS, "Tasks")]);
     session.step(Duration::from_millis(1)).expect("step");
 
     // The cards the shell draws, the rows search lists and the verbs agents read are published for
@@ -817,9 +850,9 @@ fn the_shell_offers_the_tasks_that_are_installed_and_no_card_for_the_app_that_is
         "choose-search-row",
         serde_json::json!({}),
     );
-    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
     assert_eq!(
-        host.invoked.borrow()[0].0,
+        asked.invoked.borrow()[0].0,
         application_open_target(&workspace, TASKS),
         "the Tasks this device has opens, and nothing of an app it has not"
     );
@@ -828,8 +861,8 @@ fn the_shell_offers_the_tasks_that_are_installed_and_no_card_for_the_app_that_is
 #[test]
 fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = session(Rc::clone(&host));
+    let asked = Rc::new(Asked::default());
+    let mut session = session(Rc::clone(&asked));
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = session.handle().read(|tree| {
         tree.active_workspace()
@@ -860,9 +893,9 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
     assert_eq!(
-        host.invoked.borrow()[0].0,
+        asked.invoked.borrow()[0].0,
         application_open_target(&workspace, "so.tilo.sheets"),
         "the app opens by the workspace's address for it"
     );
@@ -886,8 +919,8 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    until(&mut session, |_| host.invoked.borrow().len() == 2);
-    let (target, arguments) = host.invoked.borrow()[1].clone();
+    until(&mut session, |_| asked.invoked.borrow().len() == 2);
+    let (target, arguments) = asked.invoked.borrow()[1].clone();
     assert_eq!(
         target,
         application_action_target(&workspace, SETTINGS_APP, "settings.root", "open"),
@@ -899,7 +932,7 @@ fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
 #[test]
 fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
+    let mut session = session(Rc::new(Asked::default()));
     session.step(Duration::from_millis(1)).unwrap();
     let before = session.accessible_labels();
     invoke(
@@ -1260,8 +1293,8 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     let _settled = ui::motion::testing::settled();
     let dir = tempfile::tempdir().expect("a directory to keep the index in");
     let content = AppContentIndex::persistent(dir.path().to_path_buf());
-    let host = Rc::new(Host::default());
-    let mut session = session_over(Rc::clone(&host), None, Some(Arc::clone(&content)));
+    let asked = Rc::new(Asked::default());
+    let mut session = session_over(Rc::clone(&asked), None, Some(Arc::clone(&content)));
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = workspace_in_front(&session);
 
@@ -1283,8 +1316,8 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    until(&mut session, |_| !host.invoked.borrow().is_empty());
-    let (target, arguments) = host.invoked.borrow()[0].clone();
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
+    let (target, arguments) = asked.invoked.borrow()[0].clone();
     assert_eq!(
         target,
         application_action_target(&workspace, NOTES, "n1", "open"),
@@ -1300,7 +1333,7 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
         "the index keeps the entry on disk"
     );
     let reopened = AppContentIndex::persistent(dir.path().to_path_buf());
-    let mut session = session_over(Rc::new(Host::default()), None, Some(reopened));
+    let mut session = session_over(Rc::new(Asked::default()), None, Some(reopened));
     session.step(Duration::from_millis(1)).unwrap();
     find_row(&mut session, "groceries", "Groceries for the weekend");
 }
@@ -1348,8 +1381,8 @@ fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so()
     // The file went away after the person added it.
     std::fs::remove_file(&gone).expect("the file went away");
 
-    let host = Rc::new(Host::default());
-    let mut session = session(Rc::clone(&host));
+    let asked = Rc::new(Asked::default());
+    let mut session = session(Rc::clone(&asked));
     session.step(Duration::from_millis(1)).unwrap();
 
     // The app is found by its name and starts the way every host app starts: the entry Tilo keeps
@@ -1365,9 +1398,9 @@ fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so()
         "choose-search-row",
         serde_json::json!({}),
     );
-    until(&mut session, |_| !host.started.borrow().is_empty());
+    until(&mut session, |_| !asked.started.borrow().is_empty());
     assert_eq!(
-        host.started.borrow().as_slice(),
+        asked.started.borrow().as_slice(),
         ["tilo-downloaded-Dropped"]
     );
 
@@ -1423,7 +1456,7 @@ fn type_at_the_seat(session: &mut Session, text: &str) {
 #[test]
 fn the_palette_the_host_search_opens_takes_the_keys() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session(Rc::new(Host::default()));
+    let mut session = session(Rc::new(Asked::default()));
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
         rate: 0,
@@ -1454,10 +1487,10 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
 
 /// A session whose search lists the apps this device has — the machine's `Alacritty` and the
 /// person's `Notes` — with `host` taking the launches.
-fn host_session(host: Rc<Host>) -> Session {
+fn host_session(asked: Rc<Asked>) -> Session {
     let mut session = crate::common::headless(Options {
         lists: Lists::fixed(host_app_lists()),
-        apps: Some(host as Rc<dyn AppActions>),
+        apps: Some(asked as Rc<dyn AppActions>),
         collab: false,
         ..Options::default()
     });
@@ -1475,7 +1508,7 @@ fn labels(session: &Session) -> Vec<String> {
 enum Opening {
     /// The platform search action (`tilo.host:search`): what a window's search control, its toolbar's
     /// magnifier and Ctrl+K run, and what an agent asks.
-    Host,
+    Asked,
     /// The shell's own `search` verb, in the workspace scope its chip names.
     Shell,
     /// The applications alone, as the launchpad's "Open an app" lists them.
@@ -1486,7 +1519,7 @@ impl Opening {
     /// Open search this way, already asking `query` .
     fn open(self, session: &mut Session, query: &str) {
         match self {
-            Self::Host => {
+            Self::Asked => {
                 invoke(
                     session,
                     HOST_SEARCH,
@@ -1518,8 +1551,8 @@ impl Opening {
 fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
     let _settled = ui::motion::testing::settled();
     for (query, title) in [("alacritty", "Alacritty"), ("notes", "Notes")] {
-        let mut session = host_session(Rc::new(Host::default()));
-        Opening::Host.open(&mut session, query);
+        let mut session = host_session(Rc::new(Asked::default()));
+        Opening::Asked.open(&mut session, query);
         assert!(
             titled(&session, title).is_some(),
             "{title} is found by name from the platform search action: {:?}",
@@ -1527,7 +1560,7 @@ fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
         );
     }
     for opening in [Opening::Shell, Opening::Applications] {
-        let mut session = host_session(Rc::new(Host::default()));
+        let mut session = host_session(Rc::new(Asked::default()));
         opening.open(&mut session, "alacritty");
         assert!(
             titled(&session, "Alacritty").is_some(),
@@ -1542,9 +1575,9 @@ fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
 #[test]
 fn choosing_the_row_any_search_found_starts_the_app() {
     let _settled = ui::motion::testing::settled();
-    for opening in [Opening::Host, Opening::Shell, Opening::Applications] {
-        let host = Rc::new(Host::default());
-        let mut session = host_session(Rc::clone(&host));
+    for opening in [Opening::Asked, Opening::Shell, Opening::Applications] {
+        let asked = Rc::new(Asked::default());
+        let mut session = host_session(Rc::clone(&asked));
         opening.open(&mut session, "alacritty");
         let app = titled(&session, "Alacritty")
             .unwrap_or_else(|| panic!("the app's row from {opening:?}: {:?}", labels(&session)));
@@ -1554,9 +1587,9 @@ fn choosing_the_row_any_search_found_starts_the_app() {
             "choose-search-row",
             serde_json::json!({}),
         );
-        until(&mut session, |_| !host.started.borrow().is_empty());
+        until(&mut session, |_| !asked.started.borrow().is_empty());
         assert_eq!(
-            host.started.borrow().as_slice(),
+            asked.started.borrow().as_slice(),
             ["Alacritty.desktop"],
             "the app found by {opening:?} starts"
         );
@@ -1587,8 +1620,8 @@ fn tasks_capture() -> Vec<ResourceSpec> {
 #[test]
 fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
     let _settled = ui::motion::testing::settled();
-    let host = Rc::new(Host::default());
-    let mut session = session(Rc::clone(&host));
+    let asked = Rc::new(Asked::default());
+    let mut session = session(Rc::clone(&asked));
     session.step(Duration::from_millis(1)).expect("step");
     let workspace = session.handle().read(|tree| {
         tree.active_workspace()
@@ -1597,7 +1630,7 @@ fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
     });
     // The workspace's action host publishes Tasks' capture; no window of the app is open to write
     // it in.
-    host.publishing.borrow_mut().push(PublishedActions::of(
+    asked.publishing.borrow_mut().push(PublishedActions::of(
         "so.tilo.lang.tasks",
         &workspace,
         &tasks_capture(),
@@ -1620,8 +1653,8 @@ fn a_line_typed_into_search_runs_the_workspace_s_capture_with_no_app_open() {
         "choose-search-row",
         serde_json::json!({}),
     );
-    until(&mut session, |_| !host.invoked.borrow().is_empty());
-    let (target, arguments) = host.invoked.borrow()[0].clone();
+    until(&mut session, |_| !asked.invoked.borrow().is_empty());
+    let (target, arguments) = asked.invoked.borrow()[0].clone();
     assert_eq!(
         target,
         application_action_target(&workspace, "so.tilo.lang.tasks", "tasks", "new_task"),
@@ -1851,7 +1884,7 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
         changes.clone(),
         true,
     );
-    let mut session = session_over(Rc::new(Host::default()), Some(records), None);
+    let mut session = session_over(Rc::new(Asked::default()), Some(records), None);
     session.step(Duration::from_millis(1)).unwrap();
     // The workbook the Sheets window shows, as its app's index of this workspace names it.
     let here = workspace_in_front(&session);
@@ -1889,7 +1922,7 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
 #[test]
 fn the_search_chord_opens_the_search_with_a_window_in_front() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session_installing(Rc::new(Host::default()), &[("so.tilo.notes", "Notes")]);
+    let mut session = session_installing(Rc::new(Asked::default()), &[("so.tilo.notes", "Notes")]);
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(60),
         rate: 0,

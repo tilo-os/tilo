@@ -702,12 +702,14 @@ launchpad-open-app = Open an app
 launchpad-discuss = Discuss
 launchpad-notes = Notes
 launchpad-tasks = Tasks
+launchpad-agent = Connect an agent
 launchpad-meet = Start a call
 launchpad-invite = Invite people
 launchpad-activity = Catch up
 launchpad-discuss-detail = Open the shared conversation
 launchpad-notes-detail = Write ideas together
 launchpad-tasks-detail = Write down what needs doing
+launchpad-agent-detail = Let Claude Code work here
 launchpad-meet-detail = Talk with this workspace in Chat
 launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
@@ -800,7 +802,7 @@ overview-presence-many = { $count } people are here
 
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Welcome to Tilo
-browser-welcome-subtitle = Your team's shared computer. Everything you make is saved as you go and end-to-end encrypted.
+browser-welcome-subtitle = One workspace for you, your team and your AI agents, saved as you go and end-to-end encrypted.
 browser-welcome-hint = Arrow keys move, Enter opens
 
 # The workspace overview every desktop shows

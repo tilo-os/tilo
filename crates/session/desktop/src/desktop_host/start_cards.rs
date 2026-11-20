@@ -141,12 +141,36 @@ impl Widget for EmptyWorkspace {
         // The cards follow the apps the host has: an app installed or removed here changes what
         // every display's shell offers.
         let cards = (self.cards)();
-        let mut changed = cards != self.template.cards();
+        let mut changed = cards != self.template.offered();
         if changed {
             for pad in &mut self.pads {
                 pad.launchpad.set_cards(cards.clone());
             }
             self.template.set_cards(cards);
+        }
+        // Who sees what is made here decides the cards' words, and which cards: someone alone in
+        // a workspace has nobody to talk or call yet. Its people are its roster, as its policy
+        // keeps it; its agents and the software keeping it are not on it. No roster yet (nobody
+        // owns the workspace on this device yet) says nothing.
+        let people = self.handle.read(|tree| {
+            tree.active_workspace().map(|workspace| {
+                workspace
+                    .roster()
+                    .iter()
+                    .filter(|(person, _)| !workspace.is_blocked(person))
+                    .count()
+            })
+        });
+        let scope = match people {
+            Some(1) => crate::launchpad::WorkspaceScope::Private,
+            _ => crate::launchpad::WorkspaceScope::Shared,
+        };
+        if scope != self.template.scope() {
+            changed = true;
+            for pad in &mut self.pads {
+                pad.launchpad.set_scope(scope);
+            }
+            self.template.set_scope(scope);
         }
         let wants = self.handle.read(Self::wants);
         let same_displays = wants.len() == self.pads.len()

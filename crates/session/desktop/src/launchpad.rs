@@ -94,13 +94,15 @@ pub enum LaunchpadAction {
     Meet,
     Invite,
     Activity,
+    Agent,
 }
 
 impl LaunchpadAction {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Chat,
         Self::Notes,
         Self::Tasks,
+        Self::Agent,
         Self::Meet,
         Self::Invite,
         Self::Activity,
@@ -112,6 +114,7 @@ impl LaunchpadAction {
             Self::Chat => "chat",
             Self::Notes => "notes",
             Self::Tasks => "tasks",
+            Self::Agent => "agent",
             Self::Meet => "meet",
             Self::Invite => "invite",
             Self::Activity => "activity",
@@ -146,6 +149,7 @@ impl LaunchpadAction {
             Self::Chat | Self::Meet => Some(("so.tilo.chat", "Chat")),
             Self::Notes => Some(("so.tilo.notes", "Notes")),
             Self::Tasks => Some(("so.tilo.tasks", "Tasks")),
+            Self::Agent => Some(("so.tilo.console", "Console")),
             Self::Invite | Self::Activity => None,
         }
     }
@@ -172,6 +176,9 @@ impl LaunchpadAction {
                 resource: "chat.workspace".to_owned(),
                 action: "start-call".to_owned(),
             }),
+            // Console's own Connect place: the commands that add Tilo to an agent, and the agents
+            // already let in.
+            Self::Agent => Some(LaunchpadAppAction::connect_agent()),
             Self::Chat | Self::Notes | Self::Tasks | Self::Invite | Self::Activity => None,
         }
     }
@@ -182,6 +189,7 @@ impl LaunchpadAction {
             Self::Chat => t("launchpad-discuss"),
             Self::Notes => t("launchpad-notes"),
             Self::Tasks => t("launchpad-tasks"),
+            Self::Agent => t("launchpad-agent"),
             Self::Meet => t("launchpad-meet"),
             Self::Invite => t("launchpad-invite"),
             Self::Activity => t("launchpad-activity"),
@@ -198,6 +206,7 @@ impl LaunchpadAction {
             Self::Notes if private => t("launchpad-notes-detail-private"),
             Self::Notes => t("launchpad-notes-detail"),
             Self::Tasks => t("launchpad-tasks-detail"),
+            Self::Agent => t("launchpad-agent-detail"),
             Self::Meet if private => t("launchpad-meet-detail-private"),
             Self::Meet => t("launchpad-meet-detail"),
             Self::Invite if private => t("launchpad-invite-detail-private"),
@@ -211,9 +220,22 @@ impl LaunchpadAction {
             Self::Chat => Icon::MessageCircle,
             Self::Notes => Icon::FileText,
             Self::Tasks => Icon::ListChecks,
+            Self::Agent => Icon::Bot,
             Self::Meet => Icon::Phone,
             Self::Invite => Icon::UserPlus,
             Self::Activity => Icon::History,
+        }
+    }
+
+    /// Whether the verb is a card in a workspace of `scope`: talking and calling need someone else
+    /// there, and letting an agent in is what a person alone starts with, so a private workspace
+    /// offers connecting an agent in their place. Search and agents still find every verb.
+    #[must_use]
+    pub fn fits(self, scope: WorkspaceScope) -> bool {
+        match self {
+            Self::Chat | Self::Meet => scope != WorkspaceScope::Private,
+            Self::Agent => scope == WorkspaceScope::Private,
+            Self::Notes | Self::Tasks | Self::Invite | Self::Activity => true,
         }
     }
 
@@ -266,8 +288,10 @@ pub struct CollaborationLaunchpad {
     rect: Rect,
     /// The display the launchpad presents on when the canvas spans several.
     presentation: Option<Rect>,
-    /// The verbs this session offers as cards, in the order a person reads them: what its host
-    /// publishes for the apps it has ([`LaunchpadAction::offered`]).
+    /// The verbs this session offers, in the order a person reads them: what its host publishes
+    /// for the apps it has ([`LaunchpadAction::offered`]).
+    offered: Vec<LaunchpadAction>,
+    /// The cards shown: the offered verbs that fit the workspace's scope ([`LaunchpadAction::fits`]).
     cards: Vec<LaunchpadAction>,
     card_rects: Vec<Rect>,
     last_cursor: Point,
@@ -335,6 +359,7 @@ impl CollaborationLaunchpad {
         Self {
             rect: Rect::ZERO,
             presentation: None,
+            offered: Vec::new(),
             cards: Vec::new(),
             card_rects: Vec::new(),
             last_cursor: Point::ZERO,
@@ -363,14 +388,35 @@ impl CollaborationLaunchpad {
         self
     }
 
-    /// The verbs this session offers, in the order a person reads them.
+    /// The cards shown, in the order a person reads them.
     #[must_use]
     pub fn cards(&self) -> &[LaunchpadAction] {
         &self.cards
     }
 
+    /// The verbs this session offers, before the workspace's scope picks the cards among them.
+    #[must_use]
+    pub fn offered(&self) -> &[LaunchpadAction] {
+        &self.offered
+    }
+
     /// Offer `cards` instead, in the order a person reads them.
     pub fn set_cards(&mut self, cards: Vec<LaunchpadAction>) {
+        if cards == self.offered {
+            return;
+        }
+        self.offered = cards;
+        self.show_fitting();
+    }
+
+    /// Show the offered verbs that fit the workspace's scope.
+    fn show_fitting(&mut self) {
+        let cards: Vec<_> = self
+            .offered
+            .iter()
+            .copied()
+            .filter(|card| card.fits(self.scope))
+            .collect();
         if cards == self.cards {
             return;
         }
@@ -388,8 +434,15 @@ impl CollaborationLaunchpad {
         let mut pad = Self::new();
         pad.copy.clone_from(&self.copy);
         pad.scope = self.scope;
+        pad.offered.clone_from(&self.offered);
         pad.cards.clone_from(&self.cards);
         pad
+    }
+
+    /// What the workspace shown in is, as last said.
+    #[must_use]
+    pub const fn scope(&self) -> WorkspaceScope {
+        self.scope
     }
 
     /// Say what the workspace shown in is: private, shared or public.
@@ -397,6 +450,7 @@ impl CollaborationLaunchpad {
         if scope != self.scope {
             self.scope = scope;
             self.dirty = true;
+            self.show_fitting();
         }
     }
 
@@ -1309,8 +1363,12 @@ mod tests {
         let composition = frame.composition();
 
         let cards = collect(&composition.root, "LaunchpadCard");
-        assert_eq!(cards.len(), LaunchpadAction::ALL.len(), "{cards:#?}");
-        for (card, action) in cards.iter().zip(LaunchpadAction::ALL) {
+        let shown: Vec<_> = LaunchpadAction::ALL
+            .into_iter()
+            .filter(|card| card.fits(WorkspaceScope::Shared))
+            .collect();
+        assert_eq!(cards.len(), shown.len(), "{cards:#?}");
+        for (card, action) in cards.iter().zip(shown.iter().copied()) {
             assert_eq!(card.tag, Some("button"));
             assert!(card.focusable);
             assert_eq!(
@@ -1319,7 +1377,7 @@ mod tests {
             );
         }
         let details = collect(&composition.root, "LaunchpadCardDetail");
-        assert_eq!(details.len(), LaunchpadAction::ALL.len());
+        assert_eq!(details.len(), shown.len());
         assert!(
             details
                 .iter()
@@ -1402,6 +1460,41 @@ mod tests {
             };
             let hosted = every_card().with_copy(copy);
             assert_eq!(hosted.subtitle(), "Welcome", "a host's own words still win");
+        }
+
+        phase someone_alone_is_offered_an_agent_in_place_of_talking;
+        // Nobody else is there to talk or call yet: a private workspace offers connecting an agent
+        // instead, and a shared one keeps its conversation and its calls.
+        {
+            let mut pad = every_card();
+            assert_eq!(
+                pad.cards(),
+                [
+                    LaunchpadAction::Chat,
+                    LaunchpadAction::Notes,
+                    LaunchpadAction::Tasks,
+                    LaunchpadAction::Meet,
+                    LaunchpadAction::Invite,
+                    LaunchpadAction::Activity,
+                ]
+            );
+            pad.set_scope(WorkspaceScope::Private);
+            assert_eq!(
+                pad.cards(),
+                [
+                    LaunchpadAction::Notes,
+                    LaunchpadAction::Tasks,
+                    LaunchpadAction::Agent,
+                    LaunchpadAction::Invite,
+                    LaunchpadAction::Activity,
+                ]
+            );
+            assert_eq!(
+                LaunchpadAction::Agent.app_action(),
+                Some(LaunchpadAppAction::connect_agent()),
+                "the card opens Console where an agent is connected"
+            );
+            assert_eq!(pad.offered().len(), LaunchpadAction::ALL.len());
         }
 
         phase every_card_publishes_one_host_action_of_its_own;
