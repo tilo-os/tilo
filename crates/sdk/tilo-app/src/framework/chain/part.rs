@@ -167,8 +167,9 @@ impl PartType {
     /// `before` and minting `minted`. The answer names the text it wrote,
     /// whatever else the verb answers: where it landed is known here, even for
     /// a verb that named its item by what it says. A write that made items
-    /// names what it made instead, beside the answer. The changes are worked
-    /// out only for what reads them: as many as the write is large.
+    /// names what it made beside the answer, not instead of it. Only a write
+    /// that made items and answers nothing needs neither, and skips the diff:
+    /// the changes are worked out only for what reads them.
     pub(super) fn answered(
         &self,
         answering: Option<&str>,
@@ -177,7 +178,7 @@ impl PartType {
         minted: &[String],
     ) -> Option<serde_json::Value> {
         let answer = answering.zip(self.answer);
-        let wrote = minted.is_empty();
+        let wrote = answer.is_some() || minted.is_empty();
         if answer.is_none() && !wrote {
             return None;
         }
