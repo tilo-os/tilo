@@ -1688,6 +1688,7 @@ impl Replica {
             self.view.set_context(previous);
         }
         let output = output?;
+        let _lands = ui::tilo_resource::profiling::Phase::start("zz.lands");
         let landed = self.view.landed();
         self.place = landed
             .and_then(|envelope| self.read(|doc| self.kind.lands(doc, &envelope.action)))

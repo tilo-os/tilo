@@ -978,7 +978,11 @@ impl AttachedView {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<ActionOutput, ApiError> {
-        let (_, started) = self.start_as(invoker, address, arguments, confirmed)?;
+        let (_, started) = {
+            let _p = tilo_resource::profiling::Phase::start("zz.start_as");
+            self.start_as(invoker, address, arguments, confirmed)?
+        };
+        let _settle = tilo_resource::profiling::Phase::start("zz.settle_acted");
         // It answers once what it submitted is applied to the document; what
         // the view makes of that is made when the view is next read. A job
         // it started answers by itself.
@@ -1061,7 +1065,11 @@ impl AttachedView {
         ),
         ApiError,
     > {
-        if self.descriptor(address).is_none() {
+        let described = {
+            let _p = tilo_resource::profiling::Phase::start("zz.descriptor");
+            self.descriptor(address)
+        };
+        if described.is_none() {
             return Err(ApiError::Unknown(address.clone()));
         }
         self.landed.0.borrow_mut().clear();

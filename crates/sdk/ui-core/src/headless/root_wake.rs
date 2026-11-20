@@ -167,14 +167,21 @@ impl super::FrameHarness {
     /// the view out takes up what it brought.
     pub fn take_up_acted(&mut self) {
         self.invalidate_local();
-        self.drain_component_wakes();
+        {
+            let _p = tilo_resource::profiling::Phase::start("zz.drain_wakes");
+            self.drain_component_wakes();
+        }
         let _ = self.take_wake();
         // A frame that served a woken owner model retired the layout
         // dispatch reads; it is admitted again first.
         if let Err(error) = self.readmit_owner_service_layout() {
             tracing::warn!(?error, "headless: owner layout readmission refused");
         }
-        self.dispatch_and_poll_controls();
+        {
+            let _p = tilo_resource::profiling::Phase::start("zz.dispatch_poll");
+            self.dispatch_and_poll_controls();
+        }
+        let _p = tilo_resource::profiling::Phase::start("zz.write_out");
         let _ = self.write_out_documents();
     }
 

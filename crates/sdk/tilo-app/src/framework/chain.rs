@@ -638,6 +638,9 @@ impl ChainCore {
             return Rc::clone(published);
         }
         let _profile = tilo_resource::profiling::Phase::start("framework.chain_part_publish");
+        if std::env::var_os("ZZ_PART_LOG").is_some() || true {
+            eprintln!("ZZ part {index} rebuilt: was {:?} now {:?}", kept.at, at);
+        }
         let table = self.part.table;
         let parts = children();
         let carry = |child: tilo_actions::ResourceSpec| {

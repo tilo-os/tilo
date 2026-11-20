@@ -6822,7 +6822,10 @@ impl FrameHarness {
         tilo_actions::ApiError,
     > {
         self.invalidate_local();
-        self.pump_component_wakes();
+        {
+            let _p = tilo_resource::profiling::Phase::start("zz.pump_wakes");
+            self.pump_component_wakes();
+        }
         let invocation = ambient
             .and_then(|ambient| ambient.source_invocation)
             .unwrap_or_default();
@@ -6832,7 +6835,10 @@ impl FrameHarness {
                 .unwrap_or_default()
                 .with_invoker(invoker.clone());
             crate::invocation_scope::Continuation {
-                admitted: self.admitted_kind(address, arguments),
+                admitted: {
+                    let _p = tilo_resource::profiling::Phase::start("zz.admitted_kind");
+                    self.admitted_kind(address, arguments)
+                },
                 invoker,
                 context: Some(context),
                 refused: None,
@@ -6840,6 +6846,7 @@ impl FrameHarness {
                 deferred: None,
             }
         });
+        let _invoke_phase = tilo_resource::profiling::Phase::start("zz.invoke_bound");
         let started = match &delivered {
             Some(continuation) => {
                 self.acting_for.insert(invocation, continuation.clone());
@@ -6864,6 +6871,7 @@ impl FrameHarness {
                 Some((invocation, None)),
             ),
         };
+        drop(_invoke_phase);
         let started = started.map_err(crate::bound_dispatch::BoundActionError::into_api);
         if !matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted)) {
             self.dispatch_control_invocations();

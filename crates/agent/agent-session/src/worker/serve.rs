@@ -957,10 +957,23 @@ fn invoked(
         context.and_then(|context| appearance.map(|appearance| (invoker, context, appearance)))
     });
     match (decode(address), decode(arguments), scope) {
-        (Ok(address), Ok(arguments), Ok((invoker, context, appearance))) => output(
-            replica.invoke_within(invoker, context, appearance, &address, &arguments, confirm),
-            &address,
-        ),
+        (Ok(address), Ok(arguments), Ok((invoker, context, appearance))) => {
+            let began = std::time::Instant::now();
+            let (invoked, observed) = ui::tilo_resource::profiling::observe(|| {
+                replica.invoke_within(invoker, context, appearance, &address, &arguments, confirm)
+            });
+            if began.elapsed() > std::time::Duration::from_millis(15) {
+                let mut observed = observed;
+                observed.sort_by_key(|sample| std::cmp::Reverse(sample.elapsed_ns));
+                let top: Vec<String> = observed
+                    .iter()
+                    .take(20)
+                    .map(|sample| format!("{}={:.1}ms/{}", sample.phase, sample.elapsed_ns as f64 / 1e6, sample.calls))
+                    .collect();
+                eprintln!("WORKER-PROFILE {:?} {} {}", began.elapsed(), address.action, top.join(" "));
+            }
+            output(invoked, &address)
+        }
         (Err(reason), ..) | (_, Err(reason), _) | (.., Err(reason)) => Reply::Failed(reason),
     }
 }
