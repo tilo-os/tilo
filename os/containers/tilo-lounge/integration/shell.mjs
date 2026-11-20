@@ -160,7 +160,8 @@ export const nodesOf = tab => tab.evaluate(`(() => {
     if (!n) return;
     const s = n.semantics;
     if (s) out.push({role: s.role ?? null, name: s.name ?? '', value: s.value ?? null,
-      id: n.test_id ?? null, widget: n.widget ?? null, bounds: s.bounds ?? s.rect ?? n.rect ?? null});
+      id: n.test_id ?? null, widget: n.widget ?? null, focused: s.state?.focused ?? null,
+      bounds: s.bounds ?? s.rect ?? n.rect ?? null});
     (n.children || []).forEach(walk);
   };
   walk(globalThis.tiloMount?.state()?.semantics?.root);

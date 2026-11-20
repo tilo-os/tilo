@@ -82,6 +82,17 @@ const scrollTo = async (tab, id) => {
   fail(`the ${id} never came on screen as the page scrolled`);
 };
 const {search} = searcher({until, failed: fail, dump: async () => {}});
+// A field a person presses until the page says it holds the keyboard: the
+// first press on a window just opened can be the one that brings it in front.
+const focusField = async (tab, id, tries = 3) => {
+  for (let pressed = 0; pressed < tries; pressed += 1) {
+    if (!await pressWidget(tab, id)) fail(`the page offers no ${id} to press`);
+    const node = (await nodesOf(tab)).find(node => node.id === id);
+    if (node?.focused) return;
+    await sleep(300);
+  }
+  fail(`the ${id} never took the keyboard (${await visible(tab)})`);
+};
 // A search a person makes again where the page was still drawing: the chord
 // sent while a window mounts opens nothing, and pressing it again is what a
 // person does.
@@ -168,7 +179,7 @@ try {
     await pressAny(ada.tab, ['Other mail account'],
       `(${TREE_TEXT}).includes('Email address')`, 'choosing another provider');
     // A person presses the field and types the address, and nothing else.
-    if (!await pressWidget(ada.tab, 'settings.web.accounts.address')) fail('the address field is not where a person can press it');
+    await focusField(ada.tab, 'settings.web.accounts.address');
     await story.web.type(ada, mail.address);
     // What the field took, before the page is asked to look it up.
     const typed = (await nodesOf(ada.tab)).find(node => node.id === 'settings.web.accounts.address')?.value ?? '';
@@ -204,7 +215,7 @@ try {
       if (shown && !shown.includes(port)) fail(`Mail shows “${shown}” as the incoming server, not the provider's on port ${port}`);
       console.log(`Mail found the servers by itself: ${mail.imap} and ${mail.smtp} (${shown})`);
       await scrollTo(ada.tab, 'settings.web.accounts.password');
-      if (!await pressWidget(ada.tab, 'settings.web.accounts.password')) fail('the found step offers no password field');
+      await focusField(ada.tab, 'settings.web.accounts.password');
       await story.web.type(ada, mail.password);
     } else {
       await shows(ada.tab, 'Incoming server (IMAP)', 'the page asking for the servers', stepLimit(3));
@@ -218,7 +229,7 @@ try {
         ['settings.web.accounts.password', mail.password],
       ]) {
         await scrollTo(ada.tab, id);
-        if (!await pressWidget(ada.tab, id)) fail(`the page offers no ${id} to type in`);
+        await focusField(ada.tab, id);
         await story.web.type(ada, value);
       }
       // What the page said when it found nothing: a lookup that came back empty
