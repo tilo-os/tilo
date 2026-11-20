@@ -14,7 +14,7 @@
 // step failed or ran over its budget.
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, SHELL} from '../integration/waits.mjs';
-import {click, found, key, NODE_VALUES, openMarks, pageText, pressNamed, sealedLink, searcher, TREE_TEXT}
+import {click, found, key, NODE_VALUES, openMarks, pageText, pressNamed, sealedLink, searcher, TREE_TEXT, until}
   from '../integration/shell.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
 
@@ -24,19 +24,6 @@ if (!site || !out) {
   process.exit(2);
 }
 
-// What a wait that runs out says: what it waited for, and where the page was.
-const until = async (tab, expression, what, timeout = stepLimit(3)) => {
-  const value = await tab.waitFor(expression, {timeout}).catch(() => false);
-  if (value) return value;
-  const shown = await tab.evaluate(`JSON.stringify({
-    arrival: document.documentElement.dataset.arrival ?? null,
-    refusal: document.documentElement.dataset.refusal ?? null,
-    entry: document.documentElement.dataset.entry ?? null,
-    status: document.getElementById('status')?.textContent?.trim().slice(0, 200) ?? null,
-    windows: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => entry.label),
-  })`).catch(() => 'unreadable');
-  throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s (the page: ${shown})`);
-};
 const fail = message => { throw new Error(message); };
 const {search} = searcher({until, failed: fail, dump: async () => {}});
 const press = (tab, name) => pressNamed(tab, name);

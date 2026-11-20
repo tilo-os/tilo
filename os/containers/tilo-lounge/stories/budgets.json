@@ -61,6 +61,20 @@
       "Ada types a line in the note": 10000,
       "Grace sees Ada’s words": 1000
     },
+    "invited-activity": {
+      "Ada invites Grace and Lin into a workspace": 90000,
+      "Grace and Lin join the workspace": 90000,
+      "Ada sees who is here and what each is working on": 30000,
+      "Ada follows Grace and sees Grace’s screen live": 15000,
+      "Ada mentions Lin in Chat": 25000,
+      "Lin is told of the mention and opens it": 25000
+    },
+    "desktop-easy": {
+      "A newcomer opens their workspace": 15000,
+      "They add a strip": 15000,
+      "They switch to another workspace and back": 40000,
+      "They find their settings": 20000
+    },
     "large-workspace": {
       "The workspace is filled": 3600000
     },

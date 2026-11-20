@@ -109,13 +109,23 @@ export function recorder({id, out, logs = []}) {
     return `=== ${file.split('/').slice(-1)[0]} (${lines.length} lines)\n${lines.join('\n')}`;
   }).filter(Boolean).join('\n\n');
 
+  // Every browser the story started, closed once each when it ends: people
+  // may share one, each in a profile of their own.
+  const browsers = [];
+
   /** A person: a browser of their own with the shell's window, its page
-   * recorded frame by frame as the browser draws it. */
-  const person = async name => {
+   * recorded frame by frame as the browser draws it. `share` puts them in a
+   * browser the story already started, in a fresh profile of its own (a
+   * context), for a check whose node starts no more than one more. */
+  const person = async (name, {share = false} = {}) => {
     // A synthetic microphone and no prompt for it, as people.mjs's people get:
     // the people here can be called.
-    const launched = await launch({media: true});
-    const tab = await launched.tab();
+    let launched = share ? browsers.at(-1) : undefined;
+    if (!launched) {
+      launched = await launch({media: true});
+      browsers.push(launched);
+    }
+    const tab = share ? await launched.tab({context: await launched.context()}) : await launched.tab();
     await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
     await returning(tab);
     await recordLoading(launched, tab);
@@ -305,7 +315,7 @@ export function recorder({id, out, logs = []}) {
    * `error` is what stopped the story outside any step. */
   const finish = async ({error = null, extra = {}, extraOk = true} = {}) => {
     for (const one of people) await one.tab.send('Page.stopScreencast').catch(() => {});
-    for (const one of people) await one.launched.close().catch(closing => console.error(`closing ${one.name}'s browser: ${closing.message}`));
+    for (const browser of browsers) await browser.close().catch(closing => console.error(`closing a browser: ${closing.message}`));
     const videos = [];
     for (const one of people) {
       const video = encode(one);

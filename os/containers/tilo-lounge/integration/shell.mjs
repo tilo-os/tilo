@@ -95,6 +95,20 @@ export const found = (name, nth = 0) => `(() => {
   return match ? JSON.stringify(match) : '';
 })()`;
 export const find = async (tab, name, nth = 0) => (await tab.evaluate(found(name, nth))) || 'null';
+// [`found`] for the first node whose name matches `pattern` (a RegExp
+// source): the bar names some controls after the workspace, the strip or the
+// person they are about, so the words are read as they show rather than
+// spelled out beforehand.
+export const foundMatching = pattern => `(() => {
+  const found = [];
+  const node = n => { found.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
+  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+  const root = globalThis.tiloMount?.state()?.semantics?.root;
+  if (root) walk(root);
+  const pattern = new RegExp(${JSON.stringify(pattern)});
+  const match = found.find(n => pattern.test(n.name) && n.bounds);
+  return match ? JSON.stringify(match) : '';
+})()`;
 // A published control's `bounds` as its four edges, whichever shape they came in.
 export const boxOf = bounds => Array.isArray(bounds) ? bounds
   : [bounds.x0 ?? bounds.x, bounds.y0 ?? bounds.y,
@@ -155,6 +169,27 @@ export const nodesOf = tab => tab.evaluate(`(() => {
 /** [`pressNamed`] for a node a caller already has: one [`find`] answered. */
 export const pressNode = (tab, node, presses = null) =>
   pressBox(tab, node.bounds, presses && {name: node.name, node, presses});
+// The press a person makes on a control the page names by its own words, as
+// [`foundMatching`] reads them.
+export const pressMatching = async (tab, pattern, presses = null) => {
+  const node = JSON.parse(await tab.evaluate(foundMatching(pattern)));
+  if (!node) return false;
+  return pressNode(tab, node, presses);
+};
+// A wait for what a person would wait for, and what a wait that runs out
+// says when it did not come: what it waited for, and where the page was.
+export const until = async (tab, expression, what, timeout = stepLimit(3)) => {
+  const value = await tab.waitFor(expression, {timeout}).catch(() => false);
+  if (value) return value;
+  const shown = await tab.evaluate(`JSON.stringify({
+    arrival: document.documentElement.dataset.arrival ?? null,
+    refusal: document.documentElement.dataset.refusal ?? null,
+    entry: document.documentElement.dataset.entry ?? null,
+    status: document.getElementById('status')?.textContent?.trim().slice(0, 200) ?? null,
+    windows: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => entry.label),
+  })`).catch(() => 'unreadable');
+  throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s (the page: ${shown})`);
+};
 /** Every field the page lays a mirror of, as JSON `[{label, rect, style,
  * tiloRect, display, visibility}]`: what a press at a field is taken from, and
  * what says why none was found. */
@@ -582,6 +617,19 @@ export const shows = (tab, text, what, timeout) => tab.evaluate('globalThis.tilo
 
 /** Type `text` into the field the window publishes as `field`, as a person
  * would: press the field, then type into it. */
+// The same keys, one at a time and each answered before the next, for a
+// field that takes them as words: an app's note or a message, where the
+// search's whole query goes out as one gesture (`type`).
+export const typeText = async (tab, text, gap = 120) => {
+  for (const ch of text) {
+    await Promise.all([
+      event(tab, {type: 'keyDown', key: ch, text: ch}),
+      event(tab, {type: 'keyUp', key: ch}),
+    ]);
+    await sleep(gap);
+  }
+  await sleep(400);
+};
 export const typeInto = async (tab, field, text) => {
   if (!await pressNamed(tab, field)) throw new Error(`no ${field} field to type into`);
   await type(tab, text);

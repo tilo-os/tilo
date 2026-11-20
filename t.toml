@@ -6418,7 +6418,7 @@ outputs = ["/target/user-stories/{story}/index.html", "/target/user-stories/{sto
 evidence = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
 timeout_secs = 1800
 [check.matrix]
-story = ["invite-live", "wait-list-sign-up", "mail-password", "agent-mcp"]
+story = ["invite-live", "wait-list-sign-up", "mail-password", "agent-mcp", "invited-activity", "desktop-easy"]
 
 # The user stories whose people meet a server of their own: a Nextcloud that
 # serves a person's files over WebDAV and their calendar over CalDAV. Each
