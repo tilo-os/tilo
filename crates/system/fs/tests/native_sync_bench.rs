@@ -41,7 +41,8 @@
     clippy::map_unwrap_or,
     clippy::redundant_closure,
     clippy::too_many_lines,
-    clippy::unneeded_late_initialization,
+    clippy::needless_late_init,
+    clippy::redundant_closure_for_method_calls,
     reason = "in a benchmark these are the assertion or fixture arithmetic, not a hazard"
 )]
 

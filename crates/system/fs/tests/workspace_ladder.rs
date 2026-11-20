@@ -32,6 +32,7 @@
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
     clippy::too_many_lines,
     reason = "in a measurement these are the assertion or fixture arithmetic, not a hazard"
 )]
