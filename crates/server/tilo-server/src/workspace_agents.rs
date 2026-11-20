@@ -1,9 +1,10 @@
 //! The agents a workspace's host runs, around the clock, for the workspaces it governs.
 //!
-//! Who they are is the workspace's own record of its agents (Chat's `chat.agent`): every active
-//! agent made to run on the host ([`Agent::on_host`]) works here, whoever keeps it, and none
-//! other. What they are asked is what the workspace's people write: a message in a conversation
-//! the agent takes part in or that names it ([`chat::summons`]), and an issue given to the agent
+//! Who they are is the workspace's own record of its agents (Assistant's
+//! `tilo.workspace.agent`): every active agent made to run on the host ([`Agent::on_host`]) works
+//! here, whoever keeps it, and none other. What they are asked is what the workspace's people
+//! write: a message in a conversation the agent takes part in or that names it
+//! ([`chat::summons`]), and an issue given to the agent
 //! or written in once it has it ([`tasks_model::IssueAsk`]). A message asks too when something
 //! else started the turn for a person (a reminder that is due, an event that fired) through
 //! Chat's `ask-agent`: the agent then acts for the person its cause names ([`chat::cause`]). The
