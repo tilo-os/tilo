@@ -372,6 +372,9 @@ pub struct CameraApp {
     io_generation: u64,
     thumb_service: thumbnail::ThumbnailService,
     thumb_pending: HashMap<String, thumbnail::ThumbKey>,
+    /// Captures whose bytes the window asked its route for and waits for: the
+    /// preview is made on the pass after they arrive.
+    thumb_awaiting: HashSet<String>,
     thumb_failed: HashSet<String>,
     scan_generation: u64,
     pending_scan: Option<(String, u64)>,
@@ -521,6 +524,7 @@ impl CameraApp {
             io_generation: 0,
             thumb_service,
             thumb_pending: HashMap::new(),
+            thumb_awaiting: HashSet::new(),
             thumb_failed: HashSet::new(),
             scan_generation: 0,
             pending_scan: None,
@@ -1845,6 +1849,7 @@ impl CameraApp {
         self.captures = next.into_iter().collect();
         if changed {
             self.thumb_pending.clear();
+            self.thumb_awaiting.clear();
             self.thumb_failed.clear();
             self.thumbs.clear();
         }
@@ -3331,6 +3336,47 @@ mod tests {
             .to_owned();
         assert!(tilo_content::valid_hash(&hash), "{hash}");
         assert_eq!(lent.read(&hash), Some(picture));
+    }
+
+    /// A page that opens again holds none of its capture's bytes: the preview
+    /// waits for them from its route instead of failing, and is made on the
+    /// pass after they arrive.
+    #[test]
+    fn a_captures_preview_waits_for_bytes_the_page_lacks() {
+        let (mut app, _, _) = sample_app();
+        let route = ui::collaboration::RouteSpec::app("so.tilo.camera", uuid::Uuid::from_u128(1));
+        let link = ui::collaboration::document_content::ContentLink::of(&route);
+        let content = ui::collaboration::document_content::DocumentContent::store(
+            tilo_content::ContentStore::memory(),
+            std::sync::Arc::clone(&link),
+        );
+        app.content = content;
+        let picture = b"\x89PNG\r\n\x1a\n-a-capture".to_vec();
+        let source = tilo_content::ContentStore::memory().sealing();
+        let reference = source.put(&picture).expect("the capture is kept");
+        let address = tilo_content::content_address(&reference).expect("an address");
+        let capture = app.captures.first_mut().expect("a sample capture");
+        capture.kind = CaptureKind::Photo;
+        capture.media_id = Some(format!("{}{reference}", crate::media::MEDIA_PREFIX));
+        let capture = app.captures.first().expect("a sample capture").clone();
+        app.ensure_thumb(&capture);
+        assert!(
+            !app.thumb_failed.contains(&capture.id),
+            "bytes on their way are waited for, not failed"
+        );
+        assert!(
+            app.thumb_pending.is_empty(),
+            "no preview is asked for before its bytes"
+        );
+        link.arrive(
+            address.clone(),
+            source.read(&address).expect("the ciphertext"),
+        );
+        app.ensure_thumb(&capture);
+        assert!(
+            app.thumb_pending.contains_key(&capture.id),
+            "the preview is asked for once the bytes are here"
+        );
     }
 
     #[test]

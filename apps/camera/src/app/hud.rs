@@ -702,7 +702,35 @@ impl CameraApp {
         let address_key = media
             .as_deref()
             .and_then(|id| thumbnail::ThumbKey::of_address(&crate::media::address(id)?, size));
+        // Bytes this window does not hold are asked of its route once and
+        // waited for: a page that opens again reads its last capture's
+        // preview from the workspace rather than keeping none. Only bytes no
+        // device holds leave the capture without a preview.
+        if let Some(reference) = media
+            .as_deref()
+            .and_then(|id| id.strip_prefix(crate::media::MEDIA_PREFIX))
+            .filter(|_| address_key.is_some())
+            .filter(|reference| !self.content.has(reference))
+        {
+            if self.thumb_awaiting.insert(cap.id.clone()) {
+                let _ = self.content.open(reference);
+            }
+            if self.content.state(reference) == tilo_content::ContentState::Unavailable {
+                self.thumb_awaiting.remove(&cap.id);
+                self.thumb_failed.insert(cap.id.clone());
+            }
+            return;
+        }
+        self.thumb_awaiting.remove(&cap.id);
         let request = match (&cap.path, media) {
+            // Content-addressed bytes are the preview wherever they are kept; a
+            // path may name another device's copy, which this one cannot read.
+            (_, Some(id)) if address_key.is_some() => address_key.map(|key| {
+                let content = self.content.clone();
+                thumbnail::ThumbRequest::load(key, thumbnail::FileCategory::Image, move || {
+                    crate::media::read(&content, &id)
+                })
+            }),
             (Some(path), _) => {
                 let key = address_key.or_else(|| {
                     let meta = crate::files::metadata(path)?;
@@ -726,13 +754,7 @@ impl CameraApp {
                     )
                 })
             }
-            (None, Some(id)) => address_key.map(|key| {
-                let content = self.content.clone();
-                thumbnail::ThumbRequest::load(key, thumbnail::FileCategory::Image, move || {
-                    crate::media::read(&content, &id)
-                })
-            }),
-            (None, None) => None,
+            _ => None,
         };
         let Some(request) = request else {
             self.thumb_failed.insert(cap.id.clone());

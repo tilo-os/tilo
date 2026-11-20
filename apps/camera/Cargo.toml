@@ -74,6 +74,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 # A brokered camera whose permission prompt a test answers.
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner", "test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# A record's content route, whose content a page holds or waits for.
+uuid = { workspace = true }
 
 [lints]
 workspace = true
