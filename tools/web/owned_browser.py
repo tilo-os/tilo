@@ -17,8 +17,13 @@ stopping = False
 # their graceful close into an escalation.
 TERM_GRACE = float(os.environ.get('TILO_OWNED_BROWSER_TERM_GRACE_SECS', '2'))
 # Hard upper bound on a supervised browser's life so a forgotten driver script
-# cannot leave SwiftShader Chromium burning CPU/RAM indefinitely. 0 disables.
+# cannot leave SwiftShader Chromium burning CPU/RAM indefinitely. It counts from
+# when the browser starts, never the wait for a free browser. 0 disables.
 MAX_LIFETIME = float(os.environ.get('TILO_OWNED_BROWSER_MAX_LIFETIME_SECS', '600'))
+# How long a launch may wait for a free browser before it gives up with a
+# message: the queue is a wait, not a place a launch can sit forever. Counted
+# apart from the browser's lifetime. 0 disables.
+QUEUE_TIMEOUT = float(os.environ.get('TILO_OWNED_BROWSER_QUEUE_TIMEOUT_SECS', '900'))
 # Stop the browser if our immediate caller is reparented (orphaned when its own
 # parent agent/shell exits while a backgrounded driver script stays alive).
 FOLLOW_ANCESTOR = os.environ.get('TILO_OWNED_BROWSER_FOLLOW_ANCESTOR', '1') != '0'
@@ -214,7 +219,7 @@ def is_reaper(pid):
     return comm == 'systemd'
 
 
-def acquire_permit(caller_pid, watched_grandparent, deadline):
+def acquire_permit(caller_pid, watched_grandparent, queue_deadline):
     """Acquire one of MAX_CONCURRENT machine-wide flock permits before starting
     Chromium. Released automatically by the kernel on exit or crash.
 
@@ -236,8 +241,8 @@ def acquire_permit(caller_pid, watched_grandparent, deadline):
             print(f'owned browser: caller {caller_pid} was orphaned while waiting for a permit',
                   file=sys.stderr, flush=True)
             return None
-        if deadline is not None and time.monotonic() >= deadline:
-            print(f'owned browser: exceeded max lifetime ({MAX_LIFETIME:g}s) while waiting for a permit',
+        if queue_deadline is not None and time.monotonic() >= queue_deadline:
+            print(f'owned browser: waited {QUEUE_TIMEOUT:g}s for a free browser, none came, stopping',
                   file=sys.stderr, flush=True)
             return None
         for index in range(MAX_CONCURRENT):
@@ -274,16 +279,20 @@ def main():
     caller_pid = os.getppid()
     grandparent = ppid_of(caller_pid) if FOLLOW_ANCESTOR else None
     watched_grandparent = None if is_reaper(grandparent) else grandparent
-    started = time.monotonic()
-    deadline = started + MAX_LIFETIME if MAX_LIFETIME > 0 else None
+    queued = time.monotonic()
+    queue_deadline = queued + QUEUE_TIMEOUT if QUEUE_TIMEOUT > 0 else None
     status = None
     permit_fd = None
     try:
         if caller_gone():
             print('owned browser: the caller exited before the browser started', file=sys.stderr, flush=True)
         else:
-            permit_fd = acquire_permit(caller_pid, watched_grandparent, deadline)
+            permit_fd = acquire_permit(caller_pid, watched_grandparent, queue_deadline)
             if MAX_CONCURRENT <= 0 or permit_fd is not None:
+                # The lifetime the caller set counts what the browser does, so it starts with the
+                # browser: a launch that queued for a free one is not nearer its end for it.
+                started = time.monotonic()
+                deadline = started + MAX_LIFETIME if MAX_LIFETIME > 0 else None
                 browser = subprocess.Popen(sys.argv[1:])
                 last_ancestor_check = started
                 while not stopping and browser.poll() is None:

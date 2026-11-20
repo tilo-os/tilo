@@ -561,6 +561,96 @@ while not (root / 'browser.pid').exists() and time.monotonic() < deadline:
                         p.kill()
                         p.communicate(timeout=HANG_BOUND)
 
+    def test_queued_time_never_counts_against_the_browsers_lifetime(self):
+        """A launch that waited for a free browser gets its whole lifetime: the clock the caller
+        set starts with the browser, not with the wait. Under load a queued launch used to end
+        before it ever started."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            holder_started = root / 'holder.started'
+            queued_finished = root / 'queued.finished'
+            env = dict(
+                os.environ,
+                TILO_OWNED_BROWSER_MAX_CONCURRENT='1',
+                TILO_OWNED_BROWSER_PERMIT_DIR=str(root / 'permits'),
+                TILO_OWNED_BROWSER_MAX_LIFETIME_SECS='1.5',
+                TILO_OWNED_BROWSER_QUEUE_TIMEOUT_SECS='30',
+            )
+            holder = subprocess.Popen(
+                [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                 sys.executable, '-c',
+                 f'import pathlib, time; pathlib.Path({str(holder_started)!r}).touch(); time.sleep(2.5)'],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            queued = None
+            try:
+                deadline = time.monotonic() + HANG_BOUND
+                while not holder_started.exists():
+                    self.assertIsNone(holder.poll())
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
+                queued = subprocess.Popen(
+                    [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                     sys.executable, '-c',
+                     f'import pathlib, time; time.sleep(1.0); pathlib.Path({str(queued_finished)!r}).touch()'],
+                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                queue_began = time.monotonic()
+                _out, err = queued.communicate(timeout=HANG_BOUND)
+                waited = time.monotonic() - queue_began
+                self.assertEqual(queued.returncode, 0, err)
+                self.assertTrue(queued_finished.exists(),
+                                f'the queued browser never finished its own lifetime: {err}')
+                self.assertNotIn('exceeded max lifetime', err)
+                # It ran its 1.0 s after a wait longer than its own lifetime, and still finished.
+                self.assertGreater(waited, 1.5, f'it was not queued long enough to prove it: {waited:.2f}s')
+            finally:
+                for p in (holder, queued):
+                    if p is not None and p.poll() is None:
+                        p.kill()
+                        p.communicate(timeout=HANG_BOUND)
+                holder.wait(timeout=HANG_BOUND)
+
+    def test_the_queue_itself_is_bounded(self):
+        """A launch that no free browser comes for gives up with a message instead of waiting
+        forever."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            holder_started = root / 'holder.started'
+            queued_started = root / 'queued.started'
+            env = dict(
+                os.environ,
+                TILO_OWNED_BROWSER_MAX_CONCURRENT='1',
+                TILO_OWNED_BROWSER_PERMIT_DIR=str(root / 'permits'),
+                TILO_OWNED_BROWSER_MAX_LIFETIME_SECS='60',
+                TILO_OWNED_BROWSER_QUEUE_TIMEOUT_SECS='0.3',
+            )
+            holder = subprocess.Popen(
+                [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                 sys.executable, '-c',
+                 f'import pathlib, time; pathlib.Path({str(holder_started)!r}).touch(); time.sleep(5)'],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            queued = None
+            try:
+                deadline = time.monotonic() + HANG_BOUND
+                while not holder_started.exists():
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
+                queued = subprocess.Popen(
+                    [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+                     sys.executable, '-c',
+                     f'import pathlib; pathlib.Path({str(queued_started)!r}).touch()'],
+                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                began = time.monotonic()
+                _out, err = queued.communicate(timeout=HANG_BOUND)
+                self.assertLess(time.monotonic() - began, 3, 'the queue did not end the wait')
+                self.assertIn('waited 0.3s for a free browser', err)
+                self.assertFalse(queued_started.exists(), 'the browser started without a permit')
+            finally:
+                for p in (holder, queued):
+                    if p is not None and p.poll() is None:
+                        p.kill()
+                        p.communicate(timeout=HANG_BOUND)
+                holder.wait(timeout=HANG_BOUND)
+
 
 if __name__ == '__main__':
     unittest.main()
