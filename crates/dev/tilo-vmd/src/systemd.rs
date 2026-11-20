@@ -55,9 +55,11 @@ const USER_REGISTRY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
 /// Not in production images; the dev image installs it.
 const TILO_CONTROL: &str = "/usr/libexec/tilo/tilo-control";
-/// The groups `tilo-firstboot-user` gives a login, less `wheel`: `tilo-identity` reads the
-/// machine's device key, which provisioning an identity needs, and `video` opens `/dev/dri`.
-const ACCOUNT_USER_GROUPS: &str = "tilo-identity,video";
+/// The groups `tilo-firstboot-user` gives a login: `wheel`, as the person at a device is its
+/// administrator (Settings installs an extension through polkit for an active session of wheel),
+/// `tilo-identity` reads the machine's device key, which provisioning an identity needs, and
+/// `video` opens `/dev/dri`.
+const ACCOUNT_USER_GROUPS: &str = "wheel,tilo-identity,video";
 
 pub struct SystemdApply {
     layers_dir: PathBuf,
