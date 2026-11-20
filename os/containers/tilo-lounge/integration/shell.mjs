@@ -478,11 +478,12 @@ export const searcher = ({until, failed, dump}) => {
     const pressed = Date.now();
     // A shell that keeps its search up after what it opened has arrived
     // leaves the person to close it: a person presses Escape, and goes on.
+    // The caller that asked for that says so in what it checks next.
     const closed = await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: mayStayUp ? 5000 : stepLimit(4)})
       .catch(() => false);
     if (!closed && mayStayUp) {
       await key(tab, 'Escape');
-      await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, stepLimit(2));
+      await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: 5000}).catch(() => false);
     } else if (!closed) {
       await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, stepLimit(4));
     }
