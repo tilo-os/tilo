@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// The root helper; its presence, with a catalogue entry for the id, is what makes an extension
 /// offerable at all.
@@ -15,9 +14,6 @@ pub const CATALOGUE_DIR: &str = "/usr/share/tilo/system-extensions/sysext.d";
 /// Root-owned and world-readable, created by tmpfiles.d on every image, so it can be watched before
 /// anything was ever installed.
 pub const STATE_DIR: &str = "/var/lib/tilo/extensions";
-/// Resolving, downloading and assembling takes minutes on a slow link.
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_TEXT: usize = 300;
 const MAX_PARTS: usize = 16;
 const MAX_ID: usize = 63;
@@ -310,29 +306,76 @@ pub fn available(id: &ExtensionId) -> bool {
 /// Starts the one unit instance for `action` on `id` and waits until it finishes. The helper reports
 /// progress in the status file meanwhile, which [`watch`] delivers; stopping the caller does not stop
 /// the unit.
+///
+/// The unit is started over the system bus with interactive authorization allowed: polkit lets the
+/// person at the machine (an active local session of an administrator) start it at once, and asks
+/// anyone else through the session's own agent rather than refusing without a word.
 pub fn run(action: ExtensionAction, id: &ExtensionId) -> Result<(), String> {
     let unit = action.unit(id);
-    let output = bounded_command::run(
-        "systemctl",
-        &["start", "--wait", &unit],
-        None,
-        MAX_OUTPUT,
-        OPERATION_TIMEOUT,
-    )
-    .map_err(|error| format!("systemctl command failed: {error}"))?;
-    if output.status.success() {
+    let result = crate::block_on(start_and_wait(&unit))?;
+    if result == "done" {
         return Ok(());
     }
     let status = ExtensionStatus::read(id);
     if !status.last_error.is_empty() {
         return Err(status.last_error);
     }
-    let stderr = bounded_text(String::from_utf8_lossy(&output.stderr).trim());
-    Err(if stderr.is_empty() {
-        format!("{unit} failed; see journalctl -u {unit}")
-    } else {
-        stderr
-    })
+    Err(format!(
+        "{unit} ended as {result}; see journalctl -u {unit}"
+    ))
+}
+
+/// Start `unit` and answer how its job ended (`done`, `failed`, ...). systemd ends every job it
+/// accepted, so the wait ends with it.
+async fn start_and_wait(unit: &str) -> Result<String, String> {
+    use futures_util::StreamExt as _;
+    let failed = |error: zbus::Error| format!("could not start {unit}: {error}");
+    let bus = crate::system_bus().await?;
+    let manager = zbus::Proxy::new(
+        &bus,
+        "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+    )
+    .await
+    .map_err(failed)?;
+    // Signals are sent only to subscribers; the stream is open before the job can end.
+    manager
+        .call_method("Subscribe", &())
+        .await
+        .map_err(failed)?;
+    let mut removed = manager.receive_signal("JobRemoved").await.map_err(failed)?;
+    let job: zbus::zvariant::OwnedObjectPath = manager
+        .call_with_flags(
+            "StartUnit",
+            zbus::proxy::MethodFlags::AllowInteractiveAuth.into(),
+            &(unit, "replace"),
+        )
+        .await
+        .map_err(|error| match error {
+            zbus::Error::MethodError(name, message, _)
+                if name.as_str() == "org.freedesktop.DBus.Error.AccessDenied"
+                    || name.as_str()
+                        == "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired" =>
+            {
+                message.unwrap_or_else(|| "not allowed".into())
+            }
+            error => failed(error),
+        })?
+        .ok_or_else(|| format!("could not start {unit}: systemd answered no job"))?;
+    while let Some(signal) = removed.next().await {
+        let Ok((_, path, _, result)) =
+            signal
+                .body()
+                .deserialize::<(u32, zbus::zvariant::OwnedObjectPath, String, String)>()
+        else {
+            continue;
+        };
+        if path == job {
+            return Ok(result);
+        }
+    }
+    Err(format!("the system bus closed before {unit} ended"))
 }
 
 /// Calls `on_change` whenever the helper rewrites the status of `id`, from a background thread, until
