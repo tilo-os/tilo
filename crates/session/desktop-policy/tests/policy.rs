@@ -1371,7 +1371,7 @@ fn a_kept_window_takes_back_its_tab_and_closes_with_it() {
 }
 
 /// A window that keeps a smallest size is never cut off by a tab narrower than it: a
-/// fixed-size dialog — `PuTTY`'s Configuration is 456 px wide — takes a tab at least that wide,
+/// fixed-size window — `PuTTY`'s Configuration is 456 px wide — takes a tab at least that wide,
 /// and the strip scrolls to it. This is the same after an in-place restart, when the window
 /// comes back into the tab it stood in before whatever share that tab had.
 #[test]

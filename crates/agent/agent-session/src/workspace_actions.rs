@@ -1455,9 +1455,13 @@ impl Worker {
             }
             queue.take_sent(jobs, &self.shared.log);
             self.try_parts_again(None);
-            if let Some((at, job)) = queue.next() {
+            if let Some(queue::Waiting { queued, job, from }) = queue.next() {
                 self.expire_watchers();
-                self.admit(at, job);
+                match from {
+                    queue::Origin::Sent => self.admit(queued, job),
+                    queue::Origin::Returned(tried) => self.serve_returned(queued, job, tried),
+                }
+                queue.put_back(self.returned_to_queue(), &self.shared.log);
                 // Requests that keep coming never hold back a run's word:
                 // the page forgets a member it has not heard from.
                 if session_voice::next_due(&self.workspaces)

@@ -131,13 +131,16 @@ impl Worker {
         request: &InvokeRequest,
     ) -> Result<(Performed, Option<Unsaved>), InvocationReceipt> {
         let (mut outcome, mut unsaved, mut about) = self.performed(workspace_id, caller, request);
-        let mut stood = Vec::new();
         if waits(&outcome)
             && let Some(waiting) = about.as_deref()
             && let Some(permissions) = self.stands_for(workspace_id, caller, request, waiting)
         {
+            // What let it through is kept for the invocation, counted once it
+            // is done even where the attempt let through has to wait first.
+            if let Some(entry) = self.log().entries.get_mut(&request.invocation) {
+                entry.stood = permissions;
+            }
             (outcome, unsaved, about) = self.performed(workspace_id, caller, request);
-            stood = permissions;
         }
         if waits(&outcome)
             && let Some(about) = about
@@ -150,6 +153,14 @@ impl Worker {
         if outcome.is_ok()
             && let Some(link) = self.shared.link.get()
         {
+            // What let its person's action through is counted once it is
+            // done, also where the attempt let through had to wait first.
+            let stood = self
+                .log()
+                .entries
+                .get_mut(&request.invocation)
+                .map(|entry| std::mem::take(&mut entry.stood))
+                .unwrap_or_default();
             for permission in &stood {
                 link.permission_used(workspace_id, caller, permission);
             }

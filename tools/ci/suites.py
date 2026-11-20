@@ -17,6 +17,7 @@ import bisect
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import fnmatch
+import itertools
 import os
 from pathlib import Path
 import re
@@ -35,10 +36,21 @@ ALWAYS_RUN_SOURCES = ("tools/policy/run.sh", "tools/policy/steps.toml")
 # Test-shaped files outside these directories must be classified. Python tests
 # in tools/tests and .codex/hooks are discovered by tools/policy/run.sh.
 DISCOVERED_PYTHON_DIRS = ("tools/tests", ".codex/hooks")
+# Test-shaped paths that are not tests: a file whose generated contents a check
+# verifies, and a runner another suite takes. They belong to no suite, so they
+# are classified here rather than given a manifest entry of their own.
+NOT_TESTS = frozenset({
+    # The generated SDK types of the Speed Test app, which sdk-types verifies are current.
+    "sdk/python/src/tilo/types/speed_test.py",
+    # The serial-console runner os/tests/boot_assessment_rollback.sh takes.
+    "os/tests/serial_runner.sh",
+})
 TEST_NAME_PATTERNS = (
     "test_*.py", "*_test.py", "*_test.sh", "test-*.py", "test-*.sh", "*-test.sh",
     "*_invariants.sh", "*.test.mjs",
 )
+# A t.toml check's name, a templated family's or an instance of one.
+CHECK_NAME = re.compile(r"[a-z0-9][a-z0-9._/{}-]*")
 SUITE_TIMEOUT_SECONDS = 600
 
 
@@ -78,6 +90,8 @@ class Manifest:
     # Suites a required t check runs in its own image, which the hermetic groups' image
     # cannot: suite -> the check's name in t.toml.
     checks: dict[str, str] = field(default_factory=dict)
+    # The t check that executes an unrequired suite, whatever its trigger: suite -> name.
+    unrequired_checks: dict[str, str] = field(default_factory=dict)
     cargo: tuple[CargoReader, ...] = ()
     cargo_exempt: dict[str, str] = field(default_factory=dict)
 
@@ -143,15 +157,22 @@ def parse(text: str) -> Manifest:
                 raise ValueError(f"{suite}: covering check must name a t.toml check")
             checks[suite] = check
     unrequired: dict[str, str] = {}
+    unrequired_checks: dict[str, str] = {}
     for entry in data.get("unrequired", []):
-        if not isinstance(entry, dict) or not {"suite", "reason"} <= set(entry) <= {"suite", "reason", "workflow"}:
-            raise ValueError("unrequired entries must have suite and reason, and optionally workflow")
+        if (not isinstance(entry, dict)
+                or not {"suite", "reason"} <= set(entry) <= {"suite", "reason", "workflow", "check"}):
+            raise ValueError("unrequired entries must have suite and reason, and optionally workflow and check")
         suite = _path(entry["suite"], "unrequired suite")
         reason = entry["reason"]
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError(f"{suite}: unrequired entries need a reason")
         claim(suite, "unrequired")
         unrequired[suite] = reason
+        if "check" in entry:
+            check = entry["check"]
+            if not isinstance(check, str) or not CHECK_NAME.fullmatch(check):
+                raise ValueError(f"{suite}: check must name a t.toml check")
+            unrequired_checks[suite] = check
     cargo: list[CargoReader] = []
     packages: set[str] = set()
     for index, entry in enumerate(data.get("cargo", [])):
@@ -195,7 +216,8 @@ def parse(text: str) -> Manifest:
             raise ValueError(f"{path}: cargo-exempt entries need a reason")
         claim(path, "cargo-exempt")
         cargo_exempt[path] = reason
-    return Manifest(tuple(groups), covered, unrequired, checks, tuple(cargo), cargo_exempt)
+    return Manifest(tuple(groups), covered, unrequired, checks, unrequired_checks,
+                    tuple(cargo), cargo_exempt)
 
 
 def load(root: Path = ROOT) -> Manifest:
@@ -337,7 +359,7 @@ def run(root: Path, suites: list[str], jobs: int) -> int:
 
 def in_scope(path: str) -> bool:
     """Whether a tracked file looks like a test that must be classified."""
-    if path.startswith("vendor/"):
+    if path.startswith("vendor/") or path in NOT_TESTS:
         return False
     directory, _, name = path.rpartition("/")
     if directory == "os/tests" and name.endswith((".py", ".sh")):
@@ -376,6 +398,70 @@ def change_checks(root: Path) -> set[str]:
     }
 
 
+def check_commands(root: Path) -> dict[str, str]:
+    """Every check t.toml declares, and the command that executes its work.
+
+    A templated name is listed as the template and as each instance its matrix
+    makes (`dev-disk-boot-diagnostic-x86_64`), so an entry names either the
+    family or the architecture it means. A check that is not a command of its
+    own (a Cargo family) has no command here.
+    """
+    declared = tomllib.loads((root / "t.toml").read_text(encoding="utf-8")).get("check", [])
+    commands: dict[str, str] = {}
+    for check in declared:
+        name = check.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        command = check.get("run")
+        commands.setdefault(name, command if isinstance(command, str) else "")
+        matrix = check.get("matrix")
+        if not isinstance(matrix, dict):
+            continue
+        values: dict[str, tuple[str, ...]] = {}
+        for key, value in matrix.items():
+            if key == "set":
+                continue
+            if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+                values[key] = tuple(value)
+            elif isinstance(value, dict) and {"from_toml", "key"} <= set(value):
+                source = tomllib.loads((root / value["from_toml"]).read_text(encoding="utf-8"))
+                values[key] = tuple(
+                    entry[value["key"]] for entry in source.get(value["key"], [])
+                    if isinstance(entry, dict) and isinstance(entry.get(value["key"]), str))
+        for combination in itertools.product(*values.values()):
+            try:
+                expanded = name.format(**dict(zip(values, combination)))
+            except (KeyError, IndexError):
+                continue
+            commands.setdefault(expanded, commands[name])
+    return commands
+
+
+SINGLE_SCRIPT = re.compile(r"\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*bash\s+(\S+)(?:\s.*)?", re.S)
+# Shell syntax that makes a command more than one.
+SHELL_SYNTAX = ("&&", "||", ";", "|", "\n")
+
+
+def executes_suite(root: Path, command: str, suite: str) -> bool:
+    """Whether `command` executes `suite`: named in it, or in the one script it calls.
+
+    A script may call a neighbour by name (`"$dir/test-wait-list.sh"`), which is
+    how one flow of a suite's dispatcher is reached.
+    """
+    if suite in command:
+        return True
+    if any(syntax in command for syntax in SHELL_SYNTAX):
+        return False
+    match = SINGLE_SCRIPT.fullmatch(command)
+    script = match[1] if match else ""
+    if not script or script.startswith("-") or not (root / script).is_file():
+        return False
+    text = (root / script).read_text(encoding="utf-8", errors="replace")
+    if suite in text:
+        return True
+    return Path(script).parent == Path(suite).parent and Path(suite).name in text
+
+
 def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> list[str]:
     """Return policy violations for the manifest against the tracked tree."""
     manifest = manifest or load(root)
@@ -398,6 +484,18 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
             if check not in change_check_names:
                 problems.append(
                     f"{suite}: covering check {check} is not a check t.toml runs for a change")
+    if manifest.unrequired_checks:
+        commands = check_commands(root)
+        for suite, check in sorted(manifest.unrequired_checks.items()):
+            if check not in commands:
+                problems.append(f"{suite}: check {check} is not a check t.toml declares")
+            elif not executes_suite(root, commands[check], suite):
+                problems.append(f"{suite}: check {check} does not execute it")
+    for path in sorted(NOT_TESTS):
+        if path not in tracked_set:
+            problems.append(f"{path}: NOT_TESTS names it, but it is not a tracked file")
+        elif path in required | set(manifest.covered) | set(manifest.unrequired) | set(manifest.checks):
+            problems.append(f"{path}: NOT_TESTS names it, and {MANIFEST} lists it as a suite")
     for suite in sorted(required & tracked_set):
         if suite.endswith(".py"):
             text = (root / suite).read_text(encoding="utf-8")
@@ -808,7 +906,7 @@ def tracked_files(root: Path) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(dest="command")
     run_parser = commands.add_parser("run", help="run the named suites")
     run_parser.add_argument("suites", nargs="*")
     run_parser.add_argument("--all", action="store_true", help="run every declared suite")
@@ -816,10 +914,20 @@ def main(argv: list[str] | None = None) -> int:
                             help="run every suite of this group (repeatable)")
     run_parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     commands.add_parser("list", help="print every declared suite")
+    commands.add_parser("report", help="print the unrequired suites no t check executes yet")
     check_parser = commands.add_parser("check", help="verify every test-shaped file is accounted for")
     args = parser.parse_args(argv)
     if args.command == "list":
         print("\n".join(load(ROOT).suites()))
+        return 0
+    if args.command in (None, "report"):
+        manifest = load(ROOT)
+        missing = sorted(suite for suite in manifest.unrequired
+                         if suite not in manifest.unrequired_checks)
+        if missing:
+            print("\n".join(missing))
+        print(f"{len(missing)} of {len(manifest.unrequired)} unrequired suites name no t check yet",
+              file=sys.stderr)
         return 0
     if args.command == "check":
         problems = audit(ROOT, tracked_files(ROOT))
@@ -829,7 +937,8 @@ def main(argv: list[str] | None = None) -> int:
         if not problems:
             manifest = load(ROOT)
             print(f"suite manifest OK: {len(manifest.suites())} path-selected, "
-                  f"{len(manifest.covered)} covered, {len(manifest.unrequired)} unrequired; "
+                  f"{len(manifest.covered)} covered, {len(manifest.unrequired)} unrequired "
+                  f"({len(manifest.unrequired_checks)} naming a check); "
                   f"{len(manifest.cargo)} Cargo packages with cross-package inputs", file=sys.stderr)
         return 1 if problems else 0
     if sum(map(bool, (args.all, args.suites, args.group))) > 1:

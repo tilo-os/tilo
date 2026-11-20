@@ -237,8 +237,8 @@ impl KeptDocument {
 }
 
 struct Opened {
-    /// The covered snapshot the writes were merged onto.
-    snapshot: Option<super::AcceptedCheckpoint>,
+    /// The heads of the cleartext document the writes were merged onto.
+    base: Vec<ChangeHash>,
     /// How many writes of the history were opened.
     count: usize,
     /// The signature of the last of them.
@@ -271,14 +271,11 @@ impl Opened {
         self.document.committed_document()
     }
 
-    /// Whether `document`'s history continues the one this opened.
+    /// Whether `document`'s history continues the one this opened: its cleartext document is
+    /// the one these writes were merged onto, and the sealed writes opened are still the ones
+    /// the history starts with.
     fn continues(&self, document: &PeerDocument) -> bool {
-        let snapshot = match (&self.snapshot, &document.covered_snapshot) {
-            (None, None) => true,
-            (Some(kept), Some(now)) => std::sync::Arc::ptr_eq(&kept.0, &now.0),
-            _ => false,
-        };
-        snapshot
+        document.doc.committed_document().get_heads() == self.base
             && document.sealed.len() >= self.count
             && self.count.checked_sub(1).is_none_or(|last| {
                 document.sealed.iter().nth(last).map(|op| &op.signature) == self.last.as_ref()
@@ -462,7 +459,7 @@ impl StatePeer {
     }
 }
 
-/// `document`'s sealed history opened onto its covered snapshot, continuing what `kept` opened
+/// `document`'s sealed history opened onto its cleartext document, continuing what `kept` opened
 /// of it before. A history that does not open leaves nothing kept; one that waits for the rest
 /// of a write's segments keeps what opened.
 fn open_history<'a>(
@@ -471,32 +468,22 @@ fn open_history<'a>(
     maximum: usize,
     kept: &'a mut KeptDocument,
 ) -> Result<&'a Automerge, PeerDocumentReadError> {
-    let base = document
-        .covered_snapshot
-        .as_ref()
-        .map_or(0, |base| base.0.bytes.len());
-    if base > maximum {
-        return Err(PeerDocumentReadError::Capacity);
-    }
     let mut opened = match kept.0.take().filter(|opened| opened.continues(document)) {
         Some(opened) => opened,
         None => Opened {
-            snapshot: document.covered_snapshot.clone(),
+            base: document.doc.committed_document().get_heads(),
             count: 0,
             last: None,
-            size: base,
+            size: 0,
             transfers: crate::document_frame::Transfers::default(),
             captured: None,
             stuck: Vec::new(),
             waiting: Vec::new(),
-            document: match &document.covered_snapshot {
-                Some(base) => base
-                    .decoded()
-                    .map_err(PeerDocumentReadError::Opening)?
-                    .doc
-                    .clone(),
-                None => AutoCommit::new(),
-            },
+            // The document's cleartext part as it stands, which is what a sealed history opens
+            // onto ([`super::sealed_compaction::open_sealed_after`]): a compaction folds the
+            // writes it opened into it and leaves the checkpoint it was covered by behind, so
+            // opening onto that checkpoint read a document as it was before its compaction.
+            document: (*document.doc).clone(),
         },
     };
     // Admission order may differ from causal order on a keyless replica. A

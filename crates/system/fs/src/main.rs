@@ -1692,6 +1692,13 @@ async fn mount(
     println!("Iroh NodeID: {}", net.id());
     println!("Joined workspace.");
 
+    // A person's first open of a file this device has never fetched should not also pay for
+    // certifying the device and setting up the connection that fetches it: both start now, in
+    // the background, and the first read finds the route ready.
+    for peer in &bootstrap {
+        hydrator.warm_peer(peer.clone());
+    }
+
     let keeper = kept
         .clone()
         .map(|kept| spawn_keeper(namespace.clone(), kept));

@@ -203,22 +203,30 @@ impl Workspace {
             } else if from_others.contains(&route) {
                 self.undecided.remove(&route);
             }
-            self.documents
-                .get_or_insert_with(|| {
-                    WorkspaceDocuments::new(&route.cluster_id, self.reads.clone())
-                })
-                .landed(&route);
-            // A document the folder is made of changed: the files it indexes are read again. Any
-            // write at all can move what a caller may read, so what a find kept of that is let
-            // go here rather than answered stale.
-            if route.app_id == fs_protocol::tree::FILES_APP {
-                self.files.landed(&route.document);
-            }
-            self.readers.clear();
-            self.listings.clear();
-            self.named.clear();
+            self.write_landed(&route);
         }
         self.landed_from_others.extend(from_others);
+    }
+}
+
+impl Workspace {
+    /// A write landed in `route`: what a find keeps of the workspace is read again from what the
+    /// write made, and what a caller was answered as readable before it is let go. What a find
+    /// answers from reads this service's own store, so a write the service hands it is told of
+    /// here — the session's word of a landing answers for another device's write alone.
+    pub(super) fn write_landed(&mut self, route: &DocumentRoute) {
+        self.documents
+            .get_or_insert_with(|| WorkspaceDocuments::new(&route.cluster_id, self.reads.clone()))
+            .landed(route);
+        // A document the folder is made of changed: the files it indexes are read again. Any
+        // write at all can move what a caller may read, so what a find kept of that is let go
+        // here rather than answered stale.
+        if route.app_id == fs_protocol::tree::FILES_APP {
+            self.files.landed(&route.document);
+        }
+        self.readers.clear();
+        self.listings.clear();
+        self.named.clear();
     }
 }
 

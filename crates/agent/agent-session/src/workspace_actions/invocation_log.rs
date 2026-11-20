@@ -33,6 +33,10 @@ pub(super) struct Entry {
     pub(super) saving: bool,
     /// The token naming the person's answer, once they allowed it.
     pub(super) approval: Option<String>,
+    /// The permissions of the person whose always let it through unasked
+    /// ([`super::Worker::stands_for`]), by their ids: counted against them
+    /// once it is done, however many attempts of it wait first.
+    pub(super) stood: Vec<String>,
     /// What the person is asked about it, once it waits for their answer
     /// ([`super::bounded::About`]).
     pub(super) about: Option<Box<super::bounded::About>>,
@@ -133,6 +137,7 @@ impl InvocationLog {
                 asked: false,
                 saving: false,
                 approval: None,
+                stood: Vec::new(),
                 about: None,
                 workspace: None,
                 reads: false,

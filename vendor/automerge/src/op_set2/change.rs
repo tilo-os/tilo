@@ -197,52 +197,54 @@ where
 
     mapper.remap_actors(ops, change_actor);
 
-    use hexane::EncoderApi;
-
     let mapping = &mapper.mapping;
     let remap_opt_actor = |actor: Option<ActorIdx>| actor.map(|a| mapping[usize::from(a)].unwrap());
     let remap_actor = |a: ActorIdx| mapping[usize::from(a)].unwrap();
 
-    let obj_actor = hexane::Encoder::<Option<ActorIdx>>::encode_to_unless(
-        data,
-        ops.iter().map(T::obj_actor).map(&remap_opt_actor),
-        None,
-    );
-    let obj_ctr =
-        hexane::Encoder::<Option<u64>>::encode_to_unless(data, ops.iter().map(T::obj_ctr), None);
-    let key_actor = hexane::Encoder::<Option<ActorIdx>>::encode_to_unless(
-        data,
-        ops.iter().map(T::key_actor).map(&remap_opt_actor),
-        None,
-    );
+    // TILO(change-runs): each column takes the ops' values a run of equal
+    // values at a time, as a text's letters share most of theirs.
+    macro_rules! runs {
+        ($ty:ty, $values:expr) => {{
+            let mut enc = hexane::Encoder::<$ty>::default();
+            append_runs($values, |value, n| enc.append_n(value, n));
+            enc
+        }};
+    }
+    let obj_actor = runs!(
+        Option<ActorIdx>,
+        ops.iter().map(T::obj_actor).map(&remap_opt_actor)
+    )
+    .save_to_unless(data, None);
+    let obj_ctr = runs!(Option<u64>, ops.iter().map(T::obj_ctr)).save_to_unless(data, None);
+    let key_actor = runs!(
+        Option<ActorIdx>,
+        ops.iter().map(T::key_actor).map(&remap_opt_actor)
+    )
+    .save_to_unless(data, None);
     let key_ctr = hexane::DeltaEncoder::<Option<i64>>::encode_to_unless(
         data,
         ops.iter().map(T::key_ctr).map(|c| c.map(|c| *c)),
         None,
     );
-    let key_str =
-        hexane::Encoder::<Option<String>>::encode_to_unless(data, ops.iter().map(T::key_str), None);
-    let insert = hexane::Encoder::<bool>::encode_to(data, ops.iter().map(T::insert));
-    let action = hexane::Encoder::<Action>::encode_to(data, ops.iter().map(T::action));
-    let value_meta = hexane::Encoder::<ValueMeta>::encode_to(data, ops.iter().map(T::value_meta));
+    let key_str = runs!(Option<String>, ops.iter().map(T::key_str)).save_to_unless(data, None);
+    let insert = runs!(bool, ops.iter().map(T::insert)).save_to(data);
+    let action = runs!(Action, ops.iter().map(T::action)).save_to(data);
+    let value_meta = runs!(ValueMeta, ops.iter().map(T::value_meta)).save_to(data);
     let value_start = data.len();
     for bytes in ops.iter().filter_map(T::value) {
         data.extend_from_slice(&bytes);
     }
     let value = value_start..data.len();
-    let pred_count = hexane::Encoder::<u32>::encode_to(data, ops.iter().map(T::pred_count));
+    let pred_count = runs!(u32, ops.iter().map(T::pred_count)).save_to(data);
     let pred_iter = ops.iter().map(T::pred).flat_map(|id| id.iter());
-    let pred_actor = hexane::Encoder::<ActorIdx>::encode_to(
-        data,
-        pred_iter.clone().map(T::id_actor).map(&remap_actor),
-    );
+    let pred_actor = runs!(
+        ActorIdx,
+        pred_iter.clone().map(T::id_actor).map(&remap_actor)
+    )
+    .save_to(data);
     let pred_ctr = hexane::DeltaEncoder::<i64>::encode_to(data, pred_iter.map(|id| id.icounter()));
-    let expand = hexane::Encoder::<bool>::encode_to_unless(data, ops.iter().map(T::expand), false);
-    let mark_name = hexane::Encoder::<Option<String>>::encode_to_unless(
-        data,
-        ops.iter().map(T::mark_name),
-        None,
-    );
+    let expand = runs!(bool, ops.iter().map(T::expand)).save_to_unless(data, false);
+    let mark_name = runs!(Option<String>, ops.iter().map(T::mark_name)).save_to_unless(data, None);
 
     let cols = ChangeOpsColumns {
         obj_actor,
@@ -262,6 +264,20 @@ where
     };
 
     cols.into()
+}
+
+/// TILO(change-runs): `values` handed to `append_n` a run of equal values
+/// at a time.
+fn append_runs<V: PartialEq>(values: impl Iterator<Item = V>, mut append_n: impl FnMut(V, usize)) {
+    let mut values = values.peekable();
+    while let Some(value) = values.next() {
+        let mut n = 1;
+        while values.next_if(|next| *next == value).is_some() {
+            n += 1;
+        }
+        crate::work::wrote_change_run();
+        append_n(value, n);
+    }
 }
 
 // The many small mallocs in the remap_actors

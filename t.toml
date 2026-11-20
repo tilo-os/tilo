@@ -2288,6 +2288,45 @@ timeout_secs = 7200
 default = false
 on = ["dispatch"]
 
+# The sealed command line is measured, and the check can say so: a dev disk booted with a
+# software TPM runs its own boot-side rollback check with `tilo.generation=` sealed, then with
+# the token blanked out of the UKI in place, and the second run must fail on the generation
+# while PCR 11 still holds a measurement (os/dev/test-measured-boot.sh).
+[[check]]
+name = "measured-boot-x86_64"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "# The guest-side half is the image's /usr/libexec/tilo-rollback-boot-check, os/tests/rollback-boot-check.sh.\nbash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt tools/ci/packages/qemu-x86_64.txt && rm -rf /var/tmp/tilo-measured-boot && TILO_VM_DISPLAY=2d TILO_RUN=/var/tmp/tilo-measured-boot OUT=/target/measured-boot bash os/dev/test-measured-boot.sh /target/publish/os-dev-disk/x86_64/disk/disk.qcow2"
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/measured-boot/**"]
+cache = false
+git = true
+timeout_secs = 7200
+default = false
+on = ["dispatch"]
+
+# Owner-enrolled Secure Boot on a booted dev disk: keys generated and the image signed inside the
+# guest, enrolment refused while re-signing is off, and a reboot into enforcement that runs only
+# the owner's signed kernel (os/dev/test-secureboot.sh).
+[[check]]
+name = "secureboot-enrolment-x86_64"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt tools/ci/packages/qemu-x86_64.txt && rm -rf /var/tmp/tilo-secureboot && TILO_VM_DISPLAY=2d TILO_RUN=/var/tmp/tilo-secureboot bash os/dev/test-secureboot.sh /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --out /target/secureboot-enrolment"
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/secureboot-enrolment/**"]
+cache = false
+git = true
+timeout_secs = 7200
+default = false
+on = ["dispatch"]
+
 # A box set up once, branched into two that start configured and work on their own
 # (scripts/vm-e2e/branch.py): this tree's dev disk and tilo-vm, on libvirt in the micro-VM.
 [[check]]
@@ -4062,6 +4101,36 @@ default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# The compressed-module boot path end to end without hardware acceleration: the test stands in a
+# script for qemu-system, so a packaged .ko.zst, its signature trailer and the boot init's
+# enforcement all run on any node (os/kernel/tests/test-boot-smoke-compressed.sh).
+[[check]]
+name = "kernel-boot-smoke-compressed"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/kernel-smoke.txt && bash os/kernel/tests/test-boot-smoke-compressed.sh"
+cache = false
+timeout_secs = 1800
+default = false
+on = ["dispatch", "idle"]
+
+# The shipped launcher's sandbox on the built kernel: a diskless initramfs boots the kernel from
+# image-kernel, and the launcher writes under /tmp only where its Landlock rule allows one
+# writable path, with every unrelated write still denied (os/tests/kernel-landlock-private-tmp.sh).
+[[check]]
+name = "kernel-landlock-x86_64"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/kernel-smoke.txt tools/ci/packages/qemu-x86_64.txt && bash os/tests/kernel-landlock-private-tmp.sh /target/publish/kernel/x86_64/secureboot/vmlinuz /target/debug/tilo-launcher /target/kernel-landlock"
+needs = ["image-kernel-x86_64", "launcher-root-build"]
+requires = ["arch=x86_64"]
+outputs = ["/target/kernel-landlock/**"]
+cache = false
+git = true
+timeout_secs = 1800
+default = false
+on = ["dispatch"]
+
 [[check]]
 name = "development-signing-context-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
@@ -4780,6 +4849,26 @@ timeout_secs = 10800
 default = false
 on = ["dispatch"]
 
+# The complete graphical installation cycle on this tree's installer medium: the live installer
+# driven only through the actions its own console publishes, the encrypted target opened by the
+# passphrase after a cold power cycle, and the installed desktop's first login read off the
+# framebuffer (os/dev/test-installer-cycle.sh).
+[[check]]
+name = "installer-cycle-x86_64"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt tools/ci/packages/installer-cycle.txt && rm -rf /var/tmp/tilo-installer-cycle && TILO_VM_DISPLAY=2d TILO_ACCEL=kvm TILO_DISTROBOX= TILO_MEM=8192 TILO_VM_CYCLE=installer-cycle TILO_INSTALLER_CYCLE_STORAGE=/var/tmp/tilo-installer-cycle TILO_BOOT_WAIT_SECS=1800 TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS=3600 bash os/dev/test-installer-cycle.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 --graphics software --out /target/installer-cycle"
+needs = ["dev-installer-medium-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/installer-cycle/**"]
+cache = false
+git = true
+timeout_secs = 10800
+default = false
+on = ["dispatch"]
+
 [[check]]
 name = "os-dev-disk-{arch}"
 # Pinned: the OS assembler image it runs in carries the install's tools, and the only image it
@@ -4846,7 +4935,7 @@ arch = ["x86_64", "aarch64"]
 name = "os-dev-check-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-dev-check.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-check/{arch}"
+run = "bash tools/ci/publish/os-dev-check.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-check/{arch}"
 needs = ["os-dev-image-{arch}", "tilo-vm-binary-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
@@ -4863,7 +4952,7 @@ arch = ["x86_64", "aarch64"]
 name = "os-acceptance-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev-disk/{arch} /target/publish/os-acceptance/{arch}"
+run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev-disk/{arch} /target/publish/os-acceptance/{arch}"
 needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-disk-{arch}", "tilo-vm-binary-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
@@ -4876,6 +4965,22 @@ on = ["dispatch", "idle"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
+
+# The validation disk's QEMU arguments on a native ARM host with KVM: a paused guest takes the
+# read-only virtio drive and virtio serial, and quit answers over QMP, so the release check boots
+# a machine whose command line QEMU already accepted (os/tests/validation_drive_qemu.sh).
+[[check]]
+name = "validation-drive-aarch64"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/qemu-aarch64.txt && bash os/tests/validation_drive_qemu.sh"
+image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
+requires = ["arch=aarch64", "/dev/kvm"]
+isolation = "vm"
+cache = false
+timeout_secs = 900
+default = false
+on = ["dispatch"]
 
 [[check]]
 name = "sign-dev-os-{arch}"
