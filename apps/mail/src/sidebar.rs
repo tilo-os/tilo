@@ -58,7 +58,48 @@ pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
         sections.push(NavSection::untitled("all", vec![item]));
     }
     sections.extend(account_sections(state));
+    if let Some(kept) = kept_section(state) {
+        sections.push(kept);
+    }
     sections
+}
+
+/// The counts a folder of the mailbox the window shows carries: its unread
+/// inbox, live; how many drafts are kept and how much junk is unread, plain.
+fn shown_counts(state: &MailState, folder: Folder, item: NavItem) -> NavItem {
+    match folder {
+        Folder::Inbox => match u32_of_usize(state.mailbox.unread_count(folder)) {
+            0 => item,
+            unread => item.live_count(unread),
+        },
+        Folder::Drafts => match u32_of_usize(state.mailbox.count(folder)) {
+            0 => item,
+            drafts => item.count(drafts),
+        },
+        Folder::Junk => match u32_of_usize(state.mailbox.unread_count(folder)) {
+            0 => item,
+            unread => item.count(unread),
+        },
+        _ => item,
+    }
+}
+
+/// The workspace's mail where the person has no account of their own: what
+/// was copied in stands in the mailbox's own folders, every one of them
+/// reachable without an account.
+fn kept_section(state: &MailState) -> Option<NavSection> {
+    if !state.accounts.is_empty() || state.mailbox.messages.is_empty() {
+        return None;
+    }
+    let items = Folder::ALL
+        .into_iter()
+        .map(|folder| {
+            let item = NavItem::new(folder_row_id(0, folder), crate::i18n::t(folder.message()))
+                .icon(folder.icon());
+            shown_counts(state, folder, item)
+        })
+        .collect();
+    Some(NavSection::untitled("kept", items))
 }
 
 fn account_sections(state: &MailState) -> Vec<NavSection> {
@@ -91,23 +132,7 @@ fn account_sections(state: &MailState) -> Vec<NavSection> {
                             unread => item.live_count(unread),
                         };
                     }
-                    match folder {
-                        Folder::Inbox => match u32_of_usize(state.mailbox.unread_count(folder)) {
-                            0 => item,
-                            unread => item.live_count(unread),
-                        },
-                        // How many drafts are kept, and how much junk is
-                        // unread, are plain counts.
-                        Folder::Drafts => match u32_of_usize(state.mailbox.count(folder)) {
-                            0 => item,
-                            drafts => item.count(drafts),
-                        },
-                        Folder::Junk => match u32_of_usize(state.mailbox.unread_count(folder)) {
-                            0 => item,
-                            unread => item.count(unread),
-                        },
-                        _ => item,
-                    }
+                    shown_counts(state, folder, item)
                 })
                 // The outbox is not a folder of the mailbox: it is the
                 // messages that have not left it, so it stands at the end of
@@ -143,7 +168,8 @@ pub(crate) fn selected_row(state: &MailState) -> Option<String> {
     if state.outbox_open {
         return Some(outbox_row_id(state.outbox_account));
     }
-    (!state.accounts.is_empty()).then(|| folder_row_id(state.accounts.active, state.folder))
+    (!state.accounts.is_empty() || !state.mailbox.messages.is_empty())
+        .then(|| folder_row_id(state.accounts.active, state.folder))
 }
 
 pub fn sidebar(shared: &Shared, settings: Option<ActionBinding<String>>) -> NavList {
@@ -215,5 +241,27 @@ mod tests {
             "an account with no mail kept or fetched shows no counts"
         );
         assert_eq!(selected_row(&state), Some(folder_row_id(0, Folder::Inbox)));
+    }
+
+    #[test]
+    fn mail_without_an_account_still_lists_the_mailboxs_folders() {
+        let mut state = state();
+        state.accounts.accounts.clear();
+        let shown = sections(&state);
+        assert_eq!(shown.len(), 1, "the mailbox's own folders: {shown:?}");
+        let rows: Vec<_> = shown[0].items.iter().map(|item| item.id.clone()).collect();
+        let expected: Vec<_> = Folder::ALL
+            .into_iter()
+            .map(|folder| folder_row_id(0, folder))
+            .collect();
+        assert_eq!(rows, expected);
+        assert_eq!(selected_row(&state), Some(folder_row_id(0, state.folder)));
+
+        state.mailbox.messages.clear();
+        assert!(
+            sections(&state).is_empty(),
+            "an empty Mail offers to add an account instead"
+        );
+        assert_eq!(selected_row(&state), None);
     }
 }
