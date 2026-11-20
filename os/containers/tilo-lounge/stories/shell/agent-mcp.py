@@ -18,6 +18,7 @@ import json
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -74,8 +75,8 @@ class Working:
         reply = self.agent.reply() or {}
         return [tool.get("name") for tool in (reply.get("result") or {}).get("tools") or []]
 
-    def call(self, tool: str, arguments: dict, deadline: float = 60.0) -> str:
-        """One tool call, the person answering any sheet it raises; its text, or Failed."""
+    def answer(self, tool: str, arguments: dict, deadline: float = 60.0) -> tuple[str, bool]:
+        """(text, failed) of one tool call, the person answering any sheet it raises."""
         self.agent.send("tools/call", {"name": tool, "arguments": arguments})
         for _ in range(int(deadline)):
             if self.agent.hears(1.0):
@@ -88,7 +89,19 @@ class Working:
         except (KeyError, IndexError, TypeError):
             text = json.dumps(message)
         self.said.append({"tool": tool, "arguments": arguments, "answer": text[:4000]})
-        if result.get("isError") or "result" not in message:
+        return text, bool(result.get("isError")) or "result" not in message
+
+    def call(self, tool: str, arguments: dict, deadline: float = 60.0) -> str:
+        """One tool call's text, or Failed with what it answered. A call answered while its
+        change is still on its way ("pending <id>: …") is followed to how it ended, as an agent
+        asks `tilo_status`."""
+        text, failed = self.answer(tool, arguments, deadline)
+        until_end = time.monotonic() + deadline
+        while (pending := re.match(r"pending ([^:\s]+)", text)) and time.monotonic() < until_end:
+            time.sleep(0.25)
+            self.allows()
+            text, failed = self.answer("tilo_status", {"invocation_id": pending.group(1)})
+        if failed or text.startswith("pending "):
             raise Failed(f"{tool} {json.dumps(arguments)[:200]} failed: {text[:800]}")
         return text
 

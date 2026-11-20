@@ -157,11 +157,10 @@ for story in "${asked[@]}"; do
   { read -r TILO_SH_ADMISSION; read -r TILO_SH_MAIL_STAND_IN; read -r private_network; } < <(stacks_for_story "$story")
   export TILO_SH_ADMISSION TILO_SH_MAIL_STAND_IN private_network
   if [[ $(walk_of "$story") == shell ]]; then
-    # Each person a headless Tilo session of their own, on a scratch home under the story's
-    # directory; what a person reads the story by is kept, the sessions' installed state is not.
+    # Each person a headless Tilo session of their own, on a scratch home of its own; the
+    # driver keeps what a person reads the story by and removes the sessions' state.
     status=0
     PYTHONDONTWRITEBYTECODE=1 python3 "$stories/$driver" "$out" 2>&1 | tee "$out/driver.log" || status=$?
-    rm -rf "$out/people"/*/state
   elif ! on_stack "$story"; then
     # A story with no stack walks what it drives itself (its driver says what).
     status=0

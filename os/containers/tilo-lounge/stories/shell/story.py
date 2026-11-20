@@ -30,6 +30,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -68,8 +69,12 @@ class Person:
         self.story = story
         self.name = name
         self.key = slug(name)
-        self.state = story.out / "people" / self.key / "state"
+        # A session's state is the files layer's, which keeps it only on a local POSIX filesystem
+        # (a check's output directory may be a shared mount): it lives in the temporary directory,
+        # and what a person reads the story by (its logs) is kept beside the story.
+        self.state = Path(tempfile.mkdtemp(prefix=f"story-{self.key}-")) / "state"
         self.logs = story.out / "people" / self.key
+        self.logs.mkdir(parents=True, exist_ok=True)
         self.session = Session(self.state)
         self.frames = story.out / "frames" / self.key
         self.frames.mkdir(parents=True, exist_ok=True)
@@ -97,6 +102,13 @@ class Person:
 
     def stop(self) -> None:
         self.session.stop()
+
+    def forget(self) -> None:
+        """Stop the session, keep its own logs beside the story, and remove its state."""
+        self.stop()
+        if (self.state / "logs").is_dir():
+            shutil.copytree(self.state / "logs", self.logs / "session-logs", dirs_exist_ok=True)
+        shutil.rmtree(self.state.parent, ignore_errors=True)
 
     @property
     def running(self) -> bool:
@@ -148,11 +160,15 @@ class Person:
         return seen
 
     def log_tail(self, lines: int = 150) -> str:
-        logs = sorted(self.logs.glob("session-*.log"), key=lambda path: path.stat().st_mtime)
-        if not logs:
-            return "(no session log)"
-        text = logs[-1].read_text(errors="replace").splitlines()[-lines:]
-        return f"=== {logs[-1].name}\n" + "\n".join(text)
+        """The end of what this person's session said: its launcher's output and the session's
+        own log."""
+        said = []
+        launcher = sorted(self.logs.glob("session-*.log"), key=lambda path: path.stat().st_mtime)
+        for log in launcher[-1:] + [self.state / "logs/session.log"]:
+            if log.is_file():
+                text = log.read_text(errors="replace").splitlines()[-lines:]
+                said.append(f"=== {self.name}: {log.name}\n" + "\n".join(text))
+        return "\n\n".join(said) or f"=== {self.name}: no session log"
 
 
 class Story:
@@ -266,7 +282,7 @@ class Story:
         self._film.join(15)
         for one in self.people:
             with contextlib.suppress(Exception):
-                one.stop()
+                one.forget()
         videos = []
         for one in self.people:
             video = self._encode(one)
