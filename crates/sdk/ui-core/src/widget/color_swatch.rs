@@ -267,6 +267,9 @@ impl ColorSwatchFace {
 
 pub type SwatchPainter = dyn FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer);
 
+/// Works out a picker's swatch colours from the theme: one per swatch, in order.
+pub type ThemeColours = dyn FnMut(&Theme) -> Vec<Color>;
+
 /// A swatch fill's edge on `ground`: the edge derived from the fill, made to
 /// part the fill from the ground where the two are close. The derived edge
 /// is a translucent hairline, so it is measured as painted over the fill.
@@ -305,6 +308,12 @@ pub struct ColorSwatchPicker {
     cell_height: Option<f64>,
     /// Paints each swatch in place of its flat colour.
     painter: Option<Box<SwatchPainter>>,
+    /// Works out the swatches' colours from the theme they are drawn in.
+    theme_colours: Option<Box<ThemeColours>>,
+    /// The theme `theme_colours` last worked the colours out for.
+    coloured_for: Option<(crate::theme::ThemeDocument, crate::tokens::PresenceHue)>,
+    /// The swatch that carries a mark of its own, and the mark.
+    marked: Option<(usize, String)>,
     /// What the palette is called ("Accent"), said before the swatch a reader is on.
     name: Option<String>,
     /// The chosen ring's place: it slides from the swatch chosen before to the one chosen now.
@@ -339,6 +348,9 @@ impl ColorSwatchPicker {
             cell_width: None,
             cell_height: None,
             painter: None,
+            theme_colours: None,
+            coloured_for: None,
+            marked: None,
             name: None,
             ring: crate::motion::MotionValue::new(Rect::ZERO),
             ring_for: None,
@@ -448,6 +460,41 @@ impl ColorSwatchPicker {
     ) -> Self {
         self.painter = Some(Box::new(painter));
         self
+    }
+
+    /// Colour the swatches from the theme they are drawn in: `colours` answers one colour per
+    /// swatch, in order, and is asked again whenever the theme or the person's colour changes.
+    /// For a choice whose colours depend on the theme, such as an accent shown as it will look.
+    #[must_use]
+    pub fn with_theme_colours(
+        mut self,
+        colours: impl FnMut(&Theme) -> Vec<Color> + 'static,
+    ) -> Self {
+        self.theme_colours = Some(Box::new(colours));
+        self.coloured_for = None;
+        self
+    }
+
+    /// Mark swatch `index` with `mark`, drawn in its middle in an ink that reads on it: a
+    /// swatch that stands for a choice of its own rather than one more colour.
+    #[must_use]
+    pub fn with_mark(mut self, index: usize, mark: impl Into<String>) -> Self {
+        self.marked = Some((index, mark.into()));
+        self
+    }
+
+    fn colour_for(&mut self, theme: &Theme) {
+        let Some(colours) = self.theme_colours.as_mut() else {
+            return;
+        };
+        let current = (theme.document.clone(), theme.tokens.colors.you);
+        if self.coloured_for.as_ref() == Some(&current) {
+            return;
+        }
+        for (swatch, colour) in self.swatches.iter_mut().zip(colours(theme)) {
+            swatch.color = colour;
+        }
+        self.coloured_for = Some(current);
     }
 
     pub fn set_selected(&mut self, idx: Option<usize>) {
@@ -704,12 +751,16 @@ impl Widget for ColorSwatchPicker {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.colour_for(theme);
         let sliding = self.follow_ring(theme.motion());
         for (i, (swatch, rect)) in self.swatches.iter().zip(&self.swatch_rects).enumerate() {
-            let face = ColorSwatchFace::of(*rect, swatch)
+            let mut face = ColorSwatchFace::of(*rect, swatch)
                 .selected(self.selected == Some(i) && sliding.is_none())
                 .focused(self.focused && self.focus_index == i)
                 .hovered(self.hovered == Some(i));
+            if let Some((_, mark)) = self.marked.as_ref().filter(|(index, _)| *index == i) {
+                face = face.marker(mark.clone());
+            }
             match self.painter.as_mut() {
                 Some(painter) => {
                     painter(scene, transform, *rect, i, theme, text_renderer);
