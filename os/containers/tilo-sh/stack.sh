@@ -979,14 +979,17 @@ start_mail_stand_in() {
     (umask 077 && printf '%s\n' "$password" > "$dir/password")
   fi
   printf '%s\n' "$login" > "$dir/login"
-  autoconfig_document "$dir/config-v1.1.xml"
+  # The provider's names: the address's own domain, and the name a mail program
+  # asks for its settings document under.
+  local domain=${login#*@}
+  autoconfig_document "$dir/config-v1.1.xml" "$domain"
   : > "$log"
   # The settings document is served over https on the port every mail program
   # asks for, which a machine allows only to root or inside a network namespace
   # of its own (the story check brings the stack up in one). Where it cannot be
   # bound, a rehearsal names the servers by hand.
-  setsid "$programs/mail-stand-in" --name localhost --name "$site_host" \
-    --name "autoconfig.$site_host" --login "$login" \
+  setsid "$programs/mail-stand-in" --name localhost --name "$domain" \
+    --name "autoconfig.$domain" --login "$login" \
     --password-file "$dir/password" --write-certificate "$dir/certificate.pem" \
     --imap "127.0.0.1:$mail_stand_in_imap_port" --smtp "127.0.0.1:$mail_stand_in_smtp_port" \
     --imap-tls --autoconfig "127.0.0.1:$mail_stand_in_document_port" \
@@ -1009,14 +1012,15 @@ start_mail_stand_in() {
 }
 
 # The settings document a mail provider publishes at its address's domain for
-# mail programs to find its servers (RFC 6186's autoconfig): where this stack's
-# stand-in reads and hands in mail, and the address it takes.
+# mail programs to find its servers (RFC 6186's autoconfig) — the file its
+# domain names, for the address's domain `domain`: where this stack's stand-in
+# reads and hands in mail, and the address it takes.
 autoconfig_document() {
   cat > "$1" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <clientConfig version="1.1">
-  <emailProvider id="$site_host">
-    <domain>$site_host</domain>
+  <emailProvider id="$2">
+    <domain>$2</domain>
     <displayName>The local tilo.sh stack's mail</displayName>
     <displayShortName>the stack</displayShortName>
     <incomingServer type="imap">
