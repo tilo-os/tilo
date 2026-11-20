@@ -1583,12 +1583,18 @@ fn a_workspace_of_files_on_a_size_ladder() {
     let small_started = Instant::now();
     let mut buf = vec![0_u8; usize::try_from(small_bytes).unwrap_or(4096)];
     let mut small_written = 0_u64;
+    // What each part of the copy costs: the folder (a `mkdir` the kernel answers from its
+    // cache), the write itself, and the read-back the check makes of every twenty-fifth file.
+    let mut directories = Duration::ZERO;
+    let mut writes = Duration::ZERO;
+    let mut read_backs = Duration::ZERO;
     for i in 0..small_files {
         let dir = if i < flat_entries {
             m1.join("flat")
         } else {
             m1.join(format!("small/d{:03}", i / 1000))
         };
+        let made_at = Instant::now();
         if let Err(error) = std::fs::create_dir_all(&dir) {
             panic!(
                 "making {} before file {i} of {small_files}: {error} (the folder is {:?}); writer's log:\n{}",
@@ -1597,8 +1603,10 @@ fn a_workspace_of_files_on_a_size_ladder() {
                 pair.host.dump()
             );
         }
+        directories = directories.saturating_add(made_at.elapsed());
         fill(i, 0, &mut buf);
         let path = dir.join(format!("f{i:07}"));
+        let written_at = Instant::now();
         if let Err(error) = std::fs::write(&path, &buf) {
             panic!(
                 "writing file {i} of {small_files}, {}: {error}; writer's log:\n{}",
@@ -1606,9 +1614,11 @@ fn a_workspace_of_files_on_a_size_ladder() {
                 pair.host.dump()
             );
         }
+        writes = writes.saturating_add(written_at.elapsed());
         // A file written and acknowledged is readable at once, or the write was lost where the
         // application could not see it.
         if i % 25 == 0 {
+            let read_at = Instant::now();
             match std::fs::read(&path) {
                 Ok(read) if read == buf => {}
                 Ok(read) => eprintln!(
@@ -1622,6 +1632,7 @@ fn a_workspace_of_files_on_a_size_ladder() {
                     path.display()
                 ),
             }
+            read_backs = read_backs.saturating_add(read_at.elapsed());
         }
         small_written = small_written.saturating_add(small_bytes);
         if small_written >= small_total {
@@ -1649,6 +1660,24 @@ fn a_workspace_of_files_on_a_size_ladder() {
     let expected = (small_written.saturating_add(huge_written)) as f64;
     report(rung.as_str(), "total_bytes", expected, "B");
     report(rung.as_str(), "put_small_s", small_s.as_secs_f64(), "s");
+    report(
+        rung.as_str(),
+        "put_small_directories_s",
+        directories.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "put_small_write_s",
+        writes.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "put_small_read_back_s",
+        read_backs.as_secs_f64(),
+        "s",
+    );
     report(
         rung.as_str(),
         "put_small_mib_s",
