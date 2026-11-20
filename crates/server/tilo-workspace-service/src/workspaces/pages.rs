@@ -273,6 +273,7 @@ impl Workspaces {
             request @ (WorkspacesRequest::Servers { .. }
             | WorkspacesRequest::AddServer { .. }
             | WorkspacesRequest::RemoveServer { .. }) => self.page_servers(device, request).await?,
+            WorkspacesRequest::Delete { workspace } => self.page_delete(device, &workspace).await?,
         })
     }
 
@@ -619,10 +620,41 @@ impl Workspaces {
                 .map(|server| ServerEntry {
                     device: server.device,
                     person: server.person,
+                    label: server.label,
                     here: server.here,
                 })
                 .collect(),
         ))
+    }
+
+    /// A page's deletion of `workspace`, a workspace of the calling device's
+    /// person with nobody else in it: final, with everything this server keeps
+    /// of it. Whose a workspace is, the same check answers as for making one,
+    /// and the server's own person deletes any it governs.
+    async fn page_delete(
+        &self,
+        device: &DeviceCert,
+        workspace: &str,
+    ) -> Result<WorkspacesReply, CollaborationError> {
+        let person = device.user_public_key;
+        let theirs =
+            person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
+        if !theirs || !self.lists_to(device, workspace) {
+            return Err(CollaborationError::new(
+                tilo_server_session::workspaces::Refusal::NotYourOwn.to_reason(),
+            ));
+        }
+        {
+            let governed = self.workspace(workspace).await?;
+            let governed = governed.lock().await;
+            if self.people(&governed).people() > 1 {
+                return Err(CollaborationError::new("other people are in the workspace"));
+            }
+        }
+        self.delete(workspace)
+            .await
+            .map_err(CollaborationError::new)?;
+        Ok(WorkspacesReply::Deleted)
     }
 
     /// A page's pre-admission: an invitation anyone holding the token may

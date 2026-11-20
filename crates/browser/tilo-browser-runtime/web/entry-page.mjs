@@ -51,6 +51,7 @@ import {
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, rememberEntered,
   settleFailedWorkspace, unmarkOwnPairing, workspaceActions as workspaceSwitchActions, workspaceAt, workspaceChoices,
 } from './workspaces.mjs';
+import {LEFT_WORKSPACE} from './workspaces.mjs';
 import {initial, shownName} from './person.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
@@ -1001,6 +1002,8 @@ export async function startEntryPage({mode}) {
   let unnamed = null;
   /** Opening another of the person's workspaces, by host action id, once the page is open. */
   let switchWorkspace = null;
+  /** Opening another workspace after the person left one, by its uuid, once the page is open. */
+  let leaveWorkspace = null;
   /** Opening the window in front in a browser tab of its own, once the page is open. */
   let openInTab = null;
   /** The peer the host let in, once it did: it knows the workspace's name as its people last set it. */
@@ -1031,6 +1034,7 @@ export async function startEntryPage({mode}) {
       if (id === SET_UP.id) void setUp?.();
       else if (id === OPEN_IN_TAB) openInTab?.();
       else if (id.startsWith(OPEN_WORKSPACE)) void switchWorkspace?.(id);
+      else if (id.startsWith(LEFT_WORKSPACE)) void leaveWorkspace?.(id.slice(LEFT_WORKSPACE.length));
       else if (workspaceActions?.handles(id)) void workspaceActions.perform(id);
       else void identityActions?.perform(id, value);
     },
@@ -1613,6 +1617,16 @@ export async function startEntryPage({mode}) {
       switchWorkspace = id => {
         const choice = offered.find(candidate => candidate.id === id);
         return choice ? openWorkspace({choice, page, status}) : undefined;
+      };
+      // The person left the workspace `id`, or deleted it: another of theirs opens in its
+      // place, their own desktop when they have no other workspace, and the entry when they
+      // have none left. The one they left is never offered again.
+      leaveWorkspace = async id => {
+        const elsewhere = candidate => candidate.workspace && candidate.workspace !== id;
+        const choice = offered.find(elsewhere) ?? offered.find(candidate => candidate.workspace !== id) ?? null;
+        if (choice) return openWorkspace({choice, page, status});
+        await closeWorkspace(page);
+        loadPage(page.entry.base);
       };
     }
     // The person's own picture, as their profile keeps it.

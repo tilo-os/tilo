@@ -204,6 +204,9 @@ fn servers_section(servers: &Servers, parts: &Parts) -> Element {
         TextInput::from_state(&parts.server_origin)
             .with_id("ws-general-server-origin")
             .with_accessible_name(servers.origin_label.clone())
+            // What the field takes, in the field: a site field with no visible
+            // name reads as an empty box Add sits beside.
+            .with_placeholder(servers.origin_label.clone())
             .on_submit_view(move |_| submitting.ask_server_origin()),
     );
     let asking = parts.clone();

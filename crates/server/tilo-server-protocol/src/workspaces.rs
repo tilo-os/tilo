@@ -9,7 +9,8 @@
 //!
 //! `/workspaces` administers the host's workspaces for a device of the host's own
 //! user: create a governed workspace, enter it as its owner, invite and
-//! cancel invitations, change members' roles and remove them. `/invitation`
+//! cancel invitations, change members' roles and remove them, and delete a
+//! workspace of one's own with nobody else in it. `/invitation`
 //! says what an invitation offers ([`JoinReply::Invitation`]) to anyone
 //! holding it, before they have a device of their own to enter with: the
 //! page shows it to someone following a link before it makes them a person.
@@ -455,6 +456,12 @@ pub enum WorkspacesRequest {
         /// The server's site, or its device key.
         server: String,
     },
+    /// Delete `workspace`, with everything this server keeps of it: final,
+    /// and answered with [`WorkspacesReply::Deleted`]. A workspace of the
+    /// calling device's person, with nobody else in it, is theirs to delete.
+    Delete {
+        workspace: String,
+    },
 }
 
 /// The answer to a [`WorkspacesRequest`].
@@ -489,6 +496,8 @@ pub enum WorkspacesReply {
     /// [`WorkspacesRequest::AddServer`] and [`WorkspacesRequest::RemoveServer`]):
     /// the one asked first.
     Servers(Vec<ServerEntry>),
+    /// The workspace was deleted ([`WorkspacesRequest::Delete`]).
+    Deleted,
 }
 
 /// One server keeping a workspace, as a page lists it.
@@ -498,6 +507,10 @@ pub struct ServerEntry {
     pub device: String,
     /// The person the server keeps the workspace for, by their user public key, hex.
     pub person: String,
+    /// What the server calls itself: its site's name, or the name it gives its
+    /// own admin workspace, never a key. Its device's label when it names none.
+    #[serde(default)]
+    pub label: String,
     /// Whether this is the server asked: the one the page is connected to.
     pub here: bool,
 }

@@ -711,6 +711,14 @@ test('the page keeps switch actions together and dispatches them', async () => {
   assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'other'});
 });
 
+test('leaving a workspace opens another of the person’s in its place, never the one left', async () => {
+  const {calls, diagnostics} = await fixture();
+  choose(diagnostics, 'left-workspace:current');
+  await settled();
+  assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'other'});
+});
+
 test('a workspace offers the way back to the person’s own desktop, and their own desktop does not offer itself', async () => {
   const {calls, shown, diagnostics, page} = await fixture();
   page.link.format = route => `https://web.example/#/${route.target.scope.kind === 'own' ? 'me' : route.target.scope.workspace}`;

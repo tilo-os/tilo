@@ -116,6 +116,10 @@ export function listedAt(workspaces, scope, admittedWorkspace = null, membership
 /** Host action ids that open one of the person's workspaces. */
 export const OPEN_WORKSPACE = 'open-workspace:';
 
+/** Action ids that say the person left the workspace named after the colon: another of theirs
+ * opens in its place. */
+export const LEFT_WORKSPACE = 'left-workspace:';
+
 /** Whether `scope` (`{host | origin, workspace}`) is the web host's `home`
  * workspace; `homeWorkspace` is the workspace this browser was admitted to through its
  * entry. */

@@ -1553,6 +1553,12 @@ identifiers = ["test_host_holding"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/resources/tests.rs"]
 
 [[allow]]
+reason = "The workspace service's own field naming the person a certified device acts for (`ServiceIdentity::user_public_key` reached through `inner.host.cert`), which a page's deletion checks as making a workspace does."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/pages.rs"]
+
+[[allow]]
 reason = "The `record` field of the write the workspace's followers are told of (`ResourceWrite::record`), the type's own name for the document written."
 words = ["record"]
 identifiers = ["record"]

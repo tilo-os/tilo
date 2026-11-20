@@ -165,6 +165,76 @@ async fn a_page_renames_the_workspace_where_every_list_of_it_reads_the_name() {
     server.shutdown().await;
 }
 
+/// A page deletes a workspace of its own with nobody else in it: it goes from the server and
+/// every list of it, and one with people in it, or another person's, is not theirs to delete.
+#[tokio::test]
+async fn a_page_deletes_a_workspace_of_its_own_with_nobody_else_in_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let delete = || WorkspacesRequest::Delete {
+        workspace: workspace.clone(),
+    };
+    // A member who is not the workspace's cannot end it for everyone.
+    let refused = workspaces.page_workspaces(&ada, delete()).await;
+    assert!(
+        matches!(refused, WorkspacesReply::Refused(_)),
+        "a member deleted the workspace: {refused:?}"
+    );
+    // Nor can its owner while someone else is in it.
+    let refused = workspaces.page_workspaces(&owner, delete()).await;
+    assert!(
+        matches!(refused, WorkspacesReply::Refused(_)),
+        "the owner deleted a workspace with someone else in it: {refused:?}"
+    );
+    // A member leaves by taking themselves out, and the workspace stays for its owner.
+    let WorkspacesReply::Workspace(after) = workspaces
+        .page_workspaces(
+            &ada,
+            WorkspacesRequest::Remove {
+                workspace: workspace.clone(),
+                request_id: [9; 32],
+                user_public_key: ada.user_public_key,
+            },
+        )
+        .await
+    else {
+        panic!("a member leaves the workspace");
+    };
+    assert!(
+        !after
+            .members
+            .iter()
+            .any(|member| member.is_self && !member.removed),
+        "the member is no longer in it: {after:?}"
+    );
+    assert!(
+        matches!(
+            workspaces.page_workspaces(&owner, delete()).await,
+            WorkspacesReply::Deleted
+        ),
+        "the owner deletes their workspace with nobody else in it"
+    );
+    assert!(
+        workspaces.summary(&workspace).await.is_err(),
+        "a deleted workspace is not governed here"
+    );
+    let WorkspacesReply::Workspaces(listed) = workspaces
+        .page_workspaces(&owner, WorkspacesRequest::List)
+        .await
+    else {
+        panic!("the owner lists their workspaces");
+    };
+    assert!(
+        !listed.iter().any(|held| held.workspace == workspace),
+        "a deleted workspace is on no list: {listed:?}"
+    );
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_address_left_at_the_entry_is_on_the_wait_list_and_never_a_person_to_admit() {
     let dir = tempfile::tempdir().unwrap();
