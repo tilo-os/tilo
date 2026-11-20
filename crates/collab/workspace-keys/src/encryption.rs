@@ -2207,16 +2207,25 @@ impl KeyProvider {
             // reads its state on that thread, never on the host's runtime. A
             // caller polling this on a thread of its own (a session's main
             // thread, its search index) holds no runtime to hand it to, and
-            // is that thread already.
+            // is that thread already. A runtime of one thread reads on it too:
+            // handing the read off would let the thread's other tasks go on while
+            // the caller holds what it holds (a workspace's lock, as a resource
+            // write does), and one of them waiting on that with the thread
+            // blocked never lets the caller take the answer back.
             #[cfg(not(target_family = "wasm"))]
             {
                 let read = move || access.record_keys(workspace);
                 return match tokio::runtime::Handle::try_current() {
-                    Ok(runtime) => runtime
-                        .spawn_blocking(read)
-                        .await
-                        .unwrap_or_else(|error| Some(Err(error.to_string()))),
-                    Err(_) => read(),
+                    Ok(runtime)
+                        if runtime.runtime_flavor()
+                            == tokio::runtime::RuntimeFlavor::MultiThread =>
+                    {
+                        runtime
+                            .spawn_blocking(read)
+                            .await
+                            .unwrap_or_else(|error| Some(Err(error.to_string())))
+                    }
+                    _ => read(),
                 };
             }
             // A page has one thread: the read runs on it.
