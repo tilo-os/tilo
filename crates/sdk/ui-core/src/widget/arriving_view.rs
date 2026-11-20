@@ -1056,7 +1056,7 @@ impl Widget for ArrivingView {
 
     fn has_pending_visual_work(&self) -> bool {
         (self.answerable && self.showing() == Showing::Placeholder)
-            || self.fade.is_moving(crate::time::now())
+            || self.fade.is_moving(crate::motion::frame_now())
             || self.inner.has_pending_visual_work()
     }
 
