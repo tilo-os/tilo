@@ -140,8 +140,8 @@ pub(super) enum JsVoiceEvent {
 /// The layers of one source a call shows.
 #[derive(Serialize)]
 pub(super) struct JsWanted {
-    source: &'static str,
-    layers: Vec<&'static str>,
+    pub(super) source: &'static str,
+    pub(super) layers: Vec<&'static str>,
 }
 
 /// The name `web/voice-video.mjs` gives `source`.
@@ -297,7 +297,7 @@ pub(super) enum JsCallOperation {
 }
 
 impl JsCallOperation {
-    fn into_operation(self) -> Result<tilo_server_protocol::voice::CallOperation, JsError> {
+    pub(super) fn into_operation(self) -> Result<tilo_server_protocol::voice::CallOperation, JsError> {
         use tilo_server_protocol::voice::{CallOperation, Directions};
         Ok(match self {
             Self::Open {
