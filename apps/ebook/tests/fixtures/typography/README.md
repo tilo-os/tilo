@@ -33,6 +33,13 @@ progress slider ends in a percentage (`34b668de79b2681ba2ad3ce853129b80c20c1177`
 structure and the page frame are unchanged; they were rendered on the
 builder image.
 
+The current Linux references follow the five-look theme rework: the dark
+look's window ground, raised surface and ink tokens changed, so the chrome
+around the page moved. The sepia page, its text, the formula pixels, wrapping
+and geometry are unchanged (the page's pixel counts are identical in both
+readings, and the reader's own header row is outside the comparison). The
+Windows references were not re-rendered.
+
 The Linux math reference follows the superscript fix in the shared math
 layout: an exponent's baseline sits a fixed shift above its base's instead of
 its cell resting on the line, so `c²` and `x²` are raised, the inline formula
