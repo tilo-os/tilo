@@ -4,7 +4,7 @@ A desktop update restarts the compositor without logging the person out (the ses
 SIGUSR1, as tilo-vmd and a live update ask for it). Every host app runs behind an app keeper
 (crates/session/app-keeper), which keeps its Wayland state while no desktop is there. This check
 opens a GPU-rendered app (alacritty, OpenGL), a shared-memory one (foot) and an X11 one (xterm),
-gives each work that is saved nowhere (a running loop, typed scrollback), restarts the desktop in
+the last in a workspace of its own so the others stand in one behind it, gives each work that is saved nowhere (a running loop, typed scrollback), restarts the desktop in
 place, and then requires the same processes, their windows back in their own tabs and workspaces
 (the X11 one on the same X server), the loop's output still drawn and typed keys reaching them;
 finally a logout ends every one of them and leaves no keeper behind, and the login after it opens
@@ -150,7 +150,11 @@ def kept_through_restart(ctx, res):
     ticks = f"acc-{token}-ticks"
     opened = {}
     for n, app in enumerate(KEPT_APPS):
-        # The first opens on a desktop of its own; the next ones beside it.
+        # The first opens on a desktop of its own; the next ones beside it, and the last in a
+        # workspace of its own, so the others stand in a workspace behind the one in front: a
+        # login reads that one's layout as it reads every other.
+        if n == len(KEPT_APPS) - 1 and n > 0:
+            ctx.vm.invoke(core.SESSION, core.CHROME_NEW_WORKSPACE, {"name": f"acc-{token}"})
         gid, sid, procs = _open(ctx, res, app) if n == 0 else _open_beside(ctx, app)
         frame = _frame(ctx, sid)
         place = place_of_surface(ctx.state(), sid)
@@ -242,7 +246,8 @@ def kept_through_restart(ctx, res):
     expect(not still, f"a logout ended every kept app and keeper (still running: {still})")
     expect(not dirs, f"a logout left no keeper directory ({dirs})")
 
-    # The login after the logout opens each app again, each in the tab it was left in.
+    # The login after the logout opens each app again, each in the tab it was left in: those of
+    # the workspace behind the one in front too.
     def reopened():
         state = ctx.state()
         places = {}
