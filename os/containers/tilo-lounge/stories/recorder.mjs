@@ -223,6 +223,12 @@ export function recorder({id, out, logs = []}) {
     }
     console.log(`STEP ${index} ${record.status.toUpperCase()} ${(record.ms / 1000).toFixed(1)}s/${(budget / 1000).toFixed(1)}s ${title}${record.why ? `: ${record.why}` : ''}`);
     if (error) {
+      // The check's log is kept longer than its evidence: what the pages and
+      // the services said while the step ran goes there too, the tail of each.
+      const tail = (text, lines) => text.split('\n').slice(-lines).join('\n');
+      for (const [name, lines] of said) console.log(`--- ${name}'s page said while it ran (last 60 lines)\n${tail(lines.join('\n'), 60)}`);
+      console.log(`--- the services logged while it ran (last 150 lines)\n${tail(loggedSince(marks) || '(nothing)', 150)}`);
+      if (error?.stack) console.log(`--- where it stopped\n${error.stack}`);
       stopped = record;
       throw new StoryStopped(record.why);
     }

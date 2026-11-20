@@ -177,7 +177,9 @@ def main() -> int:
     story_dir = pathlib.Path(sys.argv[1])
     verdict = judge(story_dir)
     (story_dir / "judge.json").write_text(json.dumps(verdict, indent=2))
-    print(f"JUDGE {'not needed' if verdict.get('applicable') is False else 'accepts' if verdict['accept'] else 'rejects'}: {verdict['summary']}")
+    word = ('not needed' if verdict.get('applicable') is False else 'not judged' if not verdict.get('judged')
+            else 'accepts' if verdict['accept'] else 'rejects')
+    print(f"JUDGE {word}: {verdict['summary']}")
     for problem in verdict.get("problems", []):
         print(f"  step {problem['step']}: {problem['severity']} {problem['kind']}: {problem['what']}")
     return 0
