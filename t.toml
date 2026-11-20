@@ -3880,22 +3880,41 @@ id_token = ["registry.tilo.so"]
 # from the same bytes (publish-rpms), and a build that installed from the unsigned one records
 # that, which the signing guard (oci-sign.sh, require_published_snapshot) refuses.
 
+# The package set's snapshot, resolved from Fedora once per set: `ref` where the registry holds the
+# set already, else the snapshot it built (a package set no tag has published yet), which the mirror
+# then takes into the registry.
 [[check]]
-name = "rpms-source-{arch}"
-# dnf installs from Fedora's mirrors, which are no fixed host list, and the resolution it makes
-# is what it leaves: its answer is the resolution's, so it is not pinned. Only what it leaves
-# behind — the set's reference — is what the checks above it read, and those are served.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms-source/{arch} --ref-only"
+name = "rpms-resolve-{arch}"
+# Pinned: dnf installs from Fedora's mirrors, which are no fixed host list, and the snapshot is
+# frozen by its package set: a set's first resolution is the set's snapshot, kept by t and never
+# resolved again, as a published tag is written once.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms-resolve/{arch} --ref-only"
 needs = ["os-assets", "rpm-package-set"]
 optional_needs = ["mirror-base"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
-# `ref` where the registry holds the set, the snapshot it built here where no tag does (a package
-# set no tag has published yet); the mirror then takes that one into the registry.
-outputs = ["/target/publish/rpms-source/{arch}/**"]
+outputs = ["/target/publish/rpms-resolve/{arch}/**"]
 timeout_secs = 10800
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "rpms-source-{arch}"
+# Asks the registry, in every run, whether a tag holds the set now (seconds), and else keeps the
+# snapshot rpms-resolve-ARCH resolved: a set mirrored or published since is read by its tag. The
+# registry's answer changes as sets are published, so it is not pinned; what it leaves — the set's
+# reference — is what the checks above it read, and those are served.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"] }
+run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms-source/{arch} --ref-only --resolved /target/publish/rpms-resolve/{arch}"
+needs = ["rpms-resolve-{arch}", "rpm-package-set"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch={arch}"]
+# `ref` where the registry holds the set, the snapshot rpms-resolve-ARCH built where no tag does.
+outputs = ["/target/publish/rpms-source/{arch}/**"]
+timeout_secs = 1800
 default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -7234,15 +7253,16 @@ default = false
 # number after the last one published.
 [[check]]
 name = "generation-host"
-# Reads the series from the registry and installs jq and skopeo from Fedora's mirrors, which are
-# no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\n. tools/ci/publish/lib.sh\nuse_cosign\nrpm -q jq skopeo >/dev/null 2>&1 || dnf install -y --setopt=install_weak_deps=False jq skopeo >/dev/null\nmkdir -p /target/generation-host\nTILO_PUBLISH_REPO=registry.tilo.so/tilo/tilo-host TILO_ALLOW_EMPTY_SERIES=1 bash os/dev/next-generation.sh > /target/generation-host/generation\nprintf 'generation %s\\n' \"$(cat /target/generation-host/generation)\""
+# Reads the series from the registry, which a release moves on, so it is asked in every run and
+# not pinned (seconds); cosign checks each signature against Sigstore's log, as `pins` does. It runs
+# in the OS assembler image, which carries jq and skopeo, so it installs nothing.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"] }
+run = "set -euo pipefail\n. tools/ci/publish/lib.sh\nuse_cosign\nmkdir -p /target/generation-host\nTILO_PUBLISH_REPO=registry.tilo.so/tilo/tilo-host TILO_ALLOW_EMPTY_SERIES=1 bash os/dev/next-generation.sh > /target/generation-host/generation\nprintf 'generation %s\\n' \"$(cat /target/generation-host/generation)\""
 needs = ["signing-tools"]
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/generation-host/generation"]
-cache = false
 default = false
 
 [[check]]

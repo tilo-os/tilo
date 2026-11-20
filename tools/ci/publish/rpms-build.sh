@@ -11,13 +11,27 @@
 # (rpms-mirror.sh) mirrors when the job is trusted to write it. --ref-only is that pair's: it
 # copies nothing, and leaves the built snapshot where the registry could take none.
 #
-# usage: rpms-build.sh ARCH OUT [--ref-only]
+# --resolved DIR takes the snapshot an earlier step built (rpms-resolve-ARCH, which t keeps by
+# the package set: the hour a resolution from Fedora takes is spent once per set, not once per
+# build) instead of building one, where the registry holds no tag for the set. That step asks the
+# registry first too, so a set a tag holds already is never resolved; this asks again every time,
+# so a set mirrored or published since that step's answer is read by its tag.
+#
+# usage: rpms-build.sh ARCH OUT [--ref-only] [--resolved DIR]
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-arch=${1:?usage: rpms-build.sh ARCH OUT [--ref-only]}
-out=${2:?}
-ref_only=0
-[[ ${3:-} == --ref-only ]] && ref_only=1
+usage='usage: rpms-build.sh ARCH OUT [--ref-only] [--resolved DIR]'
+arch=${1:?$usage}
+out=${2:?$usage}
+shift 2
+ref_only=0 resolved=
+while (($#)); do
+  case $1 in
+    --ref-only) ref_only=1; shift ;;
+    --resolved) resolved=${2:?$usage}; shift 2 ;;
+    *) die "$usage" ;;
+  esac
+done
 case $arch in
   x86_64) platform=linux/amd64 ;;
   aarch64) platform=linux/arm64 ;;
@@ -50,6 +64,17 @@ if digest=$(tagged "$published"); then
   ref=registry.tilo.so/tilo/rpms@$digest
 elif digest=$(tagged "$mirrored"); then
   ref=registry.tilo.so/tilo/rpms@$digest
+elif [[ -n $resolved && -f $resolved/ref ]]; then
+  # Asked when the set was in the registry already, and tags are written once.
+  ref=$(cat "$resolved/ref")
+elif [[ -n $resolved ]]; then
+  [[ -s $resolved/image.oci.tar && -f $resolved/digest ]] \
+    || die "$resolved names neither a snapshot reference nor a snapshot it built"
+  rm -f -- "$out/epoch" "$out/ref"
+  for file in image.oci.tar digest epoch; do
+    [[ ! -f $resolved/$file ]] || cp --reflink=auto -f -- "$resolved/$file" "$out/$file"
+  done
+  printf 'no tag holds this package set yet: %s keeps the snapshot %s resolved\n' "$out" "$resolved"
 else
   # The package set rpm-package-set derived from the OS Containerfiles, where the check gave it:
   # the snapshot is keyed by that list, not by the Containerfiles, which change far more often
