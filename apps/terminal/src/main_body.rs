@@ -2080,7 +2080,11 @@ impl TerminalWidget {
     }
 
     pub(crate) fn import_previous_history(&self) -> Result<usize, String> {
-        let history = self.commands.history.as_ref().ok_or("the workspace history is unavailable")?;
+        let history = self
+            .commands
+            .history
+            .as_ref()
+            .ok_or("the workspace history is unavailable")?;
         crate::history::import_previous(&history.opener)
     }
 
@@ -2181,15 +2185,24 @@ impl TerminalWidget {
         };
         let b64 = base64::engine::general_purpose::STANDARD;
         let limit = ask.limit.clamp(1, 256);
-        let (entries, end) = self.commands.history.as_ref().filter(|history| {
-            history.record.may_read()
-                && !self.sessions.target.as_ref().is_some_and(|target| {
-                    matches!(target, crate::target::SessionTarget::Host | crate::target::SessionTarget::LinuxVm { .. })
-                })
-        }).map_or_else(
-            || (Vec::new(), true),
-            |history| {
-                let history = history.record.get();
+        let (entries, end) = self
+            .commands
+            .history
+            .as_ref()
+            .filter(|history| {
+                history.record.may_read()
+                    && !self.sessions.target.as_ref().is_some_and(|target| {
+                        matches!(
+                            target,
+                            crate::target::SessionTarget::Host
+                                | crate::target::SessionTarget::LinuxVm { .. }
+                        )
+                    })
+            })
+            .map_or_else(
+                || (Vec::new(), true),
+                |history| {
+                    let history = history.record.get();
                     let mut seen = std::collections::HashSet::new();
                     let mut lines = history
                         .matching(&ask.matching)
@@ -2210,9 +2223,9 @@ impl TerminalWidget {
                         bytes += encoded.len() + 1;
                         entries.push(encoded);
                     }
-                (entries, end)
-            },
-        );
+                    (entries, end)
+                },
+            );
         let answer = format!(
             "\x1b]133;H;k={key};s={};q={};e={}{}\x07",
             ask.skip,
@@ -2413,7 +2426,8 @@ impl TerminalWidget {
         let Some(history) = &self.commands.history else {
             return;
         };
-        if !history.record.may_read() || crate::history::is_device_shell(ran.environment.as_deref()) {
+        if !history.record.may_read() || crate::history::is_device_shell(ran.environment.as_deref())
+        {
             return;
         }
         if ran.actor.is_none() {

@@ -100,10 +100,8 @@ fn compare_content_rules(candidate: &Grant, current: &Grant) -> Ordering {
     let priority = |rule: &Grant| {
         if rule.grantee.person_id().is_some() {
             2
-        } else if matches!(rule.grantee, Grantee::CustomRole(_)) {
-            1
         } else {
-            0
+            u8::from(matches!(rule.grantee, Grantee::CustomRole(_)))
         }
     };
     priority(candidate).cmp(&priority(current)).then_with(|| {
