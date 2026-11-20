@@ -730,21 +730,42 @@ impl ChatApp {
 
     /// Show the items asked for since the last sync, on the chat `doc` holds: the conversation
     /// with an agent is read from it, as the `open-agent` action reads it.
+    ///
+    /// An item the chat does not hold yet is asked for again at the next sync, as an item a
+    /// launch names is: a notice of a message is read from what the workspace holds, which is no
+    /// promise that this window has taken that part in, and an item dropped here would never show.
     pub(crate) fn open_requested(&mut self, doc: &automerge::AutoCommit) {
-        let anchors = std::mem::take(&mut *self.opened.borrow_mut());
-        for anchor in anchors {
-            match opening(&anchor) {
-                Some(ChatEffect::OpenAgent { agent }) => {
-                    if let Ok(chat) = <crate::chat::Chat as tilo_resource::Resource>::read(doc) {
-                        self.open_agent(&agent, &chat);
-                    }
-                }
-                // An item gone since it was found shows nothing.
-                Some(effect) => {
-                    let _ = self.answer_effect(effect);
-                }
-                None => {}
+        let asked = std::mem::take(&mut *self.opened.borrow_mut());
+        let mut waiting = Vec::new();
+        for anchor in asked {
+            if !self.show_opened(&anchor, doc) {
+                waiting.push(anchor);
             }
+        }
+        if waiting.is_empty() {
+            return;
+        }
+        // What was asked for meanwhile stands after them: items show in the order they were asked
+        // for, however many syncs the first needs.
+        let mut opened = self.opened.borrow_mut();
+        waiting.append(&mut opened);
+        *opened = waiting;
+    }
+
+    /// Show the item `anchor` names, answering whether the window has it: `false` while the chat
+    /// does not hold it yet — a message whose part has not arrived, a conversation it has not
+    /// listed — and it is to be asked for again.
+    fn show_opened(&mut self, anchor: &str, doc: &automerge::AutoCommit) -> bool {
+        match opening(anchor) {
+            Some(ChatEffect::OpenAgent { agent }) => {
+                if let Ok(chat) = <crate::chat::Chat as tilo_resource::Resource>::read(doc) {
+                    self.open_agent(&agent, &chat);
+                }
+                true
+            }
+            Some(effect) => self.answer_effect(effect).is_ok(),
+            // An item no view of the chat shows.
+            None => true,
         }
     }
 }

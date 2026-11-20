@@ -1269,6 +1269,51 @@ fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
     assert!(app.revealed_range.is_none());
 }
 
+/// A notice of a message is read from what the workspace holds, which is no promise that the
+/// window it opens has taken that part in: the message shows once it has, and the open is not
+/// dropped meanwhile.
+#[test]
+fn an_opened_message_shows_once_the_window_has_taken_its_part_in() {
+    let identity = LocalIdentity::demo();
+    let mut workspace = crate::testing::demo_doc();
+    // The window is open on what it read before the message was written.
+    let mut app = projection_of(&workspace, identity);
+    let before = app.active_channel.clone();
+    let message = crate::testing::say(&mut workspace, "u_milo", "c_crit", "did you see?");
+    let anchor = ui::tilo_resource::items::item_resource_id::<crate::resource::Chat>(
+        "messages",
+        &ui::tilo_resource::Id::from_raw(message.as_str()),
+    );
+    // The person chooses the message's notice before its part has reached this window.
+    app.opened.borrow_mut().push(anchor.clone());
+    app.open_requested(&workspace.chat);
+    assert_eq!(
+        *app.opened.borrow(),
+        vec![anchor],
+        "a message the window does not hold yet is asked for again"
+    );
+    assert_eq!(
+        app.active_channel, before,
+        "the window shows nothing of it yet"
+    );
+    // Its next sync takes the part in, and the message it was asked for shows.
+    app.sync(&workspace.chat, &ROOT);
+    assert!(
+        app.opened.borrow().is_empty(),
+        "the message was shown once it arrived"
+    );
+    assert_eq!(
+        app.active_channel, "c_crit",
+        "the window shows its conversation"
+    );
+    assert_eq!(
+        app.location_name(),
+        "design-crit",
+        "the window is named by the conversation it shows"
+    );
+    assert_eq!(app.revealed_message.as_deref(), Some(message.as_str()));
+}
+
 #[test]
 fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
     use tilo_actions::remote::RemoteActionMessage;
