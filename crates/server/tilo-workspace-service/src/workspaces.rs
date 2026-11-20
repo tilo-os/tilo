@@ -945,6 +945,9 @@ struct WorkspacesInner {
     /// What each governed workspace is read through without its lock
     /// ([`Workspaces::reading`]).
     readings: readings::Readings,
+    /// What this device opened of the sealed resources its own roles read
+    /// ([`Workspaces::own_read`]).
+    own_opened: reads::OwnOpened,
     /// The action service the workspaces answer their members' devices on, as this
     /// host's own device ([`device_actions`]).
     action_service: tilo_peer_state::actions::ActionService,
@@ -1233,6 +1236,7 @@ impl Workspaces {
                 jobs,
                 workspaces,
                 readings: readings::Readings::default(),
+                own_opened: reads::OwnOpened::default(),
                 calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,

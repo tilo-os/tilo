@@ -189,10 +189,11 @@ impl KeptDocument {
     /// The kept record captured whole, at most `maximum` bytes: the bytes the last capture made
     /// (the document saved whole) with the changes since appended, rather than the document
     /// saved again. `None` when nothing is kept.
-    pub(crate) fn capture(
-        &mut self,
-        maximum: usize,
-    ) -> Option<Result<Vec<u8>, PeerDocumentReadError>> {
+    ///
+    /// # Errors
+    ///
+    /// The document exceeds `maximum`, or it does not save.
+    pub fn capture(&mut self, maximum: usize) -> Option<Result<Vec<u8>, PeerDocumentReadError>> {
         let opened = self.0.as_mut()?;
         let document = opened.document.committed_document();
         let heads = document.get_heads();

@@ -64,6 +64,11 @@ impl DocumentKeys {
         )
     }
 
+    /// The epoch of the keys: a rotation moves it.
+    pub(super) fn epoch(&self) -> u64 {
+        self.keys.epoch()
+    }
+
     /// Open any write of the record's history, under any epoch the keys
     /// hold, a compaction included.
     pub(super) fn open(&self) -> impl FnMut(&SignedOp) -> Result<Vec<u8>, String> + '_ {

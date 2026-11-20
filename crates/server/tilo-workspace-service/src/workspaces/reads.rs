@@ -21,6 +21,7 @@ use tilo_user_identity::DeviceCert;
 #[cfg(feature = "apps")]
 use super::SystemTime;
 use super::{DeviceKeys, GovernedWorkspace, Workspaces};
+use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_documents::DocumentRead;
 
 impl Workspaces {
@@ -63,8 +64,21 @@ impl Workspaces {
         let mut opened = keys
             .as_ref()
             .map(super::sealed_documents::DocumentKeys::open);
-        let mut kept = KeptDocument::default();
-        let document = peer.open_document(
+        // What this device opened of the resource before is read on, so a read opens only the
+        // writes sealed since rather than the whole history again; a second read of it waits
+        // for the first and reads on from what that one opened.
+        let used = (
+            reader,
+            keys.as_ref()
+                .map(super::sealed_documents::DocumentKeys::epoch),
+        );
+        let opening = self.inner.own_opened.of(workspace, app, resource);
+        let mut held = opening.lock_recover();
+        let mut kept = match held.take() {
+            Some((opened_with, kept)) if opened_with == used => kept,
+            _ => KeptDocument::default(),
+        };
+        let read = match peer.open_document(
             reader,
             (app, resource),
             tilo_clock::wall(),
@@ -73,43 +87,29 @@ impl Workspaces {
                 open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>
             }),
             &mut kept,
-        );
-        let document = match document {
-            Ok(document) => document,
+        ) {
+            Ok(document) => answer(document, since, maximum),
             // A write this copy knows of has not reached it yet: the next pass reads it.
-            Err(PeerDocumentReadError::Incomplete) => return Ok(DocumentRead::Pending),
-            Err(refused) => return Err(refused.to_string()),
+            Err(PeerDocumentReadError::Incomplete) => Ok(Answer::Read(DocumentRead::Pending)),
+            Err(refused) => Err(refused.to_string()),
         };
-        let heads: Vec<[u8; 32]> = document.get_heads().iter().map(|head| head.0).collect();
-        let revision = committed_document_revision(&document.get_heads());
-        // A reader's heads this device does not hold are answered with the whole document: the
-        // changes it would send are not the complete ones after them.
-        let holds_since = since.iter().all(|head| {
-            document
-                .get_change_by_hash(&automerge::ChangeHash(*head))
-                .is_some()
-        });
-        if since.is_empty() || !holds_since {
-            let bytes = saved_whole(document, maximum).map_err(|error| error.to_string())?;
-            return Ok(DocumentRead::Whole {
-                revision,
-                heads,
-                bytes,
-            });
+        let read = match read {
+            Ok(Answer::Whole { revision, heads }) => {
+                whole(&peer, &mut kept, reader, (app, resource), maximum).map(|bytes| {
+                    DocumentRead::Whole {
+                        revision,
+                        heads,
+                        bytes,
+                    }
+                })
+            }
+            Ok(Answer::Read(read)) => Ok(read),
+            Err(error) => Err(error),
+        };
+        if kept.is_open() {
+            *held = Some((used, kept));
         }
-        let since: Vec<automerge::ChangeHash> = since
-            .iter()
-            .map(|head| automerge::ChangeHash(*head))
-            .collect();
-        let bytes = changes_since(document, &since, maximum).map_err(|error| error.to_string())?;
-        if bytes.is_empty() && heads == since.iter().map(|head| head.0).collect::<Vec<_>>() {
-            return Ok(DocumentRead::Unchanged(revision));
-        }
-        Ok(DocumentRead::Changes {
-            revision,
-            heads,
-            bytes,
-        })
+        read
     }
 
     /// Every document `workspace` holds here, by its app and route.
@@ -359,12 +359,116 @@ impl Workspaces {
     }
 }
 
+/// What [`Workspaces::own_read`] answers from a document it opened.
+enum Answer {
+    /// Answered from its heads alone: unchanged, or the changes after the reader's.
+    Read(DocumentRead),
+    /// The document whole, at these heads: captured from what is kept of it.
+    Whole {
+        revision: [u8; 32],
+        heads: Vec<[u8; 32]>,
+    },
+}
+
+/// What `document` answers a reader holding `since`: only what changed after those heads, or the
+/// document whole where the reader holds none, or heads this device does not hold.
+fn answer(
+    document: &automerge::Automerge,
+    since: &[[u8; 32]],
+    maximum: usize,
+) -> Result<Answer, String> {
+    let heads: Vec<[u8; 32]> = document.get_heads().iter().map(|head| head.0).collect();
+    let revision = committed_document_revision(&document.get_heads());
+    // A reader's heads this device does not hold are answered with the whole document: the
+    // changes it would send are not the complete ones after them.
+    let holds_since = since.iter().all(|head| {
+        document
+            .get_change_by_hash(&automerge::ChangeHash(*head))
+            .is_some()
+    });
+    if since.is_empty() || !holds_since {
+        return Ok(Answer::Whole { revision, heads });
+    }
+    let since: Vec<automerge::ChangeHash> = since
+        .iter()
+        .map(|head| automerge::ChangeHash(*head))
+        .collect();
+    let bytes = changes_since(document, &since, maximum).map_err(|error| error.to_string())?;
+    if bytes.is_empty() && heads == since.iter().map(|head| head.0).collect::<Vec<_>>() {
+        return Ok(Answer::Read(DocumentRead::Unchanged(revision)));
+    }
+    Ok(Answer::Read(DocumentRead::Changes {
+        revision,
+        heads,
+        bytes,
+    }))
+}
+
+/// `app`'s `resource` saved whole for `reader`, at most `maximum` bytes: what its last capture
+/// handed out with the changes since appended where it is kept opened, rather than the document
+/// saved again; saved from the copy itself where it is held in the clear.
+fn whole(
+    peer: &StatePeer,
+    kept: &mut KeptDocument,
+    reader: [u8; 32],
+    route: (&str, &str),
+    maximum: usize,
+) -> Result<Vec<u8>, String> {
+    if let Some(captured) = kept.capture(maximum) {
+        return captured.map_err(|error| error.to_string());
+    }
+    let mut unkept = KeptDocument::default();
+    let document = peer
+        .open_document(
+            reader,
+            route,
+            tilo_clock::wall(),
+            maximum,
+            None,
+            &mut unkept,
+        )
+        .map_err(|error| error.to_string())?;
+    saved_whole(document, maximum).map_err(|error| error.to_string())
+}
+
 /// The chain `resource`, a chain's head, belongs to; `None` for any other resource.
 #[cfg(feature = "apps")]
 fn part_of(resource: &str) -> Option<&str> {
     match neighbour_wire::document_sync(resource) {
         neighbour_wire::DocumentSync::ChainHead { base } => Some(base),
         _ => None,
+    }
+}
+
+/// The device a resource was opened as, and the epoch of the keys that opened it, `None` for one
+/// held in the clear: what was opened under other keys (the workspace rotated them, as removing a
+/// member does) is let go, and the resource opens whole under the keys held now.
+type OpenedWith = ([u8; 32], Option<u64>);
+
+/// One resource as this service's own device last opened it; `None` until a read opened it.
+type OwnKept = std::sync::Arc<std::sync::Mutex<Option<(OpenedWith, KeptDocument)>>>;
+
+/// How many resources [`OwnOpened`] keeps opened at most.
+const OWN_OPENED: usize = 64;
+
+/// Sealed resources as this service's own device last opened them, by workspace, app and
+/// resource, so the next read opens only what was sealed since: a resource its session follows
+/// is opened once per write, not whole per read. What it holds is plaintext this device's keys
+/// opened, kept in its memory alone.
+#[derive(Default)]
+pub(super) struct OwnOpened(
+    std::sync::Mutex<std::collections::BTreeMap<(String, String, String), OwnKept>>,
+);
+
+impl OwnOpened {
+    /// What is kept of `app`'s `resource` of `workspace`, held while it is read.
+    fn of(&self, workspace: &str, app: &str, resource: &str) -> OwnKept {
+        let key = (workspace.to_owned(), app.to_owned(), resource.to_owned());
+        let mut kept = self.0.lock_recover();
+        if !kept.contains_key(&key) && kept.len() >= OWN_OPENED {
+            kept.pop_first();
+        }
+        std::sync::Arc::clone(kept.entry(key).or_default())
     }
 }
 
