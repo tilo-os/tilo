@@ -8,7 +8,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use super::FrameHarness;
+use super::{FrameHarness, RelayoutStats};
 use crate::app_core::AppCore as _;
 use crate::composition::{Composed, Composition, HtmlCx, css};
 use crate::widget::Widget;
@@ -62,6 +62,93 @@ struct Walk<'a> {
     /// The theme each grounded widget being composed hands what it holds, innermost last: a
     /// button on a card wears the card's on-ground colours, as its paint does.
     grounds: std::cell::RefCell<Vec<std::rc::Rc<crate::Theme>>>,
+    /// The colour of each of those grounds, innermost last.
+    ground_colours: std::cell::RefCell<Vec<[u8; 4]>>,
+    /// The composition a page was last handed, where it may be reused.
+    kept: Option<KeptParts<'a>>,
+    /// The ground each widget composed now stands on, by path, for the next frame's reuse.
+    stood_on: std::cell::RefCell<HashMap<String, [u8; 4]>>,
+}
+
+/// What a page was last handed of the frame ([`FrameHarness::compose_frame`]).
+#[derive(Default)]
+pub(super) struct Presented {
+    /// Bumped by every relayout that solved, built or remounted the layout, or met a new
+    /// viewport: what a kept composition read of the layout.
+    layout_revision: u64,
+    /// The composition it was last handed.
+    kept: Option<Kept>,
+    /// The composition it was handed before that one, while they differ.
+    before: Option<Composition>,
+    /// A frame since it was handed one left the widgets' paint marks for the next to clear.
+    drawn_owed: bool,
+}
+
+impl Presented {
+    /// A relayout's `stats`, at a viewport that changed or not (see `layout_revision`).
+    pub(super) const fn note_layout(&mut self, stats: &RelayoutStats, viewport_changed: bool) {
+        if stats.rebuilt || stats.remounted || stats.measured || viewport_changed {
+            self.layout_revision = self.layout_revision.wrapping_add(1);
+        }
+    }
+
+    /// Whether a frame clears the widgets' paint marks now: one that painted, or one before the
+    /// page was handed anything. A page's frame leaves them for the composition that shows them.
+    pub(super) const fn clears_marks(&mut self, paint: bool) -> bool {
+        if paint || self.kept.is_none() {
+            return true;
+        }
+        self.drawn_owed = true;
+        false
+    }
+}
+
+/// The composition a page was last handed ([`FrameHarness::compose_frame`]): what it
+/// read besides the widgets' own state, and the parts it composed.
+pub(super) struct Kept {
+    composition: Composition,
+    read: Read,
+    /// The ground each widget's part stood on, by path: a part whose ground changed under it
+    /// wears other colours, so it is composed again.
+    stood_on: HashMap<String, [u8; 4]>,
+}
+
+/// What a composition reads besides what each widget paints: the layout, the document and what
+/// it lets the person do, the window's size and density. A frame that moved none of it, a hover,
+/// a press's look, a focus ring, a chart's readout, changes only what its widgets paint.
+#[derive(PartialEq)]
+pub(super) struct Read {
+    layout: u64,
+    document: (Vec<automerge::ChangeHash>, usize),
+    presentation: u64,
+    permissions: Result<crate::permissions::DirectoryPermissionObservation, String>,
+    viewport: (u32, u32),
+    scale: u64,
+}
+
+/// The parts of the kept composition by path, and the grounds they stood on.
+struct KeptParts<'a> {
+    parts: HashMap<&'a str, &'a Composed>,
+    stood_on: &'a HashMap<String, [u8; 4]>,
+}
+
+impl<'a> KeptParts<'a> {
+    fn of(kept: &'a Kept) -> Self {
+        fn index<'a>(node: &'a Composed, parts: &mut HashMap<&'a str, &'a Composed>) {
+            parts.insert(node.path.as_str(), node);
+            for child in &node.children {
+                index(child, parts);
+            }
+        }
+        let mut parts = HashMap::new();
+        for root in std::iter::once(&kept.composition.root).chain(&kept.composition.layers) {
+            index(root, &mut parts);
+        }
+        Self {
+            parts,
+            stood_on: &kept.stood_on,
+        }
+    }
 }
 
 impl<'a> Walk<'a> {
@@ -101,6 +188,55 @@ impl<'a> Walk<'a> {
                                 < 0.5
                     })
             })
+    }
+
+    /// The part the kept composition holds for `widget` at `path`, when composing it again would
+    /// give the same: the widget, and every one under it, paints as it did ([`Widget::needs_redraw`]),
+    /// stands where it stood, scrolled as it was, on the same ground.
+    fn reuse(&self, node: NodeId, path: &str, widget: &dyn Widget) -> Option<Composed> {
+        let kept = self.kept.as_ref()?;
+        let before = *kept.parts.get(path)?;
+        let rect = widget.get_rect();
+        let ground = self.ground_colours.borrow().last().copied();
+        let same = before.widget == widget.name()
+            && before.rect.map(f64::to_bits)
+                == [rect.x0, rect.y0, rect.width(), rect.height()].map(f64::to_bits)
+            && kept.stood_on.get(path).copied() == ground
+            && before.scroll
+                == widget.primary_vertical_scroll().map(|region| {
+                    [
+                        region.metrics.offset,
+                        region.metrics.content,
+                        region.metrics.viewport,
+                    ]
+                })
+            && !widget.needs_redraw()
+            && !widget.needs_animation_frame();
+        if !same {
+            return None;
+        }
+        self.mark_placed(node);
+        let mut stood_on = self.stood_on.borrow_mut();
+        let mut carry = vec![before];
+        while let Some(part) = carry.pop() {
+            if let Some(&ground) = kept.stood_on.get(&part.path) {
+                stood_on.insert(part.path.clone(), ground);
+            }
+            carry.extend(&part.children);
+        }
+        Some(before.clone())
+    }
+
+    /// Every widget laid out at `node` or under it counts as placed, as composing it would count it.
+    fn mark_placed(&self, node: NodeId) {
+        let mut placed = self.placed.borrow_mut();
+        let mut nodes = vec![node];
+        while let Some(node) = nodes.pop() {
+            if let Some(&address) = self.node_widgets.get(&node) {
+                placed.insert(address);
+            }
+            nodes.extend(self.taffy.children(node).unwrap_or_default());
+        }
     }
 
     fn compose(
@@ -178,6 +314,12 @@ impl<'a> Walk<'a> {
                 children: Vec::new(),
             };
         };
+        if let Some(reused) = self.reuse(node, path, widget) {
+            return reused;
+        }
+        if let Some(&ground) = self.ground_colours.borrow().last() {
+            self.stood_on.borrow_mut().insert(path.clone(), ground);
+        }
         let rect = widget.get_rect();
         let semantics = widget
             .accessibility()
@@ -191,6 +333,7 @@ impl<'a> Walk<'a> {
             });
             let grounded = on.is_some();
             self.grounds.borrow_mut().extend(on);
+            self.ground_colours.borrow_mut().extend(ground);
             let mut inner = 0;
             let children: Vec<Composed> = children_nodes
                 .iter()
@@ -202,6 +345,7 @@ impl<'a> Walk<'a> {
                 .collect();
             if grounded {
                 self.grounds.borrow_mut().pop();
+                self.ground_colours.borrow_mut().pop();
             }
             let flows = self.flows(node, base, &children);
             (children, widgets, flows)
@@ -253,6 +397,65 @@ impl FrameHarness {
     /// ([`crate::composition`]).
     #[must_use]
     pub fn composition(&self) -> Composition {
+        self.compose_with(None).0
+    }
+
+    /// The frame's composition for a page that presents it ([`Self::composition`]), or `None` when
+    /// it is the one this last handed over: what the page shows already shows this frame.
+    ///
+    /// A frame that laid nothing out and changed nothing of the document, what it lets the person
+    /// do or the window, only changed what some widgets paint (a hover, a press, a focus ring, a
+    /// chart's readout): only those are composed again, and every other part is the one the last
+    /// frame composed. A page's frames leave the widgets' paint marks
+    /// ([`Widget::mark_drawn`]) for this to clear, as a drawn frame's paint clears them.
+    pub fn compose_frame(&mut self) -> Option<&Composition> {
+        let read = self.composition_read();
+        let previous = self.presented.kept.take();
+        let reusable = previous
+            .as_ref()
+            .filter(|kept| kept.read == read && self.history.is_none());
+        let (composition, stood_on) = self.compose_with(reusable);
+        if std::mem::take(&mut self.presented.drawn_owed) {
+            self.root.mark_drawn();
+        }
+        let changed = previous
+            .as_ref()
+            .is_none_or(|kept| kept.composition != composition);
+        self.presented.before = previous.filter(|_| changed).map(|kept| kept.composition);
+        let kept = self.presented.kept.insert(Kept {
+            composition,
+            read,
+            stood_on,
+        });
+        changed.then_some(&kept.composition)
+    }
+
+    /// The composition [`Self::compose_frame`] last handed over.
+    #[must_use]
+    pub fn presented_composition(&self) -> Option<&Composition> {
+        self.presented.kept.as_ref().map(|kept| &kept.composition)
+    }
+
+    /// The composition [`Self::compose_frame`] handed over before the one it handed last, while
+    /// they differ: what a page that showed it is handed the change from
+    /// ([`Composition::since`]).
+    #[must_use]
+    pub fn composed_before(&self) -> Option<&Composition> {
+        self.presented.before.as_ref()
+    }
+
+    fn composition_read(&self) -> Read {
+        Read {
+            layout: self.presented.layout_revision,
+            document: crate::doc::settle_mark(&self.state.doc),
+            presentation: crate::widget::resource_presentation_epoch(),
+            permissions: self.permissions.directory_observation(),
+            viewport: self.viewport,
+            scale: self.input_scale.to_bits(),
+        }
+    }
+
+    fn compose_with(&self, kept: Option<&Kept>) -> (Composition, HashMap<String, [u8; 4]>) {
         self.drain_component_wakes();
         let mut widgets = HashMap::new();
         let mut sibling_counts = HashMap::new();
@@ -271,6 +474,9 @@ impl FrameHarness {
             placed: std::cell::RefCell::default(),
             open: std::cell::RefCell::default(),
             grounds: std::cell::RefCell::default(),
+            ground_colours: std::cell::RefCell::default(),
+            kept: kept.map(KeptParts::of),
+            stood_on: std::cell::RefCell::default(),
         };
         let mut anonymous = 0;
         let root = if self.layout_built {
@@ -342,7 +548,7 @@ impl FrameHarness {
             layers,
         };
         composition.forget_semantics_children();
-        composition
+        (composition, walk.stood_on.into_inner())
     }
 
     /// The paint of each of `parts`, widgets or parts of the composition last read

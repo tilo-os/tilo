@@ -32,9 +32,9 @@ profile_env() {
   export XDG_STATE_HOME="$root/state"
   export XDG_CACHE_HOME="$root/cache"
   export TILO_STATE_PATH="$root/state.json"
-  # The session keeps its identity under $XDG_CONFIG_HOME/tilo/identity, and
-  # the CLI reads its device there: one identity for the profile, not two.
-  export TILO_IDENTITY_DIR="$root/config/tilo/identity"
+  # The session and the CLI keep the person under $XDG_CONFIG_HOME/tilo/identity
+  # and this device's key where TILO_IDENTITY_ROOT names: one identity for the
+  # profile, not two.
   export TILO_IDENTITY_ROOT="$root/config/tilo/identity"
   export TILO_WORKSPACE_ROOTS=""
   export TILO_TEST_CONTROL="$root/runtime/control.sock"
@@ -93,7 +93,7 @@ start_bus() {
 # The identity a disposable profile has: one the CLI made, so its keys and
 # its files sit in the tree the CLI and the session both read.
 mint_identity() {
-  [ -f "$TILO_IDENTITY_DIR/device-private/keypair.bin" ] && return 0
+  [ -f "$TILO_IDENTITY_ROOT/device-private/keypair.bin" ] && return 0
   # A session is not up yet, and `tilo login` needs none to make a person of
   # this profile. It is bounded: a login that waits on something answers the
   # cycle's question nowhere.

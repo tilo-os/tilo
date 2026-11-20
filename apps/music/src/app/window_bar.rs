@@ -1,6 +1,7 @@
 //! Music's parts in the window's bar: the library toggle, Back, the location and the page's
 //! one action.
 
+use crate::model::Catalogue;
 use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
 
 use super::{Action, Music, View};
@@ -36,7 +37,7 @@ impl Music {
                 .actions
                 .push(entries.entry("folder-open", name, BarCommand::OpenFile));
         }
-        if self.view == View::Playlists && !self.spotify_catalogue {
+        if self.view == View::Playlists && self.catalogue != Catalogue::Spotify {
             let new = BarCommand::Run(Action::BeginNewPlaylist);
             toolbar
                 .actions

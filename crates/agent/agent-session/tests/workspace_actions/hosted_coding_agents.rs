@@ -377,6 +377,7 @@ on_both_kinds! {
     assert!(
         workspaces
             .take_back_permission(&key, &allowed.id)
+            .await
             .expect("their own store takes it back")
     );
     started_and_waiting(

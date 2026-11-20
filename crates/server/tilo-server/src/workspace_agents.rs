@@ -871,6 +871,9 @@ impl HostAgents {
     /// # Errors
     /// The workspace's records could not be read.
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
+        // What a person answered about a use of their vault is carried out
+        // whether or not anything asks an agent now.
+        Box::pin(self.settle_uses(workspace)).await;
         // Boxed, here and in `turns` and `answer`: whoever awaits a round or a turn holds a
         // pointer to it and carries none of it in a future of its own.
         Box::pin(self.look_past(workspace, None)).await

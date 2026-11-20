@@ -12,7 +12,7 @@ use super::{
     record_provider,
 };
 use tilo_actions::remote::{Caller, CataloguePage};
-use tilo_actions::remote::{rows_weight, truncate_rows};
+use tilo_actions::remote::{rows_weight, truncate_resources, truncate_rows};
 use tilo_server_protocol::WorkspaceId;
 
 /// The fewest rows asked of a resource at a time where some of its rows are kept from the
@@ -58,8 +58,14 @@ impl Worker {
             rows.extend(admitted.into_iter().skip(passed).take(left));
         };
         let mut failed: Option<(DocumentRoute, String)> = None;
+        // A page bounded in resources is full once it holds one past them.
+        let resources_full = |rows: &[CatalogueRow]| {
+            query
+                .resource_bound()
+                .is_some_and(|most| resource_count(rows) > most)
+        };
         for route in routes {
-            if rows_weight(&rows) >= wanted {
+            if rows_weight(&rows) >= wanted || resources_full(&rows) {
                 break;
             }
             let provider = record_provider(route);
@@ -124,8 +130,11 @@ impl Worker {
         }
         // Counted in the rows each stands for: a resource's actions sent as one
         // row are as many rows of the listing.
-        let more = rows_weight(&rows) > size;
+        let mut more = rows_weight(&rows) > size;
         truncate_rows(&mut rows, size);
+        if let Some(most) = query.resource_bound() {
+            more |= truncate_resources(&mut rows, most);
+        }
         CataloguePage::window(revision, rows, query, more)
     }
 
@@ -248,4 +257,17 @@ impl Worker {
             }
         }
     }
+}
+
+/// How many resources `rows` hold rows of, each resource's rows next to each
+/// other.
+fn resource_count(rows: &[CatalogueRow]) -> usize {
+    rows.iter()
+        .enumerate()
+        .filter(|(at, row)| {
+            at.checked_sub(1)
+                .and_then(|before| rows.get(before))
+                .is_none_or(|before| before.resource.id != row.resource.id)
+        })
+        .count()
 }

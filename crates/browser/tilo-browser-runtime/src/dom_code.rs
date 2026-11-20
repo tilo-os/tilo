@@ -17,7 +17,8 @@ use wasm_bindgen::JsValue;
 pub(crate) struct Frame<'a> {
     pub present: &'a Function,
     pub id: u64,
-    /// The frame's composition, as JSON.
+    /// The frame's composition, as JSON: in full, or since the one the page shows
+    /// ([`ui::composition::Composition::since`]).
     pub composition: String,
     pub background: ui::peniko::Color,
     pub layout_ms: f64,
@@ -28,21 +29,17 @@ pub(crate) struct Frame<'a> {
     pub theme: Option<&'a ui::Theme>,
 }
 
-/// Hands frames to the page, skipping one that composes what the last did.
+/// Hands frames to the page. A frame that composes what the last did never reaches it
+/// ([`ui::headless::FrameHarness::compose_frame`]). Returns whether the page took it: a page
+/// that did not shows none of it, and is handed the next one in full.
 pub(crate) trait DomPresent {
-    fn present(&mut self, frame: Frame<'_>);
+    fn present(&mut self, frame: Frame<'_>) -> bool;
 }
 
-#[derive(Default)]
-struct Presenter {
-    last: String,
-}
+struct Presenter;
 
 impl DomPresent for Presenter {
-    fn present(&mut self, frame: Frame<'_>) {
-        if frame.theme.is_none() && frame.composition == self.last {
-            return;
-        }
+    fn present(&mut self, frame: Frame<'_>) -> bool {
         let theme = frame.theme.map(|theme| {
             crate::page_theme::css_variables(theme)
                 .into_iter()
@@ -69,14 +66,15 @@ impl DomPresent for Presenter {
         args.push(&JsValue::from_str(&frame.composition));
         if let Err(error) = frame.present.apply(&JsValue::NULL, &args) {
             web_sys::console::error_1(&error);
+            return false;
         }
-        self.last = frame.composition;
+        true
     }
 }
 
 /// A new presenter for a mount.
 pub(crate) fn presenter() -> Box<dyn DomPresent> {
-    Box::new(Presenter::default())
+    Box::new(Presenter)
 }
 
 /// The picture of a widget that is its paint: `scene`, rasterized into a

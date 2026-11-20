@@ -766,6 +766,7 @@ impl<'a> ChangeCollector<'a> {
         change_graph: &'a ChangeGraph,
         changes: Vec<BuildChangeMetadata<'a>>,
     ) -> Vec<Change> {
+        crate::work::rebuilt_changes(changes.len()); // TILO(work-count)
         let min = changes
             .iter()
             .map(|c| c.start_op as usize)

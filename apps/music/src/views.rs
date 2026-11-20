@@ -9,7 +9,7 @@ use ui::framework::views::{
 };
 
 use crate::backend::{AlbumHit, ArtistHit, MusicBackend, PlaylistHit, SearchBundle, TrackHit};
-use crate::model::Library;
+use crate::model::{Catalogue, Library};
 use crate::search_type::{ALBUM_TYPE_ID, ARTIST_TYPE_ID, PLAYLIST_TYPE_ID, SONG_TYPE_ID};
 
 pub const TITLE: &str = "title";
@@ -190,7 +190,7 @@ fn catalogue_text(query: &QuerySpec) -> String {
 pub struct CatalogueSource {
     make: fn() -> Box<dyn MusicBackend>,
     backend: Mutex<Option<Arc<dyn MusicBackend>>>,
-    label: Mutex<String>,
+    choice: Mutex<Catalogue>,
 }
 
 impl CatalogueSource {
@@ -199,13 +199,17 @@ impl CatalogueSource {
         Self {
             make,
             backend: Mutex::new(None),
-            label: Mutex::new("YouTube Music".to_owned()),
+            choice: Mutex::new(Catalogue::Unset),
         }
     }
 
-    /// The person switched catalogues: the next request builds the backend again.
-    pub fn source_changed(&self) {
-        *self.backend.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    /// The next request uses this workspace's catalogue.
+    pub(crate) fn set_choice(&self, choice: Catalogue) {
+        *self.choice.lock().unwrap_or_else(PoisonError::into_inner) = choice;
+    }
+
+    fn choice(&self) -> Catalogue {
+        *self.choice.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn backend(&self) -> Arc<dyn MusicBackend> {
@@ -214,9 +218,6 @@ impl CatalogueSource {
             return Arc::clone(backend);
         }
         let backend: Arc<dyn MusicBackend> = Arc::from((self.make)());
-        backend
-            .catalogue_label()
-            .clone_into(&mut self.label.lock().unwrap_or_else(PoisonError::into_inner));
         *held = Some(Arc::clone(&backend));
         backend
     }
@@ -228,18 +229,20 @@ impl RemoteSource for CatalogueSource {
     }
 
     fn label(&self) -> String {
-        self.label
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.choice().label().to_owned()
     }
 
     fn accepts(&self, query: &QuerySpec) -> bool {
-        catalogue_accepts(query)
+        self.choice() != Catalogue::Disabled && catalogue_accepts(query)
     }
 
     fn warm(&self) {
-        self.backend().warm();
+        let choice = self.choice();
+        if choice != Catalogue::Disabled
+            && let Ok(backend) = choice.backend(self.backend().as_ref())
+        {
+            backend.warm();
+        }
     }
 
     fn search(
@@ -248,7 +251,14 @@ impl RemoteSource for CatalogueSource {
         cancel: &Cancel,
         page: &mut dyn FnMut(Vec<Item>),
     ) -> Result<(), RemoteError> {
+        let choice = self.choice();
+        if choice == Catalogue::Disabled || cancel.is_cancelled() {
+            return Ok(());
+        }
         let backend = self.backend();
+        let backend = choice
+            .backend(backend.as_ref())
+            .map_err(|error| RemoteError(unreachable_text(choice.label(), &error.0)))?;
         let text = catalogue_text(query);
         let narrowed = |bundle: &SearchBundle| -> Vec<Item> {
             bundle_items(bundle)
@@ -267,7 +277,7 @@ impl RemoteSource for CatalogueSource {
         }
         let bundle = backend
             .search_all(&text)
-            .map_err(|error| RemoteError(unreachable_text(&self.label(), &error.0)))?;
+            .map_err(|error| RemoteError(unreachable_text(choice.label(), &error.0)))?;
         page(narrowed(&bundle));
         Ok(())
     }

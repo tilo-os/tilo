@@ -504,7 +504,10 @@ async fn what_stands_covers_exactly_what_was_asked() {
 
     // Taking the wide one back leaves the narrow one, and the other way
     // round nothing wider comes back.
-    assert_eq!(workspaces.take_back_permission(&person, &any), Ok(true));
+    assert_eq!(
+        workspaces.take_back_permission(&person, &any).await,
+        Ok(true)
+    );
     assert_eq!(workspaces.stands(&person, &other_box), None);
     assert_eq!(workspaces.stands(&person, &out), Some(id));
 

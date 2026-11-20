@@ -1478,15 +1478,18 @@ impl WorkspaceNotices {
         }
     }
 
-    /// The workspace's host answered every commit published so far.
-    fn settled(&mut self) {
+    /// The workspace's host answered every commit published so far. Whether a notice became
+    /// something to say: an answer that settles nothing to say shows nothing new.
+    fn settled(&mut self) -> bool {
         self.answered = true;
         let (published, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
             .into_iter()
             .partition(|notice| notice.published);
         self.held = waiting;
+        let says = !published.is_empty();
         self.said
             .extend(published.into_iter().map(|notice| notice.text));
+        says
     }
 
     /// Changes were withdrawn: what was said at heads `doc` no longer holds
@@ -2966,10 +2969,15 @@ impl ResourceStore {
             // delivered change, so the merge's applied changes are listed,
             // and so are the ones still waiting for history this replica
             // lacks. Neither is ever sent back on the route that brought it.
+            // Told by their hashes alone: rebuilding every change the merge brought (a
+            // newcomer's window takes in a tracker of thousands of them at once) decoded each
+            // of their ops again, seconds on a page, for hashes the graph holds.
             let mut observed = candidate
-                .get_changes(&before)
-                .into_iter()
-                .map(|change| change.hash())
+                .committed_document()
+                .change_hashes()
+                .iter()
+                .filter(|hash| !local.has_change(hash))
+                .copied()
                 .collect::<Vec<_>>();
             observed.extend(delivered);
             if let collab_types::DocumentMutation::Incremental(bytes) = &mutation {
@@ -3180,13 +3188,16 @@ impl ResourceStore {
     }
 
     /// The workspace's host answered every commit of record `id` it published:
-    /// what was held for them is said ([`Self::take_said`]).
-    pub fn workspace_settled(&self, id: &DocumentId) {
+    /// what was held for them is said ([`Self::take_said`]). Whether there is now something to
+    /// say: an answer that settled nothing to say gives its windows nothing new to draw, and that
+    /// is every keystroke's answer while a person types.
+    pub fn workspace_settled(&self, id: &DocumentId) -> bool {
         if let Ok(mut set) = self.try_set_mut()
             && let Some(parked) = set.open.get_mut(id)
         {
-            parked.action_state.notices.settled();
+            return parked.action_state.notices.settled();
         }
+        false
     }
 
     /// What to say now of record `id` ([`Self::hold_notice`]), each once.

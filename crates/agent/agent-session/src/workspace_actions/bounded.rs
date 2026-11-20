@@ -916,6 +916,7 @@ impl Worker {
                 },
             );
         }
+        let catching = super::timing_start();
         let untold =
             super::catch_up::kept_untold(&holder, self.bounded.get(&key).map(|held| &held.held));
         let kept = self.kept_held(untold);
@@ -940,6 +941,7 @@ impl Worker {
         }
         super::catch_up::tell_kept(&mut held.held, state, kept);
         super::catch_up::tell_kept(&mut held.held, state, wanted);
+        super::timing_done("replica.catch_up", catching);
         // The parts of its chains the workspace has still to send, waited on: off this
         // thread for a write or a listing, which is held until they arrive.
         self.hold_chains(&super::Writer::Bounded(key.clone()), &holder, state);
@@ -1414,10 +1416,12 @@ impl Worker {
             // that admitted it: neither the record nor its history is read for
             // what one change touched. Only a record the replica does not hold
             // as changes (a part it started whole) is read before and diffed.
+            let reading = super::timing_start();
             let written = reads::document_id(&changed.document)
                 .ok()
                 .and_then(|record| replica.app.written_keys(&record, mutation))
                 .map(Ok);
+            super::timing_done("check.written_keys", reading);
             let before = match written {
                 Some(_) => None,
                 None => state.document(changed).ok().map(|(bytes, _)| bytes),

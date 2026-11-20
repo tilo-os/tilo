@@ -9,7 +9,7 @@ use ui::widget::Element;
 
 use crate::actions::{MusicEffect, Place};
 use crate::app::Music;
-use crate::model::{Album, CatalogueTrack, Library, Playlist};
+use crate::model::{Album, Catalogue, CatalogueTrack, Library, Playlist};
 
 ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
 
@@ -34,6 +34,32 @@ impl Library {
     read_content = Library::read_document
 )]
 impl Library {
+    /// Choose the online catalogue for this workspace.
+    #[action]
+    pub fn set_catalogue(&mut self, catalogue: Catalogue) -> Result<(), Refusal> {
+        if catalogue == Catalogue::Unset {
+            return Err(Refusal::new(
+                "choose a catalogue or disable online browsing",
+            ));
+        }
+        self.catalogue = catalogue;
+        Ok(())
+    }
+
+    /// Use the device's previous catalogue in a workspace that has never chosen one.
+    #[action]
+    pub fn import_catalogue(&mut self, catalogue: Catalogue) -> Result<(), Refusal> {
+        if self.catalogue != Catalogue::Unset {
+            return Err(Refusal::new("this workspace already chose a catalogue"));
+        }
+        if !matches!(catalogue, Catalogue::Spotify | Catalogue::YouTube) {
+            return Err(Refusal::new(
+                "there is no previous online catalogue to import",
+            ));
+        }
+        self.set_catalogue(catalogue)
+    }
+
     /// Create a new playlist.
     #[action]
     pub fn create_playlist(
@@ -400,6 +426,46 @@ mod tests {
 
     fn edit(edit: &tilo_resource::Edit<Library>) -> Invoke<Library> {
         Invoke::edit(edit).unwrap()
+    }
+
+    #[test]
+    fn importing_a_device_catalogue_requires_a_workspace_edit() {
+        use ui::permissions::Role;
+
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        let profile: crate::storage::DeviceProfile =
+            serde_json::from_str(r#"{"spotify_catalogue":true}"#).unwrap();
+        app.with_surface::<MusicApp, _>(|surface| {
+            let mut music = surface.state();
+            music.disconnect();
+            music.set_legacy_catalogue_for_test(profile.legacy_catalogue);
+        })
+        .unwrap();
+        let source = "music.source:catalogue";
+        app.effect_on(source, &MusicEffect::Sources).unwrap();
+        assert_eq!(app.state().catalogue, Catalogue::Unset);
+
+        app.set_role(Role::Viewer);
+        assert!(
+            app.effect_on(source, &MusicEffect::UsePreviousCatalogue)
+                .is_err()
+        );
+        assert_eq!(app.state().catalogue, Catalogue::Unset);
+        app.set_role(Role::Owner);
+        app.effect_on(source, &MusicEffect::UsePreviousCatalogue)
+            .unwrap();
+        assert_eq!(app.state().catalogue, Catalogue::Spotify);
+
+        app.effect_on(source, &MusicEffect::BrowseYouTube).unwrap();
+        assert_eq!(app.state().catalogue, Catalogue::YouTube);
+        assert!(
+            app.invoke(Library::IMPORT_CATALOGUE.with(Catalogue::Spotify))
+                .is_err()
+        );
+        assert_eq!(app.state().catalogue, Catalogue::YouTube);
+        app.effect_on(source, &MusicEffect::DisableCatalogue)
+            .unwrap();
+        assert_eq!(app.reopen().unwrap().state().catalogue, Catalogue::Disabled);
     }
 
     #[test]

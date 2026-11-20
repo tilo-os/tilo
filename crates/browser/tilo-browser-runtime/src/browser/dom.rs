@@ -117,9 +117,9 @@ struct Shown {
     code: Option<Box<dyn crate::dom_code::DomPresent>>,
     /// The theme generation whose variables the page holds.
     theme_published: Option<u64>,
-    /// The composition last handed to the page: the pictures it then asks
-    /// for are painted from its nodes.
-    composed: Option<ui::composition::Composition>,
+    /// The page shows the composition the frame last handed over, so the next is handed as
+    /// what changed since it.
+    holds: bool,
 }
 
 /// Show the next mount made as HTML rather than on a WebGPU canvas: each
@@ -149,7 +149,7 @@ pub(super) fn claim(id: u64) {
                     presenter,
                     code: None,
                     theme_published: None,
-                    composed: None,
+                    holds: false,
                 },
             );
         });
@@ -213,20 +213,23 @@ pub(crate) fn paint_composed(
     paths: &[String],
     scale: f64,
 ) -> Vec<Option<(vello::Scene, [f64; 4])>> {
-    MOUNTS.with_borrow(|mounts| {
-        let Some(composition) = mounts.get(&m.id).and_then(|shown| shown.composed.as_ref()) else {
-            return vec![None; paths.len()];
-        };
-        let found: Vec<_> = paths.iter().map(|path| composition.find(path)).collect();
-        let mut painted = m
-            .frame
-            .paint_composed(found.iter().copied().flatten(), scale)
-            .into_iter();
-        found
-            .iter()
-            .map(|node| node.and_then(|_| painted.next().flatten()))
-            .collect()
-    })
+    let Some(composition) = m.frame.presented_composition() else {
+        return vec![None; paths.len()];
+    };
+    // The harness paints from the composition it keeps; the parts are handed over owned, as the
+    // frame that composed them is not borrowed while it paints.
+    let found: Vec<Option<ui::composition::Composed>> = paths
+        .iter()
+        .map(|path| composition.find(path).cloned())
+        .collect();
+    let mut painted = m
+        .frame
+        .paint_composed(found.iter().flatten(), scale)
+        .into_iter();
+    found
+        .iter()
+        .map(|node| node.as_ref().and_then(|_| painted.next().flatten()))
+        .collect()
 }
 
 impl Mount {
@@ -447,15 +450,38 @@ impl Mount {
         let background = self.frame.frame_render_input().background;
         let theme_generation = self.theme_seen;
         let encoded = web_time::Instant::now();
-        let composed = self.frame.composition();
-        let composition = serde_json::to_string(&composed).map_err(|error| error.to_string())?;
+        let (publish_theme, holds) = MOUNTS.with_borrow(|mounts| {
+            mounts.get(&self.id).map_or((false, false), |shown| {
+                (shown.theme_published != Some(theme_generation), shown.holds)
+            })
+        });
+        // A frame that composes what the page shows already hands it nothing, unless the page
+        // has yet to hold the theme's variables; one that changed hands what changed since what
+        // the page shows.
+        let changed = self.frame.compose_frame().is_some();
+        let on_page = if changed {
+            self.frame.composed_before()
+        } else {
+            self.frame.presented_composition()
+        };
+        let composition = (changed || publish_theme)
+            .then(|| {
+                self.frame
+                    .presented_composition()
+                    .map(|now| serde_json::to_string(&now.since(on_page.filter(|_| holds))))
+                    .transpose()
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .flatten();
         let encode_ms = encoded.elapsed().as_secs_f64() * 1000.0;
         let presented = MOUNTS.with_borrow_mut(|mounts| {
             let shown = mounts.get_mut(&self.id)?;
-            let publish_theme = shown.theme_published != Some(theme_generation);
             shown.theme_published = Some(theme_generation);
-            shown.composed = Some(composed);
-            shown
+            let Some(composition) = composition else {
+                return Some(());
+            };
+            shown.holds = shown
                 .code
                 .get_or_insert_with(crate::dom_code::presenter)
                 .present(crate::dom_code::Frame {

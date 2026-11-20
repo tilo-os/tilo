@@ -1211,8 +1211,7 @@ mod tests {
             assert_eq!(doc.get_heads(), before);
             assert!(app.lib.tracks.is_empty());
             let profile = crate::storage::DeviceProfile {
-                spotify_catalogue: false,
-                catalogue_connected: false,
+                legacy_catalogue: crate::storage::LegacyCatalogue::default(),
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
                 queue_catalogue: Vec::new(),
@@ -1231,7 +1230,6 @@ mod tests {
             wav(&path);
             let file = crate::local_file::LocalFile::open(path.to_str().unwrap(), None).unwrap();
             let profile = crate::storage::DeviceProfile {
-                spotify_catalogue: false,
                 playback: crate::model::Playback {
                     current: Some(file.track.id.clone()),
                     queue: vec![file.track.id.clone()],
@@ -1240,7 +1238,7 @@ mod tests {
                 },
                 local_file: Some(file),
                 queue_catalogue: Vec::new(),
-                catalogue_connected: false,
+                legacy_catalogue: crate::storage::LegacyCatalogue::default(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();

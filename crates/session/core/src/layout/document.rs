@@ -225,6 +225,26 @@ impl LayoutDocument {
         *self.undo.borrow_mut() = UndoLog::new(&mut current);
     }
 
+    /// Take the layout `bytes` hold — the workspace's, as it arrived — for this device's, and keep
+    /// them where this device keeps its layout: a document taken whole is written as it came, not
+    /// serialized again.
+    ///
+    /// # Errors
+    /// `bytes` are not a layout document.
+    pub fn replace_kept(&self, bytes: Vec<u8>) -> Result<(), automerge::AutomergeError> {
+        self.replace(AutoCommit::load(&bytes)?);
+        if let Some(store) = &self.store {
+            store.keep(bytes);
+        }
+        Ok(())
+    }
+
+    /// Whether this document holds every change in `heads`: the same heads are the same layout.
+    pub fn has_changes(&self, heads: &[automerge::ChangeHash]) -> bool {
+        let doc = self.doc.borrow();
+        heads.iter().all(|head| doc.has_change(head))
+    }
+
     /// Write `doc` where this device keeps it, away from the frame.
     fn keep(&self, doc: &mut AutoCommit) {
         if let Some(store) = &self.store {

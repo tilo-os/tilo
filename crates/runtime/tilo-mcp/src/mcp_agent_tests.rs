@@ -1008,6 +1008,14 @@ impl ActionProvider for Notes {
         let slow = *self.slow.lock().unwrap();
         match self.refused(&query) {
             Some(refused) => Pending::ready(Err(refused)),
+            // A listing taken a resource at a time is answered as the workspace answers it:
+            // a resource's actions as one row, each action described once a page.
+            None if query.by_resource && slow.is_none() => self.answer(&query).map(|page| {
+                page.map(|mut page| {
+                    page.rows = tilo_actions::remote::compact(page.rows);
+                    page
+                })
+            }),
             None => match slow.filter(|_| query.provider.is_some()) {
                 None => self.answer(&query),
                 Some(taking) => {

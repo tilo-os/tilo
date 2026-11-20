@@ -1166,11 +1166,14 @@ declare_owner() {
 # The stack's own person: tilo run with a home of its own under the stack's
 # state, so their root and the keys they approve never touch this account's
 # own Tilo. `stack.sh tilo …` and owner --here run tilo this way.
+# The person is kept as a Tilo session keeps one (its identity under .config,
+# this device's key under .local/share/tilo): a session given this home is them.
 as_owner() {
   local home=$state/owner/home
   mkdir -p "$home"
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
+    TILO_IDENTITY_ROOT=$home/.local/share/tilo \
     TILO_API_URL=$api_origin TILO_SITE=$site_origin "$(find_tilo)" "$@"
 }
 

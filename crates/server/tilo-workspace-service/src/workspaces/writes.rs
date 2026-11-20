@@ -104,6 +104,7 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+        let drafting = crate::timing::start();
         let (mut request, author) = {
             let governed = state.lock().await;
             governed.draft_document_write(
@@ -120,12 +121,17 @@ impl Workspaces {
                 "a local write is a document write".to_owned(),
             ));
         };
+        crate::timing::event("own_write.draft", drafting, changes.len() as u64);
+        let signing = crate::timing::start();
         sign_op(envelope, &*device.signer)
             .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
         let (envelope, own) = ((**envelope).clone(), own.clone());
+        crate::timing::event("own_write.sign", signing, 0);
+        let committing = crate::timing::start();
         self.commit_local_document(workspace, request)
             .await
             .map_err(WriteRefusal::Refused)?;
+        crate::timing::event("own_write.commit", committing, 0);
         Ok(AppWrite {
             peer: neighbour_wire::peer_handle(&device.device()),
             app_id: app.to_owned(),

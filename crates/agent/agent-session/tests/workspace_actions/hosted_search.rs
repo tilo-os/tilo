@@ -1358,6 +1358,30 @@ async fn a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed(
             .await;
         assert!(!failed, "{file}: {answered}");
     }
+    // The folder's tree reaches the workspace before a find can index it: every file is a
+    // node of it, and a write answered pending is not one until it lands.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let kept = served
+            .workspaces
+            .resource_document(
+                &workspace,
+                fs_protocol::tree::FILES_APP,
+                &tilo_fs::tree_document::document_id(),
+            )
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        if kept {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the workspace never keeps the folder's tree after {notes} files"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     // The folder's files are read into the index between requests; asking a find brings the
     // notes' files into it as the writes land, so wait for every body to be in.
     let deadline = tilo_test_env::hang_deadline();

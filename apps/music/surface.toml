@@ -8,6 +8,7 @@ label = "Music"
 version = 2
 shows = ["browse-genre", "open", "open-album", "open-artist", "toggle-like", "toggle-like-playing"]
 fields = [
+  { path = "catalogue", type = { named = "Catalogue" }, readonly = true },
   { path = "recommendations", type = { named = "Preferences" }, stored = "record" },
   { path = "recommendations.likes", type = "bool" },
   { path = "recommendations.saved_albums", type = "bool" },
@@ -26,6 +27,20 @@ fields = [
   { path = "liked", type = { set = "text" } },
   { path = "saved_albums", type = { set = "text" } },
   { path = "followed_artists", type = { set = "text" } },
+]
+
+[[resources.verbs]]
+id = "set-catalogue"
+kind = "undoable"
+params = [
+  { name = "catalogue", type = { named = "Catalogue" }, required = true, schema = { type = "string", enum = ["unset", "disabled", "you_tube", "spotify"] } },
+]
+
+[[resources.verbs]]
+id = "import-catalogue"
+kind = "undoable"
+params = [
+  { name = "catalogue", type = { named = "Catalogue" }, required = true, schema = { type = "string", enum = ["unset", "disabled", "you_tube", "spotify"] } },
 ]
 
 [[resources.verbs]]
@@ -78,6 +93,15 @@ fields = [
   { name = "name", type = "text" },
   { name = "genre", type = "text" },
   { name = "monthly_listeners", type = "int" },
+]
+
+[[resources.types]]
+name = "Catalogue"
+cases = [
+  { name = "unset" },
+  { name = "disabled" },
+  { name = "you_tube" },
+  { name = "spotify" },
 ]
 
 [[resources.types]]

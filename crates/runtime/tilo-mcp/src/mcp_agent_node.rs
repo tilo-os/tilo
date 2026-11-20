@@ -2,6 +2,7 @@
 //! directory, and the rows one listing holds under a parent.
 
 use super::{ActionDescriptor, CatalogueRow, HashMap, bound_key, path_name};
+use tilo_actions::api::ActionAddress;
 
 impl Node {
     /// This resource as a row of a listing under `parent`: the name its line
@@ -268,17 +269,57 @@ pub(super) struct Level {
 pub(super) fn level_of(rows: &[CatalogueRow], parent: &str) -> Level {
     let mut level = Level::default();
     let mut at: HashMap<&str, usize> = HashMap::new();
+    // The actions a page of compact rows described whole, by provider, kind and id: each row
+    // after names them by id ([`tilo_actions::remote::compact`]), and its node takes each
+    // placed on it straight from here, never a row per action first.
+    let mut described: HashMap<(&str, &str, &str), &ActionDescriptor> = HashMap::new();
+    let mut placed: Vec<ActionDescriptor> = Vec::new();
     for row in rows {
-        if !parent.is_empty() && row.resource.id == parent {
-            if let Some(action) = &row.action {
-                level.own.push(action.clone());
+        placed.clear();
+        let mut identity = None;
+        match &row.offered {
+            Some(offered) => {
+                for action in &offered.described {
+                    described.insert(
+                        (
+                            row.provider.as_str(),
+                            action.resource_kind.as_str(),
+                            action.address.action.as_str(),
+                        ),
+                        action,
+                    );
+                }
+                identity = offered.semantic_identity.as_ref();
+                for id in &offered.actions {
+                    let key = (
+                        row.provider.as_str(),
+                        row.resource.kind.as_str(),
+                        id.as_str(),
+                    );
+                    let Some(like) = described.get(&key) else {
+                        continue;
+                    };
+                    let mut action = (*like).clone();
+                    action.address = ActionAddress::new(row.resource.id.as_str(), id);
+                    action.resource_label.clone_from(&row.resource.label);
+                    action
+                        .semantic_identity
+                        .clone_from(&offered.semantic_identity);
+                    placed.push(action);
+                }
             }
+            None => {
+                if let Some(action) = &row.action {
+                    identity = action.semantic_identity.as_ref();
+                    placed.push(action.clone());
+                }
+            }
+        }
+        if !parent.is_empty() && row.resource.id == parent {
+            level.own.append(&mut placed);
             continue;
         }
-        let key = row
-            .action
-            .as_ref()
-            .and_then(|action| action.semantic_identity.as_ref())
+        let key = identity
             .map(|identity| identity.key.clone())
             .or_else(|| bound_key(&row.resource.id));
         let index = *at.entry(row.resource.id.as_str()).or_insert_with(|| {
@@ -299,9 +340,7 @@ pub(super) fn level_of(rows: &[CatalogueRow], parent: &str) -> Level {
             if let Some(key) = key.filter(|_| node.key == node.id) {
                 node.key = key;
             }
-            if let Some(action) = &row.action {
-                node.actions.push(action.clone());
-            }
+            node.actions.append(&mut placed);
         }
     }
     // Where each item stands among the siblings sharing its title: what a

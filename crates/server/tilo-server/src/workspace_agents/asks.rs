@@ -44,7 +44,6 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_workspace_agent::Agent;
 
 use super::{
@@ -54,8 +53,6 @@ use crate::workspaces::Workspaces;
 use crate::workspaces::person_asking::Allowing;
 use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
 
-/// How long the person has to answer a pending confirmation.
-const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// The carrier of an invocation the workspace's policy left to the person.
 const ACTION: &str = "action";
 /// How long an ask whose question never reached the document is kept: its
@@ -68,7 +65,7 @@ const INTERRUPTED: &str =
 /// Why a question is taken back when its person stopped the turn that asked it.
 const STOPPED: &str = "You stopped the work this question belonged to.";
 /// What a question is told when it no longer stands as this server asked it.
-const NOT_AS_ASKED: &str =
+pub(super) const NOT_AS_ASKED: &str =
     "The question no longer says what this server asked, so nothing was done or allowed.";
 
 /// What a person answered about an ask.
@@ -93,6 +90,13 @@ pub trait Carries: Send + Sync {
     /// # Errors
     /// Why it could not be done, in words its person reads.
     fn carry<'a>(&'a self, ask: &'a KeptAsk, answer: Answered) -> Carried<'a>;
+
+    /// The words `ask` was put to its person with, where its carrier keeps
+    /// them: a yes to a question that says anything else is carried out as a
+    /// no. `None` where they are not kept.
+    fn asked_with(&self, _ask: &KeptAsk) -> Option<String> {
+        None
+    }
 }
 
 /// The carriers of this server, by their word.
@@ -377,6 +381,8 @@ struct Found {
     message: String,
     /// The conversation it stands in.
     conversation_id: String,
+    /// The words it says now.
+    says: String,
     /// Whether it was ever edited. An agent may edit a message it wrote, and
     /// an edited question is not the one its person was asked.
     edited: bool,
@@ -432,6 +438,7 @@ fn question_of<'a>(
                         document: document.clone(),
                         message: id.to_string(),
                         conversation_id: message.channel.to_string(),
+                        says: message.text.clone(),
                         edited: message.edited || !message.history.is_empty(),
                         alone,
                     },
@@ -600,18 +607,28 @@ impl Agents {
         }
     }
 
-    /// Ask a person through the broker's single pending-confirmation path
-    /// ([`Workspaces::ask_person_confirmation`]) and carry out their answer
-    /// through the registered carrier.
+    /// Ask a person, for one of the agents this server has for them, what
+    /// `asking` says: a question in the conversation, as that agent, that
+    /// waits until they answer it, however long that takes, also over a
+    /// restart of this server. Their answer reaches the carrier `asking`
+    /// names once ([`Carries::carry`]); with always, what `asking.always`
+    /// names stands for them first. Asked the same again while they have not
+    /// answered, the one question stands.
+    ///
+    /// Reached from no transport: code of this server calls it, with words of
+    /// its own.
     ///
     /// # Errors
-    /// The ask is invalid, the agent does not exist, or carrying out the answer failed.
+    /// The workspace's server has no such agent, the person is admitted there
+    /// on no device, what always would cover is not that agent's in that
+    /// workspace, too many questions wait for them already, or the question
+    /// could not be put.
     pub async fn ask(&self, asking: ServerAsk) -> Result<Option<Value>, String> {
         let ServerAsk {
             workspace,
             person,
             agent,
-            conversation: _,
+            conversation,
             words,
             carrier,
             kept,
@@ -629,65 +646,51 @@ impl Agents {
         }) {
             return Err("what always covers is that agent's, in that workspace".to_owned());
         }
+        let workspace_id = WorkspaceId::parse(&workspace).ok_or("not a workspace id")?;
         let agents = self.agents(&workspace).await?;
         let agent = agents
             .get(&agent)
             .ok_or("this server has no such agent in that workspace")?;
+        let device = self
+            .workspaces
+            .person_device(workspace_id, person)
+            .await
+            .ok_or("the person asked is admitted there on no device")?;
+        let asker = Caller::authenticated(person, device)
+            .in_workspace(&*workspace)
+            .delegated_to(agent.id.0.clone())
+            .named(&agent.name);
         let place = self
             .workspaces
             .summary(&workspace)
             .await
             .map(|summary| summary.name)
             .unwrap_or_default();
-        let ask = KeptAsk {
-            ask: hex::encode(rand::random::<[u8; 16]>()),
-            workspace: workspace.clone(),
-            person: hex::encode(person),
+        let conversation_id = conversation_id_of(
+            &format!("{}/channels/{conversation}", chat::chat::Chat::KIND),
+            &hex::encode(person),
+            &agent.id.0,
+        );
+        let new = NewAsk {
+            workspace,
             agent: agent.id.0.clone(),
             name: agent.name.clone(),
-            carrier: carrier.clone(),
+            carrier,
             kept,
             always,
             words: Words { place, ..named },
-            asked_in: Value::Object(Map::new()),
-            started: true,
-            interrupted: false,
-            asked_at_ms: tilo_clock::unix_now_ms(),
+            asked_in: serde_json::to_value(AskedIn::default())
+                .map_err(|error| error.to_string())?,
         };
-        let question = PendingConfirmation {
-            id: rand::random(),
-            agent_id: ask.agent.clone(),
-            agent_label: ask.name.clone(),
-            title: String::new(),
-            action_label: if ask.words.action.is_empty() {
-                words.trim().to_owned()
-            } else {
-                ask.words.action.clone()
-            },
-            resource_label: ask.words.on.clone(),
-            arguments: vec![("Request".to_owned(), words)],
-            risk: "sensitive".to_owned(),
-            kind: "outside".to_owned(),
-            undoable: false,
-            allow_always: ask.always.is_some() && self.workspaces.governs(&workspace),
-            workspace,
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(QUESTION_WAIT_NS),
-            page: None,
-            ..PendingConfirmation::default()
+        let Some(kept) = self.workspaces.keep_ask(&person, new)? else {
+            return Ok(None);
         };
-        let answer = match self
-            .workspaces
-            .ask_person_confirmation(person, question)
-            .await
-        {
-            Ok(ConfirmationAnswer::AllowOnce) => Answered::Once,
-            Ok(ConfirmationAnswer::AllowAlways) => Answered::Always,
-            Ok(ConfirmationAnswer::Deny | ConfirmationAnswer::Reply(_)) | Err(_) => Answered::No,
-        };
-        let Some(runner) = self.carriers.lock_recover().get(&carrier).cloned() else {
-            return Err("there is no handler for this approval".to_owned());
-        };
-        runner.carry(&ask, answer).await
+        let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
+        let posted = post(&holder, &asker, &conversation_id, words.trim(), &kept).await;
+        if posted.is_err() {
+            self.workspaces.forget_ask(&kept);
+        }
+        posted.map(|()| None)
     }
 
     /// Carry out what the people of `workspace` answered about what its
@@ -958,7 +961,12 @@ impl Agents {
         // same ask, is not what its person answered: their yes is carried out as a no, so
         // nothing they allowed is kept and nothing is done, and it ends as not
         // done.
-        let changed = answer != Answered::No && (found.edited || !found.alone);
+        let carrier = self.carriers.lock_recover().get(&claimed.carrier).cloned();
+        let asked_with = carrier.and_then(|carrier| carrier.asked_with(&claimed));
+        let changed = answer != Answered::No
+            && (found.edited
+                || !found.alone
+                || asked_with.is_some_and(|words| words.trim() != found.says.trim()));
         let answer = if changed { Answered::No } else { answer };
         if answer != Answered::No
             && let Err(error) = self

@@ -443,6 +443,10 @@ impl Workspaces {
             let called = connections::call(root, reach, allowed, call)
                 .await
                 .map_err(refused)?;
+            // What let it through is counted where its person reads it.
+            if let Some(permission) = self.stands(&using.person, &always) {
+                self.permission_used(&using.person, &permission);
+            }
             return done(called);
         }
         // What a question could not show whole is refused before anybody

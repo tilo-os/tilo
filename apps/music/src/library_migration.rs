@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::tilo_resource::{Collection, Doc, Fields, Id, Model, ModelError, Set};
 
-use crate::model::{Album, Artist, Library, Playlist, Track};
+use crate::model::{Album, Artist, Catalogue, Library, Playlist, Track};
 
 /// Version one covered both the old document bridge and the typed model.
 /// Recognize the old bridge by its actual list and nested catalogue, rather
@@ -144,6 +144,7 @@ fn legacy_library(
     playlists: &ObjId,
 ) -> Result<Library, ModelError> {
     Ok(Library {
+        catalogue: Catalogue::Unset,
         artists: catalogue::<Artist>(doc, catalogue_root, "artists", |item, key| {
             identify(&mut item.id, key)
         })?,

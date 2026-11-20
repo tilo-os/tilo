@@ -6,11 +6,14 @@ use super::*;
 #[test]
 fn planning_a_machine_needs_the_session_that_holds_the_workspace() {
     let scratch = tempfile::tempdir().unwrap();
-    let identity = scratch.path().join("identity");
+    let identity = scratch.path().join("config/tilo/identity");
     let tilo = |args: &[&str]| {
         let out = Command::new(tilo_test_env::package_binary!("tilo"))
             .args(args)
-            .env("TILO_IDENTITY_DIR", &identity)
+            .env("HOME", scratch.path())
+            .env("XDG_CONFIG_HOME", scratch.path().join("config"))
+            .env("TILO_IDENTITY_ROOT", scratch.path().join("identity-root"))
+            .env("TILO_IDENTITY_FILE_SECRETS", "1")
             // No session answers here: `XDG_RUNTIME_DIR` names nothing.
             .env("XDG_RUNTIME_DIR", scratch.path().join("runtime"))
             .env_remove("TILO_TEST_CONTROL")

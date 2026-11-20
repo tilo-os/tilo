@@ -23,6 +23,26 @@
 # it, and who the job runs as is the shell's own word, not a program's.
 set -euo pipefail
 
+# Whether this shell is root of the initial user namespace, whose capabilities
+# reach the files a job inherits. A namespace of its own maps some range and no
+# other: to its root, an id its map lacks is "Invalid argument" to chown, and a
+# file its parent namespace owns is "Operation not permitted". A check that
+# mounts FUSE runs `unshare --user --map-root-user` and is exactly such a root,
+# so its tests keep its user instead of being handed to one it cannot name.
+tilo_test_initial_namespace() {
+    local uid_map=${1:-/proc/self/uid_map} gid_map=${2:-/proc/self/gid_map} map lines inside outside length
+    for map in "$uid_map" "$gid_map"; do
+        [ -r "$map" ] || return 1
+        lines=0
+        while read -r inside outside length; do
+            lines=$((lines + 1))
+            [ "$inside $outside $length" = "0 0 4294967295" ] || return 1
+        done <"$map"
+        [ "$lines" = 1 ] || return 1
+    done
+    return 0
+}
+
 # The test user, or nothing where tests run as whoever started them. Only an
 # image that names a test user asks who started the job. bash sets EUID itself
 # and never exports it: a value the environment brought instead is exported,
@@ -42,8 +62,12 @@ if [ -n "${TILO_TEST_USER:-}" ] && [ "${TILO_TEST_AS_ROOT:-0}" != 1 ]; then
         while IFS=$'\t' read -r tilo_test_key tilo_test_value; do
             [ "$tilo_test_key" != CapEff: ] || tilo_test_caps=$((16#$tilo_test_value))
         done </proc/self/status
-        # CAP_SETGID (6) and CAP_SETUID (7).
-        (( (tilo_test_caps >> 6 & 3) != 3 )) || tilo_test_user=$TILO_TEST_USER
+        # CAP_CHOWN (0) gives the tree, CAP_SETGID (6) and CAP_SETUID (7) become the user, and
+        # only the initial namespace's root can use them on what it inherited.
+        if (( (tilo_test_caps & 1) == 1 && (tilo_test_caps >> 6 & 3) == 3 )) \
+            && tilo_test_initial_namespace; then
+            tilo_test_user=$TILO_TEST_USER
+        fi
     fi
 fi
 

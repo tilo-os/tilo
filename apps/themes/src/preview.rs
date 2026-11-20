@@ -8,7 +8,6 @@ use ui::prelude::*;
 use ui::taffy::style_helpers::{length, percent};
 use ui::taffy::{Size as TaffySize, Style};
 use ui::theme::ThemeDocument;
-use ui::tokens::PresenceHue;
 use ui::vello::kurbo::RoundedRect;
 use ui::vello::peniko::{BlendMode, Fill};
 use ui::widget::TaffyTreeExt;
@@ -46,7 +45,7 @@ impl ThemePreview {
         let theme = ui::Theme::from_document(document).unwrap_or_default();
         Self {
             label: format!("Preview of {}", theme.name),
-            theme: theme.with_your_colour(PresenceHue::Violet),
+            theme,
             show: Show::Desktop,
             rect: Rect::ZERO,
             height: Height::Fixed(height),
@@ -158,6 +157,12 @@ impl Widget for ThemePreview {
     ) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
+        }
+        // The person's own colour, as the theme will draw for them: a look whose accent is
+        // theirs shows it in the miniature too.
+        let you = theme.tokens.colors.you;
+        if self.theme.tokens.colors.you != you {
+            self.theme = self.theme.clone().with_your_colour(you);
         }
         match self.show {
             Show::Presence => {

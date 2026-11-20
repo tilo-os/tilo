@@ -839,7 +839,7 @@ fn home_source_picker_keyboard_activation_opens_choices_without_sign_in() {
         .perform_semantic_named("music-sources", None, &ui::a11y::Action::Focus)
         .unwrap();
     app.harness().key("Enter");
-    assert_eq!(app.surface_mut::<MusicApp>().state().menu_actions.len(), 2);
+    assert_eq!(app.surface_mut::<MusicApp>().state().menu_actions.len(), 4);
     assert!(
         app.surface_mut::<MusicApp>()
             .state()
@@ -1137,7 +1137,7 @@ fn request_identities_keep_stale_responses_from_winning() {
         );
 
         app.use_worker(crate::stream::StreamWorker::spawn_offline());
-        app.catalogue_connected = true;
+        app.catalogue = Catalogue::YouTube;
         app.ensure_home();
         assert!(app.home_asked.is_some());
         assert!(
@@ -1165,7 +1165,7 @@ fn home_fetches_nothing_until_a_source_is_connected() {
     let mut app = Music::new();
     app.reload(&seed::empty_document());
     app.use_worker(crate::stream::StreamWorker::spawn_offline());
-    app.catalogue_connected = false;
+    app.catalogue = Catalogue::Unset;
     let mut doc = AutoCommit::new();
     draw_once(&mut app, &mut doc);
     assert!(
@@ -1199,7 +1199,7 @@ fn home_fetches_nothing_until_a_source_is_connected() {
         ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::Sources)
     );
 
-    app.catalogue_connected = true;
+    app.catalogue = Catalogue::YouTube;
     draw_once(&mut app, &mut doc);
     assert!(app.home_asked.is_some(), "a connected source fills Home");
 }
@@ -1239,7 +1239,7 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
     {
         let mut app = Music::new();
         app.disconnect();
-        app.catalogue_connected = true;
+        app.catalogue = Catalogue::YouTube;
         let mut doc = AutoCommit::new();
         draw_once(&mut app, &mut doc);
 

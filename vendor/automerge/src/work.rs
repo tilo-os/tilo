@@ -22,6 +22,9 @@ pub struct Work {
     /// Ops of objects read to tell which changes last wrote in them
     /// (`Automerge::latest_changes_within`).
     pub object_ops: u64,
+    /// Changes rebuilt from the op set (`Automerge::get_changes` and its kin): each decodes every
+    /// op the change made.
+    pub rebuilt_changes: u64,
 }
 
 thread_local! {
@@ -32,6 +35,7 @@ thread_local! {
             visited_changes: 0,
             renumbered_objects: 0,
             object_ops: 0,
+            rebuilt_changes: 0,
         })
     };
 }
@@ -74,4 +78,9 @@ pub(crate) fn renumbered_objects(objects: usize) {
 #[inline]
 pub(crate) fn read_object_ops(ops: usize) {
     count(|work| work.object_ops = work.object_ops.saturating_add(ops as u64));
+}
+
+#[inline]
+pub(crate) fn rebuilt_changes(changes: usize) {
+    count(|work| work.rebuilt_changes = work.rebuilt_changes.saturating_add(changes as u64));
 }

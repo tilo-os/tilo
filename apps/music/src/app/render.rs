@@ -8,10 +8,10 @@ mod accessible;
 mod now_playing;
 mod query_view;
 use super::{
-    Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Fill, HashMap,
-    HomeItem, HomeItemKind, HomeSection, Instant, Music, NodeId, ObjId, PlaylistPage, Point,
-    PresenceCtx, Rect, Scene, Size, Style, TaffyTree, TextRenderer, TextStyle, Theme, View, Widget,
-    elide, is_live_album_id, is_live_id, is_live_playlist_id, live_track_id, lyrics,
+    Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Catalogue, Color, Fill,
+    HashMap, HomeItem, HomeItemKind, HomeSection, Instant, Music, NodeId, ObjId, PlaylistPage,
+    Point, PresenceCtx, Rect, Scene, Size, Style, TaffyTree, TextRenderer, TextStyle, Theme, View,
+    Widget, elide, is_live_album_id, is_live_id, is_live_playlist_id, live_track_id, lyrics,
 };
 use accessible::{
     accessible_album, accessible_artist, accessible_download, accessible_playlist,
@@ -1377,6 +1377,7 @@ impl Music {
         effect: &crate::actions::MusicEffect,
     ) -> Result<ui::framework::Effected, String> {
         use crate::actions::MusicEffect;
+        use crate::stream::StreamRequest;
         if !self.allow_network {
             return Err("Network access is unavailable in this session".into());
         }
@@ -1384,17 +1385,12 @@ impl Music {
             return Err("A music source request is already running".into());
         }
         self.ensure_worker();
-        let request = if matches!(effect, MusicEffect::DisconnectSpotify) {
-            crate::stream::StreamRequest::DisconnectSpotify
-        } else if matches!(effect, MusicEffect::ConnectSpotify) {
-            crate::stream::StreamRequest::ConnectSpotify
-        } else if matches!(effect, MusicEffect::ConnectSpotifyPlayback) {
-            crate::stream::StreamRequest::ConnectSpotifyPlayback
-        } else {
-            crate::stream::StreamRequest::Source {
-                spotify: !matches!(effect, MusicEffect::BrowseYouTube),
-                sign_in: matches!(effect, MusicEffect::ConnectSpotifyLibrary),
-            }
+        let request = match effect {
+            MusicEffect::ConnectSpotify => StreamRequest::ConnectSpotify,
+            MusicEffect::ConnectSpotifyLibrary => StreamRequest::ConnectSpotifyLibrary,
+            MusicEffect::ConnectSpotifyPlayback => StreamRequest::ConnectSpotifyPlayback,
+            MusicEffect::DisconnectSpotify => StreamRequest::DisconnectSpotify,
+            _ => return Err("Unknown Spotify connection operation".into()),
         };
         self.worker
             .as_ref()
@@ -1453,9 +1449,7 @@ impl Music {
             MusicEffect::ConnectSpotifyLibrary
             | MusicEffect::ConnectSpotify
             | MusicEffect::ConnectSpotifyPlayback
-            | MusicEffect::DisconnectSpotify
-            | MusicEffect::BrowseSpotify
-            | MusicEffect::BrowseYouTube => self.begin_source_effect(invocation, &effect),
+            | MusicEffect::DisconnectSpotify => self.begin_source_effect(invocation, &effect),
             MusicEffect::SpotifyAccountStatus
             | MusicEffect::SpotifyDevices
             | MusicEffect::SpotifyQueue
@@ -1472,7 +1466,7 @@ impl Music {
                 self.begin_spotify_operation(invocation, &effect)
             }
             MusicEffect::NewSpotifyPlaylist => {
-                if !self.spotify_catalogue {
+                if self.catalogue != Catalogue::Spotify {
                     return Err(crate::i18n::t("music-spotify-select-first"));
                 }
                 self.on_begin_new_playlist(None);
@@ -1493,7 +1487,7 @@ impl Music {
         let done = ui::framework::Effected::done();
         match effect {
             MusicEffect::Search { query } => {
-                if !self.allow_network {
+                if !self.allow_network || self.catalogue == Catalogue::Disabled {
                     return Err("Catalogue search is unavailable in this view".into());
                 }
                 self.complete_catalogue_search(Err(
@@ -2442,7 +2436,7 @@ impl Music {
         body: Rect,
         mut y: f64,
     ) -> f64 {
-        if !self.spotify_catalogue && self.spotify_remote_queue.is_none() {
+        if self.catalogue != Catalogue::Spotify && self.spotify_remote_queue.is_none() {
             return y;
         }
         if let Some(button) = self
@@ -2540,7 +2534,7 @@ impl Music {
         if self.lib.playlists.is_empty()
             && self.lib.albums.is_empty()
             && self.lib.tracks.is_empty()
-            && !self.catalogue_connected
+            && !self.catalogue.has_online_home()
             && super::ONLINE_CATALOGUE
         {
             let title = crate::i18n::t(super::HOME_EMPTY_TITLE);
@@ -2878,7 +2872,7 @@ impl Music {
         y: f64,
         pls: &[PlaylistDisp],
     ) -> f64 {
-        if self.spotify_catalogue {
+        if self.catalogue == Catalogue::Spotify {
             let y = self.position_source_buttons(ctx, look, body, y);
             return if pls.is_empty() {
                 y

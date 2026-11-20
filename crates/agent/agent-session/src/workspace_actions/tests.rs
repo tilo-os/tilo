@@ -960,3 +960,109 @@ fn a_write_not_saved_within_its_watch_fails_with_what_the_session_keeps() {
         "{failure:?}"
     );
 }
+
+/// What a write carries is named for its log and History at a small fraction of what applying
+/// it costs: a whole part a list of issues starts by its stored heads, never by loading it, and
+/// a change by its chunk's header, never by decoding it. Loading the part to name its heads,
+/// twice for every write, cost a list of 200 issues a third of a second on a hosted workspace.
+#[test]
+fn naming_a_write_costs_a_fraction_of_applying_it() {
+    use automerge::ReadDoc as _;
+    use automerge::transaction::Transactable as _;
+    use collab_types::DocumentMutation;
+    use std::time::{Duration, Instant};
+
+    const PARA: &str = "The page should load in a second whatever the tracker holds, and a \
+        click should answer within a frame. This paragraph stands in for what a real issue says. ";
+    let list = |doc: &mut automerge::AutoCommit, first: usize| {
+        let issues = match doc.get(automerge::ROOT, "issues").unwrap() {
+            Some((_, id)) => id,
+            None => doc
+                .put_object(automerge::ROOT, "issues", automerge::ObjType::Map)
+                .unwrap(),
+        };
+        for at in first..first + 200 {
+            let issue = doc
+                .put_object(&issues, format!("issue-{at}"), automerge::ObjType::Map)
+                .unwrap();
+            doc.put(&issue, "title", format!("ENG-{at} Fix the list"))
+                .unwrap();
+            let body = doc
+                .put_object(&issue, "body", automerge::ObjType::Text)
+                .unwrap();
+            doc.splice_text(&body, 0, 0, &PARA.repeat(2 + at % 7))
+                .unwrap();
+            doc.commit();
+        }
+    };
+    // The fastest of a few tries: what the work costs, not what the machine did meanwhile.
+    let fastest =
+        |work: &mut dyn FnMut() -> Duration| (0..3).map(|_| work()).min().unwrap_or(Duration::ZERO);
+    let timed = |work: &mut dyn FnMut()| {
+        let began = Instant::now();
+        work();
+        began.elapsed()
+    };
+
+    let mut doc = automerge::AutoCommit::new();
+    list(&mut doc, 0);
+    let whole = doc.save();
+    let heads = doc.get_heads();
+    list(&mut doc, 200);
+    let change = doc.save_after(&heads);
+
+    let short =
+        |hash: &automerge::ChangeHash| hash.to_string().chars().take(12).collect::<String>();
+    let snapshot = DocumentMutation::Snapshot(whole.clone());
+    assert_eq!(
+        super::publish::changes_of(&snapshot),
+        heads.iter().map(short).collect::<Vec<_>>(),
+        "a whole part is named by its heads"
+    );
+    let loading = fastest(&mut || {
+        timed(&mut || {
+            std::hint::black_box(automerge::AutoCommit::load(&whole).unwrap());
+        })
+    });
+    let naming = fastest(&mut || {
+        timed(&mut || {
+            std::hint::black_box(super::publish::changes_of(&snapshot));
+        })
+    });
+    assert!(
+        naming * 10 <= loading,
+        "naming a whole part took {naming:?}, loading it {loading:?}"
+    );
+
+    let incremental = DocumentMutation::Incremental(change.clone());
+    let named = super::publish::changes_of(&incremental);
+    assert_eq!(
+        named.len(),
+        200,
+        "a list's change is named change by change"
+    );
+    assert_eq!(
+        named.last(),
+        doc.get_heads().first().map(short).as_ref(),
+        "the last change named is the one the list ends at"
+    );
+    let applying = fastest(&mut || {
+        let mut base = automerge::AutoCommit::load(&whole).unwrap();
+        timed(&mut || {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the test's own change, applied as the baseline naming it is measured against"
+            )]
+            base.load_incremental(&change).unwrap();
+        })
+    });
+    let naming = fastest(&mut || {
+        timed(&mut || {
+            std::hint::black_box(super::publish::changes_of(&incremental));
+        })
+    });
+    assert!(
+        naming * 10 <= applying,
+        "naming a list's change took {naming:?}, applying it {applying:?}"
+    );
+}

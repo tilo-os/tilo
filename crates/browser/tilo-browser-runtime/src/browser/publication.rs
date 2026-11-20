@@ -72,11 +72,17 @@ pub fn semantic(
         _ => return Err(error("unsupported semantic action")),
     };
     with_mount(id, |m| {
+        let passes = m.frame.relayout_frames();
         crate::clipboard::during_input(&m.status, || {
             m.frame
                 .perform_semantic_named(path, target.as_deref(), &action)
         })
         .map_err(error)?;
+        // An action that laid the widgets out itself left nothing for the
+        // next frame to find: that frame still has to present what it did.
+        if m.frame.relayout_frames() != passes {
+            m.pending = true;
+        }
         // What the person typed into a field the page shows as HTML reaches
         // the app here, so this is an input like a key: its frame is drawn
         // before the browser paints again.

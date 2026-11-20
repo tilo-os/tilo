@@ -46,6 +46,11 @@ const ASKED: &str = "Your person is asked in your conversation with them whether
      may leave. Nothing was sent. It leaves when they allow it there: tell them it waits for \
      their answer, and do not send it again.";
 
+/// The failure code of a send that was not made because its person is asked first. It is not
+/// the code of an action that wants a confirmation: the agent's tools word that one
+/// themselves, and the words here are the ones the agent must read.
+const ASKED_FIRST: &str = "asked_person_first";
+
 /// What an answer is told when the question it was given to no longer says what this server
 /// asked.
 const CHANGED: &str = "The question no longer says what this server asked, so nothing was sent.";
@@ -130,7 +135,7 @@ impl TurnMail {
         Ok(InvocationUpdate::Failed {
             invocation,
             error: ActionFailure {
-                code: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
+                code: ASKED_FIRST.to_owned(),
                 message: words,
                 details: None,
                 retryable: false,

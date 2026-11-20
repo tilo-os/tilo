@@ -325,6 +325,56 @@ pub struct Replica {
     /// What a plain listing of the app's resource has walked to, so its next
     /// page starts where the last ended ([`Self::survey_page_of`]).
     walked: std::cell::RefCell<Option<SurveyProgress>>,
+    /// The member access its permissions were made from, and when: what [`Self::renew`]
+    /// compares a later read of it with.
+    held_access: Option<HeldAccess>,
+}
+
+/// A member's access as a replica's permissions were made from it, at `unix_time`.
+#[derive(Clone)]
+struct HeldAccess {
+    access: policy::MemberAccess,
+    sandbox: Vec<collab_types::caps::CapOverride>,
+    unix_time: u64,
+}
+
+impl HeldAccess {
+    fn of(actor: &ReplicaActor) -> Option<Self> {
+        match actor {
+            ReplicaActor::Member {
+                access,
+                sandbox,
+                unix_time,
+                ..
+            } => Some(Self {
+                access: access.clone(),
+                sandbox: sandbox.clone(),
+                unix_time: *unix_time,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether the same access read again at `later` decides as it did: nothing it holds
+    /// changed, and no grant of it lapsed in between, which is the one thing time changes.
+    fn decides_alike(&self, later: &Self) -> bool {
+        let (from, to) = (
+            self.unix_time.saturating_mul(1000),
+            later.unix_time.saturating_mul(1000),
+        );
+        self.access == later.access
+            && self.sandbox == later.sandbox
+            && !self
+                .access
+                .policy
+                .grants
+                .iter()
+                .chain(&self.access.granted)
+                .any(|grant| match grant.lifetime {
+                    policy::Lifetime::Until(at) => from < at && at <= to,
+                    _ => false,
+                })
+    }
 }
 
 /// The tree a view publishes, shared with what reads it.
@@ -510,6 +560,7 @@ impl Replica {
             ReplicaActor::Agent { person, .. } => Some(person.clone()),
             _ => None,
         };
+        let held_access = HeldAccess::of(&actor);
         let (invoker, permissions) = replica_access(actor, workspace, member);
         let creator = acted_for.unwrap_or_else(|| {
             invoker
@@ -544,6 +595,7 @@ impl Replica {
             automated,
             runs_views,
             walked: std::cell::RefCell::new(None),
+            held_access,
         })
     }
 
@@ -981,6 +1033,7 @@ impl Replica {
             total: start_total,
             rows: Vec::new(),
             offering,
+            resources: 0,
         };
         let all_chained = level_in_chain;
         let visit = |placed: tilo_actions::api::PlacedAction,
@@ -1013,16 +1066,15 @@ impl Replica {
             }
             walk.total = walk.total.saturating_add(1);
             if walk.total > walk.offset && walk.rows.len() < walk.take {
-                walk.rows
-                    .push(tilo_actions::remote::CatalogueRow::for_placed_action(
-                        "",
-                        self.app_id(),
-                        tilo_actions::api::PlacedAction {
-                            parent,
-                            has_children,
-                            action,
-                        },
-                    ));
+                walk.keep(tilo_actions::remote::CatalogueRow::for_placed_action(
+                    "",
+                    self.app_id(),
+                    tilo_actions::api::PlacedAction {
+                        parent,
+                        has_children,
+                        action,
+                    },
+                ));
             }
             walk.total < walk.end
         };
@@ -1151,11 +1203,21 @@ impl Replica {
             } else {
                 self.view.past_page_len_under(root)
             };
+            // The rows an item past the pages is taken to offer: what the
+            // level's own items offered each. A window is counted in rows, and an
+            // issue offers a couple of dozen, so building as many items as
+            // there are rows left would build every item to the end.
+            let rows_each = level_rows.checked_div(level.len()).unwrap_or(1).max(1);
             while complete && walk.total < walk.end && next_child < past_len {
-                // The rows the page still needs: each item may offer none, so
-                // the walk asks again from where this window ended.
-                let room = walk.end.saturating_sub(walk.total).max(1);
-                let children = self.view.past_page_range_under(root, next_child, room);
+                // The items the rows the page still needs take: each item may
+                // offer fewer, so the walk asks again from where this window
+                // ended.
+                let rows_left = walk.end.saturating_sub(walk.total).max(1);
+                let children = self.view.past_page_range_under(
+                    root,
+                    next_child,
+                    rows_left.div_ceil(rows_each),
+                );
                 if children.is_empty() {
                     break;
                 }
@@ -1673,6 +1735,16 @@ impl Replica {
     ///
     /// [`AppError::Launch`] for any actor but a member.
     pub fn renew(&mut self, actor: ReplicaActor) -> Result<(), AppError> {
+        // The same access read again, with no grant lapsed since: the replica keeps the
+        // permissions it has, and with them everything its view laid out. Taking them in
+        // again laid the view out whole, which for a tracker of thousands of issues cost the
+        // next listing as much as the rest of it.
+        let later = HeldAccess::of(&actor);
+        if let (Some(held), Some(later)) = (&self.held_access, &later)
+            && held.decides_alike(later)
+        {
+            return Ok(());
+        }
         let ReplicaActor::Member {
             access,
             sandbox,
@@ -1684,6 +1756,7 @@ impl Replica {
         };
         self.view
             .set_permissions(member_permissions(access, sandbox, unix_time));
+        self.held_access = later;
         Ok(())
     }
 
@@ -1835,6 +1908,8 @@ struct SurveyWalk<'a> {
     /// The resources a row was admitted for: what the containers after the
     /// rows are decided by.
     offering: std::collections::HashSet<String>,
+    /// The resources the page holds rows of so far.
+    resources: usize,
 }
 
 impl SurveyWalk<'_> {
@@ -1847,10 +1922,33 @@ impl SurveyWalk<'_> {
         if !rendered && self.query.admits(&row) {
             self.total = self.total.saturating_add(1);
             if self.total > self.offset && self.rows.len() < self.take {
-                self.rows.push(row);
+                self.keep(row);
             }
         }
         self.total < self.end
+    }
+
+    /// Put `row` on the page. A page bounded in resources
+    /// ([`tilo_actions::remote::CatalogueQuery::max_resources`]) ends once it
+    /// holds a row of one past the bound: the caller sees from it that more
+    /// follow and cuts the page before it, and no resource further on is
+    /// built.
+    fn keep(&mut self, row: tilo_actions::remote::CatalogueRow) {
+        if self
+            .rows
+            .last()
+            .is_none_or(|last| last.resource.id != row.resource.id)
+        {
+            self.resources = self.resources.saturating_add(1);
+            if self
+                .query
+                .resource_bound()
+                .is_some_and(|most| self.resources > most)
+            {
+                self.end = self.total;
+            }
+        }
+        self.rows.push(row);
     }
 }
 

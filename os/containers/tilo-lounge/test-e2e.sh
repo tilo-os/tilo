@@ -34,6 +34,11 @@
 #                  the browser (case menus)
 #   people-invite  a person made an owner while their page is open invites
 #                  a third, who arrives from the link (case invite)
+#   resign-in      a person who joined by invitation, whose certificate the
+#                  server turns away, is back in by themselves as the same
+#                  member and Settings' Agent models shows the server's answer;
+#                  with certifying refused at the network too, the page never
+#                  says it is ready while it is not (integration/resign-in.mjs)
 #   share-link     a document's link opens that document live for another
 #                  person on a phone-sized page; a run's link opens Console
 #   agent-setup    a person sets Tilo up through their agent (this commit's
@@ -127,6 +132,7 @@ print("ok: the directory lists the Lounge, joined at its entry as an editor")
     people-call|people-shell|people-menus|people-invite)
       TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$server_origin" \
         "$server_origin" "$out" "$stack" ;;
+    resign-in) exec node "$integration/resign-in.mjs" "$site_origin" "$server_origin" "$stack" "$out" ;;
     share-link) exec node "$integration/share-link.mjs" "$site_origin" "$server_origin" "$workspace" "$out" ;;
     reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
@@ -158,7 +164,7 @@ fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot people-call people-shell people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
+all=(signin directory boot people-call people-shell people-menus people-invite resign-in share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
 # Run only when named: a person reloading their workspace page twenty times
 # in one browser, counting the reloads that crash or never come back.
 named_only=(reloads)
@@ -361,7 +367,7 @@ fi
 # flow slower rather than the run shorter (measured: with nine flows and four
 # people cases at once, steps a run of three cases passes in 15-20 s ran out at
 # 45 s - a search opening, a composer showing, a call's channel).
-order=(setup-resume visa people-call people-invite people-shell people-menus boot wait-list onboarding share-link agent-setup entry passkey directory reloads)
+order=(setup-resume visa people-call people-invite resign-in people-shell people-menus boot wait-list onboarding share-link agent-setup entry passkey directory reloads)
 queue=()
 for flow in "${order[@]}"; do [[ " ${parallel[*]} " == *" $flow "* ]] && queue+=("$flow"); done
 at_once=${E2E_PARALLEL:-4}

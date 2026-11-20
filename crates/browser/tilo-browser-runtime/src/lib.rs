@@ -145,14 +145,14 @@ mod console_log;
 mod crash;
 #[cfg(target_arch = "wasm32")]
 mod record_verify;
-// The record each window shows on the workspace's shared shell: its tests run
-// on the host too.
+// The document each window shows on the workspace's shared shell: native tests
+// cover it too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
     not(target_arch = "wasm32"),
     allow(
         dead_code,
-        reason = "only the browser page opens windows; the host runs its tests"
+        reason = "only the browser page opens windows; native tests cover it"
     )
 )]
 #[cfg(target_arch = "wasm32")]
@@ -163,6 +163,13 @@ mod directory;
 mod display_mode;
 #[cfg(target_arch = "wasm32")]
 mod dom_code;
+// Keeping the page's desktop in the profile: native tests cover it too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "native tests cover what the page keeps")
+)]
+mod kept;
 #[cfg_attr(
     not(target_arch = "wasm32"),
     allow(
@@ -199,7 +206,7 @@ mod invite;
 mod invited_server;
 #[cfg(target_arch = "wasm32")]
 pub use invited_server::{INVITED_SERVER, InvitedServer, builtin_invited_server};
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 mod jobs_card;
 #[cfg(target_arch = "wasm32")]
 mod layers;

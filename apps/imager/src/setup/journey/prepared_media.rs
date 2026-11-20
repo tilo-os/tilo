@@ -1856,7 +1856,7 @@ impl PreparedMedia {
     ) -> io::Result<()> {
         crate::setup::desktop_delivery::deliver(Arc::clone(prepared), home, cancel).map(|_| ())
     }
-    pub(crate) fn copy_ciphertext(&self, output: &mut std::fs::File) -> io::Result<()> {
+    fn native_copy_ciphertext(&self, output: &mut std::fs::File) -> io::Result<()> {
         let cancel = AtomicBool::new(false);
         self.delivery
             .lock()
@@ -3509,6 +3509,7 @@ impl PreparedMedia {
                 tpm_handoff: Self::native_tpm_handoff,
                 staging_artifact: Self::native_staging_artifact,
                 validate_recovery_for_stage: Self::native_validate_recovery_for_stage,
+                copy_ciphertext: Self::native_copy_ciphertext,
                 prepare_original_on_media: Self::native_prepare_original_on_media,
                 deliver_desktop_preparation: Self::native_deliver_desktop_preparation,
             },

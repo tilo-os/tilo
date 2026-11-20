@@ -104,12 +104,29 @@ fn has_text(app: &mut TestApp<MessagesShell>, text: &str) -> bool {
 fn host_history_is_transient_and_submission_is_never_delivered() {
     let host = Host::new(true, false);
     let mut app = selected(&host);
+    let workspace_before = app.state();
     app.effect(&MessagesEffect::ReadHistory { choice: choice() })
         .expect("authorized history job");
     assert!(has_text(&mut app, PRIVATE));
     assert!(has_text(&mut app, "Submitted"));
     assert!(!has_text(&mut app, "Delivered"));
     assert!(!app.harness().dump_json().contains(PRIVATE));
+    assert_eq!(
+        app.state(),
+        workspace_before,
+        "reading broker history writes no conversation"
+    );
+    let export = app
+        .effect(&MessagesEffect::ExportContent {
+            format: Some("json".into()),
+            conversation: None,
+        })
+        .unwrap();
+    let value = export.value.unwrap();
+    assert_eq!(value["messages"], 0);
+    let hash = ui::tilo_actions::content_hash(value["content"].as_str().unwrap()).unwrap();
+    let contents = String::from_utf8(app.content().read(hash).unwrap()).unwrap();
+    assert!(!contents.contains(PRIVATE));
     assert!(
         app.effect(&MessagesEffect::Send {
             choice: choice(),

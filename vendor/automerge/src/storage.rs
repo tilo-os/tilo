@@ -9,6 +9,7 @@ pub(crate) mod load;
 pub(crate) mod parse;
 
 pub use bundle::{Bundle, BundleChange, BundleChangeIter};
+pub use chunk::{stored_change_hashes, stored_document_heads};
 pub use load::VerificationMode;
 
 pub(crate) use {

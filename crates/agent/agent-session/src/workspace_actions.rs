@@ -1355,7 +1355,10 @@ fn take_all(
     app: &ConfinedReplica,
     holder: &DocumentRoute,
 ) -> Result<Vec<(DocumentRoute, DocumentMutation)>, crate::apps::AppError> {
+    let taking = timing_start();
     let own = app.take_mutation()?;
+    timing_done("take.own", taking);
+    let taking = timing_start();
     let beside = match app.take_document_mutations() {
         Ok(beside) => beside,
         Err(error) => {
@@ -1365,6 +1368,7 @@ fn take_all(
             return Err(error);
         }
     };
+    timing_done("take.beside", taking);
     let mut taken: Vec<(DocumentRoute, DocumentMutation)> = own
         .into_iter()
         .map(|mutation| (holder.clone(), mutation))
@@ -2489,9 +2493,13 @@ impl Worker {
         // after another app's writes most of a second.
         let bounded_caller = (!owner).then(|| self.bounded(caller)).flatten();
         let published_here = if let Some(who) = &bounded_caller {
-            self.bounded_descriptor(workspace_id, who, (&route, &state), &target.address)
+            let describing = timing_start();
+            let described = self
+                .bounded_descriptor(workspace_id, who, (&route, &state), &target.address)
                 .map_err(Outcome::Rejected)?
-                .is_some()
+                .is_some();
+            timing_done("action.descriptor", describing);
+            described
         } else {
             // What the document publishes now, with what was written since it
             // was last used taken up: an item made since is one of its

@@ -467,9 +467,11 @@ impl DesktopSurface {
         let (changed, renamed) = {
             let mut shared = self.shared.borrow_mut();
             let named_before = shared.bars.names.clone();
+            // What the bars name is read when a window is titled, never drawn again for: a name
+            // the bars changed, once a key while a note's first line is typed, wakes nothing.
             let changed = shared.bars.take_names(names.clone());
             if changed {
-                shared.changed();
+                shared.note_change();
             }
             let tabs = shared.tree.workspaces.iter_mut().flat_map(|workspace| {
                 workspace

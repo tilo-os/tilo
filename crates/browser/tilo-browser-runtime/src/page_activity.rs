@@ -201,7 +201,12 @@ impl crate::browser::Desktop {
         }
         self.activity.serve_following();
         let described = self.handle.read(|tree| self.activity.describe(tree));
-        if self.activity.take_woken() || described {
+        // This is part of a frame, ahead of its windows' pass, which takes in what moved since the
+        // last one (what a key just wrote, a window asking for its history): asking for
+        // another frame for it drew every key twice. A description written into the layout is
+        // the next pass's to show.
+        let _moved = self.activity.take_woken();
+        if described {
             crate::browser::wake_desktops();
         }
     }

@@ -71,6 +71,8 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
     return element.localName === 'input' && !UNTYPED.has(element.type);
   };
 
+  // Whether the runtime last heard the pointer enter the surface rather than leave it.
+  let over = false;
   for (const type of FORWARDED) {
     on(layer, type, event => {
       if (native() || pageOwned(event)) return;
@@ -80,12 +82,20 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
       // pointer never left the surface, and the runtime would take it as a
       // leave that ends the press in hand.
       if (type === 'pointerover' && event.relatedTarget && layer.contains(event.relatedTarget)) return;
+      // The pointerover for the element a frame put under a still pointer, after the pointerout
+      // above, is no entry either: in the middle of a press it would end the press, and the click
+      // would pick nothing.
+      if (type === 'pointerover' && event.pointerType !== 'touch') {
+        if (over) return;
+        over = true;
+      }
       if (type === 'pointerout') {
         if (event.relatedTarget && layer.contains(event.relatedTarget)) return;
         const rect = layer.getBoundingClientRect();
         const inside = event.clientX >= rect.left && event.clientX < rect.right
           && event.clientY >= rect.top && event.clientY < rect.bottom;
         if (inside) return;
+        over = false;
       }
       if (event.pointerType === 'touch') {
         if (type === 'pointerdown' && scrollerAt(event.clientX, event.clientY, 0)) panning.add(event.pointerId);

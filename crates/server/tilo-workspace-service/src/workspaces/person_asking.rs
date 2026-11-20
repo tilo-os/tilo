@@ -537,33 +537,57 @@ impl Workspaces {
         }
     }
 
-    /// Revoke the grant `id` for `person`.
+    /// Revoke the grant `id` for `person`, and the approval the workspace's policy keeps for
+    /// what it names: what that person let stand covers nothing from now on.
     ///
     /// # Errors
-    /// The grant file could not be removed from the workspace store.
-    pub fn take_back_permission(&self, person: &[u8; 32], id: &str) -> Result<bool, String> {
-        let removed_workspaces: Vec<String> = self.with_grants(|grants| {
-            let mut removed = Vec::new();
-            for (ws, entries) in grants.iter_mut() {
-                let before = entries.len();
-                entries.retain(|entry| !(entry.person == *person && entry.grant.id.as_str() == id));
-                if entries.len() != before {
-                    removed.push(ws.clone());
-                }
-            }
-            grants.retain(|_, entries| !entries.is_empty());
-            removed
+    /// The grant file could not be removed from the workspace store, or the workspace policy
+    /// could not take the approval back.
+    pub async fn take_back_permission(&self, person: &[u8; 32], id: &str) -> Result<bool, String> {
+        let found = self.with_grants(|grants| {
+            grants.values().find_map(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.person == *person && entry.grant.id.as_str() == id)
+                    .cloned()
+            })
         });
-        if is_grant_id(id) {
-            for ws in &removed_workspaces {
-                match std::fs::remove_file(grant_path(&self.inner.dir, ws, id)) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.to_string()),
+        let Some(entry) = found else {
+            return Ok(false);
+        };
+        // The same allowance is a grant in the workspace's policy, under the approval name the
+        // server writes when it is answered: it is taken back there first, or it still stands
+        // while the person is told nothing does.
+        if let Some(approval) = governed_permission(person, &entry.scope) {
+            let workspace = self.workspace(&entry.scope.workspace).await;
+            if let Ok(workspace) = workspace {
+                let mut workspace = workspace.lock().await;
+                if self.governs(workspace.workspace()) {
+                    let at = tilo_clock::wall();
+                    self.change_approval(
+                        &mut workspace,
+                        at,
+                        ApprovalChange::Revoke(&[approval.id]),
+                    )
+                    .await?;
                 }
             }
         }
-        Ok(!removed_workspaces.is_empty())
+        let ws = entry.scope.workspace.clone();
+        self.with_grants(|grants| {
+            for entries in grants.values_mut() {
+                entries.retain(|other| !(other.person == *person && other.grant.id.as_str() == id));
+            }
+            grants.retain(|_, entries| !entries.is_empty());
+        });
+        if is_grant_id(id) {
+            match std::fs::remove_file(grant_path(&self.inner.dir, &ws, id)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(true)
     }
 
     /// Note the questions waiting in `workspace`.
@@ -599,7 +623,7 @@ impl Workspaces {
         WaitingQuestions { questions }
     }
 
-    fn person_asking_invoke(
+    async fn person_asking_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
@@ -617,15 +641,11 @@ impl Workspaces {
             }
             (person_asking::PERMISSIONS, person_asking::TAKE_BACK) => {
                 let taking: TakeBack = argument(request, "the permission to take back")?;
-                let left = self
-                    .take_back_permission(&person, &taking.permission)
-                    .and_then(|stood| {
-                        if stood {
-                            Ok(self.permissions_of(&person))
-                        } else {
-                            Err(NONE_STANDS.to_owned())
-                        }
-                    });
+                let left = match self.take_back_permission(&person, &taking.permission).await {
+                    Ok(true) => Ok(self.permissions_of(&person)),
+                    Ok(false) => Err(NONE_STANDS.to_owned()),
+                    Err(reason) => Err(reason),
+                };
                 answer(&left)
             }
             _ => Err(ActionCallError::UnknownAction),
@@ -641,6 +661,7 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         if request.target.provider == person_asking::PROVIDER {
             self.person_asking_invoke(workspace_id, caller, certificate, request)
+                .await
         } else if request.target.provider == tilo_actions::remote::person_formats::PROVIDER {
             self.formats_invoke(workspace_id, caller, certificate, request)
         } else {

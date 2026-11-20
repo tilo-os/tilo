@@ -65,6 +65,12 @@ function unitToByte(text, unit) {
 // How much wider than the layout measured them the page may set words before
 // it cuts them short: its glyph metrics differ from the layout's by less.
 const SLACK = 4;
+// In the order a presenter keeps: a native scroller, and a value kept in step with an element.
+const SCROLLER = Symbol('scroller');
+const STEP = Symbol('step');
+// Far below a device pixel: where a moved widget stands differs from where it stood only in
+// rounding.
+const NEAR = 1e-3;
 
 const rgba = color => color ? `rgba(${color[0]},${color[1]},${color[2]},${(color[3] / 255).toFixed(3)})` : '';
 
@@ -75,6 +81,16 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   const written = new WeakMap();
   // The native scrollers, by path, and where the composition last put each.
   let scrollers = new Map();
+  // What the last frame rendered, in order: each element by its path, each native scroller, and
+  // each value the page keeps in step with an element's own (a field's text, a box's tick). A
+  // widget the runtime hands over as the same (`same`) is rendered as its stretch of this.
+  let order = [];
+  let before = [];
+  // Each widget rendered, by path: its composition, where it stood in its parent, and its stretch
+  // of `order`.
+  const kept = new Map();
+  // The widgets of the frame in hand that were handed over as the same.
+  let unchanged = new Set();
   // The pictures shown, by path: the version each holds.
   const pictures = new Map();
   // Scrolls the page made itself, which must not echo back.
@@ -178,7 +194,44 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       stats.created++;
     }
     next.set(path, element);
+    order.push([path, element]);
     return element;
+  }
+
+  // Keep a value of an element's own in step with the composition, now and each frame the
+  // widget is handed over as the same: the person's own input may have moved it.
+  function keep(step) {
+    step();
+    order.push([STEP, step]);
+  }
+
+  // The widget `node` names as the same as before, moved by `[dx, dy]`: the one held, moved.
+  function moveBy(node, dx, dy) {
+    node.rect[0] += dx;
+    node.rect[1] += dy;
+    if (node.clip) { node.clip[0] += dx; node.clip[1] += dy; }
+    for (const [rect] of node.surfaces ?? []) { rect[0] += dx; rect[1] += dy; }
+    for (const child of node.children ?? []) moveBy(child, dx, dy);
+  }
+
+  // The last frame's stretch for `held`, as this frame's, with every widget in it.
+  function replay(held, next) {
+    const shift = order.length - held.start;
+    for (let at = held.start; at < held.end; at++) {
+      const entry = before[at];
+      order.push(entry);
+      if (entry[0] === STEP) entry[1]();
+      else if (entry[0] === SCROLLER) scrollers.set(entry[1], entry[2]);
+      else next.set(entry[0], entry[1]);
+    }
+    const rebase = node => {
+      const one = kept.get(node.path);
+      if (!one) return;
+      one.start += shift;
+      one.end += shift;
+      for (const child of node.children ?? []) rebase(child);
+    };
+    rebase(held.node);
   }
 
   function tagOf(node, role) {
@@ -205,7 +258,37 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   }
 
   // `node` as an element of `parent` (whose composition is `outer`).
+  // `node` as the page holds it: a widget handed over as the same is the one held, moved as it
+  // was, and noted as one whose elements may stand as they are.
+  function resolve(node) {
+    if (!node.same) return node;
+    const held = kept.get(node.path);
+    if (!held) throw new Error(`the page holds nothing at ${node.path}`);
+    const [dx, dy] = node.same;
+    if (dx || dy) moveBy(held.node, dx, dy);
+    unchanged.add(held.node);
+    return held.node;
+  }
+
   function render(node, outer, next, scrolledBy) {
+    const placed = Boolean(outer?.flows && !outer.scroller);
+    const originX = outer ? outer.rect[0] : 0;
+    const originY = outer ? outer.rect[1] - (scrolledBy ?? 0) : 0;
+    const held = unchanged.has(node) && kept.get(node.path);
+    // Placed where it was in its parent, it is the elements it was.
+    if (held && placed === held.placed && held.scale === scale
+      && (placed || (Math.abs(node.rect[0] - originX - held.left) < NEAR && Math.abs(node.rect[1] - originY - held.top) < NEAR))) {
+      replay(held, next);
+      return held.element;
+    }
+    if (node.children) node.children = node.children.map(resolve);
+    const start = order.length;
+    const element = renderOwn(node, outer, next, scrolledBy);
+    kept.set(node.path, {node, placed, scale, left: node.rect[0] - originX, top: node.rect[1] - originY, start, end: order.length, element});
+    return element;
+  }
+
+  function renderOwn(node, outer, next, scrolledBy) {
     const role = roleOf(node.semantics);
     const element = elementFor(node.path, tagOf(node, role), next);
     const [x, y, w, h] = node.rect;
@@ -360,7 +443,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       write(sizer, 'css', `position:absolute;left:0;top:0;width:1px;height:${node.scroll[1]}px;pointer-events:none;`);
       write(sizer, '@aria-hidden', 'true');
       children.push(sizer);
-      scrollers.set(node.path, {element, offset: node.scroll[0]});
+      const at = {element, offset: node.scroll[0]};
+      scrollers.set(node.path, at);
+      order.push([SCROLLER, node.path, at]);
     }
     if (!own || own.kind === 'blocks' || own.kind === 'painted' || own.kind === 'face' || own.kind === 'control') place(element, children);
     return element;
@@ -433,7 +518,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     write(element, '@placeholder', own.placeholder ?? null);
     write(element, '@aria-label', node.semantics?.name ?? null);
     element.dataset.tiloField = 'true';
-    if (document.activeElement !== element && element.value !== own.value) element.value = own.value;
+    keep(() => { if (document.activeElement !== element && element.value !== own.value) element.value = own.value; });
     if (!element.tiloBound) {
       element.tiloBound = true;
       element.addEventListener('input', () => semantic?.(element.dataset.path, undefined, 'value', element.value, 0, 0));
@@ -612,8 +697,10 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         const input = elementFor(`${key}:input`, 'input', next);
         write(input, '@type', control.style === 'radio' ? 'radio' : 'checkbox');
         write(input, '@role', control.style === 'switch' ? 'switch' : null);
-        if (input.checked !== control.checked) input.checked = control.checked;
-        if (input.indeterminate !== Boolean(control.mixed)) input.indeterminate = Boolean(control.mixed);
+        keep(() => {
+          if (input.checked !== control.checked) input.checked = control.checked;
+          if (input.indeterminate !== Boolean(control.mixed)) input.indeterminate = Boolean(control.mixed);
+        });
         write(input, '@disabled', disabled);
         write(input, '@aria-label', control.label ? null : (node.semantics?.name ?? null));
         mark(input, 'toggle', target);
@@ -630,7 +717,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         write(input, '@min', String(control.min));
         write(input, '@max', String(control.max));
         write(input, '@step', control.step === undefined || control.step === null ? 'any' : String(control.step));
-        if (document.activeElement !== input && Number(input.value) !== control.value) input.value = String(control.value);
+        keep(() => { if (document.activeElement !== input && Number(input.value) !== control.value) input.value = String(control.value); });
         write(input, '@disabled', disabled);
         // How far along its track it is, for the filled part the toolkit paints.
         const span = control.max - control.min;
@@ -660,7 +747,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         write(input, '@min', control.min === undefined ? null : String(control.min));
         write(input, '@max', control.max === undefined ? null : String(control.max));
         write(input, '@step', control.step === undefined ? null : String(control.step));
-        if (document.activeElement !== input && input.value !== control.text) input.value = control.text;
+        keep(() => { if (document.activeElement !== input && input.value !== control.text) input.value = control.text; });
         write(input, '@disabled', disabled);
         // A secret is never the page's field: its characters stay with the
         // widget, and the page shows the mask it was given.
@@ -868,8 +955,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (background !== meta.background) layer.style.background = background = meta.background;
     const next = new Map();
     scrollers = new Map();
-    const roots = [render(composition.root, null, next, 0)];
-    for (const overlay of composition.layers ?? []) roots.push(render(overlay, null, next, 0));
+    before = order;
+    order = [];
+    unchanged = new Set();
+    const roots = [render(resolve(composition.root), null, next, 0)];
+    for (const overlay of composition.layers ?? []) roots.push(render(resolve(overlay), null, next, 0));
     place(layer, roots);
     // Scrollers stand where the composition says, unless the person is
     // moving them: their own scroll reaches the widget first.
@@ -887,6 +977,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       }
     }
     for (const path of pictures.keys()) if (!next.has(`${path}#picture`)) pictures.delete(path);
+    for (const path of kept.keys()) if (!next.has(path)) kept.delete(path);
+    before = [];
+    unchanged = new Set();
     elements = next;
     if (wanted.size && !fetching) { fetching = true; queueMicrotask(fetchPictures); }
     stats.frames++;

@@ -99,8 +99,8 @@ impl Level {
                 return Some((rest.cursor.clone(), rest.revision.clone()));
             }
             let mark = self.pages.marks.last()?;
-            let offset =
-                row_offset(&mark.cursor).saturating_add(rows.len().saturating_sub(mark.row));
+            let offset = row_offset(&mark.cursor)
+                .saturating_add(spanned(rows.get(mark.row..).unwrap_or_default()));
             return Some((
                 u64::try_from(offset)
                     .unwrap_or(u64::MAX)
@@ -110,15 +110,19 @@ impl Level {
             ));
         };
         // The marks a level leaves are pages of it, each with the provider's
-        // row cursor it started at: the rows since move that on by one each. A row of the
-        // first page, which leaves no mark, is that many rows from the directory's start, at
-        // the revision the level was read at, where the provider's cursors are row offsets.
+        // row cursor it started at: the rows since move that on by as many as each stands
+        // for. A row of the first page, which leaves no mark, is that many rows from the
+        // directory's start, at the revision the level was read at, where the provider's
+        // cursors are row offsets.
         let (offset, revision) = match self.pages.marks.iter().rev().find(|mark| mark.row <= at) {
             Some(mark) => (
-                row_offset(&mark.cursor).saturating_add(at.saturating_sub(mark.row)),
+                row_offset(&mark.cursor)
+                    .saturating_add(spanned(rows.get(mark.row..at).unwrap_or_default())),
                 &mark.revision,
             ),
-            None if !self.revision.is_empty() && self.pages_by_offset() => (at, &self.revision),
+            None if !self.revision.is_empty() && self.pages_by_offset() => {
+                (spanned(rows.get(..at).unwrap_or_default()), &self.revision)
+            }
             None => return None,
         };
         Some((
@@ -131,32 +135,24 @@ impl Level {
     }
 }
 
-/// How many rows to ask a provider for so a page reaches `reach` resources of
-/// the level under `parent`, from what `rows` already read: each resource
-/// offers its actions as rows, a few dozen on an item, which a listing taken a
-/// resource at a time sends as one ([`CatalogueQuery::by_resource`]). Asking
-/// a row per resource read three items a call, and a tracker of thousands a
-/// call per three.
-fn page_rows(rows: &[CatalogueRow], parent: &str, reach: usize) -> u32 {
-    /// The rows a resource is taken to offer before any was read.
-    const ROWS_EACH: usize = 48;
-    // A read of the whole level keeps to the pages it is bounded to.
+/// What to ask a provider for so a page reaches `reach` resources of the
+/// level under `parent`, from what `rows` already read: as many rows as a page
+/// taken a resource at a time holds ([`CatalogueQuery::by_resource`]), and the
+/// resources still wanted, one past them to say whether the level goes on
+/// ([`CatalogueQuery::max_resources`]). The provider stops there, building
+/// the resources the page shows and not as many as a guess at the rows each
+/// offers. A read of the whole level keeps to the pages it is bounded to.
+fn page_bounds(rows: &[CatalogueRow], parent: &str, reach: usize) -> (u32, Option<u32>) {
     if reach == usize::MAX {
-        return PAGE_ROWS;
+        return (PAGE_ROWS, None);
     }
-    let read = distinct_children(rows, parent);
-    let each = if read == 0 {
-        ROWS_EACH
-    } else {
-        rows.len().div_ceil(read).max(1)
-    };
     let wanted = reach
-        .saturating_sub(read)
-        .saturating_add(1)
-        .saturating_mul(each);
-    u32::try_from(wanted)
-        .unwrap_or(u32::MAX)
-        .clamp(PAGE_ROWS, tilo_actions::remote::MAX_BY_RESOURCE_PAGE)
+        .saturating_sub(distinct_children(rows, parent))
+        .saturating_add(1);
+    (
+        tilo_actions::remote::MAX_BY_RESOURCE_PAGE,
+        Some(u32::try_from(wanted).unwrap_or(u32::MAX)),
+    )
 }
 
 /// The row a provider's cursor names: how many rows of the directory it
@@ -436,13 +432,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     revision: revision.clone().unwrap_or_default(),
                 });
             }
+            let (max_results, max_resources) = page_bounds(&rows, parent, reach);
             let asked = self
                 .ask(CatalogueQuery {
                     provider: Some(provider.to_owned()),
                     parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
                     cursor: std::mem::take(&mut cursor),
                     revision: revision.take(),
-                    max_results: page_rows(&rows, parent, reach),
+                    max_results,
+                    max_resources,
                     limits: Some(CatalogueLimits {
                         max_bytes: Some(65536),
                         max_work: Some(512),
@@ -476,7 +474,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if cannot_be_read_now(&asked) {
                 return Ok(Err(Unread::CannotNow));
             }
-            rows.extend(tilo_actions::remote::expand(asked.rows));
+            rows.extend(asked.rows);
             read_at.clone_from(&asked.revision);
             if asked.exhausted || asked.next_cursor.is_empty() {
                 break;
@@ -608,6 +606,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .retain(|node| !all.iter().any(|owner| owner.beside(node)));
         Ok(root)
     }
+}
+
+/// How many of the provider's rows `rows` stand for: a resource's actions sent as one row
+/// ([`CatalogueQuery::by_resource`]) are a row each where the provider counts its cursor.
+fn spanned(rows: &[CatalogueRow]) -> usize {
+    rows.iter()
+        .map(|row| {
+            row.offered
+                .as_ref()
+                .map_or(1, |offered| offered.actions.len().max(1))
+        })
+        .sum()
 }
 
 /// How many resources of the level under `parent` `rows` name: each once,

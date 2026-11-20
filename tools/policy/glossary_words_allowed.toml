@@ -27,7 +27,10 @@ identifiers = ["host_rendered"]
 reason = "The identity registry's field naming the file an identity is kept in."
 words = ["record"]
 identifiers = ["record_path"]
-paths = ["crates/runtime/tilo-runtime/src/standalone/mcp_admission_tests.rs"]
+paths = [
+    "crates/runtime/tilo-identity/src/bin/tilo-identity.rs",
+    "crates/runtime/tilo-runtime/src/standalone/mcp_admission_tests.rs",
+]
 
 [[allow]]
 reason = "The native test pair's serving daemon runs under the profile `host`, which names its cache and identity directories."
@@ -1967,7 +1970,28 @@ paths = ["tools/policy/check_resource_placement.py", "tools/tests/test_check_res
 reason = "The Flatpak transfer `Runner`'s method that reads a Flatpak installation's list; a platform with no Flatpak still implements the trait, refusing."
 words = ["run"]
 identifiers = ["run"]
-paths = ["crates/platform/imager-backend/src/setup/flatpak_transfer/portable_absent.rs"]
+paths = ["crates/platform/imager-backend/src/setup/flatpak_transfer/native_absent.rs"]
+
+[[allow]]
+reason = "Chat's channels where the server puts the question about a use of its person's vault, and the record of the chat's messages a part is."
+words = ["channel"]
+identifiers = ["channel", "channels"]
+paths = [
+    "crates/server/tilo-server/src/workspace_agents/asks.rs",
+    "crates/server/tilo-server/src/workspace_agents/vault_uses.rs",
+]
+
+[[allow]]
+reason = "The server's own agents (`HostAgents`) carrying out a turn's use of its person's vault."
+words = ["host"]
+identifiers = ["HostAgents"]
+paths = ["crates/server/tilo-server/src/workspace_agents/vault_uses.rs"]
+
+[[allow]]
+reason = "The replica seed's existing field naming the document a replica opens, which the session's tests fill in."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/agent/agent-session/tests/*"]
 
 [[allow]]
 reason = "The toolkit enum for a live or historical window."

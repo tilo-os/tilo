@@ -292,6 +292,9 @@ pub struct ColorSwatchPicker {
     /// The swatches a row takes in the width it was laid out in: `columns`, or fewer where
     /// that many do not fit.
     fit: usize,
+    /// For each swatch, the one drawn in its place: itself, or the earlier swatch the theme
+    /// paints the same colour, so no colour is offered twice.
+    drawn_as: Vec<usize>,
     selected: Option<usize>,
     choice: Option<usize>,
     rect: Rect,
@@ -335,6 +338,7 @@ impl ColorSwatchPicker {
             swatches: swatches.into_iter().collect(),
             columns: columns.max(1),
             fit: columns.max(1),
+            drawn_as: Vec::new(),
             selected: None,
             choice: None,
             rect: Rect::ZERO,
@@ -372,7 +376,7 @@ impl ColorSwatchPicker {
         use crate::motion::{Direction, ListChange};
         let now = crate::time::now();
         let Some(target) = self
-            .selected
+            .shown_selected()
             .and_then(|i| self.swatch_rects.get(i).copied())
         else {
             self.ring_for = None;
@@ -489,6 +493,34 @@ impl ColorSwatchPicker {
             swatch.color = colour;
         }
         self.coloured_for = Some(current);
+        // A theme can paint two choices alike, such as a look's own accent and the hue it is
+        // made of: the later one is not offered again.
+        self.drawn_as = (0..self.swatches.len())
+            .map(|i| {
+                let colour = self.swatches[i].color;
+                (0..i)
+                    .find(|j| self.swatches[*j].color == colour)
+                    .unwrap_or(i)
+            })
+            .collect();
+        self.dirty = true;
+    }
+
+    /// The swatch drawn for `index`: itself, or the earlier one painted the same colour.
+    fn shown(&self, index: usize) -> usize {
+        self.drawn_as.get(index).copied().unwrap_or(index)
+    }
+
+    /// The swatches drawn, in order.
+    fn visible(&self) -> Vec<usize> {
+        (0..self.swatches.len())
+            .filter(|i| self.shown(*i) == *i)
+            .collect()
+    }
+
+    /// The swatch drawn as chosen.
+    fn shown_selected(&self) -> Option<usize> {
+        self.selected.map(|i| self.shown(i))
     }
 
     pub fn set_selected(&mut self, idx: Option<usize>) {
@@ -520,7 +552,7 @@ impl ColorSwatchPicker {
     }
 
     fn rows(&self) -> usize {
-        self.swatches.len().div_ceil(self.fit)
+        self.visible().len().div_ceil(self.fit)
     }
 
     /// The swatches a row of `width` takes: at most as many whole cells as fit and at most
@@ -533,7 +565,7 @@ impl ColorSwatchPicker {
     )]
     fn fit_in(&self, width: f64) -> usize {
         let fits = (((width + self.pad) / self.cell).floor().max(1.0) as usize).min(self.columns);
-        let count = self.swatches.len().max(1);
+        let count = self.visible().len().max(1);
         count.div_ceil(count.div_ceil(fits))
     }
 
@@ -548,13 +580,19 @@ impl ColorSwatchPicker {
         // the first sits on the grid's (the content's) leading edge.
         let gap = self.pad;
         let row = self.row_height();
+        let mut place = 0_usize;
         for i in 0..self.swatches.len() {
-            let r = i.checked_div(self.fit).unwrap_or(0) as f64;
-            let c = i.checked_rem(self.fit).unwrap_or(0) as f64;
+            if self.shown(i) != i {
+                self.swatch_rects.push(Rect::ZERO);
+                continue;
+            }
+            let r = place.checked_div(self.fit).unwrap_or(0) as f64;
+            let c = place.checked_rem(self.fit).unwrap_or(0) as f64;
             let x = self.rect.x0 + c * self.cell;
             let y = self.rect.y0 + r * row;
             self.swatch_rects
                 .push(Rect::new(x, y, x + self.cell - gap, y + row - gap));
+            place += 1;
         }
     }
 
@@ -690,15 +728,16 @@ impl Widget for ColorSwatchPicker {
     /// name, the chosen one checked.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{Control, ControlOption};
+        let chosen = self.shown_selected();
         let options = self
-            .swatches
-            .iter()
-            .enumerate()
-            .map(|(index, swatch)| {
+            .visible()
+            .into_iter()
+            .map(|index| {
+                let swatch = &self.swatches[index];
                 ControlOption::new(swatch.spoken_name())
                     .with_colour(swatch.color)
                     .with_target(format!("swatch:{index}"))
-                    .selected(self.selected == Some(index))
+                    .selected(chosen == Some(index))
             })
             .collect();
         cx.control(Control::Choices {
@@ -727,6 +766,7 @@ impl Widget for ColorSwatchPicker {
             .cell_width
             .unwrap_or_else(|| f64::from(theme.tokens.metrics.min_pointer_target));
         self.pad = f64::from(theme.tokens.spacing.s1);
+        self.colour_for(theme);
         // As wide as every column, narrowing a whole cell at a time where the row is
         // narrower: the swatches wrap onto more lines rather than overflow.
         self.fit = self.columns;
@@ -781,9 +821,13 @@ impl Widget for ColorSwatchPicker {
     ) {
         self.colour_for(theme);
         let sliding = self.follow_ring(theme.motion());
+        let chosen = self.shown_selected();
         for (i, (swatch, rect)) in self.swatches.iter().zip(&self.swatch_rects).enumerate() {
+            if self.shown(i) != i {
+                continue;
+            }
             let face = ColorSwatchFace::of(*rect, swatch)
-                .selected(self.selected == Some(i) && sliding.is_none())
+                .selected(chosen == Some(i) && sliding.is_none())
                 .focused(self.focused && self.focus_index == i)
                 .hovered(self.hovered == Some(i));
             match self.painter.as_mut() {
@@ -794,9 +838,10 @@ impl Widget for ColorSwatchPicker {
                 None => face.paint(scene, transform, text_renderer, theme),
             }
         }
-        if let (Some(at), Some(swatch)) =
-            (sliding, self.selected.and_then(|i| self.swatches.get(i)))
-        {
+        if let (Some(at), Some(swatch)) = (
+            sliding,
+            self.shown_selected().and_then(|i| self.swatches.get(i)),
+        ) {
             ColorSwatchFace::of(at, swatch)
                 .selected(true)
                 .paint_mark(scene, transform, theme);
@@ -843,16 +888,18 @@ impl Widget for ColorSwatchPicker {
                     },
                 ..
             } if self.focused && !self.swatches.is_empty() => {
-                let last = self.swatches.len().saturating_sub(1);
+                // Arrows step through the swatches drawn, not those left out.
+                let visible = self.visible();
+                let at = visible
+                    .iter()
+                    .position(|i| *i == self.shown(self.focus_index))
+                    .unwrap_or(0);
+                let last = visible.len().saturating_sub(1);
                 let next = match logical_key {
-                    Key::Named(NamedKey::ArrowLeft) => self.focus_index.saturating_sub(1),
-                    Key::Named(NamedKey::ArrowRight) => {
-                        self.focus_index.saturating_add(1).min(last)
-                    }
-                    Key::Named(NamedKey::ArrowUp) => self.focus_index.saturating_sub(self.fit),
-                    Key::Named(NamedKey::ArrowDown) => {
-                        self.focus_index.saturating_add(self.fit).min(last)
-                    }
+                    Key::Named(NamedKey::ArrowLeft) => at.saturating_sub(1),
+                    Key::Named(NamedKey::ArrowRight) => at.saturating_add(1).min(last),
+                    Key::Named(NamedKey::ArrowUp) => at.saturating_sub(self.fit),
+                    Key::Named(NamedKey::ArrowDown) => at.saturating_add(self.fit).min(last),
                     Key::Named(NamedKey::Home) => 0,
                     Key::Named(NamedKey::End) => last,
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
@@ -862,7 +909,7 @@ impl Widget for ColorSwatchPicker {
                     }
                     _ => return,
                 };
-                self.focus_index = next;
+                self.focus_index = visible.get(next).copied().unwrap_or(self.focus_index);
                 *ctx.handled = true;
             }
             _ => {}
@@ -903,7 +950,7 @@ impl Widget for ColorSwatchPicker {
         self.focused = focused;
         if focused {
             self.focus_index = self
-                .selected
+                .shown_selected()
                 .unwrap_or(0)
                 .min(self.swatches.len().saturating_sub(1));
         }
@@ -916,16 +963,17 @@ impl Widget for ColorSwatchPicker {
     fn accessibility(&self) -> Option<AccessNode> {
         // Each swatch is drawn (not a child widget), so it becomes a
         // synthetic `ListItem` named like its tooltip.
-        let count = self.swatches.len();
-        let value = self
-            .selected
+        let visible = self.visible();
+        let count = visible.len();
+        let chosen = self.shown_selected();
+        let value = chosen
             .and_then(|i| self.swatches.get(i))
             .map(ColorSwatch::spoken_name);
-        let items: Vec<AccessNode> = self
-            .swatches
+        let items: Vec<AccessNode> = visible
             .iter()
             .enumerate()
-            .map(|(i, swatch)| {
+            .map(|(place, &i)| {
+                let swatch = &self.swatches[i];
                 AccessNode::new(Role::ListItem)
                     .with_action_target(format!("swatch:{i}"))
                     .with_name(swatch.spoken_name())
@@ -936,10 +984,10 @@ impl Widget for ColorSwatchPicker {
                     .with_state(
                         AccessState::new()
                             .focusable(true)
-                            .selected(self.selected == Some(i))
+                            .selected(chosen == Some(i))
                             .focused(self.focused && self.focus_index == i),
                     )
-                    .with_position(i.saturating_add(1), count)
+                    .with_position(place.saturating_add(1), count)
             })
             .collect();
         Some(
@@ -956,10 +1004,11 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        let [swatch] = path else {
+        let [place] = path else {
             return None;
         };
-        self.swatch_rects.get(*swatch).copied()
+        let swatch = *self.visible().get(*place)?;
+        self.swatch_rects.get(swatch).copied()
     }
 
     fn perform_semantic_action(
@@ -1248,6 +1297,34 @@ mod tests {
             assert!(picker.rect.width() <= cell * 4.5, "the grid stays in its row");
             lay_out(&mut picker);
             assert_eq!(rows(&picker), 1, "wide enough, every swatch stands on one line");
+        }
+
+        phase a_colour_the_theme_paints_twice_is_offered_once;
+        {
+            let blue = Color::from_rgb8(40, 90, 220);
+            let swatches = ["Own", "Red", "Blue", "Green"]
+                .map(|name| ColorSwatch::named(Color::TRANSPARENT, name));
+            let mut picker = ColorSwatchPicker::new(swatches, 4)
+                .with_selected(2)
+                .with_theme_colours(move |_| {
+                    vec![blue, Color::from_rgb8(220, 40, 40), blue, Color::from_rgb8(40, 200, 40)]
+                });
+            lay_out(&mut picker);
+            assert_eq!(picker.visible(), [0, 1, 3], "the second blue is left out");
+            assert_eq!(picker.swatch_rects[2], Rect::ZERO, "and takes no cell");
+            assert_eq!(
+                picker.swatch_rects[3].x0 - picker.swatch_rects[1].x0,
+                picker.cell,
+                "the next swatch closes up"
+            );
+            assert_eq!(picker.shown_selected(), Some(0), "a choice of it shows on its twin");
+            let node = picker.accessibility().unwrap();
+            assert_eq!(node.children.len(), 3, "a reader hears each colour once");
+            picker.set_focus(true);
+            dispatch(&mut picker, &named_key(NamedKey::ArrowRight));
+            assert_eq!(picker.focus_index, 1);
+            dispatch(&mut picker, &named_key(NamedKey::ArrowRight));
+            assert_eq!(picker.focus_index, 3, "the arrows step over it");
         }
 
         phase the_first_swatch_sits_on_the_content_edge;

@@ -2692,6 +2692,7 @@ mod tests {
         include!("view/current_identity_tests.rs");
     }
     pub mod layout;
+    mod person_made_elsewhere;
     mod ready_focus;
     mod tour_motion;
     use tilo_onboarding::OnboardingEffect;

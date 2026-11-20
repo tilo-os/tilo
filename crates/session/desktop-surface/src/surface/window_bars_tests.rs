@@ -893,3 +893,69 @@ fn a_window_whose_bar_names_a_part_of_its_app_is_called_by_its_app() {
         "a part of the app names no window"
     );
 }
+
+/// A window renamed by what its app shows, as a note's title follows the first line typed into it,
+/// is a change of the shell the page shares, but nothing is drawn again for it: the shell's pass
+/// that took the new name asks the page for no other frame, so a key costs the frame it drew.
+#[test]
+fn a_window_renamed_by_its_app_asks_for_no_frame_of_its_own() {
+    let (surface, handle) = crate::surface::tests::shell_with(1, Box::new(WithHistory));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 800),
+        ui::Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (front, _) = shown_tabs(&frame)[0];
+    let declare = |label: &str| {
+        handle.declare_bar(
+            front,
+            45,
+            Some(WindowToolbar {
+                location: Some(ui::window_toolbar::ToolbarLocation {
+                    label: label.to_owned(),
+                    ..ui::window_toolbar::ToolbarLocation::default()
+                }),
+                ..WindowToolbar::default()
+            }),
+        );
+    };
+    declare("Seeds");
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let woken = std::sync::Arc::clone(&asked);
+    handle.set_wake(std::sync::Arc::new(move || {
+        woken.store(true, std::sync::atomic::Ordering::Relaxed);
+    }));
+    declare("Seeds for spring");
+    asked.store(false, std::sync::atomic::Ordering::Relaxed);
+    let revision = handle.revision();
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    assert_eq!(
+        handle.window_name(front).as_deref(),
+        Some("Seeds for spring")
+    );
+    assert_eq!(
+        handle
+            .read(|tree| tree.tab(front).map(|tab| tab.title.clone()))
+            .as_deref(),
+        Some("Seeds for spring"),
+        "the window is called what it shows"
+    );
+    assert_ne!(
+        handle.revision(),
+        revision,
+        "the new name is the page's to share"
+    );
+    assert!(
+        !asked.load(std::sync::atomic::Ordering::Relaxed),
+        "the pass that took the name asked for another frame"
+    );
+}

@@ -130,22 +130,11 @@ pub struct PersonPaths {
 }
 
 impl PersonPaths {
-    /// The identity this account runs as: `$TILO_IDENTITY_ROOT`, else the
-    /// system device root when it exists, else the person's data directory;
-    /// and the person's identity directory.
+    /// The identity this account acts as: this device's identity root
+    /// ([`crate::provisioning::collaboration_identity_root`]) and the
+    /// person's identity directory.
     pub fn from_env() -> Result<Self, String> {
-        let root = std::env::var_os("TILO_IDENTITY_ROOT").map_or_else(
-            || {
-                if Path::new("/var/lib/tilo/device").is_dir() {
-                    PathBuf::from("/var/lib/tilo")
-                } else {
-                    tilo_paths::data_dir()
-                        .unwrap_or_else(|| PathBuf::from(".local/share"))
-                        .join("tilo")
-                }
-            },
-            PathBuf::from,
-        );
+        let root = crate::provisioning::collaboration_identity_root();
         let dir = crate::store::identity_dir_from_env()
             .map_err(|error| format!("could not find your identity: {error}"))?;
         Ok(Self { root, dir })

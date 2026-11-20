@@ -48,10 +48,11 @@ pub(super) struct FilesIndex {
 
 impl FilesIndex {
     /// A write to `document` landed: the chunk it belongs to is read again, and the tree's own
-    /// document lists its chunks again.
+    /// document lists its chunks again. A chunk the listing does not name yet is read from a
+    /// listing that predates it, so the tree's own document is read again for that too.
     pub(super) fn landed(&mut self, document: &str) {
         if let Some(chunk) = tree::chunk_of_record(document) {
-            if chunk == 0 {
+            if chunk == 0 || !self.tree.listed().contains(&chunk) {
                 self.listed = false;
             }
             self.given_up.remove(&chunk);
@@ -253,6 +254,22 @@ mod tests {
             Some(0),
             "the write landing reads the document again"
         );
+    }
+
+    #[test]
+    fn a_chunk_the_listing_does_not_name_yet_lists_it_again() {
+        let mut index = FilesIndex::default();
+        assert_eq!(index.read(0, &index_of(&[]), None), 0);
+        assert!(index.settled(), "the tree names no chunk yet");
+        // A write to a chunk the listing read before it existed names it in the index.
+        index.landed(&tree::chunk_document_id(1));
+        assert_eq!(
+            index.next(),
+            Some(0),
+            "the tree's own document is read to list the chunk"
+        );
+        assert_eq!(index.read(0, &index_of(&[1]), None), 0);
+        assert_eq!(index.next(), Some(1), "the chunk it names is read next");
     }
 
     #[test]
