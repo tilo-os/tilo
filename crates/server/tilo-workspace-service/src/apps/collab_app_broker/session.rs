@@ -204,6 +204,9 @@ impl JoinedChannel {
             .map_err(|error| BrokerError::failed(format!("no resource command: {error}")))?;
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
+        if command.writes() {
+            self.writable()?;
+        }
         let route = self.route();
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
             return Err(BrokerError::failed(

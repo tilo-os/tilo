@@ -69,7 +69,7 @@ impl Workspace {
     /// An endpoint of `seed`'s person on its own wire connection, holding
     /// the workspace's route.
     fn endpoint(&self, seed: u8) -> Endpoint {
-        let (connection, outgoing, channel) = self.connection(seed);
+        let (connection, outgoing, channel) = self.connection(seed, RouteAccess::Own);
         Endpoint::serve(connection, outgoing, channel)
     }
 
@@ -78,6 +78,7 @@ impl Workspace {
     fn connection(
         &self,
         seed: u8,
+        route_access: RouteAccess,
     ) -> (
         Rc<WireConnection>,
         mpsc::UnboundedReceiver<HostFrame>,
@@ -106,7 +107,7 @@ impl Workspace {
             connection_id: hold,
             verified_identity: admitted,
             resource_type: None,
-            route_access: RouteAccess::Own,
+            route_access,
             lease: None,
             _hold: None,
         })));
@@ -509,8 +510,7 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
         .await;
 }
 
-/// A store that answers every count with how many it was asked, and keeps the app and workspace
-/// each command came from.
+/// A store that keeps the app and workspace each command came from.
 #[derive(Default)]
 struct CountingStore(Mutex<Vec<(String, String)>>);
 
@@ -529,7 +529,7 @@ impl crate::apps::services::ResourceServices for CountingStore {
             tilo_resource_store::wire::Command::Count { .. } => {
                 Ok(tilo_resource_store::wire::Reply::Count(asked.len()))
             }
-            _ => Err("only counts are kept here".to_owned()),
+            _ => Ok(tilo_resource_store::wire::Reply::Written),
         };
         drop(asked);
         Box::pin(std::future::ready(answer))
@@ -537,7 +537,9 @@ impl crate::apps::services::ResourceServices for CountingStore {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_apps_resource_command_reaches_the_store_as_its_route_certified() {
+async fn an_app_reads_through_its_certified_route_but_cannot_write_through_a_read_only_one() {
+    use tilo_resource_store::wire::Command;
+
     tokio::task::LocalSet::new()
         .run_until(async {
             let store = Arc::new(CountingStore::default());
@@ -546,18 +548,20 @@ async fn an_apps_resource_command_reaches_the_store_as_its_route_certified() {
                 resources: Some(served),
                 ..services
             });
-            let mut endpoint = workspace.endpoint(9);
-            let count = tilo_resource_store::wire::Command::Count {
-                kind: "tasks.issue".to_owned(),
-                filters: Vec::new(),
+            let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::ReadOnly);
+            let mut endpoint = Endpoint::serve(connection, outgoing, handle);
+            let ask = |command: Command| Operation::Command {
+                channel: handle,
+                service: Service::Resources,
+                body: serde_json::to_vec(&command).unwrap(),
+                on_behalf_of: Vec::new(),
             };
+
             let answer = endpoint
-                .call(Operation::Command {
-                    channel: endpoint.channel,
-                    service: Service::Resources,
-                    body: serde_json::to_vec(&count).unwrap(),
-                    on_behalf_of: Vec::new(),
-                })
+                .call(ask(Command::Count {
+                    kind: "tasks.issue".to_owned(),
+                    filters: Vec::new(),
+                }))
                 .await
                 .unwrap();
             let Reply::Answer(bytes) = answer else {
@@ -565,13 +569,23 @@ async fn an_apps_resource_command_reaches_the_store_as_its_route_certified() {
             };
             let reply: tilo_resource_store::wire::Reply = serde_json::from_slice(&bytes).unwrap();
             assert!(matches!(reply, tilo_resource_store::wire::Reply::Count(1)));
+
+            let denied = endpoint
+                .call(ask(Command::Remove {
+                    kind: "notes.note".to_owned(),
+                    id: "meeting-notes".to_owned(),
+                    stamp: tilo_resource_store::Stamp::default(),
+                }))
+                .await
+                .unwrap_err();
+            assert!(denied.contains("changes nothing on it"));
             assert_eq!(
                 *store.0.lock().unwrap(),
                 [(
                     workspace.route.app_id.clone(),
                     workspace.route.cluster_id.clone()
                 )],
-                "the store is told the route's app and workspace, never the app's say"
+                "only the read reaches the store, under the admitted route"
             );
         })
         .await;
@@ -790,7 +804,7 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
         .run_until(async {
             let workspace = Workspace::new(&[11, 12]);
             let connect = |seed: u8| {
-                let (connection, outgoing, channel) = workspace.connection(seed);
+                let (connection, outgoing, channel) = workspace.connection(seed, RouteAccess::Own);
                 let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
                 let (reader, writer) = host.into_split();
                 tokio::task::spawn_local(serve(connection, outgoing, reader, writer));
