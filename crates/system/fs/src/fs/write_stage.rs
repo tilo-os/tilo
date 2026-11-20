@@ -197,7 +197,10 @@ impl WriteStage {
                 let file = tempfile::Builder::new()
                     .prefix(STAGE_FILE_PREFIX)
                     .tempfile_in(dir)?;
-                file.as_file().set_len(len)?;
+                // A new file is empty already: a new file's stage costs no truncate.
+                if len > 0 {
+                    file.as_file().set_len(len)?;
+                }
                 Backing::File(file)
             }
             None => Backing::Memory(MemoryBacking {
@@ -431,7 +434,13 @@ impl WriteStage {
                 Ok(VersionSource::Bytes(&memory.bytes))
             }
             Backing::File(file) => {
-                file.as_file().set_len(len)?;
+                // Only a stage cut short or extended past its writes needs its file's length
+                // set: a truncate of a file already that long still costs the filesystem a
+                // transaction, once for every file a checkout closes.
+                let file_len = file.as_file().metadata()?.len();
+                if file_len != len {
+                    file.as_file().set_len(len)?;
+                }
                 Ok(VersionSource::File {
                     path: file.path(),
                     manifest: None,
