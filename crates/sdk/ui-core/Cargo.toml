@@ -451,7 +451,9 @@ tilo-theme-bauhaus = { version = "0.1.0", path = "../themes/bauhaus" }
 # The headless host's `HeadlessApp` and its fixtures are behind `test-support`;
 # enabling it here runs the integration tests that drive them whenever the
 # package is tested, not only when a dependant happens to unify the feature in.
-tilo-ui = { path = ".", features = ["test-support"] }
+# The defaults stay with the package's selection: a wasm32 test build asked for
+# without them (the page's toolkit core) must not take the native runner's.
+tilo-ui = { path = ".", default-features = false, features = ["test-support"] }
 # The manager's fixtures the App-driven collaboration tests drive.
 collaboration = { path = "../../collab/collaboration", features = ["test-support"] }
 # Deterministic swapchain lifecycle tests, without a display or GPU.
