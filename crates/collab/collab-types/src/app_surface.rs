@@ -216,7 +216,8 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
 /// change reads it, and a surface is tens of kilobytes. `None` when this
 /// process holds no surface for the app, or it does not parse (logged when it
 /// was named).
-fn surface_of(app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
+#[must_use]
+pub fn surface_of(app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
     registry().lock_recover().get(app_id)?.file.clone()
 }
 

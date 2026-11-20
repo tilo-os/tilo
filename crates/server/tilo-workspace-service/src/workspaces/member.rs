@@ -907,25 +907,8 @@ impl Workspaces {
             own: own.clone(),
             readers: readers.clone(),
         };
-        let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
-        let Some((route, retention)) = neighbour_wire::retention(&message, false) else {
-            return Err("the write carries no retention route".into());
-        };
-        let order = self
-            .inner
-            .host
-            .records
-            .carry(
-                workspace_id,
-                device.device(),
-                HostCommit {
-                    body: body.clone(),
-                    channel: route,
-                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-                },
-            )
-            .await?
-            .durable()
+        let (order, body) = self
+            .retain_document(workspace_id, device.device(), &message)
             .await?;
         self.absorb(workspace, device.device(), &body).await?;
         self.carry_to_links(workspace, device.device(), &message);
@@ -934,6 +917,35 @@ impl Workspaces {
             generation: order.clamp(1, u64::MAX),
             aggregate_hash: *blake3::hash(&body).as_bytes(),
         })
+    }
+
+    /// Keep a signed document on its usual retention route.
+    pub(super) async fn retain_document(
+        &self,
+        workspace: WorkspaceId,
+        author: [u8; 32],
+        message: &NeighbourMsg,
+    ) -> Result<(u64, Vec<u8>), String> {
+        let body = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+        let (channel, retention) = neighbour_wire::retention(message, false)
+            .ok_or("the write carries no retention route")?;
+        let order = self
+            .inner
+            .host
+            .records
+            .carry(
+                workspace,
+                author,
+                HostCommit {
+                    body: body.clone(),
+                    channel,
+                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+                },
+            )
+            .await?
+            .durable()
+            .await?;
+        Ok((order, body))
     }
 
     /// Write `command`, this device's own membership change (a lease it

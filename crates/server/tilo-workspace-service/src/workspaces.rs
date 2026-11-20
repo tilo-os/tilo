@@ -147,6 +147,8 @@ mod record_authority;
 #[cfg(feature = "agents")]
 pub mod repaired_documents;
 mod resources;
+#[cfg(feature = "agents")]
+pub use tilo_resource_store::wire::{Command as ResourceCommand, Reply as ResourceReply};
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 pub(crate) mod sealed_documents;

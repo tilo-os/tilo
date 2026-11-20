@@ -612,7 +612,7 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
             json(&serde_json::json!({
                 "agentId": agent,
                 "workspaces": [workspace.workspace],
-                "apps": [SHEETS, TASKS],
+                "apps": [SHEETS, TASKS, STORE_FIXTURE],
                 "expiresInSecs": 3600,
             })),
         )
@@ -805,6 +805,25 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
     }
 
     let roster = hosted.roster.as_ref().unwrap();
+    let roster_entry = workspaces
+        .hosted_roster_agent(workspace.workspace_id, agent, &keeper, None)
+        .await
+        .unwrap();
+    let caller = tilo_actions::remote::Caller::delegated_agent(agent, keeper, device)
+        .in_workspace(&workspace.workspace)
+        .on_roster_turn(
+            tilo_action_policy::turn::Turn::new("fixture", "request"),
+            roster_entry.created_at,
+        );
+    let store_route = exercise_resource_broker(
+        roster,
+        &workspaces,
+        &workspace.workspace,
+        &node,
+        &caller,
+        state.path(),
+    )
+    .await;
     let workbook = page.create(SHEETS);
     let notebook = page.create("so.tilo.notes");
     file_issue(
@@ -999,6 +1018,20 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
             .await,
         None
     );
+    assert!(
+        hosted
+            .roster
+            .as_ref()
+            .unwrap()
+            .resource_command(
+                &workspaces,
+                &caller,
+                (&workspace.workspace, STORE_FIXTURE),
+                store_command("card", "rename", "Revoked", "Kept"),
+            )
+            .await
+            .is_err()
+    );
     assert!(matches!(
         page.invoke(ask()).await.status,
         ReceiptStatus::Rejected { .. }
@@ -1014,6 +1047,51 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
     drop(hosted.web);
     hosted.server.shutdown().await;
     let reopened = crate::harness::hosted::start(&owner, &node, state.path(), options()).await;
+    let restored_store = reopened
+        .server
+        .workspaces()
+        .unwrap()
+        .resource_document(
+            &workspace.workspace,
+            &store_route.app_id,
+            &store_route.document,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_store_history(&restored_store, agent, device);
+    assert_store_history(
+        &std::fs::read(store_path(state.path(), &store_route)).unwrap(),
+        agent,
+        device,
+    );
+
+    let retained_store: Vec<_> = reopened
+        .server
+        .workspace_documents()
+        .retained(workspace.workspace_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|body| body.author == device)
+        .filter_map(|body| match postcard::from_bytes(&body.body).unwrap() {
+            neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                envelope,
+                ..
+            } if app_id == store_route.app_id && document_id == store_route.document => {
+                Some(envelope)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(retained_store.len(), 1);
+    let envelope = &retained_store[0];
+    assert_eq!(envelope.author.as_bytes(), &device);
+    assert!(envelope.encryption.is_some());
+    assert_eq!(envelope.claims.len(), 1);
+    collab_types::verify_op(envelope).unwrap();
     let restored = roster_write(&reopened, workspace.workspace_id, &workbook, device).await;
     assert_eq!(
         restored, signed,
@@ -1060,6 +1138,235 @@ async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner
     drop(reopened.web);
     reopened.server.shutdown().await;
     endpoint.close().await;
+}
+
+const STORE_FIXTURE: &str = "so.tilo.resource-fixture";
+const STORE_KIND: &str = "fixture.card";
+
+fn store_path(state: &std::path::Path, route: &DocumentRoute) -> std::path::PathBuf {
+    state
+        .join("server/workspaces")
+        .join(&route.cluster_id)
+        .join("store/docs")
+        .join(hex::encode(route.document.as_bytes()))
+}
+
+async fn exercise_resource_broker(
+    roster: &tilo_server::agents::RosterServices,
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    governor: &Device,
+    caller: &tilo_actions::remote::Caller,
+    state: &std::path::Path,
+) -> DocumentRoute {
+    use automerge::transaction::Transactable as _;
+    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+
+    collab_types::app_surface::register_built_in(
+        STORE_FIXTURE,
+        r#"{
+      "resources": [{
+        "kind":"fixture.card","label":"Card","version":1,
+        "fields":[
+          {"path":"title","type":"text"},
+          {"path":"protected","type":"text","unit":true}
+        ],
+        "types":[{"name":"fixture.card","fields":[
+          {"name":"title","type":"text"},{"name":"protected","type":"text"}
+        ]}],
+        "verbs":[{"id":"rename","kind":"undoable","field":"title"}]
+      }]
+    }"#,
+    );
+    let route = DocumentRoute {
+        app_id: STORE_FIXTURE.into(),
+        cluster_id: workspace.into(),
+        document: format!("*/{STORE_KIND}#0"),
+    };
+    let mut initial = automerge::AutoCommit::new();
+    initial.put(automerge::ROOT, "w", "*").unwrap();
+    let row = initial
+        .put_object(automerge::ROOT, "r:card", automerge::ObjType::Map)
+        .unwrap();
+    initial.put(&row, "k", STORE_KIND).unwrap();
+    let fields = initial
+        .put_object(&row, "f", automerge::ObjType::Map)
+        .unwrap();
+    initial.put(&fields, "title", "Original").unwrap();
+    initial.put(&fields, "protected", "Kept").unwrap();
+    initial.commit_with(
+        automerge::transaction::CommitOptions::default().with_message(
+            collab_types::Stamp {
+                verb: "rename".into(),
+                invocation: "seed".into(),
+                ..Default::default()
+            }
+            .message(),
+        ),
+    );
+    let keys = workspaces
+        .own_route_keys(&route, true)
+        .await
+        .unwrap()
+        .unwrap();
+    let artifact = collab_types::document_artifact_id(STORE_FIXTURE, workspace, &route.document);
+    let frame = collab_types::DocumentMutation::Snapshot(initial.save())
+        .encode()
+        .unwrap();
+    let (_, peer) = workspaces
+        .governed_copy(WorkspaceId::parse(workspace).unwrap())
+        .await
+        .unwrap();
+    let mut envelope = peer
+        .draft_write(
+            (STORE_FIXTURE, &route.document),
+            &frame,
+            Some(&mut |plaintext| {
+                keys.seal_content(
+                    artifact,
+                    collab_types::ContentRetention::Checkpoint,
+                    plaintext,
+                )
+                .map_err(|error| error.to_string())
+            }),
+            governor.cert.device_public_key,
+            0,
+            tilo_clock::wall(),
+        )
+        .unwrap();
+    collab_types::sign_op(&mut envelope, &governor.key).unwrap();
+    workspaces
+        .commit_local_document(
+            workspace,
+            OwnerCommitRequest {
+                workspace: workspace.into(),
+                operation: CommitOperation::Document {
+                    app: STORE_FIXTURE.into(),
+                    document: route.document.clone(),
+                    envelope: Box::new(envelope),
+                    own: None,
+                    readers: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    let disk = store_path(state, &route);
+    let before = std::fs::read(&disk).unwrap();
+    let mut writes = workspaces.document_writes();
+    let app_route = (workspace, STORE_FIXTURE);
+    for refused in [
+        roster
+            .resource_command(
+                workspaces,
+                &tilo_actions::remote::Caller::delegated_agent(
+                    caller.acting().agent_id().unwrap(),
+                    *caller.user_public_key().unwrap(),
+                    *caller.device_public_key().unwrap(),
+                )
+                .in_workspace(workspace),
+                app_route,
+                store_command("card", "rename", "Denied", "Kept"),
+            )
+            .await,
+        roster
+            .resource_command(
+                workspaces,
+                &caller
+                    .clone()
+                    .in_workspace("00000000-0000-0000-0000-000000000000"),
+                app_route,
+                store_command("card", "rename", "Denied", "Kept"),
+            )
+            .await,
+        roster
+            .resource_command(
+                workspaces,
+                caller,
+                app_route,
+                store_command("missing", "rename", "Denied", "Kept"),
+            )
+            .await,
+        roster
+            .resource_command(
+                workspaces,
+                caller,
+                app_route,
+                store_command("card", "unpublished", "Denied", "Kept"),
+            )
+            .await,
+        roster
+            .resource_command(
+                workspaces,
+                caller,
+                app_route,
+                store_command("card", "rename", "Denied", "No"),
+            )
+            .await,
+    ] {
+        assert!(refused.is_err(), "{refused:?}");
+    }
+    assert_eq!(std::fs::read(&disk).unwrap(), before);
+    while let Ok(write) = writes.try_recv() {
+        assert_ne!(
+            write.app, STORE_FIXTURE,
+            "a refused resource command woke a follower"
+        );
+    }
+    roster
+        .resource_command(
+            workspaces,
+            caller,
+            app_route,
+            store_command("card", "rename", "Updated", "Kept"),
+        )
+        .await
+        .unwrap();
+    let held = workspaces
+        .resource_document(workspace, STORE_FIXTURE, &route.document)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_store_history(
+        &held,
+        caller.acting().agent_id().unwrap(),
+        *caller.device_public_key().unwrap(),
+    );
+    route
+}
+
+fn store_command(
+    id: &str,
+    verb: &str,
+    title: &str,
+    protected: &str,
+) -> tilo_server::workspaces::ResourceCommand {
+    serde_json::from_value(serde_json::json!({"Put": {
+            "kind": STORE_KIND, "id": id,
+            "resource": {"readers": "*", "fields": {
+                "title": {"One": {"Text": title}}, "protected": {"One": {"Text": protected}}
+            }},
+            "stamp": {"verb": verb, "invoker": "untrusted", "invocation": "hosted-call", "membership": ["untrusted"]}
+        }})).unwrap()
+}
+
+fn assert_store_history(bytes: &[u8], agent: &str, device: [u8; 32]) {
+    let doc = automerge::Automerge::load(bytes).unwrap();
+    let changes = doc.get_changes(&[]);
+    assert_eq!(
+        changes.len(),
+        2,
+        "only the seed and admitted update are kept"
+    );
+    let latest = changes.last().unwrap();
+    assert_eq!(latest.actor_id().to_bytes(), &device);
+    let stamp = collab_types::Stamp::of(latest).unwrap();
+    assert_eq!(stamp.invoker, agent);
+    assert_eq!(stamp.verb, "rename");
+    assert_eq!(stamp.invocation, "hosted-call");
+    assert!(!stamp.membership.is_empty());
+    assert!(stamp.membership.iter().all(|head| head.len() == 64));
 }
 
 async fn roster_write(

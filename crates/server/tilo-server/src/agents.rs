@@ -1285,6 +1285,28 @@ pub struct RosterServices {
     pub initiative: Option<crate::workspace_bots::initiative::Initiative>,
 }
 
+impl RosterServices {
+    /// Dispatch a resource command on the hosted runner's certified route.
+    ///
+    /// # Errors
+    /// The command has no live roster session or fails workspace admission.
+    pub async fn resource_command(
+        &self,
+        workspaces: &crate::workspaces::Workspaces,
+        caller: &Caller,
+        route: (&str, &str),
+        command: crate::workspaces::ResourceCommand,
+    ) -> Result<crate::workspaces::ResourceReply, String> {
+        let sessions = self
+            .sessions
+            .as_ref()
+            .ok_or("the host serves no roster sessions")?;
+        workspaces
+            .hosted_resource_command(sessions, caller, route, command)
+            .await
+    }
+}
+
 impl WorkspaceActionsServer {
     fn start_events(
         &self,

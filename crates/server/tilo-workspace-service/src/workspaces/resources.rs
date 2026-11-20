@@ -545,9 +545,9 @@ impl GovernedWorkspace {
             .into_iter()
             .map(|change| Received { change, author })
             .collect();
-        let taken = received.len();
+        let before = self.resources.heads(doc);
         let refused = self.resources.receive(doc, &readers, received, &admit)?;
-        let applied = refused.len() < taken;
+        let applied = self.resources.heads(doc) != before;
         for (change, refusal) in refused {
             tracing::info!(workspace = %self.workspace(), %doc, %change, ?refusal, "a member's change to a resource was refused");
         }
@@ -606,32 +606,19 @@ impl GovernedWorkspace {
             } else {
                 write.change.raw_bytes().to_vec()
             };
-            let frame = if founding {
+            let mutation = if founding {
                 collab_types::DocumentMutation::Snapshot(bytes)
             } else {
                 collab_types::DocumentMutation::Incremental(bytes)
-            }
-            .encode()
-            .map_err(|error| error.to_string())?;
-            let artifact = collab_types::document_artifact_id(app, self.workspace(), &write.doc);
-            let mut seal = |plaintext: &[u8]| {
-                keys.seal_content(
-                    artifact,
-                    collab_types::ContentRetention::of_frame(plaintext),
-                    plaintext,
-                )
-                .map_err(|error| error.to_string())
             };
-            let mut envelope = self.peer().draft_write(
-                (app, &write.doc),
-                &frame,
-                Some(&mut seal),
-                device.device(),
-                0,
+            let envelope = signed_resource_write(
+                &self.peer(),
+                (self.workspace(), app, &write.doc),
+                mutation,
+                &keys,
+                device.signer.as_ref(),
                 now,
             )?;
-            collab_types::sign_op(&mut envelope, &*device.signer)
-                .map_err(|error| error.to_string())?;
             let own = self.peer().own_write(app, &write.doc, &device.device());
             let named = (collab_types::is_store_document(&write.doc)
                 && readers != collab_types::EVERY_MEMBER)
@@ -641,7 +628,7 @@ impl GovernedWorkspace {
                 operation: CommitOperation::Document {
                     app: app.to_owned(),
                     document: write.doc,
-                    envelope: Box::new(envelope),
+                    envelope,
                     own,
                     readers: named,
                 },
@@ -649,6 +636,38 @@ impl GovernedWorkspace {
         }
         Ok((requests, refused))
     }
+}
+
+/// Draft and sign the store's change on the workspace's usual sealed route.
+#[cfg(any(feature = "apps", feature = "agents"))]
+fn signed_resource_write(
+    peer: &super::StatePeer,
+    (workspace, app, doc): (&str, &str, &str),
+    mutation: collab_types::DocumentMutation,
+    keys: &key_group::ContentKeys,
+    signer: &dyn collab_types::signer::DeviceSigner,
+    now: web_time::SystemTime,
+) -> Result<Box<collab_types::SignedOp>, String> {
+    let frame = mutation.encode().map_err(|error| error.to_string())?;
+    let artifact = collab_types::document_artifact_id(app, workspace, doc);
+    let mut seal = |plaintext: &[u8]| {
+        keys.seal_content(
+            artifact,
+            collab_types::ContentRetention::of_frame(plaintext),
+            plaintext,
+        )
+        .map_err(|error| error.to_string())
+    };
+    let mut envelope = peer.draft_write(
+        (app, doc),
+        &frame,
+        Some(&mut seal),
+        signer.device_public_key(),
+        0,
+        now,
+    )?;
+    collab_types::sign_op(&mut envelope, signer).map_err(|error| error.to_string())?;
+    Ok(Box::new(envelope))
 }
 
 impl Workspaces {
@@ -827,3 +846,6 @@ fn may_read(reader: String) -> impl Fn(&str) -> bool {
 // the members around it (`agents`, for the device the sealed fixtures make).
 #[cfg(all(test, feature = "apps", feature = "agents"))]
 mod tests;
+
+#[cfg(feature = "agents")]
+mod hosted;
