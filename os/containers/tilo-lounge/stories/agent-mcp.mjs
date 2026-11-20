@@ -13,7 +13,7 @@
 // step failed or ran over its budget.
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from '../integration/waits.mjs';
-import {click, found, key, makeWorkspace, openWorkspace, pressNamed, searcher, showsText as shows, waitUntil}
+import {click, found, key, makeWorkspace, openWorkspace, pressNamed, searcher, showsText as shows, TREE_TEXT, waitUntil}
   from '../integration/shell.mjs';
 import {computerAt} from './computer.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
@@ -162,15 +162,20 @@ try {
     if (!await ada.tab.evaluate(open).catch(() => false)) await search(ada.tab, adaKeys, 'activity', 'Activity', 'so.tilo.activity');
     await until(ada.tab, open, 'Activity on Ada’s screen', stepLimit(4));
     await ada.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-    if (await ada.tab.waitFor(found('See history'), {timeout: stepLimit(3)}).catch(() => false)) {
-      if (!await press(ada.tab, 'See history')) fail('Activity’s See history is not where a person can press it');
+    // Its places are beside its title: History lists every change.
+    const places = await ada.tab.waitFor(found('History'), {timeout: stepLimit(3)}).catch(() => false);
+    if (places) {
+      if (!await press(ada.tab, 'History')) fail('History among Activity’s places is not where a person can press it');
     } else {
-      await pressWhen(ada.tab, 'History', 'History among Activity’s places');
+      await pressWhen(ada.tab, 'See history', 'Activity’s See history');
     }
     await shows(ada.tab, FILE, 'History listing the agent’s file', stepLimit(8));
-    for (const change of [TASK, NOTE, CHAT]) {
-      await shows(ada.tab, change, `History listing ${change}`, stepLimit(6));
-    }
+    await shows(ada.tab, TASK, `History listing ${TASK}`, stepLimit(6));
+    await shows(ada.tab, NOTE, `History listing ${NOTE}`, stepLimit(6));
+    // A message is the person's own words, which History names by what was
+    // done rather than quoting: its row is the one about a message.
+    const message = await ada.tab.waitFor(`/message/i.test(${TREE_TEXT})`, {timeout: stepLimit(6)}).catch(() => false);
+    if (!message) fail('History lists no message the agent posted');
     // Each row names who wrote it: the agent, in its own name, beside the change.
     const parts = JSON.parse(await ada.tab.evaluate(`(() => {
       const out = [];
@@ -180,11 +185,19 @@ try {
       if (root) walk(root);
       return JSON.stringify(out);
     })()`).catch(() => '[]'));
-    const unnamed = [FILE, TASK, NOTE, CHAT].filter(change => {
-      const at = parts.findIndex(part => part.includes(change));
+    const changes = [
+      {what: FILE, match: part => part.includes(FILE)},
+      {what: TASK, match: part => part.includes(TASK)},
+      {what: NOTE, match: part => part.includes(NOTE)},
+      {what: 'the message', match: part => /message/i.test(part)},
+    ];
+    const unnamed = changes.filter(change => {
+      const at = parts.findIndex(change.match);
       return at < 0 || !parts.slice(Math.max(0, at - 4), at + 4).some(part => part.includes(AGENT));
     });
-    if (unnamed.length) fail(`History does not name ${AGENT} beside ${unnamed.join(', ')}`);
+    if (unnamed.length) {
+      fail(`History does not name ${AGENT} beside ${unnamed.map(change => change.what).join(', ')}; it says: ${JSON.stringify(parts.slice(0, 120))}`);
+    }
   });
 
   await story.step('The agent asks Ada a question, and Ada answers it', async () => {
