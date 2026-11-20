@@ -262,9 +262,9 @@ extension TiloEngine {
     /// Ask the workspace's server about the agents the workspace keeps (Assistant's
     /// `tilo.workspace.agent`), as the person on this device: `read`, `create-agent`,
     /// `set-agent-on-host`, `retire-agent` or `stop-sub-agent`, and with `agent` the read of
-    /// that one agent. The server knows what the workspace keeps also where this page does not
-    /// hold it yet, so its answer is what says that a person keeps no assistant. Nothing else
-    /// of Assistant's document is asked this way: the page's own mount publishes the rest.
+    /// that one agent. The page a native app opens shows Chat alone, which keeps no agents, so
+    /// this is where the workspace's agents are read from, and nothing else of Assistant's
+    /// document is asked through the device's entry.
     ///
     /// - Throws: `Problem.refused` with the server's own code and sentence; `unavailable` for a
     ///   page that hands a native app no way to its workspace's server, `unknown_action` for a
