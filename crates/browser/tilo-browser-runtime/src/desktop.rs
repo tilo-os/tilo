@@ -883,9 +883,8 @@ impl Shared {
 /// too.
 #[derive(Clone, Default)]
 pub(crate) struct RecordActions {
-    /// The workspace's host, when this page has a session with one.
-    host: Option<SessionActions>,
-    /// The peer whose workspace this desktop shows, for the records it holds.
+    /// The peer whose workspace this desktop shows, for the documents it
+    /// holds and the server that answers their actions.
     peer: Option<u32>,
     /// The workspace this page is in, and the person asking.
     workspace: String,
@@ -905,11 +904,10 @@ pub(crate) struct RecordActions {
 type Waiting = Rc<RefCell<HashMap<InvocationId, Box<dyn FnOnce(ActionAnswer)>>>>;
 
 impl RecordActions {
-    /// The records' actions `host` runs for this page's person in
-    /// `workspace`; `requests` takes what only the page can do, and `wake`
-    /// asks for the frame that hands an answer on.
+    /// The documents' actions the page's peer asks of the workspace's server
+    /// for this page's person in `workspace`; `requests` takes what only the
+    /// page can do, and `wake` asks for the frame that hands an answer on.
     pub fn new(
-        host: Option<SessionActions>,
         peer: Option<u32>,
         workspace: &str,
         author: &str,
@@ -917,7 +915,6 @@ impl RecordActions {
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         Self {
-            host,
             peer,
             workspace: workspace.to_owned(),
             author: author.to_owned(),
@@ -926,6 +923,14 @@ impl RecordActions {
             answered: Arc::default(),
             wake: Some(wake),
         }
+    }
+
+    /// The workspace's server as this page reaches it now: a page that
+    /// certifies its device again keeps its id, and the session that replaces
+    /// the one before is the one its documents' actions go to.
+    fn server(&self) -> Option<SessionActions> {
+        let peer = self.peer?;
+        crate::peer_sync::actions_of(peer, crate::peer::workspace_id(&self.workspace).ok()?)
     }
 
     /// Hand the host's answers to what asked for them; whether any came.
@@ -967,7 +972,7 @@ impl tilo_app::linked_accounts::WorkspaceResourceActions for RecordActions {
         arguments: serde_json::Map<String, serde_json::Value>,
         done: Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>,
     ) {
-        let Some(host) = &self.host else {
+        let Some(server) = self.server() else {
             done(Err("this page reaches no workspace host".to_owned()));
             return;
         };
@@ -983,7 +988,7 @@ impl tilo_app::linked_accounts::WorkspaceResourceActions for RecordActions {
         self.waiting.borrow_mut().insert(invocation, done);
         let answered = Arc::clone(&self.answered);
         let wake = self.wake.clone();
-        host.invoke(&caller, request).then(move |answered_| {
+        server.invoke(&caller, request).then(move |answered_| {
             answered.lock_recover().push((
                 invocation,
                 tilo_app::linked_accounts::resource_answer(answered_),
@@ -2061,12 +2066,7 @@ fn take_up_feedback(
 /// linked accounts, which that host answers.
 fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -> Shared {
     let requests = crate::shell::HostRequests::default();
-    let host = inputs.peer.and_then(|peer| {
-        let workspace = crate::peer::workspace_id(&inputs.workspace).ok()?;
-        crate::peer_sync::actions_of(peer, workspace)
-    });
     let resource_actions = RecordActions::new(
-        host,
         inputs.peer,
         &inputs.workspace,
         &inputs.author,

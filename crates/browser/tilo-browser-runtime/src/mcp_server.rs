@@ -32,7 +32,11 @@ pub(crate) use crate::shell::Revoking;
 
 /// The MCP server as the page's desktop asks it.
 struct PageApi {
-    provider: SessionActions,
+    /// The page whose session with the workspace's server carries the asks:
+    /// looked up for each, as a page that certifies its device again keeps
+    /// its id while the session under it is replaced.
+    peer: u32,
+    workspace: tilo_server_protocol::WorkspaceId,
     /// Where agents connect over MCP, as the page names it.
     endpoint: Option<String>,
     revoked: Revoked,
@@ -42,17 +46,24 @@ struct PageApi {
 
 impl PageApi {
     fn new(
-        provider: SessionActions,
+        peer: u32,
+        workspace: tilo_server_protocol::WorkspaceId,
         endpoint: Option<String>,
         revoked: Revoked,
         woken: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            provider,
+            peer,
+            workspace,
             endpoint: endpoint.filter(|endpoint| !endpoint.is_empty()),
             revoked,
             woken,
         }
+    }
+
+    /// The workspace's host as this page reaches it now.
+    fn api(&self) -> Option<SessionActions> {
+        crate::peer_sync::actions_of(self.peer, self.workspace)
     }
 
     /// Hand the page the grant `request` takes back.
@@ -109,26 +120,20 @@ pub(crate) fn serve(
 ) -> Revoked {
     let revoked = Revoked::default();
     if let (Some(peer), Ok(workspace)) = (peer, crate::peer::workspace_id(workspace))
-        && let Some(api) = crate::peer_sync::actions_of(peer, workspace)
+        && crate::peer_sync::actions_of(peer, workspace).is_some()
     {
         session.serve_person_api(
             mcp_server::PROVIDER,
             Arc::new(PageApi::new(
-                api.clone(),
+                peer,
+                workspace,
                 endpoint,
                 Arc::clone(&revoked),
                 Arc::clone(woken),
             )),
         );
         if let Some(own) = crate::peer_sync::device_of(peer) {
-            crate::identity_api::serve(
-                session,
-                api,
-                own,
-                &revoked,
-                woken,
-                crate::peer_sync::handle_of(peer).as_ref(),
-            );
+            crate::identity_api::serve(session, peer, workspace, own, &revoked, woken);
         }
     }
     revoked
@@ -160,20 +165,26 @@ impl ActionProvider for PageApi {
         if request.target == mcp_server::target(mcp_server::REVOKE) {
             return Pending::ready(self.revoke(&request));
         }
-        self.provider.invoke(caller, request)
+        match self.api() {
+            Some(api) => api.invoke(caller, request),
+            None => Pending::ready(Err(crate::peer_sync::no_server())),
+        }
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.provider
+        self.api()?
             .observe(caller, id)
             .map(|state| self.with_endpoint(state))
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.provider.next_change(caller, id)
+        self.api()?.next_change(caller, id)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        self.provider.cancel(caller, id)
+        match self.api() {
+            Some(api) => api.cancel(caller, id),
+            None => Pending::ready(Err(crate::peer_sync::no_server())),
+        }
     }
 }

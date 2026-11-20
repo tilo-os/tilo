@@ -267,7 +267,11 @@ pub(crate) fn devices_moved() {
 #[cfg(target_arch = "wasm32")]
 /// The person's devices as the page's desktop asks for them.
 struct PageIdentity {
-    provider: SessionActions,
+    /// The page whose session with the workspace's server carries the asks:
+    /// looked up for each, as a page that certifies its device again keeps
+    /// its id while the session under it is replaced.
+    peer: u32,
+    workspace: tilo_server_protocol::WorkspaceId,
     /// This page's own device, which the list marks current.
     own: [u8; 32],
     revoked: Revoked,
@@ -275,47 +279,40 @@ struct PageIdentity {
     woken: Arc<AtomicBool>,
     /// The reads of the list this page keeps current.
     live: Arc<LiveDevices>,
-    /// The person's record as their host sends it whenever it changes.
-    sent: Option<tilo_session_client::Events>,
+    /// The person's devices as the server sends them whenever they change,
+    /// with the session (`peer_sync::generation`) whose link carries them: a
+    /// page that certified its device again hears the new session instead.
+    sent: std::sync::Mutex<Option<(u64, tilo_session_client::Events)>>,
 }
 
 #[cfg(target_arch = "wasm32")]
-/// Serve the desktop `session`'s asks of the person's devices from the
-/// person's record on the host `host` reaches; the devices they take back,
-/// with `revoked`, for the page to sign. `own` is this page's device, and
-/// `link` its session, on which the host sends the record as it changes.
+/// Serve the desktop `session`'s asks of the person's devices from what the
+/// server the page `peer` reaches keeps for them; the devices they take back,
+/// with `revoked`, for the page to sign. `own` is this page's device.
 pub(crate) fn serve(
     session: &DesktopSession,
-    provider: SessionActions,
+    peer: u32,
+    workspace: tilo_server_protocol::WorkspaceId,
     own: [u8; 32],
     revoked: &Revoked,
     woken: &Arc<AtomicBool>,
-    link: Option<&tilo_session_client::Link>,
 ) {
     let live = Arc::new(LiveDevices::default());
     LIVE.with_borrow_mut(|pages| {
         pages.retain(|held| held.strong_count() > 0);
         pages.push(Arc::downgrade(&live));
     });
-    let sent = link.map(|link| {
-        let sent =
-            link.events_where(|event| matches!(event, tilo_session_client::Event::Personal(_)));
-        let told = Arc::clone(&live);
-        // Each record the host sends wakes the reads, which take it.
-        link.on_event(&sent, Arc::new(move || told.wake()));
-        sent
-    });
-    session.serve_person_api(
-        identity_admin::PROVIDER,
-        Arc::new(PageIdentity {
-            provider,
-            own,
-            revoked: Arc::clone(revoked),
-            woken: Arc::clone(woken),
-            live,
-            sent,
-        }),
-    );
+    let identity = PageIdentity {
+        peer,
+        workspace,
+        own,
+        revoked: Arc::clone(revoked),
+        woken: Arc::clone(woken),
+        live,
+        sent: std::sync::Mutex::default(),
+    };
+    identity.follow_server();
+    session.serve_person_api(identity_admin::PROVIDER, Arc::new(identity));
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -336,6 +333,39 @@ fn invalid(reason: &str) -> ActionCallError {
 
 #[cfg(target_arch = "wasm32")]
 impl PageIdentity {
+    /// The workspace's server as this page reaches it now.
+    fn api(&self) -> Option<SessionActions> {
+        crate::peer_sync::actions_of(self.peer, self.workspace)
+    }
+
+    /// Follow the person's devices on the session the page holds now: one the
+    /// page certified its device again into is the one the server sends them
+    /// on.
+    fn follow_server(&self) {
+        let generation = crate::peer_sync::generation(self.peer);
+        if generation.is_some()
+            && self
+                .sent
+                .lock_recover()
+                .as_ref()
+                .is_some_and(|(followed, _)| Some(*followed) == generation)
+        {
+            return;
+        }
+        let mut sent = self.sent.lock_recover();
+        *sent = None;
+        let (Some(generation), Some(link)) = (generation, crate::peer_sync::handle_of(self.peer))
+        else {
+            return;
+        };
+        let events =
+            link.events_where(|event| matches!(event, tilo_session_client::Event::Personal(_)));
+        let told = Arc::clone(&self.live);
+        // Each list the server sends wakes the reads, which take it.
+        link.on_event(&events, Arc::new(move || told.wake()));
+        *sent = Some((generation, events));
+    }
+
     /// Name the device `request` names as the person asked it: the host's own
     /// action on their record, which every list of their devices reads.
     fn rename(
@@ -348,7 +378,7 @@ impl PageIdentity {
                 "naming a device says which device, and its name",
             )));
         };
-        let record = InvokeRequest {
+        let asked = InvokeRequest {
             target: RemoteActionTarget {
                 provider: HOST_ACTIONS_PROVIDER.to_owned(),
                 address: ActionAddress::new(HOST_WORKSPACES_RESOURCE, PERSONAL_DEVICE_NAME),
@@ -356,7 +386,10 @@ impl PageIdentity {
             argument: InvokeArgument::Json(argument.clone()),
             ..request.clone()
         };
-        self.provider.invoke(caller, record)
+        match self.api() {
+            Some(api) => api.invoke(caller, asked),
+            None => Pending::ready(Err(crate::peer_sync::no_server())),
+        }
     }
 
     /// Hand the page the device `request` takes back, for the reason it
@@ -400,17 +433,16 @@ impl PageIdentity {
     /// Take the records the host sent since the last look: the newest is the
     /// list now.
     fn take_sent(&self) {
-        let Some(sent) = &self.sent else {
-            return;
-        };
-        let newest = sent
-            .drain()
-            .into_iter()
-            .filter_map(|event| match event {
-                tilo_session_client::Event::Personal(record) => Some(record),
-                _ => None,
-            })
-            .next_back();
+        self.follow_server();
+        let newest = self.sent.lock_recover().as_ref().and_then(|(_, sent)| {
+            sent.drain()
+                .into_iter()
+                .filter_map(|event| match event {
+                    tilo_session_client::Event::Personal(record) => Some(record),
+                    _ => None,
+                })
+                .next_back()
+        });
         if let Some(record) = newest
             && let Ok(record) = serde_json::to_value(&*record)
         {
@@ -421,7 +453,7 @@ impl PageIdentity {
     /// Read the person's record from the host once more, after this page
     /// changed it: its answer is the list every open read has from then on.
     fn read_again(&self, caller: &Caller) {
-        let record = InvokeRequest {
+        let asked = InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
             target: personal_record(),
@@ -433,7 +465,11 @@ impl PageIdentity {
             appearance: None,
         };
         let (live, own) = (Arc::clone(&self.live), self.own);
-        self.provider.invoke(caller, record).then(move |receipt| {
+        let Some(api) = self.api() else {
+            live.read(None);
+            return;
+        };
+        api.invoke(caller, asked).then(move |receipt| {
             let listed = match receipt {
                 Some(Ok(InvocationReceipt {
                     status: ReceiptStatus::Completed { output },
@@ -590,14 +626,18 @@ impl ActionProvider for PageIdentity {
                 // current: the caller is admitted, and has the list as the
                 // read's items from here on.
                 let invocation = request.invocation;
-                let record = InvokeRequest {
+                let asked = InvokeRequest {
                     target: personal_record(),
                     argument: browser_devices(),
                     ..request
                 };
                 self.live.expect(invocation);
                 let (live, own) = (Arc::clone(&self.live), self.own);
-                self.provider.invoke(caller, record).map(move |receipt| {
+                let Some(api) = self.api() else {
+                    live.end(&invocation);
+                    return Pending::ready(Err(crate::peer_sync::no_server()));
+                };
+                api.invoke(caller, asked).map(move |receipt| {
                     let mut receipt = receipt.inspect_err(|_| {
                         live.end(&invocation);
                     })?;
@@ -623,7 +663,7 @@ impl ActionProvider for PageIdentity {
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         if !self.live.reads(id) {
-            return self.provider.observe(caller, id);
+            return self.api()?.observe(caller, id);
         }
         self.take_sent();
         if let Some(state) = self.live.state(id) {
@@ -631,7 +671,7 @@ impl ActionProvider for PageIdentity {
         }
         // The host had not answered the record at admission: its answer
         // opens the read.
-        let state = self.provider.observe(caller, id)?;
+        let state = self.api()?.observe(caller, id)?;
         match &state.update {
             InvocationUpdate::Succeeded { output, .. } => {
                 self.live
@@ -648,12 +688,12 @@ impl ActionProvider for PageIdentity {
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
         if !self.live.reads(id) {
-            return self.provider.next_change(caller, id);
+            return self.api()?.next_change(caller, id);
         }
         self.take_sent();
         let Some((change, owes)) = self.live.wait(id) else {
             // Not answered yet: the host says when it is.
-            return self.provider.next_change(caller, id);
+            return self.api()?.next_change(caller, id);
         };
         if owes {
             self.read_again(caller);
@@ -673,7 +713,10 @@ impl ActionProvider for PageIdentity {
         if self.live.end(id) {
             return Pending::ready(Ok(()));
         }
-        self.provider.cancel(caller, id)
+        match self.api() {
+            Some(api) => api.cancel(caller, id),
+            None => Pending::ready(Err(crate::peer_sync::no_server())),
+        }
     }
 }
 

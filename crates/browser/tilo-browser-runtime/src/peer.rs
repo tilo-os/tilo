@@ -201,6 +201,27 @@ thread_local! {
     static NEXT_PEER: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
 }
 
+/// The id a page opens as: `keep` when the page it replaces let it go as
+/// its session ended, else the next one. A page that certifies its device
+/// again opens as the page it was, so the mounts it made keep reaching it.
+fn page_id(keep: Option<u32>) -> u32 {
+    match keep.filter(|keep| !crate::peer_sync::registered(*keep)) {
+        Some(keep) => {
+            NEXT_PEER.with(|next| {
+                if next.get() <= keep {
+                    next.set(keep.wrapping_add(1).max(1));
+                }
+            });
+            keep
+        }
+        None => NEXT_PEER.with(|next| {
+            let id = next.get();
+            next.set(id.wrapping_add(1).max(1));
+            id
+        }),
+    }
+}
+
 impl DurablePeerStore {
     /// The key the run of device key `name` is kept under.
     fn run_key(&self, name: &str) -> durable_store::StorageKey {
@@ -1823,7 +1844,10 @@ impl WasmPeer {
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
     /// it. `post(path, session, body)` reaches the host origin.
     /// `channelVault` (32 bytes, from [`channel_vault`]) seals the profile's
-    /// channel state at rest; a peer with a namespace needs it.
+    /// channel state at rest; a peer with a namespace needs it. `keep` is the
+    /// page a session that replaces another opens as, when that page certifies
+    /// its device again: its mounts name the page by one id for as long as it
+    /// is open, and the session under it may be replaced.
     ///
     /// # Errors
     ///
@@ -1844,6 +1868,7 @@ impl WasmPeer {
         record: Option<Vec<u8>>,
         save: Option<Function>,
         channel_vault: Option<Vec<u8>>,
+        keep: Option<u32>,
     ) -> Result<WasmPeer, JsError> {
         let config: ConnectConfig = serde_json::from_str(config_json).map_err(js_error)?;
         let signer = PageSigner::from_js(device_key)?;
@@ -1882,11 +1907,10 @@ impl WasmPeer {
             owner_cert.clone(),
             &reporter_cert.device_label,
         );
-        let id = NEXT_PEER.with(|next| {
-            let id = next.get();
-            next.set(id.wrapping_add(1).max(1));
-            id
-        });
+        // A page that certifies its device again opens as the page it was, so
+        // the mounts it made keep reaching it; its earlier session let the id
+        // go with its registration before this one starts.
+        let id = page_id(keep);
         crate::peer_sync::register(id, &handle, &reporter_cert, &owner_cert, &display_name);
         // A lobby started beside the workspace's peer does not rename the
         // page's person.

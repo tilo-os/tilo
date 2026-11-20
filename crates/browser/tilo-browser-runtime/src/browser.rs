@@ -1435,12 +1435,15 @@ fn mount_search(
     let woken = Arc::clone(woken);
     let host = config.peer.and_then(|peer| {
         let workspace = crate::peer::workspace_id(&config.workspace).ok()?;
-        let search = tilo_actions::remote::ActionProvider::resource_search(
-            &crate::peer_sync::actions_of(peer, workspace)?,
-        )?;
+        // Whether the server has a search at all is its answer now; which
+        // session asks is looked up for each ask, so a page that certifies
+        // its device again keeps searching through its new session.
+        tilo_actions::remote::ActionProvider::resource_search(&crate::peer_sync::actions_of(
+            peer, workspace,
+        )?)?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || crate::desktop::wake(&woken));
         Some(crate::page_search::WorkspaceSearch {
-            search,
+            peer: config.peer,
             workspace: config.workspace.clone(),
             wake,
         })

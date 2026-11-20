@@ -125,10 +125,58 @@ impl PageActions {
 /// The workspace's own search as this page's palette asks it, over the session the page holds
 /// with the workspace.
 pub(crate) struct WorkspaceSearch {
-    pub search: Arc<dyn tilo_actions::remote::ResourceSearch>,
+    /// The page whose session with the workspace's server answers: looked up
+    /// for each ask, as a page that certifies its device again keeps its id
+    /// while the session under it is replaced.
+    pub peer: Option<u32>,
     pub workspace: String,
     /// What asks for the shell's pass that lists the host's answer.
     pub wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+/// The workspace server's search as the page reaches it now.
+struct FollowingSearch {
+    peer: Option<u32>,
+    workspace: String,
+}
+
+impl FollowingSearch {
+    fn search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        let peer = self.peer?;
+        let workspace = crate::peer::workspace_id(&self.workspace).ok()?;
+        tilo_actions::remote::ActionProvider::resource_search(&crate::peer_sync::actions_of(
+            peer, workspace,
+        )?)
+    }
+}
+
+impl tilo_actions::remote::ResourceSearch for FollowingSearch {
+    fn find(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        needle: &str,
+    ) -> tilo_actions::remote::Pending<
+        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
+    > {
+        match self.search() {
+            Some(search) => search.find(caller, needle),
+            None => tilo_actions::remote::Pending::ready(Err(crate::peer_sync::no_server())),
+        }
+    }
+
+    fn find_within(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        needle: &str,
+        within: &tilo_actions::remote::Within,
+    ) -> tilo_actions::remote::Pending<
+        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
+    > {
+        match self.search() {
+            Some(search) => search.find_within(caller, needle, within),
+            None => tilo_actions::remote::Pending::ready(Err(crate::peer_sync::no_server())),
+        }
+    }
 }
 
 /// What the page's search is mounted over: the bundle's apps as the apps installed here, the
@@ -156,12 +204,15 @@ fn mount(parts: SearchParts) -> Rc<SessionSearch> {
     // The page holds the records of the apps it opened; the workspace's host holds the rest and
     // ranks them, over the session the page already holds with it.
     let served_here = parts.host.is_some();
-    let host_search = parts.host.map(|host| {
+    let host_search = parts.host.map(|served| {
         tilo_desktop_search::Held::new(tilo_desktop_search::providers::hosted::HostSearch::new(
-            host.search,
+            Arc::new(FollowingSearch {
+                peer: served.peer,
+                workspace: served.workspace.clone(),
+            }),
             tilo_actions::remote::Caller::local_person(&parts.person),
-            host.workspace,
-            host.wake,
+            served.workspace,
+            served.wake,
         ))
     });
     let search = Rc::new(SessionSearch::new(

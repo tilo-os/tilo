@@ -37,11 +37,8 @@ impl WorkspaceServer {
     }
 
     fn api(&self) -> Result<SessionActions, ActionCallError> {
-        crate::peer_sync::actions_of(self.peer, self.workspace).ok_or_else(|| {
-            ActionCallError::Unavailable {
-                reason: "The workspace's host can't be reached from here right now".into(),
-            }
-        })
+        crate::peer_sync::actions_of(self.peer, self.workspace)
+            .ok_or_else(crate::peer_sync::no_server)
     }
 }
 

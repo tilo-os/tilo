@@ -797,7 +797,10 @@ async function connect({
     return issued;
   }
 
-  async function start() {
+  /** Start the page's session. `keep` is the page this one replaces, when the
+   * page certifies its device again: its mounts name it by one id for as long
+   * as it is open, and every one of them follows the session under it. */
+  async function start(keep = undefined) {
     // Kept as text: the peer starts from the exact certificate, whose
     // nanosecond timestamps a JavaScript number would round.
     const certified = await certificate();
@@ -824,6 +827,7 @@ async function connect({
       storage ? undefined : (record ?? undefined),
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
       channelVault,
+      keep,
     );
     // Settings lists this browser's tabs' device keys as one entry.
     if (profile) rememberBrowserDevice(certified, namespaces);
@@ -1534,11 +1538,14 @@ async function connect({
         }
         voice?.reset();
         stopLive();
+        // The page stays the same page while the session under it is replaced:
+        // its mounts' windows, documents and server all name it by this id.
+        const page = peer?.id;
         peer.dispose();
         resetReady();
         await store.delete(CERTIFICATE);
         host = answering;
-        await start();
+        await start(page);
         return {operationId: 'reauthenticate'};
       }
       throw new TypeError(`unsupported recovery ${request?.kind}`);

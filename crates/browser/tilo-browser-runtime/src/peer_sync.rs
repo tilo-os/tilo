@@ -50,6 +50,9 @@ struct Page {
     /// with the peer's code, which registers the page, and not with the start module, which only
     /// asks for an API once a peer is in.
     open_api: fn(&Link, WorkspaceId, [u8; 32]) -> SessionActions,
+    /// Which session this page is under (`STARTED`'s number as it registered): a page whose
+    /// session was replaced is the same page under a later one.
+    generation: u64,
 }
 
 /// An action API to `workspace`'s host actions over `handle`, with the host `host`.
@@ -60,6 +63,27 @@ fn open_api(handle: &Link, workspace: WorkspaceId, host: [u8; 32]) -> SessionAct
 thread_local! {
     /// The started pages, by [`crate::peer::WasmPeer::id`].
     static PAGES: RefCell<HashMap<u32, Page>> = RefCell::new(HashMap::new());
+    /// How many sessions the pages have opened in all: each registration takes the next
+    /// number, so what held a page's earlier session beside its id (an event stream on its
+    /// link) knows the replacement for what it is.
+    static STARTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether a page is registered as `id` now.
+pub(crate) fn registered(id: u32) -> bool {
+    PAGES.with_borrow(|pages| pages.contains_key(&id))
+}
+
+/// Which session the page `id` is under: a number that changes each time a session opens as it.
+pub(crate) fn generation(id: u32) -> Option<u64> {
+    PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.generation))
+}
+
+/// Why an action was not asked: the page holds no session with the workspace's server now.
+pub(crate) fn no_server() -> tilo_actions::remote::ActionCallError {
+    tilo_actions::remote::ActionCallError::Unavailable {
+        reason: "The workspace's server can't be reached from here right now".into(),
+    }
 }
 
 /// A started page's board for one workspace, as a mount draws it.
@@ -114,6 +138,11 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
             ..OwnPresence::default()
         },
     ));
+    let generation = STARTED.with(|started| {
+        let next = started.get().wrapping_add(1).max(1);
+        started.set(next);
+        next
+    });
     PAGES.with_borrow_mut(|pages| {
         pages.insert(
             id,
@@ -129,6 +158,7 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
                 narrated: tilo_session_client::narration::Held::default(),
                 apis: RefCell::default(),
                 open_api,
+                generation,
             },
         );
     });

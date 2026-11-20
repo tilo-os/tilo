@@ -47,6 +47,7 @@ function memoryStore() {
 function fakeRuntime({phase = 'ready'} = {}) {
   const calls = {certify: [], started: []};
   let peer;
+  let nextPeerId = 1;
   const runtime = runtimeFake({
     async hostInfo(post) { calls.hostPost = post; return JSON.stringify({address: HOST_ADDRESS, hostCert: {}}); },
     async certifyDevice(user, label, invite, deviceKey, onPairingCode) {
@@ -155,6 +156,9 @@ function fakeRuntime({phase = 'ready'} = {}) {
            * what the members said. */
           emit(phase = peer.phase, events = [], said = []) { peer.phase = phase; durable.push(...events); liveEvents.push(...said); for (const listener of listeners) listener(); },
         };
+        // The page this session opens as, when it names the one it replaces.
+        peer.id = arguments[6] ?? nextPeerId;
+        nextPeerId = Math.max(nextPeerId, peer.id + 1);
         calls.started.push(peer);
         // A session that enters (through an entry, or with an invitation) hears the host's answer
         // soon after it starts.
@@ -620,6 +624,20 @@ test('reauthentication forgets the certificate and certifies again', async () =>
   assert.deepEqual(peer.host.hostCert, {host: 'new'}, 'a changed host is learnt again');
   await peer.recover({kind: 'retry-connection'});
   assert.equal(runtime.peer.reconnects, 1);
+  await peer.dispose();
+});
+
+test('a page that certifies its device again keeps its peer id, which its mounted desktops name it by', async () => {
+  const runtime = fakeRuntime();
+  const peer = await connect(options(runtime, memoryStore()));
+  const id = peer.runtimeId;
+  assert.equal(typeof id, 'number', 'the page has an id its mounts name it by');
+  runtime.peer.emit('failed');
+  await peer.recover({kind: 'reauthenticate'});
+  assert.equal(runtime.calls.started.length, 2, 'a session replaced the one that was turned away');
+  assert.equal(runtime.calls.started[0].disposed, true);
+  assert.equal(runtime.calls.started[1].id, id, 'the replacement session opens as the same page');
+  assert.equal(peer.runtimeId, id, 'so a desktop mounted before keeps reaching the workspace through it');
   await peer.dispose();
 });
 
