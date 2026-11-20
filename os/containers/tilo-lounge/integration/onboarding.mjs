@@ -544,19 +544,12 @@ try {
 
   // -- 3. the stranger follows it, joins, and sets Tilo up through an agent ---
   await stranger.tab.navigate(inviteLink);
-  const invitedCard = await until(stranger.tab, `(() => {
-    const text = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
-    return text.includes(${JSON.stringify(`${operatorName} invited you`)}) ? text : '';
-  })()`, `the invitation naming who invited them (${operatorName})`, stepLimit(6));
-  report.invitationCard = String(invitedCard).slice(0, 400);
-  await dump(stranger.tab, '4-invitation');
-  mark('the invitation says who invited the stranger in');
-  // Someone let in off the wait list is new to this server: the invitation
-  // admits them to the Lounge, and their page opens a workspace of their own
-  // to work in, with the Lounge one switch away. A newcomer is not handed to
-  // the site's first screen either way; the setup waits in their workspace,
-  // offered from their own card once they used it.
-  if (!await pressText(stranger.tab, 'Open my workspace')) await fail(`the invitation offered no way into the workspace: ${report.invitationCard}`);
+  // Someone let in off the wait list asked to get in, so the link joins them at
+  // once, with no card to press: the invitation admits them to the Lounge, and
+  // their page opens a workspace of their own to work in, with the Lounge one
+  // switch away. A newcomer is not handed to the site's first screen either way;
+  // the setup waits in their workspace, offered from their own card once they
+  // used it.
   await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the stranger joining through the invitation', stepLimit(8));
   await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)

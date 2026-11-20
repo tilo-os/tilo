@@ -309,12 +309,12 @@ test('an invitation sent off the wait list opens the person’s own workspace in
   const wait = await open({waitList: true});
   assert.deepEqual(wait.landed, {peer: {joined: 'again', workspace: 'own-id'}, own: true});
   assert.deepEqual(wait.steps, ['join lounge', ['own of', 'lounge-id'], 'dispose lounge', ['enter', server, 'own-id']]);
-  assert.equal(wait.card.ownFirst, true, 'the card they answer says their own workspace opens');
+  assert.equal(wait.card, null, 'nothing is left to agree to: they asked to get in');
   // An ordinary invitation into the Lounge stays there.
   const plain = await open({waitList: false});
   assert.equal(plain.landed.peer, plain.lounge);
   assert.deepEqual(plain.steps, ['join lounge']);
-  assert.equal(plain.card.ownFirst, undefined, 'the card offers the Lounge itself');
+  assert.equal(plain.card.workspaceName, 'Lounge', 'the card offers the Lounge itself');
   // The long link a wait-list mail carries names the workspace it admits
   // to, and nothing inside it: their own workspace still opens.
   const long = {...target, workspace: 'lounge-id'};

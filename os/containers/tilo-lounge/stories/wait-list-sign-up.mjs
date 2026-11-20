@@ -188,13 +188,8 @@ try {
     const invite = mailLink(invitation, 'invite')
       ?? ((`${invitation.text ?? ''}\n${invitation.html ?? ''}`).match(/https?:\/\/\S+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}/) ?? [])[0];
     if (!invite) fail(`the invitation mail carries no link: ${(invitation.text ?? '').slice(0, 400)}`);
+    // They asked to get in: the link joins them at once, with no card to press.
     await ada.tab.navigate(invite);
-    const card = await until(ada.tab, `(() => {
-      const text = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
-      return text.includes(${JSON.stringify(`${HOST} invited you`)}) ? text : '';
-    })()`, `the invitation naming ${HOST}`, stepLimit(4));
-    console.log(`the invitation says: ${String(card).slice(0, 200)}`);
-    if (!await pressText(ada.tab, 'Open my workspace')) fail(`the invitation offers no way into the workspace: ${String(card).slice(0, 300)}`);
   });
 
   await story.step('They arrive in a workspace of their own', async () => {

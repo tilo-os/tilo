@@ -176,12 +176,9 @@ async function inviterName(inviter, origin) {
 /** What an invitation offers, before the person joins: the workspace it is
  * for, who it is from and how many people are in it, and what the role lets
  * them do. `inviterColour` is the presence colour of who made it, where the
- * page has one for them. Resolves to whether they join.
- *
- * An invitation sent off the wait list (`offer.ownFirst`) opens the person's
- * own workspace, and joins them to the one it names on the way: the card says
- * they are in, that their own workspace opens, and where the other one is,
- * in one line. */
+ * page has one for them. Resolves to whether they join. An invitation sent
+ * off the wait list shows no card: the person asked to get in, and joins at
+ * once (admission.mjs). */
 function invitationCard(offer, inviterColour) {
   return new Promise(resolve => {
     const form = element('form', 'tilo-entry-card tilo-invite');
@@ -204,24 +201,10 @@ function invitationCard(offer, inviterColour) {
         face.style.color = readableOn(inviterColour);
       }
       const says = element('span', 'tilo-invite-says');
-      says.append(element('strong', 'tilo-invite-name', inviter), offer.ownFirst ? ' invited you' : ' invited you to');
+      says.append(element('strong', 'tilo-invite-name', inviter), ' invited you to');
       from.append(face, says);
-    } else if (!offer.ownFirst) {
+    } else {
       from.append('You’re invited to');
-    }
-    if (offer.ownFirst) {
-      const heading = element('h2', 'tilo-invite-workspace', 'You’re in');
-      heading.id = 'tilo-invite-workspace';
-      const head = element('div', 'tilo-invite-head');
-      if (inviter) head.append(from);
-      // What opens, then, in the same breath, where the workspace that
-      // invited them is: one sentence, since the person came for their own.
-      const joined = offer.workspaceName ? ` ${offer.workspaceName} is yours too, in the workspace menu.` : '';
-      head.append(heading, element('p', 'tilo-invite-people', `Your own workspace is ready.${joined}`));
-      form.append(head);
-      form.append(answers(form, resolve, 'Open my workspace'));
-      document.body.append(form);
-      return;
     }
     // An invitation read on its own (a server reached only over iroh) does not carry the
     // workspace's name: the server says it once the person is in.
@@ -1197,12 +1180,10 @@ export async function startEntryPage({mode}) {
     },
     onAdmitted: peer => {
       admitted = peer;
-      // Their own workspace opened in place of the invitation's: named as
-      // itself, and what a bare entry reopens from now on.
+      // Their own workspace opened in place of the invitation's: named as itself.
       if (ownFirst && peer?.workspace === ownFirst.id) {
         workspaceName = ownFirst.name ?? workspaceName;
         invitedTo = ownFirst.name;
-        remembering(() => chooseWorkspace({origin: ownFirst.origin, workspace: ownFirst.id}));
       }
       letIn(peer);
     },
@@ -1502,6 +1483,9 @@ export async function startEntryPage({mode}) {
   deps.ownWorkspace = async peer => {
     try {
       ownFirst = await ensureOwnWorkspace(peer);
+      // What a bare entry reopens from now on, kept as soon as it exists: someone who closes the
+      // tab while it opens comes back to it, not to the wait list.
+      remembering(() => chooseWorkspace({origin: ownFirst.origin, workspace: ownFirst.id}));
       return {workspace: ownFirst.id, name: ownFirst.name};
     } catch (error) {
       console.warn('wait-list invitation: your own workspace was not made', error?.code ?? error?.message ?? error);

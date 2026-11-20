@@ -557,38 +557,17 @@ test('the invitation a link opens says who invited them, to what and as what, be
   assert.equal(cards().length, 0, 'either answer closes the card');
 });
 
-test('an invitation off the wait list says the person is in, their own workspace opens, and the workspace that invited them is theirs too', async () => {
-  const cards = () => document.body.children.filter(form => form.dataset.card === 'invite');
-  const text = node => typeof node === 'string' ? node
-    : node.textContent ?? node.children.map(text).join('');
-  let shown;
-  let joined;
-  let unnamed;
+test('someone a wait-list invitation lets in comes back to their own workspace, kept the moment it exists', async () => {
+  let kept;
   const {failure} = await fixture({boot: async ({deps}, page) => {
-    const answer = deps.confirmInvitation({workspaceName: 'Lounge', role: 'editor', members: 4, waitList: true, ownFirst: true,
-      inviter: {name: 'Nimble Panda', userPublicKey: USER}});
-    const [head, actions, ...rest] = cards()[0].children;
-    shown = {head: head.children.map(text), heading: head.children[1].tag, rest: rest.length,
-      actions: actions.children.map(text), primary: actions.children[0].className};
-    actions.children[0].listeners.get('click')();
-    joined = await answer;
-    const other = deps.confirmInvitation({workspaceName: 'Lounge', role: 'editor', members: 1, waitList: true, ownFirst: true, inviter: null});
-    unnamed = cards()[0].children.map(part => part.children.map(text));
-    cards()[0].children.at(-1).children[1].listeners.get('click')();
-    await other;
+    const own = await deps.ownWorkspace({...page.peer, enterOwnWorkspace: async () => ({workspace: 'own-id', name: 'Ada'})});
+    // Before anything opens it: a tab closed now still comes back to it.
+    kept = chosenWorkspace();
+    assert.deepEqual(own, {workspace: 'own-id', name: 'Ada'});
     return page;
   }});
   assert.equal(failure, null);
-  // The workspace they join on the way, and where it is from then on, in
-  // the same line. No role and no head count: they start in their own.
-  assert.deepEqual(shown.head, ['NNimble Panda invited you', 'You’re in', 'Your own workspace is ready. Lounge is yours too, in the workspace menu.']);
-  assert.equal(shown.heading, 'h2');
-  assert.equal(shown.rest, 0);
-  assert.deepEqual(shown.actions, ['Open my workspace', 'Not now'], 'the button names what it opens');
-  assert.equal(shown.primary, 'tilo-entry-primary');
-  assert.equal(joined, true);
-  // A link that names no one: no stand-in for who asked.
-  assert.deepEqual(unnamed[0], ['You’re in', 'Your own workspace is ready. Lounge is yours too, in the workspace menu.']);
+  assert.deepEqual(kept, {origin: ORIGIN, workspace: 'own-id'});
 });
 
 test('an invitation from someone the workspace has not named reads their profile, else plain words, never a key', async () => {

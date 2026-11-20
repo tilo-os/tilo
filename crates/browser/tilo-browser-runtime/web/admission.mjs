@@ -86,9 +86,12 @@ async function viaInvitation({origin, invitation, offered = null, id = null, dee
     throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
   }
   // Whether joining opens the person's own workspace in this one's place
-  // (below), so the card they answer says so.
+  // (below). They asked to get in from the wait list, and this is the answer:
+  // nothing is left to agree to, so they join now. A card to press first would
+  // leave someone who closes the tab on it not joined, sent back to the wait
+  // list when they return.
   const ownFirst = !deep && offer.waitList === true && Boolean(deps.ownWorkspace);
-  if (!await deps.confirmInvitation(ownFirst ? {...offer, ownFirst} : offer, origin)) throw new AdmissionError('declined', 'You did not join');
+  if (!ownFirst && !await deps.confirmInvitation(offer, origin)) throw new AdmissionError('declined', 'You did not join');
   const joined = await deps.joinWorkspace({
     origin, invitation, admissionToken: secrets.token,
     onProgress: event => onProgress(event),
