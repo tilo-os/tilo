@@ -9,6 +9,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
@@ -64,16 +65,7 @@ impl Clip {
         let sink = Rc::clone(&muxer);
         let on_chunk = Closure::<dyn FnMut(f64, bool, Vec<u8>)>::new(
             move |timestamp_us: f64, key: bool, data: Vec<u8>| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "microseconds of a clip, checked finite and positive"
-                )]
-                let timestamp_us = if timestamp_us.is_finite() && timestamp_us > 0.0 {
-                    timestamp_us as u64
-                } else {
-                    0
-                };
+                let timestamp_us = whole_microseconds(timestamp_us);
                 sink.borrow_mut().push(timestamp_us, key, data);
             },
         );
@@ -192,6 +184,16 @@ impl Recorder {
         });
         clip.encoder.finish(settled.unchecked_ref());
     }
+}
+
+/// The whole microseconds a page encoder's timestamp names, truncating any
+/// fraction as the container times frames in whole microseconds, or nothing
+/// when it names no time: negative, not finite, or more than a `u64` holds.
+fn whole_microseconds(timestamp_us: f64) -> u64 {
+    Duration::try_from_secs_f64(timestamp_us / 1_000_000.0)
+        .ok()
+        .and_then(|named| u64::try_from(named.as_micros()).ok())
+        .unwrap_or(0)
 }
 
 fn error_string(error: &JsValue) -> String {
