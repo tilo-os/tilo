@@ -236,6 +236,21 @@ export const plainPress = async (tab, label) => {
   if (!pressed) throw new Error(`the page offers no "${label}"; it shows: ${JSON.stringify((await plainText(tab)).slice(0, 400))}`);
 };
 
+/** Sign in to the Nextcloud page `tab` the account step opened and grant Tilo
+ * access, as a person does: the server first asks them to connect their
+ * account, then shows its login form, then asks to grant access. */
+export const nextcloudSignIn = async (tab, {user, password, beforeGrant = async () => {}}) => {
+  await plainShows(tab, 'Log in', 'the server’s connect page', stepLimit(4));
+  await plainPress(tab, 'Log in');
+  await waitUntil(tab, 'Boolean(document.querySelector("input[name=user]"))', 'the server’s login form', stepLimit(4));
+  await plainType(tab, 'input[name=user]', user);
+  await plainType(tab, 'input[name=password]', password);
+  await plainPress(tab, 'Log in');
+  await plainShows(tab, 'Grant access', 'the server asking to grant access', stepLimit(4));
+  await beforeGrant();
+  await plainPress(tab, 'Grant access');
+};
+
 /** Everything a calendar of `who` holds on the server, as its raw iCalendar
  * texts: what an invitation delivered to that person would be among. */
 export const calendarEntries = async ({base, who, password}) => {

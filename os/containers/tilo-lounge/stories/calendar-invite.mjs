@@ -20,7 +20,7 @@ import {
 } from '../integration/shell.mjs';
 import {
   arrive, beginNextcloudSignIn, calendarEntries, newPageTarget, nodesNow, offered, openExternalAccounts,
-  pageTargets, plainPress, plainShows, plainText, plainType,
+  nextcloudSignIn, pageTargets, plainText,
 } from './cloud.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
 
@@ -97,13 +97,7 @@ try {
       sleep(30_000).then(() => fail(`the page the sign-in opened (${target.url}) could not be driven within 30 s`)),
     ]);
     try {
-      await plainShows(nextcloud, 'Log in', 'the server’s sign-in page', stepLimit(4));
-      await plainType(nextcloud, 'input[name=user]', user);
-      await plainType(nextcloud, 'input[name=password]', password);
-      await plainPress(nextcloud, 'Log in');
-      await plainShows(nextcloud, 'Grant access', 'the server asking to grant access', stepLimit(4));
-      await shotOf(nextcloud, '01-grant-access');
-      await plainPress(nextcloud, 'Grant access');
+      await nextcloudSignIn(nextcloud, {user, password, beforeGrant: () => shotOf(nextcloud, '01-grant-access')});
       await sleep(1000);
     } finally {
       const shown = `${await nextcloud.evaluate('location.href').catch(() => '?')}\n${await plainText(nextcloud)}`;
