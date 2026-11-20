@@ -83,8 +83,18 @@ bindgen_tool() {
   pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$repo/crates/browser/tilo-browser-runtime/Cargo.toml")
   tool=$CARGO_TARGET_DIR/tools/wasm-bindgen-$pinned
   if [[ ! -x $tool/bin/wasm-bindgen ]]; then
-    cargo install --quiet --locked wasm-bindgen-cli --version "=$pinned" --root "$tool.next" \
-      --target-dir "$CARGO_TARGET_DIR/tools/build" >&2 || return 1
+    if ! cargo install --quiet --locked wasm-bindgen-cli --version "=$pinned" --root "$tool.next" \
+      --target-dir "$CARGO_TARGET_DIR/tools/build" >&2; then
+      # A build directory whose cargo is offline cannot fetch the tool's
+      # sources: the image's own binary of the same version binds the same
+      # module, only slower.
+      local carried
+      carried=$(command -v wasm-bindgen) &&
+        [[ $("$carried" --version) == "wasm-bindgen $pinned" ]] || return 1
+      echo "wasm-bindgen $pinned could not be built here; binding with the image's, which is slower" >&2
+      printf '%s\n' "$carried"
+      return 0
+    fi
     rm -rf "$tool"
     mv "$tool.next" "$tool"
   fi
