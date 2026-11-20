@@ -311,8 +311,9 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
         person,
     );
 
-    // Many small files are kept whole in one call, and the workspace says
-    // which addresses it already holds.
+    // Many small files are kept whole in one call, each answered by the reference that opens
+    // it (sealed, so its address is the ciphertext's), and the workspace says which of those
+    // addresses it holds.
     let first = b"first small file".to_vec();
     let second = b"second small file".to_vec();
     let files: Vec<String> = [&first, &second]
@@ -323,14 +324,22 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
     let kept: serde_json::Value = serde_json::from_str(&said).expect("contents");
     let contents = kept["contents"].as_array().expect("contents");
     assert_eq!(contents.len(), 2, "one answer for each file: {said}");
+    let mut addresses = Vec::with_capacity(contents.len());
     for (bytes, content) in [&first, &second].iter().zip(contents) {
-        let hash = blake3::hash(bytes).to_hex().to_string();
+        let reference = content
+            .as_str()
+            .and_then(|content| content.strip_prefix("tilo.content:"))
+            .unwrap_or_else(|| panic!("no content reference for the file: {said}"));
         assert_eq!(
-            content.as_str(),
-            Some(format!("tilo.content:{hash}").as_str())
+            content_bytes(&server, reference).await,
+            **bytes,
+            "the reference opens the file: {said}"
         );
+        // A sealed reference is its ciphertext's address and the key that opens it.
+        let address = reference.split('.').next().unwrap_or(reference);
+        addresses.push(address.to_owned());
     }
-    let known = blake3::hash(&first).to_hex().to_string();
+    let known = addresses.first().cloned().unwrap_or_default();
     let unknown = "0".repeat(64);
     let said = tool(
         &server,
