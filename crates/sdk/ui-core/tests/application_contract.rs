@@ -1286,9 +1286,10 @@ mod save_status_fixture {
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Named("status".into())
         }
-        fn resource_save_status(&mut self, status: ResourceSaveStatus) {
+        fn resource_save_status(&mut self, status: ResourceSaveStatus) -> bool {
             assert_eq!(self.records.save_status(&self.checkout.id).unwrap(), status);
             DELIVERED.with(|seen| seen.borrow_mut().push(status));
+            false
         }
     }
     fn factory(

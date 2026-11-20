@@ -128,7 +128,10 @@ impl SaveIndicator {
     /// The host reported the record's durability.
     /// Said in the window's bar at once: a save lands or fails outside any
     /// sync of the window, and the window shows it without one.
-    pub(crate) fn record(&mut self, status: &ResourceSaveStatus, now: Instant) {
+    /// Returns whether the window shows anything new of it: its bar's notice or the unsaved
+    /// mark changed. A save that lands within the stall window shows nothing.
+    pub(crate) fn record(&mut self, status: &ResourceSaveStatus, now: Instant) -> bool {
+        let before = (self.surface.notice(), self.surface.shows_unsaved());
         self.record = Some(match status {
             // What it means for the person, not the storage error behind it
             // (a path, an errno), which goes to the log.
@@ -140,6 +143,7 @@ impl SaveIndicator {
         });
         self.follow(now);
         self.present();
+        before != (self.surface.notice(), self.surface.shows_unsaved())
     }
 
     /// Keep the window's bar saying the save: its notice, and the mark on a

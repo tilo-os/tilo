@@ -100,7 +100,7 @@ pub(crate) trait RootApp {
     fn request_device_shell(&mut self) -> bool;
     fn take_process_intent(&mut self) -> Option<ui_core::widget::AppProcessIntent>;
     fn take_save_retry(&mut self) -> bool;
-    fn resource_save_status(&mut self, status: ResourceSaveStatus);
+    fn resource_save_status(&mut self, status: ResourceSaveStatus) -> bool;
     fn record_refused(&mut self, refusal: &ui_core::resource::ResourceRefusal);
     fn take_notices(&mut self) -> Vec<String>;
     fn record_said(&mut self, text: &str);
@@ -485,8 +485,8 @@ impl AppWidget for RootWidget {
         Some(ui_core::widget::minimum_window_width(self).map_or(phone, |width| width.max(phone)))
     }
 
-    fn resource_save_status(&mut self, status: ResourceSaveStatus) {
-        self.0.resource_save_status(status);
+    fn resource_save_status(&mut self, status: ResourceSaveStatus) -> bool {
+        self.0.resource_save_status(status)
     }
 
     fn record_refused(&mut self, refusal: &ui_core::resource::ResourceRefusal) {

@@ -1469,23 +1469,20 @@ impl AppComponent {
                 let status = binding.sampled_save_status(&parts, &wake).ok()?;
                 // The root hears the durability it shows when it moves, once
                 // per move: a frame samples it after its settle and its sync
-                // both, and a status it already shows is no news.
-                if told.as_ref() != Some(&status) {
-                    root.resource_save_status(status.clone());
-                }
-                Some((status, !refusals.is_empty() || !said.is_empty()))
+                // both, and a status it already shows is no news. It says
+                // whether the move changed anything it shows: a save that
+                // lands within the stall window shows nothing.
+                let shown =
+                    told.as_ref() != Some(&status) && root.resource_save_status(status.clone());
+                Some((status, shown, !refusals.is_empty() || !said.is_empty()))
             })
             .ok()
             .flatten();
-        let Some((status, refused)) = sampled else {
+        let Some((status, shown, refused)) = sampled else {
             return false;
         };
-        // A refusal changed what the root shows, as a new durability does.
-        let changed = refused
-            || self
-                .record_save
-                .as_ref()
-                .is_some_and(|previous| *previous != status);
+        // A refusal changed what the root shows, as a durability it shows did.
+        let changed = refused || shown;
         self.record_save = Some(status);
         if changed {
             // The caller, a sync, syncs the root again with the new state,

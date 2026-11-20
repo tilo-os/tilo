@@ -2901,10 +2901,13 @@ impl RootApp for ResourceRoot {
         self.save.take_resource_retry()
     }
 
-    fn resource_save_status(&mut self, status: ResourceSaveStatus) {
-        self.save.record(&status, ui_core::time::now());
-        // Sampled on every sync: only a new status is a change.
+    fn resource_save_status(&mut self, status: ResourceSaveStatus) -> bool {
+        // Sampled on every sync: only a new status is a change. A save that
+        // lands within the surface's stall window shows nothing, and asks no
+        // frame of its own.
+        let shown = self.save.record(&status, ui_core::time::now());
         self.saved.set_if_changed(status);
+        shown
     }
 
     // The workspace refused what this record sent, and the record withdrew it:

@@ -120,7 +120,7 @@ impl AppWidget for OwnerProbe {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("Q")
     }
-    fn resource_save_status(&mut self, status: crate::resource::ResourceSaveStatus) {
+    fn resource_save_status(&mut self, status: crate::resource::ResourceSaveStatus) -> bool {
         self.seen.saves.set(self.seen.saves.get() + 1);
         self.seen
             .saved
@@ -129,6 +129,7 @@ impl AppWidget for OwnerProbe {
             .heard
             .borrow_mut()
             .push(status == crate::resource::ResourceSaveStatus::Saved);
+        true
     }
 }
 thread_local! { static ORDER: RefCell<Rc<RefCell<Vec<u64>>>> = RefCell::new(Rc::new(RefCell::new(Vec::new()))); }

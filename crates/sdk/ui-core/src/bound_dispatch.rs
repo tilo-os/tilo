@@ -3438,8 +3438,14 @@ pub(crate) fn service_owner_save_progress(
                 if told == Some(&status) {
                     return Ok(None);
                 }
-                owner.resource_save_status(status.clone());
-                Ok(Some(status))
+                // The owner shows something new only if its bar's notice or unsaved mark
+                // changed: a save that lands within the surface's stall window shows nothing,
+                // and presents nothing.
+                if owner.resource_save_status(status.clone()) {
+                    Ok(Some(status))
+                } else {
+                    Ok(None)
+                }
             }));
         }
         None

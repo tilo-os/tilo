@@ -127,8 +127,12 @@ pub trait AppWidget: Widget {
         vec![]
     }
 
-    /// Framework-owned durability, delivered only after the record loan ends.
-    fn resource_save_status(&mut self, _status: crate::resource::ResourceSaveStatus) {}
+    /// Framework-owned durability, delivered only after the record loan ends. Returns whether the
+    /// window shows anything new of it (its bar's notice or unsaved mark): a save that lands within
+    /// [`crate::save_status::SAVE_STALL`] shows nothing.
+    fn resource_save_status(&mut self, _status: crate::resource::ResourceSaveStatus) -> bool {
+        false
+    }
 
     /// The workspace refused a change this record made, and the record withdrew it: the action is refused as
     /// one refused on this device is.
