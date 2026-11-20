@@ -9595,9 +9595,18 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
         }
         AppSdk::Standalone(standalone) => {
             manifest.push_str(&standalone.dependencies());
-            if !spec.links_toolkit_dylib() {
+            if spec.links_toolkit_dylib() {
                 manifest.push_str(
-                    "\n# `ui::dev_reload_entry!` expands code for a `thin` build, which this app has not.\n[lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(feature, values(\"thin\"))'] }\n",
+                    "\n# `resource` expands `#[cfg(tilo_model_guest)]` items into this app, whose build\n\
+                     # is not the workspace's, so its cfgs are not the workspace's either.\n\
+                     [lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(tilo_model_guest)'] }\n",
+                );
+            } else {
+                manifest.push_str(
+                    "\n# `ui::dev_reload_entry!` expands code for a `thin` build, which this app has not.\n\
+                     # `resource` expands `#[cfg(tilo_model_guest)]` items into this app, whose build\n\
+                     # is not the workspace's, so its cfgs are not the workspace's either.\n\
+                     [lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(feature, values(\"thin\"))', 'cfg(tilo_model_guest)'] }\n",
                 );
             }
             manifest.push_str(&standalone.manifest_tail()?);
