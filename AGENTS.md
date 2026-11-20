@@ -15,6 +15,21 @@
 | tilolang              | `docs/designs/app-language/README.md`                                |
 | Dev VM/device         | `tilo device guide quickstart` (source: `crates/dev/tilo-vm/guide/`) |
 
+## What Tilo is
+
+People and agents work in one shared workspace instead of each needing a whole environment of
+their own. Every device (a laptop, a phone, a server, a browser tab) holds the workspace or
+reaches it. Compute in the workspace is shared: a program goes wherever it fits, and a Linux VM
+exists only when a program needs one. Apps are untrusted packages. Identity belongs to people
+and devices, not to a service.
+
+Tilo is a small Rust core plus apps written in tilolang. The core holds workspace state, sync,
+identity and permissions, the tilolang runtime, running programs, and drawing views. Everything
+a person sees is tilolang: apps, the shell, Chat, agent views. A tilolang change needs no Rust
+build and can't break the core. A Rust app gets replaced by a tilolang app built from what the
+Rust app does, and the Rust app is deleted in the same piece of work. Don't add new Rust apps or
+app UI in Rust.
+
 ## Principles
 
 These hold for every app, the shell and the SDK. When a doc or code disagrees, these win.
@@ -93,6 +108,32 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
   start.
 - `tilo device` owns dev VM lifecycle and swaps; no SSH/SCP deployment path.
   `tilo device guide images|kernel|scenarios` for those changes.
+
+## How agents go wrong here
+
+The whole codebase is written by agents, at hundreds of commits a day. Nobody reads all of it,
+so the ways agents go wrong pile up. Check your work against each of these:
+
+- **A fix that adds a path.** A special case, a retry, a flag or a second reader makes the
+  symptom go away and leaves the cause. When the same thing breaks again, the earlier fixes are
+  the bug. Find the design that keeps breaking and change it once, deleting the patches.
+- **Another "single" implementation.** A new crate meant to replace three old ones is a fourth
+  one until the old ones are deleted. Don't start a replacement you won't finish. Move the users
+  of an existing copy onto the one that stays, and delete the rest. Deleted code is the measure.
+- **Building beside instead of finding.** Before writing a store, a sync path, a sign-in, a
+  presence feed, a settings page or a place agents start from, find the one that exists. There almost
+  certainly is one.
+- **Waiting instead of fixing what makes you wait.** A build, test or deploy that takes hours
+  should take minutes. Don't plan around slow infrastructure. Fix it, or report it to whoever
+  owns it, with the timings.
+- **Done because the code exists or a test passes.** Done means you used it the way a person
+  would: in a headless Tilo shell with a screenshot you looked at, or through the same actions
+  an agent uses. A browser check proves the web page, not Tilo.
+- **Reporting things as fine.** Say what is broken, how badly, and what you didn't check. A red
+  check is never written down as acceptable: fix it or delete it.
+- **Eroding what nobody measures.** Duplication, the developer's experience, the user's
+  experience, the agent's experience, and the model above all decay when every change only
+  climbs its own goal. Leave each of them as good as you found it or better.
 
 ## Git and delivery
 
