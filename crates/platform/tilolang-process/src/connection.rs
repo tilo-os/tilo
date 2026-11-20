@@ -157,7 +157,7 @@ impl Port for BrokerPort {
             .borrow_mut()
             .try_send(CollabRequest::ResourceCommand {
                 request_id,
-                command,
+                command: serde_json::to_vec(&command).map_err(|error| error.to_string())?,
             })
             .map_err(|error| format!("the workspace's store cannot be reached: {error:?}"))?;
         let until = Instant::now().checked_add(ANSWER_WAIT).unwrap_or_else(Instant::now);
@@ -173,7 +173,7 @@ impl Port for BrokerPort {
                 }
             }
             if let Some(answer) = answer {
-                return answer;
+                return serde_json::from_slice(&answer?).map_err(|error| error.to_string());
             }
             if Instant::now() >= until {
                 return Err("the workspace's store did not answer".to_owned());

@@ -963,7 +963,12 @@ impl Host {
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
     /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`.
     pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
-        self.inner.runtime.set_clock(clock);
+        let clock = Rc::new(clock);
+        self.inner.store.set_now({
+            let clock = Rc::clone(&clock);
+            move || clock()
+        });
+        self.inner.runtime.set_clock(move || clock());
     }
 
     /// Where the person is, in seconds east of UTC (until then: 0): what `today` reads.
@@ -1200,7 +1205,16 @@ impl Host {
     pub fn load_module(&self, wasm: &[u8], meta: Meta, ids: String) -> Result<Package, HostError> {
         let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
         meta.register_schemas();
-        self.inner.store.declare(&meta);
+        // The ids the package's lock retired are declarations this build carries the same id as
+        // under another name: what an earlier version wrote under them is read as this one.
+        let former: Vec<(String, String)> = IdsLock::parse(&ids)
+            .map(|lock| {
+                lock.retired()
+                    .map(|(name, id)| (name.to_owned(), id.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.inner.store.declare_with(&meta, &former);
         // The package's own table too: an action applied or described outside this store (a
         // receiver replaying it, a task's api) resolves its record's type by this version.
         crate::schema::register_package(&meta, &id);

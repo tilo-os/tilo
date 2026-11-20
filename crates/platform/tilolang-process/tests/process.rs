@@ -338,16 +338,19 @@ fn settle(host: &mut TilolangProcess, window: &mut Window) {
     settle_all(host, &mut [window], |_| false);
 }
 
+/// The store command a request carries, when it carries one.
+fn command_of(request: &CollabRequest) -> Option<tilo_resource_store::wire::Command> {
+    match request {
+        CollabRequest::ResourceCommand { command, .. } => serde_json::from_slice(command).ok(),
+        _ => None,
+    }
+}
+
 /// How many writes the instance's connection made of the workspace's store.
 fn writes_sent(sent: &Sent) -> usize {
     sent.borrow()
         .iter()
-        .filter(|request| {
-            matches!(
-                request,
-                CollabRequest::ResourceCommand { command, .. } if command.writes()
-            )
-        })
+        .filter(|request| command_of(request).is_some_and(|command| command.writes()))
         .count()
 }
 
@@ -369,11 +372,9 @@ fn stamp_of(
 /// Who the last write the instance's connection made names as its invoker, as the store's stamp
 /// carries it.
 fn last_writer(sent: &Sent) -> Option<String> {
-    sent.borrow().iter().rev().find_map(|request| match request {
-        CollabRequest::ResourceCommand { command, .. } if command.writes() => {
-            Some(stamp_of(command)?.invoker.clone())
-        }
-        _ => None,
+    sent.borrow().iter().rev().find_map(|request| {
+        let command = command_of(request).filter(tilo_resource_store::wire::Command::writes)?;
+        Some(stamp_of(&command)?.invoker.clone())
     })
 }
 
@@ -994,7 +995,10 @@ impl PeerTransport for SlowBroker {
                 request_id,
                 command,
             } => {
-                let result = self.workspace.command(command);
+                let result = serde_json::from_slice(&command)
+                    .map_err(|error| error.to_string())
+                    .and_then(|command| self.workspace.command(command))
+                    .and_then(|reply| serde_json::to_vec(&reply).map_err(|error| error.to_string()));
                 self.inbox
                     .borrow_mut()
                     .push_back(CollabEvent::ResourceCommandResult { request_id, result });

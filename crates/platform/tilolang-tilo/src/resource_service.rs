@@ -972,18 +972,28 @@ impl Service for ResourceService {
             app: app.clone(),
         });
         self.rehost(crate::resources::ResourceStore::new(port))?;
-        self.in_workspace = true;
-        let root = self
-            .host
-            .package(&app)
-            .and_then(|package| package.meta.roots.first().cloned());
-        let held = match &root {
-            Some(root) => !self
-                .host
-                .store()
-                .resources_of(root)
-                .map_err(|error| error.to_string())?
-                .is_empty(),
+        // Seeded once something besides the app's root is kept: a root alone is what a seed the
+        // workspace refused partway left (its keys were not here yet), and it is seeded again.
+        let held = match self.host.package(&app) {
+            Some(package) => {
+                let mut held = false;
+                for ty in &package.meta.types {
+                    if package.meta.roots.contains(&ty.id) {
+                        continue;
+                    }
+                    if !self
+                        .host
+                        .store()
+                        .resources_of(&ty.id)
+                        .map_err(|error| error.to_string())?
+                        .is_empty()
+                    {
+                        held = true;
+                        break;
+                    }
+                }
+                held
+            }
             None => true,
         };
         if !held && let Some(seed) = &self.seed {
@@ -992,6 +1002,9 @@ impl Service for ResourceService {
                 return Err(refused);
             }
         }
+        // Moved only once the workspace's store answered and holds the app's resources: a store
+        // that could not be read yet is tried again on the next pass.
+        self.in_workspace = true;
         self.publications.update(&self.host, &self.planner);
         let _ = self.watch.take();
         self.moved_unsaid = true;

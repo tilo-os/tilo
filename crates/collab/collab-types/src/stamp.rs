@@ -29,7 +29,7 @@ pub struct Stamp {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<Origin>,
     /// The work the invocation is one step of, when it is one of several taken together (an
-    /// agent's run): what a review of that work lists, and what reading its changes groups.
+    /// agent's session): what a review of that work lists, and what reading its changes groups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<Group>,
     /// Who proposed the invocation, when the invoker accepted someone's suggestion: the change

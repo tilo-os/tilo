@@ -776,7 +776,7 @@ impl Shell {
             own.iter().map(|(doc, _)| doc.clone()).collect();
         docs.extend(
             personal
-                .read(|store| store.rows())
+                .read(tilo_peer_state::PersonalStore::rows)
                 .into_iter()
                 .filter(|row| row.app_id == app)
                 .filter_map(|row| row.document_id.strip_prefix(&prefix).map(str::to_owned)),

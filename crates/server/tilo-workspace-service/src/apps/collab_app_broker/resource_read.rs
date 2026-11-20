@@ -280,7 +280,7 @@ impl ResourceReads for BrokerDocumentReads {
             .map_err(|error| invalid(format!("not a store command: {error}")))?;
         // A reader reads: what it changes goes through the app's actions, decided there.
         if command.writes() {
-            return Err(invalid("a read of records writes nothing".into()));
+            return Err(invalid("a read of resources writes nothing".into()));
         }
         state.may_read_document(caller, workspace, address)?;
         let resources = state.services.resources.clone().ok_or_else(|| {
@@ -291,6 +291,7 @@ impl ResourceReads for BrokerDocumentReads {
         let context = crate::apps::services::ResourceRequestContext::authenticated(
             address.app.clone(),
             workspace,
+            caller.clone(),
         );
         // The store answers under the workspace's lock, which no reactor is needed to take.
         let reply = futures::executor::block_on(resources.command(&context, command))

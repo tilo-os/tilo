@@ -1531,6 +1531,10 @@ impl Hosted {
             Ok(output) => InvocationUpdate::Succeeded { invocation, output },
             Err(error) => failed(invocation, error),
         };
+        // The action's writes reached the store as it ran: what it queued outside the workspace
+        // waits in the outbox, and the instance settles it on its next frame, as it does what a
+        // person's own action queues.
+        self.instance.commit_planned();
         self.answer_invocation(id, update);
         true
     }

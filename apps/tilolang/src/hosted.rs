@@ -702,6 +702,9 @@ impl ui::widget::Decorator for HostedWindow {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(connected) = &mut self.connected {
             Self::receive(connected, &self.activation);
+            // What the window answered the instance as it took what arrived — keys typed after
+            // a press it just heard ran — goes at once, not on a frame that may not come.
+            connected.view.flush();
         }
         self.content_mut().sync(state, path);
     }
@@ -720,7 +723,14 @@ impl ui::widget::Decorator for HostedWindow {
             None => false,
         };
         let child = self.content_mut().update(state, path);
-        connected_now || received || child
+        // What the window still owes its instance — a range of rows it asked for, keys typed
+        // after a press it heard ran — goes on the next pass: the frame that wrote it is not
+        // the last one the window needs.
+        let owed = self
+            .connected
+            .as_ref()
+            .is_some_and(|connected| connected.view.owes());
+        connected_now || received || child || owed
     }
 
     fn handle_event(

@@ -21,6 +21,9 @@ use tilolang_runtime::value::{self, EnumValue, ResourceRef};
 #[derive(Clone, Debug)]
 pub struct FieldEntry {
     pub name: String,
+    /// The names an earlier version of the field was held under, the ids lock's renames: what
+    /// it wrote is read where the field stands now.
+    pub former: Vec<String>,
     pub ty: Ty,
     pub kind: FieldKind,
     /// The types a collection's items may be of: one, or each case of a union. Empty for a
@@ -33,6 +36,11 @@ pub struct FieldEntry {
 }
 
 impl FieldEntry {
+    /// The names it is held under: its own, then the ones an earlier version named it.
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        std::iter::once(&self.name).chain(&self.former)
+    }
+
     /// Whether the field is held in the index: a register or text whose values are scalars,
     /// or a set of them. Everything else is the resource's content.
     #[must_use]
@@ -55,12 +63,23 @@ pub struct TypeEntry {
     pub name: String,
     /// The kind its resources are of: `tl.<app>.<name>`.
     pub kind: String,
+    /// The kinds an earlier version stored them as, the ids lock's renames: what it wrote is
+    /// read as this type, which carries the same id.
+    pub former: Vec<String>,
     pub fields: BTreeMap<FieldId, FieldEntry>,
     /// The field its resources are named by: the one it says, else its first text.
     pub title: Option<FieldId>,
     /// The texts, plain or rich, a resource is named by in turn while the ones before are
     /// empty: the field the type says names it, else each text as the type declares them.
     pub texts: Vec<FieldId>,
+}
+
+impl TypeEntry {
+    /// Every kind its resources are of: the one it publishes now, then the ones an earlier
+    /// version stored them as.
+    pub fn kinds(&self) -> impl Iterator<Item = &String> {
+        std::iter::once(&self.kind).chain(&self.former)
+    }
 }
 
 /// One enum's cases, by id and by name.
@@ -88,7 +107,14 @@ pub fn kind_of(app: &str, name: &str) -> String {
 
 impl Kinds {
     /// Takes in the types and enums of `meta`, replacing what an earlier version declared.
-    pub fn declare(&mut self, meta: &Meta) {
+    /// `former` is the retired declarations of the package's ids lock, `(name, id)` each: a
+    /// type that keeps its id across a rename is read from what the earlier name wrote, and a
+    /// field from the name it held its value under then.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over what a package declares, its enums then its types, kept where a reader follows them"
+    )]
+    pub fn declare(&mut self, meta: &Meta, former: &[(String, String)]) {
         for declared in &meta.enums {
             let plain = declared
                 .variants
@@ -135,6 +161,7 @@ impl Kinds {
                     field.id.clone(),
                     FieldEntry {
                         name: field.name.clone(),
+                        former: Vec::new(),
                         ty,
                         kind,
                         items,
@@ -175,11 +202,40 @@ impl Kinds {
                     app: meta.app.clone(),
                     name: declared.name.clone(),
                     kind,
+                    former: Vec::new(),
                     fields,
                     title,
                     texts,
                 },
             );
+        }
+        // What the earlier names of kept ids wrote: a type under the kind its name made then,
+        // a field under the name it held its value under. A retired name of another app's, or
+        // of a declaration the ids lock no longer names a type or a field of, tells nothing.
+        for (name, id) in former {
+            let Some((_, field)) = name.split_once('.') else {
+                let Some(entry) = self.types.get_mut(id) else {
+                    continue;
+                };
+                if entry.app != meta.app {
+                    continue;
+                }
+                let kind = kind_of(&meta.app, name);
+                if !entry.former.contains(&kind) {
+                    entry.former.push(kind.clone());
+                }
+                self.by_kind.entry(kind).or_insert_with(|| id.clone());
+                continue;
+            };
+            for entry in self.types.values_mut().filter(|entry| entry.app == meta.app) {
+                let Some(held) = entry.fields.get_mut(id) else {
+                    continue;
+                };
+                if !held.former.iter().any(|held| held == field) {
+                    held.former.push(field.to_owned());
+                }
+                break;
+            }
         }
     }
 

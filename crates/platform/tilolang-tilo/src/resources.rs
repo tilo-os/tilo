@@ -15,9 +15,9 @@
 //! store never saw them.
 //!
 //! **What was read.** Resources the store answered are kept ([`Inner::cache`]), and so are the
-//! pages of open listings ([`Inner::listings`]). Both are dropped after every local write
-//! ([`ResourceStore::moved`]), which is also what the host calls when the workspace's resources
-//! moved on elsewhere.
+//! pages of open listings ([`Inner::listings`]). A write here lets go of the listings of the
+//! kinds it wrote, and keeps every other; both are dropped whole when the workspace's resources
+//! moved on elsewhere ([`ResourceStore::moved`]).
 
 pub mod kinds;
 pub mod port;
@@ -35,10 +35,10 @@ use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{Actor, DocId, FieldId, ItemId, RunId, TypeId};
 use tilolang_runtime::meta::{FieldKind, Meta, Ty};
 use tilolang_runtime::store::{
-    ANY_FIELD, Applied, ChangeNote, ChangeSummary, DeliveryState, FieldKey, FieldRead, FieldSpec,
-    FieldValue, Link, LinkHow, Listing, Lit, Mutation, NewResource, OutboxEntry, OutboxState,
-    PagedItems, Pred, Scalar, Settled, Store, StoreError, SubId, Txn, Version, VersionKind,
-    field_json, field_of, ordered_cmp,
+    ANY_FIELD, Applied, ChangeNote, ChangeSummary, ClockField, DeliveryState, FieldKey, FieldRead,
+    FieldSpec, FieldValue, Link, LinkHow, Listing, Lit, Mutation, NewResource, NextChange,
+    OutboxEntry, OutboxState, PagedItems, Pred, Scalar, Settled, Store, StoreError, SubId, Txn,
+    Version, VersionKind, field_json, field_of, ordered_cmp,
 };
 use tilolang_runtime::value::ResourceRef;
 
@@ -306,6 +306,9 @@ struct Inner {
     /// The time a scenario's sample data is written at, while its writes are held back
     /// ([`ResourceStore::hold_sample`]).
     sample: RefCell<Option<String>>,
+    /// What a query that compares a field with the clock is answered at, as the host names it:
+    /// what a view that waits for an instant wakes at ([`ResourceStore::set_now`]).
+    now: RefCell<Rc<dyn Fn() -> String>>,
 }
 
 /// A moment's steps in a millisecond and in a second: a moment counts the second a change is
@@ -542,6 +545,7 @@ impl ResourceStore {
                 watches: RefCell::default(),
                 written: RefCell::default(),
                 undone: RefCell::default(),
+                now: RefCell::new(Rc::new(crate::host::system_time)),
             }),
         }
     }
@@ -685,7 +689,14 @@ impl ResourceStore {
 
     /// Takes in the types `meta` declares, so its resources are stored as their kinds.
     pub fn declare(&self, meta: &Meta) {
-        self.inner.kinds.borrow_mut().declare(meta);
+        self.inner.kinds.borrow_mut().declare(meta, &[]);
+    }
+
+    /// [`Self::declare`], with `former` — the retired declarations of the package's ids lock,
+    /// `(name, id)` each — so a rename keeps the resources the earlier name wrote readable as
+    /// the declaration that carries its id now.
+    pub fn declare_with(&self, meta: &Meta, former: &[(String, String)]) {
+        self.inner.kinds.borrow_mut().declare(meta, former);
     }
 
     /// What every loaded package's types are stored as.
@@ -984,21 +995,29 @@ impl ResourceStore {
         }
     }
 
-    /// The ids of every resource of the type `ty` the person may read.
+    /// The ids of every resource of the type `ty` the person may read, under its kind and the
+    /// kinds an earlier version stored them as.
     ///
     /// # Errors
     /// When the store cannot be read.
     pub fn resources_of(&self, ty: &str) -> Result<Vec<String>, StoreError> {
-        let kind = self.kind_of_type(ty)?;
-        self.query_all(Query::of(kind, PAGE))
+        let mut ids: Vec<String> = Vec::new();
+        for kind in self.kinds_of_type(ty)? {
+            ids.extend(self.query_all(Query::of(kind, PAGE))?);
+        }
+        let mut seen = BTreeSet::new();
+        ids.retain(|id| seen.insert(id.clone()));
+        Ok(ids)
     }
 
-    /// Whether the store holds `at`.
+    /// Whether the store holds `at`, under its kind or the one an earlier version stored it as.
     #[must_use]
     pub fn contains(&self, at: &ResourceRef) -> bool {
-        self.kind_of_type(&at.ty)
-            .and_then(|kind| self.held(&kind, &id_of(at)))
-            .is_ok_and(|held| held.is_some())
+        self.kinds_of_type(&at.ty).is_ok_and(|kinds| {
+            kinds
+                .iter()
+                .any(|kind| self.held(kind, &id_of(at)).is_ok_and(|held| held.is_some()))
+        })
     }
 
     /// The type of the resource `id` (`doc` or `doc/item`), whatever type it is: what an id
@@ -1025,7 +1044,8 @@ impl ResourceStore {
             .kinds
             .borrow()
             .types()
-            .map(|entry| entry.kind.clone())
+            .flat_map(TypeEntry::kinds)
+            .cloned()
             .collect();
         for kind in kinds {
             let Ok(Reply::Resource(Some(indexed))) = self.command(Command::Get {
@@ -1046,7 +1066,8 @@ impl ResourceStore {
             .kinds
             .borrow()
             .types()
-            .map(|entry| entry.kind.clone())
+            .flat_map(TypeEntry::kinds)
+            .cloned()
             .collect::<Vec<String>>();
         for kind in &kinds {
             let read = self.command(Command::Versions {
@@ -1066,8 +1087,11 @@ impl ResourceStore {
     pub fn holds(&self, at: &ResourceRef) -> Option<TypeId> {
         let id = at.id_string();
         let ty = self.type_of_id(&id)?;
-        let kind = self.kind_of_type(&ty).ok()?;
-        self.held(&kind, &id).ok().flatten().map(|_| ty)
+        self.kinds_of_type(&ty)
+            .ok()?
+            .iter()
+            .any(|kind| self.held(kind, &id).is_ok_and(|held| held.is_some()))
+            .then_some(ty)
     }
 
     /// What the field `at`'s type names its resources by holds: its first text, plain or rich.
@@ -1340,7 +1364,14 @@ impl ResourceStore {
         } else {
             Command::Batch(commands)
         };
-        self.inner.listings.borrow_mut().clear();
+        let mut kinds = BTreeSet::new();
+        if kinds_written(&command, &mut kinds) {
+            for kind in &kinds {
+                self.forget_listings(Some(kind));
+            }
+        } else {
+            self.forget_listings(None);
+        }
         let invocations = invocations_of(&command);
         match self.command(command) {
             Ok(_) => {
@@ -1410,6 +1441,17 @@ impl ResourceStore {
             .ok_or_else(|| not_found(format!("no type {ty} is loaded")))
     }
 
+    /// The kinds the resources of the type `ty` are of: the one it publishes now, then the ones
+    /// an earlier version stored them as.
+    fn kinds_of_type(&self, ty: &str) -> Result<Vec<String>, StoreError> {
+        self.inner
+            .kinds
+            .borrow()
+            .get(ty)
+            .map(|entry| entry.kinds().cloned().collect())
+            .ok_or_else(|| not_found(format!("no type {ty} is loaded")))
+    }
+
     fn entry_of_kind(&self, kind: &str) -> Option<TypeEntry> {
         self.inner.kinds.borrow().of_kind(kind).cloned()
     }
@@ -1453,9 +1495,13 @@ impl ResourceStore {
         } else {
             at.ty.clone()
         };
-        let kind = self.kind_of_type(&ty)?;
-        self.held(&kind, &id_of(at))?
-            .ok_or_else(|| not_found(id_of(at)))
+        let kinds = self.kinds_of_type(&ty)?;
+        for kind in kinds {
+            if let Some(held) = self.held(&kind, &id_of(at))? {
+                return Ok(held);
+            }
+        }
+        Err(not_found(id_of(at)))
     }
 
     /// The content of `id` of `kind`, read once.
@@ -1493,6 +1539,43 @@ impl ResourceStore {
             }
         }
         Ok(held.content.unwrap_or_default())
+    }
+
+    /// The cell the field named `name` of the resource `at` holds, or the one it was held under
+    /// before (`former`), read without taking the resource whole: the field a list's ten
+    /// thousand rows read of each.
+    fn cell_of(
+        &self,
+        at: &ResourceRef,
+        name: &str,
+        former: &[String],
+    ) -> Result<Option<Cell>, StoreError> {
+        let cell = |held: &Held| {
+            held.fields
+                .get(name)
+                .or_else(|| former.iter().find_map(|name| held.fields.get(name)))
+                .cloned()
+        };
+        let id = id_of(at);
+        {
+            let local = self.inner.local.borrow();
+            if let Some(held) = local.get(&id) {
+                return held
+                    .as_ref()
+                    .map(cell)
+                    .ok_or_else(|| not_found(id.clone()));
+            }
+        }
+        {
+            let cache = self.inner.cache.borrow();
+            if let Some(held) = cache.get(&id) {
+                return held
+                    .as_ref()
+                    .map(cell)
+                    .ok_or_else(|| not_found(id.clone()));
+            }
+        }
+        Ok(cell(&self.held_at(at)?))
     }
 
     /// The name a field of the type `ty` is held under, and what it is.
@@ -1540,9 +1623,29 @@ impl ResourceStore {
             }
             dirty(state.dirty.entry(id.to_owned()).or_default());
         })?;
+        let kind = held.as_ref().map(|held| held.kind.clone()).or_else(|| self.kind_held(id));
         self.inner.local.borrow_mut().insert(id.to_owned(), held);
-        self.inner.listings.borrow_mut().clear();
+        self.forget_listings(kind.as_deref());
         Ok(())
+    }
+
+    /// The kind of the resource `id`, as written here or read from the store.
+    fn kind_held(&self, id: &str) -> Option<String> {
+        let held = |map: &HashMap<String, Option<Held>>| {
+            map.get(id).and_then(|held| held.as_ref().map(|held| held.kind.clone()))
+        };
+        held(&self.inner.local.borrow()).or_else(|| held(&self.inner.cache.borrow()))
+    }
+
+    /// Lets go of the open listings of `kind`, which a write of one of its resources changed:
+    /// the listings of every other kind stay as they were read. Every listing, for a write of
+    /// a kind not known.
+    fn forget_listings(&self, kind: Option<&str>) {
+        let mut listings = self.inner.listings.borrow_mut();
+        match kind {
+            Some(kind) => listings.retain(|key, _| !listing_of(key, kind)),
+            None => listings.clear(),
+        }
     }
 
     fn touch(&self, txn: Txn, at: &ResourceRef, field: &str, collection: bool) -> Result<(), StoreError> {
@@ -1668,8 +1771,11 @@ impl ResourceStore {
         }
         let kinds: Vec<String> = item_types
             .iter()
-            .map(|ty| self.kind_of_type(ty))
-            .collect::<Result<_, _>>()?;
+            .map(|ty| self.kinds_of_type(ty))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         let holder = id_of(at);
         let mut out: BTreeMap<String, (String, String)> = BTreeMap::new();
         for kind in &kinds {
@@ -1739,15 +1845,29 @@ impl ResourceStore {
                 self.remove_tree(txn, &at.item(&item_of(&id), ty))?;
             }
         }
-        let kind = self.kind_of_type(&at.ty)?;
         let id = id_of(at);
-        let stored = self.stored(&kind, &id)?;
+        // The kind it is stored as: the one it publishes now, else the one an earlier version
+        // stored it as.
+        let stored = self.stored_kind(&at.ty, &id)?;
+        // Its whole change: what a reader of its text, a search index, reads it whole for.
+        self.touch(txn, at, ANY_FIELD, false)?;
         self.write(txn, &id, None, |dirty| {
             dirty.removed = true;
             dirty.put = false;
             dirty.edits.clear();
-            dirty.remove = stored.then_some(kind);
+            dirty.remove = stored;
         })
+    }
+
+    /// The kind the store holds `id`, a resource of the type `ty`, as: the one it publishes now,
+    /// else the one an earlier version stored it as. `None` where the store holds none.
+    fn stored_kind(&self, ty: &str, id: &str) -> Result<Option<String>, StoreError> {
+        for kind in self.kinds_of_type(ty)? {
+            if self.stored(&kind, id)? {
+                return Ok(Some(kind));
+            }
+        }
+        Ok(None)
     }
 
     /// Whether the store holds `id` of `kind`, whatever was written here.
@@ -2156,10 +2276,7 @@ impl ResourceStore {
         let mut query = Query::of(OUTBOX, PAGE);
         query.filters = filters;
         let mut rows = Vec::new();
-        loop {
-            let Ok(Reply::Page(page)) = self.command(Command::Query(query.clone())) else {
-                break;
-            };
+        while let Ok(Reply::Page(page)) = self.command(Command::Query(query.clone())) {
             let done = page.resources.is_empty();
             rows.extend(
                 page.resources
@@ -2238,6 +2355,12 @@ impl ResourceStore {
     /// on is its own to carry out.
     pub fn set_device(&self, device: &str) {
         device.clone_into(&mut self.inner.device.borrow_mut());
+    }
+
+    /// What the clock reads for a query that compares a field with it, from the host: the
+    /// instant a view that asked wakes at ([`Store::next_clock_change`]).
+    pub fn set_now(&self, now: impl Fn() -> String + 'static) {
+        *self.inner.now.borrow_mut() = Rc::new(now);
     }
 
     /// Sets the run what is written from now on is a step of, `None` for none: the changes of
@@ -2654,7 +2777,7 @@ impl ResourceStore {
         let holder = id_of(at);
         let mut filters = filters;
         filters.insert(0, Filter::Is(PARENT.to_owned(), Value::Text(holder)));
-        let key = format!("{}#{field}#{filters:?}#{order:?}", id_of(at));
+        let key = format!("{kind}#{}#{field}#{filters:?}#{order:?}", id_of(at));
         if let Some(listing) = self.inner.listings.borrow().get(&key) {
             return Rc::clone(listing);
         }
@@ -2868,6 +2991,74 @@ impl ResourceStore {
         Ok(ids)
     }
 
+    /// The instant the first resource of `kind` names in the field `field` after `clock`: the
+    /// moment a filter comparing that field with the clock next reads differently.
+    fn next_value(&self, kind: &str, field: &str, clock: i64) -> Result<Option<i64>, StoreError> {
+        let query = Query {
+            kind: kind.to_owned(),
+            filters: vec![Filter::Within {
+                field: field.to_owned(),
+                from: std::ops::Bound::Excluded(Value::Text(tilolang::calendar::time_text(clock))),
+                to: std::ops::Bound::Unbounded,
+            }],
+            order: Order::by(field.to_owned()),
+            after: None,
+            limit: 1,
+        };
+        let page = match self.command(Command::Query(query))? {
+            Reply::Page(page) => page,
+            other => return Err(backend(format!("a query answered {other:?}"))),
+        };
+        let Some((_, indexed)) = page.resources.first() else {
+            return Ok(None);
+        };
+        Ok(match indexed.fields.get(field) {
+            Some(Cell::One(Value::Text(text))) => tilolang::calendar::instant(text),
+            _ => None,
+        })
+    }
+
+    /// The instants the field `field` of a resource of `ty` written here, not yet sent to the
+    /// store, names after `clock`: a snooze an action set is known before the document holds it.
+    fn next_written(
+        &self,
+        ty: &TypeId,
+        field: &str,
+        entry: &kinds::FieldEntry,
+        kind: &str,
+        clock: i64,
+    ) -> Result<Vec<i64>, StoreError> {
+        let ids: Vec<String> = self
+            .inner
+            .local
+            .borrow()
+            .iter()
+            .filter(|(_, held)| held.as_ref().is_some_and(|held| held.kind == kind))
+            .map(|(id, _)| id.clone())
+            .collect();
+        let spec = FieldSpec {
+            id: field.to_owned(),
+            kind: entry.kind,
+        };
+        let mut out = Vec::new();
+        for id in ids {
+            let Some(at) = ResourceRef::parse_id(&id, ty.clone()) else {
+                continue;
+            };
+            let (FieldValue::Text(text) | FieldValue::Scalar(Scalar::Text(text))) =
+                self.read(&at, &spec)?
+            else {
+                continue;
+            };
+            if let Some(moment) = tilolang::calendar::instant(&text)
+                && moment > clock
+            {
+                out.push(moment);
+            }
+        }
+        Ok(out)
+    }
+
     /// The listing of `ids`, filtered by `pred` and sorted by `order` here, read field by field.
     fn evaluated(
         &self,
@@ -2945,6 +3136,13 @@ impl ResourceStore {
 /// A short tag of a type id, for the ids of its items.
 fn short(ty: &str) -> String {
     ty.chars().filter(char::is_ascii_alphanumeric).take(4).collect()
+}
+
+/// The instant `at` where the clock reads it: a reading is whole minutes, so the first minute
+/// at or after it.
+fn minute(at: i64) -> i64 {
+    at.saturating_sub(at.rem_euclid(60))
+        .saturating_add(if at.rem_euclid(60) == 0 { 0 } else { 60 })
 }
 
 /// Sets `fields` of an outbox entry to what settling it as `outcome` leaves.
@@ -3403,24 +3601,32 @@ impl Store for ResourceStore {
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
         let at = &*self.typed(at);
         let entry = self.field(&at.ty, &field.id);
-        let name = entry
-            .as_ref()
-            .map_or_else(|| field.id.clone(), |entry| entry.name.clone());
+        // The name it is held under now, and the ones an earlier version held it under.
+        let (name, former) = entry.as_ref().map_or_else(
+            || (field.id.clone(), Vec::new()),
+            |entry| (entry.name.clone(), entry.former.clone()),
+        );
         if field.kind == FieldKind::Collection {
             let listing = self.listing(at, field)?;
             return Ok(FieldValue::Items(listing.ids()));
         }
-        let held = self.held_at(at)?;
         let indexed = entry.as_ref().is_some_and(|entry| self.indexed(entry));
         if indexed {
-            if let Some(cell @ (Cell::One(_) | Cell::Set(_))) = held.fields.get(&name) {
-                return self.value_from(field, entry.as_ref(), Some(cell), None);
+            let cell = self.cell_of(at, &name, &former)?;
+            if let Some(cell @ (Cell::One(_) | Cell::Set(_))) = cell {
+                return self.value_from(field, entry.as_ref(), Some(&cell), None);
             }
             let content = self.content_of(at)?;
-            return self.value_from(field, entry.as_ref(), held.fields.get(&name), content.get(&name));
+            let json = content
+                .get(&name)
+                .or_else(|| former.iter().find_map(|name| content.get(name)));
+            return self.value_from(field, entry.as_ref(), cell.as_ref(), json);
         }
         let content = self.content_of(at)?;
-        self.value_from(field, entry.as_ref(), None, content.get(&name))
+        let json = content
+            .get(&name)
+            .or_else(|| former.iter().find_map(|name| content.get(name)));
+        self.value_from(field, entry.as_ref(), None, json)
     }
 
     fn field_lit(&self, at: &ResourceRef, read: &FieldRead) -> Result<Lit, StoreError> {
@@ -3443,18 +3649,18 @@ impl Store for ResourceStore {
                 field.id
             )));
         }
-        // A union's items are of more than one kind, which one indexed page cannot answer.
-        let kind = item_types
-            .first()
-            .map(|ty| self.kind_of_type(ty))
-            .transpose()?;
-        let Some(kind) = kind else {
+        // A union's items are of more than one kind, and items an earlier version stored under
+        // another name's kind too: one indexed page cannot answer either.
+        let renamed = item_types
+            .iter()
+            .any(|ty| self.kinds_of_type(ty).is_ok_and(|kinds| kinds.len() > 1));
+        let Some(kind) = item_types.first().and_then(|ty| self.kind_of_type(ty).ok()) else {
             return Err(StoreError::Invalid(format!(
                 "field {} is not a collection",
                 field.id
             )));
         };
-        if item_types.len() > 1 || self.writes_of(&kind) {
+        if item_types.len() > 1 || renamed || self.writes_of(&kind) {
             let ids = self
                 .children(at, &field.id)?
                 .into_iter()
@@ -3556,6 +3762,45 @@ impl Store for ResourceStore {
             return Ok(keyed.into_iter().map(|(_, target)| target).collect());
         }
         Ok(held)
+    }
+
+    fn next_clock_change(&self, ty: &TypeId, fields: &[ClockField]) -> Result<NextChange, StoreError> {
+        // A type no package loaded here declares names nothing to wake at: the query that asks
+        // of it answers none, as it does for a store that cannot tell.
+        let Some(entry) = self.inner.kinds.borrow().get(ty).cloned() else {
+            return Ok(NextChange::Unknown);
+        };
+        let kind = entry.kind.clone();
+        let now = tilolang::calendar::instant(&(self.inner.now.borrow())()).unwrap_or(0);
+        let mut looked = false;
+        let mut next: Option<i64> = None;
+        for (field, _day, offset) in fields.iter().filter(|(_, day, _)| !day) {
+            let Some(field_entry) = entry.fields.get(field) else {
+                continue;
+            };
+            if !matches!(field_entry.ty, Ty::Time | Ty::Date) {
+                continue;
+            }
+            looked = true;
+            let clock = now.saturating_add(*offset);
+            // The value the filter compares is the field's, and the clock is ahead of now by
+            // the offset: the first item holding one after it is the one that comes next.
+            let mut moments = Vec::new();
+            if let Some(at) = self.next_value(&kind, &field_entry.name, clock)? {
+                moments.push(at);
+            }
+            moments.extend(self.next_written(ty, field, field_entry, &kind, clock)?);
+            // A value `v` the clock passes at `now + offset` changes what the filter holds of
+            // its item at `v - offset`: when the clock reaches it, on a whole minute.
+            for at in moments {
+                let at = minute(at.saturating_sub(*offset));
+                next = Some(next.map_or(at, |seen| seen.min(at)));
+            }
+        }
+        if !looked {
+            return Ok(NextChange::Unknown);
+        }
+        Ok(next.map_or(NextChange::Never, NextChange::At))
     }
 
     fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
@@ -4041,5 +4286,24 @@ impl ResourceStore {
             versions.insert(place.max(1).min(versions.len()), made);
         }
         Ok(versions)
+    }
+}
+
+/// Whether the open listing kept under `key` lists resources of `kind`.
+fn listing_of(key: &str, kind: &str) -> bool {
+    key.strip_prefix(kind).is_some_and(|rest| rest.starts_with('#'))
+}
+
+/// Adds the kinds `command` writes to `kinds`; `false` when it writes resources whose kinds it
+/// does not name (an undo).
+fn kinds_written(command: &Command, kinds: &mut BTreeSet<String>) -> bool {
+    match command {
+        Command::Put { kind, .. } | Command::Remove { kind, .. } | Command::Edit { kind, .. } => {
+            kinds.insert(kind.clone());
+            true
+        }
+        Command::Batch(commands) => commands.iter().all(|command| kinds_written(command, kinds)),
+        Command::Undo { .. } => false,
+        _ => true,
     }
 }

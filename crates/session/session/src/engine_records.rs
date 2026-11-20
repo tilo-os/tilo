@@ -571,7 +571,7 @@ impl crate::Shared {
         }) else {
             return;
         };
-        if !self.records.holds(&workspace) {
+        if !self.records.holds(&workspace) || self.workspace_service.service().is_none() {
             return;
         }
         let store: std::rc::Rc<dyn tilo_service::WorkspaceStore> = std::rc::Rc::new(HeldStore {
@@ -595,12 +595,14 @@ impl tilo_service::WorkspaceStore for HeldStore {
     fn command(&self, app: &str, command: &[u8]) -> Result<Vec<u8>, String> {
         let command: tilo_resource_store::wire::Command =
             serde_json::from_slice(command).map_err(|error| error.to_string())?;
-        let service = self
+        let workspaces = self
             .service
             .service()
-            .ok_or("this device's workspace service is not open")?;
+            .ok_or("this device's workspace service is not open")?
+            .workspaces()
+            .clone();
         // The store answers under the workspace's lock, which no reactor is needed to take.
-        let reply = futures::executor::block_on(service.workspaces().resource_command(
+        let reply = futures::executor::block_on(workspaces.own_resource_command(
             &self.workspace,
             app,
             command,

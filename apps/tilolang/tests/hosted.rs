@@ -668,6 +668,9 @@ impl Session {
         let person = spec.person.clone();
         let bundle = package(package_of(&spec.app));
         let mut host = TilolangProcess::new(woken.waker());
+        // The window's instance takes over the later builds `tilolang dev` publishes, as the
+        // app's own host does ([`tilolang_app::hosted::start`]).
+        host.follow_builds(&app, tilolang_app::updates::builds());
         let (ours, theirs) = Channel::pair().expect("the instance's patch connection");
         let watched = ours.as_fd().try_clone_to_owned().ok();
         let transport = ChannelTransport::new(ours).expect("the instance's transport");
@@ -2419,7 +2422,9 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     // person can take now, drawn from what the action declares. An action that
     // asks for more than a row collects (Open, Remove, Place in board, Move to,
     // Delete project outside a project) is not a row, but every action is
-    // offered: the app keeps none back from the lists.
+    // offered: the app keeps none back from the lists. The app's document offers
+    // the history verbs its store answers — undo and redo of a change, and the
+    // versions history lists — and no checkpoint, which its store does not keep.
     let undo = Some(
         ui::HostShortcut::Undo
             .shortcut(conventions)
@@ -2448,11 +2453,6 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
             ),
             ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
             ("Redo".to_owned(), Some(ui::icons::Icon::Redo2), redo),
-            (
-                "Checkpoint".to_owned(),
-                Some(ui::icons::Icon::Bookmark),
-                None,
-            ),
         ],
         "the empty window's palette"
     );

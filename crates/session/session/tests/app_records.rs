@@ -148,14 +148,40 @@ fn tasks_in(host: &Host) -> Vec<(ResourceRef, String, bool)> {
     ids.iter()
         .filter_map(|id| ResourceRef::parse_id(id, ty.clone()))
         .filter_map(|at| {
-            let title = match host.runtime().read(&at, "title").ok()? {
-                Value::Text(title) => title,
-                _ => return None,
+            let Value::Text(title) = host.runtime().read(&at, "title").ok()? else {
+                return None;
             };
             let done = matches!(host.runtime().read(&at, "done"), Ok(Value::Bool(true)));
             Some((at, title, done))
         })
         .collect()
+}
+
+/// The Tasks window's route, joined as the launcher hands an app its collaboration connection and
+/// its identity.
+fn join(
+    socket: &std::path::Path,
+    workspace: &str,
+    workspace_id: uuid::Uuid,
+    kind: &str,
+) -> Result<collaboration::CollaborationManager, String> {
+    let mut app_wire = std::os::unix::net::UnixStream::connect(socket).map_err(|e| e.to_string())?;
+    launcher::services::write_collab_handoff(&mut app_wire, TASKS, workspace)
+        .map_err(|e| e.to_string())?;
+    let mut identity =
+        std::os::unix::net::UnixStream::connect(launcher::services::identity_socket())
+            .map_err(|e| e.to_string())?;
+    launcher::services::write_identity_handshake(&mut identity, TASKS, workspace)
+        .map_err(|e| e.to_string())?;
+    collaboration::CollaborationManager::join_instance(
+        &collab_types::document::ResourceType::new(kind.to_owned()),
+        std::os::fd::OwnedFd::from(app_wire),
+        std::os::fd::AsFd::as_fd(&identity),
+        collaboration::RouteSpec::app(TASKS.to_owned(), workspace_id),
+    )
+    .map_err(|error| format!("the window joins: {error:?}"))?
+    .finish_join()
+    .map_err(|error| format!("the window's route is joined: {error:?}"))
 }
 
 /// Run `work` in a window of the Tasks app, as its process runs one: the app's package in a host
@@ -177,24 +203,19 @@ fn in_tasks_window<R: Send>(
     let kind = format!("tl.{TASKS}.Tasks");
     std::thread::scope(|scope| {
         let window = scope.spawn(|| -> Result<R, String> {
-            let mut app_wire =
-                std::os::unix::net::UnixStream::connect(&socket).map_err(|e| e.to_string())?;
-            launcher::services::write_collab_handoff(&mut app_wire, TASKS, workspace)
-                .map_err(|e| e.to_string())?;
-            let mut identity =
-                std::os::unix::net::UnixStream::connect(launcher::services::identity_socket())
-                    .map_err(|e| e.to_string())?;
-            launcher::services::write_identity_handshake(&mut identity, TASKS, workspace)
-                .map_err(|e| e.to_string())?;
-            let manager = collaboration::CollaborationManager::join_instance(
-                &collab_types::document::ResourceType::new(kind.clone()),
-                std::os::fd::OwnedFd::from(app_wire),
-                std::os::fd::AsFd::as_fd(&identity),
-                collaboration::RouteSpec::app(TASKS.to_owned(), workspace_id),
-            )
-            .map_err(|error| format!("the window joins: {error:?}"))?
-            .finish_join()
-            .map_err(|error| format!("the window's route is joined: {error:?}"))?;
+            // The workspace's founding membership reaches the identity service a few turns after
+            // the shell shows the workspace: until then the window's join is refused, as a
+            // window started that early would be, and it joins again.
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let manager = loop {
+                match join(&socket, workspace, workspace_id, &kind) {
+                    Ok(manager) => break manager,
+                    Err(why) if why.contains("not a member") && std::time::Instant::now() < until => {
+                        std::thread::park_timeout(std::time::Duration::from_millis(100));
+                    }
+                    Err(why) => return Err(why),
+                }
+            };
             let connection = tilolang_process::connection::Connection::new(manager)?;
             let store = ResourceStore::new(std::rc::Rc::new(connection.port(None)));
             let host = Host::open(
@@ -212,7 +233,18 @@ fn in_tasks_window<R: Send>(
                     return Ok(answer);
                 }
                 if std::time::Instant::now() > until {
-                    return Err("the window never saw what it waited for".to_owned());
+                    let held: Vec<String> = host
+                        .package(TASKS)
+                        .map(|package| {
+                            package
+                                .meta
+                                .types
+                                .iter()
+                                .map(|ty| format!("{}: {:?}", ty.name, host.store().resources_of(&ty.id).map(|ids| ids.len())))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    return Err(format!("the window never saw what it waited for; it holds {held:?}"));
                 }
                 std::thread::park_timeout(std::time::Duration::from_millis(50));
                 host.store().moved();

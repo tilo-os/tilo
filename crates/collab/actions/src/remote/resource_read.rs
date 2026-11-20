@@ -93,8 +93,8 @@ pub trait ResourceReads: Send + Sync {
 
     /// The device's store's answer to `read`, a read command of the store's wire (a resource, a
     /// page of a query, a count, a content), asked of the resources the app `app` keeps in
-    /// `address`'s record as `caller` may read them now, decided as [`Self::read`] is. The command
-    /// and its answer travel as JSON, so a reader of records needs no store of its own.
+    /// `address`'s workspace as `caller` may read them now, decided as [`Self::read`] is. The command
+    /// and its answer travel as JSON, so a reader of resources needs no store of its own.
     ///
     /// # Errors
     ///

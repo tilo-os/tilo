@@ -604,7 +604,7 @@ impl GovernedWorkspace {
         let mut requests = Vec::with_capacity(written.len());
         for write in written {
             let readers = write.readers.clone();
-            let keys = match self.reader_keys(&readers).await {
+            let keys = match self.writer_keys(&readers).await {
                 Some(Ok(keys)) => keys,
                 Some(Err(error)) => return Err(error),
                 None => {
@@ -792,6 +792,31 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    /// [`Self::resource_command`] as this device's own person, for an app the device starts
+    /// itself rather than through the broker: the caller is the device the service signs as.
+    ///
+    /// # Errors
+    /// As [`Self::resource_command`], or this service serves no device.
+    #[cfg(feature = "apps")]
+    pub async fn own_resource_command(
+        &self,
+        workspace: &str,
+        app: &str,
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        let device = self.member_identity()?;
+        let caller = tilo_actions::remote::Caller::authenticated(
+            device.cert.user_public_key,
+            device.device(),
+        )
+        .in_workspace(workspace);
+        let context =
+            crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller);
+        self.resource_command(&context, command).await
+    }
+}
+
+impl Workspaces {
     /// Holds `query` open for the app `context` names, in its workspace: its first page, then
     /// each page a write here or a member's change makes different, as this device's person
     /// may read it.
@@ -831,7 +856,12 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Query(_)
         | Command::Count { .. }
         | Command::Content { .. }
-        | Command::Versions { .. } => {}
+        | Command::Versions { .. }
+        | Command::At { .. }
+        | Command::Grouped { .. }
+        | Command::Removed { .. }
+        | Command::MadeFrom { .. }
+        | Command::Newest { .. } => {}
     }
 }
 

@@ -555,13 +555,18 @@ impl Services {
     /// The workspace's store refused what a service wrote there.
     pub fn keep_in_workspace(&mut self, store: &std::rc::Rc<dyn WorkspaceStore>) -> Result<bool, String> {
         let mut moved = false;
+        let mut refused = None;
+        // One service the store refuses leaves the others to move.
         for service in &mut self.started {
-            moved |= service.keep_in_workspace(store)?;
+            match service.keep_in_workspace(store) {
+                Ok(kept) => moved |= kept,
+                Err(error) => refused = refused.or(Some(error)),
+            }
         }
         if moved {
             self.changed();
         }
-        Ok(moved)
+        refused.map_or(Ok(moved), Err)
     }
 
     /// Every document the services keep, as the activity's history reads it; see

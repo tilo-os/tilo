@@ -13,21 +13,12 @@ automerge.workspace = true
 # The id a run's changes name, one for every change of the action and its calls.
 uuid.workspace = true
 jiff.workspace = true
-crc32fast.workspace = true
-# The index each package's documents are listed and searched from: B-trees in one file, read
-# from snapshots that later commits leave as they were.
-redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tracing.workspace = true
-tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
-# The document's content store, where an action too large to record whole keeps its parts, and
-# the wake scope of the window whose code records them.
-tilo-content = { version = "0.1.0", path = "../../system/content" }
-tilo-wake.workspace = true
 tilo-service = { path = "../../session/service" }
 # The one policy what the runtime invokes is decided by.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
@@ -37,8 +28,6 @@ tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-view = { version = "0.1.0", path = "../tilo-view" }
 tilo-doc = { path = "../../doc/tilo-doc" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
-# A `RichText` field is the platform's rich-text field: tilo-doc's rich text, edited by its actions.
-tilo-document = { path = "../../doc/tilo-document" }
 tilolang = { path = "../../lang/tilolang" }
 # The wall clock, which also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
@@ -48,8 +37,6 @@ tilolang-runtime = { path = "../../lang/tilolang-runtime", default-features = fa
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 # Each member's own document of a package declaring `resources: .own` (`member_document_of`).
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
-# The platform's history sentences, which the host's history verbs speak in.
-tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 # The device's one store, which every resource of an app is kept in and read from.
 tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
@@ -62,8 +49,6 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 # The archives an app exports, read back as a person who unzips them finds them.
 bounded-zip = { path = "../../doc/bounded-zip" }
-tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
-durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tempfile.workspace = true
 uuid.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }

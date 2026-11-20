@@ -21,7 +21,7 @@ use crate::action::{DIRECT_EDITS, DirectEdit, DynAction};
 use crate::resources::{ResourceStore, Watch};
 use tilolang_runtime::ids::Actor;
 use tilolang_runtime::meta::{ActionMeta, FieldKind, Meta, TypeMeta};
-use tilolang_runtime::store::{ChangeNote, FieldSpec, Mutation, Scalar, Store as _};
+use tilolang_runtime::store::{ANY_FIELD, ChangeNote, FieldSpec, Mutation, Scalar, Store as _};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
@@ -869,21 +869,53 @@ pub enum TextMoves {
     Everything,
 }
 
-/// What a change in the documents `docs` may have moved of their text, read from `store` now:
-/// every resource each holds, and those that are gone. A change names only the document it was
-/// written in, so each is read whole.
-fn text_moves(store: &ResourceStore, docs: &BTreeSet<String>) -> TextMoves {
+/// What a change in the documents `moved` names may have moved of their text: the resources
+/// whose text a change wrote, and those it made or removed, read from the fields the store's
+/// watch names rather than the documents whole, so a change to one task of ten thousand touches
+/// one entry. A document whose change names no fields is read whole, as is one whose own
+/// resource was replaced or removed: what it held came or went with it.
+fn text_moves(store: &ResourceStore, moved: &crate::resources::Moved) -> TextMoves {
     let mut texts = BTreeSet::new();
     let mut gone = BTreeSet::new();
     let mut whole = BTreeSet::new();
-    for doc in docs {
-        let Some(ty) = store.type_of_id(doc) else {
-            gone.insert(doc.clone());
+    for doc in &moved.docs {
+        let named: Option<&BTreeSet<(String, String)>> = moved
+            .fields
+            .get(doc)
+            .filter(|fields| !fields.is_empty())
+            .filter(|fields| {
+                !fields
+                    .iter()
+                    .any(|(resource, field)| resource == doc && field == ANY_FIELD)
+            });
+        let Some(fields) = named else {
+            let Some(ty) = store.type_of_id(doc) else {
+                gone.insert(doc.clone());
+                continue;
+            };
+            texts.insert(doc.clone());
+            whole.insert(doc.clone());
+            every_item(store, &ResourceRef::root(doc.as_str(), ty), &mut texts);
             continue;
         };
-        texts.insert(doc.clone());
-        whole.insert(doc.clone());
-        every_item(store, &ResourceRef::root(doc.as_str(), ty), &mut texts);
+        let kinds = store.kinds();
+        for (resource, field) in fields {
+            let Some(ty) = store.type_of_id(resource) else {
+                gone.insert(resource.clone());
+                continue;
+            };
+            // What a search entry holds of a resource is its text: a change to any other field
+            // moves no entry.
+            let text = field == ANY_FIELD
+                || kinds.get(&ty).is_some_and(|entry| {
+                    entry.fields.get(field).is_some_and(|field| {
+                        matches!(field.kind, FieldKind::Text | FieldKind::RichText)
+                    })
+                });
+            if text {
+                texts.insert(resource.clone());
+            }
+        }
     }
     TextMoves::These { texts, gone, whole }
 }
@@ -1441,7 +1473,7 @@ impl Publications {
             let text = if all {
                 TextMoves::Everything
             } else {
-                text_moves(host.store(), &moved.docs)
+                text_moves(host.store(), &moved)
             };
             keep(&mut self.text_moves, (self.moved, text), MOTIONS_KEPT);
         }

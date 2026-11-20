@@ -977,6 +977,10 @@ fn a_change_reindexes_the_resources_it_touched(seeded: &Rc<tilolang_process::tes
 
     session.window.chord(&["ctrl"], "n");
     session.settle();
+    // The person's entry keeps what they typed in this workspace, as their own state: this step
+    // starts from an empty one.
+    session.window.press_key(NamedKey::Escape);
+    session.settle();
     session.window.type_text("Buy milk");
     session.forget_sent();
     session.window.press_key(NamedKey::Enter);

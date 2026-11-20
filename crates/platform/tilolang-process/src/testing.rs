@@ -158,6 +158,22 @@ impl Bus {
         Ok(())
     }
 
+    /// The workspace's store moved, here or in another window of it: every other connection reads
+    /// what it read of it again, as the session tells each window when another host wrote.
+    fn resources_moved(&self, from: &Inbox) {
+        let joined = self.joined.borrow();
+        let mut told: Vec<&Inbox> = Vec::new();
+        for (_, _, inbox) in joined.iter() {
+            if Rc::ptr_eq(inbox, from) || told.iter().any(|told| Rc::ptr_eq(told, inbox)) {
+                continue;
+            }
+            inbox
+                .borrow_mut()
+                .push_back(CollabEvent::ResourcesArrived { records: Vec::new() });
+            told.push(inbox);
+        }
+    }
+
     /// Delivers the presence frame `key` and `payload`, which `from` said on `route` as
     /// `person`, to the other connections joined on that route.
     fn present(
@@ -311,7 +327,16 @@ impl PeerTransport for Broker {
                 request_id,
                 command,
             } => {
-                let result = self.bus.workspace.command(command.clone());
+                let parsed = serde_json::from_slice(command).map_err(|error| error.to_string());
+                let writes = parsed.as_ref().is_ok_and(Command::writes);
+                let result = parsed
+                    .and_then(|command| self.bus.workspace.command(command))
+                    .and_then(|reply| serde_json::to_vec(&reply).map_err(|error| error.to_string()));
+                // The workspace's store is one, every connection of it: what one wrote, the
+                // others read again.
+                if writes {
+                    self.bus.resources_moved(&self.inbox);
+                }
                 self.inbox
                     .borrow_mut()
                     .push_back(CollabEvent::ResourceCommandResult {
