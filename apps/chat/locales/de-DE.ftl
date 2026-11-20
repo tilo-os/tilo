@@ -129,7 +129,7 @@ chat-agent-failed = Konnte nicht abgeschlossen werden
 
 # Was eine Antwort gegeben hat: das Modell ($model), sein Anbieter ($provider) und was der
 # Durchlauf gekostet hat ($cost), mit den verbrauchten Tokens ($tokens), sofern gezählt.
-chat-agent-answered = { $model } · { $provider } · { $cost }
+chat-agent-answered = { $model }, { $provider }, { $cost }
 # Das Modell, auf dem ein Gespräch mit einem Agenten läuft, bevor der Host eines nennt, und die
 # Wahl, die wieder der Vorgabe folgt.
 chat-agent-model = Modell
@@ -137,7 +137,7 @@ chat-agent-model-default = Dem Standardmodell folgen
 # Was die Antworten dieses Gesprächs bisher gekostet haben ($cost), die zweite Zeile des
 # Modellwechslers.
 chat-agent-model-cost = Bisherige Antworten: { $cost }
-chat-agent-answered-tokens = { $model } · { $provider } · { $cost } · { $tokens ->
+chat-agent-answered-tokens = { $model }, { $provider }, { $cost }, { $tokens ->
     [one] 1 Token
    *[other] { $tokens } Token
 }

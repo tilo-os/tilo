@@ -131,14 +131,14 @@ chat-agent-failed = Could not finish
 
 # What answered a reply: the model ($model), its provider ($provider) and what the turn cost
 # ($cost), with the tokens it used ($tokens) where its provider counted them.
-chat-agent-answered = { $model } · { $provider } · { $cost }
+chat-agent-answered = { $model }, { $provider }, { $cost }
 # The model a conversation with an agent answers on, before the server says which one, and the choice
 # that follows the keeper's default again.
 chat-agent-model = Model
 chat-agent-model-default = Follow the default model
 # What this conversation's answers have cost so far ($cost), the model switcher's second line.
 chat-agent-model-cost = Answers so far: { $cost }
-chat-agent-answered-tokens = { $model } · { $provider } · { $cost } · { $tokens ->
+chat-agent-answered-tokens = { $model }, { $provider }, { $cost }, { $tokens ->
     [one] 1 token
    *[other] { $tokens } tokens
 }
