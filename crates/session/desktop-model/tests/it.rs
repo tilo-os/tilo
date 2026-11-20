@@ -25,6 +25,8 @@ pub mod peer_window_merge;
 pub mod portable_state;
 #[path = "projection.rs"]
 pub mod projection;
+#[path = "stored_tiles.rs"]
+pub mod stored_tiles;
 #[path = "topology.rs"]
 pub mod topology;
 #[path = "workspace_name.rs"]

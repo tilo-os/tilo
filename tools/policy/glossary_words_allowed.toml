@@ -1925,3 +1925,9 @@ reason = "Mail's existing names for the page's engine that asks the workspace fo
 words = ["host", "run", "slot"]
 identifiers = ["HostMail", "host_mail", "pump_host_mail", "new_first_run", "slots"]
 paths = ["apps/mail/src/app.rs", "apps/mail/src/app/host_mail.rs", "apps/mail/src/list.rs"]
+
+[[allow]]
+reason = "A stored tile's field names (`TileContent::HostedWindow`'s `host` and `host_label`), which a test of the bytes a build kept must spell as they are stored."
+words = ["host"]
+identifiers = ["host", "host_label"]
+paths = ["crates/session/desktop-model/tests/stored_tiles.rs"]
