@@ -5,8 +5,8 @@
 //! ([`tilo_actions::remote::ActionProvider::changed`]); the device that holds the workspace holds its
 //! answer here until a change comes or the wait runs out.
 use super::{
-    ActionCallError, Arc, Caller, Completer, DocumentRoute, Event, HashSet, Instant,
-    MAX_REMOTE_WAIT, Needs, Worker, Workspace, WorkspaceDocuments, WorkspaceId,
+    ActionCallError, Caller, Completer, DocumentRoute, Event, HashSet, Instant, MAX_REMOTE_WAIT,
+    Needs, Worker, Workspace, WorkspaceDocuments, WorkspaceId,
 };
 
 /// One caller waiting for a change of what it follows in a workspace ([`Worker::watch`]).
@@ -166,8 +166,7 @@ impl Workspace {
         // ([`Worker::wake_watchers`]).
         self.watchers.note(&landed);
         for route in landed {
-            let engine = self.peer.engine();
-            // Undecided: the replica holds the document and cannot read it yet. Keys that
+            // Undecided: the service holds the document and cannot read it yet. Keys that
             // arrived for a document it holds nothing of leave nothing undecided. A document only
             // this service wrote since it was last decided is one it read to write: reading a
             // sealed part out to learn only that cost most of a second for every action that
@@ -176,22 +175,7 @@ impl Workspace {
             // read to decide.
             let undecided = from_others.contains(&route) && {
                 super::count_read();
-                let reads = engine
-                    .document_revision(&route.cluster_id, &route.app_id, &route.document)
-                    .and_then(|revision| match revision {
-                        Some(_) => Ok(true),
-                        None => engine
-                            .record(&route.cluster_id, &route.app_id, &route.document)
-                            .map(|read| read.is_some()),
-                    });
-                match reads {
-                    Ok(reads) => !reads,
-                    Err(_) => engine.documents(&route.cluster_id).is_ok_and(|records| {
-                        records
-                            .iter()
-                            .any(|(app, record)| *app == route.app_id && *record == route.document)
-                    }),
-                }
+                !self.reads.readable(&route)
             };
             if undecided {
                 self.undecided.insert(route.clone());
@@ -200,7 +184,7 @@ impl Workspace {
             }
             self.documents
                 .get_or_insert_with(|| {
-                    WorkspaceDocuments::new(&route.cluster_id, Arc::clone(self.peer.engine()))
+                    WorkspaceDocuments::new(&route.cluster_id, self.reads.clone())
                 })
                 .landed(&route);
             // A document the folder is made of changed: the files it indexes are read again. Any

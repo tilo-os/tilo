@@ -1,19 +1,92 @@
-//! A workspace's records as the session's replica holds them.
+//! A workspace's records as this device's service holds them.
 //!
-//! The session keeps every record of the workspace it joined in its replica
-//! (`tilo_session_client::engine::Engine`), opened with this member's channel
-//! keys. Nothing here keeps a second copy: a record is read from the replica
-//! when asked, and what is read of it (its text, its title, how many changes
-//! it holds) is kept only with the revision it was read at, so it is read
-//! again only once the record changed.
+//! The device's workspace service holds every record of the workspace the
+//! session joined, opened with this member's channel keys. Nothing here keeps
+//! a second copy: a record is read from the service when asked, and what is
+//! read of it (its text, its title, how many changes it holds) is kept only
+//! with the heads it was read at, so it is read again only once the record
+//! changed.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use automerge::AutoCommit;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_client::engine::Engine;
+use tilo_peer_state::workspace_documents::{DeviceDocuments, DocumentRead};
 use ui::search::index_publication::IndexEntry;
+
+/// The documents of the workspaces this device's service holds, as the
+/// session's own roles read them: the service on a computer, the page's
+/// replicated copy on the web.
+#[derive(Clone)]
+pub(crate) struct Reads(Arc<dyn DeviceDocuments>);
+
+impl Reads {
+    pub(crate) fn new(reads: Arc<dyn DeviceDocuments>) -> Self {
+        Self(reads)
+    }
+
+    /// The record whole, saved, when the service holds it and can open it
+    /// now.
+    pub(crate) fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
+        Ok(match self.read(route, None)? {
+            DocumentRead::Whole { bytes, .. } => Some(bytes),
+            DocumentRead::Changes { .. }
+            | DocumentRead::Unchanged(_)
+            | DocumentRead::Absent
+            | DocumentRead::Pending => None,
+        })
+    }
+
+    /// The revision the record stands at for this device, or `None` while it
+    /// is not here yet.
+    pub(crate) fn document_revision(
+        &self,
+        route: &DocumentRoute,
+    ) -> Result<Option<[u8; 32]>, String> {
+        Ok(match self.read(route, None)? {
+            DocumentRead::Whole { revision, .. } | DocumentRead::Changes { revision, .. } => {
+                Some(revision)
+            }
+            DocumentRead::Unchanged(revision) => Some(revision),
+            DocumentRead::Absent | DocumentRead::Pending => None,
+        })
+    }
+
+    /// Whether the record can be read now: here, and its keys arrived.
+    pub(crate) fn readable(&self, route: &DocumentRoute) -> bool {
+        match self.document_revision(route) {
+            Ok(Some(_)) => true,
+            Ok(None) => self.record(route).ok().flatten().is_some(),
+            Err(_) => self.holds(route),
+        }
+    }
+
+    /// What the workspace holds of the record, readable or still sealed.
+    pub(crate) fn holds(&self, route: &DocumentRoute) -> bool {
+        self.0
+            .holds(&route.cluster_id, &route.app_id, &route.document)
+    }
+
+    /// The records the workspace holds, by app and route.
+    pub(crate) fn documents(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+        self.0.listing(workspace)
+    }
+
+    /// The workspaces the service holds.
+    pub(crate) fn workspaces(&self) -> Vec<String> {
+        self.0.workspaces()
+    }
+
+    pub(crate) fn read(
+        &self,
+        route: &DocumentRoute,
+        since: Option<&[[u8; 32]]>,
+    ) -> Result<DocumentRead, String> {
+        self.0
+            .read(&route.cluster_id, &route.app_id, &route.document, since)
+    }
+}
 
 /// The route of a workspace's layout: its `desktop` value names each tab's record.
 pub(crate) fn desktop_route(workspace: &str) -> DocumentRoute {
@@ -69,19 +142,14 @@ impl Reading {
     }
 }
 
-/// When a record's text was read: at a revision of the replica's record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stamp {
-    Replica([u8; 32]),
-}
+/// Something read of a record, and how many writes had landed in it then:
+/// a record is read again only once another write lands in it.
+type Read<T> = HashMap<DocumentRoute, (u64, T)>;
 
-/// Something read of a record, and the revision it was read at.
-type Read<T> = HashMap<DocumentRoute, ([u8; 32], T)>;
-
-/// One workspace's records in the session's replica, minus those a replica
+/// One workspace's records in this device's service, minus those a replica
 /// of this member holds open.
 pub(crate) struct WorkspaceDocuments {
-    engine: Arc<Engine>,
+    reads: Reads,
     workspace: String,
     /// Records an open replica holds now: not listed here.
     opened: HashSet<DocumentRoute>,
@@ -111,14 +179,14 @@ pub(crate) struct WorkspaceDocuments {
     /// is still what the workspace holds, without reading it again.
     moved: HashMap<DocumentRoute, u64>,
     /// The plain text of each record search reads.
-    texts: HashMap<DocumentRoute, (Stamp, Arc<str>)>,
+    texts: HashMap<DocumentRoute, (u64, Option<Arc<str>>)>,
     tabs: Read<Arc<HashSet<String>>>,
 }
 
 impl WorkspaceDocuments {
-    pub(crate) fn new(workspace: &str, engine: Arc<Engine>) -> Self {
+    pub(crate) fn new(workspace: &str, reads: Reads) -> Self {
         Self {
-            engine,
+            reads,
             workspace: workspace.to_owned(),
             opened: HashSet::new(),
             arrived: HashMap::new(),
@@ -171,15 +239,11 @@ impl WorkspaceDocuments {
     }
 
     /// What search finds in the document at `route`, read off the serving thread by the
-    /// index's own: kept at the revision it was read from, and given back to the app's next
+    /// index's own: kept at the heads it was read from, and given back to the app's next
     /// read of it without opening the document again.
-    pub(crate) fn keep_entries(
-        &mut self,
-        route: &DocumentRoute,
-        revision: [u8; 32],
-        entries: Arc<[IndexEntry]>,
-    ) {
-        self.entries.insert(route.clone(), (revision, entries));
+    pub(crate) fn keep_entries(&mut self, route: &DocumentRoute, entries: Arc<[IndexEntry]>) {
+        let at = self.moved(route);
+        self.entries.insert(route.clone(), (at, entries));
         self.unindexed.remove(route);
     }
 
@@ -189,9 +253,9 @@ impl WorkspaceDocuments {
         self.moved.get(route).copied().unwrap_or(0)
     }
 
-    /// The replica the workspace's documents are read from, for the index's own thread.
-    pub(crate) fn engine(&self) -> Arc<Engine> {
-        Arc::clone(&self.engine)
+    /// The reads the workspace's documents are made from, for the index's own thread.
+    pub(crate) fn reads(&self) -> Reads {
+        self.reads.clone()
     }
 
     /// The workspace's id.
@@ -262,7 +326,7 @@ impl WorkspaceDocuments {
 
     /// The records of the workspace not held open.
     pub(crate) fn routes(&self) -> Vec<DocumentRoute> {
-        match self.engine.documents(&self.workspace) {
+        match self.reads.documents(&self.workspace) {
             Ok(records) => records
                 .into_iter()
                 .map(|(app_id, record)| DocumentRoute {
@@ -325,13 +389,10 @@ impl WorkspaceDocuments {
         load(&self.document(&desktop)?)
     }
 
-    /// The record at `route`, saved, as the replica holds it now. `None` when
-    /// the replica holds no such record or cannot open it yet.
+    /// The record at `route`, saved, as the service holds it now. `None` when
+    /// the service holds no such record or cannot open it yet.
     pub(crate) fn document(&self, route: &DocumentRoute) -> Option<Vec<u8>> {
-        match self
-            .engine
-            .record(&route.cluster_id, &route.app_id, &route.document)
-        {
+        match self.reads.record(route) {
             Ok(bytes) => bytes,
             Err(error) => {
                 tracing::debug!(%error, record = %route.document, "agent: a record does not read");
@@ -346,7 +407,7 @@ impl WorkspaceDocuments {
     fn cached<T: Clone>(
         &mut self,
         route: &DocumentRoute,
-        field: fn(&mut Self) -> &mut Read<T>,
+        field: impl Fn(&mut Self) -> &mut Read<T>,
         read: impl FnOnce(Vec<u8>) -> T,
     ) -> Option<T> {
         self.cached_telling(route, field, read)
@@ -358,22 +419,25 @@ impl WorkspaceDocuments {
     fn cached_telling<T: Clone>(
         &mut self,
         route: &DocumentRoute,
-        field: fn(&mut Self) -> &mut Read<T>,
+        field: impl Fn(&mut Self) -> &mut Read<T>,
         read: impl FnOnce(Vec<u8>) -> T,
     ) -> Option<(T, bool)> {
-        let known = field(self).get(route).map(|(revision, _)| *revision);
-        match self
-            .engine
-            .record_since(&route.cluster_id, &route.app_id, &route.document, known)
+        // Only a write landing in the record changes it, so what was read of
+        // it is kept until one does: a query never opens a document that no
+        // write touched since the last one.
+        let at = self.moved(route);
+        if let Some((kept_at, value)) = field(self).get(route)
+            && *kept_at == at
         {
-            Ok(Some((bytes, revision))) => {
+            return Some((value.clone(), false));
+        }
+        match self.reads.record(route) {
+            Ok(Some(bytes)) => {
                 let value = read(bytes);
-                field(self).insert(route.clone(), (revision, value.clone()));
+                field(self).insert(route.clone(), (at, value.clone()));
                 Some((value, true))
             }
-            Ok(None) => field(self)
-                .get(route)
-                .map(|(_, value)| (value.clone(), false)),
+            Ok(None) => None,
             Err(error) => {
                 tracing::debug!(%error, record = %route.document, "agent: a record does not read");
                 None
@@ -410,7 +474,10 @@ impl WorkspaceDocuments {
         answer
     }
 
-    fn read_texts(&mut self, reading: Reading) -> &mut HashMap<DocumentRoute, (Stamp, Arc<str>)> {
+    fn read_texts(
+        &mut self,
+        reading: Reading,
+    ) -> &mut HashMap<DocumentRoute, (u64, Option<Arc<str>>)> {
         match reading {
             Reading::Plain => &mut self.texts,
         }
@@ -419,27 +486,12 @@ impl WorkspaceDocuments {
     /// The text of the record at `route`, read as `reading` says, once per
     /// change of it.
     pub(crate) fn text(&mut self, route: &DocumentRoute, reading: Reading) -> Option<Arc<str>> {
-        let held = self.read_texts(reading).get(route).cloned();
-        let known = match held {
-            Some((Stamp::Replica(revision), _)) => Some(revision),
-            _ => None,
-        };
-        match self
-            .engine
-            .record_since(&route.cluster_id, &route.app_id, &route.document, known)
-        {
-            Ok(Some((bytes, revision))) => {
-                let text = reading.read(&load(&bytes)?);
-                self.read_texts(reading)
-                    .insert(route.clone(), (Stamp::Replica(revision), Arc::clone(&text)));
-                Some(text)
-            }
-            Ok(None) => known.and(held).map(|(_, text)| text),
-            Err(error) => {
-                tracing::debug!(%error, record = %route.document, "agent: a record does not read");
-                None
-            }
-        }
+        self.cached(
+            route,
+            |records| records.read_texts(reading),
+            |bytes| load(&bytes).map(|document| reading.read(&document)),
+        )
+        .flatten()
     }
 
     /// When the record at `route` last changed, as a count of landings

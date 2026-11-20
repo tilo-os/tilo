@@ -25,16 +25,13 @@ use tilo_lock::MutexRecover as _;
 use super::{InvocationLog, Job, Needs, Outcome, Performed, Shared, Worker};
 use tilo_server_protocol::WorkspaceId;
 
-/// The record at `route` as the session's replica holds it, and whether the
-/// replica holds it at all.
+/// The record at `route` as the device's service holds it, and whether the
+/// service holds it at all.
 fn document(
-    peer: &tilo_session_client::Link,
+    reads: &crate::workspace_documents::Reads,
     route: &DocumentRoute,
 ) -> (automerge::AutoCommit, bool) {
-    match peer
-        .engine()
-        .record(&route.cluster_id, &route.app_id, &route.document)
-    {
+    match reads.record(route) {
         Ok(Some(bytes)) => (
             automerge::AutoCommit::load(&bytes).unwrap_or_else(|error| {
                 tracing::warn!(record = %route.document, %error, "workspace actions: a record does not load");
@@ -473,8 +470,9 @@ impl Worker {
         Some((device, link))
     }
 
-    /// Hand `mutation` to the session, which seals it with the record's
-    /// channel keys, or holds it until a member admits the member.
+    /// Write `mutation` into the workspace: through this device's service, which
+    /// signs, seals and commits it as the device's own, or, for a change made for
+    /// an agent, through the agent's session, which signs it as the agent.
     fn hand_over(
         &mut self,
         workspace_id: WorkspaceId,
@@ -485,41 +483,58 @@ impl Worker {
         if !self.workspaces.contains_key(&workspace_id) {
             return Err("the workspace was not joined".into());
         }
-        // A record the host starts — a chain's first part, a report — has a
-        // channel of its own. The host device opens it and hands the session
-        // its keys, as it does for a record it opens, so the first change
-        // goes out sealed instead of waiting for keys nobody offers.
-        if self.channels_opened.insert(route.clone())
-            && let Some(keys) = self
-                .shared
-                .link
-                .get()
-                .and_then(|link| link.host_keys(route, false))
-        {
-            let keys = keys?;
-            let writer = match by {
-                Some((_, link)) => link,
-                None => {
-                    &self
-                        .workspaces
-                        .get(&workspace_id)
-                        .ok_or("the workspace was not joined")?
-                        .peer
-                }
-            };
-            writer.send(Cmd::InstallGroupKeys(route.clone(), keys))?;
-        }
+        let founding = matches!(mutation, DocumentMutation::Snapshot(_));
+        let link = self.shared.link.get().cloned();
+        let sealed = match &link {
+            // A record the service starts has a channel of its own: opened here
+            // and sealed under from its first change.
+            Some(link) => match link.host_keys(route, founding) {
+                Some(Ok(keys)) => Some(keys),
+                Some(Err(reason)) => return Err(reason),
+                None => None,
+            },
+            None => None,
+        };
         let workspace = self
             .workspaces
             .get_mut(&workspace_id)
             .ok_or("the workspace was not joined")?;
         if let Some((_, link)) = by {
+            // A record this service starts — a chain's first part, a report — has a
+            // channel of its own. Its keys are opened here and handed to the agent's
+            // session, so the first change goes out sealed instead of waiting for
+            // keys nobody offers.
+            if self.channels_opened.insert(route.clone())
+                && let Some(keys) = &sealed
+            {
+                link.send(Cmd::InstallGroupKeys(route.clone(), keys.clone()))?;
+            }
             // The agent's own session holds the document, or asks for it:
             // its change is a delta on one it did not make.
             link.send(Cmd::OpenRoute(route.clone()))?;
             link.write(route.clone(), mutation)?;
         } else {
-            workspace.peer.write(route.clone(), mutation)?;
+            let writes = self
+                .shared
+                .writes()
+                .ok_or("this device holds no documents to write")?;
+            let changes = match mutation {
+                DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
+                    bytes.clone()
+                }
+            };
+            let write = writes.write(
+                &route.cluster_id,
+                &route.app_id,
+                &route.document,
+                &changes,
+                founding,
+                sealed.as_ref(),
+            );
+            self.own_device
+                .runtime
+                .block_on(write)
+                .map_err(|refusal| refusal.to_string())?;
             let handed = workspace.unlanded.entry(route.clone()).or_default();
             *handed = handed.saturating_add(1);
         }
@@ -802,12 +817,12 @@ impl Worker {
         route: &DocumentRoute,
     ) -> Option<String> {
         let workspace = self.workspaces.get(&workspace_id)?;
-        let checkout = ui::resource::identity(&document(&workspace.peer, route).0)?;
+        let checkout = ui::resource::identity(&document(&workspace.reads, route).0)?;
         let index = DocumentRoute {
             document: String::new(),
             ..route.clone()
         };
-        ui::resource::index::name_of(&document(&workspace.peer, &index).0, &checkout.id)
+        ui::resource::index::name_of(&document(&workspace.reads, &index).0, &checkout.id)
     }
 
     /// Name the record at `route` in its app's index of the workspace,
@@ -864,7 +879,7 @@ impl Worker {
                 .workspaces
                 .get(&workspace_id)
                 .ok_or("the workspace was not joined")?;
-            document(&workspace.peer, route).0
+            document(&workspace.reads, route).0
         };
         let Some(checkout) = ui::resource::identity(&record) else {
             return Ok(());
@@ -884,15 +899,7 @@ impl Worker {
             .get_mut(&workspace_id)
             .ok_or("the workspace was not joined")?;
         // The index is written over what the workspace holds of it, never
-        // beside it: its keys first (made when the app has no index yet in
-        // this workspace), then everything that arrived under them.
-        if let Some(link) = &link
-            && let Some(keys) = link.host_keys(&index_route, true)
-        {
-            workspace
-                .peer
-                .send(Cmd::InstallGroupKeys(index_route.clone(), keys?))?;
-        }
+        // beside it.
         workspace
             .wait_for(
                 workspace_id,
@@ -903,7 +910,7 @@ impl Worker {
                 link.as_deref(),
             )
             .map_err(|error| error.to_string())?;
-        let (mut index, held) = document(&workspace.peer, &index_route);
+        let (mut index, held) = document(&workspace.reads, &index_route);
         let _ = index.save();
         let named = ui::resource::index::reference(&mut index, &checkout.id, &checkout.kind);
         let renamed = name.is_some()

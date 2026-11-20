@@ -448,11 +448,7 @@ impl Worker {
         route: &DocumentRoute,
         state: &WorkspaceState,
     ) -> Arc<[(String, String)]> {
-        let revision = state
-            .engine
-            .document_revision(&route.cluster_id, &route.app_id, &route.document)
-            .ok()
-            .flatten();
+        let revision = state.reads.document_revision(route).ok().flatten();
         if let (Some(revision), Some((read_at, read))) = (revision, self.said_directly.get(route))
             && *read_at == revision
         {

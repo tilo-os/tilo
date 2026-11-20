@@ -137,8 +137,8 @@ tilo_agent_session::app_worker!();
 // daemon. The daemon keeps addressing them here.
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_workspace_service::{
-    Reaching, app_serving, compaction, environment, metrics, payloads, peer, presence_mailbox,
-    service, store, surfaces, workspace, workspace_documents, workspaces,
+    Reaching, app_serving, compaction, device_documents, environment, metrics, payloads, peer,
+    presence_mailbox, service, store, surfaces, workspace, workspace_documents, workspaces,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_workspace_service::{authority_epoch, handshake, workspace_access};

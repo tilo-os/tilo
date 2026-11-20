@@ -28,6 +28,8 @@ pub mod compaction;
 mod connections;
 pub mod content_queue;
 pub mod content_work;
+/// A device's own documents, as its workspace service holds them.
+pub mod device_documents;
 #[doc(hidden)]
 pub mod environment;
 #[doc(hidden)]

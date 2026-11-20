@@ -57,6 +57,7 @@ pub mod replica;
 /// without a key to open them.
 #[cfg(not(target_arch = "wasm32"))]
 mod retained;
+/// What a device's own roles read and write its workspaces' documents through.
 mod shared;
 mod state;
 #[cfg(not(target_arch = "wasm32"))]

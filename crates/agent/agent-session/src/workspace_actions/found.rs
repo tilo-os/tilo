@@ -949,10 +949,7 @@ impl Worker {
                 reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
             });
         }
-        match state
-            .engine
-            .record(&route.cluster_id, &route.app_id, &route.document)
-        {
+        match state.reads.record(&route) {
             Ok(Some(bytes)) => Ok(tilo_actions::remote::ResourceCopy::Document(bytes)),
             Ok(None) => Ok(tilo_actions::remote::ResourceCopy::Absent),
             Err(error) => Err(ActionCallError::Unavailable { reason: error }),
@@ -983,17 +980,30 @@ impl Worker {
             .map(|route| (route.app_id.clone(), route.document.clone()))
             .collect();
         let cluster_id = state.workspace.clone().unwrap_or_default();
-        let engine = std::sync::Arc::clone(&state.engine);
+        let reads = state.reads.clone();
         let log = &mut self.membership(workspace_id)?.changes;
         log.take_in(
             &records,
             |(app, record)| {
-                engine
-                    .document_revision(&cluster_id, app, record)
+                reads
+                    .document_revision(&DocumentRoute {
+                        app_id: app.to_owned(),
+                        cluster_id: cluster_id.clone(),
+                        document: record.to_owned(),
+                    })
                     .ok()
                     .flatten()
             },
-            |(app, record)| engine.record(&cluster_id, app, record).ok().flatten(),
+            |(app, record)| {
+                reads
+                    .record(&DocumentRoute {
+                        app_id: app.to_owned(),
+                        cluster_id: cluster_id.clone(),
+                        document: record.to_owned(),
+                    })
+                    .ok()
+                    .flatten()
+            },
             &ui::history_source::sentence::ThreadWords,
         );
         let page = log.page(after);

@@ -786,17 +786,30 @@ impl Worker {
             .map(|route| (route.app_id.clone(), route.document.clone()))
             .collect();
         let cluster_id = state.workspace.clone().unwrap_or_default();
-        let engine = std::sync::Arc::clone(&state.engine);
+        let reads = state.reads.clone();
         let index = &mut self.membership(workspace_id)?.run_index;
         let unread = index.take_in(
             &records,
             |(app, record)| {
-                engine
-                    .document_revision(&cluster_id, app, record)
+                reads
+                    .document_revision(&DocumentRoute {
+                        app_id: app.to_owned(),
+                        cluster_id: cluster_id.clone(),
+                        document: record.to_owned(),
+                    })
                     .ok()
                     .flatten()
             },
-            |(app, record)| engine.record(&cluster_id, app, record).ok().flatten(),
+            |(app, record)| {
+                reads
+                    .record(&DocumentRoute {
+                        app_id: app.to_owned(),
+                        cluster_id: cluster_id.clone(),
+                        document: record.to_owned(),
+                    })
+                    .ok()
+                    .flatten()
+            },
             &ui::history_source::sentence::ThreadWords,
         );
         let mut recorded = index.steps();

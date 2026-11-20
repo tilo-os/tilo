@@ -21,7 +21,8 @@
 use std::collections::HashSet;
 use std::sync::mpsc;
 
-use super::{Arc, Duration, Instant, Ordering, Worker, WorkspaceDocuments, WorkspaceId};
+use super::{Duration, Instant, Ordering, Worker, WorkspaceDocuments, WorkspaceId};
+use crate::workspace_documents::Reads;
 use tilo_peer_state::document_frame::DocumentRoute;
 use ui::search::index_publication::IndexEntry;
 
@@ -45,10 +46,10 @@ struct WarmJob {
     workspace: WorkspaceId,
     app: String,
     route: DocumentRoute,
-    /// The replica the workspace's documents are read from, and how many writes had landed in
-    /// the document when it was asked for: entries read of a document that moved since are
-    /// dropped.
-    engine: Arc<tilo_session_client::engine::Engine>,
+    /// The device's service the workspace's documents are read from, and how many writes had
+    /// landed in the document when it was asked for: entries read of a document that moved
+    /// since are dropped.
+    reads: Reads,
     moved: u64,
 }
 
@@ -57,9 +58,8 @@ struct WarmRead {
     workspace: WorkspaceId,
     route: DocumentRoute,
     moved: u64,
-    /// The entries its app publishes at the revision they were read from, or why none were
-    /// read.
-    entries: Option<([u8; 32], Vec<IndexEntry>)>,
+    /// The entries its app publishes, or why none were read.
+    entries: Option<Vec<IndexEntry>>,
 }
 
 /// The thread that reads documents for the search index, off the serving thread.
@@ -121,12 +121,9 @@ fn warm(jobs: mpsc::Receiver<WarmJob>, read: &mpsc::Sender<WarmRead>) {
 fn read_entries(
     worker: &mut Option<crate::worker::Process>,
     job: &WarmJob,
-) -> Option<([u8; 32], Vec<IndexEntry>)> {
+) -> Option<Vec<IndexEntry>> {
     let read = Instant::now();
-    let Ok(Some((bytes, revision))) =
-        job.engine
-            .record_since(&job.route.cluster_id, &job.app, &job.route.document, None)
-    else {
+    let Ok(Some(bytes)) = job.reads.record(&job.route) else {
         return None;
     };
     let process = match worker.as_mut() {
@@ -171,7 +168,7 @@ fn read_entries(
         job.app,
         job.route.document
     );
-    entries.map(|entries| (revision, entries))
+    entries
 }
 
 impl Worker {
@@ -190,8 +187,8 @@ impl Worker {
                 continue;
             };
             match read.entries {
-                Some((revision, entries)) => {
-                    if kept.warmed(&read.route, (read.moved, revision), entries) {
+                Some(entries) => {
+                    if kept.warmed(&read.route, read.moved, entries) {
                         self.shared.search.warmed.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -231,7 +228,7 @@ impl Worker {
                     workspace: id,
                     app: route.app_id.clone(),
                     route: route.clone(),
-                    engine: kept.engine(),
+                    reads: kept.reads(),
                     moved: kept.moved(&route),
                 };
                 if self.warm.jobs.send(job).is_ok() {
@@ -262,10 +259,10 @@ impl Worker {
         let mut all = true;
         let mut read_any = false;
         'workspaces: for id in ids {
-            let Some(engine) = self
+            let Some(reads) = self
                 .workspaces
                 .get(&id)
-                .map(|workspace| Arc::clone(workspace.peer.engine()))
+                .map(|workspace| workspace.reads.clone())
             else {
                 continue;
             };
@@ -282,21 +279,19 @@ impl Worker {
                 break 'workspaces;
             };
             while let Some(chunk) = workspace.files.next() {
-                let known = workspace.files.known(chunk);
-                let chunk_id = fs_protocol::tree::chunk_document_id(chunk);
-                let read =
-                    engine.record_since(&cluster, fs_protocol::tree::FILES_APP, &chunk_id, known);
-                match read {
-                    Ok(Some((bytes, revision))) => {
-                        let files = workspace
-                            .files
-                            .read(chunk, &bytes, revision, content.as_ref());
+                let route = tilo_peer_state::document_frame::DocumentRoute {
+                    app_id: fs_protocol::tree::FILES_APP.to_owned(),
+                    cluster_id: cluster.clone(),
+                    document: fs_protocol::tree::chunk_document_id(chunk),
+                };
+                match reads.record(&route) {
+                    Ok(Some(bytes)) => {
+                        let files = workspace.files.read(chunk, &bytes, content.as_ref());
                         counted
                             .files_warmed
                             .fetch_add(files as u64, Ordering::Relaxed);
                         read_any = true;
                     }
-                    Ok(None) if known.is_some() => workspace.files.unchanged(chunk),
                     Ok(None) | Err(_) => workspace.files.pending(chunk),
                 }
                 if began.elapsed() >= budget {
@@ -318,20 +313,19 @@ impl Worker {
 }
 
 impl WorkspaceDocuments {
-    /// Entries read off the serving thread for the document at `route` (`at`: how many writes
-    /// had landed in it, and the revision it was read from): kept when it still stands there,
-    /// and dropped when a write landed in it since, which reads it again.
+    /// Entries read off the serving thread for the document at `route` (`moved`: how many
+    /// writes had landed in it when it was read): kept when it still stands there, and
+    /// dropped when a write landed in it since, which reads it again.
     pub(crate) fn warmed(
         &mut self,
         route: &DocumentRoute,
-        at: (u64, [u8; 32]),
+        moved: u64,
         entries: Vec<IndexEntry>,
     ) -> bool {
-        let (moved, revision) = at;
         if moved != self.moved(route) {
             return false;
         }
-        self.keep_entries(route, revision, entries.into());
+        self.keep_entries(route, entries.into());
         true
     }
 }

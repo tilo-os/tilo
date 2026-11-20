@@ -89,7 +89,6 @@ impl Workspaces {
     /// The workspace is not held here, a founding write finds the document held already, or the
     /// workspace refused the write: [`WriteRefusal::ChangeRefused`] names the document it
     /// refused, the changes it carried and why, as a server's refusal of a change does.
-    #[cfg(feature = "apps")]
     pub(crate) async fn own_write(
         &self,
         workspace: &str,
@@ -98,7 +97,7 @@ impl Workspaces {
         founding: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> Result<AppWrite, WriteRefusal> {
-        let device = self.member_identity().map_err(WriteRefusal::Refused)?;
+        let device = self.signing_device();
         let now = tilo_clock::wall();
         let state = self
             .workspace(workspace)

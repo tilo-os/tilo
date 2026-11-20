@@ -83,6 +83,18 @@ impl Reading {
 }
 
 impl WorkspaceDocumentsLink for Reading {
+    fn documents(&self) -> Option<Arc<dyn tilo_server::workspace_documents::DeviceDocuments>> {
+        Some(Arc::new(
+            tilo_server::device_documents::ServiceDocuments::of(self.workspaces.clone()),
+        ))
+    }
+
+    fn writes(&self) -> Option<Arc<dyn tilo_server::workspace_documents::DeviceWrites>> {
+        Some(Arc::new(tilo_server::device_documents::ServiceWrites::of(
+            self.workspaces.clone(),
+        )))
+    }
+
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.server_cert.user_public_key
     }

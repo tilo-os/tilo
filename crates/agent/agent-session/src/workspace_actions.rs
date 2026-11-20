@@ -109,15 +109,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
+use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites, DocumentRead};
 use tilo_server_protocol::WorkspaceId;
-use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
 use crate::member::actions::{Outcome, api_outcome, record_provider, resource_of};
 use crate::worker::{ConfinedReplica, ConfinedViews};
-use crate::workspace_documents::WorkspaceDocuments;
+use crate::workspace_documents::{Reads, WorkspaceDocuments};
 use catch_up::caught_up_with_own;
 use collab_types::DocumentMutation;
 use invocation_log::InvocationLog;
@@ -167,6 +167,10 @@ struct Shared {
     jobs: Mutex<Option<Jobs>>,
     /// How the service joins workspaces, once its thread runs.
     own_device: OnceLock<HostDevice>,
+    /// This device's own documents, as its service holds them: what the
+    /// workspaces' records are read from and written through.
+    reads: OnceLock<Arc<dyn DeviceDocuments>>,
+    writes: OnceLock<Arc<dyn DeviceWrites>>,
     /// The host device's one session, in every workspace the service joined.
     member: OnceLock<Arc<member::Member>>,
     /// Every workspace a request named, by id: joined as the request
@@ -194,6 +198,19 @@ struct Shared {
     agent_sessions: OnceLock<crate::control::AgentSessions>,
 }
 
+impl Shared {
+    /// This device's documents, as its service holds them: `None` before
+    /// [`WorkspaceActions::attach`] or on a device that serves no workspaces.
+    fn reads(&self) -> Option<Reads> {
+        self.reads.get().map(|reads| Reads::new(Arc::clone(reads)))
+    }
+
+    /// This device's documents, written as its service writes them.
+    fn writes(&self) -> Option<Arc<dyn DeviceWrites>> {
+        self.writes.get().map(Arc::clone)
+    }
+}
+
 /// The host's page actions over every record of its workspaces.
 #[derive(Clone)]
 pub struct WorkspaceActions {
@@ -212,6 +229,8 @@ impl WorkspaceActions {
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
                 own_device: OnceLock::new(),
+                reads: OnceLock::new(),
+                writes: OnceLock::new(),
                 member: OnceLock::new(),
                 joins: Mutex::default(),
                 stores: Mutex::default(),
@@ -233,6 +252,15 @@ impl WorkspaceActions {
     pub fn attach(&self, link: Arc<dyn WorkspaceDocumentsLink>) -> Result<(), String> {
         if self.shared.link.set(Arc::clone(&link)).is_err() {
             return Ok(());
+        }
+        // The device's documents, as its service holds them: the workspaces'
+        // records are read and written through them, never through a copy in
+        // the session's replica.
+        if let Some(reads) = link.documents() {
+            let _ = self.shared.reads.set(reads);
+        }
+        if let Some(writes) = link.writes() {
+            let _ = self.shared.writes.set(writes);
         }
         crate::worker::prestart();
         let jobs = Jobs::start(&self.shared, &self.catalogue, &link)?;
@@ -782,7 +810,7 @@ struct WorkspaceState {
     /// Its documents not held open, as the replica last listed them: read
     /// from whenever a request needs them, never listed again per request.
     documents: Arc<[DocumentRoute]>,
-    engine: Arc<tilo_session_client::engine::Engine>,
+    reads: Reads,
     /// How many writes landed in it.
     revision: u64,
     /// How many writes landed in each app's documents.
@@ -860,32 +888,22 @@ impl WorkspaceState {
         held: Option<&[[u8; 32]]>,
     ) -> Result<Option<Update>, String> {
         count_read();
-        Ok(
-            match self.engine.record_update(
-                &route.cluster_id,
-                &route.app_id,
-                &route.document,
-                held,
-            )? {
-                ResourceReading::Captured { heads, bytes, .. } => {
-                    Some((DocumentMutation::Snapshot(bytes), heads))
-                }
-                ResourceReading::Changes { heads, bytes, .. } => {
-                    Some((DocumentMutation::Incremental(bytes), heads))
-                }
-                ResourceReading::Unchanged(_) | ResourceReading::Pending => None,
-            },
-        )
+        Ok(match self.reads.read(route, held)? {
+            DocumentRead::Whole { heads, bytes, .. } => {
+                Some((DocumentMutation::Snapshot(bytes), heads))
+            }
+            DocumentRead::Changes { heads, bytes, .. } => {
+                Some((DocumentMutation::Incremental(bytes), heads))
+            }
+            DocumentRead::Unchanged(_) | DocumentRead::Absent | DocumentRead::Pending => None,
+        })
     }
 
     /// The record at `route`, saved, with its heads.
     fn document(&self, route: &DocumentRoute) -> Result<Saved, String> {
         count_read();
-        match self
-            .engine
-            .record_update(&route.cluster_id, &route.app_id, &route.document, None)?
-        {
-            ResourceReading::Captured { heads, bytes, .. } => Ok((bytes, heads)),
+        match self.reads.read(route, None)? {
+            DocumentRead::Whole { heads, bytes, .. } => Ok((bytes, heads)),
             _ => Err(format!("the workspace holds no {} yet", named(route))),
         }
     }
@@ -962,6 +980,9 @@ struct Workspace {
     id: WorkspaceId,
     peer: Link,
     member: Arc<member::Member>,
+    /// This device's documents, as its service holds them: what this
+    /// workspace's records are read and written through.
+    reads: Reads,
     ready: bool,
     /// The workspace sends its records only when a device opens them (its
     /// `Ready`): what this member does not hold is a record it may still
@@ -1033,6 +1054,9 @@ impl Workspace {
                 .get_or_init(|| member::Member::start(own_device, shared)),
         );
         member.join(workspace_id)?;
+        let reads = shared
+            .reads()
+            .ok_or("this device holds no documents to join a workspace with")?;
         Ok(Self {
             sessions: session_voice::Sessions::new(
                 workspace_id,
@@ -1041,6 +1065,7 @@ impl Workspace {
             id: workspace_id,
             peer: member.peer().clone(),
             member,
+            reads,
             ready: false,
             when_opened: false,
             asked: HashSet::new(),
@@ -1070,24 +1095,21 @@ impl Workspace {
         if self.documents.is_none()
             && let Some(cluster) = self.cluster_id(self.id)
         {
-            self.documents = Some(WorkspaceDocuments::new(
-                &cluster,
-                Arc::clone(self.peer.engine()),
-            ));
+            self.documents = Some(WorkspaceDocuments::new(&cluster, self.reads.clone()));
         }
-        let engine = Arc::clone(self.peer.engine());
+        let reads = self.reads.clone();
         match &mut self.documents {
             Some(kept) => WorkspaceState {
                 workspace: Some(kept.workspace().to_owned()),
                 documents: kept.known(),
-                engine,
+                reads,
                 revision: kept.landings(),
                 apps: kept.app_landings(),
             },
             None => WorkspaceState {
                 workspace: None,
                 documents: Vec::new().into(),
-                engine,
+                reads,
                 revision: 0,
                 apps: Arc::default(),
             },
@@ -1239,11 +1261,9 @@ impl Workspace {
         if let Some(kept) = &self.documents {
             return Some(kept.workspace().to_owned());
         }
-        self.peer
-            .engine()
+        self.reads
             .workspaces()
             .into_iter()
-            .map(|workspace| workspace.to_string())
             .find(|workspace| WorkspaceId::parse(workspace) == Some(workspace_id))
     }
 }
@@ -2127,8 +2147,12 @@ impl Worker {
                 is_part(&route.document)
                     || !kept_here.contains(route)
                     || state
-                        .engine
-                        .record(cluster_id, &route.app_id, &route.document)
+                        .reads
+                        .record(&DocumentRoute {
+                            app_id: route.app_id.clone(),
+                            cluster_id: cluster_id.to_owned(),
+                            document: route.document.clone(),
+                        })
                         .ok()
                         .flatten()
                         .is_some()

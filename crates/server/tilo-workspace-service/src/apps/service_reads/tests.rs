@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use super::*;
 use crate::apps::route::CrdtRoute;
+use crate::workspace_documents::DocumentRead;
 use crate::workspaces::fixtures::{TestHost, device_cert, governor, test_host_taking_part};
+use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
 const APP: &str = "so.tilo.notes";
 const RESOURCE: &str = "note-1";

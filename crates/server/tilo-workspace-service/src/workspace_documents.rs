@@ -43,6 +43,13 @@ pub struct HostCommit {
     pub checkpoint: bool,
 }
 
+/// What a device's own roles read and write its workspaces' documents through, shared with
+/// every process that holds documents for them: the service implements it here, and a page
+/// implements it over its replicated copy.
+pub use tilo_peer_state::workspace_documents::{
+    DeviceDocuments, DeviceWrites, DocumentRead, DocumentWrite, WriteAnswer,
+};
+
 /// In-process access to the workspaces this server hosts.
 #[derive(Clone)]
 pub struct WorkspaceDocuments {

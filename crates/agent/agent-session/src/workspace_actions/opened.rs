@@ -78,14 +78,7 @@ impl Workspace {
     /// Whether this member's replica holds `route`: readable, or sealed and waiting for the
     /// keys it opens with.
     pub(super) fn holds(&self, route: &DocumentRoute) -> bool {
-        self.peer
-            .engine()
-            .documents(&route.cluster_id)
-            .is_ok_and(|records| {
-                records
-                    .iter()
-                    .any(|(app, record)| *app == route.app_id && *record == route.document)
-            })
+        self.reads.holds(route)
     }
 
     /// The routes reading (or acting on) `needs` reaches: the record it names
@@ -106,9 +99,12 @@ impl Workspace {
             // The tree's own record names its chunks: read from the replica,
             // which holds it once the request waited for it.
             let index = self
-                .peer
-                .engine()
-                .record(&cluster_id, app_id, record)
+                .reads
+                .record(&DocumentRoute {
+                    app_id: app_id.to_owned(),
+                    cluster_id,
+                    document: record.to_owned(),
+                })
                 .ok()
                 .flatten();
             routes.extend(tree_chunks(index.as_deref(), tree));
@@ -324,6 +320,11 @@ impl Worker {
         };
         // Asked for now: the same call goes through once it arrived, which the caller waits for
         // as the workspace's state rather than a reason to read.
+        // A workspace that replayed everything it held when this device joined has nothing
+        // more to send: a document it holds none of is absent, not one on its way.
+        if !workspace.when_opened {
+            return Ok(false);
+        }
         if workspace.ask(workspace_id, needs) {
             return Err(Outcome::Rejected(ActionCallError::NotReady));
         }

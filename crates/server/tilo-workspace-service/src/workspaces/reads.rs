@@ -7,14 +7,20 @@
 //! device whose certificate asks.
 
 use automerge::ReadDoc as _;
+#[cfg(feature = "apps")]
 use collab_types::OwnResource;
+#[cfg(feature = "apps")]
+use tilo_peer_state::PeerDocumentCapture;
 use tilo_peer_state::{
-    KeptDocument, PeerDocumentCapture, PeerDocumentReadError, StatePeer, changes_since,
-    committed_document_revision, saved_whole,
+    KeptDocument, PeerDocumentReadError, StatePeer, changes_since, committed_document_revision,
+    saved_whole,
 };
+#[cfg(feature = "apps")]
 use tilo_user_identity::DeviceCert;
 
-use super::{DeviceKeys, GovernedWorkspace, SystemTime, Workspaces};
+#[cfg(feature = "apps")]
+use super::SystemTime;
+use super::{DeviceKeys, GovernedWorkspace, Workspaces};
 use tilo_peer_state::workspace_documents::DocumentRead;
 
 impl Workspaces {
@@ -152,6 +158,7 @@ impl Workspaces {
 
     /// Whether `workspace` seals every write of its resources: its device takes part in the
     /// workspace's key group and holds its keys.
+    #[cfg(feature = "apps")]
     pub(crate) async fn seals_resources(&self, workspace: &str) -> bool {
         match self.held_workspace(workspace).await {
             Some(held) => held.lock().await.seals(),
@@ -160,6 +167,7 @@ impl Workspaces {
     }
 
     /// The member's own resource `app`'s `resource` in `workspace` is, when it is one.
+    #[cfg(feature = "apps")]
     pub(crate) async fn own_resource(
         &self,
         workspace: &str,
@@ -193,6 +201,7 @@ impl Workspaces {
     ///
     /// The reader may not read it, the service holds no copy, or it is sealed and this device
     /// holds no keys of it.
+    #[cfg(feature = "apps")]
     pub(crate) async fn resource_revision(
         &self,
         workspace: &str,
@@ -216,6 +225,7 @@ impl Workspaces {
 
     /// Whether `app`'s `resource` of `workspace` is still arriving: its governed checkpoint is
     /// cut in flight, so it reads once that body is admitted.
+    #[cfg(feature = "apps")]
     pub(crate) async fn resource_arriving(
         &self,
         workspace: &str,
@@ -231,6 +241,7 @@ impl Workspaces {
     /// Whether `certificate`'s device may read `app`'s `resource` of `workspace` now: a device the
     /// workspace certifies, a current member, and the resource's Read permission as its governance
     /// grants it.
+    #[cfg(feature = "apps")]
     pub(crate) async fn authorizes_resource_read(
         &self,
         workspace: &str,
@@ -271,6 +282,7 @@ impl Workspaces {
     ///
     /// The reader may not read it, the service holds no copy, it is sealed for a group this device
     /// takes no part in, its history does not open, or it exceeds `maximum`.
+    #[cfg(feature = "apps")]
     pub(crate) async fn capture_resource(
         &self,
         workspace: &str,
@@ -300,6 +312,7 @@ impl Workspaces {
         clippy::significant_drop_tightening,
         reason = "the replica's guard is held only while its routes are copied out"
     )]
+    #[cfg(feature = "apps")]
     pub(crate) async fn chain_head_has_part(
         &self,
         workspace: &str,
@@ -346,6 +359,7 @@ impl Workspaces {
 }
 
 /// The chain `resource`, a chain's head, belongs to; `None` for any other resource.
+#[cfg(feature = "apps")]
 fn part_of(resource: &str) -> Option<&str> {
     match neighbour_wire::document_sync(resource) {
         neighbour_wire::DocumentSync::ChainHead { base } => Some(base),
@@ -409,6 +423,7 @@ async fn content_keys(
 
 /// `app`'s `resource` of `workspace` for the device `reader` at `now`, as
 /// [`Workspaces::capture_resource`] answers it.
+#[cfg(feature = "apps")]
 async fn capture_resource(
     peer: &StatePeer,
     device: Option<&DeviceKeys>,
@@ -444,6 +459,7 @@ async fn capture_resource(
 }
 
 /// [`Workspaces::resource_revision`] as this service answers it.
+#[cfg(feature = "apps")]
 async fn resource_revision(
     peer: &StatePeer,
     device: Option<&DeviceKeys>,

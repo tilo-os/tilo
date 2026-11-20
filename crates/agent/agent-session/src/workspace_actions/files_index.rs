@@ -7,7 +7,7 @@
 //! land, between requests, and each file's words are kept beside its node: a find ranks what is
 //! kept without opening a chunk document or a file.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use automerge::AutoCommit;
@@ -31,8 +31,8 @@ pub(super) struct File {
 pub(super) struct FilesIndex {
     /// The tree's nodes, by chunk, and the chunks its own document lists.
     tree: TreeChunks,
-    /// The revision each chunk was last read at: an unchanged document is not read again.
-    revisions: BTreeMap<TreeChunk, [u8; 32]>,
+    /// The chunks read, for telling which wait on a first read.
+    read: BTreeSet<TreeChunk>,
     /// The words of each file node, as its chunk read them; `None` for a file with none.
     words: HashMap<String, Option<Arc<str>>>,
     /// The chunks whose write landed since they were read.
@@ -65,7 +65,7 @@ impl FilesIndex {
         }
         self.tree.listed().into_iter().find(|chunk| {
             self.stale.contains(chunk)
-                || (!self.revisions.contains_key(chunk) && !self.given_up.contains(chunk))
+                || (!self.read.contains(chunk) && !self.given_up.contains(chunk))
         })
     }
 
@@ -74,37 +74,21 @@ impl FilesIndex {
         self.next().is_none()
     }
 
-    /// The revision `chunk` was read at, for a read of what changed since.
-    pub(super) fn known(&self, chunk: TreeChunk) -> Option<[u8; 32]> {
-        self.revisions.get(&chunk).copied()
-    }
-
-    /// The document did not change since it was read.
-    pub(super) fn unchanged(&mut self, chunk: TreeChunk) {
-        self.stale.remove(&chunk);
-        self.given_up.remove(&chunk);
-        if chunk == 0 {
-            self.listed = true;
-        }
-    }
-
     /// The document this replica cannot answer for yet: looked at again when a write lands.
     pub(super) fn pending(&mut self, chunk: TreeChunk) {
         self.stale.remove(&chunk);
         self.given_up.insert(chunk);
     }
 
-    /// Read chunk `chunk` of the tree as `bytes` holds it at `revision`, with `content` for a
-    /// file's bytes. The words of the files whose node changed since are read again, and how
-    /// many were.
+    /// Read chunk `chunk` of the tree as `bytes` holds it, with `content` for a file's bytes.
+    /// The words of the files whose node changed since are read again, and how many were.
     pub(super) fn read(
         &mut self,
         chunk: TreeChunk,
         bytes: &[u8],
-        revision: [u8; 32],
         content: Option<&ContentStore>,
     ) -> usize {
-        self.revisions.insert(chunk, revision);
+        self.read.insert(chunk);
         self.stale.remove(&chunk);
         self.given_up.remove(&chunk);
         let Ok(doc) = AutoCommit::load(bytes) else {
@@ -201,10 +185,6 @@ mod tests {
         doc.save()
     }
 
-    fn rev(n: u8) -> [u8; 32] {
-        [n; 32]
-    }
-
     #[test]
     fn a_chunk_is_read_once_and_a_file_again_only_when_its_node_changed() {
         let mut index = FilesIndex::default();
@@ -213,19 +193,19 @@ mod tests {
             Some(0),
             "the tree's own document is read first"
         );
-        assert_eq!(index.read(0, &index_of(&[1]), rev(0), None), 0);
+        assert_eq!(index.read(0, &index_of(&[1]), None), 0);
         assert_eq!(index.next(), Some(1), "the chunk it lists is read next");
-        assert_eq!(index.read(1, &chunk_of("a.txt"), rev(1), None), 1);
+        assert_eq!(index.read(1, &chunk_of("a.txt"), None), 1);
         assert!(index.settled());
         assert_eq!(
-            index.read(1, &chunk_of("a.txt"), rev(2), None),
+            index.read(1, &chunk_of("a.txt"), None),
             0,
-            "an unchanged chunk reads no file again"
+            "a chunk read again with the nodes it had reads no file again"
         );
         assert_eq!(index.files()[0].path, "a.txt");
 
         // A node that changed is read again, and the file it was is no longer kept.
-        assert_eq!(index.read(1, &chunk_of("b.txt"), rev(3), None), 1);
+        assert_eq!(index.read(1, &chunk_of("b.txt"), None), 1);
         let files = index.files();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "b.txt");

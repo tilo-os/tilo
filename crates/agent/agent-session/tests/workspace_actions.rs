@@ -576,6 +576,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     );
     for revoke_on_read in [false, true] {
         let link = Arc::new(DeliveryReadFixture {
+            workspaces: hosted.server.workspaces().unwrap().clone(),
             member: tilo_agent_session::workspace_actions::HostDevice {
                 endpoint: tilo_agent_session::HostEndpoint::iroh(
                     hosted.server.node_addr(),
@@ -636,6 +637,8 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
 
 /// Deterministically changes authority after a real Chat snapshot is read.
 struct DeliveryReadFixture {
+    /// The host's workspaces, which hold the documents this service reads.
+    workspaces: tilo_server::workspaces::Workspaces,
     member: tilo_agent_session::workspace_actions::HostDevice,
     caller: tilo_actions::remote::Caller,
     route: DocumentRoute,
@@ -646,6 +649,18 @@ struct DeliveryReadFixture {
 }
 
 impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryReadFixture {
+    fn documents(&self) -> Option<Arc<dyn tilo_server::workspace_documents::DeviceDocuments>> {
+        Some(Arc::new(
+            tilo_server::device_documents::ServiceDocuments::of(self.workspaces.clone()),
+        ))
+    }
+
+    fn writes(&self) -> Option<Arc<dyn tilo_server::workspace_documents::DeviceWrites>> {
+        Some(Arc::new(tilo_server::device_documents::ServiceWrites::of(
+            self.workspaces.clone(),
+        )))
+    }
+
     fn user_public_key(&self) -> [u8; 32] {
         self.member.endpoint.server_cert.user_public_key
     }

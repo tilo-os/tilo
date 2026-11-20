@@ -312,6 +312,19 @@ impl Workspaces {
             .ok_or_else(|| "this service serves no device's member copies".to_owned())
     }
 
+    /// The device this service signs its own roles' writes as: the device its member copies
+    /// act as where its embedder keeps one, else this device itself, which governs the
+    /// workspaces it serves.
+    pub(super) fn signing_device(&self) -> Arc<MemberDevice> {
+        if let Some(device) = self.inner.member.device.get().cloned() {
+            return device;
+        }
+        Arc::new(MemberDevice {
+            cert: self.inner.host.cert.clone(),
+            signer: Arc::new(self.inner.host.key.clone()),
+        })
+    }
+
     /// Redeem `invitation` with the device it names and hold the workspace as a
     /// member copy.
     ///
@@ -796,7 +809,7 @@ impl Workspaces {
         request: OwnerCommitRequest,
     ) -> Result<OwnerCommitReceipt, String> {
         let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
-        let device = self.member_identity()?;
+        let device = self.signing_device();
         let CommitOperation::Document {
             app,
             document,
@@ -864,7 +877,7 @@ impl Workspaces {
         request: OwnerCommitRequest,
     ) -> Result<OwnerCommitReceipt, String> {
         let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
-        let device = self.member_identity()?;
+        let device = self.signing_device();
         if self.is_member(workspace).await? {
             return Err("this workspace is held here as a member copy".into());
         }

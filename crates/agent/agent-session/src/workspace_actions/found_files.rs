@@ -9,11 +9,11 @@
 //! documents or reading a file.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use fs_protocol::files::TreeChunk;
 use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, TreeChunks};
 use tilo_actions::remote::Found;
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
 use super::files_index::File;
@@ -35,10 +35,10 @@ impl Worker {
         if needle.is_empty() || most == 0 {
             return Vec::new();
         }
-        let Some(engine) = self
+        let Some(reads) = self
             .workspaces
             .get(&workspace_id)
-            .map(|workspace| Arc::clone(workspace.peer.engine()))
+            .map(|workspace| workspace.reads.clone())
         else {
             return Vec::new();
         };
@@ -50,24 +50,20 @@ impl Worker {
         // What the index has not read yet: the documents whose write landed since the last pass
         // between requests. A document this replica cannot answer for yet is answered next time.
         while let Some(chunk) = workspace.files.next() {
-            let known = workspace.files.known(chunk);
-            let chunk_id = fs_protocol::tree::chunk_document_id(chunk);
-            match engine.record_since(cluster_id, FILES_APP, &chunk_id, known) {
-                Ok(Some((bytes, revision))) => {
-                    counted.files_chunks.fetch_add(1, Ordering::Relaxed);
-                    let files = workspace
-                        .files
-                        .read(chunk, &bytes, revision, content.as_ref());
-                    counted
-                        .files_read
-                        .fetch_add(files as u64, Ordering::Relaxed);
-                }
-                Ok(None) if known.is_some() => workspace.files.unchanged(chunk),
-                Ok(None) | Err(_) => {
-                    workspace.files.pending(chunk);
-                    break;
-                }
-            }
+            let route = DocumentRoute {
+                app_id: FILES_APP.to_owned(),
+                cluster_id: cluster_id.to_owned(),
+                document: fs_protocol::tree::chunk_document_id(chunk),
+            };
+            let Ok(Some(bytes)) = reads.record(&route) else {
+                workspace.files.pending(chunk);
+                break;
+            };
+            counted.files_chunks.fetch_add(1, Ordering::Relaxed);
+            let files = workspace.files.read(chunk, &bytes, content.as_ref());
+            counted
+                .files_read
+                .fetch_add(files as u64, Ordering::Relaxed);
         }
         ranked(workspace.files.files(), &needle, most)
     }
@@ -82,7 +78,7 @@ impl Worker {
         cluster_id: &str,
     ) -> Option<Tree> {
         let workspace = self.workspaces.get(&workspace_id)?;
-        Some(tree_records(workspace.peer.engine(), cluster_id)?.tree())
+        Some(tree_records(&workspace.reads, cluster_id)?.tree())
     }
 }
 
@@ -116,26 +112,26 @@ impl TreeRecords {
     }
 }
 
-/// The records of the tree of `cluster_id`, as the replica `engine` holds them.
+/// The records of the tree of `cluster_id`, as the device's service holds them.
 fn tree_records(
-    engine: &tilo_session_client::engine::Engine,
+    reads: &crate::workspace_documents::Reads,
     cluster_id: &str,
 ) -> Option<TreeRecords> {
-    let index = engine
-        .record(
-            cluster_id,
-            FILES_APP,
-            &collab_types::person_document_id(TREE_KIND),
-        )
+    let index = reads
+        .record(&DocumentRoute {
+            app_id: FILES_APP.to_owned(),
+            cluster_id: cluster_id.to_owned(),
+            document: collab_types::person_document_id(TREE_KIND),
+        })
         .ok()
         .flatten()?;
     TreeRecords::read(&index, |chunk| {
-        engine
-            .record(
-                cluster_id,
-                FILES_APP,
-                &fs_protocol::tree::chunk_document_id(chunk),
-            )
+        reads
+            .record(&DocumentRoute {
+                app_id: FILES_APP.to_owned(),
+                cluster_id: cluster_id.to_owned(),
+                document: fs_protocol::tree::chunk_document_id(chunk),
+            })
             .ok()
             .flatten()
     })
@@ -171,6 +167,7 @@ fn ranked(files: Vec<File>, needle: &str, most: usize) -> Vec<Found> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn file(path: &str, words: Option<&str>) -> File {
         File {

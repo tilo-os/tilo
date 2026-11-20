@@ -3,7 +3,7 @@
 //! held here ([`tilo_desktop_model::asked`]). Nothing waits for the window.
 
 use super::{
-    APPLICATION_OPEN_ACTION, ActionCallError, ActionOutput, Arc, Caller, DocumentMutation,
+    APPLICATION_OPEN_ACTION, ActionCallError, ActionOutput, Caller, DocumentMutation,
     DocumentRoute, InvokeRequest, Needs, Outcome, Worker, WorkspaceDocuments, WorkspaceId,
     application_provider_resource, caller_context, commit_failed, said_invocation_title,
 };
@@ -121,12 +121,12 @@ impl Worker {
             .workspaces
             .get_mut(&workspace_id)
             .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
-        // The layout as the session's replica holds it, read even before anything landed here
+        // The layout as the device's service holds it, read even before anything landed here
         // this session (an agent's first call is often an open).
-        let engine = Arc::clone(workspace.peer.engine());
+        let reads = workspace.reads.clone();
         let Some(held) = workspace
             .documents
-            .get_or_insert_with(|| WorkspaceDocuments::new(named, engine))
+            .get_or_insert_with(|| WorkspaceDocuments::new(named, reads))
             .desktop()
         else {
             // A layout not held here (none yet, or not replayed here yet) is never waited for: the

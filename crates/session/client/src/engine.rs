@@ -403,10 +403,6 @@ type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u
 /// How many sealed records [`Engine::read_resource`] keeps opened between reads.
 const KEPT_RECORDS: usize = 64;
 
-/// A record's bytes, with the heads they were last saved at: what [`Engine::record_since`] answers
-/// when the record changed since the caller last read it.
-type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
-
 /// The writes this device made that its replica has not taken in yet, by record, as document
 /// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for workspace
 /// held. The session that writes them keeps them here, and its readers read them over the
@@ -691,8 +687,19 @@ impl Engine {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        self.record_since(workspace, app, record, None)
-            .map(|read| read.map(|(bytes, _)| bytes))
+        Ok(
+            match self.read_resource(
+                workspace,
+                (app, record),
+                Holding::default(),
+                MAX_DOCUMENT_BYTES,
+            )? {
+                ResourceReading::Captured { bytes, .. } => Some(bytes),
+                ResourceReading::Changes { .. }
+                | ResourceReading::Unchanged(_)
+                | ResourceReading::Pending => None,
+            },
+        )
     }
 
     /// What `workspace` holds of `app`'s `record` for a reader that merged it last at the sorted
@@ -718,38 +725,6 @@ impl Engine {
                 heads,
             },
             MAX_DOCUMENT_BYTES,
-        )
-    }
-
-    /// [`Self::record`], with the revision the bytes were saved at, and told the revision
-    /// `known` this caller already holds: a record whose admitted heads still are those
-    /// is answered as unchanged without capturing or saving the document at all.
-    /// # Errors
-    /// As [`Self::record`].
-    pub fn record_since(
-        &self,
-        workspace: &str,
-        app: &str,
-        record: &str,
-        known: Option<[u8; 32]>,
-    ) -> Result<SavedRecord, String> {
-        Ok(
-            match self.read_resource(
-                workspace,
-                (app, record),
-                Holding {
-                    revision: known,
-                    heads: &[],
-                },
-                MAX_DOCUMENT_BYTES,
-            )? {
-                ResourceReading::Captured {
-                    revision, bytes, ..
-                } => Some((bytes, revision)),
-                ResourceReading::Changes { .. }
-                | ResourceReading::Unchanged(_)
-                | ResourceReading::Pending => None,
-            },
         )
     }
 
@@ -855,9 +830,9 @@ impl Engine {
         }))
     }
 
-    /// The revision `workspace`'s `app`'s `record` stands at for the reader this device is,
+    /// The revision `workspace`'s `app`'s `document` stands at for the reader this device is,
     /// decided as [`Self::read_resource`] decides it but reading nothing out: `None` while the
-    /// record is not here yet, or only a read decides it (this device's own writes the replica
+    /// document is not here yet, or only a read decides it (this device's own writes the replica
     /// has not taken in yet).
     ///
     /// # Errors
@@ -866,18 +841,18 @@ impl Engine {
         &self,
         workspace: &str,
         app: &str,
-        record: &str,
+        document: &str,
     ) -> Result<Option<[u8; 32]>, String> {
-        if self.own_writes(workspace, app, record).is_some() {
+        if self.own_writes(workspace, app, document).is_some() {
             return Ok(None);
         }
         let own = self.identity.device_cert.device_public_key;
         Ok(self
-            .opened(workspace, (app, record), &mut |workspace, open, kept| {
+            .opened(workspace, (app, document), &mut |workspace, open, kept| {
                 self.owner.with_current(workspace, |view| {
                     view.document_revision(
                         Admission::of(view, own).reader(own),
-                        (app, record),
+                        (app, document),
                         tilo_clock::wall(),
                         History { open, kept },
                     )

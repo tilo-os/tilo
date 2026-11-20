@@ -76,6 +76,17 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn user_public_key(&self) -> [u8; 32];
     /// The host's own device, as the service joins its workspaces.
     fn own_device(&self) -> HostDevice;
+    /// The documents of the workspaces this device takes part in, as its own roles read
+    /// them: its workspace service on a computer, its replicated copy on the web. `None` when
+    /// it holds none.
+    fn documents(&self) -> Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>> {
+        None
+    }
+    /// The same documents, written as this device itself writes them. `None` when it holds
+    /// none.
+    fn writes(&self) -> Option<Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>> {
+        None
+    }
     /// Whether `workspace` admits `caller`, on the device it speaks for: a
     /// person the workspace lets in, as its governance records them, and the
     /// person the host serves itself. Anyone else is a stranger to it.

@@ -681,6 +681,22 @@ impl ServerRecordsLink {
 }
 
 impl WorkspaceDocumentsLink for ServerRecordsLink {
+    /// The workspaces' documents this server holds: what its workspace actions
+    /// read their records from and write them through.
+    fn documents(&self) -> Option<Arc<dyn crate::workspace_documents::DeviceDocuments>> {
+        let workspaces = self.workspaces.clone()?;
+        Some(Arc::new(
+            tilo_workspace_service::device_documents::ServiceDocuments::of(workspaces),
+        ))
+    }
+
+    fn writes(&self) -> Option<Arc<dyn crate::workspace_documents::DeviceWrites>> {
+        let workspaces = self.workspaces.clone()?;
+        Some(Arc::new(
+            tilo_workspace_service::device_documents::ServiceWrites::of(workspaces),
+        ))
+    }
+
     /// What stands for the person the turn acts for, read from their own
     /// store on this server now: for the turn's own agent and nobody else.
     fn stands(
