@@ -40,6 +40,8 @@ mod controls;
 mod derived;
 mod facts;
 mod live_head;
+mod open;
+pub(crate) use open::{OPEN_ANCHOR, OPEN_TYPE, offer_item, offer_item_open, open_spec};
 mod open_link;
 pub(crate) use open_link::OpenLink;
 mod overlay;
@@ -101,6 +103,11 @@ pub(crate) struct ResourceRoot {
     permissions: Option<LivePermissions>,
     write: Option<PermissionScope>,
     stages: Stages,
+    /// The anchors the window was asked to show and has not shown yet, in
+    /// the order asked ([`super::Opens`]): what the launch named, an open
+    /// action, a picked hit, kept until a view shows them or says they are
+    /// gone.
+    opens: super::Opens,
     feeds: super::history::HistoryFeeds,
     /// What the view was built for, and the fixtures a capture's views read.
     pub(crate) run: Run,
@@ -231,115 +238,6 @@ impl ui_core::component_lifecycle::WindowTitle for ResourceRoot {
     fn window_title(&self) -> Option<&str> {
         let view = app_view_in(self.content.as_ref())?;
         ui_core::component_lifecycle::window_title(view)
-    }
-}
-
-/// The operation type of the framework's `open` view: show the item at an
-/// anchor, as picking a search hit does.
-pub(crate) const OPEN_TYPE: &str = tilo_actions::remote::APPLICATION_OPEN_TYPE;
-
-/// The parameter of `open` naming what to show.
-const OPEN_ANCHOR: &str = "anchor";
-
-/// `open`: show the item at an anchor (a search entry's anchor). Published
-/// when a view shows items ([`ViewCx::on_open`](super::ViewCx::on_open)), so
-/// an agent opens the app where a person's search hit would.
-fn open_spec() -> tilo_actions::ActionSpec {
-    tilo_actions::ActionSpec::typed_operation(
-        "open",
-        "Open",
-        "Item to open",
-        tilo_actions::OperationKind::View,
-        OPEN_TYPE,
-        vec![tilo_actions::ActionParam::required(
-            OPEN_ANCHOR,
-            tilo_actions::ParamType::Text,
-            "Item to open: the anchor of a search hit",
-        )],
-        |args| {
-            tilo_actions::EncodedAction::encode_operation(
-                OPEN_TYPE,
-                &serde_json::json!({ OPEN_ANCHOR: args.text(OPEN_ANCHOR) }),
-            )
-            .unwrap_or_else(|_| tilo_actions::EncodedAction {
-                type_id: OPEN_TYPE.into(),
-                payload: Vec::new(),
-            })
-        },
-    )
-    .of_kind(tilo_actions::ActionKind::Read)
-    .with_description("Open the app at one item: the anchor of a search hit.")
-}
-
-/// The label of the item view the framework gives an item resource that
-/// presents no view of its own.
-const ITEM_VIEW_LABEL: &str = "Item";
-
-/// `open` on one item resource: show that item, as its search hit would.
-pub(crate) fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
-    let encoded = tilo_actions::EncodedAction::encode_operation(
-        OPEN_TYPE,
-        &serde_json::json!({ OPEN_ANCHOR: anchor }),
-    )
-    .unwrap_or_else(|_| tilo_actions::EncodedAction {
-        type_id: OPEN_TYPE.into(),
-        payload: Vec::new(),
-    });
-    tilo_actions::ActionSpec::typed_operation(
-        "open",
-        "Open",
-        "Open",
-        tilo_actions::OperationKind::View,
-        OPEN_TYPE,
-        Vec::new(),
-        move |_| encoded.clone(),
-    )
-    .of_kind(tilo_actions::ActionKind::Read)
-    .with_description("Show this item.")
-}
-
-/// Offer `open` on the item resource `resource`, with the view and the own
-/// `share-link` that go with it, unless it has an `open` already: what shows
-/// the item where the app's window shows it and lets a link name it. An item
-/// of the app's record and one kept in a part of a chain are offered alike,
-/// so a link to either opens the item and not the record.
-pub(crate) fn offer_item(resource: &mut ResourceSpec) {
-    if resource
-        .actions
-        .iter()
-        .any(|existing| existing.id == "open")
-    {
-        return;
-    }
-    resource.actions.push(item_open_spec(resource.id.as_str()));
-    // The opener is also a presentation binding, not just a verb in the
-    // catalogue. Keep an app's explicit views; otherwise advertise the
-    // item view that this exact bound opener actually shows. The view
-    // names what it shows, the item, and not which item: the item's own
-    // label is the resource's, published once with it. Every item's
-    // `open` is then one catalogue entry however many items there are,
-    // where a copy of the item's label made each item's `open`, and its
-    // whole action template, an entry of its own.
-    if resource.views.is_empty() {
-        resource.views.push(
-            tilo_actions::ResourceViewSpec::new("item", ITEM_VIEW_LABEL, "open").with_primary(true),
-        );
-        // A view is also what a link opens: with one, the item offers
-        // `share-link` of its own, which names the item rather than the
-        // record it is in.
-        tilo_resource::share::offer(resource);
-    }
-}
-
-/// Offer `open` on every item resource under `resource` (an item of the
-/// collections of the resource `item_of` knows the items of), bound to that
-/// item ([`offer_item`]).
-fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut ResourceSpec) {
-    if item_of(resource.id.as_str()) {
-        offer_item(resource);
-    }
-    for child in &mut resource.children {
-        offer_item_open(item_of, child);
     }
 }
 
@@ -516,6 +414,7 @@ impl ResourceRoot {
             updaters,
             action_bindings,
             stages,
+            opens,
             feeds,
             bindings,
             ..
@@ -539,6 +438,7 @@ impl ResourceRoot {
                 saved: env.saved,
                 saves: env.saves,
                 stages,
+                opens,
                 feeds,
                 run: env.run,
                 storage: env.storage,
@@ -566,6 +466,7 @@ impl ResourceRoot {
             saved,
             saves,
             stages,
+            opens,
             feeds,
             run,
             storage,
@@ -588,6 +489,7 @@ impl ResourceRoot {
             permissions: None,
             write: None,
             stages,
+            opens,
             feeds,
             run,
             storage,
@@ -707,16 +609,40 @@ impl ResourceRoot {
         });
     }
 
-    /// Show the item the launch asked for once a view that opens items is
-    /// up. An item the record does not hold yet (it is still arriving) is
-    /// asked for again at the next sync.
+    /// Show the item the launch asked for, and every open the window has
+    /// not shown yet, once a view that opens items is up: the launch's
+    /// anchor joins the window's [`super::Opens`] queue, which a view shows
+    /// at its sync or from its own opener. An item the record does not hold
+    /// yet (it is still arriving) stays queued and is asked for again at the
+    /// next sync; a view that reports it gone drops it.
     fn reveal_launched(&self) {
-        let mut reveal = self.run.launched.reveal.borrow_mut();
-        if let Some(anchor) = reveal.as_deref()
-            && self.stages.opens()
-            && self.stages.open(anchor).is_ok()
-        {
-            *reveal = None;
+        if let Some(anchor) = self.run.launched.reveal.borrow_mut().take() {
+            self.opens.ask(&anchor);
+        }
+        if !self.stages.opens() {
+            return;
+        }
+        // A view that dispatches an open at once gets it here; a queue an
+        // app shows at its own sync already ran this frame, so what it
+        // could not show is asked again now and shown at the next one.
+        for anchor in self.opens.waiting() {
+            if !matches!(self.stages.open(&anchor), super::OpenOutcome::NotYet) {
+                self.opens.settled(&anchor);
+            }
+        }
+    }
+
+    /// Show the item at `anchor` where it lives, or keep it for the next
+    /// sync when no view has it yet. `Err` is an item gone for good, with
+    /// why.
+    fn show_or_keep(&self, anchor: &str) -> Result<(), String> {
+        match self.stages.open(anchor) {
+            super::OpenOutcome::Shown => Ok(()),
+            super::OpenOutcome::NotYet => {
+                self.opens.ask(anchor);
+                Ok(())
+            }
+            super::OpenOutcome::Gone(reason) => Err(reason),
         }
     }
 
@@ -1347,6 +1273,7 @@ struct Parts {
     saved: LocalState<ResourceSaveStatus>,
     saves: super::saves::Saves,
     stages: Stages,
+    opens: super::Opens,
     feeds: super::history::HistoryFeeds,
     run: Run,
     storage: Rc<super::settings::ViewStorage>,
@@ -1978,8 +1905,7 @@ impl RootModel for ResourceRoot {
                 .get(OPEN_ANCHOR)
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| tilo_resource::Refusal::new("open needs the anchor of an item"))?;
-            self.stages
-                .open(anchor)
+            self.show_or_keep(anchor)
                 .map_err(tilo_resource::Refusal::new)?;
             // Whichever window of the app shows the item, it comes forward with it.
             self.native_presentation.request_activation();
@@ -2040,8 +1966,7 @@ impl ResourceRoot {
             && !request.payload.is_empty()
             && let Some(anchor) = crate::runner::rendered_anchor(request.payload)
         {
-            self.stages
-                .open(&anchor)
+            self.show_or_keep(&anchor)
                 .map_err(tilo_resource::Refusal::new)?;
         }
         Ok(with_app_view_mut(&mut self.content, |view| {
@@ -2439,7 +2364,7 @@ impl RootSearch for ResourceRoot {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) {
-        if self.stages.open(action_id).is_err() {
+        if self.show_or_keep(action_id).is_err() {
             with_app_view_mut(&mut self.content, |view| {
                 ui_core::search::capability::activate_search_result(view, action_id, doc, path);
             });
@@ -2716,7 +2641,7 @@ impl ui_core::history_mode::capability::PresentsHistoryEntries for ResourceRoot 
         entry
             .target
             .as_ref()
-            .is_some_and(|target| self.stages.opens() && self.stages.open(&target.id).is_ok())
+            .is_some_and(|target| self.stages.opens() && self.show_or_keep(&target.id).is_ok())
     }
 }
 

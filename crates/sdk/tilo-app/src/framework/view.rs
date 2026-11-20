@@ -194,6 +194,9 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     /// The forms filled in in this scope ([`Self::form`]).
     pub(crate) forms: Forms,
     pub(crate) stages: Stages,
+    /// The anchors the window was asked to show and has not shown yet
+    /// ([`super::Opens`]): the window's own, shared with the root.
+    pub(crate) opens: super::Opens,
     pub(crate) feeds: super::history::HistoryFeeds,
     pub(crate) bindings: Bindings<R>,
 }
@@ -239,6 +242,7 @@ impl<R: Resource> ViewCx<R> {
             controls: fresh.controls,
             forms: fresh.forms,
             stages: fresh.stages,
+            opens: fresh.opens,
             feeds: fresh.feeds,
             bindings: Bindings::new(),
         }
@@ -271,6 +275,7 @@ struct FreshScope {
     controls: Rc<RefCell<HashMap<String, u32>>>,
     forms: Forms,
     stages: Stages,
+    opens: super::Opens,
     feeds: super::history::HistoryFeeds,
 }
 
@@ -283,6 +288,7 @@ impl FreshScope {
             controls: Rc::default(),
             forms: Forms::default(),
             stages: Stages::new(),
+            opens: super::Opens::default(),
             feeds: super::history::HistoryFeeds::default(),
         }
     }
@@ -378,17 +384,35 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// action. Select the item, switch to its page, scroll it into view:
     /// set the [`LocalState`]s that show it, as the person's own input would.
     ///
-    /// `open` may refuse an anchor it cannot show (a row that is gone) by
-    /// returning `Err`; the person or agent is told why.
-    pub fn on_open<O: tilo_resource::Outcome>(&self, mut open: impl FnMut(&str) -> O + 'static) {
+    /// `open` answers what it came to ([`OpenOutcome`]): shown, not yet (the
+    /// window keeps the anchor and asks again at the next sync), or gone
+    /// with the reason the person or agent is told. Returning `()`, `Ok(())`
+    /// or `Err(reason)` says the first and the last of them.
+    pub fn on_open<O: Into<super::OpenOutcome>>(&self, mut open: impl FnMut(&str) -> O + 'static) {
+        self.stages.push_opener(
+            self.alive.clone(),
+            Box::new(move |anchor| open(anchor).into()),
+        );
+    }
+
+    /// The anchors this window is asked to show, for an app that shows them
+    /// on its own sync: the framework keeps each anchor the app has not
+    /// shown yet, in the order asked, and asks again until the app reports
+    /// it shown or gone ([`Opens::show`]). Ask for it in place of
+    /// [`Self::on_open`] when the item cannot be shown from the view itself.
+    ///
+    /// [`Opens::show`]: super::Opens::show
+    pub fn opens(&self) -> super::Opens {
+        let opens = self.opens.clone();
+        let asked = opens.clone();
         self.stages.push_opener(
             self.alive.clone(),
             Box::new(move |anchor| {
-                open(anchor)
-                    .into_result()
-                    .map_err(|refusal| refusal.reason().to_owned())
+                asked.ask(anchor);
+                super::OpenOutcome::NotYet
             }),
         );
+        opens
     }
 
     /// Show the item of the resource a search hit or an agent's `open`
@@ -401,11 +425,17 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     ) {
         self.stages.push_opener(
             self.alive.clone(),
-            Box::new(move |anchor| {
-                let (_, item) = tilo_resource::items::item_of_resource::<R>(anchor)
-                    .ok_or_else(|| format!("`{anchor}` is not an item of {}", R::LABEL))?;
-                open(&item).map_err(|refusal| refusal.reason().to_owned())
-            }),
+            Box::new(
+                move |anchor| match tilo_resource::items::item_of_resource::<R>(anchor) {
+                    Some((_, item)) => open(&item)
+                        .map(|()| super::OpenOutcome::Shown)
+                        .unwrap_or_else(|refusal| super::OpenOutcome::Gone(refusal.into_reason())),
+                    None => super::OpenOutcome::Gone(format!(
+                        "`{anchor}` is not an item of {}",
+                        R::LABEL
+                    )),
+                },
+            ),
         );
     }
 
@@ -806,6 +836,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let item = self.item.clone();
         let path = self.path.clone();
         let stages = self.stages.clone();
+        let opens = self.opens.clone();
         let feeds = self.feeds.clone();
         let bindings = self.bindings.clone();
         move |alive: &Rc<()>| ViewCx {
@@ -820,6 +851,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             controls: Rc::default(),
             forms: Forms::default(),
             stages: stages.clone(),
+            opens: opens.clone(),
             feeds: feeds.clone(),
             bindings: bindings.clone(),
         }
@@ -1018,6 +1050,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
         let action_bindings = self.action_bindings.clone();
         let controls = Rc::clone(&self.controls);
         let stages = self.stages.clone();
+        let opens = self.opens.clone();
         let feeds = self.feeds.clone();
         let bindings = self.bindings.clone();
         Each::new(
@@ -1050,6 +1083,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
                         controls: Rc::clone(&controls),
                         forms: Forms::default(),
                         stages: stages.clone(),
+                        opens: opens.clone(),
                         feeds: feeds.clone(),
                         bindings: bindings.clone(),
                     };

@@ -37,7 +37,7 @@ use super::root::ResourceRoot;
 
 type Stage = Box<dyn FnMut(Option<&str>)>;
 type StageList = Vec<(Weak<()>, Stage)>;
-type Opener = Box<dyn FnMut(&str) -> Result<(), String>>;
+type Opener = Box<dyn FnMut(&str) -> super::OpenOutcome>;
 type OpenerList = Vec<(Weak<()>, Opener)>;
 
 /// The view-state callbacks of one app's views — how each stages a
@@ -110,18 +110,26 @@ impl Stages {
             .any(|(alive, _)| alive.strong_count() > 0)
     }
 
-    /// Show the item at `anchor` in every view that opens items.
-    pub(crate) fn open(&self, anchor: &str) -> Result<(), String> {
-        let mut opened = false;
-        let mut refusal = None;
-        let ran = run_live(&self.openers, |open| match open(anchor) {
-            Ok(()) => opened = true,
-            Err(reason) => refusal = Some(reason),
+    /// Show the item at `anchor` in every view that opens items: shown once
+    /// one shows it, and [`OpenOutcome::NotYet`] while no view has it yet, so the
+    /// window keeps the anchor and asks again at the next sync.
+    pub(crate) fn open(&self, anchor: &str) -> super::OpenOutcome {
+        let mut shown = false;
+        let mut not_yet = false;
+        let mut gone = None;
+        run_live(&self.openers, |open| match open(anchor) {
+            super::OpenOutcome::Shown => shown = true,
+            super::OpenOutcome::NotYet => not_yet = true,
+            super::OpenOutcome::Gone(reason) => gone = Some(reason),
         });
-        match (ran, opened, refusal) {
-            (false, ..) => Err("this app does not open items".into()),
-            (true, true, _) | (true, false, None) => Ok(()),
-            (true, false, Some(reason)) => Err(reason),
+        if shown {
+            super::OpenOutcome::Shown
+        } else if not_yet {
+            super::OpenOutcome::NotYet
+        } else {
+            super::OpenOutcome::Gone(
+                gone.unwrap_or_else(|| "this app does not open items".to_owned()),
+            )
         }
     }
 }

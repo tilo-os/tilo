@@ -903,6 +903,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             controls: Rc::clone(&self.controls),
             forms: Forms::default(),
             stages: self.stages.clone(),
+            opens: self.opens.clone(),
             feeds: HistoryFeeds::default(),
             bindings: Bindings::new(),
         };
