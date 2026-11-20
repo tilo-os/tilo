@@ -1362,7 +1362,14 @@ impl FileArea {
                             if self.entry(key).is_none() {
                                 continue;
                             }
-                            match self.file(key).and_then(|file| self.sync(&file)) {
+                            match self.file(key).and_then(|file| self.sync(&file)).map_err(
+                                |error| {
+                                    io::Error::new(
+                                        error.kind(),
+                                        format!("{}: {error}", self.path_of(key).display()),
+                                    )
+                                },
+                            ) {
                                 Ok(()) => {}
                                 Err(error) => {
                                     unsynced.push(*key);

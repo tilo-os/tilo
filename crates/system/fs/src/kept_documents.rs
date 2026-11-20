@@ -208,8 +208,10 @@ impl KeptDocuments {
         };
         // The syncs run outside the heads lock: a change waits for it to journal, and a copy
         // makes one every few milliseconds.
-        for (_, journal) in &held {
-            journal.sync_all()?;
+        for (chunk, journal) in &held {
+            journal
+                .sync_all()
+                .map_err(|error| naming(&file(&self.dir, *chunk, JOURNAL), error))?;
         }
         let held: Vec<TreeChunk> = held.into_iter().map(|(chunk, _)| chunk).collect();
         for entry in std::fs::read_dir(&self.dir)? {
@@ -227,9 +229,18 @@ impl KeptDocuments {
             if chunk.is_some_and(|chunk| held.contains(&chunk)) {
                 continue;
             }
-            std::fs::File::open(&path)?.sync_all()?;
+            // A save running beside this sync sets a journal aside between the listing and here
+            // (every start saves what an earlier process journaled): its frames are synced where
+            // they went, and nothing is left to sync once that save let go of them too.
+            let aside = chunk.map(|chunk| file(&self.dir, chunk, SET_ASIDE));
+            sync_if_present(&path).and_then(|synced| match (synced, aside) {
+                (false, Some(aside)) => sync_if_present(&aside).map(drop),
+                _ => Ok(()),
+            })?;
         }
-        std::fs::File::open(&self.dir)?.sync_all()
+        std::fs::File::open(&self.dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| naming(&self.dir, error))
     }
 
     /// Save each document of `namespace` that changed since its last save, whole, and let go of
@@ -324,6 +335,23 @@ fn read_or_none(path: &Path) -> io::Result<Vec<u8>> {
     }
 }
 
+/// Sync the file at `path` to the disk; false when there is no such file.
+fn sync_if_present(path: &Path) -> io::Result<bool> {
+    match std::fs::File::open(path) {
+        Ok(file) => file
+            .sync_all()
+            .map(|()| true)
+            .map_err(|error| naming(path, error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(naming(path, error)),
+    }
+}
+
+/// `error`, saying the file it happened to.
+fn naming(path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+}
+
 fn remove_or_none(path: &Path) -> io::Result<()> {
     match std::fs::remove_file(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
@@ -408,6 +436,43 @@ mod tests {
 
     fn holds(namespace: &mut Namespace, name: &str) -> bool {
         namespace.lookup(ROOT_INO, name).is_some()
+    }
+
+    /// Syncing while saves set journals aside never fails: a save renames a journal between
+    /// the sync listing it and opening it, which failed with "No such file or directory" a few
+    /// times every time a folder's sync started (it saves what it merged at once).
+    #[test]
+    fn a_sync_beside_saves_never_misses_a_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (kept, namespace) = open(dir.path());
+        let namespace = Mutex::new(namespace);
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let syncing = scope.spawn(|| {
+                while !done.load(Ordering::Acquire) {
+                    kept.unsynced.store(true, Ordering::Release);
+                    kept.sync()?;
+                }
+                io::Result::Ok(())
+            });
+            for n in 0..6_000 {
+                {
+                    let mut namespace = namespace.lock_recover();
+                    namespace
+                        .create_file(ROOT_INO, format!("file-{n}.txt"), None, 1, 1)
+                        .unwrap();
+                    kept.journal(&mut namespace).unwrap();
+                }
+                if n % 25 == 0 {
+                    kept.keep(&namespace).unwrap();
+                }
+            }
+            done.store(true, Ordering::Release);
+            syncing
+                .join()
+                .unwrap()
+                .expect("a sync beside the saves failed");
+        });
     }
 
     /// Thousands of files written, the process killed without a save since the first: every
