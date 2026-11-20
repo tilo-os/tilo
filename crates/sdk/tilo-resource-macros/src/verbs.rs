@@ -1878,6 +1878,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         || quote!(),
         |path| {
             quote! {
+                const ANSWERS: bool = true;
+
                 fn answer(
                     doc: &#krate::Doc,
                     action: &str,

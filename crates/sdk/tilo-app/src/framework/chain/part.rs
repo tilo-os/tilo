@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use tilo_actions::{ActionError, ActionInvoker, ActionNeed, EncodedAction};
 use tilo_resource::{Reader, Refusal, Resource};
-use ui_core::automerge::AutoCommit;
+use ui_core::automerge::{AutoCommit, ChangeHash};
 use ui_core::resource::{DocumentId, ResourceStore};
 
 use super::super::history::PartEdit;
@@ -41,6 +41,8 @@ type Carry = fn(u64, &dyn Any) -> Option<Result<Action, String>>;
 /// [`Chained::tree`] of the parts held: each item's parent among them.
 type PartsTree = fn(&dyn Any) -> Vec<(tilo_resource::Id, Option<tilo_resource::Id>)>;
 
+/// Told of a write as it lands, with the version it was made on and the ids it minted.
+pub(super) type OnWritten<'a> = dyn FnMut(&mut AutoCommit, &[ChangeHash], &[String]) + 'a;
 type Answer = fn(&AutoCommit, &str, &[ui_core::automerge::Patch]) -> Option<serde_json::Value>;
 type Spread = fn(&dyn Any, u64, &dyn Any) -> Vec<(u64, Action)>;
 type Shares = Result<Option<Vec<(u64, Action)>>, String>;
@@ -97,8 +99,8 @@ pub(super) struct PartType {
     /// Whether the verb is declared to answer nothing.
     pub(super) answers_nothing: fn(&str) -> bool,
     /// What a verb written into a document answers its caller with
-    /// ([`tilo_resource::Resource::answer`]).
-    pub(super) answer: Answer,
+    /// ([`tilo_resource::Resource::answer`]); `None` when it answers nothing.
+    pub(super) answer: Option<Answer>,
     /// The share of an action each part carries out ([`Chained::split`]).
     pub(super) split: fn(&dyn Any, &dyn Any) -> Shares,
     /// Further actions an action written into a part means for other parts
@@ -151,6 +153,38 @@ type ReadOver = Option<Result<serde_json::Value, String>>;
 /// The table of `P`, one for the whole program.
 pub(super) struct Of<P>(std::marker::PhantomData<P>);
 
+impl PartType {
+    /// What a write on a part of this type answers `answering` with, made on
+    /// `before` and minting `minted`. The answer names the text it wrote,
+    /// whatever else the verb answers: where it landed is known here, even for
+    /// a verb that named its item by what it says. A write that made items
+    /// names what it made instead, beside the answer. The changes are worked
+    /// out only for what reads them: as many as the write is large.
+    pub(super) fn answered(
+        &self,
+        answering: Option<&str>,
+        doc: &mut AutoCommit,
+        before: &[ChangeHash],
+        minted: &[String],
+    ) -> Option<serde_json::Value> {
+        let answer = answering.zip(self.answer);
+        let wrote = minted.is_empty();
+        if answer.is_none() && !wrote {
+            return None;
+        }
+        let after = doc.get_heads();
+        let changes = doc.diff(before, &after);
+        let value = answer.and_then(|(verb, answer)| answer(doc, verb, &changes));
+        match wrote
+            .then(|| ui_core::presence::written_by(doc, &changes))
+            .flatten()
+        {
+            Some(wrote) => tilo_actions::ActionOutput::noting_wrote(value, &wrote),
+            None => value,
+        }
+    }
+}
+
 impl<P: Chained> Of<P> {
     pub(super) const PART: PartType = PartType {
         kind: P::KIND,
@@ -174,7 +208,7 @@ impl<P: Chained> Of<P> {
         verb: verb::<P>,
         is_step: is_step::<P>,
         answers_nothing: answers_nothing::<P>,
-        answer: P::answer,
+        answer: if P::ANSWERS { Some(P::answer) } else { None },
         split: split::<P>,
         spread: spread::<P>,
         hidden: hidden::<P>,

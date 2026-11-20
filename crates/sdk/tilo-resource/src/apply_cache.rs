@@ -29,9 +29,11 @@
 //! once), what was kept is the document as the change left it: the next action reads only what
 //! others wrote beside it, not the group's own change back.
 //!
-//! A write also keeps the items it stored whole into new entries, for the view
-//! that follows its change: that view takes them as they were written rather
-//! than reading each back ([`taking_stored`]).
+//! A write also keeps the items it stored whole into new entries, as each
+//! reads back, for the view that follows its change and for the next action
+//! of its type: when that change is all that happened since, they take them
+//! rather than reading each back ([`taking_stored`]), and the size of the
+//! change is no reason to read everything again.
 //!
 //! An app's model module keeps nothing: it applies one action per call, to a
 //! document the device holds (`--cfg tilo_model_guest`), so there is no next
@@ -134,39 +136,42 @@ pub(crate) fn take_any(
     }
     let mut ops = 0_u64;
     let mut own = None;
-    let mut found_own = false;
+    let mut own_meta = None;
     let mut changes = Vec::with_capacity(metas.len());
     for meta in &metas {
         let count = meta.max_op.saturating_add(1).saturating_sub(meta.start_op);
-        let ours = !found_own
+        let ours = own_meta.is_none()
             && wrote.as_ref().is_some_and(|(actor, wrote)| {
                 let mut deps = meta.deps.clone();
                 deps.compact_sort();
                 meta.actor.as_ref() == actor && deps == base && count == *wrote
             });
-        // Only what is read is counted: a copy holding its own change
-        // reads none of it.
-        if !(ours && holds_own) {
-            ops = ops.checked_add(count)?;
-            if ops > MAX_OPS {
-                return None;
-            }
-        }
         if ours {
-            found_own = true;
+            own_meta = Some((meta, count));
             if !holds_own {
                 own = Some(committed.get_change_by_hash(&meta.hash)?);
             }
         } else {
+            ops = ops.checked_add(count)?;
             changes.push(committed.get_change_by_hash(&meta.hash)?);
         }
     }
     // The change the last action wrote is not here: it was rolled back, or
     // this is another document.
-    if wrote.is_some() && !found_own {
+    if wrote.is_some() && own_meta.is_none() {
         return None;
     }
     let foreign = changes.len();
+    // Only what is read is counted: a copy holding its own change reads none
+    // of it, and its own change alone is taken as it was written, every item
+    // it stored as it reads back, rather than read.
+    let alone = foreign == 0 && own_meta.is_some_and(|(meta, _)| stored_by(meta).is_some());
+    if let Some((_, count)) = own_meta.filter(|_| !holds_own && !alone) {
+        ops = ops.checked_add(count)?;
+    }
+    if ops > MAX_OPS {
+        return None;
+    }
     changes.extend(own);
     if changes.is_empty() {
         return Some((state, Delta::nothing()));
@@ -175,7 +180,13 @@ pub(crate) fn take_any(
     if delta.is_everything() {
         return None;
     }
-    if !refresh(state.as_mut(), doc, &delta) {
+    let refreshed = match own_meta.filter(|_| alone) {
+        Some((meta, _)) => taking_stored(std::slice::from_ref(meta), || {
+            refresh(state.as_mut(), doc, &delta)
+        }),
+        None => refresh(state.as_mut(), doc, &delta),
+    };
+    if !refreshed {
         return None;
     }
     let dirty = match changes.get(..foreign) {
@@ -264,9 +275,9 @@ pub fn forget_all() {
 /// was written: its actor, the version it was made on, sorted, and how many
 /// operations it holds. A reader that follows exactly that change takes these
 /// items as they are rather than reading each back from the document
-/// ([`taking_stored`]). Only items that read back as they were written are
-/// noted: one holding rich text, which reads back as the document's own
-/// structure, is read.
+/// ([`taking_stored`]). Each is noted as it reads back: one holding rich
+/// text, which reads back as the document's own structure, with that read
+/// again from where it was written ([`crate::table::settle`]).
 struct Stored {
     actor: ActorId,
     base: Vec<ChangeHash>,
@@ -343,27 +354,32 @@ pub(crate) fn taking_stored<T>(
     metas: &[automerge::ChangeMetadata<'_>],
     follow: impl FnOnce() -> T,
 ) -> T {
-    let [meta] = metas else {
-        return follow();
-    };
-    let ops = meta.max_op.saturating_add(1).saturating_sub(meta.start_op);
-    let mut deps = meta.deps.clone();
-    deps.compact_sort();
-    let items = STORED.with(|stored| {
-        stored
-            .borrow()
-            .iter()
-            .rev()
-            .find(|stored| stored.ops == ops && *meta.actor == stored.actor && stored.base == deps)
-            .map(|stored| std::rc::Rc::clone(&stored.items))
-    });
-    let Some(items) = items else {
+    let Some(items) = (match metas {
+        [meta] => stored_by(meta),
+        _ => None,
+    }) else {
         return follow();
     };
     let before = TAKING.with(|taking| taking.borrow_mut().replace(items));
     let followed = follow();
     TAKING.with(|taking| *taking.borrow_mut() = before);
     followed
+}
+
+/// The items the write on this thread whose change is `meta` stored, if one
+/// noted any.
+fn stored_by(meta: &automerge::ChangeMetadata<'_>) -> Option<StoredItems> {
+    let ops = meta.max_op.saturating_add(1).saturating_sub(meta.start_op);
+    let mut deps = meta.deps.clone();
+    deps.compact_sort();
+    STORED.with(|stored| {
+        stored
+            .borrow()
+            .iter()
+            .rev()
+            .find(|stored| stored.ops == ops && *meta.actor == stored.actor && stored.base == deps)
+            .map(|stored| std::rc::Rc::clone(&stored.items))
+    })
 }
 
 /// Hand `take` the item stored under the new entry object `entry` by the

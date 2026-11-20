@@ -895,6 +895,13 @@ impl Inner {
                 };
                 let (heads, reads) =
                     derive(&source, &app_id, &from, &part, &before, clock, opening)?;
+                // What the step derived reaches the disk here, off the frame: a process killed
+                // later opens over it instead of building the index again.
+                if index.path().is_some()
+                    && let Err(error) = index.persist()
+                {
+                    tracing::warn!(%error, "an index did not reach the disk");
+                }
                 Ok((heads, reads))
             },
             self.wake.clone(),

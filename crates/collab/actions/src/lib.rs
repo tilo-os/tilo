@@ -229,7 +229,8 @@ pub use executor::{
     UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,
     await_compensation, await_settlement, commit_written, current_step, dispatch, dispatch_by,
     dispatch_by_with_context, dispatch_with_context, entry_message, entry_of, invoking_context,
-    open_step, replay, settle_compensation, verify_change, with_invoking_context,
+    open_step, reading_invoking_context, replay, settle_compensation, verify_change,
+    with_invoking_context,
 };
 pub use framework::FrameworkChange;
 pub use interaction::{

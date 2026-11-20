@@ -37,6 +37,10 @@ pub struct Stamp {
     /// The invocation this one takes back, when it is an undo: it names that invocation's verb.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undoes: Option<String>,
+    /// When it was invoked, ISO-8601 UTC, recorded like an argument so every holder reads the
+    /// same; empty where the invoker named no time.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub at: String,
 }
 
 impl Stamp {

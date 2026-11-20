@@ -907,9 +907,12 @@ impl Instance {
             wake: (self.mode != Mode::Past).then(|| self.platform.waker()),
         };
         let access = Rc::clone(&self.access);
-        let built = Host::open(opening, self.me_actor(), move || {
-            access.borrow().as_ref().and_then(|source| source())
-        });
+        let built = {
+            let _phase = tilo_resource::profiling::Phase::start("tl.store.open");
+            Host::open(opening, self.me_actor(), move || {
+                access.borrow().as_ref().and_then(|source| source())
+            })
+        };
         let host = match built {
             Ok(host) => host,
             Err(error) => {
@@ -961,6 +964,7 @@ impl Instance {
         if self.mode != Mode::Past {
             // What is published and found of the workspace is read off the frame the first time;
             // the instance takes it in when it is ready.
+            let _phase = tilo_resource::profiling::Phase::start("tl.publication.start");
             self.publication = self.platform.publish(&host, self.platform.waker());
         }
         *self.host.borrow_mut() = Some(host.clone());
@@ -2301,6 +2305,7 @@ impl Instance {
                 self.started = true;
                 self.loading = false;
                 if !self.rootless {
+                    let _phase = tilo_resource::profiling::Phase::start("tl.view.open_root");
                     self.open_root(&host);
                 }
             } else if !self.loading {

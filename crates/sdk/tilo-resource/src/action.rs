@@ -43,10 +43,12 @@ pub struct ActionCx {
 
 /// Who invoked the action applying now, as its envelope pinned it.
 fn invoking_author() -> Option<MemberId> {
-    tilo_actions::invoking_context()
-        .and_then(|context| context.invoker)
-        .and_then(|invoker| invoker_member(&invoker))
-        .or_else(|| RESOURCE_ACTOR.with_borrow(Clone::clone))
+    tilo_actions::reading_invoking_context(|context| {
+        context
+            .and_then(|context| context.invoker.as_ref())
+            .and_then(invoker_member)
+    })
+    .or_else(|| RESOURCE_ACTOR.with_borrow(Clone::clone))
 }
 
 /// The member an invoker acts as: the member itself, or for an automation the
@@ -64,10 +66,10 @@ fn invoker_member(invoker: &tilo_actions::ActionInvoker) -> Option<MemberId> {
 /// action only its envelope counts, so every replica replaying it reads the
 /// same author.
 pub(crate) fn writing_author() -> Option<MemberId> {
-    match tilo_actions::invoking_context() {
-        Some(context) => context.invoker.and_then(|invoker| invoker_member(&invoker)),
+    tilo_actions::reading_invoking_context(|context| match context {
+        Some(context) => context.invoker.as_ref().and_then(invoker_member),
         None => RESOURCE_ACTOR.with_borrow(Clone::clone),
-    }
+    })
 }
 
 thread_local! {
@@ -96,7 +98,7 @@ impl Drop for ResourceActorScope {
 }
 
 fn invoking_invocation() -> Option<tilo_actions::InvocationId> {
-    tilo_actions::invoking_context().and_then(|context| context.source_invocation)
+    tilo_actions::reading_invoking_context(|context| context?.source_invocation)
 }
 
 impl ActionCx {
@@ -204,19 +206,23 @@ impl ActionCx {
     /// as the envelope pinned it; `None` for anyone else's action.
     #[must_use]
     pub fn appearance(&self) -> Option<tilo_actions::Appearance> {
-        tilo_actions::invoking_context()
-            .and_then(|context| context.invoker)
-            .filter(|invoker| invoker.acting.is_bot())
-            .and_then(|invoker| invoker.appearance)
+        tilo_actions::reading_invoking_context(|context| {
+            context?
+                .invoker
+                .as_ref()
+                .filter(|invoker| invoker.acting.is_bot())?
+                .appearance
+                .clone()
+        })
     }
 
     /// Who invoked the action (a person, an agent, an automation), as the
     /// envelope pinned it.
     #[must_use]
     pub fn invoked_by(&self) -> Option<tilo_actions::Acting> {
-        tilo_actions::invoking_context()
-            .and_then(|context| context.invoker)
-            .map(|invoker| invoker.acting)
+        tilo_actions::reading_invoking_context(|context| {
+            Some(context?.invoker.as_ref()?.acting.clone())
+        })
     }
 
     /// When the action was authored, in milliseconds since the Unix epoch, as
@@ -310,12 +316,14 @@ pub fn invoking_member() -> Option<MemberId> {
 /// code a verb calls without its context; empty for a person.
 #[must_use]
 pub fn invoking_name() -> String {
-    tilo_actions::invoking_context()
-        .and_then(|context| context.invoker)
-        .filter(|invoker| !invoker.acting.is_person())
-        .and_then(|invoker| invoker.name)
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_default()
+    tilo_actions::reading_invoking_context(|context| {
+        context
+            .and_then(|context| context.invoker.as_ref())
+            .filter(|invoker| !invoker.acting.is_person())
+            .and_then(|invoker| invoker.name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_default()
+    })
 }
 
 /// A new UUID for domain code that makes things (a clip split in two, a

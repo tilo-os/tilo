@@ -2343,7 +2343,10 @@ impl AppHandler {
         }
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
-            if let Err(reason) = self.init_render(window) {
+            let render_init = slow_event::phase("render_init");
+            let started = self.init_render(window);
+            drop(render_init);
+            if let Err(reason) = started {
                 // Retrying every redraw would only spin.
                 crate::diag!("tilo: {reason}");
                 stop_abnormally(
@@ -2462,6 +2465,7 @@ impl AppHandler {
                 return;
             }
         }
+        let chrome = slow_event::phase("chrome");
         sync_safe_area(&mut self.app, window);
         // The app's own row of parts, then the frame around it: where the row
         // is the window's bar, the header draws no second one. Only the Linux
@@ -2469,6 +2473,7 @@ impl AppHandler {
         let _shown = self.part_bar.refresh(&mut self.app, window);
         #[cfg(target_os = "linux")]
         self.decorations.refresh(&mut self.app, window, _shown);
+        drop(chrome);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -2523,7 +2528,9 @@ impl AppHandler {
         // record, sync against that record's document, not the
         // outgoing one's.
         mark_first_frame("first-frame-record-start");
+        let document_phase = slow_event::phase("document");
         let resource_changed = app.swap_requested_component() | app.record_tick();
+        drop(document_phase);
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= resource_changed;
         // A different record is a different document under the same tree.
@@ -2586,6 +2593,7 @@ impl AppHandler {
         floating_content_changed |= structure_rebuilt;
         let __prof_build = app.profiler.as_ref().map(|_| crate::time::now());
         if app.layout.structure_dirty {
+            let _structure = slow_event::phase("structure");
             app.rebuild_structure();
         }
         if let Some(p) = app.profiler.as_mut() {
@@ -4862,8 +4870,10 @@ impl AppHandler {
     fn handle_primary_window_event_routed(&mut self, window: &Arc<Window>, event: WindowEvent) {
         forward_native_surface_focus(self.app.root_widget.as_mut(), None, &event);
         if let Some(adapter) = self.a11y_adapter.as_mut() {
+            let _a11y = slow_event::phase("a11y");
             adapter.process_event(window, &event);
         }
+        let chrome = slow_event::phase("chrome");
         #[cfg(target_os = "linux")]
         {
             let routed = self.decorations.route(&mut self.app, window, &event);
@@ -4875,6 +4885,7 @@ impl AppHandler {
             }
         }
         let parts_took = self.part_bar.route(&mut self.app, window, &event);
+        drop(chrome);
         if self.part_bar.take_close() {
             self.close_primary_window(window);
             return;

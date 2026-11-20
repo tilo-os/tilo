@@ -220,3 +220,6 @@ test-exports-export-book = Export the address book
 test-secrets-pair = Pair a device
 test-files-save-copy = Save a copy
 test-readers-open = Open documents
+test-cached-notebook = Notebook
+test-cached-notebook-write-pages = Write pages
+test-cached-notebook-retitle-page = Retitle a page

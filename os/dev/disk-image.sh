@@ -673,12 +673,11 @@ elif [ "$COMPOSEFS" = yes ]; then
     msg "$IMAGE is in $REG/$repo:disk-install already ($published)"
   else
     msg "publishing $IMAGE to $REG/$repo:disk-install"
-    # The scratch registry lives as long as this install and is read once, on this machine:
-    # zstd at its fastest level, which bootc's composefs pull decodes as it does gzip. A
-    # default gzip push of a desktop image was nine minutes of one core, longer than the
-    # install that reads it.
-    podman push --tls-verify=false --compression-format zstd --compression-level 1 \
-      "$IMAGE" "$REG/$repo:disk-install" \
+    # A layer the registry already holds, known to podman from pulling it there, is not sent
+    # again (tools/ci/publish/installer-medium.sh loads its image that way); any other layer
+    # is compressed from storage, minutes for a desktop image whatever the format. No format is
+    # forced, so the blobs already there count.
+    podman push --tls-verify=false "$IMAGE" "$REG/$repo:disk-install" \
       || die "pushing $IMAGE to $REG failed. The composefs backend has to install from a
   registry (see the note above), so there is no local-storage fallback to take."
   fi

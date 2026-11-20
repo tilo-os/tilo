@@ -178,6 +178,12 @@ pub fn invoking_context() -> Option<ActionContext> {
     INVOKING.with(|current| current.borrow().clone())
 }
 
+/// What `read` makes of the [`invoking_context`], without copying it: it
+/// carries the action's arguments, which may be large.
+pub fn reading_invoking_context<T>(read: impl FnOnce(Option<&ActionContext>) -> T) -> T {
+    INVOKING.with(|current| read(current.borrow().as_ref()))
+}
+
 /// Call `work` with `context` as the [`invoking_context`]: an operation the
 /// app carries out itself (a write into a part of a chain) keeps the agent
 /// session and purpose its invocation came with.

@@ -24,16 +24,19 @@
 //! skip, so both stay flat as a kind grows.
 
 pub mod admit;
+mod history;
 mod index;
 mod query;
 mod ranked;
 mod schema;
 mod snapshot;
 pub mod store;
+mod undo;
 mod value;
 pub mod wire;
 
 pub use admit::{Admit, Proposal, Received, Refusal, Stamp, Touch, Touched};
+pub use history::{Version, VersionKind};
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
 pub use schema::{Expected, FIELD_EDIT, Field, FieldKind, Schema, Type, Verb, Writes};

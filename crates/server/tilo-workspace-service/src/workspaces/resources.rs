@@ -24,9 +24,9 @@ use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
 #[cfg(feature = "apps")]
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_resource_store::{Admit, Received, Refusal, Store};
 #[cfg(feature = "apps")]
-use tilo_resource_store::{Indexed, Schema, StoreError, Written};
+use tilo_resource_store::Schema;
+use tilo_resource_store::{Admit, Received, Refusal, Store};
 
 use super::{GovernedWorkspace, Workspaces};
 
@@ -475,24 +475,29 @@ impl GovernedWorkspace {
         Ok(applied)
     }
 
-    /// Writes `write` through the store as `device`, and answers each document's change prepared
-    /// to commit as this device's signed write: sealed for the document's reader set, the whole
-    /// document where the replica holds none of it yet.
+    /// Makes the write `command` in the store as `device`, and answers each document's change
+    /// prepared to commit as this device's signed write: sealed for the document's reader set,
+    /// the whole document where the replica holds none of it yet. A batch the store refused
+    /// partway answers what it wrote before the refusal, which the store holds, with the refusal.
     ///
     /// # Errors
-    /// The store refused the write, this device holds no keys of a document's readers, or a
-    /// document's write could not be drafted.
+    /// This device holds no keys of a document's readers, or a document's write could not be
+    /// drafted.
     #[cfg(feature = "apps")]
     pub(super) async fn prepare_resource_write(
         &mut self,
         device: &super::MemberDevice,
         app: &str,
-        write: impl FnOnce(&mut Store) -> Result<Vec<Written>, StoreError>,
-    ) -> Result<Vec<OwnerCommitRequest>, String> {
-        let written = {
-            let store = self.store_with_surfaces();
-            write(store).map_err(|error| error.to_string())?
-        };
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<(Vec<OwnerCommitRequest>, Option<String>), String> {
+        let (written, refused) =
+            match tilo_resource_store::wire::write(self.store_with_surfaces(), command) {
+                Ok(written) => (written, None),
+                Err(refused) => {
+                    let refusal = refused.error.to_string();
+                    (refused.written, Some(refusal))
+                }
+            };
         // What the store took is kept before it answers: a document nobody's later change
         // reaches again would otherwise leave memory with nothing of it on disk.
         for write in &written {
@@ -563,7 +568,7 @@ impl GovernedWorkspace {
                 },
             });
         }
-        Ok(requests)
+        Ok((requests, refused))
     }
 }
 
@@ -629,106 +634,43 @@ impl Workspaces {
         Ok(hex::encode(self.member_identity()?.cert.user_public_key))
     }
 
-    /// `app`'s document `document` of `workspace`, written through its store as this device, and
-    /// committed as this device's signed write in every document it changed.
+    /// Carries out `app`'s `command` in `workspace`'s store: a write as this device, committed as
+    /// its signed write of every document it changed; a read of only what this device's person
+    /// may read. A batch the store refused partway commits what it wrote before the refusal.
     ///
     /// # Errors
     /// The workspace is not held here, the store refused the write, or the workspace refused a
     /// document's write.
     #[cfg(feature = "apps")]
-    pub(crate) async fn write_resources(
+    pub(crate) async fn resource_command(
         &self,
         workspace: &str,
         app: &str,
-        write: impl FnOnce(&mut Store) -> Result<Vec<Written>, StoreError>,
-    ) -> Result<(), String> {
-        let device = self.member_identity()?;
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        use tilo_resource_store::wire::{Reply, read};
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let requests = {
+        if !command.writes() {
+            let may_read = may_read(self.resource_reader()?);
             let mut governed = state.lock().await;
-            governed.prepare_resource_write(&device, app, write).await?
+            return Ok(
+                read(governed.store_with_surfaces(), &command, &may_read).unwrap_or(Reply::Written)
+            );
+        }
+        let device = self.member_identity()?;
+        let (requests, refused) = {
+            let mut governed = state.lock().await;
+            governed
+                .prepare_resource_write(&device, app, command)
+                .await?
         };
         for request in requests {
             self.commit_local_document(workspace, request).await?;
         }
-        Ok(())
-    }
-
-    /// The resource `kind`'s `id` of `workspace`, as this device's person may read it.
-    ///
-    /// # Errors
-    /// The workspace is not held here.
-    #[cfg(feature = "apps")]
-    pub(crate) async fn resource_get(
-        &self,
-        workspace: &str,
-        kind: &str,
-        id: &str,
-    ) -> Result<Option<Indexed>, String> {
-        let may_read = may_read(self.resource_reader()?);
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let answer = {
-            let mut governed = state.lock().await;
-            governed
-                .store_with_surfaces()
-                .get(kind, id, &may_read)
-                .cloned()
-        };
-        Ok(answer)
-    }
-
-    /// One page of `query` in `workspace`, as this device's person may read it.
-    ///
-    /// # Errors
-    /// The workspace is not held here.
-    #[cfg(feature = "apps")]
-    pub(crate) async fn resource_query(
-        &self,
-        workspace: &str,
-        query: &tilo_resource_store::Query,
-    ) -> Result<tilo_resource_store::Page, String> {
-        let may_read = may_read(self.resource_reader()?);
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let answer = {
-            let mut governed = state.lock().await;
-            governed.store_with_surfaces().query(query, &may_read)
-        };
-        Ok(answer)
-    }
-
-    /// How many resources of `kind` hold to `filters` in `workspace`, as this device's person may
-    /// read them.
-    ///
-    /// # Errors
-    /// The workspace is not held here.
-    #[cfg(feature = "apps")]
-    pub(crate) async fn resource_count(
-        &self,
-        workspace: &str,
-        kind: &str,
-        filters: &[tilo_resource_store::Filter],
-    ) -> Result<usize, String> {
-        let may_read = may_read(self.resource_reader()?);
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let answer = {
-            let mut governed = state.lock().await;
-            governed
-                .store_with_surfaces()
-                .count(kind, filters, &may_read)
-        };
-        Ok(answer)
+        refused.map_or(Ok(Reply::Written), Err)
     }
 }
 
