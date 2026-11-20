@@ -203,10 +203,11 @@ pub struct AgentArgs {
     /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
     #[arg(long = "agent-model-name", value_name = "ID")]
     pub model_name: Option<String>,
-    /// Without `--agents`, still serve the workspaces' records to their pages:
+    /// Serve workspace resources to pages and host the workspace's roster agents:
     /// the host runs an action of a workspace record for whoever the workspace's
     /// policy lets ask, such as a member linking their own account on the
-    /// workspace's Discord from their profile card. `--agents` serves them too.
+    /// workspace's Discord from their profile card. Combine with `--agents`
+    /// to also serve the approval supervisor.
     #[arg(long)]
     pub workspace_documents: bool,
 }
@@ -397,10 +398,25 @@ pub async fn start_server_lending(
     #[cfg(feature = "agents")]
     if let Some(mut options) = options {
         options.feedback_reviewer = lent.feedback_reviewer;
-        options.shell = Some(
-            tilo_server::agents::host_shells(state_root.join("shells"))
-                .map_err(anyhow::Error::msg)?,
-        );
+        let shells = tilo_server::agents::host_shells(state_root.join("shells"))
+            .map_err(anyhow::Error::msg)?;
+        options.shell = Some(std::sync::Arc::clone(&shells));
+        if args.agents.workspace_documents {
+            let browsers = options.browsers.clone();
+            let (server, agents, roster) =
+                tilo_server::agents::start_with_roster(cfg, identity, options)
+                    .await
+                    .context("start the server with agents and workspace documents")?;
+            let (draining, host_agents) =
+                start_roster(&server, &args.agents, roster, shells, browsers);
+            return Ok(HostedServer {
+                server,
+                agents: Some(agents),
+                host_agents,
+                draining,
+                _lock: lock,
+            });
+        }
         let (server, agents) = tilo_server::agents::start(cfg, identity, options)
             .await
             .context("start the server with agents")?;
@@ -430,33 +446,12 @@ pub async fn start_server_lending(
             )
             .await
             .context("start the server serving its workspaces' records")?;
-        // The agents each workspace made to run here work around the clock, on the host's model.
-        // The devices this server placed itself: no agent reads as one of them for a person.
-        let placed = server.environments();
-        let started = server.workspaces().cloned().map(|workspaces| {
-            // What is judged for a person is counted on their assistant's day,
-            // and a question that waits for them reaches their log.
-            tilo_server::workspace_telling::start(&workspaces);
-            let model = args.agents.host_model();
-            tracing::info!(
-                model = %model.as_ref().map_or_else(|| "none".to_owned(), tilo_agent_session::ModelChoice::describe),
-                "the workspaces' agents run on this host"
-            );
-            let agents = tilo_server::workspace_agents::HostAgents::new(
-                workspaces,
-                actions,
-                model.map(tilo_server::workspace_agents::model_of),
-            )
-            // A coding agent among them is worked by its harness in its workspace's
-            // machine, where the shells are.
-            .with_coding(shells)
-            .with_events(events)
-            .with_initiative(initiative)
-            .placing(browsers)
-            .knowing_placed(placed);
-            (agents.draining(), tokio::spawn(agents.run()))
-        });
-        let (draining, host_agents) = started.unzip();
+        let roster = tilo_server::agents::RosterServices {
+            actions,
+            events,
+            initiative,
+        };
+        let (draining, host_agents) = start_roster(&server, &args.agents, roster, shells, browsers);
         return Ok(HostedServer {
             server,
             agents: None,
@@ -478,6 +473,46 @@ pub async fn start_server_lending(
         draining: None,
         _lock: lock,
     })
+}
+
+#[cfg(feature = "agents")]
+fn start_roster(
+    server: &Server,
+    args: &AgentArgs,
+    roster: tilo_server::agents::RosterServices,
+    shells: std::sync::Arc<tilo_server::agents::HostShells>,
+    browsers: Option<std::sync::Arc<tilo_server::hosted_browser::HostedBrowsers>>,
+) -> (
+    Option<tilo_server::workspace_agents::Draining>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    // The agents each workspace made to run here work around the clock, on the host's model.
+    // The devices this server placed itself: no agent reads as one of them for a person.
+    let placed = server.environments();
+    let started = server.workspaces().cloned().map(|workspaces| {
+        // What is judged for a person is counted on their assistant's day,
+        // and a question that waits for them reaches their log.
+        tilo_server::workspace_telling::start(&workspaces);
+        let model = args.host_model();
+        tracing::info!(
+            model = %model.as_ref().map_or_else(|| "none".to_owned(), tilo_agent_session::ModelChoice::describe),
+            "the workspaces' agents run on this host"
+        );
+        let agents = tilo_server::workspace_agents::HostAgents::new(
+            workspaces,
+            roster.actions,
+            model.map(tilo_server::workspace_agents::model_of),
+        )
+        // A coding agent among them is worked by its harness in its workspace's
+        // machine, where the shells are.
+        .with_coding(shells)
+        .with_events(roster.events)
+        .with_initiative(roster.initiative)
+        .placing(browsers)
+        .knowing_placed(placed);
+        (agents.draining(), tokio::spawn(agents.run()))
+    });
+    started.unzip()
 }
 
 /// Hand `server` the key for Apple's push service that `args` name, where

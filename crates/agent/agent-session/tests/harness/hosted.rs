@@ -58,6 +58,8 @@ pub struct Options {
     /// Serve the web routes as plain HTTP on loopback too, as a client that
     /// trusts no development certificate reaches them.
     pub plain: bool,
+    /// Start the services shared with the workspace roster runner.
+    pub roster: bool,
 }
 
 impl Default for Options {
@@ -71,6 +73,7 @@ impl Default for Options {
             shell: None,
             browsers: None,
             plain: false,
+            roster: false,
         }
     }
 }
@@ -106,25 +109,33 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
-    let (server, agents) = tilo_server::agents::start(
-        cfg,
-        ServerIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        tilo_server::agents::AgentOptions {
-            state_dir: state.join("agents"),
-            model: options.model,
-            catalogue: options.catalogue,
-            feedback_reviewer: options.feedback_reviewer,
-            shell: options.shell,
-            browsers: options.browsers,
-        },
-    )
-    .await
-    .unwrap();
+    let identity = ServerIdentity {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_signing_key: host.key.clone(),
+        device_cert: host.cert.clone(),
+        revocations: RevocationList::new(),
+    };
+    let agents = tilo_server::agents::AgentOptions {
+        state_dir: state.join("agents"),
+        model: options.model,
+        catalogue: options.catalogue,
+        feedback_reviewer: options.feedback_reviewer,
+        shell: options.shell,
+        browsers: options.browsers,
+    };
+    let (server, agents) = if options.roster {
+        let (server, agents, roster) =
+            tilo_server::agents::start_with_roster(cfg, identity, agents)
+                .await
+                .unwrap();
+        assert!(roster.events.is_some());
+        assert!(roster.initiative.is_some());
+        (server, agents)
+    } else {
+        tilo_server::agents::start(cfg, identity, agents)
+            .await
+            .unwrap()
+    };
     let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),

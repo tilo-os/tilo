@@ -88,6 +88,31 @@ impl Server {
 }
 
 impl ServerAgentLink {
+    /// Resolve the agent device of an existing roster entry to its authenticated member session.
+    /// The caller supplies the entry's id and keeper. Approval, membership and the connection
+    /// must all cover this exact workspace.
+    pub async fn roster_session_device(
+        &self,
+        sessions: &tilo_agent_session::AgentSessions,
+        workspace: WorkspaceId,
+        agent: &str,
+        keeper: &[u8; 32],
+    ) -> Option<[u8; 32]> {
+        let device = self
+            .workspaces
+            .as_ref()?
+            .approved_agent_device(workspace, agent, keeper)
+            .await?;
+        let link = sessions.link(&device)?;
+        let status = link.status();
+        (status.authenticated
+            && status.phase == tilo_session_client::TransportPhase::Connected
+            && status.device == device
+            && status.workspaces.get(&workspace) == Some(&true)
+            && status.serving.contains(&workspace))
+        .then_some(device)
+    }
+
     /// Bring agent `device`'s place on the rosters of the governed workspaces in
     /// line with the register, off the caller's thread. `cert` is the
     /// agent's certificate when it was just approved or restored.
@@ -298,20 +323,10 @@ impl WorkspaceShell for HostShells {
     }
 }
 
-/// The host's app action server: agents and the workspaces' page actions,
-/// keeping what they make in the host's content.
-struct HostActionsServer {
-    host: HostActions,
-    pages: ActionPages,
-    stores: Arc<WorkspaceStores>,
-    /// The Browser this host places for its workspaces, when it places one.
-    browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
-}
-
-/// The app action server of a host that runs no agents: the workspaces' page
-/// actions alone. A member's own actions on a workspace record (linking their
-/// account on the workspace's Discord from the profile card) need nothing more.
-struct WorkspaceRecordsServer {
+/// The workspace action server, with the supervisor where the host offers one.
+struct WorkspaceActionsServer {
+    supervisor: Option<HostActions>,
+    serve_events: bool,
     actions: WorkspaceActions,
     pages: ActionPages,
     stores: Arc<WorkspaceStores>,
@@ -355,7 +370,7 @@ impl crate::app_serving::AppPages for ActionPages {
     }
 }
 
-impl crate::AppActionServer for WorkspaceRecordsServer {
+impl crate::AppActionServer for WorkspaceActionsServer {
     fn serve(
         &self,
         workspace_id: WorkspaceId,
@@ -364,30 +379,18 @@ impl crate::AppActionServer for WorkspaceRecordsServer {
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
         // A person's events are the host's own to answer, for their device
         // and their page as for their assistant's turn.
-        if crate::workspace_bots::events::addresses(&message) {
+        if self.serve_events && crate::workspace_bots::events::addresses(&message) {
             return match self.events.get() {
                 Some(events) => events.serve(workspace_id, caller, message),
                 None => crate::workspace_bots::events::not_served(message),
             };
         }
         // So is what their assistant finds to do on its own.
-        if crate::workspace_bots::initiative::addresses(&message) {
+        if self.serve_events && crate::workspace_bots::initiative::addresses(&message) {
             return match self.initiative.get() {
                 Some(initiative) => initiative.serve(workspace_id, caller, message),
                 None => crate::workspace_bots::events::not_served(message),
             };
-        }
-        let agents = match &message {
-            tilo_actions::remote::RemoteActionMessage::CatalogueRequest { query, .. } => {
-                query.provider.as_deref() == Some(tilo_server_protocol::agents::AGENTS_PROVIDER)
-            }
-            tilo_actions::remote::RemoteActionMessage::Invoke(request) => {
-                request.target.provider == tilo_server_protocol::agents::AGENTS_PROVIDER
-            }
-            _ => false,
-        };
-        if agents {
-            return None;
         }
         let observe: Arc<crate::hosted_browser::ObserveInvocation> = {
             let actions = self.actions.clone();
@@ -398,7 +401,27 @@ impl crate::AppActionServer for WorkspaceRecordsServer {
             workspace_id,
             caller,
             message,
-            |message| self.actions.serve(workspace_id, caller, message),
+            |message| {
+                use tilo_actions::remote::RemoteActionMessage;
+                use tilo_server_protocol::agents::AGENTS_PROVIDER;
+
+                if let Some(supervisor) = &self.supervisor {
+                    return supervisor.serve(workspace_id, caller, message);
+                }
+                match &message {
+                    RemoteActionMessage::CatalogueRequest { query, .. }
+                        if query.provider.as_deref() == Some(AGENTS_PROVIDER) =>
+                    {
+                        None
+                    }
+                    RemoteActionMessage::Invoke(request)
+                        if request.target.provider == AGENTS_PROVIDER =>
+                    {
+                        None
+                    }
+                    _ => self.actions.serve(workspace_id, caller, message),
+                }
+            },
             Some(&observe),
         )
     }
@@ -455,86 +478,6 @@ impl crate::AppActionServer for WorkspaceRecordsServer {
 
     fn session_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
         self.actions.session_arrived(workspace_id, caller);
-    }
-
-    fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
-        Some(&self.pages)
-    }
-}
-
-impl crate::AppActionServer for HostActionsServer {
-    fn serve(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &tilo_actions::remote::Caller,
-        message: tilo_actions::remote::RemoteActionMessage,
-    ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
-        let observe: Arc<crate::hosted_browser::ObserveInvocation> = {
-            let actions = self.host.actions.clone();
-            Arc::new(move |caller, invocation| actions.observe(caller, invocation))
-        };
-        serve_with_browser(
-            self.browsers.as_ref(),
-            workspace_id,
-            caller,
-            message,
-            |message| self.host.serve(workspace_id, caller, message),
-            Some(&observe),
-        )
-    }
-
-    fn route(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        message: &tilo_actions::remote::RemoteActionMessage,
-    ) -> Option<crate::app_serving::Routing> {
-        self.browsers.as_ref()?.route(workspace_id, caller, message)
-    }
-
-    fn route_certified(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        certificate: &tilo_user_identity::DeviceCert,
-        message: &tilo_actions::remote::RemoteActionMessage,
-    ) -> Option<crate::app_serving::Routing> {
-        self.browsers
-            .as_ref()?
-            .route_certified(workspace_id, caller, certificate, message)
-    }
-
-    fn relayed(
-        &self,
-        workspace_id: WorkspaceId,
-        from: [u8; 32],
-        message: &tilo_actions::remote::RemoteActionMessage,
-    ) -> Option<tilo_actions::remote::RemoteActionMessage> {
-        self.browsers.as_ref()?.relayed(workspace_id, from, message)
-    }
-
-    fn tracks(&self, workspace_id: WorkspaceId) -> bool {
-        self.browsers
-            .as_ref()
-            .is_some_and(|browsers| browsers.tracks(workspace_id))
-    }
-
-    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
-        self.browsers
-            .as_ref()
-            .is_some_and(|browsers| browsers.answers_for_host(workspace_id, from, to))
-    }
-
-    fn content(&self) -> Option<Arc<WorkspaceStores>> {
-        Some(Arc::clone(&self.stores))
-    }
-
-    fn forget_workspace(&self, workspace_id: WorkspaceId) {
-        self.host.actions.forget_workspace(workspace_id);
-    }
-
-    fn session_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
-        self.host.actions.session_arrived(workspace_id, caller);
     }
 
     fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
@@ -1191,7 +1134,9 @@ pub async fn start_serving_documents_and_events(
     let events_state = cfg.state_root.join("person-events");
     let initiative_state = cfg.state_root.join("person-initiative");
     let actions = WorkspaceActions::new(catalogue);
-    let app_server = Arc::new(WorkspaceRecordsServer {
+    let app_server = Arc::new(WorkspaceActionsServer {
+        supervisor: None,
+        serve_events: true,
         pages: ActionPages(actions.clone()),
         actions,
         stores: crate::content::stores(&cfg.state_root),
@@ -1209,25 +1154,49 @@ pub async fn start_serving_documents_and_events(
         (feedback_reviewer, shell, browsers),
         None,
     )?;
-    let (initiative, events) = server
-        .workspaces()
-        .cloned()
-        .map(|workspaces| {
-            crate::workspace_bots::initiative::Initiative::start(
-                workspaces,
-                initiative_state,
-                events_state,
-                Some(app_server.actions.clone()),
-            )
-        })
-        .unzip();
-    if let Some(events) = &events {
-        let _ = app_server.events.set(events.clone());
+    let hosted = app_server.start_events(&server, events_state, initiative_state);
+    drop(app_server);
+    Ok((server, hosted.actions, hosted.events, hosted.initiative))
+}
+
+/// The services the roster turns use, on the same action server as the supervisor.
+pub struct RosterServices {
+    pub actions: WorkspaceActions,
+    pub events: Option<crate::workspace_bots::events::PersonEvents>,
+    pub initiative: Option<crate::workspace_bots::initiative::Initiative>,
+}
+
+impl WorkspaceActionsServer {
+    fn start_events(
+        &self,
+        server: &Server,
+        events_state: PathBuf,
+        initiative_state: PathBuf,
+    ) -> RosterServices {
+        let (initiative, events) = server
+            .workspaces()
+            .cloned()
+            .map(|workspaces| {
+                crate::workspace_bots::initiative::Initiative::start(
+                    workspaces,
+                    initiative_state,
+                    events_state,
+                    Some(self.actions.clone()),
+                )
+            })
+            .unzip();
+        if let Some(events) = &events {
+            let _ = self.events.set(events.clone());
+        }
+        if let Some(initiative) = &initiative {
+            let _ = self.initiative.set(initiative.clone());
+        }
+        RosterServices {
+            actions: self.actions.clone(),
+            events,
+            initiative,
+        }
     }
-    if let Some(initiative) = &initiative {
-        let _ = app_server.initiative.set(initiative.clone());
-    }
-    Ok((server, app_server.actions.clone(), events, initiative))
 }
 
 /// Give `workspaces` the records `server` holds, joined as its own device.
@@ -1305,7 +1274,8 @@ pub async fn start(
     identity: ServerIdentity,
     options: AgentOptions,
 ) -> Result<(Server, AgentHost), ServerError> {
-    start_inner(cfg, identity, options, None).await
+    let (server, agents, _) = start_inner(cfg, identity, options, None, false).await?;
+    Ok((server, agents))
 }
 
 /// Start the app-serving host with an explicit transport relay policy.
@@ -1318,7 +1288,21 @@ pub async fn start_with_relay_mode(
     options: AgentOptions,
     relay_mode: iroh::RelayMode,
 ) -> Result<(Server, AgentHost), ServerError> {
-    start_inner(cfg, identity, options, Some(relay_mode)).await
+    let (server, agents, _) = start_inner(cfg, identity, options, Some(relay_mode), false).await?;
+    Ok((server, agents))
+}
+
+/// Start the approval supervisor and the services used by the workspace roster runner.
+pub async fn start_with_roster(
+    cfg: crate::ServerConfig,
+    identity: ServerIdentity,
+    options: AgentOptions,
+) -> Result<(Server, AgentHost, RosterServices), ServerError> {
+    let events_state = cfg.state_root.join("person-events");
+    let initiative_state = cfg.state_root.join("person-initiative");
+    let (server, agents, actions) = start_inner(cfg, identity, options, None, true).await?;
+    let roster = actions.start_events(&server, events_state, initiative_state);
+    Ok((server, agents, roster))
 }
 
 async fn start_inner(
@@ -1326,7 +1310,8 @@ async fn start_inner(
     identity: ServerIdentity,
     options: AgentOptions,
     relay_mode: Option<iroh::RelayMode>,
-) -> Result<(Server, AgentHost), ServerError> {
+    roster: bool,
+) -> Result<(Server, AgentHost, Arc<WorkspaceActionsServer>), ServerError> {
     let server_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(options.catalogue, options.browsers.as_ref());
     let content = crate::content::stores(&cfg.state_root);
@@ -1337,14 +1322,18 @@ async fn start_inner(
     );
     cfg.services.app_serving = true;
     let actions = WorkspaceActions::new(catalogue);
-    let host_actions = Arc::new(HostActionsServer {
-        pages: ActionPages(actions.clone()),
-        host: HostActions {
+    let host_actions = Arc::new(WorkspaceActionsServer {
+        supervisor: Some(HostActions {
             supervisor: SupervisorHost(agents.supervisor().clone()),
-            actions,
-        },
+            actions: actions.clone(),
+        }),
+        serve_events: roster,
+        pages: ActionPages(actions.clone()),
+        actions,
         stores: content,
         browsers: options.browsers.clone(),
+        events: Arc::default(),
+        initiative: Arc::default(),
     });
     let web_entry = cfg.web_entry.clone();
     let server = match relay_mode {
@@ -1360,19 +1349,18 @@ async fn start_inner(
         None => Server::start_with_app_serving(cfg, identity, Some(host_actions.clone())).await?,
     };
     attach_resources(
-        &host_actions.host.actions,
+        &host_actions.actions,
         &server,
         &server_cert,
         web_entry,
         (options.feedback_reviewer, options.shell, options.browsers),
         Some(agents.agent_sessions()),
     )?;
-    drop(host_actions);
     agents
         .start(
             HostEndpoint::iroh(server.node_addr(), server_cert),
             Arc::new(server.agent_link()),
         )
         .map_err(ServerError::Identity)?;
-    Ok((server, agents))
+    Ok((server, agents, host_actions))
 }

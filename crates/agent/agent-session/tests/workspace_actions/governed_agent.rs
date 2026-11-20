@@ -26,17 +26,18 @@ use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert}
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
-    Browser, Device, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request, sheet_names, start,
+    Browser, Device, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request, sheet_names,
 };
 use crate::harness::script::{doing, task};
 use tilo_server_protocol::WorkspaceId;
 
-/// The laptop: a root holder answering every agent request with the
-/// agent's certificate and the delegation of exactly what was proposed.
+/// The laptop: a root holder denying the named proposal and approving the others
+/// with the agent's certificate and the delegation of exactly what was proposed.
 fn approve_agents(
     server: &tilo_server::daemon::Server,
     root: SigningKey,
     laptop: &Device,
+    denied: &'static str,
 ) -> tokio::task::JoinHandle<()> {
     let addr = server.node_addr();
     let cert = laptop.cert.clone();
@@ -58,25 +59,27 @@ fn approve_agents(
                 else {
                     continue;
                 };
-                let now = tilo_clock::unix_now_ns();
-                let cert = issue_device_cert(
-                    &pending.request,
-                    &root,
-                    &CertificationPolicy::agent(),
-                    &RevocationList::new(),
-                    now,
-                )
-                .unwrap();
-                let delegation = agent
-                    .proposal
-                    .sign(&root, pending.request.device_public_key, now)
+                let decision = if agent.proposal.label == denied {
+                    ApproverDecision::Deny
+                } else {
+                    let now = tilo_clock::unix_now_ns();
+                    let cert = issue_device_cert(
+                        &pending.request,
+                        &root,
+                        &CertificationPolicy::agent(),
+                        &RevocationList::new(),
+                        now,
+                    )
                     .unwrap();
+                    let delegation = agent
+                        .proposal
+                        .sign(&root, pending.request.device_public_key, now)
+                        .unwrap();
+                    ApproverDecision::IssueDelegate { cert, delegation }
+                };
                 assert_eq!(
                     approver
-                        .decide(
-                            pending.request_digest,
-                            ApproverDecision::IssueDelegate { cert, delegation }
-                        )
+                        .decide(pending.request_digest, decision)
                         .await
                         .unwrap(),
                     ApproverReply::Decided
@@ -247,10 +250,21 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let hosted = start(&owner, &host, state.path()).await;
+    let options = crate::harness::hosted::Options {
+        roster: true,
+        ..crate::harness::hosted::Options::offering(
+            crate::common::catalogue,
+            tilo_agent_session::ModelChoice::Scripted,
+        )
+    };
+    let hosted = crate::harness::hosted::start(&owner, &host, state.path(), options).await;
+    let sessions = hosted.agents.agent_sessions();
+    let server = hosted.server.agent_link();
+    let keeper = owner.verifying_key().to_bytes();
     let workspaces = hosted.server.workspaces().unwrap().clone();
     let workspace = workspaces.create("An agent's own session").await.unwrap();
     let elsewhere = workspaces.create("Not the agent's").await.unwrap();
+    let unjoined = workspaces.create("Approved but not joined").await.unwrap();
     admit_person(
         &hosted,
         &host,
@@ -265,7 +279,36 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     // The workbook the agent adds a sheet to: its workspace holds it, and the
     // agent is admitted to the keys of its sealed document when it opens it.
     let _ = page.create(SHEETS);
-    let approver = approve_agents(&hosted.server, owner.clone(), &laptop);
+    let approver = approve_agents(&hosted.server, owner.clone(), &laptop, "Declined");
+    let declined = supervise(
+        &mut page,
+        SUPERVISOR_RESOURCE,
+        REQUEST_GRANT_ACTION,
+        json(&serde_json::json!({
+            "label": "Declined",
+            "workspaces": [workspace.workspace],
+            "apps": [SHEETS],
+            "expiresInSecs": 3600,
+        })),
+    )
+    .await;
+    let declined = declined["grant"].as_str().unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    while !status(&mut page)
+        .await
+        .grants
+        .iter()
+        .any(|g| g.id == declined && g.state == GrantState::Denied)
+    {
+        assert!(Instant::now() < deadline, "the grant was never denied");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        server
+            .roster_session_device(&sessions, workspace.workspace_id, declined, &keeper)
+            .await,
+        None
+    );
 
     // One consent step: Ada's page asks, her laptop approves the agent with
     // the delegation of this workspace and Sheets.
@@ -275,7 +318,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         REQUEST_GRANT_ACTION,
         json(&serde_json::json!({
             "label": "Scribe",
-            "workspaces": [workspace.workspace],
+            "workspaces": [workspace.workspace, unjoined.workspace],
             "apps": [SHEETS],
             "expiresInSecs": 3600,
         })),
@@ -315,6 +358,14 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
             .unwrap()
             .is_empty(),
         "an agent is never on the roster of a workspace its grant does not name"
+    );
+
+    assert_eq!(
+        server
+            .roster_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
+            .await,
+        None,
+        "approval alone does not open a session"
     );
 
     // The agent works in the governed workspace under its own key. Its task is
@@ -381,6 +432,61 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         "the host device wrote none of it: the change is the agent's"
     );
 
+    assert_eq!(
+        server
+            .roster_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
+            .await,
+        Some(agent_key)
+    );
+    assert_eq!(
+        workspaces
+            .approved_agent_device(unjoined.workspace_id, &grant, &keeper)
+            .await,
+        Some(agent_key)
+    );
+    assert_eq!(
+        server
+            .roster_session_device(&sessions, unjoined.workspace_id, &grant, &keeper)
+            .await,
+        None,
+        "the grant covers this workspace but the session joined only the other one"
+    );
+    for (workspace, id, keeper) in [
+        (elsewhere.workspace_id, grant.as_str(), keeper),
+        (workspace.workspace_id, "another-agent", keeper),
+        (
+            workspace.workspace_id,
+            grant.as_str(),
+            other.verifying_key().to_bytes(),
+        ),
+    ] {
+        assert_eq!(
+            server
+                .roster_session_device(&sessions, workspace, id, &keeper)
+                .await,
+            None
+        );
+    }
+    let actor = tilo_actions::MemberId::agent(&grant);
+    assert!(
+        workspaces
+            .work_device(workspace.workspace_id, keeper, &actor)
+            .await
+            .is_some_and(|device| device != agent_key),
+        "the keeper's person-work caller uses a device of theirs"
+    );
+    assert_eq!(
+        workspaces
+            .work_device(
+                workspace.workspace_id,
+                other.verifying_key().to_bytes(),
+                &actor
+            )
+            .await,
+        Some(member_device.cert.device_public_key),
+        "the other person's work still uses their own device"
+    );
+
     // The roster names the agent as Ada's, acting.
     let roster = workspaces.agents(&workspace.workspace).await.unwrap();
     assert_eq!(roster.len(), 1, "{roster:?}");
@@ -399,6 +505,13 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
         InvokeArgument::None,
     )
     .await;
+    assert_eq!(
+        server
+            .roster_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
+            .await,
+        None,
+        "withdrawal invalidates the match as soon as the action answers"
+    );
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let roster = workspaces.agents(&workspace.workspace).await.unwrap();

@@ -1196,6 +1196,11 @@ impl super::GovernedWorkspace {
         peer.certificates()
             .iter()
             .filter(|cert| &cert.user_public_key == person)
+            .filter(|cert| {
+                peer.governance()
+                    .governed_agent(&cert.device_public_key)
+                    .is_none()
+            })
             .filter(|cert| !placed(&cert.device_public_key))
             .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
             .max_by_key(|cert| cert.issued_at_ns)

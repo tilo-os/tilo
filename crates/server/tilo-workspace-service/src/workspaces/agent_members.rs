@@ -25,6 +25,7 @@
 //! on. Its delegation's expiry needs no governor at all: members check it on
 //! every change.
 
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::{GovernedWorkspace, Workspaces, system_time};
@@ -73,6 +74,49 @@ impl Workspaces {
                 reason = reason.reason(), "an agent is not admitted to the workspace");
         }
         decision == Decision::Admit
+    }
+
+    /// The certified device of an exact, currently approved agent on this workspace's
+    /// governed roster. The host register and the roster must hold the same delegation.
+    /// Two live assignments of the same roster id are ambiguous.
+    pub async fn approved_agent_device(
+        &self,
+        workspace: WorkspaceId,
+        agent: &str,
+        keeper: &[u8; 32],
+    ) -> Option<[u8; 32]> {
+        let governed = self.workspace(&workspace.to_string()).await.ok()?;
+        let governed = governed.lock().await;
+        let peer = governed.peer();
+        let now_ns = tilo_clock::unix_now_ns();
+        let trust = self.trust();
+        let mut matching = peer
+            .governance()
+            .governed_agents(system_time(now_ns))
+            .ok()?
+            .into_iter()
+            .filter(|entry| {
+                entry.acting && entry.agent_id == agent && &entry.user_public_key == keeper
+            })
+            .filter_map(|entry| {
+                let device = entry.device_public_key;
+                let (cert, delegation, None) = peer.governance().governed_agent(&device)? else {
+                    return None;
+                };
+                let peer = AuthenticatedPeer {
+                    user_public_key: *keeper,
+                    device_public_key: device,
+                    cert,
+                };
+                (trust.cert(&peer, now_ns).is_ok()
+                    && trust.delegation(&device, workspace, now_ns).as_ref() == Some(&delegation))
+                .then_some(device)
+            });
+        let device = matching.next().filter(|_| matching.next().is_none());
+        drop(matching);
+        drop(peer);
+        drop(governed);
+        device
     }
 
     /// Bring agent `device`'s place in every workspace this server governs in line
