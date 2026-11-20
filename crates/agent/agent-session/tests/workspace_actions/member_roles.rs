@@ -1350,3 +1350,7 @@ async fn a_members_hand_over_that_failed_leaves_nothing_the_owner_writes_on() {
 // fixture too.
 #[path = "held_roles.rs"]
 mod held_roles;
+
+// A member's Notes page, served by the host for their browser, stands below this fixture too.
+#[path = "page_notes.rs"]
+mod page_notes;

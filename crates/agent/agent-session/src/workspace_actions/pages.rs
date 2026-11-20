@@ -273,14 +273,17 @@ impl Worker {
             .get(&page)
             .ok_or_else(|| unavailable("the page was closed"))?;
         let (workspace_id, who, route) = (held.workspace_id, held.who.clone(), held.route.clone());
+        let started = std::time::Instant::now();
         // Others' writes since are merged before the person acts, as they
         // would have seen them in a window.
         let state = self
             .refresh(workspace_id, Needs::Workspace)
             .map_err(refused)?;
+        let refreshed = started.elapsed();
         let key = self
             .bounded_replica(workspace_id, &who, &route, &state)
             .map_err(refused)?;
+        let held_at = started.elapsed();
         let patches = self
             .bounded
             .get(&key)
@@ -289,7 +292,16 @@ impl Worker {
             .app
             .page_act(act)
             .map_err(unavailable)?;
+        let acted = started.elapsed();
         self.save_page(workspace_id, &key, (&who, &route, &state))?;
+        tracing::debug!(
+            page,
+            refresh_ms = refreshed.as_millis(),
+            replica_ms = held_at.saturating_sub(refreshed).as_millis(),
+            view_ms = acted.saturating_sub(held_at).as_millis(),
+            save_ms = started.elapsed().saturating_sub(acted).as_millis(),
+            "workspace actions: a page was acted on"
+        );
         Ok(patches
             .into_iter()
             .map(|(id, html)| PagePatch { id, html })

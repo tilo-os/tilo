@@ -303,6 +303,10 @@ function start() {
   let composing = false;
   let unanswered = 0;
   let lastSelection = '';
+  // The element the view last put the person's focus in, and whether the
+  // page answers a Back or Forward of the browser's rather than the person.
+  let lastFocus = null;
+  let restoring = true;
   const settled = new Map();
 
   const say = (state, words) => {
@@ -381,6 +385,30 @@ function start() {
       else old.replaceWith(fresh);
     }
     reconcile();
+    focusAsked();
+    follow();
+  };
+
+  // Where the view puts the focus (a new note's title), the page does too.
+  const focusAsked = () => {
+    const focus = page.querySelector('[data-focus]')?.dataset.focus ?? null;
+    if (focus === lastFocus) return;
+    lastFocus = focus;
+    const focused = focus && page.querySelector(`[data-p="${focus}"]`);
+    if (focused && editing(focused) && document.activeElement !== focused) focused.focus({preventScroll: true});
+  };
+
+  // The thing the view has open (the selected note) is the page's address:
+  // what the person opened is a step Back returns from; what Back, Forward or
+  // the first load showed only names where the page now is.
+  const follow = () => {
+    const target = page.querySelector('[data-a=activate][data-t][aria-selected=true]')?.dataset.t;
+    const url = target ? `${base}/${encodeURIComponent(target)}` : location.pathname;
+    if (url !== location.pathname) {
+      if (restoring) history.replaceState(history.state, '', url);
+      else history.pushState({tilo: true}, '', url);
+    }
+    restoring = false;
   };
 
   // Once nothing typed waits for its answer, a field shows what the server
@@ -403,12 +431,15 @@ function start() {
     editable(page);
     const focus = page.querySelector('[data-focus]')?.dataset.focus;
     const focused = focus && page.querySelector(`[data-p="${focus}"]`);
+    lastFocus = focus ?? null;
     if (focused && editing(focused)) focused.focus({preventScroll: true});
+    follow();
+    if (!performance.getEntriesByName('tilo-page-shown').length) performance.mark('tilo-page-shown');
   };
 
   const answered = answer => {
     if (answer === 'loading') { say('loading'); return; }
-    if (answer.changed) { patch(answer.changed); return; }
+    if (answer.changed) { restoring = true; patch(answer.changed); return; }
     unanswered = Math.max(0, unanswered - 1);
     if (answer.shown) show(answer.shown);
     else if (answer.patched) patch(answer.patched);
@@ -426,13 +457,10 @@ function start() {
     const action = element.dataset.a;
     if (action === 'activate') {
       event.preventDefault();
+      // What is typed next is not for the field the person clicked away from.
+      const active = document.activeElement;
+      if (editing(active) && !element.contains(active)) active.blur();
       act(element, 'activate');
-      const target = element.dataset.t;
-      // A row that opens one thing (a note) is an address of its own.
-      if (target && /^[a-z0-9-]+:/.test(target)) {
-        const url = `${base}/${encodeURIComponent(target)}`;
-        if (url !== location.pathname) history.pushState({tilo: true}, '', url);
-      }
     } else if (action === 'value' && element.dataset.v !== undefined) {
       act(element, {value: element.dataset.v});
     } else if (action === 'back') {
@@ -483,7 +511,10 @@ function start() {
     if (/^(Arrow|Home|End|Page)/.test(event.key)) selected();
   });
 
-  addEventListener('popstate', () => ask({open: addressOf()}));
+  addEventListener('popstate', () => {
+    restoring = true;
+    ask({open: addressOf()});
+  });
 
   const connect = async () => {
     if (!config.link || !globalThis.WebTransport) { say('refused', 'This browser cannot open this page.'); return; }

@@ -76,6 +76,7 @@ html,body{margin:0;height:100%;background:var(--tilo-ground);}
 @media (prefers-reduced-motion:reduce){.tilo-view *{animation:none!important;transition:none!important;}}
 .tilo-doc{outline:none;}
 .tilo-doc .tilo-block{margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;position:relative;outline:none;}
+.tilo-doc [data-a=edit]:empty{min-height:1lh;}
 .tilo-doc li.tilo-block{padding-left:calc(var(--tilo-list,28px) + var(--tilo-indent,0) * var(--tilo-step,28px));}
 .tilo-doc li.tilo-bullet::before{content:"";position:absolute;left:calc(var(--tilo-list,28px) / 2 - 2.5px + var(--tilo-indent,0) * var(--tilo-step,28px));top:calc(0.5lh - 2.5px);width:5px;height:5px;border-radius:50%;background:var(--tilo-text-dim);}
 .tilo-doc li.tilo-numbered::before{content:attr(data-ordinal) ".";position:absolute;left:calc(var(--tilo-indent,0) * var(--tilo-step,28px));width:calc(var(--tilo-list,28px) - 8px);text-align:right;color:var(--tilo-text-dim);font-variant-numeric:tabular-nums;}
