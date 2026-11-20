@@ -894,3 +894,18 @@ fn a_message_larger_than_one_upload_comes_over_with_its_parts_apart() {
         sent.len() - separator
     );
 }
+
+#[test]
+fn the_terminal_counts_one_thing_in_the_singular() {
+    let one = super::sentences(&serde_json::json!({
+        "source": "thunderbird", "state": "complete", "brought": {"accounts": 1, "messages": 2},
+    }));
+    assert!(one.contains("brought 1 account, 2 messages"), "{one}");
+    let review = super::sentences(&serde_json::json!({
+        "items": [{"key": "cache/ada@example.test", "count": 1, "counts": "messages"}],
+    }));
+    assert!(
+        review.contains("  1 message") && !review.contains("1 messages"),
+        "{review}"
+    );
+}

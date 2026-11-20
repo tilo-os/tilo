@@ -1016,7 +1016,7 @@ impl Lander<'_> {
         let line = (count > 0).then(|| {
             let total = self.journal.brought.entry(kind.to_owned()).or_default();
             *total = total.saturating_add(count);
-            format!("{} {kind} brought over", *total)
+            format!("{} brought over", services::counted(*total, kind))
         });
         self.place.keep_journal(self.source, self.journal)?;
         if let Some(line) = line {
@@ -1157,7 +1157,12 @@ fn sentences(answer: &Value) -> String {
         {
             let parts: Vec<String> = brought
                 .iter()
-                .map(|(kind, count)| format!("{count} {kind}"))
+                .map(|(kind, count)| {
+                    let count = count
+                        .as_u64()
+                        .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
+                    services::counted(count, kind)
+                })
                 .collect();
             let _ = write!(out, ", brought {}", parts.join(", "));
         }
@@ -1214,7 +1219,10 @@ fn review_sentences(answer: &Value, items: &[Value], out: &mut String) {
         }
         let counts = item["counts"].as_str().unwrap_or_default();
         if !counts.is_empty() {
-            let _ = write!(out, "  {} {counts}", item["count"]);
+            let count = item["count"]
+                .as_u64()
+                .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
+            let _ = write!(out, "  {}", services::counted(count, counts));
         }
         out.push('\n');
         if let Some(note) = item.get("note").and_then(Value::as_str) {
