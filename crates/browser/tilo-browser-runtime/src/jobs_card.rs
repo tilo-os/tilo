@@ -7,8 +7,10 @@
 //! there is a job to show; the shell lays it out again whenever the jobs move
 //! ([`JobsCard::follow`]).
 
+#[cfg(target_arch = "wasm32")]
 use std::cell::Cell;
 use std::collections::HashMap;
+#[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 
 use ui::kurbo::{Affine, Rect};
@@ -26,11 +28,13 @@ const WIDTH: f32 = 380.0;
 
 /// What the shell keeps of the card it placed: the presses its rows report, and the jobs as it
 /// last laid them out.
+#[cfg(target_arch = "wasm32")]
 pub(crate) struct JobsCard {
     presses: ui::jobs::Presses,
     seen: Cell<u64>,
 }
 
+#[cfg(target_arch = "wasm32")]
 impl JobsCard {
     /// Place the card on `layers`, asking `wake` for the frame it shows in.
     pub(crate) fn place(layers: &mut crate::layers::Layers, wake: Rc<dyn Fn()>) -> Self {
@@ -229,11 +233,49 @@ impl Widget for Card {
         self.band.as_ref().is_some_and(|band| band.needs_redraw())
     }
 
+    /// A hidden card has nothing of its own to lay out, and a card with no children would
+    /// otherwise count as dirty on every frame, re-solving the whole shell's sizes while the
+    /// person types. The shell lays the card out again whenever the jobs move
+    /// ([`JobsCard::follow`]); a shown card is as dirty as its band.
+    fn is_layout_dirty(&self) -> bool {
+        self.shown
+            && self
+                .band
+                .as_ref()
+                .is_some_and(|band| band.is_layout_dirty())
+    }
+
     fn name(&self) -> &'static str {
         "JobsCard"
     }
 
     fn get_rect(&self) -> Rect {
         if self.shown { self.rect } else { Rect::ZERO }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With no job to show, the card lays out to nothing and stays clean: a card that counted as
+    /// dirty re-solved the whole shell's sizes on every keystroke.
+    #[test]
+    fn a_hidden_card_asks_for_no_layout() {
+        let mut card = Card {
+            presses: ui::jobs::Presses::new(),
+            band: None,
+            rect: Rect::ZERO,
+            shown: false,
+        };
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        card.build_layout(&mut taffy, &Theme::dark(), &mut map);
+        assert!(!card.shown);
+        assert!(card.children().is_empty());
+        assert!(
+            !card.is_layout_dirty(),
+            "a hidden card asks the shell to lay it out again"
+        );
     }
 }
