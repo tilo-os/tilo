@@ -3088,9 +3088,14 @@ impl Widget for NotesApp {
         self.finish_block_reveal();
         refresh_outline(self);
         self.note_steps();
-        // The window's bar shows the note this sync left open, and runs what
-        // the person did with its slots.
-        self.self_dirty |= self.sync_window_toolbar();
+        // The window's bar shows the note this sync left open, and carries out
+        // what the person did with its slots. It is the window's work beside
+        // the tree's sync, not the tree's: the proof that a skipped sync
+        // changes nothing syncs the tree alone, and declaring the bar there
+        // would rebuild the shell it sits in.
+        if !ui::component_inputs::is_proving() {
+            self.self_dirty |= self.sync_window_toolbar();
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
