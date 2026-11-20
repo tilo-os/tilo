@@ -700,8 +700,7 @@ impl Namespace {
 
     fn kind_of(&self, id: &str) -> NodeKind {
         self.node(id)
-            .map(|o| node_kind(&self.doc, &o))
-            .unwrap_or(NodeKind::File)
+            .map_or(NodeKind::File, |object| node_kind(&self.doc, &object))
     }
 
     fn set_field(&mut self, id: &str, key: &str, val: impl Into<ScalarValue>) {
