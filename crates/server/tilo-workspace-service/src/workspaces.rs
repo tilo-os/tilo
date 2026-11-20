@@ -1608,6 +1608,10 @@ impl Workspaces {
     /// `app` in `workspace`, saved: a record members write sealed is read with
     /// the keys this server holds as a member of its channel.
     ///
+    /// A document the workspace's resource store placed
+    /// ([`collab_types::is_store_document`]) is the store's, which the
+    /// governor's replica does not hold: it is read from the store.
+    ///
     /// # Errors
     ///
     /// The workspace is not governed here, or a sealed record cannot be opened.
@@ -1617,6 +1621,10 @@ impl Workspaces {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, CollaborationError> {
+        if collab_types::is_store_document(record) {
+            let state = self.workspace(workspace).await?;
+            return Ok(state.lock().await.store_document(record));
+        }
         // Read without holding the workspace: the record's keys are asked for
         // while every other read, decision and member's write goes on.
         let reading = match WorkspaceId::parse(workspace) {

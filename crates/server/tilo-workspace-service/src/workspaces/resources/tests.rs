@@ -68,6 +68,34 @@ impl Writer {
     /// as the server hands it every member write.
     async fn put(&mut self, workspaces: &Workspaces, workspace: &str, id: &str, title: &str) {
         let fields = BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]);
+        self.put_fields(workspaces, workspace, id, fields).await;
+    }
+
+    /// Writes the photograph `id` whose content is `reference`: what a page's Photos keeps,
+    /// naming its picture's bytes and none of them.
+    async fn put_content(
+        &mut self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        id: &str,
+        reference: &str,
+    ) -> String {
+        let fields = BTreeMap::from([(
+            "content".to_owned(),
+            Cell::One(Value::Text(reference.to_owned())),
+        )]);
+        self.put_fields(workspaces, workspace, id, fields).await
+    }
+
+    /// Writes `fields` as the resource `id` of [`KIND`] and hands each document's change to
+    /// `workspace`; the document the store placed it in.
+    async fn put_fields(
+        &mut self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        id: &str,
+        fields: BTreeMap<String, Cell>,
+    ) -> String {
         let resource = Resource {
             readers: "*".into(),
             parent: None,
@@ -78,6 +106,7 @@ impl Writer {
             .store
             .put(KIND, id, resource, &Stamp::default())
             .unwrap();
+        let mut placed = String::new();
         for write in written {
             let founding = self.seq == 0;
             let mutation = if founding {
@@ -91,7 +120,9 @@ impl Writer {
                 .absorb(workspace, self.key.verifying_key().to_bytes(), &body)
                 .await
                 .unwrap();
+            placed = write.doc;
         }
+        placed
     }
 
     fn seal(&mut self, workspace: &str, doc: &str, plaintext: &[u8], founding: bool) -> Vec<u8> {
@@ -591,4 +622,39 @@ async fn an_open_query_is_sent_each_page_a_write_makes_different() {
         governed.lock().await.resources.opened.is_empty(),
         "a query its app let go of is no longer read"
     );
+}
+
+/// A page's Photos keeps a photograph as a resource of the workspace's store: the document names
+/// the picture's bytes by reference, and the server reads the document back from the store —
+/// the replica does not hold a document the store placed.
+#[tokio::test]
+async fn a_members_store_document_reads_back_the_content_its_cells_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Photos").await.unwrap();
+    let workspace = created.workspace;
+    let (member_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let mut writer = Writer::new(&workspaces, &workspace, member_key).await;
+    let hash = "ab".repeat(32);
+    let reference = format!("blake3:{hash}:4096");
+    let document = writer
+        .put_content(&workspaces, &workspace, "p-1", &reference)
+        .await;
+    assert!(
+        collab_types::is_store_document(&document),
+        "the store placed the record: {document}"
+    );
+    let read = workspaces
+        .resource_document(&workspace, APP, &document)
+        .await
+        .unwrap()
+        .expect("the record a member wrote reads back from the store");
+    assert!(
+        String::from_utf8_lossy(&read).contains(&hash),
+        "the document names the picture's bytes, which the workspace keeps for it"
+    );
+    server.shutdown().await;
 }

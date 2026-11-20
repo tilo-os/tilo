@@ -432,3 +432,43 @@ fn the_same_bytes_stored_twice_on_a_record_of_one_workspace_are_one_item() {
         "members of another workspace seal it to other ciphertext"
     );
 }
+
+/// A window opened after a reload holds no content and asks its route for what its file
+/// names; until the answer comes where the want stands is `Pending`, not `Unavailable`,
+/// so a thumbnail keeps waiting for its photograph instead of giving up on it.
+#[test]
+fn a_photo_a_reloaded_page_lacks_is_pending_until_its_bytes_arrive() {
+    let picture: Vec<u8> = b"a picture only the page that kept it had. "
+        .iter()
+        .copied()
+        .cycle()
+        .take(300 * 1024)
+        .collect();
+    let source = ContentStore::memory().sealing();
+    let reference = source.put(&picture).unwrap();
+    let address = tilo_content::content_address(&reference).unwrap();
+    let ciphertext = source.read(&address).unwrap();
+
+    let (store, link) = resource_store("a photo after a reload");
+    assert!(
+        store.open(&reference).is_none(),
+        "the reloaded page holds none of it"
+    );
+    assert_eq!(
+        link.take_requests().wants,
+        vec![address.clone()],
+        "it asks its route for the ciphertext's address once"
+    );
+    assert_eq!(
+        store.state(&reference),
+        ContentState::Pending,
+        "a byte on its way is not a byte no device holds"
+    );
+    link.arrive(address.clone(), ciphertext);
+    assert_eq!(
+        store.read(&reference).as_deref(),
+        Some(&picture[..]),
+        "and it opens what arrived with the key its reference carries"
+    );
+    assert_eq!(store.state(&reference), ContentState::Resolved);
+}

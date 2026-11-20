@@ -196,6 +196,17 @@ impl Resources {
             .unwrap_or_default()
     }
 
+    /// The document the store placed under `doc`, saved as it holds it now: from memory, or read
+    /// from what it kept when it left memory. `None` when it placed none by that id.
+    fn document(&mut self, doc: &str) -> Option<Vec<u8>> {
+        if self.store_mut().document(doc).is_none() {
+            let bytes = fs::read(self.root.join(DOCS).join(file_name(doc))).ok()?;
+            self.store_mut().load(doc, &bytes).ok()?;
+        }
+        self.used.insert(doc.to_owned(), tilo_clock::now());
+        self.store_mut().document(doc).map(Automerge::save)
+    }
+
     /// Keeps what `doc` took since `before`: its changes appended to its file, then the
     /// index's snapshot of it, so a start reads that instead of the document — and a start
     /// after a stop that never ran (a killed process) reads the same.
@@ -454,6 +465,13 @@ fn changes_of(
 }
 
 impl GovernedWorkspace {
+    /// The document the workspace's resource store placed under `doc`, saved as the store holds
+    /// it: a document the store keeps, which the governor's replica does not
+    /// ([`is_store_document`]). `None` when the store placed none by that id.
+    pub(super) fn store_document(&mut self, doc: &str) -> Option<Vec<u8>> {
+        self.resources.document(doc)
+    }
+
     /// The workspace's store, with the types and verbs of every app surface this process knows
     /// declared: what this device's writes and the members' are judged by.
     #[cfg(feature = "apps")]
