@@ -1305,6 +1305,24 @@ fn copying_a_folder_in_and_restarting() {
         (0, 0),
         "every file the copy wrote is in the workspace"
     );
+    if missing_after + wrong_after > 0 {
+        let kept = pair.dir.join("host-cache").join("namespace");
+        let mut listing = String::new();
+        if let Ok(entries) = std::fs::read_dir(&kept) {
+            for entry in entries.flatten() {
+                listing.push_str(&format!(
+                    "  {} {} B\n",
+                    entry.file_name().to_string_lossy(),
+                    entry.metadata().map_or(0, |meta| meta.len())
+                ));
+            }
+        }
+        eprintln!(
+            "copy: {missing_after} missing after the restart ({first_after}); kept tree files:\n\
+             {listing}writer's log:\n{}",
+            pair.host.dump()
+        );
+    }
     assert_eq!(
         (missing_after, wrong_after),
         (0, 0),
