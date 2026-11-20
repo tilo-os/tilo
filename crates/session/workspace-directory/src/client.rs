@@ -589,7 +589,13 @@ pub async fn sealed_invitation(site: &str, secret: &str) -> Result<SealedInvitat
 /// what a session the host set up for a workspace knows before the join
 /// settles.
 pub fn invited_workspace(text: &str, person: &Person) -> Result<String, SiteError> {
-    verify_workspace(text, person.user)
+    // What a person is handed is a link, with the invitation in it; its own text is read alike.
+    match classify(text)? {
+        Pasted::Invitation { text, .. } => verify_workspace(&text, person.user),
+        Pasted::Sealed { .. } | Pasted::Site { .. } => {
+            Err(SiteError::Plain("that is not an invitation".to_owned()))
+        }
+    }
 }
 
 /// The workspace an invitation grants `user`, verified for them.
@@ -1050,6 +1056,27 @@ mod tests {
             SiteError::Said("directory-error-invitation-gone"),
             "the person is told it lapsed or was taken back, not a status code"
         );
+    }
+
+    #[test]
+    fn an_invitation_in_a_link_names_its_workspace_as_its_own_text_does() {
+        let person = Person {
+            user: [0x25; 32],
+            name: "Ada".to_owned(),
+        };
+        let text = invitation_for(person.user);
+        let link = format!("http://tilo.localhost:26320/#/w/{WORKSPACE}?invite={text}");
+        assert_eq!(invited_workspace(&text, &person).expect("its text"), WORKSPACE);
+        assert_eq!(invited_workspace(&link, &person).expect("its link"), WORKSPACE);
+        let stranger = Person {
+            user: [0x26; 32],
+            name: "Bo".to_owned(),
+        };
+        assert!(
+            invited_workspace(&link, &stranger).is_err(),
+            "an invitation for someone else stays theirs, in a link too"
+        );
+        assert!(invited_workspace("http://tilo.localhost:26320/", &person).is_err());
     }
 
     #[test]
