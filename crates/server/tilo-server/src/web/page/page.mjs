@@ -307,6 +307,8 @@ function start() {
   // page answers a Back or Forward of the browser's rather than the person.
   let lastFocus = null;
   let restoring = true;
+  // The app's name, which a page with something open title-cases with what is open.
+  let appTitle = config.address.app;
   const settled = new Map();
   // What was asked and not answered yet, in the order it was sent: an ask the
   // server answered by opening the document again is sent again.
@@ -436,7 +438,13 @@ function start() {
   // what the person opened is a step Back returns from; what Back, Forward or
   // the first load showed only names where the page now is.
   const follow = () => {
-    const target = page.querySelector('[data-a=activate][data-t][aria-selected=true]')?.dataset.t;
+    const selected = page.querySelector('[data-a=activate][data-t][aria-selected=true]');
+    const target = selected?.dataset.t;
+    // What the person has open names the tab and the step history keeps, as a
+    // window's title does: two notes are two tabs, and Back names each one.
+    const name = selected && (selected.getAttribute('aria-label') || selected.innerText.split('\n')[0].trim());
+    const title = name ? `${name} — ${appTitle}` : appTitle;
+    if (title !== document.title) document.title = title;
     const url = target ? `${base}/${encodeURIComponent(target)}` : location.pathname;
     if (url !== location.pathname) {
       if (restoring) history.replaceState(history.state, '', url);
@@ -480,6 +488,7 @@ function start() {
 
   const show = ({title, css, body}) => {
     const held = typingHeld();
+    appTitle = title;
     document.title = title;
     style.textContent = css;
     delete page.dataset.state;
@@ -506,8 +515,8 @@ function start() {
     caughtUp();
     // Its document was opened again past a slow request, or the page it acted
     // on is gone (the session under it restarted): nothing the ask did was
-    // applied, so it is sent again as it is. The person sees no error, and
-    // nothing they typed leaves the field.
+    // applied, so the page is shown again where it is rather than answered
+    // with an error. What the person typed stays in its field.
     if (answer.refused?.reopened || (answer.refused?.unavailable && page.querySelector('[data-p]'))) {
       reopened(asked);
       return;
@@ -536,12 +545,13 @@ function start() {
       act(element, {value: element.dataset.v});
     } else if (action === 'back') {
       event.preventDefault();
-      if (history.state?.tilo) { history.back(); return; }
-      // Nothing of this page's own to go back to: the column behind comes
-      // to the front, as a narrow window shows it.
+      // The column behind the one in front comes to the front, as a narrow
+      // window shows it. A page with nothing behind it is a step of the
+      // browser's to go back to, if this page put one there.
       const front = page.querySelector('[data-pane][data-front]');
       const behind = front && [...front.parentElement.querySelectorAll(':scope>[data-pane]')].filter(pane => pane !== front).pop();
       if (behind) { delete front.dataset.front; behind.dataset.front = ''; }
+      else if (history.state?.tilo) history.back();
     }
   });
   page.addEventListener('change', event => {
