@@ -324,14 +324,21 @@ function start() {
   };
 
   // An event the page has heard nothing back for shows the page at work,
-  // quietly: the person keeps typing and clicking meanwhile.
+  // quietly: the person keeps typing and clicking meanwhile. What it asked
+  // and what it heard back are counted on the page, for whoever looks into a
+  // page that shows a person's typing and keeps none of it.
   let working = null;
+  let asked = 0;
+  let heard = 0;
   const ask = (value, tries = 0) => {
     if (!link) return;
     unanswered++;
+    page.dataset.asks = String(++asked);
     working ??= setTimeout(() => { page.dataset.working = ''; }, 300);
     sent.push({value, tries});
-    link.send(value).catch(() => {});
+    link.send(value).catch(() => {
+      page.dataset.asksLost = String(Number(page.dataset.asksLost ?? 0) + 1);
+    });
   };
   // The app was still working on what was asked past the time the server
   // waits: it opened the document again from what the workspace holds, and
@@ -515,6 +522,7 @@ function start() {
 
   const answered = answer => {
     if (answer === 'loading') { say('loading'); return; }
+    page.dataset.answers = String(++heard);
     if (answer.changed) { restoring = true; patch(answer.changed); return; }
     unanswered = Math.max(0, unanswered - 1);
     const asked = sent.shift();
