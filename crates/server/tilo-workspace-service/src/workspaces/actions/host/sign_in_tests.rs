@@ -97,15 +97,15 @@ fn web_client(
     let base = fake.url();
     env.set(format!("TILO_OAUTH_{issuer}_WEB_CLIENT_ID"), "web-client")
         .set(
-            &format!("TILO_OAUTH_{issuer}_AUTHORIZE_URL"),
+            format!("TILO_OAUTH_{issuer}_AUTHORIZE_URL"),
             format!("{base}/authorize"),
         )
         .set(
-            &format!("TILO_OAUTH_{issuer}_TOKEN_URL"),
+            format!("TILO_OAUTH_{issuer}_TOKEN_URL"),
             format!("{base}/token"),
         )
         .set(
-            &format!("TILO_OAUTH_{issuer}_PROFILE_URL"),
+            format!("TILO_OAUTH_{issuer}_PROFILE_URL"),
             fake.profile_url(),
         );
 }
@@ -118,7 +118,7 @@ fn sealed(root: &std::path::Path, address: &str) -> Option<accounts::Secret> {
 }
 
 /// Wait until `ready`, which a background sign-in makes true.
-async fn until(what: &str, ready: impl Fn() -> bool + Send) {
+async fn until(what: &str, ready: impl Fn() -> bool + Send + Sync) {
     let waited = tokio::time::timeout(std::time::Duration::from_secs(15), async {
         while !ready() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -165,6 +165,11 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
         .unwrap(),
     );
     assert!(step.open.starts_with(&fake.url()), "{}", step.open);
+    assert!(
+        step.open.contains("include_granted_scopes=true"),
+        "another use keeps the grant: {}",
+        step.open
+    );
 
     // Until it finishes, the page shows it running, and Google's button is
     // one the server offers.
@@ -395,6 +400,11 @@ async fn a_sign_in_is_the_person_who_began_it_and_goes_stale() {
     // Gone stale, it finishes nothing.
     crate::workspaces::person_settings::expire_sign_in(&step.id);
     assert!(step.open.starts_with(&fake.url()), "{}", step.open);
+    assert!(
+        step.open.contains("include_granted_scopes=true"),
+        "another use keeps the grant: {}",
+        step.open
+    );
     tilo_oauth::fake::browse(&step.open).unwrap();
     assert!(workspaces.accounts_return(&landing.query()).await.is_err());
 
@@ -433,13 +443,13 @@ async fn a_sign_in_is_the_person_who_began_it_and_goes_stale() {
 /// A stand-in Nextcloud server that starts a login flow, and answers its
 /// poll with a minted app password while `completes` says so.
 fn nextcloud_server(
-    completes: Arc<std::sync::atomic::AtomicBool>,
+    completes: &Arc<std::sync::atomic::AtomicBool>,
 ) -> (test_http::Responder, Arc<Mutex<String>>) {
     use test_http::{Reply, Responder};
 
     let base = Arc::new(Mutex::new(String::new()));
     let for_handler = Arc::clone(&base);
-    let answering = Arc::clone(&completes);
+    let answering = Arc::clone(completes);
     let responder = Responder::handle(move |request| {
         let base = for_handler.lock().unwrap().clone();
         match (request.method.as_str(), request.target.as_str()) {
@@ -473,7 +483,7 @@ fn nextcloud_server(
 #[tokio::test]
 async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     let completes = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let (responder, _base) = nextcloud_server(Arc::clone(&completes));
+    let (responder, _base) = nextcloud_server(&completes);
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

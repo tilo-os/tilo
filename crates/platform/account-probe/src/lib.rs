@@ -190,15 +190,7 @@ impl LiveAccountTester {
         // by XOAUTH2 to both servers.
         // A setting that does not read is a password account, never one
         // signed in with a token.
-        let oauth = match account.config.get("auth") {
-            Some(value) => {
-                match serde_json::from_value::<accounts::email::AuthMethod>(value.clone()) {
-                    Ok(auth) => auth == accounts::email::AuthMethod::OAuth,
-                    Err(_) => false,
-                }
-            }
-            None => false,
-        };
+        let oauth = accounts::email::is_oauth(&account.config);
         let tls = tilo_net::client_config_with_roots(roots)
             .map(Arc::new)
             .map_err(|_| "could not initialize secure protocol versions".to_string())?;

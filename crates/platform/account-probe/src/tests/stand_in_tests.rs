@@ -103,6 +103,7 @@ fn a_stack_signs_in_with_imap_on_tls_and_smtp_by_upgrade_at_once() {
         names: vec!["localhost".to_owned()],
         login: LOGIN.to_owned(),
         password: TAKEN.to_owned(),
+        oauth_token: None,
         imap: "127.0.0.1:0".to_owned(),
         smtp: "127.0.0.1:0".to_owned(),
         imap_wrapped: true,

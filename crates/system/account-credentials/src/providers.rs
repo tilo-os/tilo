@@ -353,6 +353,19 @@ pub fn web_provider(issuer: OAuthIssuer, scopes: Vec<String>, client: &WebClient
         .clone_into(&mut descriptor.authorization_endpoint);
     client.token.clone_into(&mut descriptor.token_endpoint);
     descriptor.scopes = scopes;
+    // A later sign-in for another use (Google Calendar next to Gmail, or
+    // models next to either) keeps the grant the person already gave and
+    // asks for what it adds, instead of starting over.
+    if issuer == OAuthIssuer::Google
+        && !descriptor
+            .authorization_params
+            .iter()
+            .any(|(name, _)| name == "include_granted_scopes")
+    {
+        descriptor
+            .authorization_params
+            .push(("include_granted_scopes".to_owned(), "true".to_owned()));
+    }
     descriptor
 }
 

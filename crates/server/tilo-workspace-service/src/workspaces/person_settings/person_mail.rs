@@ -348,7 +348,9 @@ pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
             incoming_port: port(account, "imap_port", 993),
             outgoing_host: field(account, "smtp_host"),
             outgoing_port: port(account, "smtp_port", 465),
-            has_secret: vault.get_for(account).is_some_and(|secret| !secret.is_empty()),
+            has_secret: vault
+                .get_for(account)
+                .is_some_and(|secret| !secret.is_empty()),
             identities: accounts::email::AccountConfig::from_value(account.config.clone())
                 .map_or_else(
                     |error| {

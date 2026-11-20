@@ -44,6 +44,17 @@ impl AuthMethod {
     }
 }
 
+/// Whether an account's settings sign in with a bearer token rather than a
+/// password. Both the name the stored settings carry (`OAuth`, its serde
+/// form) and the key [`AuthMethod::as_key`] answers (`oauth`) count.
+#[must_use]
+pub fn is_oauth(settings: &serde_json::Value) -> bool {
+    settings
+        .get("auth")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|auth| auth.eq_ignore_ascii_case("oauth"))
+}
+
 /// How a connection to a mail server becomes secure. There is no third way:
 /// nothing signs in over a connection that stays in the clear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -454,6 +465,23 @@ mod tests {
             assert!(!cfg.autofill_from_email());
             assert_eq!(cfg.imap_host, "imap.acme.test");
             assert_eq!(cfg.smtp_host, "smtp.acme.test");
+        }
+
+        // Both the stored serde name and the key a form writes count as the
+        // token sign-in; anything else, including a value that does not
+        // read, is a password account.
+        for (auth, oauth) in [
+            (Some("OAuth"), true),
+            (Some("oauth"), true),
+            (Some("Password"), false),
+            (Some("something else"), false),
+            (None, false),
+        ] {
+            let settings = auth.map_or_else(
+                || serde_json::json!({}),
+                |auth| serde_json::json!({"auth": auth}),
+            );
+            assert_eq!(is_oauth(&settings), oauth, "{auth:?}");
         }
 
         {

@@ -18,6 +18,9 @@
 //! included, reaches only their own store, and an agent's request is refused
 //! here, as the holder's own operations refuse one.
 
+/// One provider's grant, kept in the person's vault and renewed behind one
+/// lock.
+mod oauth_grant;
 mod sending;
 /// Signing in on a provider's own page, and the server's end of it.
 mod sign_in;

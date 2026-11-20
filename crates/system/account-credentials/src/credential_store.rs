@@ -289,6 +289,16 @@ pub fn imported_oauth_matches(secret: &Secret, registration: &ImportedRegistrati
         && stored.client_secret == registration.client_secret && stored.source_binding == registration.source_binding)
 }
 
+/// The tokens a sealed `OAuth` grant holds, when the secret is one: what a
+/// reader of a person's grant reads without renewing it.
+#[must_use]
+pub fn oauth_tokens(secret: &Secret) -> Option<TokenSet> {
+    match decode_grant(secret)?.0 {
+        Grant::Oauth2 { tokens, .. } => Some(tokens),
+        Grant::Icloud { .. } | Grant::CopiedPassword { .. } => None,
+    }
+}
+
 /// Seal an `OAuth` sign-in result into a vault secret.
 pub fn oauth_secret(tokens: &TokenSet) -> Secret {
     Secret {

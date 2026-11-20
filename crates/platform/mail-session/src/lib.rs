@@ -594,15 +594,7 @@ async fn sign_in(
 
 /// Whether `account` signs in with a bearer token instead of a password.
 fn signed_in_with_oauth(account: &accounts::Account) -> bool {
-    // A setting that does not read is a password account: nothing signs in
-    // with a token on the strength of a value nobody could parse.
-    match account.config.get("auth") {
-        Some(value) => match serde_json::from_value::<accounts::email::AuthMethod>(value.clone()) {
-            Ok(auth) => auth == accounts::email::AuthMethod::OAuth,
-            Err(_) => false,
-        },
-        None => false,
-    }
+    accounts::email::is_oauth(&account.config)
 }
 
 /// What an account without a sign-in is told, in the words of what it keeps.

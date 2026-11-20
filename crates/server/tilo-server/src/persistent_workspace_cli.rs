@@ -1632,7 +1632,7 @@ pub(crate) async fn run(
                 sign_in,
                 web_entry: args.web.web_entry.clone(),
                 discord: discord.clone(),
-                accounts: Some(Arc::new(workspaces.clone())),
+                accounts: Some(Arc::new(context.workspaces.clone())),
             });
             println!(
                 "{}",

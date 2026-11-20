@@ -504,6 +504,7 @@ mod tests {
             "/wait-list",
             "/avatars/not-a-name",
             "/discord/callback",
+            "/accounts/return",
         ] {
             let request = Request::builder()
                 .uri(path)
@@ -515,5 +516,6 @@ mod tests {
                 "{path}"
             );
         }
+        drop(http);
     }
 }

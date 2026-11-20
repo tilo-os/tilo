@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
-use account_credentials::{Capability, CredentialStore, OAuthIssuer, OAuthUse, nextcloud};
+use account_credentials::{CredentialStore, OAuthIssuer, OAuthUse, nextcloud};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use tilo_actions::remote::person_accounts::{
@@ -113,14 +113,34 @@ fn begun() -> std::sync::MutexGuard<'static, BTreeMap<String, Begun>> {
 #[must_use]
 pub(super) fn signs_in_with() -> Vec<Provider> {
     let mut providers = Vec::new();
-    for issuer in [OAuthIssuer::Google, OAuthIssuer::Microsoft] {
-        if account_credentials::web_client(issuer).is_some() {
-            providers.push(provider_of(issuer));
+    for entry in WEB_SIGN_IN {
+        if account_credentials::web_client(entry.issuer).is_some() {
+            providers.push(entry.provider);
         }
     }
     providers.push(Provider::Nextcloud);
     providers
 }
+
+/// The providers this server signs in with on their own page, in the order a
+/// page offers them: the browser redirect and code exchange are the same for
+/// every one, so another provider is a row here and its client in the
+/// server's environment.
+struct WebSignIn {
+    issuer: OAuthIssuer,
+    provider: Provider,
+}
+
+const WEB_SIGN_IN: [WebSignIn; 2] = [
+    WebSignIn {
+        issuer: OAuthIssuer::Google,
+        provider: Provider::Google,
+    },
+    WebSignIn {
+        issuer: OAuthIssuer::Microsoft,
+        provider: Provider::Microsoft,
+    },
+];
 
 const fn provider_of(issuer: OAuthIssuer) -> Provider {
     match issuer {
@@ -397,10 +417,10 @@ impl Workspaces {
     pub(super) fn cancel_account_sign_in(
         &self,
         person: [u8; 32],
-        stopping: CancelSignIn,
+        stopping: &CancelSignIn,
         root: &Path,
     ) -> Result<super::MailAccounts, String> {
-        cancel(&person, &stopping)?;
+        cancel(&person, stopping)?;
         let listed = super::mail_accounts(root)?;
         self.person_settings_changed();
         Ok(listed)
@@ -467,7 +487,7 @@ pub(super) async fn accounts_sign_in(
         }
         CANCEL_SIGN_IN => {
             let stopping: CancelSignIn = super::argument(request, "a sign-in to stop")?;
-            super::answer(&workspaces.cancel_account_sign_in(person, stopping, root))
+            super::answer(&workspaces.cancel_account_sign_in(person, &stopping, root))
         }
         _ => Err(tilo_actions::remote::ActionCallError::UnknownAction),
     }
@@ -550,7 +570,7 @@ async fn finish(root: &Path, id: &str, person: [u8; 32], query: &str) -> Result<
                 &code,
                 &verifier,
             )
-            .map_err(plain_exchange)?
+            .map_err(|error| plain_exchange(&error))?
             .stamp_now();
         let address =
             identity_of(&root_owned, issuer, &profile, services, &tokens).map_err(|_| {
@@ -601,7 +621,7 @@ fn declined(reason: &str) -> String {
 
 /// Why a code exchange failed, in words the person reads: nothing of the
 /// provider's protocol or its answer.
-fn plain_exchange(error: tilo_oauth::OAuthError) -> String {
+fn plain_exchange(error: &tilo_oauth::OAuthError) -> String {
     match error {
         tilo_oauth::OAuthError::InvalidGrant => {
             "That sign-in link was already used or ran out. Begin it again".to_string()
@@ -616,48 +636,9 @@ fn plain_exchange(error: tilo_oauth::OAuthError) -> String {
     }
 }
 
-/// The person's vault as a reader of a web sign-in's grants: each use of an
-/// issuer is renewed with the web client it was signed in with, never with
-/// another registration.
-pub(super) fn vault_store(root: &Path) -> CredentialStore {
-    let mut store = CredentialStore::for_root(Some(root.to_path_buf()));
-    for issuer in [OAuthIssuer::Google, OAuthIssuer::Microsoft] {
-        let Some(client) = account_credentials::web_client(issuer) else {
-            continue;
-        };
-        let uses = [OAuthUse::mail(issuer), OAuthUse::calendar(issuer)];
-        for use_ in uses {
-            if use_.capability == Capability::Calendar && issuer != OAuthIssuer::Google {
-                continue;
-            }
-            let scopes = account_credentials::web_scopes(
-                issuer,
-                use_.capability == Capability::Mail,
-                use_.capability == Capability::Calendar,
-            );
-            let provider = account_credentials::web_provider(issuer, scopes, &client);
-            let registration = Registration {
-                client_id: client.client_id.clone(),
-                client_secret: client.client_secret.clone(),
-                paste_code_fallback: false,
-                ..Registration::default()
-            };
-            store = store.with_use(use_, provider, registration);
-        }
-    }
-    store
-}
-
 /// Whether `account` signs in with a bearer token instead of a password.
 fn signed_in_with_oauth(account: &accounts::Account) -> bool {
-    let Some(value) = account.config.get("auth") else {
-        return false;
-    };
-    let auth = tilo_failure::ignored!(
-        "settings whose auth method does not read are a password account",
-        serde_json::from_value::<accounts::email::AuthMethod>(value.clone()).ok()
-    );
-    auth.is_some_and(|auth| auth == accounts::email::AuthMethod::OAuth)
+    accounts::email::is_oauth(&account.config)
 }
 
 /// The issuer a mail account signs in with: what its settings say, or, for
@@ -705,10 +686,12 @@ pub(super) fn mail_secret(
         return Ok(secret);
     }
     let issuer = issuer_for(account)?;
-    let token = vault_store(root)
-        .oauth_access_token(&account.id, OAuthUse::mail(issuer), false)
-        .map_err(|_| "That account's sign-in needs renewing. Sign in again".to_string())?;
-    Ok(accounts::Secret::password(token.to_string()))
+    let token = super::oauth_grant::ProviderGrant::access_token(
+        root,
+        account.id.as_str(),
+        OAuthUse::mail(issuer),
+    )?;
+    Ok(accounts::Secret::password(token))
 }
 
 /// Which address the grant belongs to: what the account is kept as, shown
@@ -798,12 +781,10 @@ fn keep_oauth(
     let mut kept = accounts::Account::new(accounts::AccountId::from(id), accounts::email::TYPE_ID);
     address.clone_into(&mut kept.display_name);
     kept.config = Value::Object(config);
-    let mut vault = super::credentials(root)?;
-    vault.put_for(&kept, &account_credentials::oauth_secret(tokens));
+    super::oauth_grant::ProviderGrant::seal(root, &kept, tokens)?;
     let mut store = accounts::AccountStore::load_in(root);
     store.upsert(kept);
     store.save_in(root).map_err(|error| error.to_string())?;
-    vault.try_save()?;
     if issuer == OAuthIssuer::Google && services.calendar {
         keep_google_calendar(root, address, tokens)?;
     }
@@ -828,12 +809,10 @@ fn keep_google_calendar(root: &Path, address: &str, tokens: &TokenSet) -> Result
         "username": address,
         "calendar_provider": "google",
     });
-    let mut vault = super::credentials(root)?;
-    vault.put_for(&kept, &account_credentials::oauth_secret(tokens));
+    super::oauth_grant::ProviderGrant::seal(root, &kept, tokens)?;
     let mut store = accounts::AccountStore::load_in(root);
     store.upsert(kept);
     store.save_in(root).map_err(|error| error.to_string())?;
-    vault.try_save()?;
     Ok(())
 }
 
