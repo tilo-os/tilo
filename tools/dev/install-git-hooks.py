@@ -11,7 +11,11 @@ import subprocess
 import sys
 
 
-MERGE_DRIVERS = {"generated": "whole", "generated-blocks": "blocks"}
+MERGE_DRIVERS = {
+    "generated": ("whole", "generated file: take main's side, then regenerate"),
+    "generated-blocks": ("blocks", "generated file: take main's side, then regenerate"),
+    "generated-counts": ("counts", "generated counts: each word keeps the lower of the two sides' counts"),
+}
 
 
 def git(root, *args):
@@ -51,8 +55,8 @@ def install(root):
         raise ValueError(result.stderr.strip())
     if git(root, "config", "--get", "core.hooksPath").stdout.strip() != ".githooks":
         raise ValueError("Hook installation could not be verified.")
-    for driver, mode in MERGE_DRIVERS.items():
-        for key, value in (("name", "generated file: take main's side, then regenerate"),
+    for driver, (mode, name) in MERGE_DRIVERS.items():
+        for key, value in (("name", name),
                            ("driver", f".githooks/merge-generated {mode} %O %A %B %P %L")):
             result = git(root, "config", scope, f"merge.{driver}.{key}", value)
             if result.returncode:
