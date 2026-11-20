@@ -30,6 +30,7 @@ use std::{
 use tilo_fs::{
     fs::QuickFS,
     hydration::Hydrator,
+    kept_documents::KeptDocuments,
     namespace::Namespace,
     smart::Heuristics,
     sync_folder::{SyncFolder, Watch},
@@ -37,7 +38,7 @@ use tilo_fs::{
 
 /// The profile directory holding the workspace files' state.
 const FILES: &str = "files";
-const NAMESPACE: &str = "namespace.bin";
+const NAMESPACE: &str = "namespace";
 /// Workspace changes reach the folder, and are persisted, within this.
 const INTERVAL: Duration = Duration::from_secs(2);
 
@@ -152,7 +153,7 @@ impl Files {
         source: Option<Arc<dyn tilo_fs::hydration::ContentSource>>,
     ) -> io::Result<Self> {
         crate::unix::private_directory(state)?;
-        let namespace = NamespaceFile::open(state.join(NAMESPACE), hex::encode(author.device))?;
+        let namespace = NamespaceFile::open(&state.join(NAMESPACE), hex::encode(author.device))?;
         let hydrator = {
             let _entered = tilo_rt::app().handle().enter();
             let hydrator = Hydrator::new(endpoint, store);
@@ -174,12 +175,15 @@ impl Files {
 
     fn quick_fs(&self) -> QuickFS {
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&self.hydrator)));
+        let kept = Arc::clone(&self.namespace.kept);
         QuickFS::new(
             Arc::clone(&self.namespace.namespace),
             Arc::clone(&self.hydrator),
             heuristics,
         )
         .with_actor(self.actor)
+        // Every change is journaled on disk before the request that made it is answered.
+        .with_change_journal(Arc::new(move |namespace| kept.journal(namespace)))
     }
 
     fn sync_folder(&self, folder: &Path) -> io::Result<SyncFolder> {
@@ -189,54 +193,36 @@ impl Files {
     }
 }
 
-/// The workspace namespace and the profile file that keeps it.
+/// The workspace namespace, kept document by document in the profile's state directory: each
+/// document with the journal of the changes it has made since its last save.
 struct NamespaceFile {
     namespace: Arc<Mutex<Namespace>>,
-    path: PathBuf,
-    /// What the file holds, so an unchanged namespace is not rewritten.
-    saved: Mutex<Vec<automerge::ChangeHash>>,
+    kept: Arc<KeptDocuments>,
 }
 
 impl NamespaceFile {
-    fn open(path: PathBuf, author: String) -> io::Result<Self> {
-        let mut namespace = match std::fs::read(&path) {
-            Ok(bytes) => Namespace::from_bytes(author, &bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                Namespace::new(author).map_err(io::Error::other)?
-            }
-            Err(error) => return Err(error),
-        };
-        let saved = if path.exists() {
-            namespace.heads()
+    fn open(dir: &Path, author: String) -> io::Result<Self> {
+        let (kept, documents) = KeptDocuments::open(dir)?;
+        let (mut namespace, read) = if documents.is_empty() {
+            (
+                Namespace::new(author).map_err(io::Error::other)?,
+                std::collections::BTreeMap::new(),
+            )
         } else {
-            Vec::new()
+            Namespace::from_documents_read(author, documents)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
         };
+        kept.opened(&mut namespace, read)?;
         Ok(Self {
             namespace: Arc::new(Mutex::new(namespace)),
-            path,
-            saved: Mutex::new(saved),
+            kept: Arc::new(kept),
         })
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the saved heads stay locked across the write, so two savers never write the file out of order"
-    )]
+    /// Save each document that changed since its last save; the journals already hold every
+    /// change, so this only compacts them.
     fn save_if_changed(&self) -> io::Result<()> {
-        let poisoned = || io::Error::other("workspace namespace lock poisoned");
-        let mut saved = self.saved.lock().map_err(|_| poisoned())?;
-        let (heads, bytes) = {
-            let mut namespace = self.namespace.lock().map_err(|_| poisoned())?;
-            let heads = namespace.heads();
-            if heads == *saved {
-                return Ok(());
-            }
-            (heads, namespace.save())
-        };
-        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
-        *saved = heads;
-        Ok(())
+        self.kept.keep(&self.namespace)
     }
 }
 

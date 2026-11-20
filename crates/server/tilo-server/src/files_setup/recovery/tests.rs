@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
             );
         }
         // The tree is the workspace's Files record, not a file recovery wrote.
-        assert!(!cache.join("namespace.bin").exists());
+        assert!(!cache.join("namespace").exists());
         let peers = fs::workspace_authority::load_persisted_content_peers(&cache).unwrap();
         assert_ne!(
             peers[0].endpoint.id,
@@ -267,7 +267,7 @@ async fn two_native_peers_restore_signed_authority_without_fetching_the_tree() {
     prepare_join(&cache, workspace, person, joined).unwrap();
     super::super::check(&client.root, &cache).expect("existing joined authority is ready");
     // Nothing of the tree was fetched: the workspace's Files record publishes it.
-    assert!(!cache.join("namespace.bin").exists());
+    assert!(!cache.join("namespace").exists());
     assert!(!cache.join("blobs.db").exists());
     assert!(!cache.join("data").exists());
     hosted

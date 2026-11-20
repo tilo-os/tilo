@@ -88,9 +88,12 @@ impl Profile {
     }
 
     fn save_namespace(&self) {
-        std::fs::create_dir_all(self.cache()).expect("create cache");
-        std::fs::write(self.cache().join("namespace.bin"), b"retained namespace")
-            .expect("write namespace");
+        std::fs::create_dir_all(self.cache().join("namespace")).expect("create kept tree");
+        std::fs::write(
+            self.cache().join("namespace/0.automerge"),
+            b"retained namespace",
+        )
+        .expect("write a kept document");
     }
 
     fn save_authority(&self) {
@@ -170,7 +173,7 @@ tilo_test_env::scenario! {
         );
         assert!(profile.admin_argv().is_some(), "the authority check ran");
         assert!(
-            !profile.cache().join("namespace.bin").exists(),
+            !profile.cache().join("namespace").exists(),
             "the tree arrives with the first mount, from the Files record"
         );
     }
@@ -185,21 +188,18 @@ tilo_test_env::scenario! {
         assert!(!profile.cache().join("mount").exists());
         assert!(!profile.path("run").exists());
         assert_eq!(
-            std::fs::read(profile.cache().join("namespace.bin")).expect("namespace kept"),
+            std::fs::read(profile.cache().join("namespace/0.automerge")).expect("namespace kept"),
             b"retained namespace"
         );
     }
 
-    phase primary_launch_refuses_a_namespace_that_is_not_a_regular_file;
+    phase primary_launch_refuses_a_kept_tree_that_is_not_a_directory;
     {
         let profile = Profile::new(0);
         std::fs::create_dir_all(profile.cache()).expect("create cache");
         std::fs::write(profile.path("elsewhere"), b"namespace").expect("write target");
-        std::os::unix::fs::symlink(
-            profile.path("elsewhere"),
-            profile.cache().join("namespace.bin"),
-        )
-        .expect("symlink namespace");
+        std::os::unix::fs::symlink(profile.path("elsewhere"), profile.cache().join("namespace"))
+            .expect("symlink the kept tree");
         assert_not_ready(&profile.launch(&[]));
         assert!(!profile.cache().join("mount").exists());
         assert!(!profile.path("run").exists());
@@ -284,11 +284,13 @@ tilo_test_env::scenario! {
         );
         let defaults = Profile::new(0);
         std::fs::create_dir_all(defaults.path(".local/state/tilo/files")).expect("create cache");
+        std::fs::create_dir_all(defaults.path(".local/state/tilo/files/namespace"))
+            .expect("create kept tree");
         std::fs::write(
-            defaults.path(".local/state/tilo/files/namespace.bin"),
+            defaults.path(".local/state/tilo/files/namespace/0.automerge"),
             b"saved",
         )
-        .expect("write namespace");
+        .expect("write a kept document");
         let blank = [
             ("XDG_STATE_HOME", ""),
             ("XDG_DATA_HOME", ""),

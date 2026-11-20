@@ -372,7 +372,7 @@ mod tests {
             .unwrap();
             authority.apply(denied).unwrap();
             assert!(check(&temp.path().join("identity"), &cache).is_err());
-            assert!(!cache.join("namespace.bin").exists());
+            assert!(!cache.join("namespace").exists());
             assert!(!cache.join("mount").exists());
             assert!(!cache.join("workspace-ticket").exists());
             cert.signature[0] ^= 1;
@@ -394,7 +394,7 @@ mod tests {
             let envelope = WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &root)
                 .expect("signed existing policy");
             prepare_new(&cache, device, envelope.clone()).expect("explicit new fixture");
-            assert!(!cache.join("namespace.bin").exists());
+            assert!(!cache.join("namespace").exists());
             let authority = WorkspaceAuthority::open(
                 cache.join("workspace-authority.bin"),
                 workspace,

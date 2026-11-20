@@ -43,9 +43,9 @@ impl Host {
 
 /// Whether the workspace the profile persisted has `name` at its root.
 fn persisted(profile: &Path, name: &str) -> bool {
-    std::fs::read(profile.join(FILES).join(NAMESPACE))
+    KeptDocuments::open(&profile.join(FILES).join(NAMESPACE))
         .ok()
-        .and_then(|bytes| Namespace::from_bytes("reader", &bytes).ok())
+        .and_then(|(_, documents)| Namespace::from_records("reader", documents).ok())
         .is_some_and(|mut namespace| {
             namespace
                 .lookup(tilo_fs::namespace::ROOT_INO, name)

@@ -53,39 +53,94 @@ struct Cli {
 mod namespace_tests {
     use super::*;
 
-    /// The pre-chunk namespace fixture (`src/namespace/fixtures/pre-chunk-namespace.hex`).
-    fn pre_chunk_bytes() -> Vec<u8> {
-        let hex: String = include_str!("namespace/fixtures/pre-chunk-namespace.hex")
-            .split_whitespace()
-            .collect();
-        hex.as_bytes()
-            .chunks(2)
-            .map(|pair| {
-                u8::from_str_radix(std::str::from_utf8(pair).expect("ascii"), 16)
-                    .expect("the fixture is hex")
-            })
-            .collect()
-    }
-
+    /// Every change is journaled under the namespace's lock before the request that made it is
+    /// answered, so a process restarted at any instant holds it; saving then costs the documents
+    /// that changed, never the whole tree, and an unchanged tree is not written again.
     #[test]
-    fn an_older_image_s_namespace_is_set_aside_and_the_mount_starts_empty() {
+    fn a_change_is_kept_before_it_is_answered_and_costs_its_documents() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("namespace.bin");
-        std::fs::write(&path, pre_chunk_bytes()).unwrap();
-        let backups = fs::durable_backup::backup_dir(&path).unwrap();
+        let dir = temp.path().join("namespace");
+        assert!(!namespace_kept(&dir), "a fresh cache keeps no tree");
+        let (namespace, kept) = open_namespace("keeper".into(), Some(&dir)).unwrap();
+        let kept = kept.expect("a namespace with a directory is kept");
+        let namespace = Arc::new(Mutex::new(namespace));
+
+        namespace
+            .lock()
+            .unwrap()
+            .create_dir(fs::ROOT_INO, "placed", 1)
+            .unwrap();
+        kept.journal(&mut namespace.lock().unwrap()).unwrap();
+        assert!(namespace_kept(&dir), "the change is journaled");
+
+        let (mut restarted, _) = open_namespace("restarted".into(), Some(&dir)).unwrap();
+        assert!(
+            restarted.lookup(fs::ROOT_INO, "placed").is_some(),
+            "a process restarted after the change holds it"
+        );
+
+        keep_now(&namespace, &kept);
+        namespace
+            .lock()
+            .unwrap()
+            .create_dir(fs::ROOT_INO, "saved", 2)
+            .unwrap();
+        kept.journal(&mut namespace.lock().unwrap()).unwrap();
+        keep_now(&namespace, &kept);
+        let (mut again, _) = open_namespace("again".into(), Some(&dir)).unwrap();
+        for name in ["placed", "saved"] {
+            assert!(again.lookup(fs::ROOT_INO, name).is_some(), "{name}");
+        }
+        drop(again);
+        let kept_heads = namespace.lock().unwrap().document_heads();
+        let digest = keep_generation(&namespace, &kept).unwrap();
+        assert_eq!(
+            keep_generation(&namespace, &kept).unwrap(),
+            digest,
+            "saving an unchanged tree is the same generation"
+        );
+        let (mut third, _) = open_namespace("third".into(), Some(&dir)).unwrap();
+        assert_eq!(
+            third.document_heads(),
+            kept_heads,
+            "the saved documents hold the generation the proof named"
+        );
+    }
+}
+
+#[cfg(test)]
+mod legacy_namespace_tests {
+    use super::*;
+
+    /// A cache a previous build filled has the whole tree in one file beside where the kept
+    /// documents go; the file is set aside and the mount keeps the documents it has.
+    #[test]
+    fn a_previous_build_s_one_file_namespace_is_set_aside() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("namespace");
+        let (namespace, kept) = open_namespace("keeper".into(), Some(&dir)).unwrap();
+        let kept = kept.expect("a namespace with a directory is kept");
+        let namespace = Arc::new(Mutex::new(namespace));
+        namespace
+            .lock()
+            .unwrap()
+            .create_file(fs::ROOT_INO, "kept.txt", None, 0, 1)
+            .unwrap();
+        kept.journal(&mut namespace.lock().unwrap()).unwrap();
+
+        let legacy = temp.path().join("namespace.bin");
+        std::fs::write(&legacy, b"one whole document").unwrap();
+        let backups = fs::durable_backup::backup_dir(&legacy).unwrap();
         std::fs::create_dir_all(&backups).unwrap();
         std::fs::write(backups.join("generation-1.bak"), b"older").unwrap();
 
-        let mut opened = open_namespace("updated".into(), Some(&path))
-            .expect("an older image's namespace does not keep the mount down");
+        let (mut reopened, _) = open_namespace("restarted".into(), Some(&dir))
+            .expect("a previous build's file does not keep the mount down");
         assert!(
-            opened.lookup(fs::ROOT_INO, "notes").is_none(),
-            "the mount starts from an empty tree, not the older one's"
+            reopened.lookup(fs::ROOT_INO, "kept.txt").is_some(),
+            "the kept documents are what the mount reads"
         );
-        assert!(
-            !path.exists(),
-            "the older namespace is no longer read in place"
-        );
+        assert!(!legacy.exists(), "the one-file namespace is out of the way");
         let names: Vec<String> = std::fs::read_dir(temp.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -94,60 +149,13 @@ mod namespace_tests {
             names
                 .iter()
                 .any(|name| name.starts_with("namespace.bin.older-image-")),
-            "the older namespace is kept: {names:?}"
+            "the previous build's file is kept: {names:?}"
         );
         assert!(
             names
                 .iter()
                 .any(|name| name.starts_with(".namespace.bin.") && name.contains(".older-image-")),
             "its generations are kept with it: {names:?}"
-        );
-
-        // A namespace in the current layout that does not read is still damage: refused, untouched.
-        let damaged = temp.path().join("damaged.bin");
-        std::fs::write(&damaged, b"tilotree\x00\x00").unwrap();
-        assert!(open_namespace("updated".into(), Some(&damaged)).is_err());
-        assert!(damaged.exists(), "damage is left for durable recovery");
-    }
-
-    /// Every `fsync` asks for the namespace to be durable, so asking costs a
-    /// write only when the document changed since this process last wrote
-    /// it, by any path: the barrier itself or the full generation write.
-    #[test]
-    fn the_namespace_barrier_writes_only_a_changed_document() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("namespace.bin");
-        let namespace = Arc::new(Mutex::new(Namespace::new("barrier").unwrap()));
-        persist_namespace_changes(&namespace, &path).unwrap();
-        assert!(path.exists(), "the first barrier writes the document");
-
-        std::fs::remove_file(&path).unwrap();
-        persist_namespace_changes(&namespace, &path).unwrap();
-        assert!(!path.exists(), "an unchanged document is not written again");
-
-        namespace
-            .lock()
-            .unwrap()
-            .create_dir(fs::ROOT_INO, "placed", 1)
-            .unwrap();
-        persist_namespace_changes(&namespace, &path).unwrap();
-        let mut reopened = load_namespace(&path, "restarted".into()).unwrap();
-        assert!(
-            reopened.lookup(fs::ROOT_INO, "placed").is_some(),
-            "a changed document is written before the barrier returns"
-        );
-
-        namespace
-            .lock()
-            .unwrap()
-            .create_dir(fs::ROOT_INO, "checkpointed", 2)
-            .unwrap();
-        persist_namespace_generation(&namespace, &path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        persist_namespace_changes(&namespace, &path).unwrap();
-        assert!(
-            !path.exists(),
-            "a generation written another way already satisfies the barrier"
         );
     }
 }
@@ -1126,10 +1134,9 @@ async fn replica_workspace(
     for peer in &bootstrap {
         hydrator.add_peer(peer.clone());
     }
-    let namespace = Arc::new(Mutex::new(open_namespace(
-        endpoint.id().to_string(),
-        namespace_path.as_deref(),
-    )?));
+    let (namespace_value, kept) =
+        open_namespace(endpoint.id().to_string(), namespace_path.as_deref())?;
+    let namespace = Arc::new(Mutex::new(namespace_value));
     // A home peer keeps the workspace's tree and every byte it names: the
     // tree is the Files record it follows, and the content it hydrates.
     let workspace = Workspace::join(
@@ -1144,9 +1151,11 @@ async fn replica_workspace(
         &ticket,
         Some(&Arc::new(authority)),
     )?;
-    let _persist = namespace_path
+    // Compacts the tree's documents while the daemon serves; the record mesh keeps the fresh
+    // ones.
+    let _keeper = kept
         .clone()
-        .map(|path| spawn_persist(Arc::clone(&namespace), path));
+        .map(|kept| spawn_keeper(Arc::clone(&namespace), kept));
     println!("Home peer joined workspace; hydrating complete content replica.");
     let mut hydrated_namespace = None;
     let mut wait = ReplicaWait::new(&namespace);
@@ -1195,10 +1204,10 @@ async fn replica_workspace(
             // Do not advertise a content-complete generation until its namespace roots are
             // durable too, or it could not prove which retained blobs are live after the owner
             // goes offline.
-            let Some(path) = namespace_path.as_ref() else {
+            let Some(kept) = kept.as_ref() else {
                 status = fs::full_replica::FullReplicaStatus::syncing();
                 status.state = "failed".into();
-                status.error = Some("home peer has no durable namespace path".into());
+                status.error = Some("home peer keeps no durable workspace tree".into());
                 let _ = status_tx.send((index, status)).await;
                 wait.retry().await;
                 continue;
@@ -1206,7 +1215,7 @@ async fn replica_workspace(
             // Unchanged heads before and after the save prove it persisted
             // exactly the generation just verified.
             let unchanged_before = replica_namespace_fingerprint(&namespace) == after;
-            match persist_namespace_generation(&namespace, path) {
+            match keep_generation(&namespace, kept) {
                 Ok(persisted)
                     if unchanged_before && replica_namespace_fingerprint(&namespace) == after =>
                 {
@@ -1345,8 +1354,8 @@ async fn serve(
             hydrator.add_peer(peer.endpoint);
         }
     }
-    let fresh = !np.as_ref().is_some_and(|path| path.exists());
-    let ns_value = open_namespace(author.clone(), np.as_deref())?;
+    let fresh = np.as_ref().is_none_or(|dir| !namespace_kept(dir));
+    let (ns_value, kept) = open_namespace(author.clone(), np.as_deref())?;
     let namespace = Arc::new(Mutex::new(ns_value));
     // This mount's tree, as the Files app's person record of the workspace that holds it: this
     // daemon is the app's windowless endpoint, so what changes here reaches the person's other
@@ -1477,12 +1486,14 @@ async fn serve(
         .clone()
         .filter(|_| !joined_remote)
         .and_then(|cache_dir| follow_session_address(&net, cache_dir, ticket.clone()));
-    let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
+    let keeper = kept
+        .clone()
+        .map(|kept| spawn_keeper(namespace.clone(), kept));
     let mount_outcome = run_mount(
         MountConfig {
             workspace_id,
             mount_point,
-            namespace_path: np.clone(),
+            kept: kept.clone(),
             predictive_cache_root: cache_dir.clone(),
             thumb_dir,
             storage_sock,
@@ -1500,7 +1511,7 @@ async fn serve(
         },
     )
     .await?;
-    final_flush(persist, &namespace, np.as_deref()).await;
+    final_flush(keeper, &namespace, kept.as_ref()).await;
     if let Some(task) = authority_socket_task {
         task.abort();
     }
@@ -1568,7 +1579,8 @@ async fn mount(
         hydrator.add_peer(peer.clone());
     }
 
-    let namespace = Arc::new(Mutex::new(open_namespace(author, np.as_deref())?));
+    let (namespace, kept) = open_namespace(author, np.as_deref())?;
+    let namespace = Arc::new(Mutex::new(namespace));
     // The shared workspace's Files record holds this tree for every member: a mount that has none
     // yet is given it whole.
     let _tree_document = fs::tree_document::spawn(
@@ -1604,12 +1616,14 @@ async fn mount(
     println!("Iroh NodeID: {}", net.id());
     println!("Joined workspace.");
 
-    let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
+    let keeper = kept
+        .clone()
+        .map(|kept| spawn_keeper(namespace.clone(), kept));
     run_mount(
         MountConfig {
             workspace_id,
             mount_point,
-            namespace_path: np.clone(),
+            kept: kept.clone(),
             predictive_cache_root: cache_dir,
             thumb_dir,
             storage_sock,
@@ -1627,13 +1641,20 @@ async fn mount(
         },
     )
     .await?;
-    final_flush(persist, &namespace, np.as_deref()).await;
+    final_flush(keeper, &namespace, kept.as_ref()).await;
     drop(workspace);
     Ok(())
 }
 
+/// The directory the mount keeps its tree's documents in, each with the journal of the changes
+/// it has made since it was last saved.
 fn namespace_path(cache_dir: Option<&Path>) -> Option<PathBuf> {
-    cache_dir.map(|d| d.join("namespace.bin"))
+    cache_dir.map(|d| d.join("namespace"))
+}
+
+/// Whether `dir` already holds kept documents: a workspace this device has opened before.
+fn namespace_kept(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// Where host-generated thumbnails are cached (`thumbs/` under the content cache); `None` for an in-memory mount.
@@ -1661,151 +1682,110 @@ fn open_eviction_queue(
         .map_err(Into::into)
 }
 
-/// Atomically persist the namespace document and retain bounded known-good generations. A
-/// damaged primary is never overwritten by the live daemon.
-fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
-    if let Err(error) = persist_namespace_generation(namespace, path) {
-        eprintln!("namespace persist to {} failed: {error}", path.display());
+type KeptTree = fs::kept_documents::KeptDocuments;
+
+/// Save the tree's documents that changed since their last save, and answer the digest of the
+/// heads they are durable at: what an always-on peer proves the generation it published with, so
+/// a ready device can always reopen the same tree after a power loss.
+fn keep_generation(namespace: &Arc<Mutex<Namespace>>, kept: &KeptTree) -> Result<[u8; 32]> {
+    kept.keep(namespace)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"tilo.fs.namespace-generation.v1\0");
+    for (chunk, heads) in namespace.lock_recover().document_heads() {
+        hasher.update(&chunk.to_le_bytes());
+        hasher.update(&(heads.len() as u64).to_le_bytes());
+        for head in heads {
+            hasher.update(head.as_ref());
+        }
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Save what changed now; a failure is reported, and the journals keep the changes until the
+/// next save.
+fn keep_now(namespace: &Arc<Mutex<Namespace>>, kept: &KeptTree) {
+    if let Err(error) = kept.keep(namespace) {
+        eprintln!("saving the workspace tree failed: {error}");
     }
 }
 
-/// Atomically persist one exact namespace generation and return its digest. A full-replica
-/// readiness proof is published only after this succeeds, so a ready NAS can always reopen the
-/// same namespace after a power loss.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "The namespace lock must cover durable replacement so concurrent writers cannot reuse the process-scoped native::atomic temporary path."
-)]
-fn persist_namespace_generation(
-    namespace: &Arc<Mutex<Namespace>>,
-    path: &Path,
-) -> Result<[u8; 32]> {
-    // Keep the namespace lock through the durable replacement: transactional projections use the
-    // same lock, and it keeps two same-process writers from sharing native::atomic's
-    // process-scoped temporary pathname.
-    let mut namespace = namespace.lock_recover();
-    let bytes = namespace.save();
-    let digest = *blake3::hash(&bytes).as_bytes();
-    // Bytes this process produced with `save()` are a valid document by construction; parsing
-    // them again costs a full document load per save, under the namespace lock. Anything else
-    // found on disk is still fully validated.
-    let last = persisted_generations()
-        .lock_recover()
-        .get(path)
-        .map(|generation| generation.digest);
-    fs::durable_backup::write(path, &bytes, |candidate| {
-        let candidate_digest = *blake3::hash(candidate).as_bytes();
-        candidate_digest == digest
-            || Some(candidate_digest) == last
-            || Namespace::from_bytes("namespace-backup-validator", candidate).is_ok()
-    })?;
-    let heads = namespace.heads();
-    persisted_generations()
-        .lock_recover()
-        .insert(path.to_path_buf(), PersistedGeneration { digest, heads });
-    Ok(digest)
-}
-
-/// Persist the namespace at `path` unless the last document this process wrote there already
-/// holds it: the same heads mean the same document. An idle namespace costs a heads comparison,
-/// which is what lets every `fsync` ask for it.
-fn persist_namespace_changes(namespace: &Arc<Mutex<Namespace>>, path: &Path) -> Result<()> {
-    let heads = namespace.lock_recover().heads();
-    let written = persisted_generations()
-        .lock_recover()
-        .get(path)
-        .is_some_and(|generation| generation.heads == heads);
-    if written {
-        return Ok(());
-    }
-    persist_namespace_generation(namespace, path).map(drop)
-}
-
-struct PersistedGeneration {
-    digest: [u8; 32],
-    heads: Vec<automerge::ChangeHash>,
-}
-
-fn persisted_generations() -> &'static Mutex<std::collections::HashMap<PathBuf, PersistedGeneration>>
-{
-    static WRITTEN: std::sync::OnceLock<
-        Mutex<std::collections::HashMap<PathBuf, PersistedGeneration>>,
-    > = std::sync::OnceLock::new();
-    WRITTEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-}
-
-fn load_namespace(path: &Path, author: String) -> Result<Namespace> {
-    let outcome = fs::durable_backup::read_or_recover(path, |bytes| {
-        Namespace::from_bytes("namespace-backup-validator", bytes).is_ok()
-    })?
-    .with_context(|| format!("namespace disappeared while opening {}", path.display()))?;
-    report_namespace_recovery(path, outcome.recovery.as_ref());
-    Ok(Namespace::from_bytes(author, &outcome.bytes)?)
-}
-
-fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::RecoveryEvidence>) {
-    if let Some(recovery) = recovery {
-        eprintln!(
-            "RECOVERED damaged namespace {} from {}; preserved evidence at {}; receipt at {}",
-            path.display(),
-            recovery.backup_path.display(),
-            recovery.damaged_evidence_path.display(),
-            recovery.receipt_path.display()
-        );
-    }
-}
-
-/// Persists the namespace whenever it changes and settles ([`fs::namespace_persist`]); nothing
-/// runs while it is idle.
-fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task::JoinHandle<()> {
+/// Saves each document of the tree whole now and then while changes keep arriving
+/// ([`fs::namespace_persist`]), letting its journal go; an idle tree costs nothing.
+fn spawn_keeper(
+    namespace: Arc<Mutex<Namespace>>,
+    kept: Arc<KeptTree>,
+) -> tokio::task::JoinHandle<()> {
     fs::namespace_persist::spawn_persister(namespace, move |namespace| {
-        persist_namespace_changes(namespace, &path).inspect_err(|error| {
-            eprintln!("namespace persist to {} failed: {error}", path.display());
-        })
+        kept.keep(namespace)
+            .inspect_err(|error| eprintln!("saving the workspace tree failed: {error}"))
+            .map_err(Into::into)
     })
 }
 
-/// The last write of a mount, on shutdown and unmount: stops its persister (waiting, so the two
-/// never write at once), then writes the document as it is now.
+/// The last save of a mount, on shutdown and unmount: stops its keeper (waiting, so the two never
+/// save at once), then saves what changed.
 async fn final_flush(
-    persister: Option<tokio::task::JoinHandle<()>>,
+    keeper: Option<tokio::task::JoinHandle<()>>,
     namespace: &Arc<Mutex<Namespace>>,
-    path: Option<&Path>,
+    kept: Option<&Arc<KeptTree>>,
 ) {
-    if let Some(persister) = persister {
-        persister.abort();
-        let _ = persister.await;
+    if let Some(keeper) = keeper {
+        keeper.abort();
+        let _ = keeper.await;
     }
-    if let Some(path) = path {
-        persist_now(namespace, path);
+    if let Some(kept) = kept {
+        keep_now(namespace, kept);
     }
 }
 
-/// A mount's namespace: the persisted copy at `np`, or an empty tree the workspace's Files record
-/// fills. A copy an older image saved in a layout this build no longer reads (before the tree was
-/// kept in chunks) is set aside with its retained generations and the mount starts from an empty
-/// tree, which the workspace's Files fill again: an update never keeps the mount, and the
-/// session that needs it, down on it. Anything else unreadable stays a refusal for durable
-/// recovery.
-fn open_namespace(author: String, np: Option<&Path>) -> Result<Namespace> {
-    let Some(path) = np.filter(|path| path.exists()) else {
-        return Ok(Namespace::new(author)?);
+/// A mount's namespace: the documents kept at `dir`, each with its journal of later changes, or
+/// an empty tree the workspace's Files record fills. Every change is journaled before the request
+/// that made it is answered, so a process killed at any instant starts again holding every change
+/// it answered for.
+fn open_namespace(
+    author: String,
+    dir: Option<&Path>,
+) -> Result<(Namespace, Option<Arc<KeptTree>>)> {
+    let Some(dir) = dir else {
+        return Ok((Namespace::new(author)?, None));
     };
-    let older = std::fs::read(path).is_ok_and(|bytes| Namespace::is_pre_chunk_save(&bytes));
-    if !older {
-        return load_namespace(path, author);
+    // The build before this kept the whole tree in `namespace.bin` beside the kept documents;
+    // nothing reads it now, so it is set aside with the generations it kept rather than left
+    // looking like state this mount keeps.
+    let legacy = dir.with_file_name("namespace.bin");
+    if legacy.exists() {
+        let kept = set_aside_older_namespace(&legacy)?;
+        eprintln!(
+            "namespace {} was kept by an earlier build in one file; kept it as {}; this mount \
+             keeps the tree's documents at {}",
+            legacy.display(),
+            kept.display(),
+            dir.display()
+        );
     }
-    let kept = set_aside_older_namespace(path)?;
-    eprintln!(
-        "namespace {} was saved by an older image in a layout this build does not read; kept it \
-         as {} and started from an empty tree the workspace's Files fill again",
-        path.display(),
-        kept.display()
-    );
-    Ok(Namespace::new(author)?)
+    let (kept, documents) = KeptTree::open(dir)
+        .with_context(|| format!("open the kept workspace tree at {}", dir.display()))?;
+    let (mut namespace, read) = if documents.is_empty() {
+        (Namespace::new(author)?, std::collections::BTreeMap::new())
+    } else {
+        match Namespace::from_documents_read(author.clone(), documents) {
+            Ok(opened) => opened,
+            Err(error) => {
+                // A document or one of its journals is damaged. The documents' last saves are
+                // whole, so losing only the changes since them beats refusing the workspace.
+                eprintln!(
+                    "the workspace tree at {} does not read ({error}); starting from its last saves",
+                    dir.display()
+                );
+                Namespace::from_documents_read(author, kept.saved_only()?)?
+            }
+        }
+    };
+    kept.opened(&mut namespace, read)?;
+    Ok((namespace, Some(Arc::new(kept))))
 }
 
-/// Move the namespace at `path`, and the directory of its retained generations, aside as
+/// Move the namespace file at `path`, and the directory of its retained generations, aside as
 /// `<name>.older-image-<unix seconds>`; returns where the namespace went.
 fn set_aside_older_namespace(path: &Path) -> Result<PathBuf> {
     let secs = std::time::SystemTime::now()
@@ -1850,9 +1830,9 @@ fn fuse_worker_threads() -> usize {
 struct MountConfig {
     workspace_id: uuid::Uuid,
     mount_point: PathBuf,
-    /// Where the namespace is persisted, if anywhere: `fsync`, `fsyncdir` and native changesets
-    /// write it there before they return.
-    namespace_path: Option<PathBuf>,
+    /// The tree's documents kept on disk, if anywhere: every change is journaled there before
+    /// the request that made it is answered.
+    kept: Option<Arc<KeptTree>>,
     predictive_cache_root: Option<PathBuf>,
     thumb_dir: Option<PathBuf>,
     storage_sock: Option<PathBuf>,
@@ -1878,7 +1858,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let MountConfig {
         workspace_id,
         mount_point,
-        namespace_path: durable_namespace_path,
+        kept,
         predictive_cache_root,
         thumb_dir,
         storage_sock,
@@ -1920,11 +1900,11 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // Hydrator-only proof or direct blob deletion.
     let storage_availability = availability.clone();
     let storage_eviction_queue = eviction_queue.clone();
-    let durable_namespace = Arc::clone(&namespace);
-    #[cfg(target_os = "linux")]
-    let signalled_namespace = Arc::clone(&namespace);
     #[cfg(target_os = "linux")]
     let signalled_availability = availability.clone();
+    // The watcher that turns a folder's own changes into signals reads the tree too.
+    #[cfg(target_os = "linux")]
+    let signalled_namespace = Arc::clone(&namespace);
     let fs = QuickFS::new(namespace, hydrator, heuristics);
     let fs = match availability {
         Some(registry) => fs.with_availability(registry),
@@ -2041,13 +2021,13 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             }
         });
 
-    // Both backends: the native backend after each changeset, FUSE on `fsync`
-    // and `fsyncdir`.
-    if let Some(path) = durable_namespace_path {
-        fs.set_durability_hook(Arc::new(move || {
-            persist_namespace_changes(&durable_namespace, &path).map_err(std::io::Error::other)
-        }));
-    }
+    // Both backends: every change the mount makes is journaled on disk under the namespace's
+    // lock, before the request that made it is answered, so a process killed at any instant
+    // starts again holding every change it answered for.
+    let fs = match kept.clone() {
+        Some(kept) => fs.with_change_journal(Arc::new(move |namespace| kept.journal(namespace))),
+        None => fs,
+    };
     #[cfg(target_os = "linux")]
     if let Some((args, device)) = backend.as_ref()
         && let Some(cfg) = native_config(

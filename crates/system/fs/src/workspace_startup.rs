@@ -40,9 +40,24 @@ fn regular_file(path: &Path) -> Result<bool> {
     }
 }
 
+/// Whether the tree's kept documents are there: the directory exists and holds a document or a
+/// journal of one.
+fn kept_documents(dir: &Path) -> Result<bool> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("inspect the kept workspace tree"),
+    };
+    for entry in entries {
+        entry.context("inspect the kept workspace tree")?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
     let saved_authority = regular_file(&cache.join("workspace-authority.bin"))?;
-    let saved_namespace = regular_file(&cache.join("namespace.bin"))?;
+    let saved_namespace = kept_documents(&cache.join("namespace"))?;
     let ticket_path = cache.join("workspace-ticket");
     let local_workspace_id = if regular_file(&ticket_path)? {
         let metadata = std::fs::metadata(&ticket_path)?;
@@ -207,7 +222,7 @@ mod tests {
             .unwrap()
             .apply(envelope)
             .unwrap();
-            assert!(!dir.path().join("namespace.bin").exists());
+            assert!(!dir.path().join("namespace").exists());
             inspect(dir.path()).unwrap().require_existing().unwrap();
             assert_eq!(inspect(dir.path()).unwrap().discovered_workspace_id, None);
         }
@@ -248,7 +263,7 @@ mod tests {
             )
             .unwrap();
             assert!(inspect(dir.path()).unwrap().require_existing().is_err());
-            assert!(!dir.path().join("namespace.bin").exists());
+            assert!(!dir.path().join("namespace").exists());
         }
 
         phase discovered_binding_is_resumeable_and_output_never_contains_ticket;
@@ -261,13 +276,18 @@ mod tests {
             assert_eq!(status.discovered_workspace_id, Some(binding.workspace_id()));
             let json = serde_json::to_string(&status).unwrap();
             assert!(!json.contains(&binding.encode().unwrap()));
-            assert!(!dir.path().join("namespace.bin").exists());
+            assert!(!dir.path().join("namespace").exists());
         }
 
         phase saved_namespace_cannot_be_rebound_to_another_workspace;
         {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("namespace.bin"), b"existing durable state").unwrap();
+            std::fs::create_dir_all(dir.path().join("namespace")).unwrap();
+            std::fs::write(
+                dir.path().join("namespace/0.automerge"),
+                b"existing durable state",
+            )
+            .unwrap();
             std::fs::write(
                 dir.path().join("workspace-ticket"),
                 ticket(3).encode().unwrap(),
@@ -277,7 +297,7 @@ mod tests {
             discover(dir.path(), &ticket(4));
             assert!(inspect(dir.path()).is_err());
             assert_eq!(
-                std::fs::read(dir.path().join("namespace.bin")).unwrap(),
+                std::fs::read(dir.path().join("namespace/0.automerge")).unwrap(),
                 b"existing durable state"
             );
         }

@@ -46,24 +46,6 @@ mod index_walk_tests;
 mod kernel_changes;
 mod leases;
 mod posix;
-#[cfg(test)]
-mod pre_chunk_tests;
-
-/// A namespace the pre-chunk code saved (beca68fe58c^, a tree of `notes/plan.md`), kept as hex
-/// text: the bytes a machine kept until it updated past that commit.
-#[cfg(test)]
-pub(crate) fn pre_chunk_fixture() -> Vec<u8> {
-    let hex: String = include_str!("namespace/fixtures/pre-chunk-namespace.hex")
-        .split_whitespace()
-        .collect();
-    hex.as_bytes()
-        .chunks(2)
-        .map(|pair| {
-            u8::from_str_radix(std::str::from_utf8(pair).expect("ascii"), 16)
-                .expect("the fixture is hex")
-        })
-        .collect()
-}
 mod trash;
 pub use changesets::ChangesetMark;
 use chunks::Chunks;

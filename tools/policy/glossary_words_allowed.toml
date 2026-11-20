@@ -1742,3 +1742,8 @@ paths = ["crates/system/fs/src/caps_file.rs"]
 reason = "The size ladder's measurement harnesses: one run of a measured scenario, the workspace's tree chunks as the fs crates' own records, and a joining device's host daemon."
 words = ["run", "record", "host"]
 paths = ["crates/system/fs/tests/workspace_ladder.rs", "crates/system/fs/tests/native_sync_bench.rs", "tools/ci/fs-workspace-scale.sh"]
+
+[[allow]]
+reason = "The workspace tree's own vocabulary: fs_protocol keeps the tree as records (its own record and one per chunk), the tree travels as the workspace's Files record, and the daemon, its tests and the standalone runtime name them so."
+words = ["record"]
+paths = ["crates/system/fs/src/main.rs", "crates/system/fs/src/namespace*", "crates/system/fs/tests/native_tier1.rs", "crates/system/fs/tests/workspace_ladder.rs", "crates/runtime/tilo-runtime/src/standalone/*"]

@@ -680,12 +680,9 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
 }
 
 fn persisted_namespace(cache: &Path) -> fs::Namespace {
-    let outcome = fs::durable_backup::read_or_recover(&cache.join("namespace.bin"), |bytes| {
-        fs::Namespace::from_bytes("reader", bytes).is_ok()
-    })
-    .unwrap()
-    .unwrap();
-    fs::Namespace::from_bytes("reader", &outcome.bytes).unwrap()
+    let (_kept, documents) =
+        fs::kept_documents::KeptDocuments::open(&cache.join("namespace")).unwrap();
+    fs::Namespace::from_records("reader", documents).unwrap()
 }
 
 /// When each file at `paths` last had its content written.
