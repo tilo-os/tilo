@@ -308,6 +308,9 @@ function start() {
   let lastFocus = null;
   let restoring = true;
   const settled = new Map();
+  // What was asked and not answered yet, in the order it was sent: an ask the
+  // server answered by opening the document again is sent again.
+  const sent = [];
 
   const say = (state, words) => {
     page.dataset.state = state;
@@ -326,7 +329,22 @@ function start() {
     if (!link) return;
     unanswered++;
     working ??= setTimeout(() => { page.dataset.working = ''; }, 300);
+    sent.push({value, tries: 0});
     link.send(value).catch(() => {});
+  };
+  // The app was still working on what was asked past the time the server
+  // waits: it opened the document again from what the workspace holds, and
+  // what was asked did not reach it. The ask goes again, quietly — what the
+  // person typed stays in the field while it does, and lands on the document
+  // as it is now. A document that keeps reopening is shown again whole.
+  const reopened = asked => {
+    if (!asked || !link) return;
+    if (asked.tries >= 2) { ask({open: addressOf()}); return; }
+    asked.tries++;
+    unanswered++;
+    working ??= setTimeout(() => { page.dataset.working = ''; }, 300);
+    sent.push(asked);
+    link.send(asked.value).catch(() => {});
   };
   const caughtUp = () => {
     if (unanswered > 0) return;
@@ -433,7 +451,29 @@ function start() {
     }
   };
 
+  // The field the person is typing in, its text and the caret's place: a page
+  // that replaces itself under them puts them back as they were, so no key
+  // they pressed is lost.
+  const typingHeld = () => {
+    const active = document.activeElement;
+    const key = active && page.contains(active) && editing(active) && keyOf(active);
+    if (!key) return null;
+    return {key, value: valueOf(active), start: active.selectionStart, end: active.selectionEnd};
+  };
+  const typingBack = held => {
+    const field = held && page.querySelector(held.key);
+    if (!field) return;
+    if (field.matches('input,textarea')) {
+      field.value = held.value;
+      if (held.start != null) field.setSelectionRange(held.start, held.end);
+    } else {
+      field.textContent = held.value;
+    }
+    field.focus({preventScroll: true});
+  };
+
   const show = ({title, css, body}) => {
+    const held = typingHeld();
     document.title = title;
     style.textContent = css;
     delete page.dataset.state;
@@ -443,6 +483,7 @@ function start() {
     const focused = focus && page.querySelector(`[data-p="${focus}"]`);
     lastFocus = focus ?? null;
     if (focused && editing(focused)) focused.focus({preventScroll: true});
+    typingBack(held);
     follow();
     if (!performance.getEntriesByName('tilo-page-shown').length) performance.mark('tilo-page-shown');
   };
@@ -451,7 +492,16 @@ function start() {
     if (answer === 'loading') { say('loading'); return; }
     if (answer.changed) { restoring = true; patch(answer.changed); return; }
     unanswered = Math.max(0, unanswered - 1);
+    const asked = sent.shift();
     caughtUp();
+    // Its document was opened again past a slow request, or the page it acted
+    // on is gone (the session under it restarted): nothing the ask did was
+    // applied, so it is sent again as it is. The person sees no error, and
+    // nothing they typed leaves the field.
+    if (answer.refused?.reopened || (answer.refused?.unavailable && page.querySelector('[data-p]'))) {
+      reopened(asked);
+      return;
+    }
     if (answer.shown) show(answer.shown);
     else if (answer.patched) patch(answer.patched);
     else if (answer.refused) {
@@ -547,6 +597,7 @@ function start() {
       link.close();
       link = null;
       unanswered = 0;
+      sent.length = 0;
       caughtUp();
       if (page.querySelector('[data-p]')) {
         // The session ended under an open page: open it again.
