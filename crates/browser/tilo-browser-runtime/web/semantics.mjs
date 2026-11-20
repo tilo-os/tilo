@@ -558,13 +558,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         state.canonicalValue=value;
         state.canonicalSelection=selection;
         if(!state.composing&&!unchanged){
-          const scroll=[element.scrollLeft,element.scrollTop];
+          // Only the field the person is in shows where it is scrolled to;
+          // reading another's scroll laid the page out once per field, and
+          // opening a page of fields (an issue) read every one of them.
+          const kept=element===document.activeElement;
+          const scroll=kept&&[element.scrollLeft,element.scrollTop];
           if(element.value!==value)element.value=value;
           if(state.canonicalSelection){
             setCanonicalSelection(element,state.canonicalSelection);
             state.lastSelection=[...state.canonicalSelection];
           }
-          [element.scrollLeft,element.scrollTop]=scroll;
+          if(kept)[element.scrollLeft,element.scrollTop]=scroll;
         }
       }
       else if(changed&&!node.children?.length)element.textContent=value||node.name||'';

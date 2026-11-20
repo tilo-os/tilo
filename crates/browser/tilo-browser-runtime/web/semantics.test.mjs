@@ -866,6 +866,25 @@ test('the mirror rewrites only the elements of nodes a patch changed',()=>{
   assert.equal(find(root,'Message').dataset.tiloFocused,'true','focus stays on the composer');
 });
 
+test('a page of new fields reads the scroll of the one the person is in only',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const field=(key,value)=>({path:`issue/${key}`,semantics:{semantic_key:key,role:'MultilineTextInput',value,text_selection:{anchor:0,focus:0}}});
+  const page=texts=>({root:{path:'issue',semantics:{role:'Group',name:'Issue'},children:texts.map((text,i)=>field(`block-${i}`,text))}});
+  bridge.update(page(['Title','First paragraph','Second paragraph','A comment']));
+  // Each node of the tree that says something is its own element under the root.
+  const fields=root.children.filter(element=>element.tiloEditable);
+  document.activeElement=fields[1];fields[1].scrollTop=42;
+  // Reading a field's scroll makes the browser lay the page out first: one
+  // layout per field each time an issue with many fields opens.
+  let reads=0;
+  for(const f of fields)for(const name of ['scrollLeft','scrollTop']){let held=f[name];Object.defineProperty(f,name,{get(){reads++;return held;},set(v){held=v;},configurable:true});}
+  bridge.update(page(['Another title','Its paragraph','Its second','Its comment']));
+  assert.deepEqual(fields.map(f=>f.value),['Another title','Its paragraph','Its second','Its comment']);
+  assert.equal(reads,2,'only the focused field keeps its scroll');
+  assert.equal(fields[1].scrollTop,42);
+  document.activeElement=null;
+});
+
 test('a field that only moved is left alone: its scroll is not read and its value and selection not set again',()=>{
   const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
   const tree=(y,value='Paragraph one',focus=3)=>({root:{path:'note',semantics:{semantic_key:'block',role:'MultilineTextInput',value,text_selection:{anchor:focus,focus},bounds:{x0:0,y0:y,x1:400,y1:y+40}}}});
