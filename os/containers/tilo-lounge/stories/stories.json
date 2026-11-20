@@ -69,7 +69,6 @@
       "steps": [
         "Ada opens Tilo",
         "Ada gives their name",
-        "Ada makes a workspace, “Studio”",
         "Ada drops a photo and a PDF on the page",
         "Ada runs `tilo login` and copies a document into the workspace folder",
         "Ada copies a spreadsheet in with the `tilo` command",
@@ -83,7 +82,6 @@
       "driver": "agent-mcp.mjs",
       "steps": [
         "Ada opens Tilo",
-        "Ada makes a workspace, “Workshop”",
         "Ada connects their agent to the workspace",
         "The agent writes a file",
         "The agent adds a Tasks issue",

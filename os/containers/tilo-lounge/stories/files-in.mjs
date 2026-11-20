@@ -19,7 +19,7 @@ import {join} from 'node:path';
 import {deflateSync} from 'node:zlib';
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from '../integration/waits.mjs';
-import {click, giveName, key, makeWorkspace, openWorkspace, searcher, settled, showsText as shows, waitUntil}
+import {click, giveName, key, searcher, settled, showsText as shows, waitUntil}
   from '../integration/shell.mjs';
 import {computerAt} from './computer.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
@@ -151,7 +151,7 @@ const pressPageButton = async (tab, id, what) => {
 };
 
 const story = recorder({id: 'files-in', out, logs});
-const WORKSPACE = 'Studio';
+let workspace = '';
 const computer = computerAt(out, {namespace: true});
 let folder = null;
 let error = null;
@@ -176,12 +176,8 @@ try {
     await until(ada.tab, 'globalThis.tiloMount?.state()?.searchOpen === true', 'the search opening');
     await search(ada.tab, adaKeys, 'set your name', 'Set your name');
     await giveName(ada.tab, 'Ada');
-  });
-
-  await story.step(`Ada makes a workspace, “${WORKSPACE}”`, async () => {
-    await search(ada.tab, adaKeys, 'new workspace', 'New workspace');
-    await makeWorkspace(ada.tab, WORKSPACE);
-    await until(ada.tab, openWorkspace(WORKSPACE), `${WORKSPACE} opening`, stepLimit(10));
+    workspace = await ada.tab.evaluate('globalThis.tiloMount?.state?.()?.workspaceName ?? ""');
+    if (!workspace) fail('the page shows no workspace to bring files into');
     await settled(ada.tab);
   });
 
@@ -238,9 +234,9 @@ try {
       listing = listed.stdout;
       if (listed.code === 0) {
         const said = JSON.parse(listed.stdout.trim().split('\n').at(-1));
-        shown = (said.peer?.mounted ?? []).find(entry => entry.name === WORKSPACE) ?? null;
+        shown = (said.peer?.mounted ?? []).find(entry => entry.name === workspace) ?? null;
       }
-      if (!shown && Date.now() > deadline) fail(`no folder of ${WORKSPACE} is mounted here: ${listing.slice(0, 800)}`);
+      if (!shown && Date.now() > deadline) fail(`no folder of ${workspace} is mounted here: ${listing.slice(0, 800)}`);
       if (!shown) await sleep(1000);
     }
     folder = {path: shown.at, shown: shown.shown};
@@ -252,7 +248,7 @@ try {
   });
 
   await story.step('Ada copies a spreadsheet in with the `tilo` command', async () => {
-    const put = await computer.run(['files', 'put', join(where, SHEET), '-w', WORKSPACE], {timeout: stepLimit(8)});
+    const put = await computer.run(['files', 'put', join(where, SHEET), '-w', workspace], {timeout: stepLimit(8)});
     if (put.code !== 0) fail(`tilo files put failed (${put.code}): ${put.stderr}${put.stdout}`);
     await shows(ada.tab, SHEET, `the spread sheet ${SHEET} in Files`, stepLimit(8));
   });

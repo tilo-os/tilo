@@ -13,7 +13,7 @@
 // step failed or ran over its budget.
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from '../integration/waits.mjs';
-import {click, found, key, makeWorkspace, openWorkspace, pressNamed, searcher, settled, showsText as shows, TREE_TEXT, waitUntil}
+import {found, key, pressNamed, searcher, settled, showsText as shows, TREE_TEXT, waitUntil}
   from '../integration/shell.mjs';
 import {computerAt} from './computer.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
@@ -36,7 +36,6 @@ const chord = async tab => (await tab.evaluate('/Mac/.test(navigator.platform)')
 const arrived = `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`;
 
 const story = recorder({id: 'agent-mcp', out, logs});
-const WORKSPACE = 'Workshop';
 const AGENT = 'Claude Code';
 const FILE = 'agent-notes.md';
 const TASK = 'Check the spring budget';
@@ -84,17 +83,8 @@ try {
     story.web.scriptSize(ada);
   });
 
-  await story.step(`Ada makes a workspace, “${WORKSPACE}”`, async () => {
-    await click(ada.tab, SHELL.empty.x, SHELL.empty.y);
-    await key(ada.tab, 'k', adaKeys);
-    await until(ada.tab, 'globalThis.tiloMount?.state()?.searchOpen === true', 'the search opening');
-    await search(ada.tab, adaKeys, 'new workspace', 'New workspace');
-    await makeWorkspace(ada.tab, WORKSPACE);
-    await until(ada.tab, openWorkspace(WORKSPACE), `${WORKSPACE} opening`, stepLimit(10));
-    await settled(ada.tab);
-  });
-
   await story.step('Ada connects their agent to the workspace', async () => {
+    await settled(ada.tab);
     await search(ada.tab, adaKeys, 'connect an agent or computer', 'Connect an agent or computer');
     const prompt = await until(ada.tab, `(() => {
       const offer = document.getElementById('first-screen-offer')?.textContent ?? '';

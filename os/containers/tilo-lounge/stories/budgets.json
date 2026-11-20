@@ -67,7 +67,6 @@
     "files-in": {
       "Ada opens Tilo": 15000,
       "Ada gives their name": 10000,
-      "Ada makes a workspace, “Studio”": 15000,
       "Ada drops a photo and a PDF on the page": 45000,
       "Ada runs `tilo login` and copies a document into the workspace folder": 120000,
       "Ada copies a spreadsheet in with the `tilo` command": 30000,
@@ -75,7 +74,6 @@
     },
     "agent-mcp": {
       "Ada opens Tilo": 15000,
-      "Ada makes a workspace, “Workshop”": 15000,
       "Ada connects their agent to the workspace": 90000,
       "The agent writes a file": 45000,
       "The agent adds a Tasks issue": 45000,
