@@ -177,6 +177,12 @@ tilo_test_env::scenario! {
         let mut built_again = Vec::new();
         for entry in toolkit().entries() {
             let description = (entry.describe)();
+            // A board's cards are their views, and props given in place carry none of them, so
+            // it is built again from the view it holds rather than left with empty cards (the
+            // scenario above shows that). Being rebuilt is its intended update.
+            if description.name == "Board" {
+                continue;
+            }
             let props: Vec<(&str, Value)> = description
                 .props
                 .iter()

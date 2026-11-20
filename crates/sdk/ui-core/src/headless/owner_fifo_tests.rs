@@ -327,11 +327,11 @@ fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_w
         );
     }
 }
-/// A save that lands after a keystroke changes the save status and nothing the model holds: its owner
-/// hears the status, and no model callback runs (no update, no sync) and no layout is retired or solved
-/// for it.
+/// A save-progress wake shows the status its owner does not already show, and nothing else: no
+/// model callback runs (no update, no sync) and no layout is retired or solved for it. A wake
+/// that samples the status the owner already shows tells nothing, and draws nothing.
 #[test]
-fn a_landed_save_shows_its_status_without_an_owner_service_or_layout() {
+fn a_save_status_wake_shows_it_without_an_owner_service_or_layout() {
     let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 6100, true);
@@ -343,11 +343,15 @@ fn a_landed_save_shows_its_status_without_an_owner_service_or_layout() {
 
     wake.wake_save_progress();
     assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
-    assert_eq!(seen.saves.get(), saves + 1, "the owner hears the status");
+    assert_eq!(
+        seen.saves.get(),
+        saves,
+        "a status the owner already shows is not told again"
+    );
     assert_eq!(
         (seen.updates.get(), seen.syncs.get()),
         (updates, syncs),
-        "no model callback runs for a save that landed"
+        "no model callback runs for a save"
     );
     assert!(
         !frame.owner_service_layout_retired,

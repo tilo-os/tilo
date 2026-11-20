@@ -155,6 +155,10 @@ impl OwnerWakeRequest {
     pub fn key(&self) -> &OwnerWakeKey {
         &self.key
     }
+    /// The registration this wake belongs to: the owner it wakes, across every wake it queues.
+    pub fn registration(&self) -> Uuid {
+        self.key.id
+    }
     /// Aggregate OR, independent of the representative event's original reason.
     pub const fn requires_sync(&self) -> bool {
         self.requires_sync

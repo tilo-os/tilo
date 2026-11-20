@@ -3410,10 +3410,11 @@ pub(crate) fn service_retained_owner_model(
 /// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner is told the save status
 /// alone.
 /// Show the save status this wake sampled to the owner, when it differs from
-/// `told` — the status the window last told the owner. Returns the status the
-/// owner was told, or `None` when it already shows the sampled one: a save
-/// landing after every keystroke repeats the status the key's own frame
-/// already showed, and telling it again would draw a second frame for it.
+/// `told` — the status that owner was last told. Returns the status the owner
+/// was told, or `None` when it already shows the sampled one: a save landing
+/// after every keystroke repeats the status the key's own frame already showed,
+/// and telling it again would draw a second frame for it. Each owner has its
+/// own last-told status: one owner's save says nothing of another's.
 pub(crate) fn service_owner_save_progress(
     root: &mut dyn Widget,
     work: &crate::owner_wake::OwnerWakeRequest,

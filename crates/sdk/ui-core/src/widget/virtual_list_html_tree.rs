@@ -22,18 +22,25 @@ impl VirtualRows {
         let Some(marks) = self.tree.as_ref() else {
             return rows;
         };
-        // Pair each composed row with the row the list holds, by where it stands: the
-        // composition names a row by its path in the window's layout, the list by its key.
+        // Pair each composed row with the row the list holds. The composition lays out the rows
+        // the list holds, in the order it holds them, so that order is what names them when the
+        // two are the same set; a row whose box drifted from the one the list laid out (a page
+        // shapes a row taller than the list gives it) is otherwise found by where it stands.
+        let by_order = rows.len() == self.mounted.len();
         let mut paired: Vec<(u32, ListKey, Composed)> = Vec::with_capacity(rows.len());
         let mut loose: Vec<Composed> = Vec::new();
-        for row in rows {
-            let mounted = self.mounted.iter().find(|mounted| {
-                let rect = mounted.widget.get_rect();
-                near(rect.x0, row.rect[0])
-                    && near(rect.y0, row.rect[1])
-                    && near(rect.width(), row.rect[2])
-                    && near(rect.height(), row.rect[3])
-            });
+        for (at, row) in rows.into_iter().enumerate() {
+            let mounted = if by_order {
+                self.mounted.get(at)
+            } else {
+                self.mounted.iter().find(|mounted| {
+                    let rect = mounted.widget.get_rect();
+                    near(rect.x0, row.rect[0])
+                        && near(rect.y0, row.rect[1])
+                        && near(rect.width(), row.rect[2])
+                        && near(rect.height(), row.rect[3])
+                })
+            };
             match mounted {
                 Some(mounted) => paired.push((marks.depth(&mounted.key), mounted.key.clone(), row)),
                 None => loose.push(row),

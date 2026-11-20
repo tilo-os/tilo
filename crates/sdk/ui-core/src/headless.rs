@@ -643,9 +643,10 @@ pub struct FrameHarness {
     input_frame_pending: bool,
     /// A save-status-only owner service changed what an owner shows since the last frame.
     owner_save_shown: bool,
-    /// The save status the window last told its owner: a service that samples the
-    /// same one again shows nothing new, and asks for no frame.
-    save_status_told: Option<crate::resource::ResourceSaveStatus>,
+    /// The save status each owner was last told, by its registration: a service that samples
+    /// the same one for that owner again shows it nothing new, and asks for no frame. One
+    /// owner's status says nothing of another's.
+    save_status_told: HashMap<uuid::Uuid, crate::resource::ResourceSaveStatus>,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
@@ -1074,6 +1075,7 @@ impl FrameHarness {
         let _running = self.running();
         self.pending_app_activation = None;
         self.bound_publication.clear();
+        self.save_status_told.clear();
         self.control_domain.close();
         if let Some(wake) = &self.component_wake {
             wake.close();
@@ -1552,7 +1554,7 @@ impl FrameHarness {
             coalesce_input_frames: false,
             input_frame_pending: false,
             owner_save_shown: false,
-            save_status_told: None,
+            save_status_told: HashMap::new(),
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,

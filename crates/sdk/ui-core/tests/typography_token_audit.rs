@@ -48,6 +48,15 @@ fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
     if &c[1] != "measure" {
         return true;
     }
+    // A viewport measures a row's box — its index, key and height — not text, and its three
+    // arguments read as a text measurement's otherwise.
+    let start = c.get(0).map_or(0, |matched| matched.start());
+    if line
+        .get(..start)
+        .is_some_and(|before| before.trim_end().ends_with(".viewport"))
+    {
+        return false;
+    }
     let mut depth = 0_u32;
     let mut quoted = false;
     let mut escaped = false;

@@ -662,8 +662,8 @@ fn a_struck_rows_title_is_struck_through_on_the_page() {
     ));
 }
 
-/// A chosen list row stands on the selection's lift as the canvas paints it: under everything it
-/// shows, past its own edges by the list's bleed, so what it says at its end keeps its margin.
+/// A chosen list row stands on the selection's lift as the canvas paints it: the row's own
+/// ground, under everything it shows, so what it says keeps its place over the wash.
 #[test]
 fn a_chosen_list_row_stands_on_the_selection_lift() {
     let page = composed(
@@ -674,11 +674,6 @@ fn a_chosen_list_row_stands_on_the_selection_lift() {
         .into_iter()
         .find(|node| node.widget == "ListRow")
         .expect("the row composes");
-    let lift = row.children.first().expect("the row holds its parts");
-    assert_eq!(
-        lift.widget, "ListRowLift",
-        "the lift stands first, under the rest"
-    );
     let theme = Theme::dark();
     let ground = theme.tokens.colors.surfaces.content;
     let chosen = crate::chrome::selection_tier_on(
@@ -687,13 +682,25 @@ fn a_chosen_list_row_stands_on_the_selection_lift() {
         ground,
     )
     .fill;
+    let lift = row
+        .ground
+        .as_ref()
+        .expect("the chosen row stands on the selection lift");
     assert_eq!(
-        lift.ground.as_ref().and_then(|ground| ground.fill),
-        Some(crate::composition::rgba8(chosen))
+        lift.fill,
+        Some(crate::composition::rgba8(chosen)),
+        "the row's ground is the selection wash"
+    );
+    assert_eq!(
+        lift.radius,
+        f64::from(theme.tokens.radii.item).min(row.rect[3] / 2.0),
+        "and is rounded as the canvas rounds it"
     );
     assert!(
-        lift.rect[0] < row.rect[0] && lift.rect[2] > row.rect[2],
-        "the lift reaches past the row's edges"
+        row.children
+            .iter()
+            .all(|child| child.widget != "ListRowLift"),
+        "the lift is the row's own ground, never a part laid over its words"
     );
     let rest = composed(
         Box::new(crate::widget::ListRow::new("main", "main.rs")),
@@ -702,8 +709,11 @@ fn a_chosen_list_row_stands_on_the_selection_lift() {
     assert!(
         nodes(&rest.root)
             .into_iter()
-            .filter(|node| node.widget == "ListRowLift")
-            .all(|node| node.ground.is_none()),
+            .filter(|node| node.widget == "ListRow")
+            .all(|node| node
+                .ground
+                .as_ref()
+                .is_none_or(|ground| ground.fill.is_none())),
         "a row at rest stands on the page's ground"
     );
 }

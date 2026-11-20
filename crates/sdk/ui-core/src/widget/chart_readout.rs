@@ -489,9 +489,15 @@ impl Inks {
     }
 }
 
-/// How far a dot's ring stands out of it, and the dot's radius.
-const DOT_RING: f64 = 2.0;
-const DOT_RADIUS: f64 = 4.0;
+/// A marked dot's radius, and how far its ring stands out of it: the dot is a spacing step
+/// across and its ring half a step, so both grow with the person's scale.
+fn dot_radius(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s1)
+}
+
+fn dot_ring(theme: &Theme) -> f64 {
+    dot_radius(theme) / 2.0
+}
 
 fn guide_ink(theme: &Theme) -> Color {
     with_alpha(theme.tokens.colors.text_dim, 150)
@@ -516,14 +522,14 @@ fn paint_mark(scene: &mut Scene, transform: Affine, theme: &Theme, mark: Highlig
                 transform,
                 theme.tokens.colors.surfaces.base,
                 None,
-                &Circle::new(at, DOT_RADIUS + DOT_RING),
+                &Circle::new(at, dot_radius(theme) + dot_ring(theme)),
             );
             scene.fill(
                 Fill::NonZero,
                 transform,
                 color,
                 None,
-                &Circle::new(at, DOT_RADIUS),
+                &Circle::new(at, dot_radius(theme)),
             );
         }
         Highlight::Band(rect) => scene.fill(
@@ -562,7 +568,7 @@ fn compose_mark(node: &mut Composed, theme: &Theme, index: usize, mark: Highligh
             fill(guide_ink(theme), 0.0),
         ),
         Highlight::Dot { at, color } => {
-            let outer = DOT_RADIUS + DOT_RING;
+            let outer = dot_radius(theme) + dot_ring(theme);
             shape(
                 node,
                 format!("ring{index}"),
@@ -572,8 +578,8 @@ fn compose_mark(node: &mut Composed, theme: &Theme, index: usize, mark: Highligh
             shape(
                 node,
                 format!("dot{index}"),
-                Rect::from_center_size(at, (DOT_RADIUS * 2.0, DOT_RADIUS * 2.0)),
-                fill(color, DOT_RADIUS),
+                Rect::from_center_size(at, (dot_radius(theme) * 2.0, dot_radius(theme) * 2.0)),
+                fill(color, dot_radius(theme)),
             );
         }
         Highlight::Band(rect) => shape(

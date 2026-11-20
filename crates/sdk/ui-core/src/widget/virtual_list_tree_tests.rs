@@ -1449,6 +1449,18 @@ fn holds(node: &crate::composition::Composed, path: &str) -> bool {
         .any(|child| child.path == path || holds(child, path))
 }
 
+/// The row saying `text`: the list item that owns the words, not an outer row that holds it too.
+fn row_named<'a>(
+    root: &'a crate::composition::Composed,
+    text: &str,
+) -> Option<&'a crate::composition::Composed> {
+    let saying = composed_named(root, text)?;
+    let path = saying.path.split('#').next().unwrap_or(&saying.path);
+    composed_at(root, "ListRow")
+        .into_iter()
+        .find(|node| node.path == path)
+}
+
 /// The rows of a tree compose as elements: a row stands inside the element of the row it is
 /// under, and a row holding others carries the disclosure its chevron stands for. Pressing the
 /// disclosure folds the rows away, through the list's own action.
@@ -1466,8 +1478,8 @@ fn a_tree_composes_as_nested_elements_with_a_disclosure() {
     harness.relayout();
     let composition = harness.composition();
     let note = |name: &str| {
-        composed_named(&composition.root, name)
-            .unwrap_or_else(|| panic!("the row saying {name:?} composes"))
+        row_named(&composition.root, name)
+            .unwrap_or_else(|| panic!("the row saying {name:?} is a list item"))
     };
     let first = note("Note 0");
     let second = note("Note 1");
@@ -1514,7 +1526,7 @@ fn a_tree_composes_as_nested_elements_with_a_disclosure() {
         composed_named(&composition.root, "Note 1").is_none(),
         "the folded row's notes leave the page"
     );
-    let first = composed_named(&composition.root, "Note 0").expect("the branch stays");
+    let first = row_named(&composition.root, "Note 0").expect("the branch stays");
     let disclosure = composed_at(first, "RowDisclosure")
         .into_iter()
         .next()

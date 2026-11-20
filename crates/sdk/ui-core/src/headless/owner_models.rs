@@ -23,12 +23,13 @@ impl FrameHarness {
             while let Some(work) = batch.front() {
                 let _profile =
                     tilo_resource::profiling::Phase::start("ui.owner_wake.save_progress");
+                let owner = work.registration();
                 if let Some(status) = crate::bound_dispatch::service_owner_save_progress(
                     self.root.as_mut(),
                     work,
-                    self.save_status_told.as_ref(),
+                    self.save_status_told.get(&owner),
                 )? {
-                    self.save_status_told = Some(status);
+                    self.save_status_told.insert(owner, status);
                     *presented = true;
                 }
                 batch.complete_front();
