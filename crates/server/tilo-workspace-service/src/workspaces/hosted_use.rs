@@ -1176,86 +1176,49 @@ impl Workspaces {
     }
 }
 
-impl super::GovernedWorkspace {
-    /// The device of `person`'s own this workspace certified most recently and admits now: the
-    /// one an agent this server runs for them works on, so what the agent may do is the
-    /// person's access here at every step, and a person removed from the workspace leaves
-    /// their agent nothing.
-    ///
-    /// A device this server placed itself (`placed`) is never that device. It is certified in
-    /// the person's name for a window in the workspace's machine, later than any device of
-    /// their own, and it is confined to that window: a person with no other device here has
-    /// none.
-    pub(super) fn person_device(
-        &self,
-        person: &[u8; 32],
-        placed: impl Fn(&[u8; 32]) -> bool,
-    ) -> Option<[u8; 32]> {
-        let peer = self.peer();
-        let now = tilo_clock::wall();
-        peer.certificates()
-            .iter()
-            .filter(|cert| &cert.user_public_key == person)
-            .filter(|cert| {
-                peer.governance()
-                    .governed_agent(&cert.device_public_key)
-                    .is_none()
-            })
-            .filter(|cert| !placed(&cert.device_public_key))
-            .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
-            .max_by_key(|cert| cert.issued_at_ns)
-            .map(|cert| cert.device_public_key)
-    }
+/// The device of `person`'s own the workspace `peer` holds certified most recently and admits
+/// now: the one an agent this server runs for them works on, so what the agent may do is the
+/// person's access here at every step, and a person removed from the workspace leaves their
+/// agent nothing.
+///
+/// A device this server placed itself (`placed`) is never that device. It is certified in the
+/// person's name for a window in the workspace's machine, later than any device of their own,
+/// and it is confined to that window: a person with no other device here has none.
+fn person_device_in(
+    peer: &super::StatePeer,
+    person: &[u8; 32],
+    placed: impl Fn(&[u8; 32]) -> bool,
+) -> Option<[u8; 32]> {
+    let now = tilo_clock::wall();
+    peer.certificates()
+        .iter()
+        .filter(|cert| &cert.user_public_key == person)
+        .filter(|cert| {
+            peer.governance()
+                .governed_agent(&cert.device_public_key)
+                .is_none()
+        })
+        .filter(|cert| !placed(&cert.device_public_key))
+        .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
+        .max_by_key(|cert| cert.issued_at_ns)
+        .map(|cert| cert.device_public_key)
+}
 
-    /// Whether the workspace admits `person`'s work on `device` for a turn
-    /// acting as `actor`: on one of their own devices, or on `server`, this
-    /// device, where the member delegated that work
-    /// to it as `actor` ([`collab_types::work_delegation::WorkDelegation`]). A
-    /// device that is neither is no device their work is admitted on, whatever
-    /// certificate it holds.
-    pub(super) fn admits_work(
-        &self,
-        person: &[u8; 32],
-        device: &[u8; 32],
-        actor: &tilo_action_policy::MemberId,
-        server: &[u8; 32],
-        placed: impl Fn(&[u8; 32]) -> bool,
-    ) -> bool {
-        if self.person_device(person, placed) == Some(*device) {
-            return true;
-        }
-        if device != server {
-            return false;
-        }
-        let peer = self.peer();
-        peer.workspace()
-            .work_delegation(server, person, tilo_clock::wall())
-            .is_some_and(|delegation| delegation.actor() == *actor)
-    }
-
-    /// The vault items a turn taking `person`'s work on `device` may use
-    /// ([`Self::admits_work`]): every item on one of their own devices, and
-    /// only what the delegation names where it takes their work on this
-    /// server. `None` where every item of theirs is theirs to use.
-    pub(super) fn turn_secrets(
-        &self,
-        person: &[u8; 32],
-        device: &[u8; 32],
-        server: &[u8; 32],
-        placed: impl Fn(&[u8; 32]) -> bool,
-    ) -> Option<BTreeSet<String>> {
-        if self.person_device(person, placed) == Some(*device) || device != server {
-            return None;
-        }
-        self.peer()
-            .workspace()
-            .work_delegation(server, person, tilo_clock::wall())
-            .map(|delegation| delegation.secrets.into_iter().collect())
-    }
+/// Whether the member delegated `person`'s work to `server`, this device, as `actor`
+/// ([`collab_types::work_delegation::WorkDelegation`]) in the workspace `peer` holds.
+fn delegated_in(
+    peer: &super::StatePeer,
+    person: &[u8; 32],
+    actor: &tilo_action_policy::MemberId,
+    server: &[u8; 32],
+) -> bool {
+    peer.workspace()
+        .work_delegation(server, person, tilo_clock::wall())
+        .is_some_and(|delegation| delegation.actor() == *actor)
 }
 
 impl Workspaces {
-    /// [`GovernedWorkspace::person_device`] in the workspace `workspace` governed here: `None` for
+    /// [`person_device_in`] the workspace `workspace` governed here: `None` for
     /// a workspace not governed here, or a person it admits on no device of their own. The
     /// devices this server placed are those its own list of them holds
     /// ([`crate::environment::EnvironmentRegistry`]).
@@ -1286,7 +1249,7 @@ impl Workspaces {
         self.device_beside(workspace, person, Some(never)).await
     }
 
-    /// [`GovernedWorkspace::person_device`] in `workspace`, where neither a device this server
+    /// [`person_device_in`] `workspace`, where neither a device this server
     /// placed nor `never` is the one.
     async fn device_beside(
         &self,
@@ -1294,19 +1257,22 @@ impl Workspaces {
         person: [u8; 32],
         never: Option<[u8; 32]>,
     ) -> Option<[u8; 32]> {
-        let governed = self.held(workspace).await?;
-        let runtime = governed.lock().await;
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
-        runtime.person_device(&person, |device| {
-            never.as_ref() == Some(device) || placed.of(device, now_ns).is_some()
+        self.governing(workspace, |governance| {
+            person_device_in(governance.peer, &person, |device| {
+                never.as_ref() == Some(device) || placed.of(device, now_ns).is_some()
+            })
         })
+        .await
+        .flatten()
     }
 
     /// Whether the workspace `workspace` admits `person`'s work on `device` for a
-    /// turn acting as `actor` ([`GovernedWorkspace::admits_work`]): one of their
-    /// own devices, or this server's own device where they delegated that work
-    /// to it as `actor`. `false` for a workspace not governed here.
+    /// turn acting as `actor`: on one of their own devices, or on this server's
+    /// own device where they delegated that work to it as `actor`. A device that
+    /// is neither is no device their work is admitted on, whatever certificate it
+    /// holds. `false` for a workspace not governed here.
     pub async fn admits_work(
         &self,
         workspace: WorkspaceId,
@@ -1314,19 +1280,18 @@ impl Workspaces {
         device: [u8; 32],
         actor: &tilo_action_policy::MemberId,
     ) -> bool {
-        let Some(governed) = self.held(workspace).await else {
-            return false;
-        };
-        let runtime = governed.lock().await;
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
-        runtime.admits_work(
-            &person,
-            &device,
-            actor,
-            &self.governor().device_public_key,
-            |device| placed.of(device, now_ns).is_some(),
-        )
+        let server = self.governor().device_public_key;
+        self.governing(workspace, |governance| {
+            let own = person_device_in(governance.peer, &person, |device| {
+                placed.of(device, now_ns).is_some()
+            });
+            own == Some(device)
+                || (device == server && delegated_in(governance.peer, &person, actor, &server))
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// The vault items a turn taking `person`'s work on `device` in `workspace`
@@ -1339,16 +1304,24 @@ impl Workspaces {
         person: [u8; 32],
         device: [u8; 32],
     ) -> Option<BTreeSet<String>> {
-        let governed = self.held(workspace).await?;
-        let runtime = governed.lock().await;
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
-        runtime.turn_secrets(
-            &person,
-            &device,
-            &self.governor().device_public_key,
-            |device| placed.of(device, now_ns).is_some(),
-        )
+        let server = self.governor().device_public_key;
+        self.governing(workspace, |governance| {
+            let own = person_device_in(governance.peer, &person, |device| {
+                placed.of(device, now_ns).is_some()
+            });
+            if own == Some(device) || device != server {
+                return None;
+            }
+            governance
+                .peer
+                .workspace()
+                .work_delegation(&server, &person, tilo_clock::wall())
+                .map(|delegation| delegation.secrets.into_iter().collect())
+        })
+        .await
+        .flatten()
     }
 
     /// The device the workspace `workspace` admits `person`'s work on for a turn
@@ -1362,20 +1335,19 @@ impl Workspaces {
         person: [u8; 32],
         actor: &tilo_action_policy::MemberId,
     ) -> Option<[u8; 32]> {
-        let governed = self.held(workspace).await?;
-        let runtime = governed.lock().await;
         let placed = &self.inner.host.environments;
         let now_ns = tilo_clock::unix_now_ns();
         let server = self.governor().device_public_key;
-        let delegated = runtime
-            .peer()
-            .workspace()
-            .work_delegation(&server, &person, tilo_clock::wall())
-            .is_some_and(|delegation| delegation.actor() == *actor);
-        if delegated {
-            return Some(server);
-        }
-        runtime.person_device(&person, |device| placed.of(device, now_ns).is_some())
+        self.governing(workspace, |governance| {
+            if delegated_in(governance.peer, &person, actor, &server) {
+                return Some(server);
+            }
+            person_device_in(governance.peer, &person, |device| {
+                placed.of(device, now_ns).is_some()
+            })
+        })
+        .await
+        .flatten()
     }
 }
 

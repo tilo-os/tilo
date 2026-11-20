@@ -10,8 +10,8 @@ const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
 /// A governed workspace's governance as its replica holds it now: what every
 /// decision of who reads what is made against.
-struct Governance<'a> {
-    peer: &'a StatePeer,
+pub(super) struct Governance<'a> {
+    pub(super) peer: &'a StatePeer,
     workspace: &'a str,
 }
 
@@ -119,7 +119,7 @@ pub fn bot_shows_personas(peer: &StatePeer, installation: &str, now: SystemTime)
 impl Workspaces {
     /// `answer` of the governance of the workspace `workspace` governed here,
     /// as its replica holds it now; `None` for a workspace not governed here.
-    async fn governing<T>(
+    pub(super) async fn governing<T>(
         &self,
         workspace: WorkspaceId,
         answer: impl FnOnce(&Governance<'_>) -> T,
