@@ -278,8 +278,16 @@ export function recorder({id, out, logs = []}) {
       measure('script-kb', one.bytes.script / 1024, `${one.name}; WebAssembly ${Math.round(one.bytes.wasm / 1024)} KB`);
     },
     /** `one` opening the page again in the same browser. */
+    /** `one` opening the site again as a person does: its address again in
+     * the same browser, with what that browser kept from the first visit (not
+     * a reload that bypasses the cache, which no person's return does). */
     warmLoad: async one => {
-      await one.tab.reload();
+      // Without its fragment: the same address with one is a move within the
+      // page the browser already shows, not opening it again.
+      const url = await one.tab.evaluate('location.origin + location.pathname + location.search');
+      const opened = one.tab.nextDocument(30_000);
+      await one.tab.navigate(url);
+      await opened;
       await sleep(200);
       const first = await one.tab.waitFor(FIRST_CONTENT, {timeout: 60_000}).catch(() => NaN);
       measure('warm-load-ms', first, one.name);

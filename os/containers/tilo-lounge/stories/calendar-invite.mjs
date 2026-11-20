@@ -89,18 +89,26 @@ try {
     if (!target) {
       fail(`pressing “Sign in with Nextcloud” opened no page on ${server}; Settings offers: ${JSON.stringify(await offered(ada.tab))}`);
     }
-    const nextcloud = await ada.launched.tab({target: target.targetId, firstScreen: true});
+    // Where the press sent the person, said in the log (kept longer than the
+    // evidence), and the page driven within a deadline of its own.
+    console.log(`the sign-in opened ${target.url || '(a page with no address yet)'}`);
+    const nextcloud = await Promise.race([
+      ada.launched.tab({target: target.targetId, firstScreen: true}),
+      sleep(30_000).then(() => fail(`the page the sign-in opened (${target.url}) could not be driven within 30 s`)),
+    ]);
     try {
-      await plainShows(nextcloud, 'Log in', 'the server’s sign-in page', stepLimit(20));
+      await plainShows(nextcloud, 'Log in', 'the server’s sign-in page', stepLimit(4));
       await plainType(nextcloud, 'input[name=user]', user);
       await plainType(nextcloud, 'input[name=password]', password);
       await plainPress(nextcloud, 'Log in');
-      await plainShows(nextcloud, 'Grant access', 'the server asking to grant access', stepLimit(20));
+      await plainShows(nextcloud, 'Grant access', 'the server asking to grant access', stepLimit(4));
       await shotOf(nextcloud, '01-grant-access');
       await plainPress(nextcloud, 'Grant access');
       await sleep(1000);
     } finally {
-      writeFileSync(join(out, 'evidence', 'nextcloud-page.txt'), `${await plainText(nextcloud)}\n`);
+      const shown = `${await nextcloud.evaluate('location.href').catch(() => '?')}\n${await plainText(nextcloud)}`;
+      console.log(`the server's page: ${shown.slice(0, 1500)}`);
+      writeFileSync(join(out, 'evidence', 'nextcloud-page.txt'), `${shown}\n`);
     }
     // The account arrives in Settings through the server's live reading of
     // it: a row named after the server, never the field the address was typed in.
