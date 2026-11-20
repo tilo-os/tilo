@@ -47,6 +47,7 @@ use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
 mod bar_events;
 mod contact_attendees;
 mod editor;
+mod event_menu;
 mod month_view;
 mod opens;
 mod repeat_scope;
@@ -211,6 +212,8 @@ pub struct CalendarApp {
     repeat_scope_menu: Box<Popover>,
     pending_repeat: Option<repeat_scope::PendingRepeatChange>,
     search_opener: ui::search::SearchOpener,
+    /// What rows of an event's menu invoke, until the window hands them on.
+    menu_invocations: std::collections::VecDeque<tilo_actions::ControlInvocation>,
     places: ui::widget::NavFeed,
     month: ui::widget::DateFeed,
     bar: Option<ui::widget::WindowBarLink>,
@@ -358,6 +361,7 @@ impl CalendarApp {
             bar: None,
             bar_entries: ui::framework::BarCommands::new(),
             search_opener: ui::search::SearchOpener::new(),
+            menu_invocations: std::collections::VecDeque::new(),
             staged_new_event: false,
             wanted_new_event: false,
             staged_popover: None,
@@ -4259,6 +4263,9 @@ impl ui::widget::controls::ActionControls for CalendarApp {
         if let Some(search) = self.search_opener.take() {
             return Some(search);
         }
+        if let Some(invocation) = self.menu_invocations.pop_front() {
+            return Some(invocation);
+        }
         self.children_mut()
             .into_iter()
             .find_map(ui::widget::controls::take_control_invocation)
@@ -4389,6 +4396,7 @@ impl CalendarApp {
                     self.status.show(text, kind);
                     self.dirty = true;
                 }
+                store::Ask::Act(act) => self.act_on_event(act),
             }
         }
     }

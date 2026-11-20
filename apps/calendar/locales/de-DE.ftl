@@ -143,6 +143,7 @@ calendar-exported = { $events } Ereignisse und { $tasks } Aufgaben exportiert
 calendar-export-cancelled = Export abgebrochen
 calendar-move-event-failed = Das Ereignis konnte nicht verschoben werden: { $reason }
 calendar-showing-all = Alle Kalender werden angezeigt
+calendar-event-open = Öffnen
 calendar-showing-calendar = { $calendar } wird angezeigt
 calendar-calendar-hidden = { $calendar } ist ausgeblendet. Schalte ihn in der Seitenleiste ein, um seine Ereignisse zu sehen.
 calendar-visible = Der Kalender ist jetzt sichtbar

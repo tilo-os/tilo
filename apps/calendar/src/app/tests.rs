@@ -12,6 +12,8 @@ mod accessibility;
 mod caldav_sync;
 #[path = "tests/dropdown_rows.rs"]
 mod dropdown_rows;
+#[path = "tests/event_menu.rs"]
+mod event_menu;
 #[path = "tests/platform_history.rs"]
 mod platform_history;
 #[path = "tests/sidebar.rs"]

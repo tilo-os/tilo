@@ -43,6 +43,8 @@ pub(crate) enum Ask {
     SearchContacts,
     Say(String, ToastKind),
     Stage(Option<String>),
+    /// A row of an event's menu chosen.
+    Act(super::event_menu::EventAction),
 }
 
 pub(crate) struct Store {
@@ -478,6 +480,6 @@ pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
             // A calendar's row offers showing or hiding it, whichever applies.
             .row_status(move |id| statuses.borrow().row_status(id))
             .search_entries(move || entries.borrow().contact_search_entries()),
-        Box::new(app),
+        super::event_menu::with_event_menu(app),
     )
 }

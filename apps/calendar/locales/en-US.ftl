@@ -143,6 +143,7 @@ calendar-exported = Exported { $events } events and { $tasks } tasks
 calendar-export-cancelled = Export cancelled
 calendar-move-event-failed = Couldn't move the event: { $reason }
 calendar-showing-all = Showing all calendars
+calendar-event-open = Open
 calendar-showing-calendar = Showing { $calendar }
 calendar-calendar-hidden = { $calendar } is hidden. Turn it on in the sidebar to show its events.
 calendar-visible = Calendar is now visible
