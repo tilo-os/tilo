@@ -52,12 +52,12 @@ impl ResourceApp for App {
         ]
     }
 
-    /// `editor` opens a theme written from the warm graphite preset; `tinted` gives it a
+    /// `editor` opens a theme written from the Paper dark preset; `tinted` gives it a
     /// tinted emphasis and a rounder, roomier shape; `illegible` lifts its tertiary ink
     /// until it misses its floor.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Studio>> {
         let theme = Studio::paths().themes.item(&Id::from_raw(SCENARIO_THEME));
-        let start = Studio::NEW_THEME.with((SCENARIO_THEME.to_owned(), "dark-graphite".to_owned()));
+        let start = Studio::NEW_THEME.with((SCENARIO_THEME.to_owned(), "paper-dark".to_owned()));
         let edits = match name {
             Some("editor" | "editor-list" | "editor-dialog") => {
                 vec![theme.name.replace("Ember")]

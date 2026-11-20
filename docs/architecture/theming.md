@@ -80,7 +80,7 @@ and a theme sets them through one document:
 
 | Theme role | What it sets | Tokens it produces | Where |
 |---|---|---|---|
-| `palette` | Neutral hue and chroma (≤ 0.010), the lightness of `base`, `content`, `sidebar`, `inspector`, `raised`, `overlay`, three ink tiers, four muted status tones, light or dark, high contrast | `surfaces.*`, `text_primary` / `text_dim` / `text_tertiary`, `semantic.*`, `border_standard`, the neutral ramp, state veneers, `content_edge` | `tokens/palette.rs` (`Palette`), `tokens/colors.rs` (`Colors::as_authored`) |
+| `palette` | Neutral hue and chroma (≤ 0.032), the lightness of `base`, `content`, `sidebar`, `inspector`, `raised`, `overlay`, three ink tiers, four muted status tones, light or dark, high contrast | `surfaces.*`, `text_primary` / `text_dim` / `text_tertiary`, `semantic.*`, `border_standard`, the neutral ramp, state veneers, `content_edge` | `tokens/palette.rs` (`Palette`), `tokens/colors.rs` (`Colors::as_authored`) |
 | `emphasis` | `inverted` (default) or `tinted { hue }` | `intent.inverted`, `inverted_hover`, `on_inverted` (primary actions, on switches, filled tracks), `intent.selection`, `selection_hover`, `Colors::lift_on` (the selection lift) | `tokens/palette.rs` (`Emphasis`) |
 | `presence` | Lightness and chroma of the twelve presence hues (hues stay 30° apart) | `presence` (`PresencePalette`), and through it `intent.you`, `selection_tint`, `border_focus` | `tokens/colors.rs` |
 | `shape` | `window_radius`; `border`: the outline every surface carries, its `width` and `ink` (`hairline`, `standard` or `strong`) | `radii.{tile, panel, control, item, detail}` derived concentrically (`Radii::from_window_radius`), the surface outline | `tokens/radii.rs`, `tokens/finish.rs` (`Border`) |
@@ -191,26 +191,31 @@ current version when it is next saved. A document of any other version is
 not admitted: the layer it sits on contributes nothing and the layers below
 it apply.
 
-The shipped presets (`Preset`, `Theme::ALL`):
+The shipped presets (`Preset`, `Theme::ALL`) are five looks (`Look`), each
+on both sides, plus the two high-contrast palettes:
 
-| Preset | Hue / chroma | Ladder |
-|---|---|---|
-| Dark (default) | – / 0 (pure neutral) | the design language's dark ladder |
-| Dark cool | 255 / 0.008 | dark ladder |
-| Dark graphite | 60 / 0.006 | dark ladder |
-| Dark soft | 270 / 0.003 | base 0.19, content 0.25, sidebar 0.228, inspector 0.27, raised 0.30, overlay 0.32; tertiary ink 0.65 |
-| Light | – / 0.010 (neutral until a workspace gives it a hue) | the light ladder |
-| High contrast | – / 0 | black surfaces, ink 1.0 / 0.94 / 0.88, AAA |
-| High contrast light | – / 0 | white surfaces, ink 0 / 0.30 / 0.40, AAA |
+| Look | Dark: hue / chroma, base | Light: hue / chroma, base / content | Emphasis |
+|---|---|---|---|
+| Tilo (default) | 255 / 0.016, 0.175 | – / 0.008 (the workspace's hue), 0.935 / 0.995 | `You` |
+| Paper | 70 / 0.014, 0.17 | 80 / 0.011, 0.915 / 0.988 | `Tinted { hue: 255 }` |
+| Moss | 160 / 0.020, 0.165 | 150 / 0.013, 0.92 / 0.988 | `Tinted { hue: 85 }` |
+| Dusk | 285 / 0.030, 0.16 | 295 / 0.018, 0.92 / 0.99 | `Tinted { hue: 355 }` |
+| Mono | – / 0, 0.13 | – / 0, 0.94 / 1.0 | `Inverted` |
+| High contrast | – / 0, black, ink 1.0 / 0.94 / 0.88, AAA | – / 0, white, ink 0 / 0.30 / 0.40, AAA | `Inverted` |
 
-Glass, Glass light, Block, Block light, Pixelated, Liquid Glass and Liquid
-Glass light are plain
-documents in `crates/sdk/ui-core/themes/`.
+Every dark ladder steps the same from its base (`Palette::dark_at`: content
++0.043, regions +0.023, raised +0.087, overlay +0.075), and every light one
+from its base and content (`Palette::light_at`). Ids are `tilo-dark`,
+`tilo-light`, `paper-dark` and so on; `dark` and `light` still name Tilo's.
+
+The finishes (Glass, Block, Pixelated, Liquid Glass, each with a light side)
+are not presets: a theme document chooses them in `material`. The painter
+tests render them from `crates/sdk/ui-core/tests/fixtures/finishes/`.
 
 ### Validation and legibility
 
 `ThemeDocument::validate` checks structure: the schema, id/name/face, and
-every number finite and inside the band its role admits (chroma ≤ 0.010,
+every number finite and inside the band its role admits (chroma ≤ 0.032,
 ink on the ink side of every surface, status chroma ≤ 0.13, presence
 lightness 0.35–0.90 and chroma 0.04–0.20, window radius 0–40, density
 0.5–2, base size 10–24, motion 0–2, and every material parameter inside the
@@ -411,8 +416,8 @@ section (`theme_layers::user_document`):
 | Key | Value |
 |---|---|
 | `mode` | `"dark"`, `"light"` or `"automatic"` (light by day, dark by night, on the schedule night light shares) |
-| `dark_theme` | the theme dark mode shows: a preset id (`"dark-soft"`) or `"custom:<id>"`; default `"dark"` |
-| `light_theme` | the theme light mode shows; default `"light"` |
+| `dark_theme` | the theme dark mode shows: a preset id (`"dusk-dark"`) or `"custom:<id>"`; default `"tilo-dark"` |
+| `light_theme` | the theme light mode shows; default `"tilo-light"` |
 | `custom_themes` | the documents a `custom:<id>` names (Theme Studio writes them when it applies one) |
 | `density` | the person's spacing over whichever theme is shown (Compact 0.85, Regular 1, Roomy 1.2) |
 | `ui_face` | the face the person reads best, over the theme's (`Default`, `Hyperlegible`, any family name); absent or `null` follows the theme |
@@ -442,11 +447,11 @@ not draw.
 **The workspace temperature** is a hue only: the person's override for that
 workspace (`appearance.workspace_temperatures`, OKLCH degrees by workspace
 id, `workspace_temperature_override`) or the dominant hue of its wallpaper
-(`ui::workspace_hue`, `None` for a grey one). It never adds chroma, so the
-default dark (chroma 0) shows no temperature and Light (0.010) shows the
-most. Light has no hue of its own (`Palette::hue` is `None`): without a
-temperature — a grey wallpaper, no shell, a capture — it is pure neutral.
-The high-contrast palettes carry none.
+(`ui::workspace_hue`, `None` for a grey one). It never adds chroma: it moves
+the look's own hue at the look's own chroma, and without a temperature — a
+grey wallpaper, no shell, a capture — the look keeps its own hue. Tilo light
+has none of its own (white paper until a workspace tints it); Mono and the
+high-contrast palettes carry no chroma to tint.
 
 **The window layer** (`ThemeLayerStack::window`, `ui::WindowAppearance`) is
 set by the host that shows a window, never by a settings document: the
@@ -575,8 +580,8 @@ that **no theme and no app can reproduce**:
 Verified against the code at the time of writing:
 
 - **The document and its presets.** `ThemeDocument` schema 8 with the
-  roles above; `Preset` ships Dark (default, chroma 0), Dark cool, Dark
-  graphite, Dark soft, Light and both high-contrast palettes;
+  roles above; `Preset` ships the five looks (Tilo, Paper, Moss, Dusk,
+  Mono) on both sides and both high-contrast palettes;
   `Theme::from_document` builds a theme, `Theme::named` finds a preset.
 - **Contrast.** `FLOORS`, `audit`, `ThemeDocument::findings` and
   `contrast::repair` as above; the preset, temperature, presence-hue and
@@ -623,7 +628,8 @@ Verified against the code at the time of writing:
   the band's light end is bound by the light ink, so a white page shows as
   a mid-dark grey; Liquid Glass light is the bright glass, dark ink over
   what shows through lifted toward white. Glass, Glass light, Block, Block
-  light, Pixelated, Liquid Glass and Liquid Glass light ship as documents in `crates/sdk/ui-core/themes/`. Legibility is checked
+  light, Pixelated, Liquid Glass and Liquid Glass light are documents in
+  `crates/sdk/ui-core/tests/fixtures/finishes/`, rendered by the painter tests. Legibility is checked
   against the worst backdrop each material can show (`audit_materials`), and
   `tilolang layout-check --theme NAME` lays a view out under a theme. Reduce
   transparency, forced colours and the high-contrast palettes keep floating

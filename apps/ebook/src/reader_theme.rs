@@ -175,7 +175,7 @@ mod tests {
     fn page_palettes_split_chrome_from_paper_and_honour_high_contrast() {
         {
             let dark = Theme::dark();
-            let cool = Theme::preset(ui::theme::Preset::DarkCool);
+            let cool = Theme::preset(ui::theme::Preset::DuskDark);
             let from_dark = ReaderPalette::resolve(ReadTheme::Dark, &dark);
             let from_cool = ReaderPalette::resolve(ReadTheme::Dark, &cool);
             assert_eq!(

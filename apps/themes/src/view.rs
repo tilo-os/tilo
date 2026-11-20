@@ -343,7 +343,7 @@ const PRESETS: &str = "presets";
 const THEME: &str = "theme:";
 const YOURS: &str = "yours";
 const NEW_THEME: &str = "new-theme";
-const NEW_THEME_BASE: &str = "dark";
+const NEW_THEME_BASE: &str = "tilo-dark";
 
 fn t(key: &str) -> String {
     crate::locales::CATALOG.t(key)
@@ -933,7 +933,7 @@ mod tests {
     use super::*;
     use ui::tilo_resource::Replica;
 
-    const BASE: &str = "dark-graphite";
+    const BASE: &str = "paper-dark";
 
     /// An editor of a draft of `BASE` under `id`, outside any window: what its controls
     /// send is applied when the test says, as an action API that has not caught up yet would.

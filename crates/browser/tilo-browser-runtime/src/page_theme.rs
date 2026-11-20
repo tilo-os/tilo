@@ -269,10 +269,8 @@ mod tests {
         {
             use ui::storage::{DeviceClass, SettingsSchema as _};
             let fresh = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
-            assert_eq!(fresh.theme_choice(), "Automatic");
-            let mut chosen = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
-            chosen.choose_theme("Automatic");
-            let chosen = serde_json::json!({"appearance": {"mode": chosen.mode}});
+            assert_eq!(fresh.mode, "automatic");
+            let chosen = serde_json::json!({"appearance": {"mode": "automatic"}});
             for dark in [false, true] {
                 let untouched = from_settings(&serde_json::Map::new(), Some(dark));
                 assert_eq!(untouched.document.is_dark(), dark, "it follows the system");
@@ -287,9 +285,8 @@ mod tests {
                 "Dark, chosen, is dark on a light system"
             );
             assert_eq!(
-                settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Native)
-                    .theme_choice(),
-                "Dark",
+                settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Native).mode,
+                "dark",
                 "the person's own computer starts dark, and says so"
             );
         }
@@ -336,14 +333,14 @@ mod tests {
             );
             assert!(
                 !drew(
-                    serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
+                    serde_json::json!({"appearance": {"light_theme": "paper-light"}}),
                     false
                 ),
                 "a theme chosen for one mode shows when the system is in that mode"
             );
             assert!(
                 drew(
-                    serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
+                    serde_json::json!({"appearance": {"light_theme": "paper-light"}}),
                     true
                 ),
                 "and the other mode's theme while the system is in it"

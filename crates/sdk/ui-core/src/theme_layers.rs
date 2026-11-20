@@ -706,7 +706,7 @@ mod tests {
     }
 
     fn house() -> ThemeDocument {
-        let mut doc = Preset::DarkGraphite.document();
+        let mut doc = Preset::PaperDark.document();
         doc.id = "house".into();
         doc.name = "House".into();
         doc.shape.window_radius = 4.0;
@@ -1104,7 +1104,7 @@ mod tests {
                 (tinted.l - stock.l).abs() <= 0.005,
                 "the temperature moves no lightness"
             );
-            assert!(tinted.c <= 0.014, "nor adds chroma: {}", tinted.c);
+            assert!(tinted.c <= stock.c + 0.002, "nor adds chroma: {} over {}", tinted.c, stock.c);
 
             let forced = resolve_theme_layers(&ThemeLayerStack {
                 window: warm_window,
@@ -1164,21 +1164,21 @@ mod tests {
             assert_eq!(read(serde_json::json!({"appearance": {}})), None);
             assert_eq!(
                 read(serde_json::json!({"appearance": {"mode": "dark"}})).map(|d| d.id),
-                Some("dark".into())
+                Some("tilo-dark".into())
             );
             assert_eq!(
-                read(serde_json::json!({"appearance": {"mode": "light", "dark_theme": "dark-soft"}}))
+                read(serde_json::json!({"appearance": {"mode": "light", "dark_theme": "dusk-dark"}}))
                     .map(|d| d.id),
-                Some("light".into())
+                Some("tilo-light".into())
             );
             assert_eq!(
                 read(serde_json::json!({"appearance": {"mode": "dark", "dark_theme": "nord"}})),
                 None
             );
             let dense =
-                read(serde_json::json!({"appearance": {"dark_theme": "dark-cool", "density": 0.85}}))
+                read(serde_json::json!({"appearance": {"dark_theme": "moss-dark", "density": 0.85}}))
                     .expect("a dark theme alone means dark mode");
-            assert_eq!(dense.id, "dark-cool");
+            assert_eq!(dense.id, "moss-dark");
             assert!((dense.density.spacing - 0.85).abs() < 1e-6);
             let ignored = read(serde_json::json!({"appearance": {"mode": "dark", "density": 9.0}}))
                 .expect("dark");

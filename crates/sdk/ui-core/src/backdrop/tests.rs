@@ -500,7 +500,7 @@ tilo_test_env::scenario! {
     // did while the request was sized for a smooth sample.
     phase a_blocky_surface_asks_for_one_texel_per_cell;
     {
-        let theme = Theme::preset(crate::theme::Preset::Pixelated);
+        let theme = crate::theme_document::finish_theme("pixelated");
         let mut scene = Scene::new();
         let recording = BackdropRecording::begin();
         layer_scene(&scene, 0);
@@ -566,7 +566,7 @@ fn render_floating_over_stripes(theme: &Theme) -> Vec<u8> {
 }
 
 fn glass_theme(refraction: f32) -> Theme {
-    let mut document = crate::theme::Preset::Glass.document();
+    let mut document = crate::theme_document::finish_document("glass");
     document.material.floating =
         crate::tokens::Finish::glass([4.0, 0.2, 1.0, refraction, 0.5, 0.0]);
     Theme::from_document(&document).unwrap()
@@ -623,7 +623,7 @@ fn a_glass_panel_bends_and_lights_its_rim_and_stays_legible() {
 /// The Liquid Glass preset with its floating finish bending `refraction`
 /// across a 22 px band, unblurred and with no rim, so only the bend shows.
 fn liquid_theme(refraction: f32, dispersion: f32) -> Theme {
-    let mut document = crate::theme::Preset::LiquidGlass.document();
+    let mut document = crate::theme_document::finish_document("liquid-glass");
     document.material.floating = crate::tokens::Finish::new(
         crate::part_paint::builtin::liquid_set().clone(),
         [
@@ -732,8 +732,8 @@ tilo_test_env::scenario! {
     // what lies below.
     phase a_glass_or_pixelated_window_ground_samples_nothing;
     {
-        for preset in [crate::theme::Preset::Glass, crate::theme::Preset::Pixelated] {
-            let theme = Theme::preset(preset);
+        for finish in ["glass", "pixelated"] {
+            let theme = crate::theme_document::finish_theme(finish);
             let mut scene = stripes(256, 192);
             let recording = BackdropRecording::begin();
             layer_scene(&scene, 0);
@@ -747,13 +747,13 @@ tilo_test_env::scenario! {
                 &theme,
                 ground,
             );
-            assert!(recording.finish().is_empty(), "{preset:?}'s window sampled");
+            assert!(recording.finish().is_empty(), "{finish}'s window sampled");
         }
     }
 
     phase the_legible_range_compresses_luminance_and_keeps_hue;
     {
-        let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+        let theme = crate::theme_document::finish_theme("liquid-glass");
         let legible = Legible::of(&theme, crate::chrome::panel_ground(&theme));
         assert!(legible.compresses());
         let luminance = |[r, g, b]: [f64; 3]| {
@@ -771,7 +771,7 @@ tilo_test_env::scenario! {
         let [r, g, b] = legible.tone([0.1, 0.8, 0.2]);
         assert!(g > 2.0 * r && g > 2.0 * b, "green became {r} {g} {b}");
         assert_eq!(Legible::ANY.tone([0.9, 0.1, 0.3]), [0.9, 0.1, 0.3]);
-        let light = Theme::preset(crate::theme::Preset::LiquidGlassLight);
+        let light = crate::theme_document::finish_theme("liquid-glass-light");
         let lifted = Legible::of(&light, crate::chrome::panel_ground(&light));
         let [r, g, b] = lifted.tone([14.0 / 255.0, 16.0 / 255.0, 22.0 / 255.0]);
         assert!(b - r < 0.03 && b - g < 0.03, "the page turned {r} {g} {b}");
@@ -783,7 +783,7 @@ tilo_test_env::scenario! {
 #[test]
 fn the_shipped_liquid_glass_shows_what_lies_below() {
     let width = 256;
-    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let theme = crate::theme_document::finish_theme("liquid-glass");
     let seen = render_floating_over_stripes(&theme);
     let row: Vec<u16> = (100..160)
         .map(|x| brightness(pixel(&seen, width, x, 96)))
@@ -798,7 +798,7 @@ fn the_shipped_liquid_glass_shows_what_lies_below() {
 #[test]
 fn a_liquid_bar_window_and_panel_in_one_frame_all_show_what_lies_below() {
     let (width, height) = (256, 192);
-    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let theme = crate::theme_document::finish_theme("liquid-glass");
     let ground = theme.tokens.colors.surfaces.base;
     let mut scene = stripes(width, height);
     let recording = BackdropRecording::begin();
@@ -905,16 +905,10 @@ fn render_over(theme: &Theme, mut scene: Scene) -> Vec<u8> {
 /// still shows: compressed, not flattened.
 #[test]
 fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_finish() {
-    use crate::theme::Preset;
     let width = 256;
     let floor = crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST - 0.1;
-    for preset in [
-        Preset::LiquidGlass,
-        Preset::LiquidGlassLight,
-        Preset::Glass,
-        Preset::Pixelated,
-    ] {
-        let theme = Theme::preset(preset);
+    for finish in ["liquid-glass", "liquid-glass-light", "glass", "pixelated"] {
+        let theme = crate::theme_document::finish_theme(finish);
         let ink = theme.tokens.colors.text_dim;
         for (name, below) in [
             ("white page", white_page(256, 192)),
@@ -922,7 +916,7 @@ fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_f
         ] {
             let seen = render_over(&theme, below);
             let mut areas = vec![("panel", (70..186, 54..140))];
-            if matches!(preset, Preset::LiquidGlass | Preset::LiquidGlassLight) {
+            if finish.starts_with("liquid") {
                 areas.push(("window", (10..54, 20..170)));
             }
             for (area, (xs, ys)) in areas {
@@ -933,7 +927,7 @@ fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_f
                             crate::color::contrast_ratio(ink, Color::from_rgba8(r, g, b, 255));
                         assert!(
                             ratio >= floor,
-                            "{preset:?} {area} over the {name} at ({x}, {y}): {ratio:.2}:1"
+                            "{finish} {area} over the {name} at ({x}, {y}): {ratio:.2}:1"
                         );
                     }
                 }
@@ -944,14 +938,14 @@ fn text_over_a_white_page_and_bright_colour_stays_legible_on_every_translucent_f
             .map(|x| brightness(pixel(&seen, width, x, 96)))
             .collect();
         let spread = row.iter().max().unwrap() - row.iter().min().unwrap();
-        assert!(spread >= 6, "{preset:?} flattens the colour: {row:?}");
+        assert!(spread >= 6, "{finish} flattens the colour: {row:?}");
     }
 }
 
 #[test]
 fn liquid_glass_keeps_the_colour_of_what_lies_below() {
     let width = 256;
-    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let theme = crate::theme_document::finish_theme("liquid-glass");
     let seen = render_over(&theme, colour_stripes(256, 192));
     // Columns are 16 px: red at 80..96, green at 96..112 (column 5 and 6
     // of five colours repeating: 5 % 5 = red, 6 % 5 = green).
@@ -1012,7 +1006,7 @@ fn a_liquid_panel_bends_its_rim_and_leaves_its_middle_sharp() {
 #[test]
 fn a_block_panel_is_flat_and_bordered() {
     let width = 256;
-    let theme = Theme::preset(crate::theme::Preset::Block);
+    let theme = crate::theme_document::finish_theme("block");
     let seen = render_floating_over_stripes(&theme);
     let ground = crate::chrome::panel_ground(&theme).to_rgba8().to_u8_array();
     assert!(close(pixel(&seen, width, 128, 96), ground, 1));
@@ -1041,7 +1035,7 @@ fn a_block_panel_is_flat_and_bordered() {
 #[test]
 fn a_pixelated_panel_shows_what_lies_below_as_cells() {
     let width = 256;
-    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let theme = crate::theme_document::finish_theme("pixelated");
     let seen = render_floating_over_stripes(&theme);
     let cell = theme
         .finish(crate::tokens::SurfaceRole::Floating)
@@ -1089,7 +1083,7 @@ fn a_pixelated_panel_shows_what_lies_below_as_cells() {
 }
 
 fn liquid_backdrop(window_x: f64, mark: Option<Rect>) -> (Scene, BackdropFrame) {
-    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let theme = crate::theme_document::finish_theme("liquid-glass");
     let ground = theme.tokens.colors.surfaces.base;
     let mut scene = stripes(256, 192);
     let recording = BackdropRecording::begin();
@@ -1165,7 +1159,7 @@ fn an_unchanged_backdrop_is_shown_from_the_sample_it_kept() {
 #[test]
 fn light_liquid_glass_is_clear_and_bright() {
     let width = 256;
-    let theme = Theme::preset(crate::theme::Preset::LiquidGlassLight);
+    let theme = crate::theme_document::finish_theme("liquid-glass-light");
     let seen = render_over(&theme, white_page(256, 192));
     // Rows 4..8 of each 12 carry a line; row 10 is paper.
     let paper = pixel(&seen, width, 128, 94);

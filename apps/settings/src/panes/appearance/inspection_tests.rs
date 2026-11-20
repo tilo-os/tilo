@@ -27,16 +27,17 @@ fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_
         &mut app,
         APPEARANCE,
         "choose-theme",
-        serde_json::json!({ "theme": "Automatic" }),
+        serde_json::json!({ "theme": "Dusk" }),
     )
     .unwrap();
+    edit_field(&mut app, APPEARANCE, "mode", "automatic").unwrap();
     crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "schedule", "custom").unwrap();
     edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
     edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
     let original = read(&mut app);
     let preferences = app.settings::<AppearancePrefs>().get();
     assert_eq!(original["schema"], "tilo.settings.appearance.v1");
-    assert_eq!(original["theme"], "Automatic");
+    assert_eq!(original["theme"], "dusk");
     assert_eq!(original["mode"], "automatic");
     assert_eq!(original["schedule"], "custom");
     assert_eq!(original["sunrise"], "06:30");
@@ -46,10 +47,10 @@ fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_
         &mut app,
         APPEARANCE,
         "choose-theme",
-        serde_json::json!({ "theme": "Light" }),
+        serde_json::json!({ "theme": "Mono" }),
     )
     .unwrap();
-    assert_eq!(read(&mut app)["theme"], "Light");
+    assert_eq!(read(&mut app)["theme"], "mono");
     invoke_section(
         &mut app,
         APPEARANCE,
@@ -87,7 +88,7 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
             ui::tilo_actions::ActionInvoker::person("unrelated-member"),
             &format!("settings:{APPEARANCE}"),
             "choose-theme",
-            serde_json::json!({"theme":"Dark"})
+            serde_json::json!({"theme":"Moss"})
         )
         .is_err()
     );
@@ -102,7 +103,7 @@ fn appearance_inspection_follows_current_shared_custom_choices_without_exporting
         .update(|prefs| {
             prefs.mode = "automatic".into();
             prefs.dark_theme = "custom:private-theme".into();
-            prefs.light_theme = "light".into();
+            prefs.light_theme = "tilo-light".into();
             prefs.custom_themes = vec![crate::prefs::CustomTheme(
                 serde_json::json!({"private_document_marker":"never-export"}),
             )];

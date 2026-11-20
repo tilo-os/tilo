@@ -96,7 +96,7 @@ themes-theme-rim-span = Die Reichweite des Lichts am aktiven Tab von { $item } a
 themes-theme-rim-alpha = Das Licht am aktiven Tab von { $item } auf { $new } gesetzt
 themes-theme-hover-alpha = Die Stärke beim Überfahren eines Tabs von { $item } auf { $new } gesetzt
 themes-new-theme = Ein Design aus { $base } begonnen
-themes-reset = { $item } auf die Vorlage Graphit zurückgesetzt
+themes-reset = { $item } auf Papier dunkel zurückgesetzt
 themes-delete = { $item } gelöscht
 themes-switch-polarity = { $dark ->
     [true] { $item } dunkel gemacht

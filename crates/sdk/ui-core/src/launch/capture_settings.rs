@@ -46,7 +46,7 @@ mod tests {
         for (name, preset) in [
             ("light", Preset::Light),
             ("dark", Preset::Dark),
-            ("dark-graphite", Preset::DarkGraphite),
+            ("paper-dark", Preset::PaperDark),
         ] {
             let args = super::super::LaunchArgs {
                 theme: Some(name.to_owned()),

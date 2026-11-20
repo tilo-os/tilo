@@ -67,27 +67,47 @@ no appearance to get wrong.
 ### Surfaces: five levels with real separation
 
 All neutrals are OKLCH lightnesses at one hue, so a theme or a workspace can
-shift their temperature without moving contrast. The stock temperature is
-hue 260 at chroma 0.006: cool, not grey-blue. Chroma never exceeds 0.010.
+shift their temperature without moving contrast. Tilo's own temperature is
+slate on dark, hue 255 at chroma 0.016; Tilo light is white paper that a
+workspace's temperature tints at chroma 0.008. Chroma never exceeds 0.032,
+enough for a look to have a colour of its own and never enough to read as a
+coloured wall.
 
 | Level | Token | Dark L | Light L | Edge | Shadow |
 |---|---|---|---|---|---|
-| Ground (desktop) | `surfaces.base` | 0.14 | 0.90 | — | — |
-| Window (app content) | `surfaces.content` | 0.19 | 0.995 | the window edge hairline | soft: y 2, blur 16, 0.28 dark / 0.10 light |
-| Region (sidebar, inspector) | `surfaces.sidebar`, `surfaces.inspector` | 0.165 (recessed) | 0.965 | none: the step separates | — |
-| Raised (field wells, segmented tracks, secondary buttons, objects) | `surfaces.raised` | 0.235 | 0.95 (a darker well on light) | none | — |
-| Floating (menu, popover, palette, sheet, Quick Settings, tooltip) | `surfaces.overlay` | 0.225, material when blurred | 1.0 | 1 px inner hairline, white 7 % dark / black 8 % light | two layers: y 1 blur 2 (0.30 / 0.08) and y 12 blur 32 (0.38 / 0.14) |
+| Ground (desktop) | `surfaces.base` | 0.175 | 0.935 | — | — |
+| Window (app content) | `surfaces.content` | 0.218 | 0.995 | the window edge hairline | soft: y 2, blur 16, 0.28 dark / 0.10 light |
+| Region (sidebar, inspector) | `surfaces.sidebar`, `surfaces.inspector` | 0.198 (recessed) | 0.971 | none: the step separates | — |
+| Raised (field wells, segmented tracks, secondary buttons, objects) | `surfaces.raised` | 0.262 | 0.952 (a darker well on light) | none | — |
+| Floating (menu, popover, palette, sheet, Quick Settings, tooltip) | `surfaces.overlay` | 0.25, material when blurred | 1.0 | 1 px inner hairline, white 7 % dark / black 8 % light | two layers: y 1 blur 2 (0.30 / 0.08) and y 12 blur 32 (0.38 / 0.14) |
 
-Ink on the window: primary L 0.96 / 0.18, secondary 0.76 / 0.43, tertiary
-0.62 / 0.56 (dark / light). Every pairing meets WCAG AA for its role, and
+These are Tilo's own steps; every look keeps the same gaps between levels
+from its own ground. Ink on the window: primary L 0.955 / 0.18, secondary
+0.775 / 0.43, tertiary 0.665 / 0.555 (dark / light). Every pairing meets WCAG AA for its role, and
 the contrast tests (`tokens::contrast`) enforce it.
 
 A child never paints a surface of its parent's level, and never a raised
 surface inside a raised one; `ui::widget::Surface` refuses to.
 
-**Dark presets.** Cool (255 / 0.008), Warm graphite (60 / 0.006) and Soft
-(270 / 0.003, lifted: base 0.19, content 0.25, region 0.228, raised 0.30,
-floating 0.32; its accent is light with a dark label) keep the contract.
+**Looks.** Five, each designed for light and dark, so the person picks a
+look once and the mode only turns it over:
+
+| Look | Temperature (dark / light) | Its own accent | Character |
+|---|---|---|---|
+| Tilo | slate 255 / 0.016; light takes the workspace's hue at 0.008 | the person's colour | the default: cool, calm, yours |
+| Paper | warm 70 / 0.014, 80 / 0.011 on a cream page | ink blue (255) | reading and writing |
+| Moss | green-grey 160 / 0.020, 150 / 0.013 | ochre (85) | quiet, outdoors |
+| Dusk | violet 285 / 0.030, 295 / 0.018 | rose (355) | evening, the most colour |
+| Mono | none | inverted: ink is the fill | colourless, for those who want none |
+
+A person can give any look another accent; the swatches show each hue as it
+will look on the chosen look.
+
+**Accent fills.** Every hue gets its own fill lightness rather than one for
+all. Blue, violet, pink and red fill at the lightest step where a white
+label still meets body-text contrast; yellow, lime, green and cyan (hues
+40°–222°) fill light, near L 0.80 dark / 0.76 light, with a dark label, so
+yellow never turns olive and green never turns muddy.
 
 **Workspace temperature.** Each workspace derives the neutral hue (never
 more chroma) from its wallpaper, so switching workspaces feels like entering

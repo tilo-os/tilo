@@ -1005,11 +1005,12 @@ Chrome reads `colors.surfaces.*`. It does **not** reach into
 about contrast* that every material keeps, at every temperature.
 
 The neutral material is defined in OKLCH and shares one hue
-(`colors.palette.hue`, chroma at most 0.010), so a theme or a workspace can
+(`colors.palette.hue`, chroma at most 0.032), so a theme or a workspace can
 shift its temperature without moving contrast (`Theme::with_neutral_hue`;
 each workspace takes the hue of its wallpaper, `ui::workspace_hue`). A
-palette without a hue (`Palette::hue == None`, the light preset) is pure
-grey until the window's workspace gives it one; nothing falls back to a
+palette without a hue (`Palette::hue == None`, Tilo light) is pure grey
+until the window's workspace gives it one, and one without chroma (Mono,
+high contrast) stays grey in every workspace; nothing falls back to a
 default hue.
 
 | Surface | Dark L | Light L | Use |

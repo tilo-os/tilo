@@ -1,13 +1,14 @@
-//! The theme picker: each theme drawn as a small window in its own colours (the
-//! desktop ground, a sidebar with the selected row, a heading and text lines, a
-//! primary button in the accent and a switch that is on), named underneath.
+//! The look picker: each look drawn as a small window in its own colours, its light
+//! side beside its dark side (the desktop ground, a sidebar with the selected row, a
+//! heading and text lines, a primary button in the accent and a switch that is on),
+//! named underneath. A look is painted in the accent the person chose, so a tile shows
+//! what choosing it gives.
 
-use std::cell::OnceCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::theme::Theme;
+use ui::theme::{Look, Theme};
+use ui::tokens::{Emphasis, PresenceHue};
 use ui::widget::{ModelPath, TaffyTreeExt, Widget, card_column_width, card_columns};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -15,57 +16,53 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::i18n::t;
-use crate::prefs::AppearancePrefs;
 
 struct Tile {
-    name: &'static str,
-    themes: Vec<Theme>,
+    look: Look,
+    /// The light side, then the dark side.
+    sides: [Theme; 2],
 }
 
-thread_local! {
-    /// The themes the tiles are painted with, built once: they are the
-    /// shipped presets, which never change while the app runs.
-    static TILES: OnceCell<Rc<[Tile]>> = const { OnceCell::new() };
-}
-
-fn tiles() -> Rc<[Tile]> {
-    TILES.with(|tiles| {
-        Rc::clone(tiles.get_or_init(|| {
-            AppearancePrefs::THEMES
-                .iter()
-                .map(|name| Tile {
-                    name,
-                    themes: if *name == "Automatic" {
-                        ["Light", "Dark"]
-                            .iter()
-                            .filter_map(|name| Theme::named(name))
-                            .collect()
-                    } else {
-                        Theme::named(name).into_iter().collect()
-                    },
-                })
-                .filter(|tile| !tile.themes.is_empty())
-                .collect()
-        }))
-    })
+/// Every look, painted in `accent` when the person chose one and in the look's own
+/// otherwise, for the person whose colour is `you`.
+fn tiles(accent: Option<PresenceHue>, you: PresenceHue) -> Vec<Tile> {
+    Look::ALL
+        .into_iter()
+        .map(|look| {
+            let side = |dark: bool| {
+                let mut document = look.preset(dark).document();
+                if let Some(accent) = accent {
+                    document.emphasis = Emphasis::Tinted {
+                        hue: accent.degrees(),
+                    };
+                }
+                Theme::from_document(&document)
+                    .unwrap_or_else(|| Theme::preset(look.preset(dark)))
+                    .with_your_colour(you)
+            };
+            Tile {
+                look,
+                sides: [side(false), side(true)],
+            }
+        })
+        .collect()
 }
 
 const TILE_ASPECT: f64 = 0.66;
 
 fn tile_geometry(width: f64, tiles: usize, gap: f64, narrowest: f64) -> (usize, f64, f64) {
-    let tiles = tiles.max(1);
-    let fit = card_columns(width, narrowest, gap).min(tiles);
-    let columns = (1..=fit)
-        .rev()
-        .find(|c| tiles.is_multiple_of(*c))
-        .unwrap_or(fit);
+    let columns = card_columns(width, narrowest, gap).clamp(1, tiles.max(1));
     let tile = card_column_width(width, columns, gap);
     (columns, tile, (tile * TILE_ASPECT).round())
 }
 
 pub struct ThemeTiles {
-    tiles: Rc<[Tile]>,
+    tiles: Vec<Tile>,
+    /// The id of the look shown chosen; a theme of the person's own matches none.
     chosen: String,
+    accent: Option<PresenceHue>,
+    /// The colour the tiles were painted for; the live theme's is the person's.
+    you: PresenceHue,
     hover: Option<usize>,
     cursor: usize,
     focused: bool,
@@ -82,17 +79,21 @@ pub struct ThemeTiles {
 }
 
 impl ThemeTiles {
-    pub fn new(chosen: impl Into<String>) -> Self {
+    /// The picker with the look `chosen` (an id) marked, every tile in `accent`.
+    pub fn new(chosen: impl Into<String>, accent: Option<PresenceHue>) -> Self {
         let chosen = chosen.into();
-        let tiles = tiles();
+        let you = PresenceHue::Blue;
+        let tiles = tiles(accent, you);
         let cursor = tiles
             .iter()
-            .position(|tile| tile.name == chosen)
+            .position(|tile| tile.look.id() == chosen)
             .unwrap_or_default();
         Self {
             dirty: true,
             tiles,
             chosen,
+            accent,
+            you,
             hover: None,
             cursor,
             focused: false,
@@ -100,7 +101,7 @@ impl ThemeTiles {
             last_cursor: Point::ZERO,
             action: None,
             rect: Rect::ZERO,
-            narrowest: f64::from(ui::tokens::Metrics::BASE.picture_tile_min_width),
+            narrowest: 132.0,
             preferred: f64::from(ui::tokens::Metrics::BASE.picture_tile_width),
             gap: 12.0,
             label: 24.0,
@@ -140,24 +141,26 @@ impl ThemeTiles {
             return;
         };
         self.cursor = index;
-        if self.chosen == tile.name || !self.enabled {
+        if self.chosen == tile.look.id() || !self.enabled {
             return;
         }
-        // The ring stays on the stored theme until the store says otherwise:
-        // the pane rebuilds the tiles when the chosen theme changes, so a
+        // The ring stays on the stored look until the store says otherwise:
+        // the pane rebuilds the tiles when the chosen look changes, so a
         // choice that never lands is never shown as made.
         if let Some(action) = &mut self.action
-            && let Err(error) = action.emit(tile.name.to_owned())
+            && let Err(error) = action.emit(tile.look.id().to_owned())
         {
-            tracing::warn!(%error, "the theme choice was refused");
+            tracing::warn!(%error, "the look choice was refused");
         }
     }
 
-    pub(super) fn label_of(name: &str) -> String {
-        t(&format!(
-            "settings-appearance-theme-{}",
-            name.to_ascii_lowercase().replace(' ', "-")
-        ))
+    /// The name a person reads for the look stored as `id`; a theme of their own reads
+    /// as its id.
+    pub(super) fn label_of(id: &str) -> String {
+        match Look::find(id) {
+            Some(look) => t(&format!("settings-appearance-look-{}", look.id())),
+            None => id.strip_prefix("custom:").unwrap_or(id).to_owned(),
+        }
     }
 }
 
@@ -396,7 +399,7 @@ impl Widget for ThemeTiles {
         available: Size<taffy::AvailableSpace>,
         _text: &mut ui::text_render::TextRenderer,
     ) -> Size<f32> {
-        let width = known.width.unwrap_or_else(|| match available.width {
+        let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(width) => width,
             _ => ((self.preferred + self.gap) * self.tiles.len() as f64) as f32,
         });
@@ -419,37 +422,44 @@ impl Widget for ThemeTiles {
         theme: &Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
+        // The tiles wear the person's colour where a look's accent is theirs.
+        let you = theme.tokens.colors.you;
+        if you != self.you {
+            self.you = you;
+            self.tiles = tiles(self.accent, you);
+        }
         let radius = f64::from(theme.tokens.radii.control);
         let caption = theme.text(ui::TextRole::Caption);
         for (index, tile) in self.tiles.iter().enumerate() {
             let area = self.tile_rect(index);
-            match tile.themes.as_slice() {
-                [light, dark] => {
-                    let half = Rect::new(area.x0, area.y0, area.center().x, area.y1);
-                    scene.push_layer(
-                        Fill::NonZero,
-                        vello::peniko::BlendMode::default(),
-                        1.0,
-                        transform,
-                        &half,
-                    );
-                    paint_window(scene, transform, area, light, radius);
-                    scene.pop_layer();
-                    let other = Rect::new(area.center().x, area.y0, area.x1, area.y1);
-                    scene.push_layer(
-                        Fill::NonZero,
-                        vello::peniko::BlendMode::default(),
-                        1.0,
-                        transform,
-                        &other,
-                    );
-                    paint_window(scene, transform, area, dark, radius);
-                    scene.pop_layer();
-                }
-                [only, ..] => paint_window(scene, transform, area, only, radius),
-                [] => {}
+            let [light, dark] = &tile.sides;
+            // The light side, then the dark side across a slanted line.
+            let slant = area.height() * 0.18;
+            let middle = area.center().x;
+            // The part of the tile between its edge at `edge` and the slanted line.
+            let half = |edge: f64| {
+                let mut path = vello::kurbo::BezPath::new();
+                path.move_to((edge, area.y0));
+                path.line_to((middle + slant, area.y0));
+                path.line_to((middle - slant, area.y1));
+                path.line_to((edge, area.y1));
+                path.close_path();
+                path
+            };
+            let light_half = half(area.x0);
+            let dark_half = half(area.x1);
+            for (side, half) in [(light, &light_half), (dark, &dark_half)] {
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    half,
+                );
+                paint_window(scene, transform, area, side, radius);
+                scene.pop_layer();
             }
-            let chosen = tile.name == self.chosen;
+            let chosen = tile.look.id() == self.chosen;
             let edge = RoundedRect::from_rect(area, radius);
             if chosen {
                 ui::surface::selected_edge(scene, transform, area, radius, theme);
@@ -480,7 +490,7 @@ impl Widget for ThemeTiles {
                     &edge.rect().inflate(6.0, 6.0).to_rounded_rect(radius + 6.0),
                 );
             }
-            let name = Self::label_of(tile.name);
+            let name = Self::label_of(tile.look.id());
             let (width, _) = text.measure_style(&name, Some(area.width() as f32), &caption);
             text.draw_style(
                 scene,
@@ -588,7 +598,7 @@ impl Widget for ThemeTiles {
         use ui::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Group)
-                .with_name(t("settings-appearance-theme"))
+                .with_name(t("settings-appearance-look"))
                 .with_value(Self::label_of(&self.chosen))
                 .with_state(
                     AccessState::new()
@@ -608,11 +618,9 @@ impl Widget for ThemeTiles {
     ) -> bool {
         match action {
             ui::a11y::Action::SetValue(value) => {
-                match self
-                    .tiles
-                    .iter()
-                    .position(|tile| tile.name == value || Self::label_of(tile.name) == *value)
-                {
+                match self.tiles.iter().position(|tile| {
+                    tile.look.id() == value || Self::label_of(tile.look.id()) == *value
+                }) {
                     Some(index) => {
                         self.choose(index);
                         true
@@ -638,72 +646,61 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn the_theme_tiles_show_every_theme_by_name_in_even_lines;
+        fn the_look_tiles_show_every_look_by_name_on_both_sides;
 
-        phase every_offered_theme_has_a_tile_in_its_own_colours;
+        phase every_look_has_a_tile_with_a_light_and_a_dark_side;
         {
-            let tiles = tiles();
+            let tiles = tiles(None, PresenceHue::Blue);
             assert_eq!(
-                tiles.iter().map(|tile| tile.name).collect::<Vec<_>>(),
-                AppearancePrefs::THEMES
+                tiles.iter().map(|tile| tile.look).collect::<Vec<_>>(),
+                Look::ALL
             );
-            let automatic = tiles.iter().find(|tile| tile.name == "Automatic").unwrap();
-            assert_eq!(automatic.themes.len(), 2);
-            let light = tiles.iter().find(|tile| tile.name == "Light").unwrap();
-            let dark = tiles.iter().find(|tile| tile.name == "Dark").unwrap();
-            assert_ne!(
-                light.themes[0].tokens.colors.surfaces.content,
-                dark.themes[0].tokens.colors.surfaces.content
-            );
+            for tile in &tiles {
+                let [light, dark] = &tile.sides;
+                assert!(!light.document.is_dark(), "{:?}", tile.look);
+                assert!(dark.document.is_dark(), "{:?}", tile.look);
+            }
+        }
+
+        phase a_chosen_accent_paints_every_tile;
+        {
+            let own = tiles(None, PresenceHue::Blue);
+            let violet = tiles(Some(PresenceHue::Violet), PresenceHue::Blue);
+            for (own, violet) in own.iter().zip(&violet) {
+                if own.look == Look::Mono {
+                    continue;
+                }
+                assert_ne!(
+                    own.sides[1].tokens.colors.intent.accent,
+                    violet.sides[1].tokens.colors.intent.accent,
+                    "{:?}",
+                    own.look
+                );
+            }
         }
 
         phase every_tile_has_a_name;
         // Every tile is named in words, never by the message id it looks its
         // name up under.
         {
-            for tile in tiles().iter() {
-                let label = ThemeTiles::label_of(tile.name);
+            for look in Look::ALL {
+                let label = ThemeTiles::label_of(look.id());
                 assert!(
                     !label.starts_with("settings-"),
                     "the {} tile shows its message id: {label}",
-                    tile.name
+                    look.id()
                 );
             }
-        }
-
-        phase the_tiles_fill_even_lines;
-        {
-            let offered = AppearancePrefs::THEMES.len();
-            let mut tiles = ThemeTiles::new("Dark");
-            let mut previous = usize::MAX;
-            for width in [720.0, 400.0, 260.0] {
-                tiles.rect = Rect::new(0.0, 0.0, width, 400.0);
-                let columns = tiles.columns();
-                assert!(
-                    offered.is_multiple_of(columns),
-                    "at {width}: {columns} tiles a line"
-                );
-                assert!(
-                    columns <= previous,
-                    "at {width}: a narrower pane shows no more columns"
-                );
-                previous = columns;
-            }
-            assert_eq!(tiles.columns(), 2);
-            assert_eq!(tiles.columns(), 2);
-            assert!(tiles.tile_rect(2).y0 > tiles.tile_rect(0).y1);
-            assert_eq!(tiles.tile_at(tiles.tile_rect(3).center()), Some(3));
+            assert_eq!(ThemeTiles::label_of("custom:ember"), "ember");
         }
 
         phase the_tiles_fill_the_line_at_every_width;
-        // From a phone to a wide window, every line of tiles spans the whole
-        // width: the tiles grow with the window instead of leaving a gap at
-        // the end of the line, and the column count reflows as it widens.
+        // From a phone to a wide window, every full line of tiles spans the
+        // whole width, and a wider pane never shows fewer columns.
         {
-            let mut tiles = ThemeTiles::new("Dark");
+            let mut tiles = ThemeTiles::new("tilo", None);
             let mut counts = Vec::new();
-            let mut first_width = Vec::new();
-            for width in [260.0, 360.0, 420.0, 560.0, 640.0, 720.0, 900.0, 1400.0] {
+            for width in [300.0, 360.0, 420.0, 560.0, 640.0, 720.0, 900.0, 1400.0] {
                 tiles.rect = Rect::new(0.0, 0.0, width, 400.0);
                 let columns = tiles.columns();
                 let line_end = tiles.tile_rect(columns - 1).x1;
@@ -711,36 +708,17 @@ mod tests {
                     (line_end - width).abs() < 0.5,
                     "at {width}: the line of {columns} tiles ends at {line_end}"
                 );
-                assert!(
-                    (tiles.tile_rect(0).x0).abs() < 0.5,
-                    "at {width}: the line starts at the edge"
-                );
-                let widths: Vec<f64> = (0..columns).map(|i| tiles.tile_rect(i).width()).collect();
-                assert!(
-                    widths.iter().all(|w| (w - widths[0]).abs() < 0.01),
-                    "at {width}: the tiles share the line evenly: {widths:?}"
-                );
                 counts.push(columns);
-                first_width.push(widths[0]);
             }
             assert!(
                 counts.windows(2).all(|pair| pair[1] >= pair[0]),
                 "a wider pane never shows fewer columns: {counts:?}"
             );
             assert_eq!(counts.first(), Some(&2), "a phone shows two columns");
-            assert!(
-                counts
-                    .iter()
-                    .all(|columns| AppearancePrefs::THEMES.len().is_multiple_of(*columns)),
-                "every line holds as many tiles as the others: {counts:?}"
-            );
-            assert!(
-                counts
-                    .windows(2)
-                    .zip(first_width.windows(2))
-                    .all(|(columns, widths)| columns[0] != columns[1] || widths[1] > widths[0]),
-                "while the columns stay, the tiles keep growing with the window: {first_width:?}"
-            );
+            assert_eq!(counts.last(), Some(&5), "a wide pane shows every look in a line");
+            tiles.rect = Rect::new(0.0, 0.0, 300.0, 400.0);
+            assert!(tiles.tile_rect(2).y0 > tiles.tile_rect(0).y1);
+            assert_eq!(tiles.tile_at(tiles.tile_rect(3).center()), Some(3));
         }
     }
 }

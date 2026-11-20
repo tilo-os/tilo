@@ -242,7 +242,7 @@ fn settings_controls_change_the_settings_the_session_keeps() {
         (
             APPEARANCE,
             "dark_theme",
-            json!(ui::theme::Preset::DarkCool.id()),
+            json!(ui::theme::Preset::MossDark.id()),
         ),
         (APPEARANCE, "accent", json!("violet")),
         (APPEARANCE, "text_scale", json!(1.25)),

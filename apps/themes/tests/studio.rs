@@ -177,20 +177,20 @@ fn the_preset_in_use_says_in_use() {
     let mut app = gallery_at(1680);
     app.harness()
         .expect(
-            &SemanticExpectation::named("use-dark")
+            &SemanticExpectation::named("use-tilo-dark")
                 .name_contains("In use")
                 .enabled(false),
         )
-        .expect("with nothing chosen, the system shows Dark");
+        .expect("with nothing chosen, the system shows Tilo dark");
     app.harness()
         .expect(
-            &SemanticExpectation::named("use-light")
+            &SemanticExpectation::named("use-tilo-light")
                 .name_contains("Use")
                 .enabled(true),
         )
         .expect("every other preset can be used");
     app.harness()
-        .expect(&SemanticExpectation::named("use-dark").enabled(false))
+        .expect(&SemanticExpectation::named("use-tilo-dark").enabled(false))
         .expect("still in use");
     let mut selected = Vec::new();
     selected_cards(app.harness().root_widget(), &mut selected);
@@ -226,14 +226,14 @@ fn the_gallery_marks_in_use_the_theme_a_page_draws() {
         .expect("the gallery lays out in the theme the page draws");
     app.harness()
         .expect(
-            &SemanticExpectation::named("use-light")
+            &SemanticExpectation::named("use-tilo-light")
                 .name_contains("In use")
                 .enabled(false),
         )
-        .expect("the page draws Light, so Light is in use");
+        .expect("the page draws Tilo light, so it is in use");
     app.harness()
         .expect(
-            &SemanticExpectation::named("use-dark")
+            &SemanticExpectation::named("use-tilo-dark")
                 .name_contains("Use")
                 .enabled(true),
         )
@@ -400,7 +400,7 @@ fn leave_for_presets(app: &mut TestApp<App>) {
 #[test]
 fn customizing_writes_the_theme_on_its_first_edit() {
     let mut app = gallery_at(1680);
-    let customize = format!("customize-{}", Preset::DarkGraphite.id());
+    let customize = format!("customize-{}", Preset::PaperDark.id());
     app.harness()
         .click_named(&customize)
         .expect("the preset offers Customize");
@@ -428,7 +428,7 @@ fn customizing_writes_the_theme_on_its_first_edit() {
     assert_eq!(state.themes.len(), 1, "the first edit writes one theme");
     let (_, theme) = state.themes.iter().next().expect("one theme");
     assert!(
-        theme.name.contains('X') && theme.name.contains(Preset::DarkGraphite.name()),
+        theme.name.contains('X') && theme.name.contains(Preset::PaperDark.name()),
         "the theme is the preset's copy carrying the edit: {:?}",
         theme.name
     );

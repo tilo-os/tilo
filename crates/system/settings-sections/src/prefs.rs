@@ -1373,8 +1373,8 @@ impl Default for UpdatePrefs {
 }
 
 /// Look-and-feel preferences the OS theming layer resolves into the
-/// concrete [`ui::Theme`] every app draws against. `theme` is a named preset
-/// (see [`AppearancePrefs::THEMES`]); `high_contrast` overrides the palette
+/// concrete [`ui::Theme`] every app draws against. `dark_theme` and `light_theme`
+/// name the two sides of a look ([`ui::theme::Look`]); `high_contrast` overrides the palette
 /// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
 /// fold in the accessibility comforts. The compositor reads this section the
 /// A theme document Theme Studio wrote, kept as it is.
@@ -1733,24 +1733,19 @@ impl ui::storage::SettingsSchema for AppearancePrefs {
     migrate = crate::leaves_moved_out
 )]
 impl AppearancePrefs {
-    /// Set the theme every app draws with; Automatic is light by day and
-    /// dark by night.
+    /// Dress every app in a look: Tilo, Paper, Moss, Dusk or Mono, each
+    /// designed for light and for dark; the mode stays as it is.
     #[action(id = "choose-theme")]
     pub fn pick_theme(
         &mut self,
-        #[param(
-            "The theme: Automatic, Dark, Light, Dark graphite, Dark cool, Dark soft, Glass, Block, Pixelated or Liquid Glass"
-        )]
-        theme: String,
+        #[param("The look: Tilo, Paper, Moss, Dusk or Mono")] theme: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
-        // Any theme the toolkit ships, by its name or id, and Automatic.
-        let automatic = settings_store::day_schedule::is_automatic(&theme.to_ascii_lowercase());
-        if !automatic && ui::theme::Preset::find(&theme).is_none() {
-            return Err(ui::tilo_resource::Refusal::new(format!(
-                "`{theme}` is not a theme"
-            )));
-        }
-        self.choose_theme(&theme);
+        let look = ui::theme::Look::find(&theme).ok_or_else(|| {
+            ui::tilo_resource::Refusal::new(format!(
+                "`{theme}` is not a look: Tilo, Paper, Moss, Dusk or Mono"
+            ))
+        })?;
+        self.choose_look(look);
         Ok(())
     }
 
@@ -1764,45 +1759,41 @@ impl AppearancePrefs {
 }
 
 impl AppearancePrefs {
-    pub const THEMES: &'static [&'static str] = &[
-        "Automatic",
-        "Dark",
-        "Light",
-        "Dark graphite",
-        "Dark cool",
-        "Dark soft",
-        "Glass",
-        "Block",
-        "Pixelated",
-        "Liquid Glass",
+    /// The modes a person picks from, as `mode` stores them.
+    pub const MODES: [&'static str; 3] = [
+        settings_store::day_schedule::AUTOMATIC_MODE,
+        "light",
+        "dark",
     ];
-    /// Show `name` from [`Self::THEMES`]: Automatic, or a preset that becomes
-    /// the theme of its own mode.
-    pub fn choose_theme(&mut self, name: &str) {
-        if settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()) {
-            self.mode = "automatic".into();
-        } else if let Some(preset) = ui::theme::Preset::find(name) {
-            let doc = preset.document();
-            self.mode = if doc.palette.dark { "dark" } else { "light" }.into();
-            if doc.palette.dark {
-                self.dark_theme = preset.id().into();
-            } else {
-                self.light_theme = preset.id().into();
-            }
+
+    /// Wear `look` in both modes.
+    pub fn choose_look(&mut self, look: ui::theme::Look) {
+        self.dark_theme = look.preset(true).id().into();
+        self.light_theme = look.preset(false).id().into();
+    }
+
+    /// The id of the theme the current mode shows (Automatic shows its dark one
+    /// here; the page and the shell resolve the hour themselves).
+    fn shown_theme(&self) -> &str {
+        if self.mode == "light" {
+            &self.light_theme
+        } else {
+            &self.dark_theme
         }
     }
 
-    /// The [`Self::THEMES`] entry the stored mode and themes amount to; a
-    /// custom theme reads as its id.
-    pub fn theme_choice(&self) -> String {
-        let id = match self.mode.as_str() {
-            mode if settings_store::day_schedule::is_automatic(mode) => {
-                return "Automatic".into();
-            }
-            "light" => &self.light_theme,
-            _ => &self.dark_theme,
-        };
-        ui::theme::Preset::find(id).map_or_else(|| id.clone(), |preset| preset.name().into())
+    /// The look the person wears, or `None` for a theme of their own.
+    pub fn look(&self) -> Option<ui::theme::Look> {
+        ui::theme::Preset::find(self.shown_theme()).and_then(ui::theme::Preset::look)
+    }
+
+    /// What the look picker shows chosen: a look's id, or a theme of the
+    /// person's own by its stored id.
+    pub fn look_choice(&self) -> String {
+        self.look().map_or_else(
+            || self.shown_theme().to_owned(),
+            |look| look.id().to_owned(),
+        )
     }
 }
 
@@ -2214,26 +2205,32 @@ mod theme_tests {
     use super::AppearancePrefs;
 
     /// Every look the toolkit ships can be chosen through the published action, by the name a
-    /// person reads, and is what the store then holds; a name no theme has is refused.
+    /// person reads; it dresses both modes and leaves the mode alone. A name no look has is
+    /// refused.
     #[test]
     fn every_shipped_look_can_be_chosen() {
-        for (name, id) in [
-            ("Glass", "glass"),
-            ("Block", "block"),
-            ("Pixelated", "pixelated"),
-            ("Liquid Glass", "liquid-glass"),
-        ] {
-            let mut prefs = AppearancePrefs::default();
-            prefs.pick_theme(name.to_owned()).unwrap();
-            assert_eq!(prefs.dark_theme, id, "{name}");
-            assert_eq!(prefs.mode, "dark", "{name}");
-            assert_eq!(prefs.theme_choice(), name);
-            assert!(AppearancePrefs::THEMES.contains(&name), "{name} is offered");
+        for look in ui::theme::Look::ALL {
+            let mut prefs = AppearancePrefs {
+                mode: "light".into(),
+                ..AppearancePrefs::default()
+            };
+            prefs.pick_theme(look.name().to_owned()).unwrap();
+            assert_eq!(prefs.dark_theme, look.preset(true).id());
+            assert_eq!(prefs.light_theme, look.preset(false).id());
+            assert_eq!(prefs.mode, "light", "{}", look.name());
+            assert_eq!(prefs.look(), Some(look));
+            assert_eq!(prefs.look_choice(), look.id());
         }
         assert!(
             AppearancePrefs::default()
                 .pick_theme("Crimson".to_owned())
                 .is_err()
         );
+        let custom = AppearancePrefs {
+            dark_theme: "custom:ember".into(),
+            ..AppearancePrefs::default()
+        };
+        assert_eq!(custom.look(), None);
+        assert_eq!(custom.look_choice(), "custom:ember");
     }
 }

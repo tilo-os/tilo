@@ -169,28 +169,6 @@ fn translucency_choices() -> Vec<(String, String)> {
     choices
 }
 
-fn accent_choices() -> Vec<(String, String)> {
-    let mut choices = vec![(
-        THEME_CHOICE.to_owned(),
-        t("settings-appearance-accent-theme"),
-    )];
-    choices.extend(
-        ui::tokens::PresenceHue::ALL
-            .iter()
-            .map(|hue| (hue.id().to_owned(), hue.label().to_owned())),
-    );
-    choices
-}
-
-fn accent_of(key: &str) -> Result<Option<String>, String> {
-    if key == THEME_CHOICE {
-        return Ok(None);
-    }
-    ui::tokens::PresenceHue::from_id(key)
-        .map(|hue| Some(hue.id().to_owned()))
-        .ok_or_else(|| format!("`{key}` is not an accent colour"))
-}
-
 fn ui_face_of(choice: String) -> Result<Option<String>, String> {
     if choice == THEME_CHOICE {
         return Ok(None);
@@ -249,7 +227,7 @@ impl<'a> From<&'a AppearancePrefs> for AppearanceInspection<'a> {
     fn from(prefs: &'a AppearancePrefs) -> Self {
         Self {
             schema: "tilo.settings.appearance.v1",
-            theme: prefs.theme_choice(),
+            theme: prefs.look_choice(),
             mode: &prefs.mode,
             dark_theme: &prefs.dark_theme,
             light_theme: &prefs.light_theme,
@@ -391,7 +369,8 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let prefs = cx.settings::<AppearancePrefs>();
     cx.record(&prefs, move |cx| {
         let mut groups = vec![
-            theme_card(cx, &actions),
+            theme_card(cx),
+            size_card(cx, &actions),
             {
                 let (actions, decoded) = (actions.clone(), decoded.clone());
                 cx.switch(&status, move |cx, status| {
@@ -440,19 +419,129 @@ fn colour_card(cx: &ViewCx<crate::prefs::IdentityPrefs>) -> Element {
     section(&t("settings-appearance-colour-card"), rows(vec![row])).into_element()
 }
 
-fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Element {
+pub(super) fn mode_label(mode: &String) -> String {
+    t(&format!("settings-appearance-mode-{mode}"))
+}
+
+/// The look, the mode and the accent: what a person picks to make Tilo theirs, each
+/// shown as what it gives and applied the moment it is picked.
+fn theme_card(cx: &ViewCx<AppearancePrefs>) -> Element {
     let paths = AppearancePrefs::paths();
-    let tiles = cx.switch(&cx.value(AppearancePrefs::theme_choice), |cx, theme| {
-        Box::new(
-            cx.actions()
-                .bind(ThemeTiles::new(theme.clone()), AppearancePrefs::PICK_THEME),
-        )
+    let chosen = cx.value(|prefs: &AppearancePrefs| (prefs.look_choice(), prefs.accent.clone()));
+    let tiles = cx.switch(&chosen, |cx, (look, accent)| {
+        let accent = accent.as_deref().and_then(ui::tokens::PresenceHue::from_id);
+        Box::new(cx.actions().bind(
+            ThemeTiles::new(look.clone(), accent),
+            AppearancePrefs::PICK_THEME,
+        ))
     });
-    let open = crate::effects::open_pane(crate::categories::Category::Accessibility);
+    let accent = cx.value(|prefs: &AppearancePrefs| prefs.accent.clone());
+    let swatches = cx.switch(&accent, |cx, accent| -> Element {
+        let mut picker = accent_swatches(accent.as_deref());
+        if let Some(binding) = cx.actions().set_binding(
+            AppearancePrefs::paths().accent,
+            |index: usize| -> Result<Option<String>, String> {
+                match index.checked_sub(1) {
+                    None => Ok(None),
+                    Some(hue) => ui::tokens::PresenceHue::ALL
+                        .get(hue)
+                        .map(|hue| Some(hue.id().to_owned()))
+                        .ok_or_else(|| format!("no accent {index}")),
+                }
+            },
+        ) {
+            picker = picker.on_action(binding);
+        }
+        Box::new(picker)
+    });
     section(
         &t("settings-appearance-theme-card"),
         rows(vec![
             block(tiles),
+            cx.setting(t("settings-appearance-mode"))
+                .described(t("settings-appearance-mode-desc"))
+                .id("appearance.mode")
+                .among(
+                    paths.mode,
+                    AppearancePrefs::MODES.map(str::to_owned),
+                    mode_label,
+                ),
+            provider_settings_ui::widgets::field_row_described(
+                &t("settings-appearance-accent"),
+                &t("settings-appearance-accent-desc"),
+                swatches,
+            ),
+            cx.setting(t("settings-appearance-translucency"))
+                .described(t("settings-appearance-translucency-desc"))
+                .id("appearance.translucency")
+                .keyed(
+                    paths.translucency,
+                    translucency_choices(),
+                    translucency_key,
+                    |key: String| translucency_of(&key),
+                ),
+        ]),
+    )
+    .into_element()
+}
+
+/// Swatches a line: the look's own and six hues, then six more, so the two lines fit a
+/// phone at a touch target's size.
+const ACCENT_COLUMNS: usize = 7;
+
+/// The accent swatches: the look's own first, then the twelve hues, each painted as the
+/// primary button the shown theme would fill with it.
+fn accent_swatches(chosen: Option<&str>) -> ui::widget::ColorSwatchPicker {
+    use ui::tokens::{Colors, Emphasis, PresenceHue};
+    // Each swatch takes its colour from the theme it is drawn in, so it shows the accent as
+    // the chosen look will draw it.
+    let unpainted = ui::peniko::Color::TRANSPARENT;
+    let mut swatches = vec![ui::widget::ColorSwatch::named(
+        unpainted,
+        t("settings-appearance-accent-theme"),
+    )];
+    swatches.extend(
+        PresenceHue::ALL
+            .iter()
+            .map(|hue| ui::widget::ColorSwatch::named(unpainted, hue.label().to_owned())),
+    );
+    let selected = chosen
+        .and_then(PresenceHue::from_id)
+        .and_then(|hue| PresenceHue::ALL.iter().position(|each| *each == hue))
+        .map_or(0, |index| index + 1);
+    ui::widget::ColorSwatchPicker::new(swatches, ACCENT_COLUMNS)
+        .with_selected(selected)
+        .with_accessible_name(t("settings-appearance-accent"))
+        // The look's own accent: following the look is a choice of its own, not one more colour.
+        .with_mark(0, "•")
+        .with_theme_colours(|theme| {
+            let document = &theme.document;
+            let you = theme.tokens.colors.you;
+            let own = ui::theme::Preset::find(&document.id)
+                .and_then(ui::theme::Preset::look)
+                .map_or(Emphasis::You, ui::theme::Look::emphasis);
+            let fill = |emphasis| {
+                Colors::of_palette(&document.palette, emphasis, document.presence, you)
+                    .intent
+                    .accent
+            };
+            std::iter::once(fill(own))
+                .chain(
+                    PresenceHue::ALL
+                        .iter()
+                        .map(|hue| fill(Emphasis::Tinted { hue: hue.degrees() })),
+                )
+                .collect()
+        })
+}
+
+/// Density, interface size and font: how big and how tight everything is drawn.
+fn size_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Element {
+    let paths = AppearancePrefs::paths();
+    let open = crate::effects::open_pane(crate::categories::Category::Accessibility);
+    section(
+        &t("settings-appearance-size-card"),
+        rows(vec![
             cx.setting(t("settings-appearance-density"))
                 .described(t("settings-appearance-density-desc"))
                 .id("appearance.density")
@@ -482,29 +571,6 @@ fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Elem
                             .unwrap_or_else(|| THEME_CHOICE.to_owned())
                     },
                     ui_face_of,
-                ),
-            cx.setting(t("settings-appearance-accent"))
-                .described(t("settings-appearance-accent-desc"))
-                .id("appearance.accent")
-                .keyed(
-                    paths.accent,
-                    accent_choices(),
-                    |prefs| {
-                        prefs
-                            .accent
-                            .clone()
-                            .unwrap_or_else(|| THEME_CHOICE.to_owned())
-                    },
-                    |key: String| accent_of(&key),
-                ),
-            cx.setting(t("settings-appearance-translucency"))
-                .described(t("settings-appearance-translucency-desc"))
-                .id("appearance.translucency")
-                .keyed(
-                    paths.translucency,
-                    translucency_choices(),
-                    translucency_key,
-                    |key: String| translucency_of(&key),
                 ),
             cx.setting(t("settings-appearance-accessibility"))
                 .described(t("settings-appearance-accessibility-desc"))
@@ -724,9 +790,10 @@ mod tests {
             &mut app,
             APPEARANCE,
             "choose-theme",
-            serde_json::json!({ "theme": "Automatic" }),
+            serde_json::json!({ "theme": "Paper" }),
         )
         .unwrap();
+        edit_field(&mut app, APPEARANCE, "mode", "automatic").unwrap();
         crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "ui_scale", 1.5).unwrap();
         crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "text_scale", 1.15)
             .unwrap();
@@ -745,7 +812,8 @@ mod tests {
 
         let settings = app.settings::<AppearancePrefs>();
         let prefs = settings.get();
-        assert_eq!(prefs.theme_choice(), "Automatic");
+        assert_eq!(prefs.look(), Some(ui::theme::Look::Paper));
+        assert_eq!(prefs.mode, "automatic");
         assert_eq!(prefs.ui_scale, 1.50);
         assert_eq!(prefs.text_scale, 1.15);
         assert!(prefs.high_contrast);
@@ -924,7 +992,7 @@ mod tests {
         app.settings::<AppearancePrefs>()
             .set(&AppearancePrefs {
                 mode: "dark".into(),
-                dark_theme: "dark-cool".into(),
+                dark_theme: "moss-dark".into(),
                 text_scale: 1.15,
                 ui_scale: 1.25,
                 ..AppearancePrefs::default()
@@ -939,13 +1007,13 @@ mod tests {
             .with_widget::<crate::window::Inspected, _>(intent())
             .flatten()
             .expect("the Appearance page expresses the look");
-        assert_eq!(shown.base_theme.name, "Dark cool");
+        assert_eq!(shown.base_theme.name, "Moss dark");
         assert_eq!(shown.ui_scale, 1.25);
         assert_eq!(shown.text_scale, 1.15);
 
         app.settings::<AppearancePrefs>()
             .update(|prefs| {
-                prefs.choose_theme("Dark graphite");
+                prefs.choose_look(ui::theme::Look::Paper);
                 prefs.reduce_motion = true;
             })
             .unwrap();
@@ -954,7 +1022,7 @@ mod tests {
             .with_widget::<crate::window::Inspected, _>(intent())
             .flatten()
             .expect("the Appearance page expresses the look");
-        assert_eq!(shown.base_theme.name, "Dark graphite");
+        assert_eq!(shown.base_theme.name, "Paper dark");
         assert!(shown.reduce_motion);
         let size = crate::testing::caption("settings-appearance-ui-scale");
         assert!(

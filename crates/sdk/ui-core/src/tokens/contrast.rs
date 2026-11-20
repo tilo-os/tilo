@@ -474,13 +474,18 @@ mod tests {
     use crate::tokens::colors::PresenceHue;
     use crate::tokens::palette::{Emphasis, Palette};
 
-    fn presets() -> [Palette; 7] {
+    fn presets() -> [Palette; 12] {
         [
             Palette::dark(),
-            Palette::dark_cool(),
-            Palette::dark_graphite(),
-            Palette::dark_soft(),
             Palette::light(),
+            Palette::paper_dark(),
+            Palette::paper_light(),
+            Palette::moss_dark(),
+            Palette::moss_light(),
+            Palette::dusk_dark(),
+            Palette::dusk_light(),
+            Palette::mono_dark(),
+            Palette::mono_light(),
             Palette::high_contrast_dark(),
             Palette::high_contrast_light(),
         ]

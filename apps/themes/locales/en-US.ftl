@@ -96,7 +96,7 @@ themes-theme-rim-span = Set how far the active tab light of { $item } reaches to
 themes-theme-rim-alpha = Set the active tab light of { $item } to { $new }
 themes-theme-hover-alpha = Set the hovered tab strength of { $item } to { $new }
 themes-new-theme = Started a theme from { $base }
-themes-reset = Reset { $item } to the graphite preset
+themes-reset = Reset { $item } to Paper dark
 themes-delete = Deleted { $item }
 themes-switch-polarity = { $dark ->
     [true] Made { $item } dark

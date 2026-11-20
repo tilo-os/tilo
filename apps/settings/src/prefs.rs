@@ -309,7 +309,7 @@ mod tests {
                 ui_scale: 1.15,
                 ..AppearancePrefs::default()
             };
-            appearance.choose_theme("Dark soft");
+            appearance.choose_look(ui::theme::Look::Dusk);
             assert_eq!(round_trip(&appearance), appearance);
             let notifications = NotificationPrefs {
                 do_not_disturb: true,
@@ -374,7 +374,7 @@ mod tests {
         phase appearance_prefs_resolve_to_real_themes;
         {
             let p = AppearancePrefs::default();
-            assert_eq!(p.theme_choice(), "Dark");
+            assert_eq!(p.look_choice(), "tilo");
             assert_eq!(
                 p.base_theme(&AppearanceDevicePrefs::default()).name,
                 ui::Theme::configured_from(&serde_json::Map::new()).name,
@@ -383,7 +383,7 @@ mod tests {
             assert!(!p.high_contrast);
             assert_eq!(p.text_scale, 1.0);
 
-            let prefs = |theme: &str, high_contrast, reduce_motion, text_scale, ui_scale| {
+            let prefs = |look: ui::theme::Look, high_contrast, reduce_motion, text_scale, ui_scale| {
                 let mut prefs = AppearancePrefs {
                     high_contrast,
                     reduce_motion,
@@ -391,21 +391,21 @@ mod tests {
                     ui_scale,
                     ..AppearancePrefs::default()
                 };
-                prefs.choose_theme(theme);
+                prefs.choose_look(look);
                 prefs
             };
             let cases = [
-                ("default resolves to dark, unscaled", p, "Dark", 1.0, false),
+                ("default resolves to dark, unscaled", p, "Tilo dark", 1.0, false),
                 (
                     "named preset with comforts",
-                    prefs("Dark cool", false, true, 1.5, 1.0),
-                    "Dark cool",
+                    prefs(ui::theme::Look::Moss, false, true, 1.5, 1.0),
+                    "Moss dark",
                     1.5,
                     true,
                 ),
                 (
                     "high contrast overrides the preset",
-                    prefs("Dark graphite", true, false, 1.0, 1.0),
+                    prefs(ui::theme::Look::Paper, true, false, 1.0, 1.0),
                     "High contrast",
                     1.0,
                     false,
@@ -418,19 +418,19 @@ mod tests {
                 assert_eq!(theme.reduce_motion, reduce_motion, "case {case}");
             }
 
-            for name in AppearancePrefs::THEMES
-                .iter()
-                .filter(|name| !settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()))
-            {
-                let t = ui::Theme::named(name).expect("an advertised preset");
-                assert_eq!(&t.name, name, "{name} must resolve to its own theme");
+            for look in ui::theme::Look::ALL {
+                for dark in [true, false] {
+                    let name = look.preset(dark).name();
+                    let t = ui::Theme::named(name).expect("an advertised preset");
+                    assert_eq!(t.name, name, "{name} must resolve to its own theme");
+                }
             }
 
             let base = ui::Theme::dark();
             let base_gap = base.tokens.spacing.s3;
             let base_type = base.tokens.typography.size(ui::tokens::TextRole::Body);
             let theme =
-                prefs("Dark", false, false, 1.2, 1.25).resolve_theme(&AppearanceDevicePrefs::default());
+                prefs(ui::theme::Look::Tilo, false, false, 1.2, 1.25).resolve_theme(&AppearanceDevicePrefs::default());
             assert_eq!(theme.ui_scale, 1.25, "UI scale folds in");
             assert_eq!(theme.text_scale, 1.2, "text scale folds in");
             // Spacing grows by the UI factor only; type by UI × text.
@@ -443,7 +443,8 @@ mod tests {
 
             // A pinned distribution emphasis wins over the named preset's emphasis
             // only. The palette stays the one the pane shows.
-            let pinned = prefs("Light", false, false, 1.0, 1.0);
+            let mut pinned = prefs(ui::theme::Look::Tilo, false, false, 1.0, 1.0);
+            pinned.mode = "light".into();
             let device = AppearanceDevicePrefs {
                 distribution_defaults: Some(ui::theme::DistributionDefaults {
                     document: Some(ui::theme::ThemeDocument {
@@ -457,7 +458,7 @@ mod tests {
                 }),
             };
             let pinned_theme = pinned.resolve_theme(&device);
-            assert_eq!(pinned_theme.name, "Light");
+            assert_eq!(pinned_theme.name, "Tilo light");
             assert_eq!(
                 pinned_theme.tokens.colors.emphasis,
                 ui::tokens::Emphasis::Tinted { hue: 260.0 }

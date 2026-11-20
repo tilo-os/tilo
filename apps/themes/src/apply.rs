@@ -138,25 +138,25 @@ mod tests {
                 light_theme: light.map(str::to_owned),
             };
         let unset = AppearanceChoice::default();
-        assert!(unset.shows("dark", true), "nothing chosen shows Dark");
-        assert!(!unset.shows("light", false));
+        assert!(unset.shows("tilo-dark", true), "nothing chosen shows Dark");
+        assert!(!unset.shows("tilo-light", false));
 
-        let graphite = choice(Some("dark"), Some("dark-graphite"), Some("light"));
-        assert!(graphite.shows("dark-graphite", true));
-        assert!(!graphite.shows("dark", true));
-        assert!(!graphite.shows("light", false), "light mode is not shown");
+        let paper = choice(Some("dark"), Some("paper-dark"), Some("tilo-light"));
+        assert!(paper.shows("paper-dark", true));
+        assert!(!paper.shows("tilo-dark", true));
+        assert!(!paper.shows("tilo-light", false), "light mode is not shown");
 
-        let light = choice(Some("light"), Some("dark-graphite"), Some("light"));
-        assert!(light.shows("light", false));
-        assert!(!light.shows("dark-graphite", true));
+        let light = choice(Some("light"), Some("paper-dark"), Some("tilo-light"));
+        assert!(light.shows("tilo-light", false));
+        assert!(!light.shows("paper-dark", true));
 
-        let automatic = choice(Some("automatic"), Some("dark-soft"), None);
-        assert!(automatic.shows("dark-soft", true), "by night");
-        assert!(automatic.shows("light", false), "by day");
+        let automatic = choice(Some("automatic"), Some("dusk-dark"), None);
+        assert!(automatic.shows("dusk-dark", true), "by night");
+        assert!(automatic.shows("tilo-light", false), "by day");
 
         let custom = choice(Some("dark"), Some("custom:ember"), None);
         assert!(custom.shows("custom:ember", true));
-        assert!(!custom.shows("dark", true));
+        assert!(!custom.shows("tilo-dark", true));
     }
 
     /// The page the person is looking at draws its browser's light or dark while they have chosen
@@ -168,42 +168,42 @@ mod tests {
         {
             let _page = ui::theme::scoped_host_scheme(Some(false));
             assert!(
-                unset.shows("light", false),
+                unset.shows("tilo-light", false),
                 "a page on a light system draws Light, so Light is in use"
             );
             assert!(
-                !unset.shows("dark", true),
+                !unset.shows("tilo-dark", true),
                 "and Dark is drawn nowhere, so it is not in use"
             );
         }
         {
             let _page = ui::theme::scoped_host_scheme(Some(true));
-            assert!(unset.shows("dark", true), "a dark browser draws Dark");
-            assert!(!unset.shows("light", false));
+            assert!(unset.shows("tilo-dark", true), "a dark browser draws Dark");
+            assert!(!unset.shows("tilo-light", false));
         }
         let automatic = AppearanceChoice {
             mode: Some(ui::theme::AUTOMATIC_MODE.to_owned()),
-            dark_theme: Some("dark-soft".to_owned()),
+            dark_theme: Some("dusk-dark".to_owned()),
             light_theme: None,
         };
         {
             let _page = ui::theme::scoped_host_scheme(Some(false));
             assert!(
-                automatic.shows("light", false),
+                automatic.shows("tilo-light", false),
                 "a page's Automatic is the browser's light"
             );
-            assert!(!automatic.shows("dark-soft", true));
+            assert!(!automatic.shows("dusk-dark", true));
         }
         let _computer = ui::theme::scoped_host_scheme(None);
-        assert!(automatic.shows("dark-soft", true), "by night");
-        assert!(automatic.shows("light", false), "and by day");
-        assert!(unset.shows("dark", true), "a computer starts dark");
+        assert!(automatic.shows("dusk-dark", true), "by night");
+        assert!(automatic.shows("tilo-light", false), "and by day");
+        assert!(unset.shows("tilo-dark", true), "a computer starts dark");
     }
 
     #[test]
     fn applying_a_preset_names_it_and_sets_the_mode() {
-        let values = appearance_values(&Preset::DarkSoft.document(), &serde_json::Map::new());
-        assert_eq!(values[DARK_THEME_KEY], "dark-soft");
+        let values = appearance_values(&Preset::DuskDark.document(), &serde_json::Map::new());
+        assert_eq!(values[DARK_THEME_KEY], "dusk-dark");
         assert_eq!(values[MODE_KEY], "dark");
         assert!(!values.contains_key(CUSTOM_THEMES_KEY));
 
@@ -212,7 +212,7 @@ mod tests {
             &Preset::Light.document(),
             automatic.as_object().expect("an object"),
         );
-        assert_eq!(values[LIGHT_THEME_KEY], "light");
+        assert_eq!(values[LIGHT_THEME_KEY], "tilo-light");
         assert!(
             !values.contains_key(MODE_KEY),
             "automatic mode stays automatic"
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn applying_a_custom_theme_stores_its_document_once_and_the_runtime_reads_it() {
-        let mut document = Preset::DarkGraphite.document();
+        let mut document = Preset::PaperDark.document();
         document.id = "ember".into();
         document.name = "Ember".into();
         document.shape.window_radius = 20.0;

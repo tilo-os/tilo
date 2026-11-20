@@ -1234,7 +1234,10 @@ mod tests {
                 let ratio = crate::a11y::contrast_ratio(dimmed_knob, dimmed_track);
                 assert!(
                     ratio >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                    "a locked switch's knob is only {ratio:.2}:1 against its dimmed track"
+                    "a locked switch's knob is only {ratio:.2}:1 against its dimmed track: \
+                     knob {:?} on track {:?}, dimmed {dimmed_knob:?} on {dimmed_track:?}",
+                    locked.knob,
+                    locked.track
                 );
             }
 

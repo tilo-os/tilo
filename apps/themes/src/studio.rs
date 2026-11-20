@@ -509,7 +509,7 @@ impl Studio {
     pub fn new_theme(
         &mut self,
         #[param("Id for the new theme")] id: String,
-        #[param("The preset or theme to start from", example = "dark-graphite")] base: String,
+        #[param("The preset or theme to start from", example = "paper-dark")] base: String,
     ) -> Result<(), Refusal> {
         let id = Id::from_raw(id);
         if self.themes.contains(&id) || Preset::find(id.as_str()).is_some() {
@@ -560,10 +560,10 @@ impl Studio {
         Ok(())
     }
 
-    /// Reset the editable properties to the graphite preset, preserving its name.
+    /// Reset the editable properties to the Paper dark preset, preserving its name.
     #[action]
     pub fn reset(&mut self, theme: &Id) -> Result<(), Refusal> {
-        let document = base_document(self, "dark-graphite")?;
+        let document = base_document(self, "paper-dark")?;
         let current = theme_mut(self, theme)?;
         *current = Theme {
             name: current.name.clone(),
@@ -657,7 +657,10 @@ mod tests {
 
     #[test]
     fn editing_a_finished_theme_keeps_its_look() {
-        let document = Preset::LiquidGlass.document();
+        let document: ThemeDocument = serde_json::from_str(include_str!(
+            "../../../crates/sdk/ui-core/tests/fixtures/finishes/liquid-glass.json"
+        ))
+        .unwrap();
         let mut theme = Theme::from_document(&document);
         theme.tint_opacity = 0.2;
         theme.density = 1.1;
@@ -684,8 +687,8 @@ mod tests {
 
     #[test]
     fn edits_stay_inside_the_admitted_bands() {
-        let (mut studio, id) = studio_with("dark-soft");
-        assert_eq!(theme(&studio, &id).name, "Dark soft copy");
+        let (mut studio, id) = studio_with("dusk-dark");
+        assert_eq!(theme(&studio, &id).name, "Dusk dark copy");
         let paths = Studio::paths().themes.item(&id);
         edit(&mut studio, &paths.hue.set(Some(40.0))).unwrap();
         assert_eq!(theme(&studio, &id).hue, Some(40.0));
@@ -736,7 +739,7 @@ mod tests {
             .unwrap();
         let light = theme(&studio, &id);
         assert!(!light.dark);
-        assert_eq!(light.name, "Dark copy", "switching keeps the name");
+        assert_eq!(light.name, "Tilo dark copy", "switching keeps the name");
         assert_eq!(light.findings("mine"), Vec::<String>::new());
 
         edit(&mut studio, &Rung::Tertiary.path(&paths).set(0.80)).unwrap();
@@ -792,7 +795,7 @@ mod tests {
     #[test]
     fn an_imported_theme_is_written_only_when_it_is_admitted_and_legible() {
         let mut studio = Replica::<Studio>::new();
-        let document = Preset::DarkSoft.document();
+        let document = Preset::DuskDark.document();
         studio
             .apply(Studio::IMPORT_THEME.with(("ember".to_owned(), document_json(&document))))
             .unwrap();

@@ -64,7 +64,7 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
         ..HostAppearance::default()
     };
     assert!(a.apply_host_appearance(light));
-    assert_eq!(a.theme.name, "Light");
+    assert_eq!(a.theme.name, "Tilo light");
     assert_eq!(
         a.theme.tokens.colors.surfaces.content,
         Theme::light().tokens.colors.surfaces.content
@@ -255,7 +255,7 @@ tilo_test_env::scenario! {
             };
             let mut a = App::new(State::new(), Box::new(root));
             assert!(!a.reconcile_appearance());
-            assert_eq!(a.theme.name, "Dark");
+            assert_eq!(a.theme.name, "Tilo dark");
             assert_eq!(a.ui_scale(), 1.0);
         }
 

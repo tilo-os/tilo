@@ -232,7 +232,7 @@ fn reset_preserves_identity_and_restores_the_preset_through_the_public_action() 
     assert_ne!(before, after, "reset changes the edited properties");
     assert_eq!(
         after.shape,
-        Preset::find("dark-graphite").unwrap().document().shape
+        Preset::find("paper-dark").unwrap().document().shape
     );
     assert!(after.findings().is_empty());
     assert!(app.undo());

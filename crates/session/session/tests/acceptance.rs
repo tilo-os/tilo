@@ -430,10 +430,10 @@ fn step_9_a_theme_switch_changes_looks_only() {
         .screenshot("HEADLESS-1")
         .expect("the frame the listing drew");
 
-    // The person picks another theme, as Settings does, one after another (glass, then liquid
-    // glass): each draws the session anew, and neither moves anything.
+    // The person picks another theme, as Settings does, one after another (Paper, then Dusk):
+    // each draws the session anew, and neither moves anything.
     let mut shot = shot_before;
-    for theme in ["glass", "liquid-glass"] {
+    for theme in ["paper-dark", "dusk-dark"] {
         settings_store::update_section(
             "appearance",
             Map::from_iter([

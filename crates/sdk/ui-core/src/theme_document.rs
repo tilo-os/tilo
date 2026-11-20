@@ -507,157 +507,78 @@ impl ThemeDocument {
     }
 }
 
+/// A look Tilo ships: one temperature designed twice, for light and for dark, with the
+/// accent it comes with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Preset {
-    Dark,
-    DarkCool,
-    DarkGraphite,
-    DarkSoft,
-    Light,
-    HighContrast,
-    HighContrastLight,
-    Glass,
-    GlassLight,
-    Block,
-    BlockLight,
-    /// Square and bordered, every surface shown as coarse pixels of what lies below it
-    /// (`themes/pixelated.json`).
-    Pixelated,
-    /// Every surface a lens of glass: what lies below bent along its rounded edge,
-    /// straight in the middle, with a specular rim (`themes/liquid-glass.json`).
-    LiquidGlass,
-    LiquidGlassLight,
+pub enum Look {
+    /// Slate; the accent is the person's own colour.
+    Tilo,
+    /// Warm stock and charcoal, with a fountain-pen blue.
+    Paper,
+    /// Sage and forest night, with amber.
+    Moss,
+    /// Lilac and deep indigo, with rose.
+    Dusk,
+    /// True greys, black and white for emphasis, no accent.
+    Mono,
 }
 
-const SHIPPED_DOCUMENTS: [(Preset, &str); 7] = [
-    (Preset::Glass, include_str!("../themes/glass.json")),
-    (
-        Preset::GlassLight,
-        include_str!("../themes/glass-light.json"),
-    ),
-    (Preset::Block, include_str!("../themes/block.json")),
-    (
-        Preset::BlockLight,
-        include_str!("../themes/block-light.json"),
-    ),
-    (Preset::Pixelated, include_str!("../themes/pixelated.json")),
-    (
-        Preset::LiquidGlass,
-        include_str!("../themes/liquid-glass.json"),
-    ),
-    (
-        Preset::LiquidGlassLight,
-        include_str!("../themes/liquid-glass-light.json"),
-    ),
-];
+impl Look {
+    pub const ALL: [Self; 5] = [Self::Tilo, Self::Paper, Self::Moss, Self::Dusk, Self::Mono];
 
-impl Preset {
-    pub const ALL: [Self; 14] = [
-        Self::Dark,
-        Self::DarkCool,
-        Self::DarkGraphite,
-        Self::DarkSoft,
-        Self::Light,
-        Self::HighContrast,
-        Self::HighContrastLight,
-        Self::Glass,
-        Self::GlassLight,
-        Self::Block,
-        Self::BlockLight,
-        Self::Pixelated,
-        Self::LiquidGlass,
-        Self::LiquidGlassLight,
-    ];
-
-    /// The stored id (`appearance.dark_theme`, `appearance.light_theme`).
+    /// The stored id of the look (`tilo`, `paper`).
     #[must_use]
     pub const fn id(self) -> &'static str {
         match self {
-            Self::Dark => "dark",
-            Self::DarkCool => "dark-cool",
-            Self::DarkGraphite => "dark-graphite",
-            Self::DarkSoft => "dark-soft",
-            Self::Light => "light",
-            Self::HighContrast => "high-contrast",
-            Self::HighContrastLight => "high-contrast-light",
-            Self::Glass => "glass",
-            Self::GlassLight => "glass-light",
-            Self::Block => "block",
-            Self::BlockLight => "block-light",
-            Self::Pixelated => "pixelated",
-            Self::LiquidGlass => "liquid-glass",
-            Self::LiquidGlassLight => "liquid-glass-light",
+            Self::Tilo => "tilo",
+            Self::Paper => "paper",
+            Self::Moss => "moss",
+            Self::Dusk => "dusk",
+            Self::Mono => "mono",
         }
     }
 
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Dark => "Dark",
-            Self::DarkCool => "Dark cool",
-            Self::DarkGraphite => "Dark graphite",
-            Self::DarkSoft => "Dark soft",
-            Self::Light => "Light",
-            Self::HighContrast => "High contrast",
-            Self::HighContrastLight => "High contrast light",
-            Self::Glass => "Glass",
-            Self::GlassLight => "Glass light",
-            Self::Block => "Block",
-            Self::BlockLight => "Block light",
-            Self::Pixelated => "Pixelated",
-            Self::LiquidGlass => "Liquid Glass",
-            Self::LiquidGlassLight => "Liquid Glass light",
+            Self::Tilo => "Tilo",
+            Self::Paper => "Paper",
+            Self::Moss => "Moss",
+            Self::Dusk => "Dusk",
+            Self::Mono => "Mono",
         }
     }
 
+    /// The preset of this look for the polarity `dark` names.
     #[must_use]
-    pub const fn palette(self) -> Palette {
+    pub const fn preset(self, dark: bool) -> Preset {
+        match (self, dark) {
+            (Self::Tilo, true) => Preset::Dark,
+            (Self::Tilo, false) => Preset::Light,
+            (Self::Paper, true) => Preset::PaperDark,
+            (Self::Paper, false) => Preset::PaperLight,
+            (Self::Moss, true) => Preset::MossDark,
+            (Self::Moss, false) => Preset::MossLight,
+            (Self::Dusk, true) => Preset::DuskDark,
+            (Self::Dusk, false) => Preset::DuskLight,
+            (Self::Mono, true) => Preset::MonoDark,
+            (Self::Mono, false) => Preset::MonoLight,
+        }
+    }
+
+    /// The accent the look comes with, until the person picks one.
+    #[must_use]
+    pub const fn emphasis(self) -> Emphasis {
         match self {
-            Self::Dark | Self::Glass | Self::Block | Self::Pixelated | Self::LiquidGlass => {
-                Palette::dark()
-            }
-            Self::DarkCool => Palette::dark_cool(),
-            Self::DarkGraphite => Palette::dark_graphite(),
-            Self::DarkSoft => Palette::dark_soft(),
-            Self::Light | Self::GlassLight | Self::BlockLight | Self::LiquidGlassLight => {
-                Palette::light()
-            }
-            Self::HighContrast => Palette::high_contrast_dark(),
-            Self::HighContrastLight => Palette::high_contrast_light(),
+            Self::Tilo => Emphasis::You,
+            Self::Paper => Emphasis::Tinted { hue: 255.0 },
+            Self::Moss => Emphasis::Tinted { hue: 85.0 },
+            Self::Dusk => Emphasis::Tinted { hue: 355.0 },
+            Self::Mono => Emphasis::Inverted,
         }
     }
 
-    /// The preset's document: the stock roles around its palette, or for a shipped
-    /// document its file, parsed once.
-    #[must_use]
-    pub fn document(self) -> ThemeDocument {
-        static PARSED: std::sync::LazyLock<Vec<(Preset, ThemeDocument)>> = std::sync::LazyLock::new(
-            || {
-                SHIPPED_DOCUMENTS
-                    .iter()
-                    .filter_map(|(preset, json)| {
-                        match serde_json::from_str::<ThemeDocument>(json) {
-                            Ok(document) => Some((*preset, document)),
-                            Err(error) => {
-                                tracing::error!(preset = preset.id(), %error, "a shipped theme document does not parse");
-                                None
-                            }
-                        }
-                    })
-                    .collect()
-            },
-        );
-        PARSED
-            .iter()
-            .find(|(preset, _)| *preset == self)
-            .map_or_else(
-                || ThemeDocument::stock(self.id(), self.name(), self.palette()),
-                |(_, document)| document.clone(),
-            )
-    }
-
-    /// A preset by id or name, loosely: case, spaces, hyphens and underscores are ignored
-    /// (`"high-contrast"`, `"High contrast"`).
+    /// A look by id or name, loosely: case and punctuation are ignored.
     #[must_use]
     pub fn find(key: &str) -> Option<Self> {
         let key: String = key
@@ -665,24 +586,170 @@ impl Preset {
             .filter(|c| c.is_alphanumeric())
             .flat_map(char::to_lowercase)
             .collect();
-        Some(match key.as_str() {
-            "dark" => Self::Dark,
-            "darkcool" | "cool" => Self::DarkCool,
-            "darkgraphite" | "graphite" | "darkwarm" | "warm" => Self::DarkGraphite,
-            "darksoft" | "soft" => Self::DarkSoft,
-            "light" => Self::Light,
-            "highcontrast" | "contrast" | "highcontrastdark" => Self::HighContrast,
-            "highcontrastlight" => Self::HighContrastLight,
-            "glass" | "glassdark" => Self::Glass,
-            "glasslight" => Self::GlassLight,
-            "block" | "blockdark" => Self::Block,
-            "blocklight" => Self::BlockLight,
-            "pixelated" | "pixel" => Self::Pixelated,
-            "liquidglass" | "liquid" => Self::LiquidGlass,
-            "liquidglasslight" | "liquidlight" => Self::LiquidGlassLight,
-            _ => return None,
+        Self::ALL.into_iter().find(|look| look.id() == key)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Preset {
+    /// Tilo, dark: the default.
+    Dark,
+    /// Tilo, light.
+    Light,
+    PaperDark,
+    PaperLight,
+    MossDark,
+    MossLight,
+    DuskDark,
+    DuskLight,
+    MonoDark,
+    MonoLight,
+    HighContrast,
+    HighContrastLight,
+}
+
+impl Preset {
+    pub const ALL: [Self; 12] = [
+        Self::Dark,
+        Self::Light,
+        Self::PaperDark,
+        Self::PaperLight,
+        Self::MossDark,
+        Self::MossLight,
+        Self::DuskDark,
+        Self::DuskLight,
+        Self::MonoDark,
+        Self::MonoLight,
+        Self::HighContrast,
+        Self::HighContrastLight,
+    ];
+
+    /// The stored id (`appearance.dark_theme`, `appearance.light_theme`).
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Dark => "tilo-dark",
+            Self::Light => "tilo-light",
+            Self::PaperDark => "paper-dark",
+            Self::PaperLight => "paper-light",
+            Self::MossDark => "moss-dark",
+            Self::MossLight => "moss-light",
+            Self::DuskDark => "dusk-dark",
+            Self::DuskLight => "dusk-light",
+            Self::MonoDark => "mono-dark",
+            Self::MonoLight => "mono-light",
+            Self::HighContrast => "high-contrast",
+            Self::HighContrastLight => "high-contrast-light",
+        }
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Dark => "Tilo dark",
+            Self::Light => "Tilo light",
+            Self::PaperDark => "Paper dark",
+            Self::PaperLight => "Paper light",
+            Self::MossDark => "Moss dark",
+            Self::MossLight => "Moss light",
+            Self::DuskDark => "Dusk dark",
+            Self::DuskLight => "Dusk light",
+            Self::MonoDark => "Mono dark",
+            Self::MonoLight => "Mono light",
+            Self::HighContrast => "High contrast",
+            Self::HighContrastLight => "High contrast light",
+        }
+    }
+
+    /// The look this preset is one side of; high contrast belongs to none.
+    #[must_use]
+    pub const fn look(self) -> Option<Look> {
+        Some(match self {
+            Self::Dark | Self::Light => Look::Tilo,
+            Self::PaperDark | Self::PaperLight => Look::Paper,
+            Self::MossDark | Self::MossLight => Look::Moss,
+            Self::DuskDark | Self::DuskLight => Look::Dusk,
+            Self::MonoDark | Self::MonoLight => Look::Mono,
+            Self::HighContrast | Self::HighContrastLight => return None,
         })
     }
+
+    #[must_use]
+    pub const fn palette(self) -> Palette {
+        match self {
+            Self::Dark => Palette::dark(),
+            Self::Light => Palette::light(),
+            Self::PaperDark => Palette::paper_dark(),
+            Self::PaperLight => Palette::paper_light(),
+            Self::MossDark => Palette::moss_dark(),
+            Self::MossLight => Palette::moss_light(),
+            Self::DuskDark => Palette::dusk_dark(),
+            Self::DuskLight => Palette::dusk_light(),
+            Self::MonoDark => Palette::mono_dark(),
+            Self::MonoLight => Palette::mono_light(),
+            Self::HighContrast => Palette::high_contrast_dark(),
+            Self::HighContrastLight => Palette::high_contrast_light(),
+        }
+    }
+
+    /// The preset's document: the stock roles around its palette, with its look's accent.
+    #[must_use]
+    pub fn document(self) -> ThemeDocument {
+        let mut document = ThemeDocument::stock(self.id(), self.name(), self.palette());
+        if let Some(look) = self.look() {
+            document.emphasis = look.emphasis();
+        }
+        document
+    }
+
+    /// A preset by id or name, loosely (`"paper-light"`, `"Paper light"`); a look's name
+    /// alone (`"paper"`) is its dark side, and `dark` and `light` are Tilo's.
+    #[must_use]
+    pub fn find(key: &str) -> Option<Self> {
+        let key: String = key
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect();
+        if let Some(preset) = Self::ALL.into_iter().find(|preset| {
+            preset
+                .id()
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .eq(key.chars())
+        }) {
+            return Some(preset);
+        }
+        Some(match key.as_str() {
+            "dark" => Self::Dark,
+            "light" => Self::Light,
+            "highcontrast" | "contrast" | "highcontrastdark" => Self::HighContrast,
+            other => Look::find(other)?.preset(true),
+        })
+    }
+}
+
+/// Theme documents that exercise each surface finish (glass, block, pixelated, liquid
+/// glass), for the finish painters' own tests: no shipped theme wears them.
+#[cfg(test)]
+pub(crate) fn finish_document(id: &str) -> ThemeDocument {
+    let json = match id {
+        "glass" => include_str!("../tests/fixtures/finishes/glass.json"),
+        "glass-light" => include_str!("../tests/fixtures/finishes/glass-light.json"),
+        "block" => include_str!("../tests/fixtures/finishes/block.json"),
+        "block-light" => include_str!("../tests/fixtures/finishes/block-light.json"),
+        "pixelated" => include_str!("../tests/fixtures/finishes/pixelated.json"),
+        "liquid-glass" => include_str!("../tests/fixtures/finishes/liquid-glass.json"),
+        "liquid-glass-light" => include_str!("../tests/fixtures/finishes/liquid-glass-light.json"),
+        other => panic!("no finish fixture {other}"),
+    };
+    serde_json::from_str(json).expect("a finish fixture parses")
+}
+
+/// [`finish_document`] as the theme it builds.
+#[cfg(test)]
+pub(crate) fn finish_theme(id: &str) -> crate::theme::Theme {
+    crate::theme::Theme::from_document(&finish_document(id)).expect("a finish fixture is usable")
 }
 
 #[cfg(test)]
@@ -720,7 +787,7 @@ mod tests {
 
         phase a_document_round_trips_and_other_schemas_are_not_admitted;
         {
-            let mut doc = Preset::DarkSoft.document();
+            let mut doc = Preset::DuskDark.document();
             doc.emphasis = Emphasis::Tinted { hue: 30.0 };
             let json = serde_json::to_value(&doc).unwrap();
             assert_eq!(json["type"]["base_size"], 14.0);
@@ -746,7 +813,7 @@ mod tests {
         // role's parts.
         {
             use crate::tokens::SurfaceRole;
-            let mut doc = Preset::LiquidGlass.document();
+            let mut doc = finish_document("liquid-glass");
             doc.material.floating = Finish::named(
                 "liquid",
                 [
@@ -972,16 +1039,53 @@ mod tests {
             assert_eq!(hc.findings(), Vec::new());
         }
 
-        phase shipped_documents_are_valid_and_legible_and_parse_from_their_files;
+        phase every_look_is_designed_twice_and_its_sides_differ;
         {
-            for (preset, json) in SHIPPED_DOCUMENTS {
-                let parsed: ThemeDocument = serde_json::from_str(json).unwrap();
-                assert_eq!(parsed.id, preset.id());
-                assert_eq!(parsed.name, preset.name());
-                assert_eq!(parsed.palette, preset.palette(), "{}", preset.name());
-                assert_eq!(preset.document(), parsed);
+            for look in Look::ALL {
+                let dark = look.preset(true);
+                let light = look.preset(false);
+                assert_eq!(dark.look(), Some(look));
+                assert_eq!(light.look(), Some(look));
+                assert!(dark.document().is_dark(), "{}", dark.name());
+                assert!(!light.document().is_dark(), "{}", light.name());
+                assert_eq!(dark.document().emphasis, look.emphasis());
+                assert_eq!(Look::find(look.name()), Some(look));
+                assert_eq!(Preset::find(look.id()), Some(dark));
             }
-            let glass = Preset::Glass.document();
+            // Two looks of one polarity are told apart at a glance: their desktop and
+            // their windows together differ by more than a rounding step. (Light windows
+            // are all near white; the desktop around them carries the temperature.)
+            for dark in [true, false] {
+                let grounds: Vec<_> = Look::ALL
+                    .iter()
+                    .map(|look| {
+                        let surfaces =
+                            crate::theme::Theme::preset(look.preset(dark)).tokens.colors.surfaces;
+                        [surfaces.base.to_rgba8(), surfaces.content.to_rgba8()]
+                    })
+                    .collect();
+                for (i, a) in grounds.iter().enumerate() {
+                    for b in grounds.iter().skip(i + 1) {
+                        let distance: u32 = a
+                            .iter()
+                            .zip(b)
+                            .map(|(a, b)| {
+                                i32::from(a.r).abs_diff(i32::from(b.r))
+                                    + i32::from(a.g).abs_diff(i32::from(b.g))
+                                    + i32::from(a.b).abs_diff(i32::from(b.b))
+                            })
+                            .sum();
+                        assert!(distance >= 8, "{a:?} and {b:?} are too alike");
+                    }
+                }
+            }
+            for preset in Preset::ALL {
+                assert_eq!(preset.document().icons, None, "{}", preset.name());
+            }
+            let pixelated = finish_document("pixelated");
+            assert_eq!(pixelated.icons, Some(ThemeIcons { stroke: 2.0 }));
+            assert!((finish_theme("pixelated").tokens.icon_stroke_px - 2.0).abs() < f32::EPSILON);
+            let glass = finish_document("glass");
             for role in [
                 glass.material.window,
                 glass.material.control,
@@ -989,44 +1093,12 @@ mod tests {
             ] {
                 assert_eq!(role.painter(), "glass", "{role:?}");
             }
-            let block = Preset::Block.document();
+            let block = finish_document("block");
             assert_eq!(block.shape.window_radius, 0.0);
             assert_eq!(block.depth, Depth::None);
             assert_eq!(block.motion.curve, MotionCurve::None);
             assert!(block.shape.border.outlines());
             assert_eq!(block.material.roles().opaque(), block.material.roles());
-
-            // Every look's icon role is its own: Pixelated's outline is a whole 2 px it can
-            // land on, and no other shipped look restates it.
-            let pixelated = Preset::Pixelated.document();
-            assert_eq!(pixelated.icons, Some(ThemeIcons { stroke: 2.0 }));
-            for preset in Preset::ALL {
-                if preset == Preset::Pixelated {
-                    continue;
-                }
-                assert_eq!(
-                    preset.document().icons,
-                    None,
-                    "{} keeps the stock icons",
-                    preset.name()
-                );
-            }
-            assert!(
-                (crate::theme::Theme::preset(Preset::Pixelated)
-                    .tokens
-                    .icon_stroke_px
-                    - 2.0)
-                    .abs()
-                    < f32::EPSILON
-            );
-            assert!(
-                (crate::theme::Theme::preset(Preset::Block)
-                    .tokens
-                    .icon_stroke_px
-                    - 1.5)
-                    .abs()
-                    < f32::EPSILON
-            );
         }
 
         phase the_backdrop_band_narrows_to_what_the_ink_can_afford;

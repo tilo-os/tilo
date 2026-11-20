@@ -326,8 +326,8 @@ tilo_test_env::scenario! {
             use crate::a11y::relative_luminance;
             for theme in [
                 Theme::dark(),
-                Theme::named("dark-soft").unwrap(),
-                Theme::named("dark-cool").unwrap(),
+                Theme::named("dusk-dark").unwrap(),
+                Theme::named("moss-dark").unwrap(),
             ] {
                 let panel = crate::chrome::panel_ground(&theme);
                 let content = theme.tokens.colors.surfaces.content;
@@ -348,7 +348,11 @@ tilo_test_env::scenario! {
             let theme = Theme::dark();
             let (armed, _) = crate::widget::floating_surface::armed_row(&theme);
             let oklch = crate::color::Oklch::from_color(armed);
-            assert!(oklch.c <= 0.011, "no hue in the highlight: {oklch:?}");
+            let panel = crate::color::Oklch::from_color(crate::chrome::panel_ground(&theme));
+            assert!(
+                oklch.c <= panel.c + 0.004,
+                "no hue in the highlight beyond the panel's temperature: {oklch:?}"
+            );
             let mut p = opened();
             let scene = present(&mut p, &theme);
             let armed_rgba = armed.premultiply().to_rgba8().to_u32();

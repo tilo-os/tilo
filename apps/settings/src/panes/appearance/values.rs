@@ -1,6 +1,6 @@
 //! Values the appearance settings show, read from the person's preferences.
 
-use super::{AppearancePrefs, ThemeTiles, schedule_label, ui_scale_label};
+use super::{AppearancePrefs, mode_label, schedule_label, ui_scale_label};
 use crate::setting::Follows;
 use crate::settings_app::SettingsApp;
 
@@ -8,8 +8,9 @@ fn prefs(app: &SettingsApp, follows: &Follows) -> AppearancePrefs {
     follows.get::<AppearancePrefs>(app.storage())
 }
 
+/// Light, dark or automatic: what people search for as "dark mode".
 pub(crate) fn style(app: &SettingsApp, follows: &Follows) -> String {
-    ThemeTiles::label_of(&prefs(app, follows).theme_choice())
+    mode_label(&prefs(app, follows).mode)
 }
 
 pub(crate) fn schedule(app: &SettingsApp, follows: &Follows) -> String {

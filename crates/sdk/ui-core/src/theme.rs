@@ -1,6 +1,6 @@
 use crate::theme_document::ThemeIcons;
 pub use crate::theme_document::{
-    MotionCurve, Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial,
+    Look, MotionCurve, Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial,
     ThemeMotion, ThemeShape, ThemeType, ThemeWeight, ThemeWeights,
 };
 pub use crate::theme_layers::{
@@ -289,19 +289,24 @@ impl Default for Theme {
 #[cfg(test)]
 pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     Theme::dark,
-    || Theme::preset(Preset::DarkCool),
-    || Theme::preset(Preset::DarkGraphite),
-    || Theme::preset(Preset::DarkSoft),
     Theme::light,
+    || Theme::preset(Preset::PaperDark),
+    || Theme::preset(Preset::PaperLight),
+    || Theme::preset(Preset::MossDark),
+    || Theme::preset(Preset::MossLight),
+    || Theme::preset(Preset::DuskDark),
+    || Theme::preset(Preset::DuskLight),
+    || Theme::preset(Preset::MonoDark),
+    || Theme::preset(Preset::MonoLight),
     Theme::high_contrast,
     || Theme::preset(Preset::HighContrastLight),
-    || Theme::preset(Preset::Glass),
-    || Theme::preset(Preset::GlassLight),
-    || Theme::preset(Preset::Block),
-    || Theme::preset(Preset::BlockLight),
-    || Theme::preset(Preset::Pixelated),
-    || Theme::preset(Preset::LiquidGlass),
-    || Theme::preset(Preset::LiquidGlassLight),
+    || crate::theme_document::finish_theme("glass"),
+    || crate::theme_document::finish_theme("glass-light"),
+    || crate::theme_document::finish_theme("block"),
+    || crate::theme_document::finish_theme("block-light"),
+    || crate::theme_document::finish_theme("pixelated"),
+    || crate::theme_document::finish_theme("liquid-glass"),
+    || crate::theme_document::finish_theme("liquid-glass-light"),
 ];
 
 /// Polled by [`crate::app::App`] once per frame and reconciled against the live theme.
@@ -550,7 +555,7 @@ impl Theme {
         Self::assembled(document.clone(), tokens.clone())
     }
 
-    /// The default: pure neutral dark.
+    /// The default: Tilo, dark.
     pub fn dark() -> Self {
         Self::preset(Preset::Dark)
     }
@@ -850,21 +855,19 @@ impl Theme {
     }
 
     /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
-    pub const ALL: [&'static str; 14] = [
+    pub const ALL: [&'static str; 12] = [
         Preset::Dark.name(),
-        Preset::DarkCool.name(),
-        Preset::DarkGraphite.name(),
-        Preset::DarkSoft.name(),
         Preset::Light.name(),
+        Preset::PaperDark.name(),
+        Preset::PaperLight.name(),
+        Preset::MossDark.name(),
+        Preset::MossLight.name(),
+        Preset::DuskDark.name(),
+        Preset::DuskLight.name(),
+        Preset::MonoDark.name(),
+        Preset::MonoLight.name(),
         Preset::HighContrast.name(),
         Preset::HighContrastLight.name(),
-        Preset::Glass.name(),
-        Preset::GlassLight.name(),
-        Preset::Block.name(),
-        Preset::BlockLight.name(),
-        Preset::Pixelated.name(),
-        Preset::LiquidGlass.name(),
-        Preset::LiquidGlassLight.name(),
     ];
 
     /// A shipped theme by id or name, loosely ([`Preset::find`]), so the same lookup
@@ -1279,7 +1282,7 @@ mod tests {
     use crate::tokens::Emphasis;
 
     fn quiet_ocean(spacing: f32) -> ThemeDocument {
-        let mut doc = Preset::DarkCool.document();
+        let mut doc = Preset::MossDark.document();
         doc.id = "quiet-ocean".into();
         doc.name = "Quiet ocean".into();
         doc.palette.hue = Some(220.0);
@@ -1407,7 +1410,7 @@ mod tests {
         // between them and never states a finish.
         {
             use crate::tokens::ChromeMaterial;
-            let glass = Theme::preset(Preset::Glass);
+            let glass = crate::theme_document::finish_theme("glass");
             let glossy = glass.chrome_material(ChromeMaterial::Glass);
             assert_eq!(glossy, *glass.tokens.finishes.bar.as_ref().unwrap());
             assert!(glossy.translucent() && glossy.blur() > 0.0);
@@ -1457,7 +1460,7 @@ mod tests {
                 "without a bar material, glass is the floating material"
             );
 
-            let mut reduced = Theme::preset(Preset::Glass);
+            let mut reduced = crate::theme_document::finish_theme("glass");
             reduced.reduce_transparency = true;
             assert!(
                 !reduced.chrome_material(ChromeMaterial::Glass).translucent(),
@@ -1474,9 +1477,9 @@ mod tests {
                     assert_eq!(theme.name, name);
                 }
                 assert_eq!(Theme::named("high-contrast").unwrap().name, "High contrast");
-                assert_eq!(Theme::named("dark-soft").unwrap().name, "Dark soft");
+                assert_eq!(Theme::named("dusk-dark").unwrap().name, "Dusk dark");
                 assert!(Theme::named("Dracula").is_none(), "no third-party palettes");
-                assert_eq!(ALL_PRESETS_FOR_TEST.len(), Theme::ALL.len());
+                assert_eq!(ALL_PRESETS_FOR_TEST.len(), Theme::ALL.len() + 7, "every preset and every finish");
             }
             // phase: every_shipped_theme_keeps_every_floor
             {
@@ -1641,7 +1644,7 @@ mod tests {
                     warm.tokens.colors.surfaces.content
                 );
                 assert_eq!(warm.text_dim, warm.tokens.colors.text_dim);
-                assert_eq!(warm.name, "Light");
+                assert_eq!(warm.name, "Tilo light");
                 assert_eq!(warm.document.palette.hue, Some(60.0));
                 let same = Theme::light().with_neutral_hue(f32::NAN);
                 assert_eq!(
@@ -1668,7 +1671,7 @@ mod tests {
                 ] {
                     let (w, c) = (Oklch::from_color(warm), Oklch::from_color(cool));
                     assert!((w.l - c.l).abs() <= 0.005, "lightness {} vs {}", w.l, c.l);
-                    assert!(w.c <= 0.010 + 0.004, "chroma {}", w.c);
+                    assert!(w.c <= c.c + 0.003, "no chroma added: {} over {}", w.c, c.c);
                 }
             }
             // phase: your_colour_is_the_focus_ring_and_survives_every_track
@@ -1842,7 +1845,7 @@ mod tests {
             {
                 let off = crate::a11y::A11ySettings::default();
                 let theme = Theme::light().with_a11y(&off, 1.0, 1.0);
-                assert_eq!(theme.name, "Light");
+                assert_eq!(theme.name, "Tilo light");
                 assert!(!theme.reduce_motion);
             }
         }
@@ -1906,7 +1909,7 @@ mod tests {
             assert!(Theme::from_document(&document).is_none());
             assert!(Theme::refusal(&document).unwrap().contains("scale"));
             // Block holds still: lifts only.
-            let block = Theme::preset(Preset::Block);
+            let block = crate::theme_document::finish_theme("block");
             assert_eq!(block.tokens.response, Response::STILL);
         }
 
@@ -2005,7 +2008,7 @@ mod tests {
             {
                 use crate::text_render::TextWeight;
                 use crate::tokens::{Depth, Finish, TextRole};
-                let block = Theme::preset(Preset::Block);
+                let block = crate::theme_document::finish_theme("block");
                 assert_eq!(block.tokens.radii.control, 0.0);
                 assert_eq!(block.tokens.radii.tile, 0.0);
                 assert_eq!(block.tokens.finishes.window, Finish::flat());
@@ -2026,7 +2029,7 @@ mod tests {
                     "a floating panel's edge is the strong border"
                 );
 
-                let glass = Theme::preset(Preset::Glass);
+                let glass = crate::theme_document::finish_theme("glass");
                 assert_eq!(glass.tokens.finishes.window.painter(), "glass");
                 assert!(glass.tokens.colors.surfaces.material_blur_px > 0.0);
                 assert!(
@@ -2087,8 +2090,8 @@ mod tests {
                 serde_json::json!({"appearance": {"mode": "dark"}}),
                 serde_json::json!({"appearance": {"mode": "light"}}),
                 serde_json::json!({"appearance": {"mode": "automatic"}}),
-                serde_json::json!({"appearance": {"mode": "automatic", "dark_theme": "glass"}}),
-                serde_json::json!({"appearance": {"light_theme": "glass-light"}}),
+                serde_json::json!({"appearance": {"mode": "automatic", "dark_theme": "moss-dark"}}),
+                serde_json::json!({"appearance": {"light_theme": "paper-light"}}),
             ];
             for settings in appearances {
                 let settings = settings.as_object().cloned().unwrap_or_default();
@@ -2144,7 +2147,7 @@ mod tests {
         phase the_automatic_mode_is_light_by_day_and_dark_by_night;
         {
             use settings_store::day_schedule::LocalMoment;
-            let json = r#"{"appearance":{"mode":"automatic","dark_theme":"dark-soft","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
+            let json = r#"{"appearance":{"mode":"automatic","dark_theme":"dusk-dark","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
             let at = |minute_of_day| LocalMoment {
                 day_of_year: 100,
                 minute_of_day,
@@ -2160,7 +2163,7 @@ mod tests {
                 Theme::from_settings_json_at(json, at(22 * 60))
                     .unwrap()
                     .name,
-                "Dark soft"
+                "Dusk dark"
             );
         }
     }

@@ -556,15 +556,49 @@ fn high_contrast_overlays(ink: u8) -> OverlayTiers {
 }
 
 /// The accent fill on a palette, as `(rest, hover, pressed)` lightness, one chroma, and
-/// whether its label is white (else the window ground).
-fn accent_fill(palette: &Palette) -> ([f32; 3], f32, bool) {
+/// whether its label is white (else the darker of the window ground and primary ink).
+fn accent_fill(palette: &Palette, hue: f32) -> ([f32; 3], f32, bool) {
+    const CHROMA: f32 = 0.17;
+    const LIGHT_CHROMA: f32 = 0.15;
     match (palette.dark, palette.high_contrast) {
-        (true, false) if palette.surfaces.content <= 0.20 => ([0.525, 0.495, 0.465], 0.15, true),
-        (true, false) => ([0.72, 0.76, 0.68], 0.13, false),
-        (false, false) => ([0.50, 0.465, 0.43], 0.15, true),
-        (true, true) => ([0.86, 0.90, 0.82], 0.12, false),
-        (false, true) => ([0.36, 0.32, 0.29], 0.13, false),
+        (true, true) => return ([0.86, 0.90, 0.82], 0.12, false),
+        (false, true) => return ([0.36, 0.32, 0.29], 0.13, true),
+        _ => {}
     }
+    if bright_hue(hue) {
+        // Orange through cyan only look like themselves light: a deep fill of them is
+        // brown or olive. They take a light fill under a dark label. On a dark window
+        // any light fill stands out; on a light one it is the lightest that still
+        // stands off the window (WCAG 1.4.11, with a margin for the temperature).
+        if palette.dark {
+            return ([0.80, 0.84, 0.76], LIGHT_CHROMA, false);
+        }
+        let window = oklch(palette.surfaces.content, 0.0, 0.0);
+        let mut rest = 0.76_f32;
+        while rest > 0.50
+            && crate::a11y::contrast_ratio(window, oklch(rest, LIGHT_CHROMA, hue))
+                < NON_TEXT_MIN_CONTRAST + 0.1
+        {
+            rest -= 0.005;
+        }
+        // A press darkens only a little: the dark label has to read on it too.
+        return ([rest, rest + 0.03, rest - 0.02], LIGHT_CHROMA, false);
+    }
+    // The lightest fill of the hue a white label still reads on (WCAG AA, 4.5:1).
+    let mut rest = 0.62_f32;
+    while rest > 0.40
+        && crate::a11y::contrast_ratio(Color::WHITE, oklch(rest, CHROMA, hue))
+            < super::contrast::BODY_TEXT_MIN_CONTRAST
+    {
+        rest -= 0.005;
+    }
+    ([rest, rest - 0.03, rest - 0.06], CHROMA, true)
+}
+
+/// Whether `hue` (OKLCH degrees) is one whose most colourful shade is light: orange,
+/// amber, olive, green, teal and cyan. Their deep shades read as brown or olive.
+fn bright_hue(hue: f32) -> bool {
+    (40.0..222.0).contains(&hue.rem_euclid(360.0))
 }
 
 fn accent_ink_lightness(palette: &Palette, presence: Tone) -> f32 {
@@ -660,8 +694,15 @@ impl Colors {
                     (primary, hover, pressed, content, ink, chroma, hue)
                 }
                 Some(accent_hue) => {
-                    let ([rest, hover, pressed], fill_chroma, white_label) = accent_fill(palette);
-                    let label = if white_label { Color::WHITE } else { content };
+                    let ([rest, hover, pressed], fill_chroma, white_label) =
+                        accent_fill(palette, accent_hue);
+                    let label = if white_label {
+                        Color::WHITE
+                    } else if palette.dark {
+                        content
+                    } else {
+                        primary
+                    };
                     (
                         oklch(rest, fill_chroma, accent_hue),
                         oklch(hover, fill_chroma, accent_hue),
@@ -865,9 +906,13 @@ impl Colors {
     /// person: the on state where they can change it, and a neutral ink where they cannot, so a
     /// switch the workspace holds never reads as one of theirs to flip.
     #[must_use]
-    pub const fn on_fill(&self, enabled: bool) -> Color {
+    pub fn on_fill(&self, enabled: bool) -> Color {
         if enabled {
             self.intent.on_state
+        } else if self.palette.dark {
+            // Dark palettes' tertiary ink is light enough to read as text on every surface,
+            // too light for a white mark: a quarter of the way to the window keeps the mark.
+            mix8(self.text_tertiary, self.surfaces.content, 0.25)
         } else {
             self.text_tertiary
         }
@@ -1238,13 +1283,18 @@ mod tests {
         [c.r(), c.g(), c.b(), c.a()]
     }
 
-    fn palettes() -> [(&'static str, Palette); 7] {
+    fn palettes() -> [(&'static str, Palette); 12] {
         [
-            ("dark", Palette::dark()),
-            ("dark cool", Palette::dark_cool()),
-            ("dark graphite", Palette::dark_graphite()),
-            ("dark soft", Palette::dark_soft()),
-            ("light", Palette::light()),
+            ("tilo dark", Palette::dark()),
+            ("tilo light", Palette::light()),
+            ("paper dark", Palette::paper_dark()),
+            ("paper light", Palette::paper_light()),
+            ("moss dark", Palette::moss_dark()),
+            ("moss light", Palette::moss_light()),
+            ("dusk dark", Palette::dusk_dark()),
+            ("dusk light", Palette::dusk_light()),
+            ("mono dark", Palette::mono_dark()),
+            ("mono light", Palette::mono_light()),
             ("high contrast", Palette::high_contrast_dark()),
             ("high contrast light", Palette::high_contrast_light()),
         ]
@@ -1318,7 +1368,7 @@ mod tests {
                 "the on state is green whatever the accent"
             );
             let plain_fill = Oklch::from_color(plain.intent.accent);
-            assert!(plain_fill.c < 0.01, "inverted emphasis has no hue");
+            assert!(plain_fill.c < 0.02, "inverted emphasis has only the neutral temperature");
             let stock = Colors::dark();
             assert_eq!(stock.emphasis, Emphasis::You);
             let you = Oklch::from_color(stock.intent.accent);
@@ -1433,7 +1483,7 @@ mod tests {
         {
             // phase: a_hue_change_moves_the_neutrals_and_nothing_else
             {
-                let mut cool = Colors::stock(&Palette::dark_cool());
+                let mut cool = Colors::stock(&Palette::dark());
                 cool.set_you(PresenceHue::Orange);
                 let warm = cool.with_neutral_hue(40.0);
                 assert_eq!(warm.palette.hue, Some(40.0));
@@ -1572,12 +1622,13 @@ mod tests {
             }
         }
 
-        phase primary_labels_on_dark_and_light_are_white_and_read;
+        phase primary_labels_are_white_on_deep_fills_dark_on_light_ones_and_read;
         {
             for palette in [Palette::dark(), Palette::light()] {
                 for you in PresenceHue::ALL {
                     let c = Colors::as_authored(&palette, Emphasis::You, palette.stock_presence(), you);
-                    assert_eq!(rgba(c.intent.on_accent), [255, 255, 255, 255]);
+                    let white = rgba(c.intent.on_accent) == [255, 255, 255, 255];
+                    assert_eq!(white, !bright_hue(you.degrees()), "{you:?}'s label");
                     for fill in [
                         c.intent.accent,
                         c.intent.accent_hover,
@@ -1675,9 +1726,18 @@ mod tests {
                     let rest = colors.wash_on(ground, tone, WashStrength::Rest);
                     let selected = colors.wash_on(ground, tone, WashStrength::Selected);
                     let lift = colors.lift_on(ground, 1.0);
-                    let chroma = |c: Color| Oklch::from_color(c).c;
+                    // It carries more colour than the plain lift, or its hue leans toward
+                    // the tone's (the mark's) where the ground's temperature is another hue.
+                    let toward = |c: Color| {
+                        let (a, b) = (Oklch::from_color(c), Oklch::from_color(selected.mark));
+                        let d = (a.h - b.h).rem_euclid(360.0);
+                        d.min(360.0 - d)
+                    };
                     assert!(
-                        chroma(selected.fill) > chroma(lift) + 0.01,
+                        Oklch::from_color(selected.fill).c > 0.02
+                            && (toward(selected.fill) < toward(lift)
+                                || Oklch::from_color(selected.fill).c
+                                    > Oklch::from_color(lift).c + 0.01),
                         "{label}/{tone:?}: selected wash lost its hue",
                     );
                     assert_ne!(rgba(rest.fill), rgba(selected.fill), "{label}/{tone:?}");
@@ -1712,18 +1772,18 @@ mod tests {
                 let table = [
                     (
                         Palette::dark(),
-                        [0.14, 0.19, 0.165, 0.165, 0.235, 0.225],
-                        [0.96, 0.76, 0.62],
+                        [0.175, 0.218, 0.198, 0.198, 0.262, 0.25],
+                        [0.955, 0.775, 0.665],
                     ),
                     (
-                        Palette::dark_soft(),
-                        [0.19, 0.25, 0.228, 0.27, 0.30, 0.32],
-                        [0.96, 0.78, 0.65],
+                        Palette::paper_light(),
+                        [0.915, 0.988, 0.964, 0.964, 0.945, 0.996],
+                        [0.235, 0.46, 0.545],
                     ),
                     (
                         Palette::light(),
-                        [0.90, 0.995, 0.965, 0.965, 0.95, 1.0],
-                        [0.18, 0.43, 0.56],
+                        [0.935, 0.995, 0.971, 0.971, 0.952, 1.0],
+                        [0.18, 0.43, 0.555],
                     ),
                 ];
                 for (palette, surface_l, ink_l) in table {
@@ -1805,9 +1865,9 @@ mod tests {
                 for c in [Colors::dark(), Colors::light()] {
                     for (name, colour) in surfaces(&c) {
                         let o = Oklch::from_color(colour);
-                        assert!(o.c <= 0.010, "{name} has chroma {:.4}", o.c);
+                        assert!(o.c <= 0.018, "{name} has chroma {:.4}", o.c);
                         if o.c >= 0.004 && o.l > 0.1 && o.l < 0.97 {
-                            let d = (o.h - 260.0).rem_euclid(360.0);
+                            let d = (o.h - 255.0).rem_euclid(360.0);
                             let d = d.min(360.0 - d);
                             assert!(d <= 30.0, "{name} is at hue {:.0}, not cool", o.h);
                         }

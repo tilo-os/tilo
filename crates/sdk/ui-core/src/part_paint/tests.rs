@@ -419,7 +419,7 @@ fn with_param(tokens: &PartTokens, name: &str, value: f32) -> PartTokens {
 /// The straight stretches of the Liquid rim on a 200×100 floating panel lit from `light_angle`: each
 /// solid fill in the theme's light, by its bounds and opacity.
 fn liquid_rim_stretches(light_angle: f32) -> Vec<(Rect, f32)> {
-    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let theme = crate::theme_document::finish_theme("liquid-glass");
     let color = Color::from_rgb8(0x30, 0x34, 0x40);
     let mut tokens = part_tokens(&theme, SurfaceRole::Floating, (color, color, color), color);
     tokens.radius = 12.0;
@@ -481,7 +481,7 @@ fn the_part_cache_keys_on_every_liquid_parameter() {
         calls: AtomicUsize::new(0),
     });
     let set = PainterSet::new("test.counted-liquid", painter.clone());
-    let theme = Theme::preset(crate::theme::Preset::LiquidGlass);
+    let theme = crate::theme_document::finish_theme("liquid-glass");
     let color = Color::from_rgb8(0x50, 0x54, 0x60);
     let base = part_tokens(&theme, SurfaceRole::Control, (color, color, color), color);
     let draw = |tokens: &PartTokens| {
@@ -555,7 +555,7 @@ tilo_test_env::scenario! {
         // Glass draws its specular sheen and its lit rim in `tokens.light`: the
         // colour the theme names for the light a surface catches, never a
         // literal white in the painter.
-        let theme = Theme::named("glass").expect("the Glass preset");
+        let theme = crate::theme_document::finish_theme("glass");
         let color = Color::from_rgb8(0x40, 0x60, 0x80);
         let tokens = part_tokens(&theme, SurfaceRole::Bar, (color, color, color), color);
         assert_eq!(
@@ -621,7 +621,7 @@ tilo_test_env::scenario! {
     // floating rather than as reaching the edge.
     {
         use crate::part_paint::Sides;
-        let theme = Theme::named("glass").expect("the Glass preset");
+        let theme = crate::theme_document::finish_theme("glass");
         let color = Color::from_rgb8(0x40, 0x60, 0x80);
         let size = Size::new(320.0, 32.0);
         let body = Rect::new(0.0, 0.0, 320.0, 32.0);
@@ -708,7 +708,7 @@ tilo_test_env::scenario! {
     // Pixelated draws its cell grid as its own ops: a pattern fill of the body in the fill stepped towards
     // the ink, one texel per cell.
     {
-        let theme = Theme::preset(crate::theme::Preset::Pixelated);
+        let theme = crate::theme_document::finish_theme("pixelated");
         let color = Color::from_rgb8(0x18, 0x20, 0x2c);
         let tokens = part_tokens(
             &theme,
@@ -744,7 +744,7 @@ tilo_test_env::scenario! {
 fn the_cell_grid_paints_cells_on_the_frame() {
     use crate::offscreen::OffscreenRenderer;
     let (width, height) = (160, 120);
-    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let theme = crate::theme_document::finish_theme("pixelated");
     let color = Color::from_rgb8(0x20, 0x28, 0x34);
     let ink = Color::from_rgb8(0xf0, 0xf2, 0xf6);
     let tokens = part_tokens(

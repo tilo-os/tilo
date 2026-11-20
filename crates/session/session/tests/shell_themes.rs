@@ -7,21 +7,16 @@
 //! appearance section's own published `field-edit` action on the settings
 //! service the session hosts — never a theme poked straight into a host.
 //!
-//! Across Default (Dark), Glass, Pixelated, Liquid Glass and Liquid Glass light
-//! the test holds three things:
+//! Across the five looks, on both sides (Tilo dark, Paper light, Moss dark, Dusk
+//! light and Mono dark), the test holds three things:
 //!
 //! 1. **The layout does not change.** Every node the shell lays out for assistive
 //!    technology — its kind, its name, its order, and its rectangle — is the same
 //!    in every theme, with one exception a theme role legitimately makes:
 //!    `type.weights` sets the weight body text, labels and headings are drawn in,
-//!    and a heavier weight measures a wider text run. Pixelated and Block set
-//!    `heading: bold` against the stock `semibold`, so a button's label or a
-//!    heading measures a pixel or two wider, and what follows it in a packed row
-//!    starts that much further along. That is all: a run's own width moves by a
-//!    pixel or two, the vertical and every box a view lays out (a place, a strip,
-//!    a panel) stay exactly where Default puts them, and a theme whose `type` role
-//!    is the stock one lays out Default's rectangles exactly. Nothing else in any
-//!    theme moves: not a gap, not a row, not a size a view asked for.
+//!    and a heavier weight measures a wider text run, so what follows it in a
+//!    packed row starts a pixel or two further along. The shipped looks all keep
+//!    the stock weights, so every rectangle is the same in every one of them.
 //! 2. **The look does change.** The frames the compositor draws differ between
 //!    every pair of themes.
 //! 3. **Nothing is drawn while idle.** Once a switch settles, the shell's views
@@ -82,29 +77,29 @@ struct Theme {
 impl Theme {
     const ALL: [Self; 5] = [
         Self {
-            name: "Default",
-            id: "dark",
+            name: "Tilo dark",
+            id: "tilo-dark",
             light: false,
         },
         Self {
-            name: "Glass",
-            id: "glass",
-            light: false,
-        },
-        Self {
-            name: "Pixelated",
-            id: "pixelated",
-            light: false,
-        },
-        Self {
-            name: "Liquid Glass",
-            id: "liquid-glass",
-            light: false,
-        },
-        Self {
-            name: "Liquid Glass light",
-            id: "liquid-glass-light",
+            name: "Paper light",
+            id: "paper-light",
             light: true,
+        },
+        Self {
+            name: "Moss dark",
+            id: "moss-dark",
+            light: false,
+        },
+        Self {
+            name: "Dusk light",
+            id: "dusk-light",
+            light: true,
+        },
+        Self {
+            name: "Mono dark",
+            id: "mono-dark",
+            light: false,
         },
     ];
 

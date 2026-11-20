@@ -21,7 +21,7 @@ use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, fill_role, layer_scene
 use tilo_ui::chrome::{SelectionState, selection_tier_on};
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::{Preset, Theme, ThemeDocument};
+use tilo_ui::theme::{Theme, ThemeDocument};
 use tilo_ui::tokens::SurfaceRole;
 use tilo_ui::widget::{Button, ButtonRole, Column, Row, Toggle};
 use vello::Scene;
@@ -36,16 +36,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("usage: theme-looks OUT_DIR [THEME.json ...]".into());
     };
     let mut themes: Vec<(String, Theme)> = Vec::new();
-    let files: Vec<PathBuf> = args.map(PathBuf::from).collect();
+    let mut files: Vec<PathBuf> = args.map(PathBuf::from).collect();
     if files.is_empty() {
-        for preset in [
-            Preset::Block,
-            Preset::Glass,
-            Preset::Pixelated,
-            Preset::LiquidGlass,
-            Preset::LiquidGlassLight,
+        // The finish documents the painter tests render.
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/finishes");
+        for name in [
+            "block",
+            "glass",
+            "pixelated",
+            "liquid-glass",
+            "liquid-glass-light",
         ] {
-            themes.push((preset.id().to_owned(), Theme::preset(preset)));
+            files.push(fixtures.join(format!("{name}.json")));
         }
     }
     for file in files {

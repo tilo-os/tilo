@@ -521,7 +521,7 @@ pub const SETTINGS: &[Setting] = &[
     s("power.lid", "power", "power.lid"),
     s("power.power_key", "power", "power.power_key"),
     s("power.critical", "power", "power.critical"),
-    s("appearance.style", "appearance", "appearance.theme").choice(
+    s("appearance.style", "appearance", "appearance.mode").choice(
         "settings.appearance",
         "mode",
         &[

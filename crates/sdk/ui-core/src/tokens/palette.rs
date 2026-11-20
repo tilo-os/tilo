@@ -6,9 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Ceiling on the neutral material's chroma. The neutrals carry a temperature, never a
-/// colour.
-pub const NEUTRAL_MAX_CHROMA: f32 = 0.010;
+/// Ceiling on the neutral material's chroma. The neutrals carry a temperature you can
+/// name (slate, paper, moss, dusk), never a colour that competes with content.
+pub const NEUTRAL_MAX_CHROMA: f32 = 0.032;
 
 /// Ceiling on status chroma: danger, warning and success are muted.
 pub const STATUS_MAX_CHROMA: f32 = 0.13;
@@ -137,110 +137,166 @@ const LIGHT_STATUS: StatusTones = StatusTones {
     info: Tone::new(0.52, 0.11),
 };
 
-/// The five levels of the dark material (`docs/design-language.md`, "Surfaces"): ground,
+/// Tilo's own temperature: slate, cool enough to read as a colour of its own on dark
+/// surfaces and as clean daylight on light ones.
+pub const STOCK_HUE: f32 = 255.0;
+
+/// The five levels of a dark material (`docs/design-language.md`, "Surfaces"): ground,
 /// window, region (recessed, so sidebar and inspector alike), raised and floating. Each
 /// level is a step the eye registers on its own; a child never paints its parent's level.
-const DARK_LADDER: SurfaceLadder = SurfaceLadder {
-    base: 0.14,
-    content: 0.19,
-    sidebar: 0.165,
-    inspector: 0.165,
-    raised: 0.235,
-    overlay: 0.225,
-};
+const fn dark_ladder(base: f32) -> SurfaceLadder {
+    SurfaceLadder {
+        base,
+        content: base + 0.043,
+        sidebar: base + 0.023,
+        inspector: base + 0.023,
+        raised: base + 0.087,
+        overlay: base + 0.075,
+    }
+}
 
-/// The stock neutral temperature: a cool hue at a whisper of chroma, so the material
-/// reads as considered rather than as sterile grey, never as grey-blue.
-pub const STOCK_HUE: f32 = 260.0;
-/// See [`STOCK_HUE`].
-pub const STOCK_CHROMA: f32 = 0.006;
+/// The light material: a tinted desktop under near-white windows, regions a step down and
+/// wells a step further.
+const fn light_ladder(base: f32, content: f32) -> SurfaceLadder {
+    SurfaceLadder {
+        base,
+        content,
+        sidebar: content - 0.024,
+        inspector: content - 0.024,
+        raised: content - 0.043,
+        overlay: if content + 0.008 > 1.0 {
+            1.0
+        } else {
+            content + 0.008
+        },
+    }
+}
 
 const DARK_INK: InkLadder = InkLadder {
-    primary: 0.96,
-    secondary: 0.76,
-    tertiary: 0.62,
+    primary: 0.955,
+    secondary: 0.775,
+    tertiary: 0.665,
+};
+
+const LIGHT_INK: InkLadder = InkLadder {
+    primary: 0.18,
+    secondary: 0.43,
+    tertiary: 0.555,
 };
 
 impl Palette {
-    /// The default: the dark ladder at the stock cool temperature.
-    #[must_use]
-    pub const fn dark() -> Self {
+    /// A dark material at `hue` and `chroma` whose ground is `base`.
+    const fn dark_at(hue: f32, chroma: f32, base: f32) -> Self {
         Self {
             dark: true,
             high_contrast: false,
-            hue: Some(STOCK_HUE),
-            chroma: STOCK_CHROMA,
-            surfaces: DARK_LADDER,
+            hue: Some(hue),
+            chroma,
+            surfaces: dark_ladder(base),
             ink: DARK_INK,
             status: DARK_STATUS,
         }
     }
 
-    #[must_use]
-    pub const fn dark_cool() -> Self {
-        Self {
-            hue: Some(255.0),
-            chroma: 0.008,
-            ..Self::dark()
-        }
-    }
-
-    /// The dark ladder, warm graphite.
-    #[must_use]
-    pub const fn dark_graphite() -> Self {
-        Self {
-            hue: Some(60.0),
-            chroma: 0.006,
-            ..Self::dark()
-        }
-    }
-
-    /// A lifted dark ladder, faintly violet: lower contrast between ground and ink for
-    /// long sessions.
-    #[must_use]
-    pub const fn dark_soft() -> Self {
-        Self {
-            hue: Some(270.0),
-            chroma: 0.003,
-            surfaces: SurfaceLadder {
-                base: 0.19,
-                content: 0.25,
-                sidebar: 0.228,
-                inspector: 0.27,
-                raised: 0.30,
-                overlay: 0.32,
-            },
-            ink: InkLadder {
-                primary: 0.96,
-                secondary: 0.78,
-                tertiary: 0.65,
-            },
-            ..Self::dark()
-        }
-    }
-
-    /// The light ladder at the stock cool temperature.
-    #[must_use]
-    pub const fn light() -> Self {
+    /// A light material at `hue` and `chroma`: a desktop at `base` under windows at `content`.
+    const fn light_at(hue: f32, chroma: f32, base: f32, content: f32) -> Self {
         Self {
             dark: false,
             high_contrast: false,
-            hue: Some(STOCK_HUE),
-            chroma: STOCK_CHROMA,
-            surfaces: SurfaceLadder {
-                base: 0.90,
-                content: 0.995,
-                sidebar: 0.965,
-                inspector: 0.965,
-                raised: 0.95,
-                overlay: 1.0,
-            },
-            ink: InkLadder {
-                primary: 0.18,
-                secondary: 0.43,
-                tertiary: 0.56,
-            },
+            hue: Some(hue),
+            chroma,
+            surfaces: light_ladder(base, content),
+            ink: LIGHT_INK,
             status: LIGHT_STATUS,
+        }
+    }
+
+    /// Tilo, dark: slate.
+    #[must_use]
+    pub const fn dark() -> Self {
+        Self::dark_at(STOCK_HUE, 0.016, 0.175)
+    }
+
+    /// Tilo, light: clean daylight with a cool desktop.
+    #[must_use]
+    pub const fn light() -> Self {
+        // No hue of its own: white paper, which a workspace's temperature tints.
+        Self {
+            hue: None,
+            ..Self::light_at(STOCK_HUE, 0.008, 0.935, 0.995)
+        }
+    }
+
+    /// Paper, dark: warm charcoal, like lamplight on a dark page.
+    #[must_use]
+    pub const fn paper_dark() -> Self {
+        Self::dark_at(70.0, 0.014, 0.17)
+    }
+
+    /// Paper, light: warm stock, never cream.
+    #[must_use]
+    pub const fn paper_light() -> Self {
+        Self {
+            ink: InkLadder {
+                primary: 0.235,
+                secondary: 0.46,
+                tertiary: 0.545,
+            },
+            ..Self::light_at(80.0, 0.011, 0.915, 0.988)
+        }
+    }
+
+    /// Moss, dark: the green-black of a forest at night.
+    #[must_use]
+    pub const fn moss_dark() -> Self {
+        Self::dark_at(160.0, 0.020, 0.165)
+    }
+
+    /// Moss, light: pale sage.
+    #[must_use]
+    pub const fn moss_light() -> Self {
+        Self::light_at(150.0, 0.013, 0.92, 0.988)
+    }
+
+    /// Dusk, dark: deep indigo.
+    #[must_use]
+    pub const fn dusk_dark() -> Self {
+        Self::dark_at(285.0, 0.030, 0.16)
+    }
+
+    /// Dusk, light: lilac grey.
+    #[must_use]
+    pub const fn dusk_light() -> Self {
+        Self::light_at(295.0, 0.018, 0.92, 0.99)
+    }
+
+    /// Mono, dark: true greys, no temperature at all.
+    #[must_use]
+    pub const fn mono_dark() -> Self {
+        Self {
+            hue: None,
+            chroma: 0.0,
+            ink: InkLadder {
+                primary: 0.97,
+                secondary: 0.78,
+                tertiary: 0.66,
+            },
+            ..Self::dark_at(0.0, 0.0, 0.13)
+        }
+    }
+
+    /// Mono, light: white windows on a grey desktop, black ink.
+    #[must_use]
+    pub const fn mono_light() -> Self {
+        Self {
+            hue: None,
+            chroma: 0.0,
+            ink: InkLadder {
+                primary: 0.15,
+                secondary: 0.43,
+                tertiary: 0.55,
+            },
+            ..Self::light_at(0.0, 0.0, 0.94, 1.0)
         }
     }
 
@@ -387,7 +443,7 @@ impl Palette {
             return Err("invalid palette hue");
         }
         if !self.chroma.is_finite() || !(0.0..=NEUTRAL_MAX_CHROMA).contains(&self.chroma) {
-            return Err("palette chroma outside 0..=0.010");
+            return Err("palette chroma outside 0..=0.032");
         }
         if !self.surfaces.rungs().iter().all(|(_, l)| unit(*l)) {
             return Err("invalid surface lightness");
@@ -485,23 +541,39 @@ mod tests {
         {
             for palette in [
                 Palette::dark(),
-                Palette::dark_cool(),
-                Palette::dark_graphite(),
-                Palette::dark_soft(),
                 Palette::light(),
+                Palette::paper_dark(),
+                Palette::paper_light(),
+                Palette::moss_dark(),
+                Palette::moss_light(),
+                Palette::dusk_dark(),
+                Palette::dusk_light(),
+                Palette::mono_dark(),
+                Palette::mono_light(),
                 Palette::high_contrast_dark(),
                 Palette::high_contrast_light(),
             ] {
                 assert_eq!(palette.validate(), Ok(()), "{palette:?}");
                 assert_eq!(palette.stock_presence().validate_presence(), Ok(()));
+                // Five levels the eye registers on its own: ground below region below
+                // window below raised, and ink well clear of all of them.
+                if !palette.high_contrast {
+                    let l = palette.surfaces;
+                    let order = if palette.dark {
+                        [l.base, l.sidebar, l.content, l.raised]
+                    } else {
+                        [l.base, l.raised, l.sidebar, l.content]
+                    };
+                    assert!(order.windows(2).all(|w| w[0] < w[1]), "{palette:?}");
+                    // A light menu is the window's white or whiter; it floats by its shadow.
+                    assert!(palette.dark || l.overlay >= l.content, "{palette:?}");
+                }
             }
-            // The stock temperature: cool, a whisper of chroma, on both polarities; a
-            // workspace moves its hue, never its chroma.
-            for stock in [Palette::dark(), Palette::light()] {
-                assert_eq!(stock.hue, Some(260.0));
-                assert!((stock.chroma - 0.006).abs() < f32::EPSILON);
-                assert_eq!(stock.temperature(), (260.0, 0.006));
-            }
+            // Tilo's temperature: slate, on both polarities; a workspace moves its hue,
+            // never its chroma.
+            assert_eq!(Palette::dark().hue, Some(STOCK_HUE));
+            assert_eq!(Palette::light().hue, None, "white paper until a workspace tints it");
+            assert_eq!(Palette::mono_dark().temperature(), (0.0, 0.0));
             let grey = Palette {
                 hue: None,
                 ..Palette::light()
@@ -517,41 +589,6 @@ mod tests {
                 ..Palette::light()
             };
             assert_eq!(warm.temperature(), (40.0, 0.010));
-            let dark = Palette::dark().surfaces;
-            assert_eq!(
-                [
-                    dark.base,
-                    dark.content,
-                    dark.sidebar,
-                    dark.inspector,
-                    dark.raised,
-                    dark.overlay
-                ],
-                [0.14, 0.19, 0.165, 0.165, 0.235, 0.225]
-            );
-            let light = Palette::light().surfaces;
-            assert_eq!(
-                [
-                    light.base,
-                    light.content,
-                    light.sidebar,
-                    light.inspector,
-                    light.raised,
-                    light.overlay
-                ],
-                [0.90, 0.995, 0.965, 0.965, 0.95, 1.0]
-            );
-            let soft = Palette::dark_soft().surfaces;
-            assert_eq!(
-                [
-                    soft.base,
-                    soft.content,
-                    soft.sidebar,
-                    soft.raised,
-                    soft.overlay
-                ],
-                [0.19, 0.25, 0.228, 0.30, 0.32]
-            );
         }
 
         phase a_palette_out_of_band_or_with_crossed_ink_is_refused;

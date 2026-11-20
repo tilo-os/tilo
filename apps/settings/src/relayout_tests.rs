@@ -92,7 +92,7 @@ fn values_move_controls_and_shape_or_language_rebuild_them() {
 
     let themed = app.harness().inspection_json().unwrap();
     app.settings::<AppearancePrefs>()
-        .update(|prefs| prefs.choose_theme("Dark graphite"))
+        .update(|prefs| prefs.choose_look(ui::theme::Look::Paper))
         .unwrap();
     settle(&mut app);
     let (rebuilt, _) = control(&mut app, "appearance.ui_scale");

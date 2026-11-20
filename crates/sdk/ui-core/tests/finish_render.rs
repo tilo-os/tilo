@@ -39,7 +39,7 @@ use vello::peniko::{Color, Fill};
 
 use tilo_ui::backdrop::{BackdropFrame, BackdropRecording, layer_scene};
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::theme::{Preset, Theme};
+use tilo_ui::theme::{Theme, ThemeDocument};
 use tilo_ui::tokens::SurfaceRole;
 
 const W: u32 = 420;
@@ -144,13 +144,21 @@ fn body(rgba: &[u8], x: u32, y: u32) -> [u8; 3] {
     pixel(rgba, x, y)
 }
 
-fn presets() -> [(Preset, &'static str); 4] {
-    [
-        (Preset::Block, "block"),
-        (Preset::Glass, "glass"),
-        (Preset::LiquidGlass, "liquid-glass"),
-        (Preset::Pixelated, "pixelated"),
-    ]
+fn finishes() -> [&'static str; 4] {
+    ["block", "glass", "liquid-glass", "pixelated"]
+}
+
+/// The theme a finish fixture (`tests/fixtures/finishes`) builds.
+fn finish(name: &str) -> Theme {
+    let json = match name {
+        "block" => include_str!("fixtures/finishes/block.json"),
+        "glass" => include_str!("fixtures/finishes/glass.json"),
+        "liquid-glass" => include_str!("fixtures/finishes/liquid-glass.json"),
+        "pixelated" => include_str!("fixtures/finishes/pixelated.json"),
+        other => panic!("no finish fixture {other}"),
+    };
+    let document: ThemeDocument = serde_json::from_str(json).unwrap();
+    Theme::from_document(&document).unwrap()
 }
 
 /// The shell itself, for comparing what a material lets through.
@@ -186,7 +194,7 @@ fn runs(rgba: &[u8], y: u32, xs: std::ops::Range<u32>) -> (usize, usize) {
 #[test]
 fn block_is_one_flat_colour_with_square_corners() {
     let _settled = tilo_ui::motion::testing::settled();
-    let theme = Theme::preset(Preset::Block);
+    let theme = finish("block");
     let rgba = render(&theme, "block-dark");
     let (colours, changes) = runs(&rgba, 150, 120..320);
     assert_eq!(
@@ -202,7 +210,7 @@ fn block_is_one_flat_colour_with_square_corners() {
 #[test]
 fn glass_lets_the_blurred_shell_through_and_lights_its_rim() {
     let _settled = tilo_ui::motion::testing::settled();
-    let theme = Theme::preset(Preset::Glass);
+    let theme = finish("glass");
     let rgba = render(&theme, "glass-dark");
     let bare = bare_backdrop();
     // Inside the body the shell below still reads: the blurred stripes move
@@ -235,7 +243,7 @@ fn glass_lets_the_blurred_shell_through_and_lights_its_rim() {
 #[test]
 fn liquid_glass_shows_the_shell_in_its_middle_and_bends_it_at_the_rim() {
     let _settled = tilo_ui::motion::testing::settled();
-    let theme = Theme::preset(Preset::LiquidGlass);
+    let theme = finish("liquid-glass");
     let rgba = render(&theme, "liquid-glass-dark");
     let bare = bare_backdrop();
     // The middle is nearly clear: the shell's colours are there. The
@@ -247,7 +255,7 @@ fn liquid_glass_shows_the_shell_in_its_middle_and_bends_it_at_the_rim() {
         let row: Vec<f32> = (118..322).map(|x| at(x, 100)).collect();
         row.iter().copied().fold(f32::MIN, f32::max) - row.iter().copied().fold(f32::MAX, f32::min)
     };
-    let block = render(&Theme::preset(Preset::Block), "liquid-block-reference");
+    let block = render(&finish("block"), "liquid-block-reference");
     let block_spread = {
         let row: Vec<f32> = (118..322).map(|x| luma(body(&block, x, 100))).collect();
         row.iter().copied().fold(f32::MIN, f32::max) - row.iter().copied().fold(f32::MAX, f32::min)
@@ -278,7 +286,7 @@ fn liquid_glass_shows_the_shell_in_its_middle_and_bends_it_at_the_rim() {
 #[test]
 fn pixelated_shows_the_shell_as_cells() {
     let _settled = tilo_ui::motion::testing::settled();
-    let theme = Theme::preset(Preset::Pixelated);
+    let theme = finish("pixelated");
     let rgba = render(&theme, "pixelated-dark");
     let cell = theme
         .finish(SurfaceRole::Floating)
@@ -313,7 +321,7 @@ fn pixelated_shows_the_shell_as_cells() {
 #[test]
 fn pixelated_shows_its_grid_over_a_flat_ground() {
     let _settled = tilo_ui::motion::testing::settled();
-    let theme = Theme::preset(Preset::Pixelated);
+    let theme = finish("pixelated");
     let cell = theme
         .finish(SurfaceRole::Floating)
         .param("cell")
@@ -354,22 +362,21 @@ fn pixelated_shows_its_grid_over_a_flat_ground() {
 }
 
 #[test]
-fn every_shipped_look_draws_differently_from_block() {
+fn every_finish_draws_differently_from_block() {
     let _settled = tilo_ui::motion::testing::settled();
-    let base = render(&Theme::preset(Preset::Block), "block-reference");
-    for (preset, name) in presets() {
-        if preset == Preset::Block {
+    let base = render(&finish("block"), "block-reference");
+    for name in finishes() {
+        if name == "block" {
             continue;
         }
-        let shown = render(&Theme::preset(preset), &format!("{name}-dark"));
+        let shown = render(&finish(name), &format!("{name}-dark"));
         let differing = (0..W)
             .flat_map(|x| (0..H).map(move |y| (x, y)))
             .filter(|&(x, y)| pixel(&base, x, y) != pixel(&shown, x, y))
             .count();
         assert!(
             differing > 2000,
-            "{} draws its own material: {differing} pixels differ from Block",
-            preset.name()
+            "{name} draws its own material: {differing} pixels differ from Block"
         );
     }
 }
