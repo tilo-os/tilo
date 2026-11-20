@@ -23,9 +23,10 @@ import TiloLive
 public final class TiloSource: AssistantSource {
     /// Which of Chat's conversations is the main chat.
     public enum MainChat: Sendable, Equatable {
-        /// The person's own conversation with the assistant they keep. It needs Chat's agents.
+        /// The person's own conversation with the assistant they keep. It needs the workspace's
+        /// agents.
         case assistant
-        /// One conversation by its id: for a site whose Chat keeps no agents yet, and for a check.
+        /// One conversation by its id: for a site whose workspace keeps no agents yet, and for a check.
         case conversation(id: String, name: String)
         /// The person's conversation with one agent, named by its id: for a site whose page
         /// does not say which agents its workspace keeps, and for a check.
@@ -748,11 +749,12 @@ public final class TiloSource: AssistantSource {
         throw TiloEngine.Problem.refused(code: "unknown_action", reason: "Chat has not published this person yet")
     }
 
-    /// The workspace's agents as this page holds them, each read whole. Nil while the page
+    /// The workspace's agents as this page holds them, each read whole: Assistant's
+    /// `tilo.workspace.agent`, which every app of the workspace opens. Nil while the page
     /// publishes none of it.
     private func agentsInPage() async -> [JSON]? {
         guard agentsRefused < 8 else { return nil }
-        guard let listed = try? await engine.read("chat.agent") else {
+        guard let listed = try? await engine.read("tilo.workspace.agent") else {
             agentsRefused += 1
             return nil
         }
@@ -1970,7 +1972,7 @@ public final class TiloSource: AssistantSource {
     }
 
     public func stop(_ subAgent: SubAgent.ID) async throws {
-        try await taken { try await self.engine.invoke("stop-sub-agent", on: "chat.agent", ["agent": .string(subAgent.value)]) }
+        try await taken { try await self.engine.askAgents("stop-sub-agent", ["agent": .string(subAgent.value)]) }
     }
 
     // MARK: Tasks, scheduled things and events
