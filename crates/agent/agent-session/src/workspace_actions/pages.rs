@@ -6,6 +6,8 @@
 //! is checked against their access and saved as every bounded caller's write
 //! is.
 
+use std::fmt::Write as _;
+
 use super::{
     ActionCallError, Caller, DocumentRoute, HashMap, Job, Needs, Worker, WorkspaceActions,
     WorkspaceId, bounded, catch_up, pending,
@@ -51,10 +53,16 @@ impl PageJob {
 }
 
 /// A page the service holds: whose it is and what it shows.
-pub(super) struct HeldPage {
-    workspace_id: WorkspaceId,
-    who: bounded::Bounded,
-    route: DocumentRoute,
+pub(super) enum HeldPage {
+    /// An app's page: the record it shows, and who opened it.
+    App {
+        workspace_id: WorkspaceId,
+        who: bounded::Bounded,
+        route: DocumentRoute,
+    },
+    /// The workspace's front page: the apps a member opens here. Nothing is
+    /// acted on it and it never changes.
+    Home { workspace_id: WorkspaceId },
 }
 
 /// The pages the service holds, by number.
@@ -71,7 +79,10 @@ impl Pages {
         match job {
             PageJob::Open { caller, .. } => Some(&**caller),
             PageJob::Act { page, .. } | PageJob::Close { page, .. } => {
-                self.held.get(page).map(|held| &held.who.caller)
+                match self.held.get(page) {
+                    Some(HeldPage::App { who, .. }) => Some(&who.caller),
+                    Some(HeldPage::Home { .. }) | None => None,
+                }
             }
         }
     }
@@ -185,13 +196,10 @@ impl Worker {
             PageJob::Open { address, .. } => self
                 .page_app(&address.app)
                 .map_or(super::keys::Keys::Joined, |app| document(app.app_id(), "")),
-            PageJob::Act { page, .. } => self
-                .pages
-                .held
-                .get(page)
-                .map_or(super::keys::Keys::Joined, |held| {
-                    document(&held.route.app_id, &held.route.document)
-                }),
+            PageJob::Act { page, .. } => match self.pages.held.get(page) {
+                Some(HeldPage::App { route, .. }) => document(&route.app_id, &route.document),
+                Some(HeldPage::Home { .. }) | None => super::keys::Keys::Joined,
+            },
             PageJob::Close { .. } => super::keys::Keys::Joined,
         }
     }
@@ -216,6 +224,9 @@ impl Worker {
     ) -> Result<OpenedPage, PageRefusal> {
         if !self.admits_member(workspace_id, caller) {
             return Err(PageRefusal::NotMember);
+        }
+        if address.is_home() {
+            return self.open_home(workspace_id);
         }
         let app = self.page_app(&address.app).ok_or(PageRefusal::NoSuchApp)?;
         // A page shows an app's own document of the workspace; an app that
@@ -269,7 +280,7 @@ impl Worker {
         self.save_page(workspace_id, &key, (&who, &route, &state))?;
         self.pages.held.insert(
             page,
-            HeldPage {
+            HeldPage::App {
                 workspace_id,
                 who,
                 route,
@@ -284,17 +295,82 @@ impl Worker {
         })
     }
 
+    /// The workspace's front page: the apps a member opens here, each a link
+    /// to its own page. It shows nothing the workspace holds, so it is the
+    /// same for everyone in it, and nothing is acted on it.
+    fn open_home(&mut self, workspace_id: WorkspaceId) -> Result<OpenedPage, PageRefusal> {
+        // The workspace has to be readable here, as an app's page does.
+        let state = self.refresh(workspace_id, Needs::Workspace).map_err(refused)?;
+        state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
+        let mut apps: Vec<_> = self
+            .catalogue
+            .iter()
+            .filter(|app| app.keeps_workspace_resource())
+            .collect();
+        apps.sort_by_key(|app| app.title().to_owned());
+        let mut body = String::from(
+            "<div class=\"tilo-view tilo-home\" data-p=\"0\">\
+             <h1 class=\"tilo-home-title\">Tilo</h1><ul class=\"tilo-home-apps\">",
+        );
+        for app in apps {
+            let name = app
+                .app_id()
+                .rsplit_once('.')
+                .map_or(app.app_id(), |(_, last)| last);
+            let icon = match &app.icon {
+                ui::IconDescriptor::Named(icon) => ui::icons::Icon::from_name(icon)
+                    .map_or_else(String::new, ui::icons::icon_svg),
+                _ => String::new(),
+            };
+            let _ = write!(
+                body,
+                "<li><a class=\"tilo-home-app\" href=\"/w/{workspace_id}/{name}\">{icon}\
+                 <span>{}</span></a></li>",
+                escape(app.title())
+            );
+        }
+        body.push_str("</ul></div>");
+        self.pages.next = self.pages.next.wrapping_add(1);
+        let page = self.pages.next;
+        self.pages.held.insert(page, HeldPage::Home { workspace_id });
+        Ok(OpenedPage {
+            page,
+            title: "Tilo".to_owned(),
+            css: ui::composition::page::theme_css(&ui::Theme::default())
+                + ui::composition::page::PAGE_CSS
+                + HOME_CSS,
+            body,
+        })
+    }
+
     fn act_on_page(
         &mut self,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
-        let held = self
+        // What the page holds, taken by value so the workspace is read next.
+        let (home, app) = match self
             .pages
             .held
             .get(&page)
-            .ok_or_else(|| unavailable("the page was closed"))?;
-        let (workspace_id, who, route) = (held.workspace_id, held.who.clone(), held.route.clone());
+            .ok_or_else(|| unavailable("the page was closed"))?
+        {
+            HeldPage::App {
+                workspace_id,
+                who,
+                route,
+            } => (None, Some((*workspace_id, who.clone(), route.clone()))),
+            HeldPage::Home { workspace_id } => (Some(*workspace_id), None),
+        };
+        // The workspace's front page holds no document and nothing acts on
+        // it: a pass over it answers that nothing changed. It is read again
+        // first, so a workspace no longer readable here is refused.
+        if let Some(workspace_id) = home {
+            self.refresh(workspace_id, Needs::Workspace).map_err(refused)?;
+            return Ok(Vec::new());
+        }
+        let (workspace_id, who, route) =
+            app.ok_or_else(|| unavailable("the page was closed"))?;
         let started = std::time::Instant::now();
         // Others' writes since are merged before the person acts, as they
         // would have seen them in a window.
@@ -374,4 +450,35 @@ impl Worker {
             Err(refusal) => Err(refusal),
         }
     }
+}
+
+/// The workspace's front page: its apps as tiles, on the theme's own ground.
+/// It is the page's own stylesheet, after the app pages' (`PAGE_CSS`).
+const HOME_CSS: &str = "\
+.tilo-home{height:100%;overflow-y:auto;display:flex;flex-direction:column;gap:20px;\
+padding:clamp(24px,6vh,56px) clamp(20px,6vw,64px);background:var(--tilo-ground);}\
+.tilo-home-title{margin:0;font-size:18px;font-weight:600;}\
+.tilo-home-apps{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));\
+gap:8px;margin:0;padding:0;list-style:none;max-width:880px;}\
+.tilo-home-app{display:flex;flex-direction:column;align-items:center;gap:10px;padding:18px 10px;\
+border-radius:14px;color:var(--tilo-text);text-decoration:none;font-size:13px;font-weight:500;}\
+.tilo-home-app:hover{background:var(--tilo-hover);}\
+.tilo-home-app:active{background:var(--tilo-press);}\
+.tilo-home-app:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
+.tilo-home-app svg{width:52px;height:52px;border-radius:12px;}";
+
+/// `text` as HTML shows it.
+fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
 }
