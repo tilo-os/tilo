@@ -230,6 +230,9 @@ pub(crate) fn set_label(id: u32, name: &str) {
         name.clone_into(&mut own.label);
         page.client.set_own(own);
     });
+    // The bar's own chip reads the name this page goes by: a name given in the profile card is
+    // drawn at once, not at whatever change wakes the page next.
+    crate::browser::wake_desktops();
 }
 
 impl Page {

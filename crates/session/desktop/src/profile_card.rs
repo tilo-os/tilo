@@ -1853,6 +1853,9 @@ impl ProfileCard {
     /// typed in it is kept when it is submitted, when a field is left, when the card closes and
     /// when typing pauses ([`Self::set_settled`]). Whether either changed.
     fn keep_typed(&mut self) -> bool {
+        // Whatever the pause held is looked at now, asked for or due: a pause that stays set
+        // after its work is done is a deadline the next frame would wake for again.
+        self.settle.set(None);
         let mut kept = false;
         let name = self.draft.get();
         let name = name.trim();
@@ -1880,11 +1883,17 @@ impl ProfileCard {
 
     /// The pause after typing that keeps what was typed: a person who types a name and stops
     /// has saved it, without reaching for Enter.
-    fn settle_due(&self, now: Instant) -> Option<Instant> {
+    fn settle_due(&self, _now: Instant) -> Option<Instant> {
+        // A closed card keeps nothing more: a pause left due on a card nobody shows would demand
+        // a frame for ever. A pause that has come stays due until it is served: a deadline
+        // reported only while it lies in the future vanishes at the moment the shell wakes for it,
+        // and the wake then draws nothing and keeps nothing.
+        if !self.is_open() {
+            return None;
+        }
         self.settle
             .get()
             .and_then(|typed| typed.checked_add(TYPING_SETTLE))
-            .filter(|due| *due > now)
     }
 
     pub fn is_open(&self) -> bool {
@@ -1967,6 +1976,17 @@ impl Widget for ProfileCard {
             kept = true;
         }
         self.was_open = self.is_open();
+        // The pause a field asks for has passed: the frame that comes after it keeps what was
+        // typed. A page's own loop wakes for that deadline, and where it serves it only a quiet
+        // frame, the drawn frame keeps it here — a field with no Save button never loses what a
+        // person typed because the shell was busy elsewhere.
+        if self.settle.get().is_some_and(|typed| {
+            typed
+                .checked_add(TYPING_SETTLE)
+                .is_some_and(|due| due <= ui::time::now())
+        }) {
+            kept = true;
+        }
         let kept = kept && self.keep_typed();
         self.popover.update(state, path) || kept
     }

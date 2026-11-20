@@ -1936,6 +1936,10 @@ impl Widget for BrowserShell {
         for intent in intents {
             self.apply_intent(intent);
         }
+        // The card's own pass, as the bar's and the desktop's: a name or a status typed in it is
+        // kept by the card itself — when it is submitted, when its field is left, and once typing
+        // pauses — so a card the shell never updates shows what was typed and keeps nothing.
+        changed |= self.profile.update(state, path);
         // Every choice the card made since the last frame: a name and a status typed one after
         // the other are two, never one dropped for the other.
         while let Some(choice) = self.profile.take_choice() {
@@ -2345,6 +2349,18 @@ impl Widget for BrowserShell {
             .chain(self.linking.due())
             .chain(self.walk.deadline())
             .min()
+    }
+
+    /// A wake a part of the page asked for is due: the work is that part's, and it is told.
+    /// The profile card keeps a name or a status a pause after typing it, with no Save button,
+    /// and only its own deadline does that: a wake served here on the page's behalf and never
+    /// given to the card left what a person typed in a field that showed it and kept nothing.
+    fn serve_deadline(&mut self, now: ui::time::Instant) -> bool {
+        let mut served = false;
+        for child in self.children_mut() {
+            served |= child.serve_deadline(now);
+        }
+        served
     }
 
     fn name(&self) -> &'static str {

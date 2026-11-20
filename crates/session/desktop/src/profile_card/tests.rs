@@ -883,15 +883,23 @@ fn with_status_and_photo() -> ProfileModel {
     model
 }
 
-/// Type `text` into the card's field `id`, as the person would: point at it, take what is
-/// there, and type.
-fn type_into(frame: &mut ui::headless::Framed<ProfileCard>, id: &str, text: &str) {
+/// Put `text` into the card's field `id` in one edit, as the page's semantics bridge does for a
+/// keystroke: a loaded machine's pause between two typed characters keeps half a line, which is
+/// the pause rule working, not the case under test.
+fn set_value(frame: &mut ui::headless::Framed<ProfileCard>, id: &str, text: &str) {
     let harness = ui::headless::Framed::harness_mut(frame);
     harness.poll_frame().unwrap();
-    harness.click_named(id).unwrap();
+    // Point at the field first: a person types into the field they focused, and leaving it is
+    // what keeps what is there.
+    harness.click_named(id).expect("the field is there");
     harness.poll_frame().unwrap();
-    harness.key("Ctrl+A");
-    harness.type_text(text);
+    harness
+        .perform(&ui::headless::Action::Perform {
+            target: id.into(),
+            semantic_target: None,
+            action: ui::headless::SemanticAction::SetValue(text.into()),
+        })
+        .expect("the field takes an edit");
     harness.poll_frame().unwrap();
 }
 
@@ -900,7 +908,7 @@ fn type_into(frame: &mut ui::headless::Framed<ProfileCard>, id: &str, text: &str
 #[test]
 fn a_name_typed_and_left_is_kept() {
     let mut frame = framed_model(&with_status_and_photo());
-    type_into(&mut frame, "profile-name", " Grace ");
+    set_value(&mut frame, "profile-name", " Grace ");
     // Pointing at the status field leaves the name field.
     let harness = ui::headless::Framed::harness_mut(&mut frame);
     harness.click_named("profile-status").unwrap();
@@ -921,7 +929,9 @@ fn a_name_typed_and_left_is_kept() {
 #[test]
 fn a_status_typed_is_kept_when_the_card_closes() {
     let mut frame = framed_model(&with_status_and_photo());
-    type_into(&mut frame, "profile-status", "Reviewing the signup");
+    // Said in one edit, as the page's bridge says it: typing it a key at a time lets a loaded
+    // machine's pauses keep half the line, which is the pause rule working, not this case.
+    set_value(&mut frame, "profile-status", "Reviewing the signup");
     ui::headless::Framed::harness_mut(&mut frame).key("Escape");
     ui::headless::Framed::harness_mut(&mut frame)
         .poll_frame()
@@ -939,7 +949,7 @@ fn a_status_typed_is_kept_when_the_card_closes() {
 #[test]
 fn a_pause_after_typing_keeps_what_was_typed() {
     let mut frame = framed_model(&with_status_and_photo());
-    type_into(&mut frame, "profile-status", "Reviewing the signup");
+    set_value(&mut frame, "profile-status", "Reviewing the signup");
     assert!(frame.take_choice().is_none(), "not while it is typed");
     let due = Widget::next_wake_deadline(&*frame).expect("a typed field asks to be kept");
     assert!(
@@ -951,6 +961,94 @@ fn a_pause_after_typing_keeps_what_was_typed() {
         Some(ProfileChoice::Status("Reviewing the signup".into()))
     );
     assert!(frame.take_choice().is_none(), "said once");
+}
+
+/// A pause that has come is still the work the shell owes: the deadline stays due until it is
+/// served, and serving it keeps the name. A deadline reported only while it lies in the future
+/// vanished at the moment the shell woke for it, so a name typed on the page showed in the field
+/// and reached nobody.
+#[test]
+fn a_pause_that_has_come_stays_due_and_is_kept_when_served() {
+    let mut frame = framed_model(&with_status_and_photo());
+    set_value(&mut frame, "profile-name", "Ada");
+    assert!(
+        frame.take_choice().is_none(),
+        "not yet: the pause is coming"
+    );
+    std::thread::sleep(TYPING_SETTLE + ui::time::Duration::from_millis(50));
+    let due = Widget::next_wake_deadline(&*frame)
+        .expect("a pause that has come is still the work the shell owes");
+    assert!(due <= ui::time::now(), "it is due now");
+    assert!(
+        Widget::serve_deadline(&mut *frame, due),
+        "the pause came and was served"
+    );
+    assert_eq!(
+        frame.take_choice(),
+        Some(ProfileChoice::Rename("Ada".into())),
+        "the served pause keeps it"
+    );
+}
+
+/// A person who typed one name and then another has the second: the card keeps what differs
+/// from what it last kept, so a rename made after the first is theirs too.
+#[test]
+fn a_name_typed_after_another_is_kept() {
+    let mut frame = framed_model(&with_status_and_photo());
+    set_value(&mut frame, "profile-name", "Grace");
+    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    harness.click_named("profile-status").unwrap();
+    harness.poll_frame().unwrap();
+    assert_eq!(
+        frame.take_choice(),
+        Some(ProfileChoice::Rename("Grace".into()))
+    );
+    set_value(&mut frame, "profile-name", "Mira");
+    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    harness.click_named("profile-status").unwrap();
+    harness.poll_frame().unwrap();
+    assert_eq!(
+        frame.take_choice(),
+        Some(ProfileChoice::Rename("Mira".into())),
+        "the name they typed second is theirs too"
+    );
+}
+
+/// The web page's semantics bridge sets a field's value as the person's own browser does — a
+/// screen reader's edit, a paste, a keystroke the page forwards — and Enter submits it. The
+/// card keeps the name that arrived that way, never only one typed straight into the canvas.
+#[test]
+fn a_name_set_through_the_page_bridge_is_kept() {
+    let mut frame = framed_model(&with_status_and_photo());
+    set_value(&mut frame, "profile-name", "Ada");
+    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    harness.key("Enter");
+    harness.poll_frame().unwrap();
+    let (card, _) = ui::headless::Framed::split(&mut frame);
+    assert_eq!(card.draft(), "Ada", "the bridge's edit is the field's text");
+    assert_eq!(
+        card.take_choice(),
+        Some(ProfileChoice::Rename("Ada".into())),
+        "Enter keeps what the bridge set"
+    );
+}
+
+/// An edit the page's bridge sets, left alone afterwards, is kept once typing pauses: a field
+/// with no Save button keeps what it holds however the browser got it there.
+#[test]
+fn a_name_set_through_the_page_bridge_is_kept_once_typing_pauses() {
+    let mut frame = framed_model(&with_status_and_photo());
+    set_value(&mut frame, "profile-name", "Ada");
+    let due = Widget::next_wake_deadline(&*frame).expect("a typed field asks to be kept");
+    assert!(
+        Widget::serve_deadline(&mut *frame, due + TYPING_SETTLE),
+        "the pause came"
+    );
+    assert_eq!(
+        frame.take_choice(),
+        Some(ProfileChoice::Rename("Ada".into())),
+        "the pause keeps what the bridge set"
+    );
 }
 
 /// A field that says what is already kept says nothing: opening the card and pressing nothing
