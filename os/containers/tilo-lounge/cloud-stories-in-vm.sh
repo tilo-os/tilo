@@ -27,14 +27,34 @@ printf '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\n' \
 command -v podman >/dev/null \
   || dnf install -y --setopt=install_weak_deps=False podman >/dev/null
 
+mkdir -p "$work"
+find "$work" -mindepth 1 -delete
+
+# A story whose servers never came up was not walked: its page says it was
+# not tested, never that a person met a broken Tilo, and the check fails.
+untested() {
+  mkdir -p "$work/$story"
+  python3 -I -c 'import json, sys, datetime
+json.dump({"id": sys.argv[1], "at": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "seconds": 0, "completed": False, "withinBudget": False, "brokeAt": None,
+           "untested": sys.argv[2], "steps": [], "timings": {}, "videos": []}, open(sys.argv[3], "w"))' \
+    "$story" "$1" "$work/$story/story.json"
+  python3 -I "$here/stories/page.py" "$work"
+  echo "NOT TESTED $story: $1"
+  exit 1
+}
+
 servers=$repo/crates/system/cloud-source-dav/tests/servers.sh
 trap 'bash "$servers" stop' EXIT
 # The variables `start` prints are what the suite reads; the seed adds the
 # person's own Nextcloud (their address, calendars and files) and the second
 # person an invitation can name. Both are exported, so the story's browser and
-# driver inherit them.
-eval "$(bash "$servers" start)"
-eval "$(bash "$servers" seed)"
+# driver inherit them. Each is read whole first: a failure inside eval's
+# argument would not stop this script.
+started=$(bash "$servers" start) || untested "its Nextcloud and calendar servers did not start (the log above says why)"
+eval "$started"
+seeded=$(bash "$servers" seed) || untested "its Nextcloud could not be given the person's address, calendars and files (the log above says why)"
+eval "$seeded"
 
 # The story is walked as an unprivileged user: the stack's services sandbox
 # themselves with bwrap, and a program started as root here would prove less
@@ -43,8 +63,6 @@ user=stories
 id "$user" >/dev/null 2>&1 || useradd --create-home "$user"
 runtime=/tmp/stories-runtime-$user
 install -d -m 0700 -o "$user" -g "$user" "$runtime"
-mkdir -p "$work"
-find "$work" -mindepth 1 -delete
 chown "$user:$user" "$work"
 
 # The image's Chromium is Playwright's, in root's cache: named for the user,

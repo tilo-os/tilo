@@ -166,7 +166,7 @@ for story in "${asked[@]}"; do
       unshare --user --map-root-user --mount --net -- bash -c 'walk_story_stack; exit $?' || status=$?
       if [[ ! -f $out/walked ]]; then
         echo "FAIL: $story: its stack could not be given a network namespace of its own (unshare --user --map-root-user --mount --net exited $status)"
-        printf '{"id": "%s", "at": "%s", "seconds": 0, "completed": false, "withinBudget": false, "brokeAt": null, "error": "the stack could not be given a network namespace of its own", "steps": [], "timings": {}, "videos": []}\n' \
+        printf '{"id": "%s", "at": "%s", "seconds": 0, "completed": false, "withinBudget": false, "brokeAt": null, "untested": "its stack could not be given a network namespace of its own", "steps": [], "timings": {}, "videos": []}\n' \
           "$story" "$(date -u +%FT%TZ)" > "$out/story.json"
       fi
     else

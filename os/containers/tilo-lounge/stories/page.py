@@ -45,6 +45,8 @@ def verdict_of(story: dict | None, judged: dict | None, entry: dict) -> tuple[st
         if entry.get("driver"):
             return "missing", "Automated, but this run has no result for it."
         return "pending", "Not yet automated."
+    if story.get("untested"):
+        return "untested", "Not tested: " + story["untested"]
     if not story["completed"]:
         stopped = next((step for step in story.get("steps", []) if step.get("status") == "failed"), None)
         broke = ({"index": stopped["index"], "title": stopped["title"], "why": stopped.get("why")}
@@ -77,6 +79,7 @@ LABELS = {
     "credentials": "Needs credentials",
     "unjudged": "Passed, not judged",
     "missing": "No result",
+    "untested": "Not tested",
 }
 
 
@@ -231,11 +234,11 @@ a { color: var(--accent); }
 .pill-green { background: var(--green-bg); color: var(--green); }
 .pill-red { background: var(--red-bg); color: var(--red); }
 .pill-credentials, .pill-unjudged { background: var(--amber-bg); color: var(--amber); }
-.pill-pending, .pill-missing { background: var(--grey-bg); color: var(--muted); }
+.pill-pending, .pill-missing, .pill-untested { background: var(--grey-bg); color: var(--muted); }
 .intent { margin: 0; max-width: 75ch; }
 .reason { margin: 0; font-weight: 600; }
 .reason-red { color: var(--red); } .reason-green { color: var(--green); } .reason-credentials, .reason-unjudged { color: var(--amber); }
-.reason-pending, .reason-missing { color: var(--muted); font-weight: 500; }
+.reason-pending, .reason-missing, .reason-untested { color: var(--muted); font-weight: 500; }
 .planned { margin: 0; padding-left: 1.4em; color: var(--muted); }
 .needs { margin: 0; color: var(--muted); }
 .broke { display: grid; gap: 10px; padding: 14px; border-radius: 8px; background: var(--red-bg); }
@@ -288,11 +291,11 @@ def build(run_dir: pathlib.Path, extra: list[pathlib.Path]) -> str:
         states.append((state, entry))
         sections.append(section)
     # Red first, then green, then what is not automated yet.
-    rank = {"red": 0, "missing": 1, "unjudged": 2, "green": 3, "credentials": 4, "pending": 5}
+    rank = {"red": 0, "untested": 1, "missing": 2, "unjudged": 3, "green": 4, "credentials": 5, "pending": 6}
     ordered = [section for _, section in sorted(zip([rank[s] for s, _ in states], sections), key=lambda pair: pair[0])]
     counts = {state: sum(1 for s, _ in states if s == state) for state in rank}
     tally = "".join(f'<span class="pill pill-{state}">{counts[state]} {LABELS[state].lower()}</span>'
-                    for state in ["green", "unjudged", "red", "missing", "credentials", "pending"] if counts[state])
+                    for state in ["green", "unjudged", "red", "untested", "missing", "credentials", "pending"] if counts[state])
     when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     revision = os.environ.get("T_COMMIT") or os.environ.get("SOURCE_REVISION") or ""
     return f"""<meta charset="utf-8">
