@@ -3255,6 +3255,19 @@ requires = ["arch=x86_64"]
 timeout_secs = 1800
 on = ["idle"]
 
+# The tilolang gallery shown as HTML in a real browser (tools/web/html-renderer/tilolang-perf.mjs):
+# each place of its sidebar is clicked once and must show its page by the frames of that click,
+# and every interaction stays within the numbers pinned in tilolang-perf.pinned.json.
+[[check]]
+name = "tilolang-web-gallery"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\nbash tools/web/html-renderer/build-tilolang-web.sh\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode tools/web/html-renderer/tilolang-perf.mjs \"$CARGO_TARGET_DIR/htmlrenderer/tilolang\" --budget --attempts 3\n"
+env = { npm_config_cache = "/tmp/npm-cache" }
+requires = ["arch=x86_64"]
+timeout_secs = 3600
+on = ["idle"]
+
 # The web desktop driven in a real browser, as a person presses it: a secondary click, a Mac's
 # Control-click, the Menu key and Shift+F10 open the text's menu in the word processor and never the
 # browser's own (crates/browser/tilo-web-desktop/scripts/context-menu.mjs), and Mail's link to Settings
