@@ -169,12 +169,15 @@ mod tests {
         app
     }
 
+    /// An agent opens `place` by the row the map publishes for it: a screen
+    /// effect is offered on that row, and places its invoker there.
     fn open(app: &mut TestApp<MapsShell>, invoker: ActionInvoker, place: &str) {
+        let row = format!("maps.place:{place}");
         app.call_by(
             invoker,
-            "maps.workspace",
+            &row,
             "open-place",
-            serde_json::json!({ "place": place }),
+            serde_json::json!({ "place": row }),
         )
         .unwrap();
         app.settle();
