@@ -176,6 +176,14 @@
 		}
 	}
 
+	# A workspace's app as a web page, /w/<workspace>/<app>[/<target>]: the
+	# deployment's server renders it, and answers its address here, at this
+	# site's own origin, so the page proves itself with the device this
+	# browser already keeps for the site.
+	handle /w/* {
+		reverse_proxy {$TILO_WEB_SHELF:127.0.0.1:9}
+	}
+
 	# The sign-in page a service's sign-in link lands on. It answers with a
 	# form the browser posts to the service that asked, which is another
 	# origin by definition: `form-action` names the origins a sign-in link may

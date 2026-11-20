@@ -107,6 +107,16 @@ pub struct PagePatch {
     pub html: String,
 }
 
+/// A page a serving device opened: the number a page's next asks name it by,
+/// and the page whole.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenedPage {
+    pub page: u64,
+    pub title: String,
+    pub css: String,
+    pub body: String,
+}
+
 /// What a page is answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,10 +130,13 @@ pub enum PageAnswer {
         css: String,
         body: String,
     },
-    /// The elements that changed, outermost first.
+    /// What the page's last ask changed: the elements, outermost first.
     Patched(Vec<PagePatch>),
     /// The page is not shown here, and why.
     Refused(PageRefusal),
+    /// What others changed on the page since, unasked: the elements,
+    /// outermost first.
+    Changed(Vec<PagePatch>),
 }
 
 /// Why a page is not shown.

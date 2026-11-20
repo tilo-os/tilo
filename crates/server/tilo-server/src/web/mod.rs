@@ -17,6 +17,7 @@ pub mod install;
 mod link;
 pub(crate) mod live;
 mod login_codes;
+mod page;
 mod page_errors;
 mod shelf;
 mod sign_in;
@@ -1086,6 +1087,18 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         let mut response = shelf::handle(web, request, &handle).await;
         shelf::cors(&mut response);
         return response;
+    }
+    // A workspace's app as a web page: the document its script opens the
+    // page from, over the device's own session.
+    if request.method() == Method::GET
+        && let Some(address) = tilo_server_protocol::page::PageAddress::parse(request.uri().path())
+    {
+        let link = web
+            .server_info
+            .address
+            .as_ref()
+            .and_then(|address| address.web.as_ref());
+        return page::answer(&address, link);
     }
     let origin = request.headers().get(header::ORIGIN).cloned();
     let public = public_directory_route(request.uri().path());

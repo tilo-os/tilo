@@ -302,6 +302,7 @@ impl WorkspaceShell for HostShells {
 /// keeping what they make in the host's content.
 struct HostActionsServer {
     host: HostActions,
+    pages: ActionPages,
     stores: Arc<WorkspaceStores>,
     /// The Browser this host places for its workspaces, when it places one.
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
@@ -312,6 +313,7 @@ struct HostActionsServer {
 /// account on the workspace's Discord from the profile card) need nothing more.
 struct WorkspaceRecordsServer {
     actions: WorkspaceActions,
+    pages: ActionPages,
     stores: Arc<WorkspaceStores>,
     /// The Browser this host places for its workspaces, when it places one.
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
@@ -319,6 +321,38 @@ struct WorkspaceRecordsServer {
     events: Arc<std::sync::OnceLock<crate::workspace_bots::events::PersonEvents>>,
     /// What its people's assistants find to do on their own, once its workspaces are up.
     initiative: Arc<std::sync::OnceLock<crate::workspace_bots::initiative::Initiative>>,
+}
+
+/// The workspaces' apps as web pages, each held by the action service as the
+/// member who opened it ([`WorkspaceActions::open_page`]).
+struct ActionPages(WorkspaceActions);
+
+impl crate::app_serving::AppPages for ActionPages {
+    fn open(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        address: tilo_server_protocol::page::PageAddress,
+    ) -> Pending<
+        Result<tilo_server_protocol::page::OpenedPage, tilo_server_protocol::page::PageRefusal>,
+    > {
+        self.0.open_page(workspace_id, caller, address)
+    }
+
+    fn act(
+        &self,
+        workspace_id: WorkspaceId,
+        page: u64,
+        act: Option<(u32, Option<String>, tilo_server_protocol::page::PageAction)>,
+    ) -> Pending<
+        Result<Vec<tilo_server_protocol::page::PagePatch>, tilo_server_protocol::page::PageRefusal>,
+    > {
+        self.0.act_on_page(workspace_id, page, act)
+    }
+
+    fn close(&self, workspace_id: WorkspaceId, page: u64) {
+        self.0.close_page(workspace_id, page);
+    }
 }
 
 impl crate::AppActionServer for WorkspaceRecordsServer {
@@ -422,6 +456,10 @@ impl crate::AppActionServer for WorkspaceRecordsServer {
     fn session_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
         self.actions.session_arrived(workspace_id, caller);
     }
+
+    fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
+        Some(&self.pages)
+    }
 }
 
 impl crate::AppActionServer for HostActionsServer {
@@ -497,6 +535,10 @@ impl crate::AppActionServer for HostActionsServer {
 
     fn session_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
         self.host.actions.session_arrived(workspace_id, caller);
+    }
+
+    fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
+        Some(&self.pages)
     }
 }
 
@@ -1148,8 +1190,10 @@ pub async fn start_serving_documents_and_events(
     cfg.services.app_serving = true;
     let events_state = cfg.state_root.join("person-events");
     let initiative_state = cfg.state_root.join("person-initiative");
+    let actions = WorkspaceActions::new(catalogue);
     let app_server = Arc::new(WorkspaceRecordsServer {
-        actions: WorkspaceActions::new(catalogue),
+        pages: ActionPages(actions.clone()),
+        actions,
         stores: crate::content::stores(&cfg.state_root),
         browsers: browsers.clone(),
         events: Arc::default(),
@@ -1292,10 +1336,12 @@ async fn start_inner(
         options.model,
     );
     cfg.services.app_serving = true;
+    let actions = WorkspaceActions::new(catalogue);
     let host_actions = Arc::new(HostActionsServer {
+        pages: ActionPages(actions.clone()),
         host: HostActions {
             supervisor: SupervisorHost(agents.supervisor().clone()),
-            actions: WorkspaceActions::new(catalogue),
+            actions,
         },
         stores: content,
         browsers: options.browsers.clone(),

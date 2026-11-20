@@ -13,6 +13,7 @@
 
 use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage};
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
 
 /// Answers remote-action requests addressed to this host.
 ///
@@ -157,6 +158,38 @@ pub trait AppActionServer: Send + Sync {
         let _ = workspace_id;
         false
     }
+
+    /// The workspaces' apps as web pages its members open
+    /// ([`tilo_server_protocol::page`]), where this app action server shows
+    /// them. None by default.
+    fn pages(&self) -> Option<&dyn AppPages> {
+        None
+    }
+}
+
+/// A workspace's apps as web pages: each page an app's view of the
+/// workspace's document, as the member who opened it may see it.
+pub trait AppPages: Send + Sync {
+    /// Show `caller` the page `address` names in `workspace_id`.
+    fn open(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        address: PageAddress,
+    ) -> Pending<Result<OpenedPage, PageRefusal>>;
+
+    /// Act on `page` as its person did (the element's number, its semantic
+    /// target and the action), or with no act, answer what changed on it
+    /// since others wrote: the elements that changed, outermost first.
+    fn act(
+        &self,
+        workspace_id: WorkspaceId,
+        page: u64,
+        act: Option<(u32, Option<String>, PageAction)>,
+    ) -> Pending<Result<Vec<PagePatch>, PageRefusal>>;
+
+    /// Let go of `page`: its person closed it.
+    fn close(&self, workspace_id: WorkspaceId, page: u64);
 }
 
 /// Where a frame is served instead of on the host it was addressed to

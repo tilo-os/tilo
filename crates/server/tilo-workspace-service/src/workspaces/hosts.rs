@@ -115,6 +115,16 @@ impl Workspaces {
             == Some(CopyRole::Store)
     }
 
+    /// Whether `workspace`'s governance names this device a store of its
+    /// ciphertext, which reads none of it; `false` for one not governed here.
+    pub async fn stores_only(&self, workspace: &str) -> bool {
+        let Ok(governed) = self.workspace(workspace).await else {
+            return false;
+        };
+        let governed = governed.lock().await;
+        self.holds_as_store(&governed)
+    }
+
     /// Whether `workspace`'s governance names the device `device` among its
     /// hosts.
     pub(crate) async fn names_server(&self, workspace: &str, device: [u8; 32]) -> bool {

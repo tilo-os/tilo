@@ -11,16 +11,7 @@ use super::{
     WorkspaceId, bounded, catch_up, pending,
 };
 use tilo_actions::remote::{Completer, Pending};
-use tilo_server_protocol::page::{PageAction, PageAddress, PagePatch, PageRefusal};
-
-/// A page shown: the number its next asks name it by, and the page whole.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OpenedPage {
-    pub page: u64,
-    pub title: String,
-    pub css: String,
-    pub body: String,
-}
+use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
 
 /// What a page asks of the service's thread.
 pub(super) enum PageJob {

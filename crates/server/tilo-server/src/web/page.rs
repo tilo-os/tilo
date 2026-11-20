@@ -1,0 +1,273 @@
+//! A workspace's apps as web pages, for a browser that is already a device of
+//! one of its members: `/w/<workspace>/<app>[/<target>]`.
+//!
+//! The address answers a small document: the page's stylesheet and a script,
+//! no app code. The script proves the browser's device on a WebTransport
+//! session at [`LINK_PAGE_PATH`] with the handshake every session opens with
+//! (`tilo_server_protocol::auth`), then asks for the page
+//! ([`PageAsk::Open`]). The app's view renders here as semantic HTML
+//! ([`AppPages`]), and each click or edit the person makes comes back as one
+//! [`PageAsk::Act`], answered with the elements that changed.
+//!
+//! A page is shown only where this server reads the workspace: it governs it
+//! and holds its keys, or holds it unsealed. While the keys are on their way
+//! the page is told it is loading; a server that only stores the workspace's
+//! ciphertext refuses it ([`PageRefusal::StoredCopy`]).
+
+use std::future::Future;
+use std::time::Duration;
+
+use tilo_actions::remote::Caller;
+use tilo_server_client::frame::{read_frame_or_eof, write_frame};
+use tilo_server_protocol::page::{
+    MAX_PAGE_FRAME_BYTES, PageAddress, PageAnswer, PageAsk, PageRefusal,
+};
+use tilo_server_protocol::web::LINK_PAGE_PATH;
+use tokio::io::{AsyncRead, AsyncWrite};
+
+use crate::WorkspaceId;
+use crate::app_serving::AppPages;
+use crate::service::ServerProtocol;
+
+/// How often an open page asks what others changed while its person does
+/// nothing: their edits reach it within this.
+const FOLLOW_EVERY: Duration = Duration::from_secs(2);
+
+/// The page's script: the handshake, the session and what the person does.
+const SCRIPT: &str = include_str!("page/page.mjs");
+
+/// Whether the workspace's documents are readable here now: `Ok(true)` once
+/// the keys on their way have arrived, `Ok(false)` when they are readable.
+async fn readiness(
+    workspaces: Option<&crate::workspaces::Workspaces>,
+    workspace_id: WorkspaceId,
+    app: String,
+) -> Result<bool, PageRefusal> {
+    let workspaces = workspaces.ok_or(PageRefusal::Elsewhere)?;
+    let name = workspaces
+        .workspace_identity(workspace_id)
+        .await
+        .ok_or(PageRefusal::Elsewhere)?;
+    if workspaces.stores_only(&name).await {
+        return Err(PageRefusal::StoredCopy);
+    }
+    // The app's own document is the one its page shows first; a sealed
+    // workspace whose keys this server holds none of waits for them all.
+    Ok(workspaces.waits_for_keys(&name, &app, "").await)
+}
+
+/// Serve a WebTransport session at [`LINK_PAGE_PATH`]: its first stream proves
+/// which device opened it, as every session's does, then carries its pages.
+pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webtransport::Session) {
+    let link = tilo_server_client::link::Link::web(session);
+    let Ok((mut send, mut recv)) = link.accept_bi().await else {
+        return;
+    };
+    let Ok(device) = protocol.authenticate_member(&mut recv, &mut send).await else {
+        link.close("the device did not prove itself");
+        return;
+    };
+    let Some(pages) = protocol.pages() else {
+        link.close("no app is served here");
+        return;
+    };
+    let workspaces = protocol.admin.get().cloned();
+    let person = crate::service::local_caller(&device.cert);
+    serve_pages(
+        pages,
+        &person,
+        |workspace_id, app| readiness(workspaces.as_deref(), workspace_id, app),
+        recv,
+        send,
+    )
+    .await;
+    link.close("the page closed");
+}
+
+/// Answer what a page asks on its stream until it closes: the person of
+/// `person` opens pages and acts on the one open, and an open page hears what
+/// others changed on it. `ready` says whether a workspace's documents are
+/// readable here ([`readiness`]).
+pub(crate) async fn serve_pages<R, W, F, Fut>(
+    pages: &dyn AppPages,
+    person: &Caller,
+    ready: F,
+    mut recv: R,
+    mut send: W,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send,
+    F: Fn(WorkspaceId, String) -> Fut + Sync,
+    Fut: Future<Output = Result<bool, PageRefusal>> + Send,
+{
+    // The stream is read on its own, so a page whose person does nothing
+    // still hears what others changed.
+    let (asked, mut asks) = tokio::sync::mpsc::channel(16);
+    let reader = tokio::spawn(async move {
+        while let Ok(Some(frame)) = read_frame_or_eof(&mut recv, MAX_PAGE_FRAME_BYTES).await {
+            if asked.send(frame).await.is_err() {
+                break;
+            }
+        }
+    });
+    let mut open: Option<(WorkspaceId, u64)> = None;
+    let mut follow = tokio::time::interval(FOLLOW_EVERY);
+    follow.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let answer = tokio::select! {
+            frame = asks.recv() => {
+                let Some(ask) = frame.and_then(|frame| serde_json::from_slice::<PageAsk>(&frame).ok()) else {
+                    break;
+                };
+                match ask {
+                    PageAsk::Open(address) => {
+                        if let Some((workspace_id, page)) = open.take() {
+                            pages.close(workspace_id, page);
+                        }
+                        let opened = open_page(pages, person, &ready, address, &mut send).await;
+                        if let Ok((workspace_id, page, _)) = &opened {
+                            open = Some((*workspace_id, *page));
+                        }
+                        match opened {
+                            Ok((_, _, answer)) => answer,
+                            Err(refusal) => PageAnswer::Refused(refusal),
+                        }
+                    }
+                    PageAsk::Act { id, target, action } => match open {
+                        Some((workspace_id, page)) => patched(
+                            pages.act(workspace_id, page, Some((id, target, action))).await,
+                        ),
+                        None => PageAnswer::Refused(PageRefusal::Unavailable(
+                            "no page is open".to_owned(),
+                        )),
+                    },
+                }
+            }
+            _ = follow.tick(), if open.is_some() => {
+                let Some((workspace_id, page)) = open else { continue };
+                match pages.act(workspace_id, page, None).await {
+                    Some(Ok(patches)) if patches.is_empty() => continue,
+                    Some(Ok(patches)) => PageAnswer::Changed(patches),
+                    answered => patched(answered),
+                }
+            }
+        };
+        if write(&mut send, &answer).await.is_err() {
+            break;
+        }
+    }
+    reader.abort();
+    if let Some((workspace_id, page)) = open {
+        pages.close(workspace_id, page);
+    }
+}
+
+/// Open the page `address` names for `person`: its workspace, its number and
+/// the page whole. A workspace whose keys are on their way is said to be
+/// loading first.
+async fn open_page<W, F, Fut>(
+    pages: &dyn AppPages,
+    person: &Caller,
+    ready: &F,
+    address: PageAddress,
+    send: &mut W,
+) -> Result<(WorkspaceId, u64, PageAnswer), PageRefusal>
+where
+    W: AsyncWrite + Unpin + Send,
+    F: Fn(WorkspaceId, String) -> Fut + Sync,
+    Fut: Future<Output = Result<bool, PageRefusal>> + Send,
+{
+    let workspace_id = WorkspaceId::parse(&address.workspace).ok_or(PageRefusal::Elsewhere)?;
+    if ready(workspace_id, address.app.clone()).await? {
+        // The keys arrive on their own; the open below waits for them.
+        let _ = write(send, &PageAnswer::Loading).await;
+    }
+    let caller = person.clone().in_workspace(workspace_id.to_string());
+    let opened = pages
+        .open(workspace_id, &caller, address)
+        .await
+        .unwrap_or_else(|| Err(PageRefusal::Unavailable("the page was dropped".to_owned())))?;
+    let page = opened.page;
+    Ok((
+        workspace_id,
+        page,
+        PageAnswer::Shown {
+            title: opened.title,
+            css: opened.css,
+            body: opened.body,
+        },
+    ))
+}
+
+fn patched(
+    answered: Option<Result<Vec<tilo_server_protocol::page::PagePatch>, PageRefusal>>,
+) -> PageAnswer {
+    match answered {
+        Some(Ok(patches)) => PageAnswer::Patched(patches),
+        Some(Err(refusal)) => PageAnswer::Refused(refusal),
+        None => PageAnswer::Refused(PageRefusal::Unavailable("the page was dropped".to_owned())),
+    }
+}
+
+async fn write<W: AsyncWrite + Unpin>(send: &mut W, answer: &PageAnswer) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(answer).map_err(std::io::Error::other)?;
+    write_frame(send, &bytes).await
+}
+
+/// What a page's address answers: [`document`], kept by no cache, since the
+/// script in it is this server's.
+pub(super) fn answer(
+    address: &PageAddress,
+    link: Option<&tilo_server_protocol::web::WebLink>,
+) -> hyper::Response<super::Body> {
+    let mut response = super::reply(hyper::StatusCode::OK, document(address, link).into_bytes());
+    let headers = response.headers_mut();
+    headers.insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(
+        hyper::header::CACHE_CONTROL,
+        hyper::header::HeaderValue::from_static("no-cache"),
+    );
+    response
+}
+
+/// The document a page's address answers: its title, a stylesheet for the
+/// moment before the page arrives, and the script with where to reach this
+/// server. Nothing in it is the person's: the page itself arrives once their
+/// device proved itself.
+pub(super) fn document(
+    address: &PageAddress,
+    link: Option<&tilo_server_protocol::web::WebLink>,
+) -> String {
+    let link = link.map(|link| {
+        serde_json::json!({
+            "origin": link.origin,
+            "path": LINK_PAGE_PATH,
+            "certificate_sha256": link.certificate_sha256.map(|hash| hash.to_vec()),
+        })
+    });
+    let config = serde_json::json!({
+        "link": link,
+        "protocol": tilo_server_protocol::auth::PEER_PROTOCOL_VERSION,
+        "address": address,
+    });
+    // `</` never closes the script early: JSON escapes it.
+    let config = config.to_string().replace("</", "<\\/");
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{app}</title><style id=\"tilo-theme\">:root{{color-scheme:light dark}}html,body{{margin:0;height:100%}}body{{font-family:system-ui,-apple-system,\"Segoe UI\",sans-serif}}#tilo-page[data-state]{{display:grid;place-items:center;height:100dvh;color:GrayText}}</style><style id=\"tilo-page-css\"></style></head><body><div id=\"tilo-page\" data-state=\"opening\"></div><script type=\"application/json\" id=\"tilo-page-config\">{config}</script><script type=\"module\">{SCRIPT}</script></body></html>",
+        app = ui_title(&address.app),
+    )
+}
+
+/// The app's name as a title before its page says its own: `notes` → `Notes`.
+fn ui_title(app: &str) -> String {
+    let mut chars = app.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+#[cfg(test)]
+mod tests;

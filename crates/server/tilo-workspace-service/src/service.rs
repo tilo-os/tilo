@@ -1381,6 +1381,13 @@ impl ServerProtocol {
         Ok(())
     }
 
+    /// What shows its workspaces' apps as web pages, where the apps it serves
+    /// do ([`crate::app_serving::AppActionServer::pages`]).
+    #[must_use]
+    pub fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
+        self.app_serving.as_deref()?.pages()
+    }
+
     /// Prove which member device opened a stream that does not say so itself
     /// (a WebTransport session's first): the server handshake under the live
     /// policy, as every session opens with.

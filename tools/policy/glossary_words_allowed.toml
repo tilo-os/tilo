@@ -52,6 +52,12 @@ identifiers = ["run", "fake_run"]
 paths = ["os/dev/assemble-app-runtime.py", "tools/tests/test_assemble_app_runtime_models.py"]
 
 [[allow]]
+reason = "Tokio's in-process queue between two tasks, `mpsc::channel`, not a Tilo channel."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/server/tilo-server/src/web/page.rs"]
+
+[[allow]]
 reason = "A WAV recording's audio channels (left, right), not a Tilo channel."
 words = ["channel"]
 paths = ["crates/dev/tilo-vm/src/sound.rs"]
@@ -296,6 +302,7 @@ words = ["custody"]
 paths = [
     "crates/browser/tilo-browser-runtime/web/device-key.mjs",
     "crates/browser/tilo-browser-runtime/web/device-key.test.mjs",
+    "crates/server/tilo-server/src/web/page/page.mjs",
 ]
 
 [[allow]]

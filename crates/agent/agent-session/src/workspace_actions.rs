@@ -103,7 +103,6 @@ pub use link::{
     AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
     ViewReadPolicy, WorkspaceDocumentsLink,
 };
-pub use pages::OpenedPage;
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};

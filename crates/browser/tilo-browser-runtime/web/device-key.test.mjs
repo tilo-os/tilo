@@ -299,6 +299,9 @@ test('a browser keeps each tab device certificate once, under one id', async () 
   const kept = JSON.parse(namespaces.getItem(BROWSER_DEVICES));
   assert.match(kept.id, /^[0-9a-f]{32}$/);
   assert.deepEqual(kept.certs.map(one => one.device_public_key[0]), [2, 1]);
+  // Each one's text as issued, which a number would round, by its key.
+  assert.equal(kept.exact[`01${'00'.repeat(31)}`], cert(1));
+  assert.deepEqual(Object.keys(kept.exact).length, 2);
   rememberBrowserDevice('not json', namespaces);
   assert.equal(JSON.parse(namespaces.getItem(BROWSER_DEVICES)).id, kept.id);
 });

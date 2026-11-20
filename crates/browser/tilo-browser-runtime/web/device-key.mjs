@@ -348,11 +348,14 @@ export async function openDeviceKey({
 }
 
 /** This browser profile's tab devices, in `localStorage`, which every tab
- * of the profile shares: `{id, certs}`, the profile's own random id and the
- * certificate each tab's device key holds (as the peer keeps it, JSON). The
+ * of the profile shares: `{id, certs, exact}`, the profile's own random id and
+ * the certificate each tab's device key holds (as the peer keeps it, JSON). The
  * page hands them to the person's record when it lists their devices, so
  * every device of theirs lists this browser as one entry, and taking it back
- * takes back each of its tabs' keys. */
+ * takes back each of its tabs' keys. `exact` keeps each one's text as it was
+ * issued, by its key in hex: its nanosecond times are signed, and a number
+ * rounds them, so a page that proves the device with it (a workspace's web
+ * page, served without the app) reads them from the text. */
 export const BROWSER_DEVICES = 'tilo-browser-devices';
 /** How many certificates are kept: past it the oldest goes, a key no tab
  * held for long (the pool reuses keys, so it rarely gets there). */
@@ -367,8 +370,13 @@ export function rememberBrowserDevice(certified, namespaces = globalThis.localSt
     const kept = JSON.parse(namespaces?.getItem(BROWSER_DEVICES) ?? 'null');
     const id = typeof kept?.id === 'string' && /^[0-9a-f]{32}$/.test(kept.id) ? kept.id
       : [...random(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
-    const certs = (Array.isArray(kept?.certs) ? kept.certs : []).filter(other => JSON.stringify(other?.device_public_key) !== key);
-    namespaces?.setItem(BROWSER_DEVICES, JSON.stringify({id, certs: [...certs, cert].slice(-BROWSER_DEVICES_KEPT)}));
+    const certs = [...(Array.isArray(kept?.certs) ? kept.certs : []).filter(other => JSON.stringify(other?.device_public_key) !== key), cert]
+      .slice(-BROWSER_DEVICES_KEPT);
+    const hex = bytes => bytes.map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const exact = {...(kept?.exact && typeof kept.exact === 'object' ? kept.exact : {}), [hex(cert.device_public_key)]: certified};
+    const keys = new Set(certs.map(other => Array.isArray(other?.device_public_key) ? hex(other.device_public_key) : ''));
+    for (const other of Object.keys(exact)) if (!keys.has(other)) delete exact[other];
+    namespaces?.setItem(BROWSER_DEVICES, JSON.stringify({id, certs, exact}));
   } catch { /* not kept: the person's record lists this tab as a device of its own */ }
 }
 

@@ -13,12 +13,14 @@
 //!   ([`LINK_CERTIFY_KEPT`]) has every conversation on it, each on a stream
 //!   of its own;
 //! - the live session path: the workspace's live session, offered and answered as
-//!   `moq-lite`, after the device proves itself on the first stream.
+//!   `moq-lite`, after the device proves itself on the first stream;
+//! - the page path: a workspace's apps as web pages ([`super::page`]), after
+//!   the device proves itself on the first stream.
 
 use tilo_net::webtransport::Answer;
 use tilo_server_client::link::Link;
 use tilo_server_protocol::web::{
-    LINK_CERTIFY_KEPT, LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_SESSION_PATH,
+    LINK_CERTIFY_KEPT, LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_PAGE_PATH, LINK_SESSION_PATH,
 };
 
 use crate::certification::CertificationProtocol;
@@ -49,7 +51,7 @@ fn answer(path: &str, offered: &[String]) -> Answer {
         LINK_CERTIFY_PATH if offered.iter().any(|protocol| protocol == LINK_CERTIFY_KEPT) => {
             Answer::AcceptAs(LINK_CERTIFY_KEPT.to_owned())
         }
-        LINK_SESSION_PATH | LINK_CERTIFY_PATH => Answer::Accept,
+        LINK_SESSION_PATH | LINK_CERTIFY_PATH | LINK_PAGE_PATH => Answer::Accept,
         LINK_LIVE_SESSION_PATH
             if offered
                 .iter()
@@ -95,6 +97,7 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
                         )
                         .await;
                     }
+                    LINK_PAGE_PATH => super::page::serve_web(&serving.server, session).await,
                     _ => {}
                 }
             }

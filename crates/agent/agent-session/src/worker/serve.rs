@@ -300,10 +300,18 @@ impl Worker {
         let Some(replica) = self.replica.as_mut().filter(|_| self.mode == Mode::Page) else {
             return Reply::Failed("this worker shows no page here".into());
         };
-        if let Some(show) = show
-            && let Err(reason) = replica.act_on_page(show, None, &ui::a11y::Action::Activate)
-        {
-            tracing::debug!(%reason, show, "app worker: the page's address names nothing it shows");
+        // The address names what to show by the semantic target its element
+        // carries (a note's row): activated as a click on that row is.
+        if let Some(show) = show {
+            let (composition, _) = replica.page();
+            let shown = widget_of_target(&composition, show)
+                .ok_or_else(|| "no element carries it".to_owned())
+                .and_then(|widget| {
+                    replica.act_on_page(&widget, Some(show), &ui::a11y::Action::Activate)
+                });
+            if let Err(reason) = shown {
+                tracing::debug!(%reason, show, "app worker: the page's address names nothing it shows");
+            }
         }
         let (composition, theme) = replica.page();
         let title = self
@@ -314,7 +322,7 @@ impl Worker {
         let page = self.page.insert(ui::composition::page::Page::new());
         Reply::Shown {
             title,
-            css: ui::composition::page::theme_css(&theme),
+            css: ui::composition::page::theme_css(&theme) + ui::composition::page::PAGE_CSS,
             body: page.render(&composition),
         }
     }
@@ -900,4 +908,22 @@ fn taken_document_mutations(replica: &mut crate::Replica) -> Reply {
         ),
         Err(error) => Reply::Failed(error.to_string()),
     }
+}
+
+/// The path of the widget whose element carries the semantic target `target`.
+fn widget_of_target(composition: &ui::composition::Composition, target: &str) -> Option<String> {
+    fn find(node: &ui::composition::Composed, target: &str) -> Option<String> {
+        if node
+            .semantics
+            .as_ref()
+            .and_then(|semantics| semantics.action_target.as_deref())
+            == Some(target)
+        {
+            return Some(node.path.clone());
+        }
+        node.children.iter().find_map(|child| find(child, target))
+    }
+    std::iter::once(&composition.root)
+        .chain(&composition.layers)
+        .find_map(|node| find(node, target))
 }

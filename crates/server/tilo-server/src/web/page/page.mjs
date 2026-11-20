@@ -1,0 +1,515 @@
+// A workspace's app as a web page, for a browser that is already a device of
+// one of the workspace's members (it signed in to Tilo here before).
+//
+// The page holds no app: the server renders the app's view as HTML. This
+// script proves the browser's device to the server on a WebTransport session,
+// with the handshake every device's session opens with, asks for the page,
+// and sends back each click and edit, one at a time, applying the elements
+// that changed. Typing shows at once in the field itself; the server's answer
+// never moves the caret: a field being typed in keeps its own text until the
+// person stops, and is only then set to the server's, if that differs.
+
+const CLIENT_TAG = new TextEncoder().encode('tilo-server-auth-v2/client\0');
+const DEVICES = 'tilo-browser-devices';
+// The name the store of device keys had before (`device-key.mjs`).
+const STORE_BEFORE = 'custody';
+const MAX_FRAME = 8 * 1024 * 1024;
+
+// ---- BLAKE3 of one block (the handshake's digests are 59 bytes) ----
+
+const IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+const PERMUTE = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+
+/** BLAKE3 of `input`, at most one 64-byte block: the digest a handshake signs. */
+export function blake3Block(input) {
+  if (input.length > 64) throw new RangeError('one block at most');
+  const block = new Uint8Array(64);
+  block.set(input);
+  let m = Array.from({length: 16}, (_, i) => new DataView(block.buffer).getUint32(i * 4, true));
+  // CHUNK_START | CHUNK_END | ROOT
+  const v = [...IV, IV[0], IV[1], IV[2], IV[3], 0, 0, input.length, 1 | 2 | 8];
+  const rotr = (x, n) => ((x >>> n) | (x << (32 - n))) >>> 0;
+  const g = (a, b, c, d, x, y) => {
+    v[a] = (v[a] + v[b] + x) >>> 0; v[d] = rotr(v[d] ^ v[a], 16);
+    v[c] = (v[c] + v[d]) >>> 0; v[b] = rotr(v[b] ^ v[c], 12);
+    v[a] = (v[a] + v[b] + y) >>> 0; v[d] = rotr(v[d] ^ v[a], 8);
+    v[c] = (v[c] + v[d]) >>> 0; v[b] = rotr(v[b] ^ v[c], 7);
+  };
+  for (let round = 0; round < 7; round++) {
+    g(0, 4, 8, 12, m[0], m[1]); g(1, 5, 9, 13, m[2], m[3]);
+    g(2, 6, 10, 14, m[4], m[5]); g(3, 7, 11, 15, m[6], m[7]);
+    g(0, 5, 10, 15, m[8], m[9]); g(1, 6, 11, 12, m[10], m[11]);
+    g(2, 7, 8, 13, m[12], m[13]); g(3, 4, 9, 14, m[14], m[15]);
+    m = PERMUTE.map(i => m[i]);
+  }
+  const out = new Uint8Array(32);
+  const view = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) view.setUint32(i * 4, (v[i] ^ v[i + 8]) >>> 0, true);
+  return out;
+}
+
+// ---- The certificate, read exactly ----
+
+/** `text` as JSON, its integers past what a number holds exactly as BigInt:
+ * a certificate's nanosecond times are signed, so a rounded one is another. */
+export function parseExact(text) {
+  let at = 0;
+  const blank = () => { while (/\s/.test(text[at])) at++; };
+  const value = () => {
+    blank();
+    const c = text[at];
+    if (c === '{') {
+      at++; const object = {}; blank();
+      if (text[at] === '}') { at++; return object; }
+      for (;;) {
+        blank(); const key = value(); blank(); at++; // ':'
+        object[key] = value(); blank();
+        if (text[at++] === '}') return object;
+      }
+    }
+    if (c === '[') {
+      at++; const list = []; blank();
+      if (text[at] === ']') { at++; return list; }
+      for (;;) { list.push(value()); blank(); if (text[at++] === ']') return list; }
+    }
+    if (c === '"') {
+      const start = at; at++;
+      while (text[at] !== '"') at += text[at] === '\\' ? 2 : 1;
+      at++;
+      return JSON.parse(text.slice(start, at));
+    }
+    const literal = /^(-?\d+(\.\d+)?([eE][+-]?\d+)?|true|false|null)/.exec(text.slice(at))[0];
+    at += literal.length;
+    if (/^-?\d+$/.test(literal)) {
+      const big = BigInt(literal);
+      return big >= BigInt(Number.MIN_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : big;
+    }
+    return JSON.parse(literal);
+  };
+  return value();
+}
+
+// ---- postcard, as the server reads the handshake ----
+
+class Writer {
+  constructor() { this.bytes = []; }
+  byte(b) { this.bytes.push(b & 0xff); }
+  raw(bytes) { for (const b of bytes) this.bytes.push(b); }
+  varint(n) {
+    let value = BigInt(n);
+    do {
+      let b = Number(value & 0x7fn);
+      value >>= 7n;
+      if (value) b |= 0x80;
+      this.byte(b);
+    } while (value);
+  }
+  str(s) { const bytes = new TextEncoder().encode(s); this.varint(bytes.length); this.raw(bytes); }
+  done() { return Uint8Array.from(this.bytes); }
+}
+
+const EXTENDED = {foreign: 1, can_administer_devices: 2, agent: 4, stand_in: 8, issued: 16, server_key: 32, browser_pages: 64, workspace_service: 128};
+
+function uuidBytes(text) {
+  const hex = text.replaceAll('-', '');
+  return Array.from({length: 16}, (_, i) => parseInt(hex.slice(i * 2, i * 2 + 2), 16));
+}
+
+/** `cert` (as the certificate's JSON reads, [`parseExact`]) in postcard. */
+export function writeCert(w, cert) {
+  w.raw(cert.user_public_key);
+  w.raw(cert.device_public_key);
+  w.str(cert.device_label);
+  const caps = cert.capabilities;
+  const issued = Boolean(cert.issuer);
+  let extended = 0;
+  for (const [name, bit] of Object.entries(EXTENDED)) {
+    if (name === 'issued' ? issued : name === 'agent' ? caps.agent != null : caps[name]) extended |= bit;
+  }
+  const flags = [caps.can_own_workspaces ? 1 : 0, caps.can_admit_devices ? 1 : 0, 0, 0];
+  if (extended & ~EXTENDED.foreign) {
+    w.byte(3); w.byte(extended);
+    if (caps.agent != null) { if (caps.agent === 'all') w.byte(0); else { w.byte(1); w.raw(uuidBytes(caps.agent)); } }
+  } else if (caps.foreign) {
+    w.byte(2);
+  }
+  w.raw(flags);
+  w.varint(cert.issued_at_ns);
+  if (cert.expires_at_ns == null) w.byte(0); else { w.byte(1); w.varint(cert.expires_at_ns); }
+  w.varint(cert.signature.length); w.raw(cert.signature);
+  if (issued) writeCert(w, cert.issuer);
+}
+
+/** The hello a device opens its session with: its protocol version, its
+ * certificate, its challenge and no entry. */
+export function hello(protocol, cert, nonce) {
+  const w = new Writer();
+  w.varint(protocol);
+  writeCert(w, cert);
+  w.raw(nonce);
+  w.byte(0);
+  return w.done();
+}
+
+class Reader {
+  constructor(bytes) { this.bytes = bytes; this.at = 0; }
+  byte() { if (this.at >= this.bytes.length) throw new RangeError('short'); return this.bytes[this.at++]; }
+  take(n) { if (this.at + n > this.bytes.length) throw new RangeError('short'); const out = this.bytes.slice(this.at, this.at + n); this.at += n; return out; }
+  varint() { let shift = 0n, value = 0n, b; do { b = this.byte(); value |= BigInt(b & 0x7f) << shift; shift += 7n; } while (b & 0x80); return value; }
+}
+
+function skipCert(r) {
+  r.take(64);
+  r.take(Number(r.varint()));
+  const first = r.byte();
+  let issued = false;
+  if (first === 3) {
+    const extended = r.byte();
+    issued = Boolean(extended & EXTENDED.issued);
+    if (extended & EXTENDED.agent && r.byte() === 1) r.take(16);
+    r.take(4);
+  } else if (first === 2) {
+    r.take(4);
+  } else {
+    r.take(3);
+  }
+  r.varint();
+  if (r.byte()) r.varint();
+  r.take(Number(r.varint()));
+  if (issued) skipCert(r);
+}
+
+/** The server's challenge from its ack: what this device signs back. */
+export function serverNonce(ack) {
+  const r = new Reader(ack);
+  r.varint();
+  skipCert(r);
+  return r.take(32);
+}
+
+/** The third message: this device's signature over the server's challenge. */
+export async function ack2(sign, nonce) {
+  const digest = blake3Block(Uint8Array.from([...CLIENT_TAG, ...nonce]));
+  const signature = await sign(digest);
+  const w = new Writer();
+  w.varint(signature.length); w.raw(signature);
+  return w.done();
+}
+
+// ---- Frames: a little-endian u32 length, then the bytes ----
+
+function framed(bytes) {
+  const out = new Uint8Array(4 + bytes.length);
+  new DataView(out.buffer).setUint32(0, bytes.length, true);
+  out.set(bytes, 4);
+  return out;
+}
+
+function frames(readable) {
+  const reader = readable.getReader();
+  let buffered = new Uint8Array(0);
+  return async function next() {
+    for (;;) {
+      if (buffered.length >= 4) {
+        const length = new DataView(buffered.buffer, buffered.byteOffset).getUint32(0, true);
+        if (length > MAX_FRAME) throw new Error('frame too large');
+        if (buffered.length >= 4 + length) {
+          const frame = buffered.slice(4, 4 + length);
+          buffered = buffered.slice(4 + length);
+          return frame;
+        }
+      }
+      const {value, done} = await reader.read();
+      if (done) return null;
+      const joined = new Uint8Array(buffered.length + value.length);
+      joined.set(buffered); joined.set(value, buffered.length);
+      buffered = joined;
+    }
+  };
+}
+
+// ---- This browser's devices ----
+
+const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+
+/** The device keys this browser holds that it kept a certificate of: each
+ * `{cert, sign}`, newest certificate first. */
+async function devices() {
+  let exact = {};
+  try { exact = JSON.parse(localStorage.getItem(DEVICES) ?? 'null')?.exact ?? {}; } catch { /* none kept */ }
+  if (!Object.keys(exact).length) return [];
+  const keys = await new Promise(resolve => {
+    const request = indexedDB.open('tilo-device');
+    // A browser that never had a device gets no database from this page.
+    request.onupgradeneeded = () => request.transaction.abort();
+    request.onerror = () => resolve([]);
+    request.onsuccess = () => {
+      const db = request.result;
+      const store = ['device-key', STORE_BEFORE].find(name => db.objectStoreNames.contains(name));
+      if (!store) { resolve([]); return; }
+      const all = db.transaction(store).objectStore(store).getAll();
+      all.onsuccess = () => resolve(all.result ?? []);
+      all.onerror = () => resolve([]);
+    };
+  });
+  const found = [];
+  for (const key of keys) {
+    if (key?.kind !== 'webcrypto-ed25519') continue;
+    const text = exact[hex(key.publicKey)];
+    if (!text) continue;
+    const cert = parseExact(text).cert;
+    found.push({cert, sign: async digest => new Uint8Array(await crypto.subtle.sign({name: 'Ed25519'}, key.privateKey, digest))});
+  }
+  return found.sort((a, b) => (BigInt(b.cert.issued_at_ns) > BigInt(a.cert.issued_at_ns) ? 1 : -1));
+}
+
+// ---- The session ----
+
+/** Open a session at the server and prove `device` on it: `{send, next, close}`,
+ * or `null` when the server refused the device. */
+async function session(config, device) {
+  const {origin, path, certificate_sha256: pinned} = config.link;
+  const options = pinned ? {serverCertificateHashes: [{algorithm: 'sha-256', value: Uint8Array.from(pinned)}]} : {};
+  const transport = new WebTransport(origin + path, options);
+  await transport.ready;
+  const stream = await transport.createBidirectionalStream();
+  const writer = stream.writable.getWriter();
+  const next = frames(stream.readable);
+  const nonce = crypto.getRandomValues(new Uint8Array(32));
+  await writer.write(framed(hello(config.protocol, device.cert, nonce)));
+  const ack = await next();
+  // An empty frame stands before a refusal; a short one is the server's
+  // version alone. Either way this device is not let in.
+  if (!ack || ack.length < 64) { transport.close(); return null; }
+  await writer.write(framed(await ack2(device.sign, serverNonce(ack))));
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  return {
+    send: ask => writer.write(framed(encoder.encode(JSON.stringify(ask)))),
+    next: async () => { const frame = await next(); return frame && JSON.parse(decoder.decode(frame)); },
+    close: () => transport.close(),
+    closed: transport.closed,
+  };
+}
+
+// ---- The page ----
+
+function start() {
+  const config = JSON.parse(document.getElementById('tilo-page-config').textContent);
+  const page = document.getElementById('tilo-page');
+  const style = document.getElementById('tilo-page-css');
+  const base = `/w/${config.address.workspace}/${config.address.app}`;
+  let link = null;
+  let composing = false;
+  let unanswered = 0;
+  let lastSelection = '';
+  const settled = new Map();
+
+  const say = (state, words) => {
+    page.dataset.state = state;
+    page.textContent = words ?? '';
+  };
+
+  const addressOf = () => {
+    const rest = location.pathname.slice(base.length).replace(/^\//, '');
+    return {...config.address, show: rest ? decodeURIComponent(rest) : null};
+  };
+
+  const ask = value => {
+    if (!link) return;
+    unanswered++;
+    link.send(value).catch(() => {});
+  };
+
+  const numberOf = element => Number(element.closest('[data-p]')?.dataset.p);
+
+  const act = (element, action) => {
+    const id = numberOf(element);
+    if (!Number.isFinite(id)) return;
+    ask({act: {id, target: element.dataset.t ?? null, action}});
+  };
+
+  const editing = element => element?.matches?.('input,textarea,[contenteditable]') ?? false;
+  const valueOf = element => (element.matches('input,textarea') ? element.value : element.innerText.replace(/\n$/, ''));
+  const keyOf = element => element.dataset.p ? `[data-p="${element.dataset.p}"]`
+    : element.dataset.block ? `[data-block="${CSS.escape(element.dataset.block)}"]` : null;
+
+  // A document's editable blocks are edited in place, as the person's text.
+  const editable = root => {
+    for (const block of root.querySelectorAll('[data-a=edit]')) block.contentEditable = 'plaintext-only';
+  };
+
+  const sameAttributes = (to, from) => {
+    for (const {name} of [...to.attributes]) if (!from.hasAttribute(name) && name !== 'contenteditable') to.removeAttribute(name);
+    for (const {name, value} of from.attributes) if (to.getAttribute(name) !== value) to.setAttribute(name, value);
+  };
+
+  // Replace `old` with `fresh`, keeping the field being typed in where it is:
+  // the same element, so its caret, its composition and its undo stay.
+  const morph = (old, fresh, active) => {
+    if (old === active) {
+      sameAttributes(old, fresh);
+      settled.set(old, fresh.matches('input,textarea') ? fresh.value : fresh.textContent);
+      return;
+    }
+    const keep = [...old.children].find(child => child.contains(active));
+    const key = keep && keyOf(keep);
+    const kept = key && [...fresh.children].find(child => child.matches(key));
+    if (!kept) {
+      old.replaceWith(fresh);
+      return;
+    }
+    sameAttributes(old, fresh);
+    for (const child of [...old.childNodes]) if (child !== keep) child.remove();
+    const children = [...fresh.childNodes];
+    const at = children.indexOf(kept);
+    keep.before(...children.slice(0, at));
+    keep.after(...children.slice(at + 1));
+    morph(keep, kept, active);
+  };
+
+  const patch = patches => {
+    const active = document.activeElement;
+    for (const {id, html} of patches) {
+      const old = page.querySelector(`[data-p="${id}"]`);
+      if (!old) continue;
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      const fresh = template.content.firstElementChild;
+      editable(template.content);
+      if (editing(active) && old.contains(active)) morph(old, fresh, active);
+      else old.replaceWith(fresh);
+    }
+    reconcile();
+  };
+
+  // Once nothing typed waits for its answer, a field shows what the server
+  // holds: another person's edit, or what the app made of the typing.
+  const reconcile = () => {
+    if (composing || unanswered > 0) return;
+    for (const [field, value] of settled) {
+      settled.delete(field);
+      if (!field.isConnected || valueOf(field) === value) continue;
+      if (field.matches('input,textarea')) field.value = value;
+      else field.textContent = value;
+    }
+  };
+
+  const show = ({title, css, body}) => {
+    document.title = title;
+    style.textContent = css;
+    delete page.dataset.state;
+    page.innerHTML = body;
+    editable(page);
+    const focus = page.querySelector('[data-focus]')?.dataset.focus;
+    const focused = focus && page.querySelector(`[data-p="${focus}"]`);
+    if (focused && editing(focused)) focused.focus({preventScroll: true});
+  };
+
+  const answered = answer => {
+    if (answer === 'loading') { say('loading'); return; }
+    if (answer.changed) { patch(answer.changed); return; }
+    unanswered = Math.max(0, unanswered - 1);
+    if (answer.shown) show(answer.shown);
+    else if (answer.patched) patch(answer.patched);
+    else if (answer.refused) say('refused', 'This page is not available here.');
+  };
+
+  // What the person does.
+  page.addEventListener('click', event => {
+    const element = event.target.closest('[data-a]');
+    if (!element || !page.contains(element)) return;
+    const action = element.dataset.a;
+    if (action === 'activate') {
+      event.preventDefault();
+      act(element, 'activate');
+      const target = element.dataset.t;
+      // A row that opens one thing (a note) is an address of its own.
+      if (target && /^[a-z0-9-]+:/.test(target)) {
+        const url = `${base}/${encodeURIComponent(target)}`;
+        if (url !== location.pathname) history.pushState({tilo: true}, '', url);
+      }
+    } else if (action === 'value' && element.dataset.v !== undefined) {
+      act(element, {value: element.dataset.v});
+    } else if (action === 'back') {
+      event.preventDefault();
+      if (history.state?.tilo) { history.back(); return; }
+      // Nothing of this page's own to go back to: the column behind comes
+      // to the front, as a narrow window shows it.
+      const front = page.querySelector('[data-pane][data-front]');
+      const behind = front && [...front.parentElement.querySelectorAll(':scope>[data-pane]')].filter(pane => pane !== front).pop();
+      if (behind) { delete front.dataset.front; behind.dataset.front = ''; }
+    }
+  });
+  page.addEventListener('change', event => {
+    const element = event.target;
+    if (element.dataset?.a === 'toggle') act(element, 'toggle');
+  });
+  page.addEventListener('input', event => {
+    const element = event.target;
+    if (composing || event.isComposing) return;
+    if (element.dataset?.a === 'value' || element.dataset?.a === 'edit') act(element, {value: valueOf(element)});
+  });
+  page.addEventListener('compositionstart', () => { composing = true; });
+  page.addEventListener('compositionend', event => {
+    composing = false;
+    const element = event.target;
+    if (element.dataset?.a === 'value' || element.dataset?.a === 'edit') act(element, {value: valueOf(element)});
+  });
+  page.addEventListener('focusin', event => {
+    const element = event.target;
+    if (element.dataset?.a === 'value' || element.dataset?.a === 'edit') act(element, 'focus');
+  });
+  // Where the caret is matters to the app (a new block goes after it): told
+  // when the person moves it, not on every key they type.
+  const graphemes = (text, offset) => [...new Intl.Segmenter().segment(text.slice(0, offset))].length;
+  const selected = () => {
+    const element = document.activeElement;
+    if (composing || element?.dataset?.a !== 'value' || !element.matches('input,textarea')) return;
+    const text = element.value;
+    const anchor = graphemes(text, element.selectionStart ?? 0);
+    const focus = graphemes(text, element.selectionEnd ?? 0);
+    const said = `${numberOf(element)}:${anchor}:${focus}`;
+    if (said === lastSelection) return;
+    lastSelection = said;
+    act(element, {select: {anchor, focus}});
+  };
+  page.addEventListener('mouseup', () => setTimeout(selected));
+  page.addEventListener('keyup', event => {
+    if (/^(Arrow|Home|End|Page)/.test(event.key)) selected();
+  });
+
+  addEventListener('popstate', () => ask({open: addressOf()}));
+
+  const connect = async () => {
+    if (!config.link || !globalThis.WebTransport) { say('refused', 'This browser cannot open this page.'); return; }
+    const found = await devices();
+    if (!found.length) {
+      say('refused', 'Sign in to Tilo in this browser to open this page.');
+      return;
+    }
+    for (const device of found) {
+      const opened = await session(config, device).catch(() => null);
+      if (!opened) continue;
+      link = opened;
+      ask({open: addressOf()});
+      let answer;
+      while ((answer = await link.next().catch(() => null))) {
+        if (answer.refused === 'not_member' && !page.querySelector('[data-p]')) break;
+        answered(answer);
+      }
+      link.close();
+      link = null;
+      if (page.querySelector('[data-p]')) {
+        // The session ended under an open page: open it again.
+        setTimeout(connect, 1000);
+        return;
+      }
+    }
+    if (!page.querySelector('[data-p]')) say('refused', 'This page is not available to you.');
+  };
+  say('opening');
+  connect();
+}
+
+if (globalThis.document?.getElementById('tilo-page-config')) start();

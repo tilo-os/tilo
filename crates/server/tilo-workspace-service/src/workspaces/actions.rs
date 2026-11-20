@@ -2976,6 +2976,10 @@ impl AppActionServer for GovernedServer {
             .as_ref()
             .is_some_and(|apps| apps.answers_for_host(workspace_id, from, to))
     }
+
+    fn pages(&self) -> Option<&dyn crate::app_serving::AppPages> {
+        self.apps.as_deref()?.pages()
+    }
 }
 
 #[cfg(test)]
