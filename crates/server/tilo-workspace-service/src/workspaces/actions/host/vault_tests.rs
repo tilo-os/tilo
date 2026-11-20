@@ -284,6 +284,15 @@ async fn no_agent_reaches_a_persons_vault() {
             (person_vault::LIST, json!({})),
             (person_vault::ADD, a_login("https://attacker.example")),
             (person_vault::REMOVE, json!({"item": reference})),
+            (person_vault::ENTRIES, json!({})),
+            (
+                person_vault::KEEP_ENTRY,
+                json!({"entry": an_entry("Planted", "planted")}),
+            ),
+            (
+                person_vault::FORGET_ENTRY,
+                json!({"id": "an-entry-of-hers"}),
+            ),
         ] {
             let refused = ask(&service, workspace_id, (device, asking), action, argument).await;
             assert!(
@@ -314,6 +323,110 @@ async fn no_agent_reaches_a_persons_vault() {
     .await
     .unwrap();
     assert_eq!(his["items"], json!([]));
+    server.shutdown().await;
+}
+
+/// An entry of the person's Passwords: what the app sends, secret included.
+fn an_entry(title: &str, password: &str) -> Value {
+    let mut entry = accounts::SecretItem::login(title, NAME, password);
+    entry.add_origin("https://example.com").unwrap();
+    serde_json::to_value(entry).unwrap()
+}
+
+/// The person keeps the entries of their Passwords in their vault from their
+/// own device, reads them back secrets included, edits one in place and
+/// forgets it. Another person's device reads none of it.
+#[tokio::test]
+async fn a_persons_passwords_are_kept_and_read_back_by_them_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let hers = (&ada, &caller(&ada));
+    let entries = |answer: &Value| answer["entries"].as_array().cloned().unwrap_or_default();
+
+    let entry = an_entry("Bank", PASSWORD);
+    let kept = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::KEEP_ENTRY,
+        json!({"entry": entry}),
+    )
+    .await
+    .expect("Ada keeps an entry");
+    assert_eq!(entries(&kept).len(), 1, "{kept}");
+    let read = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::ENTRIES,
+        json!({}),
+    )
+    .await
+    .expect("Ada reads her entries");
+    let read = entries(&read);
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0]["title"], "Bank");
+    assert_eq!(
+        read[0]["password"], PASSWORD,
+        "her own secret comes back to her"
+    );
+
+    let mut edited = read[0].clone();
+    edited["title"] = json!("Bank, renamed");
+    let after = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::KEEP_ENTRY,
+        json!({"entry": edited}),
+    )
+    .await
+    .unwrap();
+    let after = entries(&after);
+    assert_eq!(after.len(), 1, "edited in place");
+    assert_eq!(after[0]["title"], "Bank, renamed");
+
+    let his = ask(
+        &service,
+        workspace_id,
+        (&bo, &caller(&bo)),
+        person_vault::ENTRIES,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(his["entries"], json!([]), "Bo reads none of hers");
+    // Her entries are no items an agent may use, and the other way round.
+    let items = ask(&service, workspace_id, hers, person_vault::LIST, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(items["items"], json!([]));
+
+    let id = after[0]["id"].clone();
+    let left = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::FORGET_ENTRY,
+        json!({"id": id}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(left["entries"], json!([]));
+    let again = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::FORGET_ENTRY,
+        json!({"id": id}),
+    )
+    .await;
+    assert!(again.is_ok(), "one gone already is no refusal: {again:?}");
     server.shutdown().await;
 }
 

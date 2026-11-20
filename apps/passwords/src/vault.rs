@@ -517,16 +517,18 @@ impl Core {
             return;
         };
         self.model_revision = model.revision();
-        self.recovery_error = model.recovery_error().map(|_| {
-            "Your vault could not be unlocked. Restore access to its key, then reopen Passwords."
-                .to_owned()
+        self.recovery_error = model.unreachable().or_else(|| {
+            model.recovery_error().map(|_| {
+                "Your vault could not be unlocked. Restore access to its key, then reopen Passwords."
+                    .to_owned()
+            })
         });
         self.health = model.health();
         let full = model.items();
         self.findings = crate::findings(&full);
         self.app_grants = model.app_grants();
         self.app_proposals = model.app_proposals();
-        self.backend = Some(model.backend().label());
+        self.backend = model.backend().map(accounts::VaultBackend::label);
         self.items = full
             .into_iter()
             .map(|mut item| {

@@ -9,6 +9,12 @@
 //! kind, where it belongs, when it was added and when it was last used, and
 //! nothing else.
 //!
+//! The same vault keeps the entries of the person's Passwords: logins,
+//! keys, notes and Wi-Fi passwords they read and edit themselves, from any
+//! device of theirs, a browser page included ([`ENTRIES`], [`KEEP_ENTRY`],
+//! [`FORGET_ENTRY`]). Those are answered to the person alone, on a device
+//! whose certificate names them; an app's or an agent's request is refused.
+//!
 //! What an agent holds is a reference ([`ItemRef`]): the address of an item,
 //! which is not its secret. An action that needs a secret takes one as a
 //! parameter ([`item_param`]). Whatever signs in resolves it on the server,
@@ -45,6 +51,17 @@ pub const USES: &str = "uses";
 /// without its person being asked again. Answers what the item remembers
 /// then, as an [`ItemUses`].
 pub const TAKE_BACK: &str = "take-back";
+
+/// Every entry of the person's Passwords, secrets included, as [`Entries`].
+/// Answered to the person alone, on a device of theirs: never to an app or
+/// an agent, and no catalogue offers it.
+pub const ENTRIES: &str = "entries";
+/// Keep one entry of the person's Passwords ([`KeepEntry`]), a new one or
+/// an edit of one kept, answering [`Entries`].
+pub const KEEP_ENTRY: &str = "keep-entry";
+/// Forget one entry of the person's Passwords ([`ForgetEntry`]), answering
+/// the [`Entries`] that remain.
+pub const FORGET_ENTRY: &str = "forget-entry";
 
 /// The use that fills a field of a web page from an item, by reference
 /// ([`FillPage`]): the action a leave names it by ([`use_word`]) and a
@@ -317,6 +334,45 @@ pub struct AlwaysUse {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveItem {
     pub item: ItemRef,
+}
+
+/// The entries of the person's Passwords, oldest first. Each is the
+/// Passwords app's own entry, as it reads and writes it (`accounts::SecretItem`):
+/// its title, name, password, notes, fields, tags and places.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Entries {
+    pub entries: Vec<serde_json::Value>,
+}
+
+impl std::fmt::Debug for Entries {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Entries")
+            .field("count", &self.entries.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// An entry of the person's Passwords to keep: one with the id of a kept
+/// entry replaces it.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeepEntry {
+    pub entry: serde_json::Value,
+}
+
+impl std::fmt::Debug for KeepEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("KeepEntry").finish_non_exhaustive()
+    }
+}
+
+/// The entry of the person's Passwords to forget, by its id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForgetEntry {
+    pub id: String,
 }
 
 /// The item whose leaves to take back: every one, or only those

@@ -11,7 +11,8 @@ use crate::window::PasswordsWindow;
 mod credential_owner_tests;
 
 /// The vault's published document: its type lives in `passwords-model`, and it holds no
-/// secret material — the vault is this device's encrypted store.
+/// secret material — the entries are in the person's vault, on their workspace's server or
+/// in the one their device lends the app.
 pub use passwords_model::Passwords;
 
 pub struct DemoVault;
@@ -404,9 +405,10 @@ mod tests {
         }
     }
 
-    /// A private profile whose vault is the test's own: its key in an in-process secret
-    /// store, its file in a scratch home.
+    /// A private profile and a vault of the test's own, which the workspace's server would
+    /// keep: nothing reaches the person's.
     struct Profile {
+        _vault: crate::served_vault::ServedVault,
         _home: tempfile::TempDir,
         _paths: tilo_paths::ProfileScope,
         _secrets: ui::secrets::SecretsScope,
@@ -415,6 +417,7 @@ mod tests {
     fn profile() -> Profile {
         let home = tempfile::tempdir().unwrap();
         Profile {
+            _vault: crate::served_vault::served(),
             _paths: tilo_paths::scope_profile(home.path()),
             _secrets: ui::secrets::scope_thread(ui::secrets::memory_backend()),
             _home: home,
@@ -607,6 +610,7 @@ mod window_bar_tests {
     /// enough to dock it and in a narrow one.
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
+        let _vault = crate::served_vault::served();
         ui::framework::testing::check_window_sidebar_button(
             ui::framework::testing::TestApp::<super::PasswordsShell>::new,
         )

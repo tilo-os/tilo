@@ -12334,6 +12334,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-app",
+ "tilo-clock",
  "tilo-files",
  "tilo-messaging",
  "tilo-paths",

@@ -202,8 +202,8 @@ tilo_test_env::scenario! {
 
     phase filters_favorites_and_confirmed_deletes_are_real_vault_state;
     {
-        let root = temp_root("delete");
-        let mut model = crate::PasswordsModel::open_in(&root);
+        let _vault = crate::served_vault::served();
+        let mut model = crate::PasswordsModel::open();
         let mut kept = SecretItem::login("Kept", "ada", "kept-secret-1A");
         let mut gone = SecretItem::login("Removed", "ada", "removed-secret-1A");
         model.save_item(&mut kept).unwrap();
@@ -235,14 +235,13 @@ tilo_test_env::scenario! {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].title, "Kept");
         assert!(app.core().visible().is_empty(), "no favorite is left");
-        let _ = std::fs::remove_dir_all(root);
     }
 
     phase every_capture_scenario_stages_on_the_fixture_vault;
     {
         for scenario in SCENARIOS.iter().copied().map(Some).chain([None]) {
-            let root = temp_root("capture");
-            let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+            let _vault = crate::served_vault::served();
+            let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
             app.stager()(scenario);
             app.settle();
             let core = app.core();
@@ -259,7 +258,6 @@ tilo_test_env::scenario! {
             };
             assert_eq!(core.screen, expected, "{scenario:?}");
             drop(core);
-            let _ = std::fs::remove_dir_all(root);
         }
     }
 
@@ -410,8 +408,8 @@ tilo_test_env::scenario! {
         eprintln!("phase copying and revealing are distinct actions");
         {
             let _clipboard = clipboard_fixture(true);
-            let root = temp_root("secret-actions");
-            let mut model = crate::PasswordsModel::open_in(&root);
+            let _vault = crate::served_vault::served();
+            let mut model = crate::PasswordsModel::open();
             let mut item = SecretItem::login("Account", "ada", "private-value");
             item.add_origin("https://example.invalid").unwrap();
             let id = model.save_item(&mut item).unwrap();
@@ -444,14 +442,13 @@ tilo_test_env::scenario! {
             );
             effect(&mut app, PasswordsEffect::Hide { item: id.0 });
             assert!(app.core().revealed.is_none(), "hiding puts it away");
-            let _ = std::fs::remove_dir_all(root);
         }
 
         eprintln!("phase a failed copy says so and leaves the clipboard alone");
         {
             let _clipboard = clipboard_fixture(false);
-            let root = temp_root("copy-failure");
-            let mut model = crate::PasswordsModel::open_in(&root);
+            let _vault = crate::served_vault::served();
+            let mut model = crate::PasswordsModel::open();
             let mut item = SecretItem::login("Account", "ada", "private-value");
             item.add_origin("https://example.invalid").unwrap();
             let id = model.save_item(&mut item).unwrap();
@@ -469,7 +466,6 @@ tilo_test_env::scenario! {
                 );
                 assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
             }
-            let _ = std::fs::remove_dir_all(root);
         }
     }
 }
@@ -480,8 +476,8 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
     eprintln!("phase a new login is saved, then edited without retyping its password");
     {
         let _clipboard = clipboard_fixture(true);
-        let root = temp_root("editor");
-        let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+        let _vault = crate::served_vault::served();
+        let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
         request(&mut app, Request::NewItem);
         assert_eq!(app.core().screen, Screen::Editor);
         {
@@ -532,7 +528,6 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         let copied = ui::clipboard_paste().unwrap();
         assert!(copied.contains("https://example.com"));
         assert!(copied.contains("https://login.example.com"));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     eprintln!("phase a draft names what is missing next to the field");
@@ -574,8 +569,8 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
 
     eprintln!("phase editing keeps fields and tags the editor does not show");
     {
-        let root = temp_root("custom-fields");
-        let mut model = crate::PasswordsModel::open_in(&root);
+        let _vault = crate::served_vault::served();
+        let mut model = crate::PasswordsModel::open();
         let mut item = SecretItem::login("Deployment", "ada", "token");
         item.kind = SecretItemKind::Other;
         item.fields.insert("client-id".into(), "app-42".into());
@@ -602,7 +597,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         }
         request(&mut app, Request::Save);
 
-        let stored = crate::PasswordsModel::open_in(&root)
+        let stored = crate::PasswordsModel::open()
             .items()
             .into_iter()
             .find(|candidate| candidate.id == id)
@@ -618,7 +613,6 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         assert!(!stored.fields.contains_key("tenant"));
         assert!(stored.tags.contains("favorite"));
         assert!(stored.tags.contains("infrastructure"));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     eprintln!("phase the custom field parser is helpful and rejects ambiguous rows");
@@ -647,8 +641,8 @@ tilo_test_env::scenario! {
     // An empty vault has nothing to review: the page says so instead of grading zero passwords
     // as all clear.
     {
-        let root = temp_root("empty-review");
-        let app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+        let _vault = crate::served_vault::served();
+        let app = PasswordsWindow::new(crate::PasswordsModel::open());
         let shared = Rc::clone(&app.core);
         shared.borrow_mut().screen = Screen::Review;
         let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
@@ -656,7 +650,6 @@ tilo_test_env::scenario! {
         assert!(tree.contains("Nothing to check yet"), "{tree}");
         assert!(!tree.contains("Nothing to fix"), "{tree}");
         assert!(!tree.contains("Reused"), "no grades for nothing: {tree}");
-        let _ = std::fs::remove_dir_all(root);
     }
 
     phase the_review_says_it_checked_this_vault;
@@ -729,8 +722,8 @@ tilo_test_env::scenario! {
     // A bare host is the https site it names, a corrected field drops its complaint at once,
     // and a saved item is kept, with nothing left writing.
     {
-        let root = temp_root("bare-host");
-        let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+        let _vault = crate::served_vault::served();
+        let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
         request(&mut app, Request::NewItem);
         {
             let mut core = app.core_mut();
@@ -761,7 +754,6 @@ tilo_test_env::scenario! {
             !app.core().writing,
             "a saved item is kept, not left writing"
         );
-        let _ = std::fs::remove_dir_all(root);
     }
 }
 
@@ -779,7 +771,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
     eprintln!("phase an import previews conflicts before writing");
     {
         use std::io::Write;
-        let root = temp_root("import-store");
+        let _vault = crate::served_vault::served();
         let csv_path = temp_root("import").with_extension("csv");
         let mut selected = std::fs::File::create(&csv_path).unwrap();
         selected
@@ -788,7 +780,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
             )
             .unwrap();
         drop(selected);
-        let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+        let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
         let (services, recorder) = ui::process::ProcessServices::recording();
         for expected_conflicts in [0, 1] {
             recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
@@ -813,12 +805,12 @@ fn import_and_restore_flows_round_trip_through_portals() {
         }
         assert_eq!(recorder.pick_requests()[0].title(), "Import passwords");
         let _ = std::fs::remove_file(csv_path);
-        let _ = std::fs::remove_dir_all(root);
     }
 
     eprintln!("phase an encrypted backup restores complete items");
     {
         let base = temp_root("backup-flow");
+        let _vault = crate::served_vault::served();
         let backup_path = base.join("portable-vault.tilopw");
         std::fs::create_dir_all(&base).unwrap();
         let mut item = SecretItem::login("Studio", "ada", "private-token");
@@ -829,8 +821,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
                 .unwrap();
         std::fs::write(&backup_path, backup.as_slice()).unwrap();
         let (services, recorder) = ui::process::ProcessServices::recording();
-        let mut restored =
-            PasswordsWindow::new(crate::PasswordsModel::open_in(&base.join("restored")));
+        let mut restored = PasswordsWindow::new(crate::PasswordsModel::open());
         recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
             ui::portal::OpenedFile::new(
                 std::fs::File::open(&backup_path).unwrap(),

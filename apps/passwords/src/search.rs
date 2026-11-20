@@ -140,8 +140,8 @@ mod tests {
                 None,
                 "a past version says nothing"
             );
-            let home = tempfile::tempdir().unwrap();
-            let open = crate::vault::Core::with_model(crate::PasswordsModel::open_in(home.path()));
+            let _vault = crate::served_vault::served();
+            let open = crate::vault::Core::with_model(crate::PasswordsModel::open());
             assert_eq!(open.secrets_unlocked(), Some(open.recovery_error.is_none()));
         }
 

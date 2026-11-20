@@ -1,6 +1,6 @@
 //! What Passwords does with the vault, as a typed effect vocabulary, and the rows it
-//! publishes for the vault's items. The vault is this device's encrypted credential store
-//! ([`accounts::SecretStore`]), never a document: every change to it is an effect the
+//! publishes for the vault's items. The vault is the person's encrypted credential store, on
+//! their workspace's server or lent by their device, never a document: every change to it is an effect the
 //! surface answers, and every row is an item of a declared type that offers that type's
 //! effects, bound to the item.
 

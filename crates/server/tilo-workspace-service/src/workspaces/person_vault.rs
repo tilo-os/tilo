@@ -11,6 +11,12 @@
 //! A secret travels in and never back. A listing says what is safe to say
 //! of an item and no request answers more.
 //!
+//! The entries of the person's Passwords are kept in the same vault, and
+//! they are the exception: the person reads and edits them, secrets
+//! included, from any device of theirs, a browser page as much as a laptop
+//! ([`person_vault::ENTRIES`]). They are answered to the person alone, as
+//! everything here is: never to an app or an agent.
+//!
 //! What uses an item names it by its reference and carries no secret, so an
 //! agent acting for the person may ask it ([`Workspaces::asking_for_person`]):
 //! adding a mail account whose sign-in the vault keeps, keeping a provider's
@@ -37,8 +43,8 @@ use tilo_action_policy::{Answer, Grant, Level};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
-    self, AddItem, AlwaysUse, ItemKind, ItemRef, ItemUse, ItemUses, ItemView, KeptItems,
-    RemoveItem, TakeBack, UsesOf,
+    self, AddItem, AlwaysUse, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse, ItemUses, ItemView,
+    KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
 };
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
@@ -70,6 +76,17 @@ impl Workspaces {
                 let removing: RemoveItem =
                     argument(request, "an item to forget is named by its reference")?;
                 answer(remove(&root, &removing.item))
+            }
+            person_vault::ENTRIES => said(entries(&root)),
+            person_vault::KEEP_ENTRY => {
+                let keeping: KeepEntry =
+                    argument(request, "an entry to keep is an entry of Passwords")?;
+                said(keep_entry(&root, keeping))
+            }
+            person_vault::FORGET_ENTRY => {
+                let forgetting: ForgetEntry =
+                    argument(request, "an entry to forget is named by its id")?;
+                said(forget_entry(&root, forgetting))
             }
             person_vault::USES => {
                 let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
@@ -337,6 +354,48 @@ fn remove(root: &Path, item: &ItemRef) -> Result<KeptItems, vault_items::ItemErr
         return Err(vault_items::ItemError::NotFound);
     }
     kept(root)
+}
+
+/// The person's Passwords, in the vault under `root`, refusing a vault
+/// whose key is gone rather than answering it empty.
+fn passwords(root: &Path) -> Result<accounts::SecretStore, String> {
+    let store = accounts::SecretStore::open_in(root);
+    match store.recovery_error() {
+        Some(error) => Err(format!("Your vault could not be opened: {error}")),
+        None => Ok(store),
+    }
+}
+
+/// Every entry of the person's Passwords, secrets included.
+fn entries(root: &Path) -> Result<Entries, String> {
+    let entries = passwords(root)?
+        .list()
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<_, _>>()
+        .map_err(|_| "An entry of Passwords could not be read".to_owned())?;
+    Ok(Entries { entries })
+}
+
+/// Keep `keeping`'s entry, a new one or the edit of one kept, answering
+/// every entry then. What was handed is never echoed in a refusal.
+fn keep_entry(root: &Path, keeping: KeepEntry) -> Result<Entries, String> {
+    let mut entry: accounts::SecretItem = serde_json::from_value(keeping.entry)
+        .map_err(|_| "That is no entry of Passwords".to_owned())?;
+    passwords(root)?
+        .put(&mut entry)
+        .map_err(|error| format!("The entry could not be kept: {error}"))?;
+    entries(root)
+}
+
+/// Forget the entry `forgetting` names, answering every entry left. One
+/// already gone is no refusal: another device of the person's may have
+/// forgotten it first.
+fn forget_entry(root: &Path, forgetting: ForgetEntry) -> Result<Entries, String> {
+    passwords(root)?
+        .remove(&accounts::SecretId(forgetting.id))
+        .map_err(|error| format!("The entry could not be forgotten: {error}"))?;
+    entries(root)
 }
 
 /// What the caller reads of a use's outcome, or the reason it was refused.
