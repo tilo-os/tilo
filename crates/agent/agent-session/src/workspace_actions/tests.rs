@@ -489,7 +489,9 @@ fn a_records_keys_are_waited_for_as_an_act_or_a_read() {
 
 #[test]
 fn files_opens_its_workspace_record_and_lists_no_tree_beside_it() {
-    let files = file_explorer::definition();
+    // The page's Files, which is what a workspace mounts for the app: the
+    // computer's file manager reads the device's disk instead.
+    let files = file_explorer::page_definition();
     assert!(
         super::opens_as_its_own(files, ""),
         "the workspace's own Files record"

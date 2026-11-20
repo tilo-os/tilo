@@ -591,7 +591,7 @@ mod file_explorer_split {
     #[unsafe(export_name = "__wasm_split_00___file_explorer___00_export_eff2a92347af8340_definition")]
     #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
     extern "C" fn export() -> *const ApplicationDefinition {
-        file_explorer::definition()
+        file_explorer::page_definition()
     }
 
     fn open() -> Loading {

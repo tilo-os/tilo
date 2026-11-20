@@ -127,6 +127,18 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     }
 }
 
+/// The workspace's files as a page shows them: the workspace's tree, never the
+/// computer's own disk.
+///
+/// The browser desktop and an agent session mount a workspace's apps for their
+/// pages by this one, whichever way the build beside it compiled the
+/// computer's Files: a crate that needs the device's mounts turns on the
+/// `desktop` feature for the whole build, and [`definition`] then answers the
+/// computer's window.
+pub fn page_definition() -> &'static ui::application::ApplicationDefinition {
+    ui::built_in_definition!(FilesTreeShell)
+}
+
 #[cfg(all(test, feature = "desktop"))]
 mod action_icons_tests;
 #[cfg(all(test, feature = "desktop"))]

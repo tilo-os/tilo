@@ -66,6 +66,10 @@ runtime-engine = ["thin", "tilo-pdf-engine/thin", "tilo-archive-engine/thin"]
 # The page's Files is the workspace's tree, not the file manager: a web build
 # compiles no default feature.
 web-features = []
+# And it mounts that tree's window whatever features a build beside it turned
+# on: a test build that unifies the file manager's `desktop` features would
+# otherwise give a page the computer's disk.
+page-definition = "page_definition"
 
 # The app keeps two surfaces of the one Files app: the file manager on a
 # computer, which browses the mounts of the device, and the workspace's files
