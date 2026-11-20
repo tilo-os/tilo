@@ -21,10 +21,22 @@ pub fn ended(result: io::Result<()>) -> io::Result<()> {
 /// daemon has died. A mount still in use cannot be unmounted at all; detaching it
 /// leaves the connection serving its open files until each one closes.
 pub fn unmount_and_join(session: fuser::BackgroundSession, mount_point: &Path) -> io::Result<()> {
+    let trace = |what: &str| {
+        if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
+            eprintln!("unmount: {what}");
+        }
+    };
+    trace("ending the connection");
     if end_connection(mount_point)? {
-        ended(session.join())
+        trace("connection ended; joining the session");
+        let result = ended(session.join());
+        trace("session joined");
+        result
     } else {
-        ended(session.umount_and_join())
+        trace("fuser unmounts; joining");
+        let result = ended(session.umount_and_join());
+        trace("fuser joined");
+        result
     }
 }
 
@@ -41,6 +53,9 @@ fn end_connection(mount_point: &Path) -> io::Result<bool> {
         Err(Errno::PERM | Errno::INVAL) => return Ok(false),
         Err(Errno::BUSY) => {}
         Err(error) => return Err(error.into()),
+    }
+    if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
+        eprintln!("unmount: busy; forcing a detach");
     }
     // The mount point is never opened here: serving that open is what the session being ended
     // must do, and the thread that would wait for it is this one. Every change this daemon
