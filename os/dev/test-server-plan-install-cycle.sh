@@ -133,7 +133,7 @@ owner_control() {
   TILO_SSH_BOUND="${TILO_SSH_BOUND:-120}" owner ssh "bash $owner_driver $owner_root control $*"
 }
 owner_cmd() {
-  TILO_SSH_BOUND="${TILO_SSH_BOUND:-300}" owner ssh "bash $owner_driver $owner_root cmd $(printf '%q ' "$@")"
+  TILO_SSH_BOUND="${TILO_SSH_BOUND:-600}" owner ssh "bash $owner_driver $owner_root cmd $(printf '%q ' "$@")"
 }
 
 wait_server_ssh() {
@@ -262,11 +262,21 @@ mark_step 02-owner ok
 
 # The person plans the machine: the plan goes into their Servers workspace,
 # and the single-use token stays on this device, in a file only it reads.
+# The session's workspace service comes up after its control socket, so ask
+# the same actions a cheap question first and give it a bound to answer in.
+for attempt in $(seq 1 12); do
+  TILO_SSH_BOUND=30 owner_cmd tilo machine list >/dev/null 2>&1 && break
+  sleep 5
+done
 owner_cmd tilo machine add --os server --name "$server_name" \
   --disk serial:tilo-install-target --network dhcp --unlock owner-device \
   --updates stable --no-workspaces --token-file "$owner_root/machine.token" \
   > "$evidence/03-plan.txt" 2>&1 \
-  || { cat "$evidence/03-plan.txt" >&2; die 'the machine could not be planned'; }
+  || {
+    cat "$evidence/03-plan.txt" >&2
+    TILO_SSH_BOUND=30 owner ssh "tail -n 120 $owner_root/logs/session.log" >&2 2>&1 || true
+    die 'the machine could not be planned'
+  }
 plan_id="$(sed -n 's/^plan \([0-9a-f]\{32\}\).*/\1/p' "$evidence/03-plan.txt" | head -n 1)"
 [[ "$plan_id" =~ ^[0-9a-f]{32}$ ]] || die "the plan's id is not in the command's answer: $(cat "$evidence/03-plan.txt")"
 owner_control actions invoke tilo.machines $'machines\x1fmachine.show' \
