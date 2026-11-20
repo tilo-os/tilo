@@ -1,6 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cosmic_text::{FontSystem, fontdb};
@@ -273,7 +273,6 @@ pub(crate) fn mapped(db: &fontdb::Database) -> fontdb::Database {
                             Arc::new(Mapped {
                                 map,
                                 path: path.clone(),
-                                read: AtomicBool::new(false),
                             }) as Bytes
                         })
                         .inspect_err(|error| {
@@ -300,47 +299,54 @@ pub(crate) fn mapped(db: &fontdb::Database) -> fontdb::Database {
     out
 }
 
-/// A mapped font file that notes the first time its bytes are asked for, which is when
-/// shaping first reads it ([`font_files_read`]).
+/// A mapped font file that notes the first time its bytes are asked for on a thread, which is
+/// when text shaped there first reads it ([`font_files_read`]).
 struct Mapped {
     map: tilo_files::native::mapped::MappedFile,
     path: PathBuf,
-    read: AtomicBool,
 }
 
-static FILES_READ: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+thread_local! {
+    /// What text shaped on this thread has read ([`font_files_read`]).
+    static FILES_READ: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
 
 impl AsRef<[u8]> for Mapped {
     fn as_ref(&self) -> &[u8] {
-        if !self.read.load(Ordering::Relaxed) && !self.read.swap(true, Ordering::Relaxed) {
-            FILES_READ.lock_recover().push(self.path.clone());
-        }
+        FILES_READ.with(|read| {
+            let mut read = read.borrow_mut();
+            if !read.contains(&self.path) {
+                read.push(self.path.clone());
+            }
+        });
         self.map.as_ref()
     }
 }
 
-/// The font files of the process's database whose bytes text has asked for so far, in the order
-/// it first did: a file that is mapped and never shaped from is never read.
+/// The font files whose bytes text on this thread has read so far, in the order it first read
+/// them: a file that is mapped and never shaped from is never read. Shaping reads a file on the
+/// thread that lays its text out, so a window's frames keep their own list.
 #[must_use]
 pub fn font_files_read() -> Vec<PathBuf> {
-    FILES_READ.lock_recover().clone()
+    FILES_READ.with(|read| read.borrow().clone())
 }
 
-/// How many font files text has read so far ([`font_files_read`]).
+/// How many font files text on this thread has read so far ([`font_files_read`]).
 #[cfg(feature = "native")]
 pub(crate) fn font_files_read_count() -> usize {
-    FILES_READ.lock_recover().len()
+    FILES_READ.with(|read| read.borrow().len())
 }
 
-/// The names of the font files text read after the first `count` of them.
+/// The names of the font files text on this thread read after the first `count` of them.
 #[cfg(feature = "native")]
 pub(crate) fn font_files_read_after(count: usize) -> Vec<String> {
-    FILES_READ
-        .lock_recover()
-        .iter()
-        .skip(count)
-        .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
-        .collect()
+    FILES_READ.with(|read| {
+        read.borrow()
+            .iter()
+            .skip(count)
+            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+            .collect()
+    })
 }
 
 /// Keep one face per family, style, weight and stretch.

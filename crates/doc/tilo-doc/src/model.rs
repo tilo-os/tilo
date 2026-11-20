@@ -33,6 +33,7 @@ use tilo_content::{ContentInputs, ContentMeta, ContentSource};
 use tilo_sort::CompactSort as _;
 
 mod bulk;
+pub use bulk::Written;
 mod graft;
 /// Instrumentation for tests comparing the bulk import path with the op-by-op reference.
 #[cfg(any(test, feature = "bulk-instrumentation"))]
@@ -1567,7 +1568,7 @@ fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
         return (String::new(), Vec::new());
     };
     let mut text = String::new();
-    let mut runs: BTreeMap<String, Vec<(usize, usize, ScalarValue)>> = BTreeMap::new();
+    let mut named_marks: BTreeMap<String, Vec<(usize, usize, ScalarValue)>> = BTreeMap::new();
     let mut index = 0usize;
     for span in spans {
         let piece = span.as_str();
@@ -1579,12 +1580,12 @@ fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
             && len > 0
         {
             for (name, value) in marks.iter() {
-                let named = runs.entry(name.to_string()).or_default();
+                let named = named_marks.entry(name.to_string()).or_default();
                 match named.last_mut() {
-                    Some((start, run_len, v))
-                        if v == value && start.saturating_add(*run_len) == index =>
+                    Some((start, span_len, v))
+                        if v == value && start.saturating_add(*span_len) == index =>
                     {
-                        *run_len = run_len.saturating_add(len);
+                        *span_len = span_len.saturating_add(len);
                     }
                     _ => named.push((index, len, value.clone())),
                 }
@@ -1592,7 +1593,15 @@ fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
         }
         index = index.saturating_add(len);
     }
-    let mut marks: Vec<MarkSpan> = runs
+    let marks = mark_spans(named_marks);
+    (text, marks)
+}
+
+/// The marks of each name in `spans` (their start, length and value, in
+/// order and merged where they meet with one value), as a text's marks read:
+/// a mark set to nothing is no mark, and they go by where they start.
+fn mark_spans(spans: BTreeMap<String, Vec<(usize, usize, ScalarValue)>>) -> Vec<MarkSpan> {
+    let mut marks: Vec<MarkSpan> = spans
         .into_iter()
         .flat_map(|(name, named)| {
             named
@@ -1609,7 +1618,55 @@ fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
     marks.compact_sort_by(|a, b| {
         (a.start, a.end, &a.name, &a.value).cmp(&(b.start, b.end, &b.name, &b.value))
     });
-    (text, marks)
+    marks
+}
+
+/// The marks [`text_and_marks`] reads from a text of `len` characters just
+/// written with `marks` (name, value, start, end) set over it one after
+/// another: where two of a name overlap, the later one holds.
+fn written_mark_spans<'a>(
+    len: usize,
+    marks: impl IntoIterator<Item = (&'a str, &'a ScalarValue, usize, usize)>,
+) -> Vec<MarkSpan> {
+    let mut by_name: BTreeMap<&str, Vec<Option<&ScalarValue>>> = BTreeMap::new();
+    for (name, value, start, end) in marks {
+        let at = by_name.entry(name).or_insert_with(|| vec![None; len]);
+        for letter in at.iter_mut().take(end).skip(start) {
+            *letter = Some(value);
+        }
+    }
+    let spans = by_name
+        .into_iter()
+        .map(|(name, at)| {
+            let mut named: Vec<(usize, usize, ScalarValue)> = Vec::new();
+            for (index, value) in at.into_iter().enumerate() {
+                let Some(value) = value else { continue };
+                match named.last_mut() {
+                    Some((start, span_len, v))
+                        if v == value && start.saturating_add(*span_len) == index =>
+                    {
+                        *span_len = span_len.saturating_add(1);
+                    }
+                    _ => named.push((index, 1, value.clone())),
+                }
+            }
+            (name.to_owned(), named)
+        })
+        .collect();
+    mark_spans(spans)
+}
+
+/// A block attribute's value as [`scalar_props`] reads it: `None` for a
+/// kind it does not read.
+fn attr_val(value: &ScalarValue) -> Option<AttrVal> {
+    Some(match value {
+        ScalarValue::Int(i) => AttrVal::Int(*i),
+        ScalarValue::Uint(u) => AttrVal::Int(i64::try_from(*u).unwrap_or(i64::MAX)),
+        ScalarValue::Boolean(b) => AttrVal::Bool(*b),
+        ScalarValue::Str(st) => AttrVal::Str(st.to_string()),
+        ScalarValue::F64(f) => AttrVal::Float(*f),
+        _ => return None,
+    })
 }
 
 pub fn marks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<MarkSpan> {

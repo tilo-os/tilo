@@ -2019,3 +2019,9 @@ paths = ["apps/mail/src/resource.rs", "apps/video-player/src/app.rs"]
 reason = "Terminal command history keeps the existing command execution id in its saved schema."
 words = ["run"]
 paths = ["apps/terminal/src/history.rs"]
+
+[[allow]]
+reason = "The resource model's existing `Slot`, the place a value is written, which a test writing a value directly names."
+words = ["slot"]
+identifiers = ["Slot"]
+paths = ["crates/doc/tilo-document/src/field.rs"]

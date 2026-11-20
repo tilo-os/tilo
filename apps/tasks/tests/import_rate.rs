@@ -56,6 +56,7 @@ fn each_list_reads_back_each_description_it_wrote_once() {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let mut read = Vec::new();
     let mut items = Vec::new();
+    let mut again = Vec::new();
     for first in (0..3 * LIST).step_by(LIST) {
         let list = list(first);
         let ((), observed) = ui::tilo_resource::profiling::observe(|| {
@@ -70,6 +71,7 @@ fn each_list_reads_back_each_description_it_wrote_once() {
         };
         read.push(calls("rich_text.read.parts"));
         items.push(calls("collection.read_item"));
+        again.push(calls("rich_text.read.spine") + calls("rich_text.load.materialize"));
     }
     assert_eq!(common::held(&app).len(), 3 * LIST);
     assert!(
@@ -77,6 +79,10 @@ fn each_list_reads_back_each_description_it_wrote_once() {
         "a list starts a part"
     );
     assert_eq!(read, [LIST; 3], "each list reads its own descriptions once");
+    assert_eq!(
+        again, [0; 3],
+        "a description just written is not read back from the document"
+    );
     assert_eq!(
         items, [0; 3],
         "no list reads an issue back from the tracker, its own or an earlier list's"
