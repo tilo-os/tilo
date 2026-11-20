@@ -671,6 +671,11 @@ impl MessageList {
             .filter(|point| list.contains(*point))
             .and_then(|point| slots.iter().find(|slot| slot.rect.contains(point)))
             .map(|slot| slot.band.union(slot.rect).inflate(2.0, 2.0));
+        *state.row_bounds.borrow_mut() = slots
+            .iter()
+            .filter(|row| row.rect.y1 >= list.y0 && row.rect.y0 <= list.y1)
+            .map(|row| (row.id, row.rect.intersect(list)))
+            .collect();
         self.slots = slots;
     }
 

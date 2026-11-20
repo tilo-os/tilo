@@ -194,6 +194,12 @@ impl HostMail {
 
     /// Take every request the window posted and every answer the host gave.
     /// Whether anything changed.
+    /// Whether the window waits on the workspace: an answer arrives without
+    /// waking the window, so the window looks again until each one has.
+    pub(super) fn waiting(&self) -> bool {
+        !self.asking.is_empty() || !self.staging.is_empty() || self.adding.is_some()
+    }
+
     pub(super) fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(request) = self.requests.try_recv() {
@@ -1451,6 +1457,12 @@ mod tests {
             ))
             .unwrap();
 
+        assert!(!mail.waiting(), "nothing is asked before the window looks");
+        mail.poll();
+        assert!(
+            mail.waiting(),
+            "a begun draft keeps the window looking for its answer"
+        );
         let mut kept = false;
         for _ in 0..8 {
             mail.poll();
@@ -1472,6 +1484,7 @@ mod tests {
             }
         }
         assert!(kept, "the host's answer settles the draft");
+        assert!(!mail.waiting(), "settled, the window stops looking");
         let actions: Vec<String> = serving
             .asked()
             .iter()
@@ -1481,6 +1494,46 @@ mod tests {
         assert_eq!(
             actions,
             [person_accounts::BEGIN_SEND, person_accounts::SAVE_DRAFT]
+        );
+    }
+
+    /// What a window's pass asks of the workspace leaves in that pass: a send
+    /// whose undo time ran out is asked while the window settles, and
+    /// nothing else may wake the window to hand it over.
+    #[test]
+    fn what_a_pass_asks_of_the_workspace_leaves_in_that_pass() {
+        let serving = Arc::new(Keeping::of(vec![adas_account()]));
+        let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
+        let (handle, mail) = engine(tilo_content::ContentStore::memory());
+        let mut app = crate::app::MailApp::new_first_run();
+        app.host_mail = Some(mail);
+        handle
+            .tx
+            .send(EngineRequest::save_draft(
+                crate::model::AccountConfig {
+                    email: "ada@example.test".into(),
+                    ..crate::model::AccountConfig::default()
+                },
+                Box::new(crate::model::Draft {
+                    to: "bob@example.test".into(),
+                    subject: "Due now".into(),
+                    ..crate::model::Draft::default()
+                }),
+            ))
+            .unwrap();
+
+        let mut doc = crate::resource::TestMail::doc();
+        ui::widget::Widget::settle(
+            &mut app,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        );
+        assert!(
+            serving
+                .asked()
+                .iter()
+                .any(|request| request.target.address.action == person_accounts::BEGIN_SEND),
+            "the pass that settled the window asked the workspace"
         );
     }
 

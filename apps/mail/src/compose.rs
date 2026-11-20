@@ -471,6 +471,8 @@ pub struct ComposeWindow {
     theme: Theme,
 }
 
+mod tab_order;
+
 impl ComposeWindow {
     pub fn heading(&self) -> &'static str {
         self.heading
@@ -1752,6 +1754,13 @@ impl ComposeWindow {
             self.handle_body_key(event, ctx);
             return (true, ComposeAction::None);
         }
+        // Tab moves on through the headers to the message, Shift+Tab back.
+        if let Some(back) = Self::tab_press(event, ctx.modifiers) {
+            let next = self.header_after(self.focus, back);
+            self.set_focus(next);
+            self.dirty = true;
+            return (true, ComposeAction::None);
+        }
         self.handle_header_key(event, ctx);
         (true, ComposeAction::None)
     }
@@ -2716,6 +2725,40 @@ mod tests {
                     "{field:?}: Enter alone does not"
                 );
             }
+        }
+
+        phase tab_moves_through_the_headers_to_the_message;
+        {
+            let mut w = win();
+            w.set_focus(Field::To);
+            w.to.set_text("bob@example.test");
+            let mut doc = crate::resource::TestMail::doc();
+            let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+            let node = taffy::NodeId::new(0);
+            let shift = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+            let plain = winit::event::Modifiers::default();
+            let tab = key(Key::Named(NamedKey::Tab), None);
+            let mut press = |w: &mut ComposeWindow, modifiers| {
+                w.handle_event(
+                    &tab,
+                    &mut ComposeEventContext {
+                        scale_factor: 1.0,
+                        modifiers,
+                        state: ui::widget::Edits::lend(&mut doc),
+                        path: &automerge::ROOT,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+                w.focus
+            };
+            assert_eq!(press(&mut w, plain), Field::Subject, "Tab leaves To for Subject");
+            assert_eq!(press(&mut w, plain), Field::Body, "then for the message");
+            w.set_focus(Field::Subject);
+            assert_eq!(press(&mut w, shift), Field::To, "Shift+Tab goes back");
+            assert_eq!(w.to.value(), "bob@example.test", "Tab typed nothing into To");
+            w.show_cc_bcc = true;
+            assert_eq!(press(&mut w, plain), Field::Cc, "shown, Cc comes after To");
         }
 
         phase composer_window_moves_resizes_docks_and_owns_its_input;

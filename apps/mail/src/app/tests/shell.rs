@@ -673,3 +673,95 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+/// Each message row says where it is drawn, not the whole list's place, so
+/// assistive technology and automation point at the row itself.
+#[test]
+fn each_message_row_says_its_own_place() {
+    let (app, _doc) = app();
+    let mut frame = ui::headless::FrameHarness::new(ui::State::new(), Box::new(app), (1280, 800));
+    frame.poll_frame().expect("the window lays out");
+    frame.poll_frame().expect("the window draws");
+    let rows: Vec<ui::accesskit::Rect> = frame
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| node.role() == ui::accesskit::Role::ListItem)
+        .filter(|(_, node)| node.label().is_some_and(|label| !label.is_empty()))
+        .filter_map(|(_, node)| node.bounds())
+        .collect();
+    assert!(rows.len() >= 2, "the sample's rows are listed: {rows:?}");
+    for pair in rows.windows(2) {
+        assert!(
+            pair[0].y1 <= pair[1].y0 + 0.5 || pair[1].y1 <= pair[0].y0 + 0.5,
+            "rows do not overlap: {pair:?}"
+        );
+    }
+    assert!(
+        rows.iter().all(|row| row.height() < 200.0),
+        "a row is one row tall: {rows:?}"
+    );
+}
+
+/// A window whose sidebar is a screen of its own still shows the list beside
+/// the message, and so says the list too: its rows can be reached there.
+#[test]
+fn a_list_beside_the_message_is_said_while_the_sidebar_is_its_own_screen() {
+    use ui::a11y::Role as A11yRole;
+    let mut seen = Vec::new();
+    for width in (560..=1400).step_by(20) {
+        let (mut app, _doc) = app();
+        app.layout_for_test(f64::from(width), 808.0);
+        let geometry = app.nav.geometry();
+        let screen_sidebar = geometry.stack.contains(&NavPane::Sidebar);
+        if !(screen_sidebar && geometry.side_by_side) || app.nav_pane() == NavPane::Sidebar {
+            continue;
+        }
+        let window = app.accessibility().expect("mail semantics");
+        assert!(
+            window
+                .children
+                .iter()
+                .any(|node| node.role == A11yRole::List),
+            "at {width} px the list stands beside the message and is said"
+        );
+        seen.push(width);
+    }
+    assert!(
+        !seen.is_empty(),
+        "some width puts the sidebar on its own screen beside a split list"
+    );
+}
+
+/// A press in the window gives it the keyboard, so what is typed next lands
+/// here and not in the window that had the keyboard before.
+#[test]
+fn a_press_in_the_window_takes_the_keyboard() {
+    let (app, _doc) = app();
+    let mut frame = ui::headless::FrameHarness::new(ui::State::new(), Box::new(app), (1280, 800));
+    frame.poll_frame().expect("the window lays out");
+    let before = frame.focused();
+    // An empty stretch of the open message: nothing there takes the press.
+    let row = Point::new(1200.0, 760.0);
+    frame.click_at(row.x, row.y);
+    assert!(
+        frame.focused().is_some() && frame.focused() != before,
+        "a press in the window takes the keyboard (before {before:?}, after {:?})",
+        frame.focused()
+    );
+}
+
+/// Tab is the composer's while a header has the keyboard, so it moves on to
+/// the next field instead of leaving the window.
+#[test]
+fn the_composer_takes_tab_in_its_headers() {
+    let (mut app, _doc) = app();
+    assert!(
+        !Widget::wants_tab_input(&app),
+        "the mailbox leaves Tab to the window"
+    );
+    app.compose.open_blank();
+    assert!(
+        Widget::wants_tab_input(&app),
+        "the To field passes Tab on to Subject"
+    );
+}

@@ -1919,3 +1919,9 @@ reason = "The standard library's hand-off between an app worker's threads: the r
 words = ["channel"]
 identifiers = ["channel"]
 paths = ["crates/agent/agent-session/src/worker/*"]
+
+[[allow]]
+reason = "Mail's existing names for the page's engine that asks the workspace for mail (`HostMail`, `host_mail`, `pump_host_mail`), the window that starts with no account (`new_first_run`), and the list's laid-out rows (`slots`); code that calls them keeps those names."
+words = ["host", "run", "slot"]
+identifiers = ["HostMail", "host_mail", "pump_host_mail", "new_first_run", "slots"]
+paths = ["apps/mail/src/app.rs", "apps/mail/src/app/host_mail.rs", "apps/mail/src/list.rs"]

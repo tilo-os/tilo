@@ -195,6 +195,9 @@ struct PendingEngineRequest {
 /// changes, the mailbox's search revision and how much content had arrived.
 type HydratedAt = (Vec<ui::automerge::ChangeHash>, usize, u64, u64, u64);
 
+/// How often a window looks for the workspace's answers while it waits on them.
+const ANSWER_POLL_MS: u64 = 250;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (shell layout flags and engine-request bookkeeping); grouping them would need a real design pass"
@@ -271,6 +274,9 @@ pub struct MailApp {
     layout_theme: Theme,
     first_layout: bool,
     dirty: bool,
+    /// Whether the window has the keyboard: a press in it gives it, and
+    /// the desktop takes it back when another window is pressed.
+    keyboard: bool,
     #[cfg(test)]
     test_layout: Option<(TaffyTree<()>, NodeId)>,
     #[cfg(test)]
@@ -643,6 +649,7 @@ impl MailApp {
             layout_theme: Theme::dark(),
             first_layout: true,
             dirty: true,
+            keyboard: false,
             #[cfg(test)]
             test_layout: None,
             #[cfg(test)]
@@ -3428,6 +3435,9 @@ impl MailApp {
                 if *thread_len > 1 {
                     node = node.with_description(Self::thread_messages(*thread_len));
                 }
+                if let Some(bounds) = state.row_bounds.borrow().get(id) {
+                    node = node.with_bounds(*bounds);
+                }
                 Some(node)
             })
             .collect::<Vec<_>>();
@@ -3864,6 +3874,11 @@ impl Widget for MailApp {
         }
         self.nav.settle(state, path);
         self.state().composing = self.compose.open;
+        // What this pass asked of the workspace (a send whose undo time ran out,
+        // a fetch, a mark) leaves now: nothing else may wake the window to
+        // hand it over.
+        #[cfg(any(test, not(feature = "live")))]
+        self.pump_host_mail();
     }
 
     fn build_layout(
@@ -3986,6 +4001,21 @@ impl Widget for MailApp {
             let point = ctx.logical(position);
             self.shared.borrow_mut().last_mouse = point;
         }
+        // A press in the window gives it the keyboard, as a click in any
+        // window does: what is typed next goes here, not to the window that
+        // had it before. A part of it that takes the keyboard itself (a field
+        // of its own) claims it after this.
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && ctx.focus_target.is_none()
+            && self.get_rect().contains(self.shared.borrow().last_mouse)
+        {
+            *ctx.focus_target = Some(ctx.node_id);
+        }
 
         // The shortcut sheet is a genuine modal first-responder.  It must
         // consume all input before any Mail command can observe it.
@@ -4043,6 +4073,22 @@ impl Widget for MailApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn wants_tab_input(&self) -> bool {
+        self.compose.takes_tab()
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn is_focused(&self) -> bool {
+        self.keyboard
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.keyboard = focused;
     }
 
     fn get_rect(&self) -> Rect {
@@ -4127,10 +4173,13 @@ impl Widget for MailApp {
         // is open; the sidebar list publishes itself.
         let drawer_open =
             self.nav.geometry().sidebar == SidebarPlacement::Drawer && self.nav.is_sidebar_open();
-        let overview_visible =
-            !drawer_open && (!compact || self.nav.front_pane() == NavPane::Overview);
-        let reader_visible =
-            !drawer_open && (!compact || self.nav.front_pane() == NavPane::Content);
+        // The list and the message stand side by side unless the push stack
+        // holds them one at a time; a sidebar that is a screen of its own
+        // covers both while it is in front.
+        let front = self.nav.front_pane();
+        let together = !compact || (self.nav.geometry().side_by_side && front != NavPane::Sidebar);
+        let overview_visible = !drawer_open && (together || front == NavPane::Overview);
+        let reader_visible = !drawer_open && (together || front == NavPane::Content);
         let mut children = Vec::new();
 
         if self.state().awaiting_engine {
@@ -4264,14 +4313,26 @@ impl Widget for MailApp {
         // deadline fixed until sync consumes a tick, even with reduced motion.
         // Workers that wake the window themselves are not polled at all.
         let workers_wake = self.workers_wake();
-        let pending = (!workers_wake && self.state().awaiting_engine)
+        // The workspace's answers wake nothing: a window asking it looks again,
+        // a few times a second rather than every frame, since a page that
+        // looks every frame has no time left to draw.
+        #[cfg(any(test, not(feature = "live")))]
+        let answer_due = self
+            .host_mail
+            .as_ref()
+            .is_some_and(host_mail::HostMail::waiting);
+        #[cfg(not(any(test, not(feature = "live"))))]
+        let answer_due = false;
+        let local = (!workers_wake && self.state().awaiting_engine)
             || self.compose_attachment_rx.is_some()
             || self.compose_attachment_contents.is_some();
+        let pending = local || answer_due;
+        let interval = if local { 16 } else { ANSWER_POLL_MS };
         let background = pending.then(|| {
             let deadline = self
                 .background_poll_deadline
                 .get()
-                .unwrap_or_else(|| ui::time::now() + std::time::Duration::from_millis(16));
+                .unwrap_or_else(|| ui::time::now() + std::time::Duration::from_millis(interval));
             self.background_poll_deadline.set(Some(deadline));
             deadline
         });

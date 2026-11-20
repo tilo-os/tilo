@@ -275,6 +275,9 @@ pub struct MailState {
     /// it works. The list says it until a check works again.
     pub sync_error: Option<SyncFailure>,
     pub wants_older: std::cell::Cell<bool>,
+    /// Where the list last painted each row it shows, so each row says its
+    /// own place to assistive technology rather than the whole list's.
+    pub row_bounds: RefCell<HashMap<MessageId, Rect>>,
     pub first_fetch: Option<ui::arriving::ArrivalClock>,
     pub passed_over: HashMap<(String, Folder), crate::sync::Window>,
     pub remote_senders: std::collections::BTreeSet<String>,
@@ -464,6 +467,7 @@ impl MailState {
             outbox_selected: None,
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
+            row_bounds: RefCell::default(),
             first_fetch: None,
             passed_over: HashMap::new(),
             avatars,
