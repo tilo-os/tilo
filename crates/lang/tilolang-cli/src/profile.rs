@@ -23,6 +23,8 @@ pub struct ProfileOptions {
     pub scenario: Option<String>,
     pub seed: Option<usize>,
     pub size: (u32, u32),
+    /// The display's scale the window is laid out at: device pixels to a logical one.
+    pub scale: f64,
     /// The layer of a package with more than one root to show (`Shell`, `Layout`).
     pub root: Option<String>,
     /// Interactions to run after the app is open, each in [`Interaction`]'s spelling.
@@ -48,14 +50,17 @@ pub enum Interaction {
     Drag((f64, f64), (f64, f64)),
     /// The pointer moved to a point with no button held, in logical pixels: `hover:640,980`.
     Hover(f64, f64),
+    /// The window resized, as a person maximizing or dragging its edge does: `resize:1920x1080`.
+    Resize(u32, u32),
 }
 
 impl Interaction {
     /// The interaction `spec` spells, as `--then` takes it: `key:Tab`, `click:120,300`,
-    /// `type:Shopping`, `scroll:0,480`, `press:NAME`, `drag:260,400,420,400`, `hover:640,980`.
+    /// `type:Shopping`, `scroll:0,480`, `press:NAME`, `drag:260,400,420,400`, `hover:640,980`,
+    /// `resize:1920x1080`.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let (what, rest) = spec.split_once(':').ok_or_else(|| {
-            format!("--then {spec}: expected key:, click:, type:, scroll:, press:, drag: or hover:")
+            format!("--then {spec}: expected key:, click:, type:, scroll:, press:, drag:, hover: or resize:")
         })?;
         let pair = || -> Result<(f64, f64), String> {
             let (a, b) = rest
@@ -99,8 +104,14 @@ impl Interaction {
                 let (x, y) = pair()?;
                 Ok(Self::Hover(x, y))
             }
+            "resize" => rest
+                .split_once('x')
+                .and_then(|(w, h)| {
+                    Some(Self::Resize(w.trim().parse().ok()?, h.trim().parse().ok()?))
+                })
+                .ok_or_else(|| format!("--then {spec}: expected a size, as in 1920x1080")),
             _ => Err(format!(
-                "--then {spec}: {what:?} is not an interaction (key, click, type, scroll, press, drag, hover)"
+                "--then {spec}: {what:?} is not an interaction (key, click, type, scroll, press, drag, hover, resize)"
             )),
         }
     }
@@ -115,6 +126,7 @@ impl Interaction {
             Self::Press(name) => format!("press:{name}"),
             Self::Drag((x0, y0), (x1, y1)) => format!("drag:{x0},{y0},{x1},{y1}"),
             Self::Hover(x, y) => format!("hover:{x},{y}"),
+            Self::Resize(width, height) => format!("resize:{width}x{height}"),
         }
     }
 }
@@ -185,7 +197,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
                 states: Vec::new(),
             },
         )?;
-        staged.lay_out(viewport, theme.clone(), input, 1.0)?;
+        staged.lay_out(viewport, theme.clone(), input, options.scale)?;
         Ok(staged)
     });
     let mut staged = staged?;
@@ -242,6 +254,10 @@ fn perform(staged: &mut stage::Staged, interaction: &Interaction) -> Result<(), 
         }
         Interaction::Drag(from, to) => staged.harness_mut().drag_at(*from, *to),
         Interaction::Hover(x, y) => staged.hover(*x, *y),
+        Interaction::Resize(width, height) => staged
+            .harness_mut()
+            .resize((*width, *height))
+            .map_err(|error| format!("--then resize:{width}x{height}: {error:?}"))?,
     }
     Ok(())
 }

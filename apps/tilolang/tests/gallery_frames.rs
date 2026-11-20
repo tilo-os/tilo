@@ -6,7 +6,8 @@
 //! number of times and costs no more time or memory after many switches than after one, a drag
 //! step of the sidebar's edge is
 //! one layout with no rebuild, no view evaluated and no sync, and a wheel step is one layout with
-//! no component synced.
+//! no component synced, and a resize (a window maximized, its edge dragged) is one layout that
+//! rebuilds nothing and evaluates no view.
 
 use std::collections::HashMap;
 
@@ -25,6 +26,11 @@ const EDGE: f64 = 282.0;
 
 /// One frame as the shell draws the app: laid out at the desktop size, then drawn.
 fn frame(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
+    frame_at(tile, text, (1280.0, 800.0));
+}
+
+/// One frame of the app laid out at `size`, then drawn.
+fn frame_at(tile: &mut EmbeddedApp, text: &mut TextRenderer, (width, height): (f32, f32)) {
     use ui::widget::{DrawChild as _, Widget as _};
     let theme = tile.app().theme.clone();
     let mut taffy = ui::taffy::TaffyTree::new();
@@ -32,8 +38,8 @@ fn frame(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     let _ = taffy.compute_layout(
         node,
         ui::taffy::Size {
-            width: ui::taffy::AvailableSpace::Definite(1280.0),
-            height: ui::taffy::AvailableSpace::Definite(800.0),
+            width: ui::taffy::AvailableSpace::Definite(width),
+            height: ui::taffy::AvailableSpace::Definite(height),
         },
     );
     tile.apply_layout(&taffy, node, ui::kurbo::Point::ZERO);
@@ -112,6 +118,7 @@ fn switching_pages_resizing_the_sidebar_and_scrolling_do_only_what_changed() {
         switches(tile, &mut text);
         drags(tile, &mut text);
         scrolls(tile, &mut text);
+        resizes(tile, &mut text);
     })
     .expect("the gallery opens in a window");
 }
@@ -307,5 +314,32 @@ fn scrolls(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
             "a wheel step is one layout: {}",
             said(&scopes)
         );
+    }
+}
+
+/// The window resized, as maximizing it and dragging its edge do: each size is one layout, with no
+/// rebuild and no view evaluated, on every page that switches in place.
+fn resizes(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
+    for y in ROWS {
+        let _ = click(tile, text, (120.0, y));
+        for size in [(2560.0, 1440.0), (1600.0, 900.0), (1280.0, 800.0)] {
+            let ((), scopes) = observe(|| frame_at(tile, text, size));
+            let evaluated = scopes
+                .iter()
+                .filter(|sample| sample.phase.starts_with("tl."))
+                .count();
+            // A larger window mounts the rows it brings into view, and solves once more for
+            // them. The media page's grid takes another count of columns past a width, and
+            // composes it anew; no page evaluates a view for a size.
+            assert!(
+                calls(&scopes, "ui.layout") == 1
+                    && calls(&scopes, "ui.solve") <= 2
+                    && calls(&scopes, "ui.rebuild_structure") <= 2
+                    && evaluated == 0,
+                "a resize to {size:?} on the page at {y} is one layout of at most two solves, \
+                 without a view evaluated: {}",
+                said(&scopes)
+            );
+        }
     }
 }

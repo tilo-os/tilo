@@ -326,6 +326,23 @@ pub fn font_files_read() -> Vec<PathBuf> {
     FILES_READ.lock_recover().clone()
 }
 
+/// How many font files text has read so far ([`font_files_read`]).
+#[cfg(feature = "native")]
+pub(crate) fn font_files_read_count() -> usize {
+    FILES_READ.lock_recover().len()
+}
+
+/// The names of the font files text read after the first `count` of them.
+#[cfg(feature = "native")]
+pub(crate) fn font_files_read_after(count: usize) -> Vec<String> {
+    FILES_READ
+        .lock_recover()
+        .iter()
+        .skip(count)
+        .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+        .collect()
+}
+
 /// Keep one face per family, style, weight and stretch.
 pub(crate) fn drop_duplicate_faces(db: &mut fontdb::Database) {
     let mut kept: HashMap<_, (fontdb::ID, PathBuf, u32)> = HashMap::new();

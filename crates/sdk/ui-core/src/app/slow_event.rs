@@ -7,6 +7,14 @@
 //!
 //! `tilo: SLOW-EVENT window_event MouseInput 412 ms: sync=3 layout=391 draw=12 a11y=0 other=6`
 //!
+//! A frame names what came since the one before it, the events that gave it
+//! its work (`after: Resized×3 MouseInput`): a slow frame after a resize
+//! reads apart from one after a click that switched a page. A slow event that
+//! laid out says what its solves did (`solved: 2 solves, 3 passes, 1019
+//! measures`), and one whose text first read a font file names the file
+//! (`fonts read: NotoColorEmoji.ttf`): a solve slow for its count of measures
+//! reads apart from one slow for what a measure loaded.
+//!
 //! A person's "every click takes seconds" then names its phase in the next
 //! log instead of needing a profiler on their machine. The line ends with the
 //! named scopes (`tilo_resource::profiling::Phase`) the event ran, the costliest
@@ -35,6 +43,42 @@ struct Phases(Vec<(&'static str, Duration)>);
 thread_local! {
     /// The phases of the event being handled, when one is.
     static ACTIVE: RefCell<Option<Phases>> = const { RefCell::new(None) };
+    /// The events since the last frame, each with how often it came.
+    static SINCE_FRAME: RefCell<Vec<(&'static str, u32)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The name a frame's span carries: the frame takes the events noted since the last one.
+const FRAME: &str = "RedrawRequested";
+
+/// The most distinct events a frame names.
+const MOST_CAUSES: usize = 8;
+
+/// Note `name` as an event the next frame follows.
+pub(crate) fn note_cause(name: &'static str) {
+    SINCE_FRAME.with(|since| {
+        let mut since = since.borrow_mut();
+        if let Some((_, count)) = since.iter_mut().find(|(known, _)| *known == name) {
+            *count = count.saturating_add(1);
+        } else if since.len() < MOST_CAUSES {
+            since.push((name, 1));
+        }
+    });
+}
+
+/// The events since the last frame, as the report names them: ` after: Resized×3 MouseInput`.
+fn causes_line(since: &[(&'static str, u32)]) -> String {
+    if since.is_empty() {
+        return String::new();
+    }
+    let mut line = " after:".to_owned();
+    for (name, count) in since {
+        line.push(' ');
+        line.push_str(name);
+        if *count > 1 {
+            line.push_str(&format!("×{count}"));
+        }
+    }
+    line
 }
 
 /// One event or frame on the main thread; reports itself on drop when slow.
@@ -47,6 +91,10 @@ pub(crate) struct Span {
     /// Whether this span started the thread's observation of named scopes,
     /// so it takes it when it ends.
     scopes: bool,
+    /// What the thread's layout solver had done as the span began.
+    solved: crate::profiling::layout_counts::LayoutCounts,
+    /// How many font files text had read as the span began.
+    fonts_read: usize,
 }
 
 impl Span {
@@ -60,6 +108,9 @@ impl Span {
                 true
             }
         });
+        if owner && name != FRAME && name != "other" && !name.is_empty() {
+            note_cause(name);
+        }
         let scopes = owner && tilo_resource::profiling::begin_live();
         Self {
             kind,
@@ -67,6 +118,8 @@ impl Span {
             start: crate::time::now(),
             owner,
             scopes,
+            solved: crate::profiling::layout_counts::read(),
+            fonts_read: crate::font_catalog::font_files_read_count(),
         }
     }
 }
@@ -79,6 +132,11 @@ impl Drop for Span {
         let phases = ACTIVE.with(|active| active.borrow_mut().take());
         let scopes = if self.scopes {
             tilo_resource::profiling::take_live()
+        } else {
+            Vec::new()
+        };
+        let causes = if self.name == FRAME {
+            SINCE_FRAME.with(|since| std::mem::take(&mut *since.borrow_mut()))
         } else {
             Vec::new()
         };
@@ -103,6 +161,15 @@ impl Drop for Span {
             " other={}",
             total.saturating_sub(named).as_millis()
         ));
+        line.push_str(&causes_line(&causes));
+        line.push_str(&solved_line(
+            self.solved,
+            crate::profiling::layout_counts::read(),
+        ));
+        let fonts = crate::font_catalog::font_files_read_after(self.fonts_read);
+        if !fonts.is_empty() {
+            line.push_str(&format!(" fonts read: {}", fonts.join(" ")));
+        }
         line.push_str(&scopes_line(scopes));
         crate::diag!(
             "tilo: SLOW-EVENT {} {} {} ms:{line}",
@@ -136,6 +203,24 @@ impl Drop for Phase {
             }
         });
     }
+}
+
+/// What the layout solver did between `before` and `after`, as the report
+/// says it: nothing when it solved nothing.
+fn solved_line(
+    before: crate::profiling::layout_counts::LayoutCounts,
+    after: crate::profiling::layout_counts::LayoutCounts,
+) -> String {
+    let solves = after.solves.saturating_sub(before.solves);
+    if solves == 0 {
+        return String::new();
+    }
+    format!(
+        " solved: {solves} solves, {} passes, {} probes, {} measures",
+        after.passes.saturating_sub(before.passes),
+        after.probes.saturating_sub(before.probes),
+        after.measures.saturating_sub(before.measures),
+    )
 }
 
 /// The most named scopes a report lists.
@@ -219,6 +304,41 @@ mod tests {
             );
             drop(tilo_resource::profiling::take_live());
         }
+    }
+
+    #[test]
+    fn a_frame_names_the_events_since_the_last_one() {
+        drop(Span::begin("window_event", "Resized"));
+        drop(Span::begin("window_event", "Resized"));
+        drop(Span::begin("window_event", "MouseInput"));
+        let since = SINCE_FRAME.with(|since| since.borrow().clone());
+        assert_eq!(causes_line(&since), " after: Resized×2 MouseInput");
+        drop(Span::begin("window_event", FRAME));
+        assert!(
+            SINCE_FRAME.with(|since| since.borrow().is_empty()),
+            "a frame takes the events it follows"
+        );
+    }
+
+    #[test]
+    fn the_report_says_what_the_solves_did() {
+        use crate::profiling::layout_counts::LayoutCounts;
+        let before = LayoutCounts {
+            solves: 4,
+            measures: 100,
+            ..LayoutCounts::default()
+        };
+        assert_eq!(solved_line(before, before), "", "no solve, nothing said");
+        let after = LayoutCounts {
+            solves: 5,
+            passes: 2,
+            measures: 1119,
+            ..before
+        };
+        assert_eq!(
+            solved_line(before, after),
+            " solved: 1 solves, 2 passes, 0 probes, 1019 measures"
+        );
     }
 
     #[test]

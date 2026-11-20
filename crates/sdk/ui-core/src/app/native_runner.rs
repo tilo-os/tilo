@@ -4173,6 +4173,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.needs_sync,
             crate::time::now(),
         ) {
+            let _tick = slow_event::phase("state_tick");
             app.run_state_tick();
         }
         // Reveal requests must not wait on rendering an occluded/minimized
@@ -4214,8 +4215,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .presence_ctx
             .interaction_next_wake_deadline(interaction_now);
 
-        let idle_model = app.service_native_idle_model();
+        let idle_model = {
+            let _model = slow_event::phase("model");
+            app.service_native_idle_model()
+        };
         if idle_model.changed {
+            // What the app's own work changed is drawn on the next frame.
+            slow_event::note_cause("model");
             request_primary_redraw();
         }
 
@@ -4225,6 +4231,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Run both: Settings' open Appearance pane may intentionally override
         // the file-level base with its richer live accessibility intent.
+        let appearance_phase = slow_event::phase("appearance");
         let configured_changed = app.reconcile_configured_theme();
         // A settings change re-themes from the file; outside Tilo OS the host
         // appearance takes over again.
@@ -4234,6 +4241,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .and_then(|host| host.take_change(configured_changed))
             .is_some_and(|appearance| app.apply_host_appearance(appearance));
         let appearance_changed = app.reconcile_appearance();
+        drop(appearance_phase);
         if configured_changed || host_changed || appearance_changed {
             app.needs_sync = true;
             request_primary_redraw();
@@ -4248,7 +4256,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // Run here too, not only `RedrawRequested`, since painting isn't
         // guaranteed — a background tab, or a first frame behind a shader
         // compile.
-        if app.record_tick() {
+        let recorded = {
+            let _document = slow_event::phase("document");
+            app.record_tick()
+        };
+        if recorded {
             request_primary_redraw();
         }
 

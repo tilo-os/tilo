@@ -35,7 +35,7 @@ usage:
       file, runtime directory, control socket or state directory): every saved .tl file is compiled, installed
       and taken over by the app there, and --runtime BIN bakes the runtime binary into a signed
       runtime bundle installed in that session. See docs/tilolang-dev.md.
-  tilolang profile [DIR] [--search DIR]... [--scenario NAME] [--seed N] [--size WxH]
+  tilolang profile [DIR] [--search DIR]... [--scenario NAME] [--seed N] [--size WxH] [--scale S]
                    [--root NAME] [--then INTERACTION]... [--times]
       count what the app in DIR (default: .) costs to open and to use, in the language's own
       terms: each unit of its code by source line, with the calls it ran, the fuel it spent and
@@ -43,8 +43,10 @@ usage:
       `tilolang bench` seeds one); --scenario stages that scenario of the app (the app's first
       by default); --then runs an interaction after the app is open and counts that alone:
       key:Tab, click:X,Y, type:TEXT, scroll:DX,DY, press:NAME (a click on the widget the window
-      names so), drag:X0,Y0,X1,Y1 or hover:X,Y (the pointer moved there), in logical pixels.
-      --size is the window's size (default 1280x800), --root the layer of a package with more
+      names so), drag:X0,Y0,X1,Y1 or hover:X,Y (the pointer moved there), in logical pixels,
+      or resize:WxH (the window resized, as maximizing it does).
+      --size is the window's size (default 1280x800), --scale the display's scale (default 1;
+      1.25 or 2 as a laptop's panel), --root the layer of a package with more
       than one root. The counts are the same
       on any machine at any load; --times adds what each step took in the framework's named
       scopes, which depends on the machine.
@@ -143,6 +145,7 @@ fn profile_command(args: &[String]) -> Result<(), String> {
         scenario: None,
         seed: None,
         size: (1280, 800),
+        scale: 1.0,
         root: None,
         then: Vec::new(),
         times: false,
@@ -169,6 +172,14 @@ fn profile_command(args: &[String]) -> Result<(), String> {
                         .map_err(|_| format!("--size {size}: {text:?} is not a size"))
                 };
                 options.size = (number(w)?, number(h)?);
+            }
+            "--scale" => {
+                let scale = value(&mut iter, arg)?;
+                options.scale = scale
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|scale| *scale > 0.0)
+                    .ok_or_else(|| format!("--scale {scale}: not a display scale"))?;
             }
             "--root" => options.root = Some(value(&mut iter, arg)?),
             "--then" => options.then.push(value(&mut iter, arg)?),
