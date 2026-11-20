@@ -427,15 +427,16 @@ impl Daemon {
 
     fn wait_serving(&mut self) {
         if backend() == Backend::Fuse {
-            // The line is printed as the mount is asked for; the kernel has the filesystem only
-            // once the mount point answers.
+            // The line is printed as the mount is asked for. Reading the path proves nothing
+            // until then: the directory underneath it answers too, empty. The mount table names
+            // the filesystem once the kernel has it.
             self.wait_line("Mounting QuickFS at ");
             let deadline = Instant::now() + Duration::from_secs(10);
-            while std::fs::read_dir(&self.mount).is_err() {
+            while !mounted_at(&self.mount) {
                 self.alive();
                 assert!(
                     Instant::now() < deadline,
-                    "{}: its mount at {} never answered; logs:\n{}",
+                    "{}: its mount at {} never appeared; logs:\n{}",
                     self.name,
                     self.mount.display(),
                     self.dump()
@@ -1141,6 +1142,22 @@ fn disk_bytes(root: &Path) -> u64 {
         }
     }
     total
+}
+
+/// Whether the kernel has a FUSE filesystem mounted at `at`, from the mount table rather than by
+/// touching the path.
+fn mounted_at(at: &Path) -> bool {
+    let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
+        return false;
+    };
+    let escaped = at.to_string_lossy().replace(' ', "\\040");
+    mounts.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        let _source = fields.next();
+        let point = fields.next();
+        let kind = fields.next();
+        point == Some(escaped.as_str()) && kind.is_some_and(|kind| kind.starts_with("fuse"))
+    })
 }
 
 fn list_directory(path: &Path) -> usize {
