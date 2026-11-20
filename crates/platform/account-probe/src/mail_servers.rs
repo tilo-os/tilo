@@ -8,12 +8,14 @@
 //!    ([`accounts::email::AccountConfig::autofill_from_email`]), also where
 //!    the servers that take the domain's mail are one of theirs;
 //! 2. the settings document the address's own domain publishes for mail
-//!    programs, then the one its provider publishes: its provider is
+//!    programs, then the ones its provider publishes: its provider is
 //!    whoever takes the domain's mail or answers its autodiscover service
 //!    name ([`Sources::documents`]);
-//! 3. the services its domain names: the `SRV` names of RFC 6186 and
+//! 3. the settings the database of what providers publish keeps for the
+//!    domain, and for its provider's ([`in_database`]);
+//! 4. the services its domain names: the `SRV` names of RFC 6186 and
 //!    RFC 8314 ([`Sources::service`]);
-//! 4. the names mail servers are usually given (`imap.`, `mail.`, `smtp.`)
+//! 5. the names mail servers are usually given (`imap.`, `mail.`, `smtp.`)
 //!    under the domain and under its provider, each taken only where a mail
 //!    server greets over a connection secured with a certificate for that
 //!    very name ([`Sources::reads`], [`Sources::sends`]).
@@ -51,6 +53,9 @@ const LONGEST_LABEL: usize = 63;
 const MOST_DOMAINS: usize = 4;
 /// The most a settings document may hold, in bytes.
 const MOST_DOCUMENT: usize = 64 * 1024;
+/// Where the database of the settings providers publish is asked, by a
+/// domain's name.
+const DATABASE: &str = "autoconfig.thunderbird.net";
 
 /// What is said of words that are no mail address.
 pub const NOT_AN_ADDRESS: &str = "That is not a mail address";
@@ -361,6 +366,29 @@ fn published(
         .find_map(|text| published_in(&text, address))
 }
 
+/// What the database of what providers publish says of the servers of
+/// `address`: a settings document for each of `domains`, asked after the
+/// domains' own documents and before the services a domain names, and only
+/// where this machine may ask the database.
+fn in_database(
+    domains: &[String],
+    address: &str,
+    sources: &dyn Sources,
+) -> Option<(Server, Server, Option<String>)> {
+    if !sources.allowed(DATABASE) {
+        return None;
+    }
+    let urls: Vec<String> = domains
+        .iter()
+        .map(|domain| format!("https://{DATABASE}/v1.1/{domain}"))
+        .collect();
+    sources
+        .documents(&urls)
+        .into_iter()
+        .flatten()
+        .find_map(|text| published_in(&text, address))
+}
+
 /// Where the mail of `address` lives, as `sources` answer.
 ///
 /// # Errors
@@ -406,7 +434,8 @@ pub fn find(address: &str, sources: &dyn Sources) -> Result<MailServers, String>
             .flatten()
             .map(|server| (server, found))
     };
-    let said = published(&domains, address, sources);
+    let said =
+        published(&domains, address, sources).or_else(|| in_database(&domains, address, sources));
     let incoming = said
         .as_ref()
         .and_then(|(incoming, _, _)| reads(Found::Published, vec![incoming.clone()]))
@@ -930,6 +959,117 @@ mod tests {
             !naming.asked().iter().any(|asked| asked.starts_with(':')),
             "a service that names nobody is asked nothing: {:?}",
             naming.asked()
+        );
+    }
+
+    /// A domain that publishes nothing itself is found through the settings
+    /// the database of what providers publish keeps for it: asked after the
+    /// domain's own documents and before the services the domain names, so a
+    /// document that answers is not passed over for a service name.
+    #[test]
+    fn a_domain_that_publishes_nothing_is_found_in_the_providers_database() {
+        let network = Told {
+            documents: vec![(
+                "https://autoconfig.thunderbird.net/v1.1/example.test",
+                settings(
+                    "imap.database.example",
+                    "smtp.database.example",
+                    587,
+                    "STARTTLS",
+                ),
+            )],
+            services: vec![(
+                "_imaps._tcp.example.test",
+                vec![Server::new("in.mailer.example", 993)],
+            )],
+            greet: vec![
+                Server::new("imap.database.example", 993),
+                Server::new("smtp.database.example", 587),
+                Server::new("in.mailer.example", 993),
+            ],
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &network).expect("its servers");
+        assert_eq!(found.incoming, Server::new("imap.database.example", 993));
+        assert_eq!(found.outgoing, Server::new("smtp.database.example", 587));
+        assert_eq!(found.found, Found::Published);
+        assert_eq!(found.username.as_deref(), Some("ada@example.test"));
+        let asked = network.asked();
+        let own = asked
+            .iter()
+            .position(|asked| asked.starts_with("https://autoconfig.example.test/"))
+            .expect("the domain's own document is asked");
+        let database = asked
+            .iter()
+            .position(|asked| {
+                asked.starts_with("https://autoconfig.thunderbird.net/v1.1/example.test")
+            })
+            .expect("the database is asked");
+        assert!(own < database, "{asked:?}");
+        assert!(
+            !asked
+                .iter()
+                .any(|asked| asked.starts_with("in.mailer.example:")),
+            "a document that answers is not passed over: {asked:?}"
+        );
+    }
+
+    /// What a domain publishes itself is taken before the database is asked,
+    /// and a database this machine may not ask is asked nothing.
+    #[test]
+    fn a_domains_own_document_comes_before_the_database() {
+        let both = Told {
+            documents: vec![
+                (
+                    "https://autoconfig.example.test/",
+                    settings("imap.example.test", "smtp.example.test", 465, "SSL"),
+                ),
+                (
+                    "https://autoconfig.thunderbird.net/v1.1/",
+                    settings(
+                        "imap.database.example",
+                        "smtp.database.example",
+                        587,
+                        "STARTTLS",
+                    ),
+                ),
+            ],
+            greet: vec![
+                Server::new("imap.example.test", 993),
+                Server::new("smtp.example.test", 465),
+                Server::new("imap.database.example", 993),
+                Server::new("smtp.database.example", 587),
+            ],
+            ..Told::default()
+        };
+        let found = find("ada@example.test", &both).expect("its servers");
+        assert_eq!(found.incoming, Server::new("imap.example.test", 993));
+        assert_eq!(found.outgoing, Server::new("smtp.example.test", 465));
+        assert!(
+            !both
+                .asked()
+                .iter()
+                .any(|asked| asked.contains("autoconfig.thunderbird.net")),
+            "the database is not asked once a document answered: {:?}",
+            both.asked()
+        );
+
+        let inside = Told {
+            greet: vec![
+                Server::new("imap.example.test", 993),
+                Server::new("smtp.example.test", 465),
+            ],
+            inside: vec!["autoconfig.thunderbird.net"],
+            ..Told::default()
+        };
+        find("ada@example.test", &inside).expect("the usual name answered");
+        assert!(
+            !inside
+                .asked()
+                .iter()
+                .any(|asked| asked.contains("autoconfig.thunderbird.net")),
+            "a database this machine may not ask is asked nothing: {:?}",
+            inside.asked()
         );
     }
 
