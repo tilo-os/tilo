@@ -1943,3 +1943,14 @@ paths = ["crates/collab/tilo-peer-state/src/state/kept_open_tests.rs"]
 reason = "The workspace service's test fixture that starts the service on a state directory with the device's group keys, as a restart does."
 words = ["host"]
 identifiers = ["test_host_holding"]
+[[allow]]
+reason = "Python's `subprocess.run` starts Git in the policy check that compares where an app keeps a resource kind, and in its fixture."
+words = ["run"]
+identifiers = ["run"]
+paths = ["tools/policy/check_resource_placement.py", "tools/tests/test_check_resource_placement.py"]
+
+[[allow]]
+reason = "The policy table's file name, `record_conversions.toml`, written as the check names it."
+words = ["record"]
+identifiers = ["record_conversions"]
+paths = ["tools/policy/check_resource_placement.py", "tools/tests/test_check_resource_placement.py", "tools/policy/record_conversions.toml"]

@@ -50,23 +50,54 @@ file: each is a Rust type serialized to disk, and a field added in its middle
 reads the bytes an earlier build wrote as something else (a device's journal
 did, and every write after its snapshot was dropped). Such a type is listed in
 ``tools/policy/stored_layouts.toml`` under the format whose version covers it,
-with a digest of its definition at that version. ``check`` fails when a listed
-type's definition no longer matches the digest recorded for the format's
-current version: a layout that changed is a new version of its format, with
-the step that brings up what the version before wrote. ``pin`` writes the
-digest of the current version once that version is declared. ``against BASE``
-fails when the digest a still-declared version had at BASE changed.
+with a digest of its definition at that version. A digest covers the types the
+listed definition names, recursively, resolved to the definition in its own
+crate first and then to the one definition under ``crates/`` or ``apps/``: a
+field added inside a type one of them reaches changes the digest of the root
+that reaches it. A name with more than one definition is skipped, as is one
+with none (a std or external type).
+
+``check`` fails when a listed definition no longer matches the digest recorded
+for the format's current version: a layout that changed is a new version of its
+format, with the step that brings up what the version before wrote. ``pin``
+writes the digest of the current version once that version is declared.
+``against BASE`` fails when the digest a still-declared version had at BASE
+changed.
+
+A format is not always one ``migration::Format``. One that keeps its version
+in a plain constant, and opens a state of another version by refusing it, is
+declared with a ``[[format]]`` table whose ``version`` names the path and the
+constant (``"crate/src/file.rs:CONST"``): its layout is pinned the same way,
+and a change under the same number fails. A format with no version at all,
+such as the frames a store writes without a header, is declared
+``version = "none"``: any change to a listed type fails, because a later build
+cannot tell the bytes apart.
+
+The digests' meaning is written at the top of the file (``schema``). A layout
+recorded under another schema is compared by the check that wrote it, not this
+one: ``against BASE`` leaves it alone when BASE's schema is another.
+
+``check_wire_enums.py`` reads the same closure: an enum a stored root reaches
+is stored, so its variants move only with a new version of its format, exactly
+as a listed enum's.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import subprocess
 import sys
 import tomllib
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import is_test_file, lex, split_top_level, strip_tests  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 DECLARATION = re.compile(
@@ -325,57 +356,265 @@ def sources_since(root: Path, base: str, before: dict[str, str]) -> dict[str, st
 
 LAYOUTS = Path("tools/policy/stored_layouts.toml")
 
+# The items a stored layout may name: a type written to disk, a function whose
+# output is kept there (a derived key), a constant it is derived with, or a
+# type alias a listed definition names.
+ITEM = re.compile(
+    r"(?m)^(?P<attrs>(?:[ \t]*#\[[^\n]*\]\s*\n)*)[ \t]*"
+    r"(?:pub(?:\([^)]*\))?\s+)?"
+    r"(?:(?:const|async|unsafe|default|extern(?:\s+\"[^\"]*\")?)\s+)*"
+    r"(?P<kind>struct|enum|union|trait|fn|const|static|type)\s+"
+    r"(?:mut\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
+)
+# A name a stored definition may reach: a type is written in CamelCase.
+TYPE_NAME = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
 
-def item_definition(text: str, name: str) -> str | None:
-    """The definition of struct or enum `name` in `text`, with the serde
-    attributes on it and its fields, without comments or doc text, its
-    whitespace collapsed: what decides the bytes it is stored as."""
-    code = without_tests("lib.rs", text)
-    code = re.sub(r"/\*.*?\*/", " ", code, flags=re.S)
-    code = re.sub(r"(?m)//[^\n]*$", "", code)
-    found = re.search(
-        rf"(?m)^(?P<attrs>(?:[ \t]*#\[[^\n]*\]\s*\n)*)[ \t]*(?:pub(?:\([^)]*\))?\s+)?"
-        rf"(?P<kind>struct|enum)\s+{re.escape(name)}\b",
-        code,
-    )
-    if not found:
-        return None
+
+@lru_cache(maxsize=512)
+def definition_region(text: str) -> tuple[str, str]:
+    """`text` and the same text, both without their test items: the first with
+    comments blanked and literals kept (what is stored), the second with both
+    blanked (where its brackets are)."""
+    blanked, literals = lex(text)
+    pruned = strip_tests(text, blanked)
+    kept = list(blanked)
+    for literal in literals:
+        kept[literal.start : literal.end] = text[literal.start : literal.end]
+    for start, end in pruned.removed:
+        for at in range(start, end):
+            if kept[at] != "\n":
+                kept[at] = " "
+    return "".join(kept), pruned.code
+
+
+def without_variant_names(body: str) -> str:
+    """An enum's body without each variant's name: its payloads and fields are
+    left, and their types are what the enum names."""
+    opening = body.find("{")
+    closing = body.rfind("}")
+    if opening < 0 or closing < opening:
+        return body
+    parts = []
+    for part in split_top_level(body[opening + 1 : closing]):
+        part = re.sub(r"^(?:\s*#\[[^\]]*\]\s*)*", "", part)
+        name = re.match(r"[A-Za-z_][A-Za-z0-9_]*", part)
+        parts.append(part[name.end() :] if name else part)
+    return body[: opening + 1] + ",".join(parts) + body[closing:]
+
+
+def item_references(body: str, kind: str) -> list[str]:
+    """The type names a definition's body uses: its fields' and parameters'
+    types, its return type, the types of its variants' payloads and the types
+    it constructs. Field names, variant names and calls are no types."""
+    text = re.sub(r"#\[[^\]]*\]", " ", body)
+    text = re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\s*:", " ", text)
+    text = re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\(", " ", text)
+    if kind == "enum":
+        text = without_variant_names(text)
+    return TYPE_NAME.findall(text)
+
+
+def item(text: str, name: str) -> tuple[str | None, list[str]]:
+    """The definition of item `name` in `text` (a struct, enum, union, trait,
+    function, constant, static or type alias), with the serde attributes on it
+    and its fields, without comments or doc text, its whitespace collapsed:
+    what decides the bytes it is stored as, or the value it derives; and the
+    type names its body uses."""
+    code, scan = definition_region(text)
+    found = None
+    for match in ITEM.finditer(code):
+        if match.group("name") == name:
+            found = match
+            break
+    if found is None:
+        return None, []
+    # A body ends at its closing brace; a declaration at its `;`. Parens and
+    # brackets only nest: a function's parameters close before its body, and a
+    # tuple body's `)` before its `;`. Angles are no brackets either:
+    # `-> Result<Vec<u8>, _>` would unbalance a count of them.
     depth, end = 0, None
-    for at in range(found.end(), len(code)):
-        char = code[at]
-        if char in "<({[":
+    for at in range(found.end(), len(scan)):
+        char = scan[at]
+        if char in "([{":
             depth += 1
-        elif char in ">)}]":
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        elif char == "}":
             depth -= 1
-            if depth == 0 and char in ")}":
+            if depth == 0:
                 end = at + 1
                 break
         elif char == ";" and depth == 0:
             end = at + 1
             break
     if end is None:
-        return None
+        return None, []
     attrs = " ".join(
         attr for attr in re.findall(r"#\[[^\n]*\]", found.group("attrs")) if "serde" in attr
     )
     body = code[found.start("kind") : end]
-    return re.sub(r"\s+", " ", f"{attrs} {body}").strip()
+    definition = re.sub(r"\s+", " ", f"{attrs} {body}").strip()
+    return definition, item_references(scan[found.start("kind") : end], found.group("kind"))
 
 
-def layout_digest(types: list[str], read) -> tuple[str | None, list[str]]:
-    """The digest of `types` (each `path:Type`) as `read(path)` holds them, or
-    `None` with what was not found."""
-    parts, missing = [], []
-    for entry in types:
+def item_definition(text: str, name: str) -> str | None:
+    """The definition of item `name` in `text`, as [`item`] reads it."""
+    return item(text, name)[0]
+
+
+def crate_path(path: str) -> str:
+    """The crate directory a tree-relative source path belongs to."""
+    head, separator, _ = path.partition("/src/")
+    return head if separator else path.rsplit("/", 1)[0]
+
+
+class Definitions:
+    """Every definition under `crates/` and `apps/`, by the names its files
+    declare: what a stored definition reaches, resolved the same way each time.
+
+    A name is resolved to the one definition in the referencing file's crate,
+    else to the one definition in the tree. A name with more than one in its
+    crate, or none in its crate and more than one in the tree, is ambiguous
+    and skipped; one with none anywhere is std or external and skipped.
+    Test sources are no definitions: a fixture's `Entry` is not the one stored.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+        self._names: dict[str, list[str]] | None = None
+        self._texts: dict[str, str | None] = {}
+        self._items: dict[tuple[str, str], tuple[str | None, list[str]]] = {}
+        self._verified: dict[str, list[str]] = {}
+
+    def text(self, path: str) -> str | None:
+        if path not in self._texts:
+            file = self.root / path
+            try:
+                self._texts[path] = file.read_text(errors="replace") if file.is_file() else None
+            except OSError:
+                self._texts[path] = None
+        return self._texts[path]
+
+    def _scan(self) -> dict[str, list[str]]:
+        if self._names is not None:
+            return self._names
+        files = []
+        for base in ("crates", "apps"):
+            directory = self.root / base
+            if not directory.is_dir():
+                continue
+            for file in sorted(directory.rglob("*.rs")):
+                relative = file.relative_to(self.root)
+                if "target" in relative.parts or is_test_file(file):
+                    continue
+                files.append(relative.as_posix())
+
+        def read(path: str) -> tuple[str, str | None]:
+            try:
+                return path, (self.root / path).read_text(errors="replace")
+            except OSError:
+                return path, None
+
+        workers = min(16, max(1, (os.cpu_count() or 1) * 2))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for path, text in pool.map(read, files):
+                self._texts[path] = text
+        names: dict[str, list[str]] = {}
+        for path in files:
+            text = self._texts[path]
+            if text is None:
+                continue
+            for match in ITEM.finditer(text):
+                names.setdefault(match.group("name"), []).append(path)
+        self._names = names
+        return names
+
+    def _item(self, path: str, name: str) -> tuple[str | None, list[str]]:
+        key = (path, name)
+        if key not in self._items:
+            text = self.text(path)
+            self._items[key] = item(text, name) if text is not None else (None, [])
+        return self._items[key]
+
+    def definition(self, path: str, name: str) -> str | None:
+        return self._item(path, name)[0]
+
+    def references(self, path: str, name: str) -> list[str]:
+        return self._item(path, name)[1]
+
+    def verified(self, name: str) -> list[str]:
+        """The files that define `name` in production code. A match in a test
+        module is none."""
+        if name not in self._verified:
+            found = []
+            for path in self._scan().get(name, []):
+                if self.definition(path, name) is not None:
+                    found.append(path)
+            self._verified[name] = found
+        return self._verified[name]
+
+    def resolve(self, name: str, from_path: str) -> str | None:
+        """The file whose definition `name` means when named in `from_path`:
+        the one in its crate first, else the one in the tree."""
+        found = self.verified(name)
+        if not found:
+            return None
+        crate = crate_path(from_path)
+        local = [path for path in found if crate_path(path) == crate]
+        if len(local) == 1:
+            return local[0]
+        if local:
+            return None
+        return found[0] if len(found) == 1 else None
+
+
+def definitions_for(root: Path) -> Definitions:
+    """The definitions `root` holds now: scanned once per call, so a check
+    that reads a tree being edited sees its files as they are."""
+    return Definitions(Path(root))
+
+
+def reached_definitions(
+    entries: list[str], definitions: Definitions
+) -> tuple[dict[tuple[str, str], str], list[str]]:
+    """The definition of each `path:Name` in `entries`, then of every type it
+    names, recursively; with the entries that name no definition."""
+    found: dict[tuple[str, str], str] = {}
+    missing: list[str] = []
+    queue = deque()
+    for entry in entries:
         path, _, name = entry.partition(":")
-        text = read(path)
-        definition = item_definition(text, name) if text is not None else None
-        if definition is None:
-            missing.append(entry)
+        queue.append((path, name))
+    while queue:
+        path, name = queue.popleft()
+        key = (path, name)
+        if key in found:
             continue
-        parts.append(f"{entry}={definition}")
+        definition = definitions.definition(path, name)
+        if definition is None:
+            missing.append(f"{path}:{name}")
+            continue
+        found[key] = definition
+        if len(found) > 4096:
+            continue
+        for reference in definitions.references(path, name):
+            target = definitions.resolve(reference, path)
+            if target is not None:
+                target_key = (target, reference)
+                if target_key not in found:
+                    queue.append(target_key)
+    return found, missing
+
+
+def layout_digest(entries: list[str], definitions: Definitions) -> tuple[str | None, list[str]]:
+    """The digest of `entries` (each `path:Name`) and what they reach, or
+    `None` with what was not found."""
+    found, missing = reached_definitions(entries, definitions)
     if missing:
         return None, missing
+    parts = [
+        f"{path}:{name}={definition}" for (path, name), definition in sorted(found.items())
+    ]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16], []
 
 
@@ -383,8 +622,77 @@ def layouts(text: str) -> list[dict]:
     return tomllib.loads(text).get("layout", [])
 
 
+def formats(text: str) -> list[dict]:
+    return tomllib.loads(text).get("format", [])
+
+
+def schema(text: str) -> int:
+    """The meaning of the digests in a `stored_layouts.toml`."""
+    return int(tomllib.loads(text).get("schema", 1))
+
+
+def constant_version(root: Path, written: str) -> int | None:
+    """The number a `[[format]]` `version = "<path>:<CONST>"` names, if that
+    constant is a `u32` of the file."""
+    path, _, constant = written.partition(":")
+    if not path or not constant:
+        return None
+    file = root / path
+    if not file.is_file():
+        return None
+    found = re.search(
+        rf"\bconst\s+{re.escape(constant)}\s*:\s*u32\s*=\s*([0-9]+)\s*;",
+        file.read_text(errors="replace"),
+    )
+    return int(found.group(1)) if found else None
+
+
+def format_tables(root: Path) -> dict[str, str]:
+    """Each `[[format]]` of `stored_layouts.toml`, by name, as written."""
+    file = root / LAYOUTS
+    if not file.is_file():
+        return {}
+    return {table["name"]: str(table.get("version", "")).strip() for table in formats(file.read_text())}
+
+
+def format_problems(root: Path) -> list[str]:
+    """Each `[[format]]` whose `version` names neither `none` nor a `u32`
+    constant that exists."""
+    problems = []
+    for name, written in sorted(format_tables(root).items()):
+        if written == "none" or constant_version(root, written) is not None:
+            continue
+        if written.isdigit():
+            continue
+        problems.append(
+            f"{LAYOUTS}: format {name!r} declares `version = \"{written}\"`; name "
+            "`<path>:<CONST>` of a `const NAME: u32 = N;`, or `none` for a format "
+            "written with no version at all"
+        )
+    return problems
+
+
+def declared_format_versions(root: Path) -> tuple[dict[str, int], set[str]]:
+    """The versions `[[format]]` tables declare, by name; and the names of
+    those that declare no version."""
+    versions: dict[str, int] = {}
+    unversioned: set[str] = set()
+    for name, written in format_tables(root).items():
+        if written == "none":
+            unversioned.add(name)
+            continue
+        if written.isdigit():
+            versions[name] = int(written)
+            continue
+        number = constant_version(root, written)
+        if number is not None:
+            versions[name] = number
+    return versions, unversioned
+
+
 def current_versions(root: Path, texts: dict[str, str]) -> dict[str, int]:
-    """Each declared format's version now, by name."""
+    """Each declared format's version now, by name: a `migration::Format`'s, or
+    one a `[[format]]` table names."""
     found: dict[str, int] = {}
     cache: dict[Path, dict[str, str]] = {}
     for path, text in texts.items():
@@ -393,15 +701,31 @@ def current_versions(root: Path, texts: dict[str, str]) -> dict[str, int]:
             version = version_of(match.group("version"), crate_sources(crate, root, cache))
             if version is not None:
                 found[match.group("name")] = version
+    versions, _ = declared_format_versions(root)
+    found.update(versions)
     return found
 
 
-def read_file(root: Path):
-    def read(path: str) -> str | None:
-        file = root / path
-        return file.read_text(errors="replace") if file.is_file() else None
-
-    return read
+def changed_layout_message(name: str, version: int, entries: list[str], constant: str | None) -> str:
+    """What a stored layout that changed under its version means, for a format
+    that keeps its version in a `migration::Format` or in a plain constant."""
+    listed = ", ".join(entries)
+    if constant is None:
+        return (
+            f"{LAYOUTS}: a type stored under format {name!r} changed while the format is "
+            f"still version {version} ({listed}). Bytes an earlier build wrote would read as "
+            "something else: give the format a new version with a step that brings up what "
+            "this one wrote, then pin the new layout with "
+            "`python3 tools/policy/check_format_migrations.py pin`"
+        )
+    return (
+        f"{LAYOUTS}: a type stored under format {name!r} changed while the format is still "
+        f"version {version} ({listed}). That format refuses a state of another version by "
+        "name, so a new version needs a step that brings up what this one wrote before the "
+        f"number in `{constant}` moves: without that step the bytes an earlier build wrote are "
+        "refused, not read. Then pin the new layout with "
+        "`python3 tools/policy/check_format_migrations.py pin`"
+    )
 
 
 def stored_layouts(root: Path, texts: dict[str, str]) -> list[str]:
@@ -410,16 +734,45 @@ def stored_layouts(root: Path, texts: dict[str, str]) -> list[str]:
     file = root / LAYOUTS
     if not file.is_file():
         return []
-    problems = []
+    data = tomllib.loads(file.read_text())
+    problems = format_problems(root)
     versions = current_versions(root, texts)
+    constant_versions, unversioned = declared_format_versions(root)
+    definitions = definitions_for(root)
     newest: dict[str, int] = {}
-    for layout in layouts(file.read_text()):
-        name, version = layout["format"], int(layout["version"])
+    for layout in data.get("layout", []):
+        name = layout["format"]
+        if name in unversioned:
+            digest, missing = layout_digest(layout["types"], definitions)
+            if missing:
+                problems.append(
+                    f"{LAYOUTS}: format {name!r} lists {', '.join(missing)}, "
+                    "which its file does not define"
+                )
+            elif digest != layout["digest"]:
+                problems.append(
+                    f"{LAYOUTS}: a type stored in format {name!r} changed, and that format "
+                    f"has no version ({', '.join(layout['types'])}): the bytes an earlier "
+                    "build wrote read as something else, and a later build cannot tell them "
+                    "from these. Give the format a version in its `[[format]]` table and a "
+                    "step that brings up what was written (a reader that converts it), then "
+                    "pin the new layout with "
+                    "`python3 tools/policy/check_format_migrations.py pin`"
+                )
+            continue
+        if "version" not in layout:
+            problems.append(
+                f"{LAYOUTS}: a layout of format {name!r} names no version: a format with "
+                "versions writes the version its layout is"
+            )
+            continue
+        version = int(layout["version"])
         newest[name] = max(newest.get(name, 0), version)
         if name not in versions:
             problems.append(
                 f"{LAYOUTS}: names format {name!r}, which nothing declares: list a stored "
-                "type under the `migration::Format` whose version covers it"
+                "type under the `migration::Format` whose version covers it, or declare the "
+                "format in a `[[format]]` table"
             )
             continue
         if version > versions[name]:
@@ -429,7 +782,7 @@ def stored_layouts(root: Path, texts: dict[str, str]) -> list[str]:
             )
         if version != versions[name]:
             continue
-        digest, missing = layout_digest(layout["types"], read_file(root))
+        digest, missing = layout_digest(layout["types"], definitions)
         if missing:
             problems.append(
                 f"{LAYOUTS}: format {name!r} version {version} lists {', '.join(missing)}, "
@@ -437,11 +790,12 @@ def stored_layouts(root: Path, texts: dict[str, str]) -> list[str]:
             )
         elif digest != layout["digest"]:
             problems.append(
-                f"{LAYOUTS}: a type stored under format {name!r} changed while the format is "
-                f"still version {version} ({', '.join(layout['types'])}). Bytes an earlier "
-                "build wrote would read as something else: give the format a new version with "
-                "a step that brings up what this one wrote, then pin the new layout with "
-                "`python3 tools/policy/check_format_migrations.py pin`"
+                changed_layout_message(
+                    name,
+                    version,
+                    layout["types"],
+                    format_tables(root).get(name) if name in constant_versions else None,
+                )
             )
     for name, version in sorted(versions.items()):
         if name in newest and newest[name] < version:
@@ -453,22 +807,70 @@ def stored_layouts(root: Path, texts: dict[str, str]) -> list[str]:
     return problems
 
 
+DIGEST_BLOCK = re.compile(r"(?ms)^\[\[layout\]\]\n.*?(?=^\[\[layout\]\]\n|\Z)")
+
+
+def rewrite_digests(text: str, wanted: dict[tuple[str, int | None], str]) -> str:
+    """`text` with each `[[layout]]` block's digest replaced by the one `wanted`
+    names for its (format, version). A block besides those is as it was."""
+
+    def fix(block: re.Match[str]) -> str:
+        chunk = block.group(0)
+        name = re.search(r'(?m)^format\s*=\s*"([^"]*)"', chunk)
+        version = re.search(r"(?m)^version\s*=\s*([0-9]+)", chunk)
+        if name is None:
+            return chunk
+        key = (name.group(1), int(version.group(1)) if version else None)
+        if key not in wanted:
+            return chunk
+        return re.sub(
+            r'(?m)^digest\s*=\s*"[^"]*"', f'digest = "{wanted[key]}"', chunk, count=1
+        )
+
+    return DIGEST_BLOCK.sub(fix, text)
+
+
 def pin(root: Path = ROOT) -> list[str]:
-    """Pin the digest of each listed format's current version: a new
-    entry, from the types its newest one lists, for a version not recorded
-    yet. A version already recorded keeps its digest."""
+    """Pin each listed format's current version: the digest of the definition
+    its layout lists, as the tree holds it now. A version not recorded yet is
+    added, from the types the newest recorded layout lists; a recorded one has
+    its digest written again (a re-pin is visible to `against BASE`)."""
     file = root / LAYOUTS
     text = file.read_text()
+    problems = format_problems(root)
+    if problems:
+        return problems
     versions = current_versions(root, sources(root))
+    table_versions, unversioned = declared_format_versions(root)
+    definitions = definitions_for(root)
     listed = layouts(text)
-    added = []
-    for name in sorted({layout["format"] for layout in listed}):
+    wanted: dict[tuple[str, int | None], str] = {}
+    added: list[str] = []
+    names = {layout["format"] for layout in listed} | set(table_versions) | unversioned
+    for name in sorted(names):
         mine = [layout for layout in listed if layout["format"] == name]
-        newest = max(mine, key=lambda layout: int(layout["version"]))
-        version = versions.get(name)
-        if version is None or any(int(layout["version"]) == version for layout in mine):
+        if name in unversioned:
+            if not mine:
+                return [f"{name}: no layout lists the types a format with no version stores"]
+            digest, missing = layout_digest(mine[0]["types"], definitions)
+            if missing:
+                return [f"{name}: {', '.join(missing)} not found"]
+            wanted[(name, None)] = digest
             continue
-        digest, missing = layout_digest(newest["types"], read_file(root))
+        version = versions.get(name)
+        if version is None:
+            continue
+        current = [layout for layout in mine if int(layout.get("version", -1)) == version]
+        if current:
+            digest, missing = layout_digest(current[0]["types"], definitions)
+            if missing:
+                return [f"{name}: {', '.join(missing)} not found"]
+            wanted[(name, version)] = digest
+            continue
+        if not mine:
+            return [f"{name}: no layout lists the types version {version} stores"]
+        newest = max(mine, key=lambda layout: int(layout["version"]))
+        digest, missing = layout_digest(newest["types"], definitions)
         if missing:
             return [f"{name}: {', '.join(missing)} not found"]
         types = "".join(f'  "{entry}",\n' for entry in newest["types"])
@@ -476,16 +878,21 @@ def pin(root: Path = ROOT) -> list[str]:
             f'\n[[layout]]\nformat = "{name}"\nversion = {version}\ndigest = "{digest}"\n'
             f'what = """{newest["what"]}"""\ntypes = [\n{types}]\n'
         )
+        wanted[(name, version)] = digest
+    text = rewrite_digests(text, wanted)
     if added:
-        file.write_text(text.rstrip("\n") + "\n" + "".join(added))
+        text = text.rstrip("\n") + "\n" + "".join(added)
+    file.write_text(text)
     return []
 
 
 def changed_layouts(root: Path, base: str, now_texts: dict[str, str]) -> list[str]:
     """Each digest `base` recorded for a version still declared that is
-    another now: what a version wrote never changes."""
+    another now: what a version wrote never changes. Digests BASE recorded
+    under another `schema` were meant another way and are left to the check
+    that wrote them."""
     try:
-        then = subprocess.check_output(
+        then_text = subprocess.check_output(
             ["git", "show", f"{base}:{LAYOUTS.as_posix()}"],
             cwd=root,
             text=True,
@@ -496,25 +903,43 @@ def changed_layouts(root: Path, base: str, now_texts: dict[str, str]) -> list[st
     file = root / LAYOUTS
     if not file.is_file():
         return []
+    now_text = file.read_text()
+    if schema(then_text) != schema(now_text):
+        return []
     versions = current_versions(root, now_texts)
-    now = {(layout["format"], int(layout["version"])): layout for layout in layouts(file.read_text())}
+    constant_versions, unversioned = declared_format_versions(root)
+    now = {
+        (layout["format"], int(layout["version"]) if "version" in layout else None): layout
+        for layout in layouts(now_text)
+    }
+    declared_now = declarations(now_texts)
     problems = []
-    for layout in layouts(then):
-        key = (layout["format"], int(layout["version"]))
-        oldest = declarations(now_texts).get(layout["format"])
-        still = oldest is not None and oldest[1].isdigit() and int(oldest[1]) <= key[1]
-        if not still or key[1] > versions.get(key[0], 0):
+    for layout in layouts(then_text):
+        key = (layout["format"], int(layout["version"]) if "version" in layout else None)
+        name, version = key
+        if name in unversioned:
+            still = True
+        elif name in constant_versions:
+            # This format refuses a version other than the one it is: only the
+            # version it declares now can still be read.
+            still = version == constant_versions[name]
+        else:
+            oldest = declared_now.get(name)
+            still = oldest is not None and oldest[1].isdigit() and int(oldest[1]) <= (version or 0)
+        if not still:
+            continue
+        if version is not None and name in versions and version > versions[name]:
             continue
         if key not in now or now[key]["digest"] != layout["digest"]:
             problems.append(
-                f"{LAYOUTS}: the layout format {key[0]!r} version {key[1]} stored changed; "
+                f"{LAYOUTS}: the layout format {name!r} version {version} stored changed; "
                 "what a version wrote never changes, so a layout change is a new version"
             )
     return problems
 
 
 def check(root: Path = ROOT) -> list[str]:
-    problems = []
+    problems = format_problems(root)
     texts = sources(root)
     for name, (path, oldest) in declarations(texts).items():
         if not oldest.isdigit():
@@ -622,6 +1047,24 @@ def against(base: str, root: Path = ROOT) -> list[str]:
         + dropped_versions(root, base, then, now)
         + changed_layouts(root, base, now)
     )
+
+
+def stored_closure(root: Path = ROOT) -> set[tuple[str, str]]:
+    """(file, name) pairs of every definition `stored_layouts.toml` lists or
+    one of its listed definitions reaches: the types whose bytes a later build
+    reads back."""
+    file = root / LAYOUTS
+    if not file.is_file():
+        return set()
+    entries = [
+        entry
+        for layout in layouts(file.read_text())
+        for entry in layout.get("types", [])
+    ]
+    if not entries:
+        return set()
+    found, _ = reached_definitions(entries, definitions_for(root))
+    return set(found)
 
 
 def main(argv: list[str] | None = None) -> int:

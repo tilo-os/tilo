@@ -1,0 +1,24 @@
+# Where a resource kind's data went when the kind moved between apps, or
+# joined or left an app's `[resources] own` list, read by
+# tools/policy/check_resource_placement.py. A kind that moves takes what a
+# person kept with it; an entry here says how it was carried over, or what the
+# person loses.
+#
+# [[change]]
+# kind = "<the resource kind>"
+# app = "<the app whose surface or own list changed>"
+# change = "moved" | "removed" | "joined-own" | "left-own"
+# conversion = "<path>:<fn>"   # a function in this tree that carries the data
+# lost = "<what a person loses, and why>"   # or what could not be carried
+
+[[change]]
+kind = "chat.agent"
+app = "chat"
+change = "removed"
+conversion = "crates/server/tilo-workspace-service/src/workspaces/agent_roster.rs:copy_agents"
+
+[[change]]
+kind = "mail.mailbox"
+app = "mail"
+change = "left-own"
+conversion = "apps/mail/src/own_mailbox.rs:take_in"

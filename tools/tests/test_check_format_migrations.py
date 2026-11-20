@@ -208,7 +208,7 @@ class FormatMigrationTests(unittest.TestCase):
             (root / "tools/policy").mkdir(parents=True)
             layouts = root / "tools/policy/stored_layouts.toml"
             digest, missing = formats.layout_digest(
-                ["crates/x/src/journal.rs:Entry"], formats.read_file(root)
+                ["crates/x/src/journal.rs:Entry"], formats.definitions_for(root)
             )
             self.assertEqual(missing, [])
             layouts.write_text(
@@ -258,6 +258,208 @@ class FormatMigrationTests(unittest.TestCase):
             found = formats.against("main", root)
             self.assertEqual(len(found), 1, found)
             self.assertIn("version 2 stored changed", found[0])
+
+    def stored(self, files, layouts):
+        """A tree of `files` (path under crates/x/src -> text), with a
+        declaration that passes the rest of the check, and `layouts` written
+        as `tools/policy/stored_layouts.toml`."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        crate = root / "crates/x"
+        (crate / "src").mkdir(parents=True)
+        keep_golden(crate)
+        (crate / "src/lib.rs").write_text(
+            declaration(1) + "fn open(p: &Path, b: Vec<u8>, v: u32) { STATE.bring_up(p, b, v); }\n"
+        )
+        for name, text in files.items():
+            (crate / "src" / name).write_text(text)
+        (root / "tools/policy").mkdir(parents=True)
+        (root / "tools/policy/stored_layouts.toml").write_text(layouts)
+        return root
+
+    def pinned(self, root, entry, format="fixture state", version=2):
+        """`entry` listed under `format` at `version`, with its digest."""
+        digest, missing = formats.layout_digest([entry], formats.definitions_for(root))
+        self.assertEqual(missing, [])
+        return (
+            f'[[layout]]\nformat = "{format}"\nversion = {version}\ndigest = "{digest}"\n'
+            f'what = "a fixture"\ntypes = ["{entry}"]\n'
+        )
+
+    def test_a_derivation_and_its_domain_constant_change_only_with_a_version(self):
+        # A derived id is stored in every sealed document: a change to how it
+        # is derived reads as another document's key. Neither its function nor
+        # the domain it is derived with was a type the check could list.
+        derive = (
+            'pub const DOMAIN: &[u8] = b"tilo-fixture-v1\\0";\n\n'
+            "pub fn artifact(document: &str) -> String {\n"
+            "    let mut out = String::from_utf8_lossy(DOMAIN).into_owned();\n"
+            "    out.push_str(document);\n    out\n}\n"
+        )
+        root = self.stored({"derive.rs": derive}, "")
+        layouts = root / "tools/policy/stored_layouts.toml"
+        listed = [
+            "crates/x/src/derive.rs:artifact",
+            "crates/x/src/derive.rs:DOMAIN",
+        ]
+        digest, missing = formats.layout_digest(listed, formats.definitions_for(root))
+        self.assertEqual(missing, [])
+        types = "".join(f'  "{entry}",\n' for entry in listed)
+        layouts.write_text(
+            '[[layout]]\nformat = "fixture state"\nversion = 2\n'
+            f'digest = "{digest}"\nwhat = "a fixture"\ntypes = [\n{types}]\n'
+        )
+        self.assertEqual(formats.check(root), [])
+        # The domain's bytes are part of every derived id.
+        (root / "crates/x/src/derive.rs").write_text(derive.replace("v1", "v2"))
+        found = formats.check(root)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("still version 2", found[0])
+        self.assertIn("derive.rs:artifact", found[0])
+        # And so is the body that derives it.
+        (root / "crates/x/src/derive.rs").write_text(derive.replace("out\n}", "out.clone()\n}"))
+        found = formats.check(root)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("still version 2", found[0])
+
+    def test_a_format_versioned_by_a_constant_needs_a_step_to_move(self):
+        # The durable state names its version in a plain constant and refuses
+        # any other: a layout change is a new constant, with a step that reads
+        # what the old one wrote.
+        state = (
+            "pub const DURABLE_STATE_VERSION: u32 = 2;\n\n"
+            "#[derive(serde::Serialize, serde::Deserialize)]\n"
+            "pub struct State {\n    pub revision: u64,\n}\n"
+        )
+        layouts = (
+            '[[format]]\nname = "fixture durable"\n'
+            'version = "crates/x/src/state.rs:DURABLE_STATE_VERSION"\n\n'
+        )
+        root = self.stored({"state.rs": state}, layouts)
+        file = root / "tools/policy/stored_layouts.toml"
+        digest, missing = formats.layout_digest(
+            ["crates/x/src/state.rs:State"], formats.definitions_for(root)
+        )
+        self.assertEqual(missing, [])
+        file.write_text(
+            layouts
+            + '[[layout]]\nformat = "fixture durable"\nversion = 2\n'
+            f'digest = "{digest}"\nwhat = "a durable state"\n'
+            'types = ["crates/x/src/state.rs:State"]\n'
+        )
+        self.assertEqual(formats.check(root), [])
+        (root / "crates/x/src/state.rs").write_text(
+            state.replace("pub revision: u64,", "pub revision: u64,\n    pub pending: Vec<u8>,")
+        )
+        found = formats.check(root)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("refuses a state of another version", found[0])
+        self.assertIn("step that brings up", found[0])
+        # Moving the constant is the version change, and its layout is pinned.
+        (root / "crates/x/src/state.rs").write_text(
+            state.replace("DURABLE_STATE_VERSION: u32 = 2", "DURABLE_STATE_VERSION: u32 = 3")
+        )
+        (root / "crates/x/golden/fixture-state/v3.hex").write_text("03\n")
+        (root / "crates/x/tests/golden3.rs").write_text(
+            READS_GOLDEN.replace("v2.hex", "v3.hex")
+        )
+        found = formats.check(root)
+        self.assertTrue(any("pinned only up to version 2" in p for p in found), found)
+        self.assertEqual(formats.pin(root), [])
+        self.assertEqual(formats.check(root), [])
+        # A constant that is not there names no version.
+        (root / "tools/policy/stored_layouts.toml").write_text(
+            layouts.replace("STATE_VERSION", "MISSING_VERSION")
+        )
+        self.assertIn("declares `version", formats.check(root)[0])
+
+    def test_a_format_with_no_version_fails_on_any_change(self):
+        # Frames a store writes without a header: a later build cannot tell
+        # one layout from another, so any change is a change of meaning.
+        frames = (
+            "#[derive(serde::Serialize, serde::Deserialize)]\n"
+            "pub enum Frames {\n    One(u64),\n    Two,\n}\n"
+        )
+        root = self.stored({"frame.rs": frames}, "")
+        file = root / "tools/policy/stored_layouts.toml"
+        digest, missing = formats.layout_digest(
+            ["crates/x/src/frame.rs:Frames"], formats.definitions_for(root)
+        )
+        self.assertEqual(missing, [])
+        file.write_text(
+            '[[format]]\nname = "fixture frames"\nversion = "none"\n\n'
+            '[[layout]]\nformat = "fixture frames"\n'
+            f'digest = "{digest}"\nwhat = "frames"\n'
+            'types = ["crates/x/src/frame.rs:Frames"]\n'
+        )
+        self.assertEqual(formats.check(root), [])
+        (root / "crates/x/src/frame.rs").write_text(frames.replace("One(u64)", "One(u64, u8)"))
+        found = formats.check(root)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("has no version", found[0])
+        self.assertIn("Give the format a version", found[0])
+        self.assertIn("step that brings up", found[0])
+
+    def test_a_listed_type_covers_the_types_it_names(self):
+        # A field added inside a type the listed one names reads the bytes an
+        # earlier build wrote as something else, as much as one in the root.
+        root = self.stored(
+            {
+                "types.rs": "pub struct Root {\n    pub inner: Inner,\n}\n",
+                "inner.rs": "pub struct Inner {\n    pub count: u64,\n}\n",
+            },
+            "",
+        )
+        file = root / "tools/policy/stored_layouts.toml"
+        file.write_text(self.pinned(root, "crates/x/src/types.rs:Root"))
+        self.assertEqual(formats.check(root), [])
+        (root / "crates/x/src/inner.rs").write_text(
+            "pub struct Inner {\n    pub count: u64,\n    pub other: u8,\n}\n"
+        )
+        found = formats.check(root)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("still version 2", found[0])
+        self.assertIn("types.rs:Root", found[0])
+
+    def test_a_name_is_resolved_in_its_crate_first(self):
+        # Two crates may name a type; the one in the referencing file's crate
+        # is the one it means, and the other is no part of its layout.
+        root = self.stored(
+            {
+                "types.rs": "pub struct Root {\n    pub inner: Inner,\n}\n",
+                "inner.rs": "pub struct Inner {\n    pub count: u64,\n}\n",
+            },
+            "",
+        )
+        other = root / "crates/y/src"
+        other.mkdir(parents=True)
+        (other / "inner.rs").write_text("pub struct Inner {\n    pub elsewhere: u8,\n}\n")
+        file = root / "tools/policy/stored_layouts.toml"
+        file.write_text(self.pinned(root, "crates/x/src/types.rs:Root"))
+        self.assertEqual(formats.check(root), [])
+        (other / "inner.rs").write_text("pub struct Inner {\n    pub elsewhere: u16,\n}\n")
+        self.assertEqual(formats.check(root), [])
+
+    def test_an_ambiguous_name_reaches_no_definition(self):
+        # A name two crates use is no type the root means; a field added to
+        # either is not a change of the root's bytes.
+        root = self.stored(
+            {"types.rs": "pub struct Root {\n    pub inner: Inner,\n}\n"}, ""
+        )
+        for crate in ("crates/y", "crates/z"):
+            (root / crate / "src").mkdir(parents=True)
+            (root / crate / "src/inner.rs").write_text(
+                "pub struct Inner {\n    pub elsewhere: u8,\n}\n"
+            )
+        file = root / "tools/policy/stored_layouts.toml"
+        file.write_text(self.pinned(root, "crates/x/src/types.rs:Root"))
+        self.assertEqual(formats.check(root), [])
+        (root / "crates/y/src/inner.rs").write_text(
+            "pub struct Inner {\n    pub elsewhere: u16,\n}\n"
+        )
+        self.assertEqual(formats.check(root), [])
+
 
 
 if __name__ == "__main__":

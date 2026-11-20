@@ -41,6 +41,11 @@ label = "Versioned on-disk formats name the oldest version they bring up"
 run = "python3 tools/policy/check_format_migrations.py check"
 
 [[step]]
+name = "resource-placements"
+label = "Where an app keeps a resource kind moves only with its conversion"
+run = "python3 tools/policy/check_resource_placement.py check"
+
+[[step]]
 name = "workflow-timeouts"
 label = "Workflow timeouts"
 run = "python3 tools/policy/check_workflow_timeouts.py"

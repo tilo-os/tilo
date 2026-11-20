@@ -1,22 +1,77 @@
-# Rust types a build writes to disk and a later build reads back, beside the
-# bytes a format's golden file pins, read by
-# tools/policy/check_format_migrations.py. Each is listed under the
-# `migration::Format` whose version covers it, with a digest of its definition
-# at that version: a change to one is a new version of that format, with the
-# step that brings up what the version before wrote. Pin the digest of a
-# new version with `python3 tools/policy/check_format_migrations.py pin`.
+schema = 2
+
+# Rust types, functions and constants a build stores in its own bytes and a
+# later build reads back, beside the bytes a format's golden file pins, read by
+# tools/policy/check_format_migrations.py. Each is listed under the format
+# whose version covers it, with a digest of its definition at that version: a
+# change to one is a new version of that format, with the step that brings up
+# what the version before wrote. A digest covers the types the listed
+# definition names, recursively. Pin the digest of a new version with
+# `python3 tools/policy/check_format_migrations.py pin`.
+#
+# A format that keeps its version in a plain constant, rather than a
+# `migration::Format`, is declared in a `[[format]]` table whose `version`
+# names the file and the constant; one written with no version at all says
+# `version = "none"`, and any change to its listed types fails.
+#
+# [[format]]
+# name = "<the format's name>"
+# version = "<path>:<CONST>" | "none"
 #
 # [[layout]]
-# format = "<the Format's name>"
-# version = <the version this layout is>
+# format = "<the format's name>"
+# version = <the version this layout is; left out for a format with none>
 # digest = "<written by `pin`>"
 # what = "what is stored, and where"
-# types = ["crates/<crate>/src/<file>.rs:Type", ...]
+# types = ["crates/<crate>/src/<file>.rs:Item", ...]
+
+[[format]]
+name = "peer durable state"
+version = "crates/collab/tilo-peer-state/src/state/durable.rs:DURABLE_VERSION"
+
+[[format]]
+name = "peer store frames"
+version = "none"
+
+[[layout]]
+format = "peer durable state"
+version = 10
+digest = "783705cd628eed78"
+what = """a replica's durable state: its workspace, documents, certificates, receipts, pending frames and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set"""
+types = [
+  "crates/collab/tilo-peer-state/src/state/durable.rs:Durable",
+  "crates/collab/tilo-peer-state/src/state.rs:DurableDocument",
+  "crates/collab/collab-types/src/op.rs:SignedOp",
+  "crates/collab/collab-types/src/op.rs:DocumentMutation",
+  "crates/collab/collab-types/src/op.rs:EncryptionMetadata",
+  "crates/collab/collab-types/src/op.rs:document_artifact_id",
+  "crates/collab/collab-types/src/op.rs:document_attestation_id",
+  "crates/collab/collab-types/src/op.rs:derived_document_uuid",
+  "crates/collab/collab-types/src/op.rs:derived_uuid",
+  "crates/collab/collab-types/src/op.rs:DOCUMENT_ATTESTATION_DOMAIN",
+  "crates/collab/collab-types/src/readers.rs:content_artifact_id",
+  "crates/collab/collab-types/src/readers.rs:reader_group",
+  "crates/collab/collab-types/src/readers.rs:app_document_id",
+  "crates/collab/collab-types/src/readers.rs:store_document_readers",
+  "crates/collab/collab-types/src/readers.rs:reader_set_name",
+  "crates/collab/collab-types/src/readers.rs:EVERY_MEMBER",
+  "crates/collab/collab-types/src/readers.rs:CONTENT_ARTIFACT_DOMAIN",
+  "crates/collab/collab-types/src/readers.rs:READER_GROUP_DOMAIN",
+  "crates/server/tilo-server-protocol/src/live.rs:live_artifact",
+]
+
+[[layout]]
+format = "peer store frames"
+digest = "ebed316e3cbea33c"
+what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, with no version of its own"""
+types = [
+  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
+]
 
 [[layout]]
 format = "owner workspace document"
 version = 8
-digest = "6e92419b1e9484e9"
+digest = "8cb336fffd2a63b0"
 what = """the journal appended beside each workspace's entry in a device's owner state: one postcard entry per publication, each a delta of what the entry before left"""
 types = [
   "crates/collab/tilo-peer-state/src/owner/journal.rs:Entry",

@@ -32,7 +32,9 @@ enum writes.
 A change that may break an encoding on purpose (a type no byte of which is
 ever kept, or a format whose version is bumped and read by migration) is
 named, with the reason, in ``tools/policy/wire_enum_breaks.toml``, in the
-commit that makes it.
+commit that makes it. A waiver is refused for a stored type: one
+``stored_layouts.toml`` lists, or one a listed definition reaches, since an
+enum a stored type's fields name moves bytes a later build reads back.
 
 ``carried_types`` is the tree's one answer to which types a compact format
 carries: the interfaces' ``postcard``/``bincode`` declarations and what their
@@ -52,6 +54,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_format_migrations import stored_closure  # noqa: E402
 from rust_source import code_only, is_test_file, matching  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -353,8 +356,9 @@ def against(base: str, root: Path = ROOT, head: str | None = None) -> list[str]:
         if text is not None:
             now[target] = wire_enums(text)
     allowed = breaks(root)
-    return stored_breaks(root, allowed, base) + diff_problems(
-        before, now, allowed - stored_types(root), renamed
+    stored = stored_types(root)
+    return stored_breaks(root, allowed, stored, base) + diff_problems(
+        before, now, allowed - stored, renamed
     )
 
 
@@ -363,20 +367,16 @@ LAYOUTS = Path("tools/policy/stored_layouts.toml")
 
 def stored_types(root: Path) -> set[tuple[str, str]]:
     """(file, type) pairs ``stored_layouts.toml`` lists as written to disk and
-    read back by a later build."""
-    path = root / LAYOUTS
-    if not path.is_file():
-        return set()
-    found = set()
-    for layout in tomllib.loads(path.read_text()).get("layout", []):
-        for entry in layout.get("types", []):
-            file, _, name = entry.partition(":")
-            found.add((file, name))
-    return found
+    read back by a later build, and every type those definitions reach: an
+    enum one of them names is stored just as a listed one is."""
+    return stored_closure(root)
 
 
 def stored_breaks(
-    root: Path, allowed: set[tuple[str, str]], base: str | None = None
+    root: Path,
+    allowed: set[tuple[str, str]],
+    stored: set[tuple[str, str]],
+    base: str | None = None,
 ) -> list[str]:
     """A break waived since `base` for an enum that is stored: its bytes are
     read back by a later build, so its variants move only with a new version of
@@ -385,10 +385,11 @@ def stored_breaks(
         before = _revision_text(root, f"{base}:{BREAKS.as_posix()}")
         allowed = allowed - (allowed_breaks(before) if before is not None else set())
     return [
-        f"{BREAKS}: waives {name} in {file}, which {LAYOUTS} lists as stored: bytes an "
-        "earlier build kept read back by position, so its variants move only with a new "
-        "version of its format and the step that brings up what the version before wrote"
-        for file, name in sorted(allowed & stored_types(root))
+        f"{BREAKS}: waives {name} in {file}, which {LAYOUTS} lists as stored or a listed "
+        "definition reaches: bytes an earlier build kept read back by position, so its variants "
+        "move only with a new version of its format and the step that brings up what the "
+        "version before wrote"
+        for file, name in sorted(allowed & stored)
     ]
 
 
@@ -403,8 +404,9 @@ def staged(root: Path = ROOT) -> list[str]:
         if (text := _revision_text(root, f":{target}")) is not None:
             now[target] = wire_enums(text)
     allowed = breaks(root)
-    return stored_breaks(root, allowed, "HEAD") + diff_problems(
-        before, now, allowed - stored_types(root), renamed
+    stored = stored_types(root)
+    return stored_breaks(root, allowed, stored, "HEAD") + diff_problems(
+        before, now, allowed - stored, renamed
     )
 
 
