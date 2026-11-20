@@ -126,7 +126,9 @@ fn switching_pages_resizing_the_sidebar_and_scrolling_do_only_what_changed() {
 #[test]
 fn the_gallery_reads_only_the_faces_its_text_is_set_in() {
     // Every catalog face is listed and mapped before the first frame; a file is read only when text
-    // needs one of its faces, and the gallery's first page is set in the interface face alone.
+    // needs one of its faces, and the gallery's first page is set in the interface face alone. The
+    // list is the thread laying the window out, so a window another test opens in this binary adds
+    // nothing to it.
     crate::support::installed("gallery");
     ui::framework::testing::drive_live_embedded::<TlApp, _>(|tile| {
         let mut text = TextRenderer::new();
