@@ -55,13 +55,37 @@ start_bus() {
   [ -s "$root/dbus.address" ] && return 0
   # The daemon keeps the descriptor it wrote its address to, so a pipe would
   # wait for the daemon to end: write it to a file instead.
-  dbus-daemon --session --fork --print-address=1 --print-pid=1 \
-    > "$root/dbus.out" 2>/dev/null || {
-    echo "the owner profile has no session bus" >&2
-    return 1
-  }
-  sed -n '1p' "$root/dbus.out" > "$root/dbus.address"
-  [ -s "$root/dbus.address" ]
+  if command -v dbus-daemon >/dev/null 2>&1 \
+    && dbus-daemon --session --fork --print-address=1 --print-pid=1 \
+      > "$root/dbus.out" 2>/dev/null; then
+    sed -n '1p' "$root/dbus.out" > "$root/dbus.address"
+    [ -s "$root/dbus.address" ] && return 0
+  fi
+  # The image's own bus is dbus-broker, which takes its listener from socket
+  # activation rather than making one, and Fedora does not carry dbus-daemon
+  # beside it. A broker of this profile's own keeps the session's names off
+  # the desktop's bus, which another session on this machine already holds.
+  if command -v dbus-broker-launch >/dev/null 2>&1 \
+    && command -v systemd-socket-activate >/dev/null 2>&1; then
+    local runtime="$root/runtime" attempt
+    rm -f "$runtime/bus"
+    XDG_RUNTIME_DIR="$runtime" setsid \
+      systemd-socket-activate -l "$runtime/bus" dbus-broker-launch --scope user \
+      > "$root/logs/bus.log" 2>&1 &
+    for attempt in $(seq 1 300); do
+      [ -S "$runtime/bus" ] && break
+      sleep 0.1
+    done
+    if [ -S "$runtime/bus" ]; then
+      printf 'unix:path=%s/bus\n' "$runtime" > "$root/dbus.address"
+      return 0
+    fi
+  fi
+  # Nothing to start is not a reason to stop: the session answers its
+  # questions over its own control socket, and says in its log what a bus it
+  # could not have cost it.
+  echo "the owner profile starts without a session bus" >&2
+  return 0
 }
 
 # The throwaway identity a development profile starts with: minted by a
@@ -100,6 +124,9 @@ case "$mode" in
   start)
     prepare
     start_bus
+    # The session, its control socket and its identity all live in the
+    # profile, so they start with the profile's environment, bus included.
+    profile_env
     if [ -s "$root/session.pid" ] && kill -0 "$(<"$root/session.pid")" 2>/dev/null; then
       exit 0
     fi
