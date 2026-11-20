@@ -1346,20 +1346,27 @@ impl GroupRow {
         }
     }
 
-    /// The sections this strip is partitioned into; empty for one continuous row.
-    /// Whether the window at `idx` is drawn under `p`: its laid-out rect holds the point, and, on
-    /// a strip spread across displays, the point stands on the display the window is laid out on.
-    /// A window whose rect reaches past its display's edge is clipped there, so a point on the
-    /// next display is empty canvas, not that window.
+    /// Whether `p` stands on the display the window at `idx` is laid out on. On a strip spread
+    /// across displays a window whose rect reaches past its display's edge is clipped there, so
+    /// the next display's canvas is not its own; a floating window stands over whichever display
+    /// it is put on.
+    pub(super) fn on_display_under(&self, idx: usize, p: Point) -> bool {
+        self.sections.is_empty()
+            || self.canvas.is_some()
+            || self
+                .groups
+                .get(idx)
+                .is_some_and(|group| self.is_floating(group.id))
+            || self.section_at(p) == Some(self.section_index_of(idx))
+    }
+
+    /// Whether the window at `idx` is drawn under `p`: its laid-out rect holds the point and the
+    /// point stands on its own display ([`Self::on_display_under`]).
     pub(super) fn shown_under(&self, idx: usize, p: Point) -> bool {
-        let Some(group) = self.groups.get(idx) else {
-            return false;
-        };
-        group.get_rect().contains(p)
-            && (self.sections.is_empty()
-                || self.canvas.is_some()
-                || self.is_floating(group.id)
-                || self.section_at(p) == Some(self.section_index_of(idx)))
+        self.groups
+            .get(idx)
+            .is_some_and(|group| group.get_rect().contains(p))
+            && self.on_display_under(idx, p)
     }
 
     /// The index of the shown window drawn under `p`, other than `except`: the last laid out
@@ -4617,8 +4624,8 @@ impl Widget for GroupRow {
         // edge. The exact painted control owns both the cursor update and the press; otherwise the
         // border keeps its usual first refusal. Forwarding the move matters because button events
         // carry no coordinates.
-        let hidden: Vec<bool> = (0..self.groups.len())
-            .map(|i| self.layout_hides_group(i))
+        let stands_here: Vec<bool> = (0..self.groups.len())
+            .map(|i| !self.layout_hides_group(i) && self.on_display_under(i, self.last_cursor))
             .collect();
         let new_tab_owned = matches!(
             event,
@@ -4628,7 +4635,7 @@ impl Widget for GroupRow {
                     ..
                 }
         ) && self.groups.iter().enumerate().any(|(i, group)| {
-            !hidden.get(i).copied().unwrap_or(false) && group.new_tab_hit(self.last_cursor)
+            stands_here.get(i).copied().unwrap_or(false) && group.new_tab_hit(self.last_cursor)
         });
         let cursor = self.last_cursor;
         let direct_new_tab = matches!(
@@ -4643,7 +4650,7 @@ impl Widget for GroupRow {
             .iter_mut()
             .enumerate()
             .find(|(i, group)| {
-                !hidden.get(*i).copied().unwrap_or(false) && group.new_tab_hit(cursor)
+                stands_here.get(*i).copied().unwrap_or(false) && group.new_tab_hit(cursor)
             })
             .is_some_and(|(_, group)| group.request_new_tab_if_hit(cursor));
         if direct_new_tab {
@@ -4719,18 +4726,19 @@ impl Widget for GroupRow {
         if self.group_drag.is_some() || self.pointer_pan.is_some_and(|pan| pan.engaged) {
             return Some(winit::window::CursorIcon::Grabbing);
         }
+        let stands_here = |i: usize| !self.layout_hides_group(i) && self.on_display_under(i, point);
         if self
             .groups
             .iter()
             .enumerate()
-            .any(|(i, group)| !self.layout_hides_group(i) && group.bar_grab_hit(point))
+            .any(|(i, group)| stands_here(i) && group.bar_grab_hit(point))
         {
             return Some(winit::window::CursorIcon::Grab);
         }
         self.groups
             .iter()
             .enumerate()
-            .filter(|(i, _)| !self.layout_hides_group(*i))
+            .filter(|(i, _)| stands_here(*i))
             .find_map(|(_, group)| group.cursor_shape(point))
     }
 
@@ -5612,9 +5620,29 @@ impl GroupRow {
 
     fn dispatch_to_groups(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Mouse buttons and wheels carry no position, so dispatch the group that owns the
-        // remembered cursor (or an active capture) before siblings. Keep every
-        // sibling in the fallback order: synthetic and keyboard-adjacent test
-        // paths can legitimately lack a preceding cursor move.
+        // remembered cursor (or an active capture) before siblings. What the pointer stands on
+        // may take it, and so may a group holding the pointer from a press of its own still under
+        // way (a tab dragged onto another display): what the strip draws under a point is what
+        // may take it, so a window laid out past its display's edge, clipped there, takes nothing
+        // on the next display. A release and a key press reach every group: they end or start
+        // what a group holds, wherever the pointer stands.
+        let pressing = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(_)
+        );
+        let takes_pointer: Vec<bool> = (0..self.groups.len())
+            .map(|i| {
+                !self.layout_hides_group(i)
+                    && (self.on_display_under(i, self.last_cursor)
+                        || self.groups[i].wants_pointer_capture())
+            })
+            .collect();
         // Edge grips first, for every group: they overlay the windows' own
         // content, so no group's tile may swallow the pointer before the group
         // under it has seen it.
@@ -5623,7 +5651,7 @@ impl GroupRow {
             WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
         ) {
             for i in 0..self.groups.len() {
-                if self.layout_hides_group(i) {
+                if !takes_pointer.get(i).copied().unwrap_or(false) {
                     continue;
                 }
                 if self.groups[i].handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
@@ -5638,7 +5666,9 @@ impl GroupRow {
                 .iter()
                 .enumerate()
                 .position(|(i, group)| {
-                    !self.layout_hides_group(i) && group.new_tab_hit(self.last_cursor)
+                    !self.layout_hides_group(i)
+                        && self.on_display_under(i, self.last_cursor)
+                        && group.new_tab_hit(self.last_cursor)
                 })
                 .or_else(|| {
                     self.groups.iter().enumerate().position(|(i, group)| {
@@ -5646,11 +5676,7 @@ impl GroupRow {
                     })
                 })
                 .or_else(|| self.float_under_cursor())
-                .or_else(|| {
-                    self.groups.iter().enumerate().position(|(i, group)| {
-                        !self.layout_hides_group(i) && group.get_rect().contains(self.last_cursor)
-                    })
-                })
+                .or_else(|| self.window_under(self.last_cursor, None))
         });
         let preferred = preferred.flatten();
         if matches!(
@@ -5679,10 +5705,11 @@ impl GroupRow {
             order.push(i);
         }
         if !(wheel && preferred.is_some()) {
-            order.extend(
-                (0..self.groups.len())
-                    .filter(|i| Some(*i) != preferred && !self.layout_hides_group(*i)),
-            );
+            order.extend((0..self.groups.len()).filter(|i| {
+                Some(*i) != preferred
+                    && !self.layout_hides_group(*i)
+                    && (!pressing || takes_pointer.get(*i).copied().unwrap_or(false))
+            }));
         }
         for i in order {
             let Some(g) = self.groups.get_mut(i) else {

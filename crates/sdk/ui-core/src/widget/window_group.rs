@@ -3300,6 +3300,7 @@ impl Widget for WindowGroup {
     }
     fn wants_pointer_capture(&self) -> bool {
         self.edge_drag.is_some()
+            || super::Widget::wants_pointer_capture(&self.bar)
             || self
                 .active_host()
                 .is_some_and(super::Widget::wants_pointer_capture)
