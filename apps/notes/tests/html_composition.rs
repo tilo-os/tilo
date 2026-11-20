@@ -130,6 +130,26 @@ fn a_note_renders_as_its_own_elements() {
     }
 }
 
+/// A notebook with nothing in it offers the first note on the page as it does
+/// on the screen: a page has no paint to draw the pill with, so the words the
+/// accessibility tree already carries are the page's own.
+#[test]
+fn an_empty_notebook_offers_the_first_note_on_the_page() {
+    let mut app = notes();
+    let _ = app.harness().poll_frame();
+    let composition = app.harness().composition();
+    let mut page = ui::composition::page::Page::new();
+    let body = page.render(&composition);
+    assert!(
+        body.contains(">New note<"),
+        "the page offers the first note in words: {body}"
+    );
+    assert!(
+        body.contains("data-t=\"notes.first_note\""),
+        "the offer opens the notebook's first note: {body}"
+    );
+}
+
 /// On a phone the page's bar is the app's own header row: its buttons are faces of their own
 /// (icons, not pictures of their paint), and a notice comes and goes over the note without
 /// moving it.

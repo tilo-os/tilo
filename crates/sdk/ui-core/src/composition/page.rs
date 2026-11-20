@@ -400,6 +400,23 @@ impl Page {
             }
             element.children.push(self.node(child, Some(flows)));
         }
+        // What a view draws itself, a page has no paint for: a control whose
+        // own paint is all it shows still says its name, which the
+        // accessibility tree already carries. Otherwise an empty notebook is
+        // an empty page, and its offer of a first note cannot be pressed.
+        if element.own.is_empty()
+            && element.children.is_empty()
+            && matches!(element.tag, "button" | "a")
+        {
+            if let Some(name) = node
+                .semantics
+                .as_ref()
+                .and_then(|access| access.name.as_deref())
+                .filter(|name| !name.trim().is_empty())
+            {
+                element.own = escape(name);
+            }
+        }
         element
     }
 
