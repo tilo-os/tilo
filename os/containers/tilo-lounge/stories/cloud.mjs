@@ -241,10 +241,16 @@ export const plainPress = async (tab, label) => {
  * account, then shows its login form, then asks to grant access. */
 export const nextcloudSignIn = async (tab, {user, password, beforeGrant = async () => {}}) => {
   await plainShows(tab, 'Log in', 'the server’s connect page', stepLimit(4));
-  await plainPress(tab, 'Log in');
   // The connect page carries a hidden field named user too: the login form is
-  // there once its password field shows.
-  await waitUntil(tab, 'document.querySelector("input[type=password]")?.offsetParent != null', 'the server’s login form', stepLimit(4));
+  // there once its password field shows. A press the page took before its own
+  // script was ready opens nothing, and a person presses again.
+  const form = 'document.querySelector("input[type=password]")?.offsetParent != null';
+  for (let press = 1; ; press++) {
+    await plainPress(tab, 'Log in');
+    const opened = await waitUntil(tab, form, 'the server’s login form', 10_000).then(() => true, () => false);
+    if (opened) break;
+    if (press === 3) throw new Error(`three presses of the connect page's Log in opened no login form; the page shows: ${JSON.stringify((await plainText(tab)).slice(0, 300))}`);
+  }
   await plainType(tab, 'input[name=user]:not([type=hidden])', user);
   await plainType(tab, 'input[type=password]', password);
   await plainPress(tab, 'Log in');
