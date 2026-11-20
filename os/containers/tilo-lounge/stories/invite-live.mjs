@@ -14,7 +14,7 @@
 // step failed or ran over its budget.
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {stepLimit, SHELL} from '../integration/waits.mjs';
-import {click, find, found, key, NODE_VALUES, openMarks, pageText, pressNamed, sealedLink, searcher, TREE_TEXT, until}
+import {click, find, found, key, NODE_VALUES, openMarks, pageText, pressNamed, sealedLink, searcher, textFieldMarks, TREE_TEXT, until, watchTextField}
   from '../integration/shell.mjs';
 import {recorder, StoryStopped} from './recorder.mjs';
 
@@ -203,10 +203,11 @@ try {
     story.web.openApp(ada, opened.ok ? opened.presentMs : NaN, 'Notes');
     await ada.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
     await until(ada.tab, found('New note'), 'Notes’ New note');
-    const pressed = Date.now();
+    await watchTextField(ada.tab);
     if (!await press(ada.tab, 'New note')) fail('Notes’ New note is not where a person can press it');
     await until(ada.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? null).includes('MultilineTextInput')`, 'the new note’s text field');
-    story.web.action(ada, Date.now() - pressed, 'a new note');
+    const field = await textFieldMarks(ada.tab);
+    story.web.action(ada, field.ok ? field.ms : NaN, 'a new note');
     // Following Ada, Grace is shown the note too, under the name Ada's window has.
     const labels = `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => entry.label)`;
     const adaShows = await ada.tab.evaluate(`JSON.stringify(${labels})`).catch(() => '[]');
