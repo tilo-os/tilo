@@ -2107,7 +2107,7 @@ up_native() {
   # authority that signed it — which this makes. The host starts before the
   # server, which reads where to place a workspace once, when it starts.
   [[ -z $discord ]] || start_native_discord
-  [[ -z $fake_oauth ]] || start_native_fake_oauth
+  [[ -z ${fake_oauth:-} ]] || start_native_fake_oauth
   start_mail
   # Before the TLS and the bundle, so its certificate is trusted by the server
   # that signs a mail account in.
@@ -2272,7 +2272,7 @@ up() {
       --fake-oauth) fake_oauth=1 ;;
       --fresh) fresh=1 ;;
       -h|--help) usage; return ;;
-      *) die "up takes --images, --seed, --discord and --fresh, not $arg" ;;
+      *) die "up takes --images, --seed, --discord, --fake-oauth and --fresh, not $arg" ;;
     esac
   done
   local began=$SECONDS
