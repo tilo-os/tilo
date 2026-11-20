@@ -691,9 +691,15 @@ fn land_message(
     message: &migration_sources::thunderbird::StoredMessage,
     lander: &mut Lander<'_>,
 ) -> Result<()> {
-    let Some(delivery) = delivery(&message.bytes, folder, message.read, address) else {
+    // One reading of a message that may be hundreds of megabytes: what it is
+    // delivered as, and which of its parts are kept apart.
+    use mail_parser::MessageParser;
+    let sent = as_sent(&message.bytes);
+    let Some(parsed) = MessageParser::default().parse(sent) else {
         return Ok(());
     };
+    let delivery = delivery_of(&parsed, sent, folder, message.read, address);
+    let split = tilo_mail_parts::split_parsed(sent, &parsed);
     // The message's own Message-ID names it; one without is named by what it says.
     let name = message
         .message_id
@@ -707,7 +713,6 @@ fn land_message(
             // are what Mail keeps; the words beside it are for whoever reads the record alone.
             // Its large parts travel apart from it, each in pieces, so a message of any size
             // comes over and no one upload or piece of content holds all of it.
-            let split = tilo_mail_parts::split(as_sent(&message.bytes));
             let original = workspace.put(&split.rest)?;
             let mut parts = Vec::with_capacity(split.apart.len());
             for part in &split.apart {
@@ -747,9 +752,22 @@ fn already_held(error: &anyhow::Error) -> bool {
 /// date and text, the folder it is in, whether it was read, and the conversation it belongs to.
 /// `None` for bytes that are not a message.
 #[must_use]
+#[cfg(test)]
 pub fn delivery(bytes: &[u8], folder: &str, read: bool, account: &str) -> Option<Value> {
-    use mail_parser::{MessageParser, MimeHeaders as _};
-    let parsed = MessageParser::default().parse(bytes)?;
+    let parsed = mail_parser::MessageParser::default().parse(bytes)?;
+    Some(delivery_of(&parsed, bytes, folder, read, account))
+}
+
+/// [`delivery`], of `parsed`, which was read from `bytes`: a message read once for everything it
+/// says, however large it is.
+fn delivery_of(
+    parsed: &mail_parser::Message<'_>,
+    bytes: &[u8],
+    folder: &str,
+    read: bool,
+    account: &str,
+) -> Value {
+    use mail_parser::MimeHeaders as _;
     let addresses = |list: Option<&mail_parser::Address<'_>>| -> String {
         list.map(|list| {
             list.iter()
@@ -802,7 +820,9 @@ pub fn delivery(bytes: &[u8], folder: &str, read: bool, account: &str) -> Option
         if let Some(conversation) = conversation {
             fields.insert("conversation".into(), json!(conversation));
         }
-        // Mail lists these before it holds the message's bytes.
+        // Mail lists these before it holds the message's bytes. A part's length
+        // is what its body decodes to, which the reading already worked out: no
+        // attachment is decoded again, however large it is.
         let attachments: Vec<Value> = parsed
             .attachments()
             .map(|part| {
@@ -813,7 +833,7 @@ pub fn delivery(bytes: &[u8], folder: &str, read: bool, account: &str) -> Option
                 json!({
                     "filename": part.attachment_name().unwrap_or("attachment.bin"),
                     "media_type": media_type,
-                    "size": part.contents().len(),
+                    "size": part.len(),
                 })
             })
             .collect();
@@ -821,7 +841,7 @@ pub fn delivery(bytes: &[u8], folder: &str, read: bool, account: &str) -> Option
             fields.insert("attachments".into(), json!(attachments));
         }
     }
-    Some(delivery)
+    delivery
 }
 
 /// The first `<id>` of a header naming messages.

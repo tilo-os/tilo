@@ -50,13 +50,17 @@ pub struct Split<'a> {
 /// all of it and nothing is apart.
 #[must_use]
 pub fn split(message: &[u8]) -> Split<'_> {
-    let whole = || Split {
-        rest: message.to_vec(),
-        apart: Vec::new(),
-    };
     let Some(parsed) = MessageParser::default().parse(message) else {
-        return whole();
+        return whole(message);
     };
+    split_parsed(message, &parsed)
+}
+
+/// [`split`], of `parsed`, which was read from `message`: a caller that also reads the message
+/// for what else it says reads it once, not once a piece.
+#[must_use]
+pub fn split_parsed<'a>(message: &'a [u8], parsed: &mail_parser::Message<'a>) -> Split<'a> {
+    let kept_whole = || whole(message);
     // Each large leaf: its body's start and end in the message, and its decoded size. A nested
     // message is one leaf, its own parts kept with it.
     let mut cut: Vec<(usize, usize, u64)> = parsed
@@ -77,7 +81,7 @@ pub fn split(message: &[u8]) -> Split<'_> {
     for (start, end, size) in cut {
         // Overlapping or out of order: not a message these offsets describe.
         let (Some(kept), Some(body)) = (message.get(from..start), message.get(start..end)) else {
-            return whole();
+            return kept_whole();
         };
         rest.extend_from_slice(kept);
         apart.push(Apart {
@@ -88,20 +92,28 @@ pub fn split(message: &[u8]) -> Split<'_> {
         from = end;
     }
     if apart.is_empty() {
-        return whole();
+        return kept_whole();
     }
     rest.extend_from_slice(message.get(from..).unwrap_or_default());
     let split = Split { rest, apart };
-    if reads_the_same(message, &split) {
+    if reads_the_same(message, parsed, &split) {
         split
     } else {
-        whole()
+        kept_whole()
     }
 }
 
-/// Whether `split` is `message`: put back together it is the same bytes, and its rest reads as
-/// the same parts, each one kept apart where it says, empty.
-fn reads_the_same(message: &[u8], split: &Split<'_>) -> bool {
+/// `message` whole, with nothing kept apart.
+fn whole(message: &[u8]) -> Split<'_> {
+    Split {
+        rest: message.to_vec(),
+        apart: Vec::new(),
+    }
+}
+
+/// Whether `split` is `message`, `parsed`: put back together it is the same bytes, and its rest
+/// reads as the same parts, each one kept apart where it says, empty.
+fn reads_the_same(message: &[u8], whole: &mail_parser::Message<'_>, split: &Split<'_>) -> bool {
     let bodies: Vec<(u64, &[u8])> = split
         .apart
         .iter()
@@ -110,10 +122,7 @@ fn reads_the_same(message: &[u8], split: &Split<'_>) -> bool {
     if join(&split.rest, &bodies).as_deref() != Some(message) {
         return false;
     }
-    let (Some(whole), Some(rest)) = (
-        MessageParser::default().parse(message),
-        MessageParser::default().parse(&split.rest),
-    ) else {
+    let Some(rest) = MessageParser::default().parse(&split.rest) else {
         return false;
     };
     whole.parts.len() == rest.parts.len()

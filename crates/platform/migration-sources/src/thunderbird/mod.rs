@@ -1233,17 +1233,25 @@ impl MailFacts {
 }
 
 fn message_facts(raw: &[u8], maildir: Option<(bool, bool)>) -> (bool, bool, u64) {
-    let parsed = mail_parser::MessageParser::default().parse(raw);
-    let attachments = parsed
+    let (read, starred) = message_flags(raw, maildir);
+    let attachments = mail_parser::MessageParser::default()
+        .parse(raw)
         .as_ref()
         .map_or(0, |message| message.attachments().count() as u64);
+    (read, starred, attachments)
+}
+
+/// Whether a message was read and starred, from what a maildir's file name says or from the
+/// `X-Mozilla-Status` an mbox keeps in its headers: never from a reading of the whole message,
+/// which a copy of one only reads for what it delivers.
+fn message_flags(raw: &[u8], maildir: Option<(bool, bool)>) -> (bool, bool) {
     if let Some((read, starred)) = maildir {
-        return (read, starred, attachments);
+        return (read, starred);
     }
     let status = header(raw, b"x-mozilla-status:")
         .and_then(|value| u32::from_str_radix(value.trim(), 16).ok())
         .unwrap_or(0);
-    ((status & 0x0001) != 0, (status & 0x0004) != 0, attachments)
+    ((status & 0x0001) != 0, (status & 0x0004) != 0)
 }
 
 fn header<'a>(raw: &'a [u8], name: &[u8]) -> Option<&'a str> {

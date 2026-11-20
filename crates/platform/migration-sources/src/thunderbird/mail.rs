@@ -15,7 +15,7 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 
 use super::{
     FolderFormat, MboxMessages, ReviewedFolder, ReviewedThunderbird, header, maildir_read_flags,
-    mbox, message_facts, read_file, scan, walk,
+    mbox, message_flags, read_file, scan, walk,
 };
 
 /// One message as the folder holds it, with its flags.
@@ -78,7 +78,7 @@ fn read_mbox(
     loop {
         match messages.next_message() {
             Ok(Some(raw)) => {
-                let (read, starred, _) = message_facts(&raw, None);
+                let (read, starred) = message_flags(&raw, None);
                 let message_id = header(&raw, b"message-id:").map(|value| value.trim().to_owned());
                 if each(StoredMessage {
                     bytes: raw,

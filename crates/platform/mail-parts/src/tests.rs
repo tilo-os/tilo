@@ -200,3 +200,20 @@ fn a_decoder_made_from_its_encodings_name_decodes_the_same_file() {
     }
     assert!(Decoder::named("uuencode").is_none());
 }
+
+/// A caller that already read the message for what else it says keeps the same parts apart from
+/// that one reading, byte for byte as [`split`] does from its own.
+#[test]
+fn a_message_read_once_comes_apart_as_it_does_read_again() {
+    let message = message_with_attachments(
+        "once@example.net",
+        "Once",
+        &[("plans.pdf", 1024 * 1024), ("note.txt", 100)],
+    );
+    let parsed = MessageParser::default().parse(&message).unwrap();
+    let once = split_parsed(&message, &parsed);
+    let again = split(&message);
+    assert_eq!(once.rest, again.rest);
+    assert_eq!(once.apart, again.apart);
+    assert_eq!(join(&once.rest, &bodies(&once)).unwrap(), message);
+}
