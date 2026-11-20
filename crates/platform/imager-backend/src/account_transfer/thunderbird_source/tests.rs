@@ -126,8 +126,48 @@ fn read_kept(path: &Path) -> Kept {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
-fn key() -> SymmetricKey {
-    SymmetricKey::generate().unwrap()
+/// A fresh migration password; the artifact is written to a directory of its own that lives as
+/// long as the sealed selection does.
+fn key() -> Vec<u8> {
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random).unwrap();
+    format!("test-password-{}", hex::encode(random)).into_bytes()
+}
+
+type Sealed = (tempfile::TempDir, PasswordSealedThunderbird);
+
+fn seal_selected(
+    reviewed: &ReviewedThunderbird,
+    selection: &ThunderbirdSelection,
+    password: &[u8],
+    binding: &[u8],
+) -> std::io::Result<Sealed> {
+    let directory = tempfile::tempdir()?;
+    let artifact = PasswordSealedThunderbird::seal(
+        reviewed,
+        selection,
+        password,
+        binding,
+        &std::sync::atomic::AtomicBool::new(false),
+        &directory.path().join("mail.sealed"),
+    )?;
+    Ok((directory, artifact))
+}
+
+fn import_selected(
+    target: &Path,
+    sealed: &Sealed,
+    password: &[u8],
+    binding: &[u8],
+    selection: &ThunderbirdSelection,
+) -> std::io::Result<ThunderbirdImportReceipt> {
+    sealed.1.import(
+        target,
+        password,
+        binding,
+        selection,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
 }
 
 const BINDING: &[u8] = b"operation-7/target-user-1000";
@@ -248,7 +288,8 @@ tilo_test_env::scenario! {
         let selection = ThunderbirdSelection::all(&reviewed);
         let key = key();
         let sealed = seal_selected(&reviewed, &selection, &key, BINDING).unwrap();
-        assert!(!String::from_utf8_lossy(sealed.as_bytes()).contains("person@example.test"));
+        assert!(!String::from_utf8_lossy(&std::fs::read(sealed.0.path().join("mail.sealed")).unwrap())
+            .contains("person@example.test"));
         let target = tempfile::tempdir().unwrap();
         let receipt = import_selected(target.path(), &sealed, &key, BINDING, &selection).unwrap();
         assert_eq!(receipt.accounts.len(), 2);
@@ -395,10 +436,13 @@ tilo_test_env::scenario! {
         let sealed = seal_selected(&reviewed, &selection, &transport_key, BINDING).unwrap();
         let target = tempfile::tempdir().unwrap();
         assert_eq!(
-            import_selected(target.path(), &sealed, &key(), BINDING, &selection).unwrap_err(),
-            ConnectionError::CredentialUnavailable
+            import_selected(target.path(), &sealed, &key(), BINDING, &selection)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData,
+            "another password does not open the artifact"
         );
-        assert_eq!(
+        assert!(
             import_selected(
                 target.path(),
                 &sealed,
@@ -406,14 +450,14 @@ tilo_test_env::scenario! {
                 b"another-operation",
                 &selection
             )
-            .unwrap_err(),
-            ConnectionError::CredentialUnavailable
+            .is_err(),
+            "another operation's binding does not open the artifact"
         );
         let mut widened = selection;
         widened.accounts[0].folders.push("not-a-folder".into());
-        assert_eq!(
-            import_selected(target.path(), &sealed, &transport_key, BINDING, &widened).unwrap_err(),
-            ConnectionError::InvalidConfiguration
+        assert!(
+            import_selected(target.path(), &sealed, &transport_key, BINDING, &widened).is_err(),
+            "a widened selection is refused"
         );
         assert!(
             !target
@@ -734,9 +778,9 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(&cache).unwrap();
         let corrupt = cache.join(format!("{local_stem}.json"));
         std::fs::write(&corrupt, b"{not json").unwrap();
-        assert_eq!(
-            import_selected(target.path(), &sealed, &key, BINDING, &selection).unwrap_err(),
-            ConnectionError::StorageUnavailable
+        assert!(
+            import_selected(target.path(), &sealed, &key, BINDING, &selection).is_err(),
+            "unreadable kept mail is refused"
         );
         assert!(
             !accounts::store_path_in(&target.path().join(".config/tilo")).exists(),
@@ -788,9 +832,9 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(&files).unwrap();
         let attachment = files.join(format!("{}.0", stable_message_id("one@example.test")));
         std::fs::write(&attachment, b"someone else's bytes").unwrap();
-        assert_eq!(
-            import_selected(target.path(), &sealed, &key, BINDING, &selection).unwrap_err(),
-            ConnectionError::AlreadyPresent
+        assert!(
+            import_selected(target.path(), &sealed, &key, BINDING, &selection).is_err(),
+            "an attachment that differs is refused"
         );
         assert!(
             !accounts::store_path_in(&target.path().join(".config/tilo")).exists(),

@@ -2169,33 +2169,23 @@ fn prepare_mail(
     let mut handoffs = Vec::with_capacity(selection.profiles.len());
     for (reviewed, selected) in &selection.profiles {
         imager_backend::migration::check_cancel(cancel)?;
-        let artifact =
-            PasswordSealedThunderbird::seal(reviewed, selected, password, binding.as_bytes())
-                .map_err(|_| io::Error::other("Selected mail could not be prepared"))?;
         let filename = format!("mail-{}.sealed", uuid::Uuid::new_v4());
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(tree.join(&filename))?;
-        if u64::try_from(artifact.as_bytes().len())
-            .map_or(true, |bytes| bytes > prepared_setup::LIMITS.plaintext_bytes)
-        {
-            return Err(io::Error::other(
-                "Selected mail exceeds the prepared setup package bound",
-            ));
-        }
-        file.write_all(artifact.as_bytes())?;
-        file.sync_all()?;
+        let artifact = PasswordSealedThunderbird::seal(
+            reviewed,
+            selected,
+            password,
+            binding.as_bytes(),
+            cancel,
+            &tree.join(&filename),
+        )
+        .map_err(|_| io::Error::other("Selected mail could not be prepared"))?;
         handoffs.push(prepared_setup::MailHandoff {
             filename,
             selection: selected.clone(),
-            sealed_bytes: u64::try_from(artifact.as_bytes().len())
-                .map_err(|_| io::Error::other("Selected mail exceeds its bound"))?,
-            ciphertext_sha256: {
-                use sha2::Digest;
-                sha2::Sha256::digest(artifact.as_bytes()).into()
-            },
+            sealed_bytes: artifact.len(),
+            ciphertext_sha256: artifact
+                .sha256()
+                .map_err(|_| io::Error::other("Selected mail could not be read back"))?,
         });
     }
     Ok(handoffs)

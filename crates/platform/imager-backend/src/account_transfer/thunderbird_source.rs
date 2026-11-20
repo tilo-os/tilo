@@ -4,7 +4,7 @@
 //!
 //! A transfer that stays on this computer streams the granted Home instead of building the bundle.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -13,20 +13,20 @@ use accounts::thunderbird::{AccountMetadata, Transport};
 use accounts::{Account, AccountId, AccountStore};
 use mail_parser::MimeHeaders;
 use serde::{Deserialize, Serialize};
-use tilo_seal::{Context, Frame, FrameError, Label, SymmetricKey, envelope, migration_password};
-use zeroize::Zeroizing;
+use tilo_seal::{Frame, migration_password};
 
 use crate::account_sources::thunderbird::{
-    FolderFormat, ReviewedFolder, ReviewedThunderbird, ThunderbirdAccount, ThunderbirdFolder,
-    read_maildir_files, read_reviewed,
+    ReviewedThunderbird, ThunderbirdAccount, ThunderbirdFolder,
 };
 
 use super::ConnectionError;
 use super::actions::target_root;
 
+mod artifact;
 mod personal_data;
 mod stream;
 
+pub use artifact::{MAX_ARTIFACT_BYTES, PasswordSealedThunderbird};
 pub use stream::import_reviewed;
 
 const DOMAIN: &[u8] = b"tilo-thunderbird-selection/v1\0";
@@ -50,8 +50,6 @@ const MAIL_ARTIFACT: Frame = Frame::new(
     16 * 1024,
     MAX_SEALED,
 );
-
-pub const MAX_THUNDERBIRD_ARTIFACT: usize = MAIL_ARTIFACT.max_len();
 
 /// An empty account list is an empty selection, not "everything"; the ids are the opaque ones from
 /// discovery.
@@ -182,112 +180,11 @@ fn unique(values: &[String], limit: usize) -> Result<(), ConnectionError> {
         .ok_or(ConnectionError::InvalidConfiguration)
 }
 
-/// Ciphertext only; no key, path, address or body is visible until it authenticates.
-pub struct SealedThunderbird(Vec<u8>);
-
-impl std::fmt::Debug for SealedThunderbird {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("SealedThunderbird")
-            .field("bytes", &self.0.len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl SealedThunderbird {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    /// Parses the envelope framing only; authentication happens on import.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectionError> {
-        if bytes.len() > MAX_SEALED {
-            return Err(ConnectionError::InvalidConfiguration);
-        }
-        envelope::Envelope::parse(bytes).map_err(|_| ConnectionError::CredentialUnavailable)?;
-        Ok(Self(bytes.to_vec()))
-    }
-}
-
-/// The content key is wrapped under the person's preparation password; the package never holds a
-/// password or an unwrapped key.
-pub struct PasswordSealedThunderbird(Vec<u8>);
-
-impl std::fmt::Debug for PasswordSealedThunderbird {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PasswordSealedThunderbird")
-            .field("bytes", &self.0.len())
-            .finish_non_exhaustive()
-    }
-}
-
-impl PasswordSealedThunderbird {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    /// Parses the framing and the canonical KDF policy without deriving a key; authentication
-    /// happens only in [`Self::open`].
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ConnectionError> {
-        MAIL_ARTIFACT.parse(bytes).map_err(frame_error)?;
-        Ok(Self(bytes.to_vec()))
-    }
-
-    pub fn read(path: &Path) -> Result<Self, ConnectionError> {
-        read_artifact(path).map_err(|_| ConnectionError::StorageUnavailable)
-    }
-
-    pub fn seal(
-        reviewed: &ReviewedThunderbird,
-        selection: &ThunderbirdSelection,
-        password: &[u8],
-        setup_binding: &[u8],
-    ) -> Result<Self, ConnectionError> {
-        selection.validate(reviewed)?;
-        validate_password(password)?;
-        binding(setup_binding)?;
-        let key = SymmetricKey::generate().map_err(|_| ConnectionError::CredentialUnavailable)?;
-        let selected = seal_selected(reviewed, selection, &key, setup_binding)?;
-        let bytes = MAIL_ARTIFACT
-            .seal(password, setup_binding, &key, selected.as_bytes())
-            .map_err(frame_error)?;
-        Self::from_bytes(&bytes)
-    }
-
-    /// Authenticates the wrap and the inner selection, then hands the retained key to the import; a
-    /// wrong password, binding or changed bytes is refused before any target ownership is touched.
-    pub fn open(
-        &self,
-        password: &[u8],
-        setup_binding: &[u8],
-    ) -> Result<(SealedThunderbird, SymmetricKey), ConnectionError> {
-        validate_password(password)?;
-        let (key, selected) = MAIL_ARTIFACT
-            .open(password, setup_binding, &self.0)
-            .map_err(frame_error)?;
-        Ok((SealedThunderbird::from_bytes(&selected)?, key))
-    }
-}
-
-fn frame_error(error: FrameError) -> ConnectionError {
-    match error {
-        FrameError::Malformed => ConnectionError::InvalidConfiguration,
-        FrameError::Unauthenticated => ConnectionError::CredentialUnavailable,
-    }
-}
-
 fn validate_password(password: &[u8]) -> Result<(), ConnectionError> {
     if !migration_password(password) {
         return Err(ConnectionError::InvalidConfiguration);
     }
     Ok(())
-}
-
-fn read_artifact(path: &Path) -> std::io::Result<PasswordSealedThunderbird> {
-    let bytes = crate::destination_security::read_private_file(path, MAX_THUNDERBIRD_ARTIFACT)?;
-    PasswordSealedThunderbird::from_bytes(&bytes)
-        .map_err(|_| std::io::Error::other("Malformed mail artifact"))
 }
 
 /// What the destination received, in opaque ids and counts; never a path, address or content.
@@ -314,53 +211,6 @@ pub struct ThunderbirdFolderReceipt {
     pub local_only: bool,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Bundle {
-    version: u8,
-    profiles: Vec<BundleProfile>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BundleProfile {
-    source_id: String,
-    label: String,
-    accounts: Vec<BundleAccount>,
-    address_books: Vec<BundleFile>,
-    calendars: Vec<BundleFile>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BundleAccount {
-    inventory: ThunderbirdAccount,
-    metadata: AccountMetadata,
-    folders: Vec<BundleFolder>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BundleFolder {
-    inventory: ThunderbirdFolder,
-    files: Vec<BundleData>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BundleData {
-    name: String,
-    bytes: Vec<u8>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BundleFile {
-    source_id: String,
-    name: String,
-    bytes: Vec<u8>,
-}
-
 fn binding(binding: &[u8]) -> Result<Vec<u8>, ConnectionError> {
     if binding.is_empty() || binding.len() > MAX_BINDING {
         return Err(ConnectionError::InvalidConfiguration);
@@ -368,160 +218,6 @@ fn binding(binding: &[u8]) -> Result<Vec<u8>, ConnectionError> {
     let mut context = DOMAIN.to_vec();
     context.extend_from_slice(binding);
     Ok(context)
-}
-
-/// Re-reads the source through its pinned profile handles and revalidates the profile before the
-/// artifact is produced.
-pub fn seal_selected(
-    reviewed: &ReviewedThunderbird,
-    selection: &ThunderbirdSelection,
-    key: &SymmetricKey,
-    setup_binding: &[u8],
-) -> Result<SealedThunderbird, ConnectionError> {
-    selection.validate(reviewed)?;
-    let context = binding(setup_binding)?;
-    reviewed
-        .root
-        .validate()
-        .map_err(|_| ConnectionError::AccountMissing)?;
-    let mut profiles = Vec::new();
-    for profile in [reviewed] {
-        let selected_accounts: BTreeMap<_, _> = selection
-            .accounts
-            .iter()
-            .map(|account| (account.source_id.as_str(), account))
-            .collect();
-        let mut accounts = Vec::new();
-        for account in &profile.accounts {
-            let Some(selected) = selected_accounts.get(account.inventory.source_id.as_str()) else {
-                continue;
-            };
-            let mut folders = Vec::new();
-            for folder in &account.folders {
-                if !selected
-                    .folders
-                    .iter()
-                    .any(|id| id == &folder.inventory.source_id)
-                {
-                    continue;
-                }
-                folders.push(read_folder(profile, folder)?);
-            }
-            accounts.push(BundleAccount {
-                inventory: account.inventory.clone(),
-                metadata: account.metadata.clone(),
-                folders,
-            });
-        }
-        let mut address_books = Vec::new();
-        for book in &profile.address_books {
-            if selection
-                .accounts
-                .iter()
-                .any(|account| account.address_books.iter().any(|id| id == &book.source_id))
-            {
-                address_books.push(read_bundle_file(profile, book)?);
-            }
-        }
-        let mut calendars = Vec::new();
-        for calendar in &profile.calendars {
-            if selection
-                .accounts
-                .iter()
-                .any(|account| account.calendars.iter().any(|id| id == &calendar.source_id))
-            {
-                calendars.push(read_bundle_file(profile, calendar)?);
-            }
-        }
-        profiles.push(BundleProfile {
-            source_id: profile.profile.source_id.clone(),
-            label: profile.profile.label.clone(),
-            accounts,
-            address_books,
-            calendars,
-        });
-    }
-    reviewed
-        .root
-        .validate()
-        .map_err(|_| ConnectionError::AccountMissing)?;
-    let bundle = Bundle {
-        version: 1,
-        profiles,
-    };
-    let mut plain = Zeroizing::new(Vec::new());
-    serde_json::to_writer(&mut Bounded(&mut plain), &bundle)
-        .map_err(|_| ConnectionError::InvalidConfiguration)?;
-    if plain.len() > MAX_PLAINTEXT {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    let sealed = envelope::seal(key, Context::new(Label::MigrationPackage, &context), &plain)
-        .map_err(|_| ConnectionError::CredentialUnavailable)?;
-    Ok(SealedThunderbird(sealed))
-}
-
-fn read_folder(
-    reviewed: &ReviewedThunderbird,
-    folder: &ReviewedFolder,
-) -> Result<BundleFolder, ConnectionError> {
-    let files = match folder.format {
-        FolderFormat::Mbox => vec![BundleData {
-            name: folder
-                .inventory
-                .hierarchy
-                .last()
-                .cloned()
-                .unwrap_or_else(|| "mail".into()),
-            bytes: read_reviewed(reviewed, &folder.relative, MAX_PLAINTEXT as u64)
-                .map_err(|_| ConnectionError::AccountMissing)?,
-        }],
-        FolderFormat::Maildir => read_maildir_files(reviewed, folder, MAX_PLAINTEXT as u64)
-            .map_err(|_| ConnectionError::AccountMissing)?
-            .into_iter()
-            .map(|(name, bytes)| BundleData { name, bytes })
-            .collect(),
-    };
-    if files.len() > MAX_FILES {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    Ok(BundleFolder {
-        inventory: folder.inventory.clone(),
-        files,
-    })
-}
-
-fn read_bundle_file(
-    reviewed: &ReviewedThunderbird,
-    file: &crate::account_sources::thunderbird::ReviewedFile,
-) -> Result<BundleFile, ConnectionError> {
-    let relative = file
-        .relative
-        .as_ref()
-        .ok_or(ConnectionError::AccountMissing)?;
-    let bytes = read_reviewed(reviewed, relative, MAX_PLAINTEXT as u64)
-        .map_err(|_| ConnectionError::AccountMissing)?;
-    Ok(BundleFile {
-        source_id: file.source_id.clone(),
-        name: file.name.clone(),
-        bytes,
-    })
-}
-
-struct Bounded<'a>(&'a mut Vec<u8>);
-
-impl std::io::Write for Bounded<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAX_PLAINTEXT.saturating_sub(self.0.len()) {
-            return Err(std::io::Error::other(
-                "Thunderbird selection exceeds its bound",
-            ));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Publishes canonical Mail accounts and local mail under `target_home`. An existing account with
@@ -532,178 +228,6 @@ impl std::io::Write for Bounded<'_> {
 /// Refuses a wrong key, binding or selection, a changed target, a conflicting account or
 /// unavailable storage. No account is reported created unless its metadata and selected mail were
 /// written.
-pub fn import_selected(
-    target_home: &Path,
-    sealed: &SealedThunderbird,
-    key: &SymmetricKey,
-    setup_binding: &[u8],
-    expected: &ThunderbirdSelection,
-) -> Result<ThunderbirdImportReceipt, ConnectionError> {
-    let context = binding(setup_binding)?;
-    if sealed.0.len() > MAX_SEALED {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    let plain = envelope::open(
-        key,
-        Context::new(Label::MigrationPackage, &context),
-        &sealed.0,
-    )
-    .map_err(|_| ConnectionError::CredentialUnavailable)?;
-    if plain.len() > MAX_PLAINTEXT {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    let bundle: Bundle =
-        serde_json::from_slice(&plain).map_err(|_| ConnectionError::InvalidConfiguration)?;
-    if bundle.version != 1 {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    verify_selection(&bundle, expected)?;
-    let root = target_root(target_home).map_err(|_| ConnectionError::InvalidConfiguration)?;
-    let mut store = super::connect::load_store(&root)?;
-    let cache = ensure_dir(target_home, &[".cache", MAIL_APP, "mail"])?;
-    let retained = ensure_dir(
-        target_home,
-        &[".local", "share", "tilo", "mail-import", "thunderbird"],
-    )?;
-    let mut receipt = ThunderbirdImportReceipt {
-        accounts: Vec::new(),
-        address_books: 0,
-        calendars: 0,
-    };
-    for profile in &bundle.profiles {
-        for account in &profile.accounts {
-            let selected = expected
-                .accounts
-                .iter()
-                .find(|selected| selected.source_id == account.inventory.source_id)
-                .ok_or(ConnectionError::AccountMissing)?;
-            let (id, created) = publish_account(&mut store, &account.inventory, &account.metadata)?;
-            // Read the kept mail once so every selected folder merges into one file and messages
-            // the app already keeps their state.
-            let stem = file_stem(id.as_str());
-            let files = cache.join(format!("{stem}.files"));
-            let mut seen = read_cache_ids(&cache, &id)?;
-            let mut inserted = Vec::new();
-            let mut folders = Vec::new();
-            for folder in &account.folders {
-                if !selected
-                    .folders
-                    .iter()
-                    .any(|id| id == &folder.inventory.source_id)
-                {
-                    continue;
-                }
-                let parsed = messages(folder, &account.inventory, &files, &mut seen)?;
-                let messages = parsed.len() as u64;
-                inserted.extend(parsed);
-                retain_folder(
-                    &retained,
-                    &profile.source_id,
-                    &account.inventory.source_id,
-                    folder,
-                )?;
-                folders.push(ThunderbirdFolderReceipt {
-                    source_id: folder.inventory.source_id.clone(),
-                    messages,
-                    bytes: folder.inventory.bytes,
-                    local_only: folder.inventory.local_only,
-                });
-            }
-            if !inserted.is_empty() {
-                publish_cache(&cache, &id, &inserted)?;
-            }
-            receipt.accounts.push(ThunderbirdAccountReceipt {
-                source_id: account.inventory.source_id.clone(),
-                created,
-                needs_reconnect: account.inventory.needs_reconnect,
-                folders,
-            });
-        }
-        for book in &profile.address_books {
-            if expected
-                .accounts
-                .iter()
-                .any(|account| account.address_books.iter().any(|id| id == &book.source_id))
-            {
-                retain_file(&retained, &profile.source_id, "address-books", book)?;
-                personal_data::stage(
-                    target_home,
-                    &profile.source_id,
-                    &book.source_id,
-                    personal_data::Sidecar::AddressBook,
-                    &book.bytes,
-                )
-                .map_err(|_| ConnectionError::StorageUnavailable)?;
-                receipt.address_books += 1;
-            }
-        }
-        for calendar in &profile.calendars {
-            if expected
-                .accounts
-                .iter()
-                .any(|account| account.calendars.iter().any(|id| id == &calendar.source_id))
-            {
-                retain_file(&retained, &profile.source_id, "calendars", calendar)?;
-                personal_data::stage(
-                    target_home,
-                    &profile.source_id,
-                    &calendar.source_id,
-                    personal_data::Sidecar::Calendar,
-                    &calendar.bytes,
-                )
-                .map_err(|_| ConnectionError::StorageUnavailable)?;
-                receipt.calendars += 1;
-            }
-        }
-    }
-    store
-        .save_in(&root)
-        .map_err(|_| ConnectionError::StorageUnavailable)?;
-    Ok(receipt)
-}
-
-fn verify_selection(
-    bundle: &Bundle,
-    expected: &ThunderbirdSelection,
-) -> Result<(), ConnectionError> {
-    if expected.accounts.is_empty() || expected.accounts.len() > MAX_ACCOUNTS {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    let mut actual = Vec::new();
-    for profile in &bundle.profiles {
-        for account in &profile.accounts {
-            let selected = expected
-                .accounts
-                .iter()
-                .find(|selected| selected.source_id == account.inventory.source_id)
-                .ok_or(ConnectionError::InvalidConfiguration)?;
-            let mut folders: Vec<_> = account
-                .folders
-                .iter()
-                .map(|folder| folder.inventory.source_id.clone())
-                .collect();
-            let mut expected_folders = selected.folders.clone();
-            folders.sort();
-            expected_folders.sort();
-            if folders != expected_folders {
-                return Err(ConnectionError::InvalidConfiguration);
-            }
-            actual.push(account.inventory.source_id.clone());
-        }
-    }
-    let mut expected_ids: Vec<_> = expected
-        .accounts
-        .iter()
-        .map(|account| account.source_id.clone())
-        .collect();
-    actual.sort();
-    expected_ids.sort();
-    if actual != expected_ids {
-        return Err(ConnectionError::InvalidConfiguration);
-    }
-    Ok(())
-}
-
 fn publish_account(
     store: &mut AccountStore,
     inventory: &ThunderbirdAccount,
@@ -911,23 +435,6 @@ struct CachedServerPlace {
     uid_validity: u32,
 }
 
-/// An existing but unreadable file is refused rather than replaced: it may be the person's mail.
-fn read_cache_ids(
-    cache: &Path,
-    account: &AccountId,
-) -> Result<BTreeSet<uuid::Uuid>, ConnectionError> {
-    let path = cache_path(cache, account);
-    let Some(bytes) = read_private(&path, MAX_CACHE)? else {
-        return Ok(BTreeSet::new());
-    };
-    let kept = parse_kept(Some(&bytes))?;
-    Ok(kept
-        .messages
-        .into_iter()
-        .map(|message| message.id)
-        .collect())
-}
-
 fn cache_path(cache: &Path, account: &AccountId) -> PathBuf {
     cache.join(format!("{}.json", file_stem(account.as_str())))
 }
@@ -946,95 +453,6 @@ fn parse_kept(bytes: Option<&[u8]>) -> Result<Kept, ConnectionError> {
     let mut seen = BTreeSet::new();
     kept.messages.retain(|message| seen.insert(message.id));
     Ok(kept)
-}
-
-/// Merges into the kept mail and publishes over the exact bytes that were read; a file another
-/// writer changed meanwhile is merged again instead of overwritten.
-fn publish_cache(
-    cache: &Path,
-    account: &AccountId,
-    incoming: &[CachedMessage],
-) -> Result<(), ConnectionError> {
-    let path = cache_path(cache, account);
-    for _ in 0..CACHE_ATTEMPTS {
-        let snapshot = read_private(&path, MAX_CACHE)?;
-        let mut kept = parse_kept(snapshot.as_deref())?;
-        let mut seen: BTreeSet<_> = kept.messages.iter().map(|message| message.id).collect();
-        for message in incoming {
-            if seen.insert(message.id) {
-                kept.messages.push(message.clone());
-            }
-        }
-        kept.messages
-            .sort_by_key(|message| std::cmp::Reverse(message.timestamp_min));
-        let bytes = serde_json::to_vec(&kept).map_err(|_| ConnectionError::StorageUnavailable)?;
-        if bytes.len() as u64 > MAX_CACHE {
-            return Err(ConnectionError::StorageUnavailable);
-        }
-        if read_private(&path, MAX_CACHE)? != snapshot {
-            continue;
-        }
-        let parent = path.parent().ok_or(ConnectionError::StorageUnavailable)?;
-        ensure_private_dir(parent)?;
-        return tilo_files::native::atomic::write_private(&path, &bytes)
-            .map_err(|_| ConnectionError::StorageUnavailable);
-    }
-    Err(ConnectionError::StorageUnavailable)
-}
-
-fn messages(
-    folder: &BundleFolder,
-    inventory: &ThunderbirdAccount,
-    files: &Path,
-    seen: &mut BTreeSet<uuid::Uuid>,
-) -> Result<Vec<CachedMessage>, ConnectionError> {
-    let mut output = Vec::new();
-    for file in &folder.files {
-        if folder.inventory.format == "mbox" {
-            for raw in mbox_messages(&file.bytes) {
-                keep_message(
-                    message(raw, &folder.inventory, inventory, None)?,
-                    files,
-                    seen,
-                    &mut output,
-                )?;
-            }
-        } else {
-            keep_message(
-                message(
-                    &file.bytes,
-                    &folder.inventory,
-                    inventory,
-                    Some(maildir_flags(&file.name)),
-                )?,
-                files,
-                seen,
-                &mut output,
-            )?;
-        }
-    }
-    Ok(output)
-}
-
-/// Writes attachment bytes only when the message is actually new, so an existing kept copy keeps
-/// its state.
-fn keep_message(
-    parsed: Option<(CachedMessage, Vec<(usize, Vec<u8>)>)>,
-    files: &Path,
-    seen: &mut BTreeSet<uuid::Uuid>,
-    output: &mut Vec<CachedMessage>,
-) -> Result<(), ConnectionError> {
-    let Some((message, attachments)) = parsed else {
-        return Ok(());
-    };
-    if !seen.insert(message.id) {
-        return Ok(());
-    }
-    for (index, bytes) in attachments {
-        write_file(&files.join(format!("{}.{index}", message.id)), &bytes)?;
-    }
-    output.push(message);
-    Ok(())
 }
 
 /// The attachment bytes, written once the message is inserted.
@@ -1240,78 +658,6 @@ fn mbox_flags(raw: &[u8]) -> (bool, bool) {
         }
     }
     (false, false)
-}
-
-fn maildir_flags(name: &str) -> (bool, bool) {
-    name.split_once(":2,").map_or((false, false), |(_, flags)| {
-        (flags.contains('S'), flags.contains('F'))
-    })
-}
-
-fn mbox_messages(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut starts = Vec::new();
-    let mut offset = 0;
-    while let Some(found) = bytes[offset..]
-        .windows(5)
-        .position(|window| window == b"From ")
-    {
-        let start = offset + found;
-        if start == 0 || bytes[start - 1] == b'\n' {
-            starts.push(start);
-        }
-        offset = start + 5;
-    }
-    let mut ranges = Vec::new();
-    let mut message_start = None;
-    for start in starts {
-        if let Some(previous) = message_start.replace(start) {
-            ranges.push(previous..start);
-        }
-    }
-    if let Some(previous) = message_start {
-        ranges.push(previous..bytes.len());
-    }
-    ranges.into_iter().map(move |range| &bytes[range])
-}
-
-fn retain_folder(
-    root: &Path,
-    profile: &str,
-    account: &str,
-    folder: &BundleFolder,
-) -> Result<(), ConnectionError> {
-    let mut directory = root.join(component(profile)).join(component(account));
-    for name in &folder.inventory.hierarchy {
-        directory.push(component(name));
-    }
-    ensure_private_dir(&directory)?;
-    for file in &folder.files {
-        let path = if folder.inventory.format == "mbox" {
-            directory.join(format!("{}.mbox", component(&file.name)))
-        } else {
-            let mut parts = file.name.splitn(2, '/');
-            let part = component(parts.next().unwrap_or("cur"));
-            let name = component(parts.next().unwrap_or("message"));
-            ensure_private_dir(&directory.join(&part))?;
-            directory.join(part).join(name)
-        };
-        write_file(&path, &file.bytes)?;
-    }
-    Ok(())
-}
-
-fn retain_file(
-    root: &Path,
-    profile: &str,
-    kind: &str,
-    file: &BundleFile,
-) -> Result<(), ConnectionError> {
-    let directory = root
-        .join(component(profile))
-        .join(kind)
-        .join(component(&file.source_id));
-    ensure_private_dir(&directory)?;
-    write_file(&directory.join(component(&file.name)), &file.bytes)
 }
 
 fn component(value: &str) -> String {

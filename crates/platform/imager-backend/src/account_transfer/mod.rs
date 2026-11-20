@@ -36,10 +36,9 @@ pub use discovery::{Candidate, Inventory, Origin, Provider, SourceRoots, discove
 pub use goa_pending::{AccountImportReceipt, import_selected as import_selected_goa};
 pub use portable::{PasswordSealedAccounts, SealedAccounts, inspect_prepared_consumer};
 pub use thunderbird_source::{
-    MAX_THUNDERBIRD_ARTIFACT, PasswordSealedThunderbird, SealedThunderbird,
-    ThunderbirdAccountReceipt, ThunderbirdAccountSelection, ThunderbirdFolderReceipt,
-    ThunderbirdImportReceipt, ThunderbirdSelection, import_reviewed, import_selected,
-    seal_selected,
+    MAX_ARTIFACT_BYTES, PasswordSealedThunderbird, ThunderbirdAccountReceipt,
+    ThunderbirdAccountSelection, ThunderbirdFolderReceipt, ThunderbirdImportReceipt,
+    ThunderbirdSelection, import_reviewed,
 };
 pub use tilo_sources::TiloCandidate;
 

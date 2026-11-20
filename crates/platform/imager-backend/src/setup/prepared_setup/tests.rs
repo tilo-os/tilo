@@ -1239,19 +1239,36 @@ user_pref("calendar.registry.personal.filename", "calendar-data.local.sqlite");
         .folders
         .retain(|folder| folder != &drafts);
     selection.validate(&reviewed).unwrap();
-    let artifact =
-        PasswordSealedThunderbird::seal(&reviewed, &selection, PASSWORD, b"mail-operation")
-            .unwrap();
+    let mail_tree = tempfile::tempdir().unwrap();
+    let artifact_path = mail_tree.path().join("mail-selected.sealed");
+    let artifact = PasswordSealedThunderbird::seal(
+        &reviewed,
+        &selection,
+        PASSWORD,
+        b"mail-operation",
+        &std::sync::atomic::AtomicBool::new(false),
+        &artifact_path,
+    )
+    .unwrap();
     assert!(
-        !String::from_utf8_lossy(artifact.as_bytes()).contains("Kept mail"),
+        !String::from_utf8_lossy(&std::fs::read(&artifact_path).unwrap()).contains("Kept mail"),
         "the carrier is ciphertext"
     );
-    assert_eq!(
-        PasswordSealedThunderbird::from_bytes(artifact.as_bytes())
-            .unwrap()
-            .open(b"a completely different password", b"mail-operation")
-            .unwrap_err(),
-        crate::account_transfer::ConnectionError::CredentialUnavailable
+    assert!(
+        PasswordSealedThunderbird::read(
+            &artifact_path,
+            crate::account_transfer::MAX_ARTIFACT_BYTES
+        )
+        .unwrap()
+        .import(
+            mail_tree.path(),
+            b"a completely different password",
+            b"mail-operation",
+            &selection,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .is_err(),
+        "another password does not open the artifact"
     );
     let staging = root.join("mail-staging");
     private(&staging);
@@ -1269,7 +1286,7 @@ user_pref("calendar.registry.personal.filename", "calendar-data.local.sqlite");
         )
         .unwrap();
     let filename = "mail-selected.sealed";
-    std::fs::write(staging.join(filename), artifact.as_bytes()).unwrap();
+    std::fs::copy(&artifact_path, staging.join(filename)).unwrap();
     std::fs::set_permissions(
         staging.join(filename),
         std::fs::Permissions::from_mode(0o600),
@@ -1280,8 +1297,8 @@ user_pref("calendar.registry.personal.filename", "calendar-data.local.sqlite");
     manifest.units.insert(Unit::Mail(vec![MailHandoff {
         filename: filename.into(),
         selection,
-        sealed_bytes: artifact.as_bytes().len() as u64,
-        ciphertext_sha256: Sha256::digest(artifact.as_bytes()).into(),
+        sealed_bytes: artifact.len(),
+        ciphertext_sha256: artifact.sha256().unwrap(),
     }]));
     manifest.write(&staging).unwrap();
     let sealed_package = package(root, &staging, "selected-mail.sealed");

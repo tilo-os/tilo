@@ -159,8 +159,7 @@ impl MailHandoff {
                 .bytes()
                 .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.')))
             || self.sealed_bytes == 0
-            || self.sealed_bytes > super::account_transfer::MAX_THUNDERBIRD_ARTIFACT as u64
-            || self.sealed_bytes > LIMITS.plaintext_bytes
+            || self.sealed_bytes > super::account_transfer::MAX_ARTIFACT_BYTES
         {
             return Err(invalid());
         }
@@ -171,8 +170,8 @@ impl MailHandoff {
         artifact: &super::account_transfer::PasswordSealedThunderbird,
     ) -> io::Result<()> {
         self.validate()?;
-        if self.sealed_bytes != u64::try_from(artifact.as_bytes().len()).map_err(|_| invalid())?
-            || self.ciphertext_sha256 != <[u8; 32]>::from(Sha256::digest(artifact.as_bytes()))
+        if self.sealed_bytes != artifact.len()
+            || self.ciphertext_sha256 != artifact.sha256().map_err(|_| invalid())?
         {
             return Err(invalid());
         }
@@ -580,6 +579,21 @@ fn bounded_file(pin: &Arc<PinnedDirectory>, name: &str, limit: u64) -> io::Resul
     pin.validate()?;
     Ok(bytes)
 }
+/// The mail artifact as an open file: it is streamed at import, never held whole.
+fn bounded_artifact_file(pin: &Arc<PinnedDirectory>, name: &str) -> io::Result<std::fs::File> {
+    pin.validate()?;
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No).nonblock(true);
+    let file = cap_primitives::fs::open(&pin.file, Path::new(name), &options)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.len() > super::account_transfer::MAX_ARTIFACT_BYTES {
+        return Err(invalid());
+    }
+    destination_security::check_private_file(&file)?;
+    pin.validate()?;
+    Ok(file)
+}
+
 fn members(pin: &Arc<PinnedDirectory>, manifest: &Manifest) -> io::Result<()> {
     let directory = cap_std::fs::Dir::from_std_file(pin.file.try_clone()?);
     let mut expected: BTreeSet<_> = [MANIFEST_FILE.into(), IDENTITY_FILE.into()]
@@ -712,8 +726,9 @@ impl PreparedSetupReview {
         };
         let mut mail_artifacts = Vec::with_capacity(manifest.units.mail().len());
         for declaration in manifest.units.mail() {
-            let artifact = super::account_transfer::PasswordSealedThunderbird::from_bytes(
-                &bounded_file(&pin, &declaration.filename, LIMITS.plaintext_bytes)?,
+            let artifact = super::account_transfer::PasswordSealedThunderbird::open(
+                bounded_artifact_file(&pin, &declaration.filename)?,
+                super::account_transfer::MAX_ARTIFACT_BYTES,
             )
             .map_err(|_| invalid())?;
             declaration.verify_ciphertext(&artifact)?;
@@ -836,11 +851,7 @@ impl PreparedSetupReview {
             }
         }
         for (declaration, artifact) in &self.mail_artifacts {
-            if bounded_file(&self.pin, &declaration.filename, LIMITS.plaintext_bytes)?
-                != artifact.as_bytes()
-            {
-                return Err(invalid());
-            }
+            declaration.verify_ciphertext(artifact)?;
         }
         Ok(())
     }
@@ -1096,17 +1107,15 @@ impl PreparedSetupReview {
         let mut receipts = Vec::with_capacity(self.mail_artifacts.len());
         for (declaration, artifact) in &self.mail_artifacts {
             declaration.verify_ciphertext(artifact)?;
-            let (sealed, key) = artifact
-                .open(password, self.manifest.setup_binding.as_bytes())
+            let receipt = artifact
+                .import(
+                    target_home,
+                    password,
+                    self.manifest.setup_binding.as_bytes(),
+                    &declaration.selection,
+                    &AtomicBool::new(false),
+                )
                 .map_err(|_| invalid())?;
-            let receipt = super::account_transfer::import_selected(
-                target_home,
-                &sealed,
-                &key,
-                self.manifest.setup_binding.as_bytes(),
-                &declaration.selection,
-            )
-            .map_err(|_| invalid())?;
             receipts.push(receipt);
         }
         self.validate()?;

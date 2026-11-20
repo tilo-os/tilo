@@ -663,14 +663,14 @@ impl Read for Tee<'_> {
 
 /// Held beside the target until the file has been read completely and its source identity checks
 /// out.
-struct Retention {
+pub(super) struct Retention {
     target: PathBuf,
     temporary: PathBuf,
     file: Option<std::fs::File>,
 }
 
 impl Retention {
-    fn create(target: PathBuf) -> io::Result<Self> {
+    pub(super) fn create(target: PathBuf) -> io::Result<Self> {
         let parent = target
             .parent()
             .ok_or_else(|| invalid("A retained mail copy needs a directory"))?;
@@ -685,7 +685,7 @@ impl Retention {
         })
     }
 
-    fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+    pub(super) fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
         match &mut self.file {
             Some(file) => file.write_all(bytes),
             None => Err(storage("A retained mail copy was already closed")),
@@ -693,7 +693,7 @@ impl Retention {
     }
 
     /// Refuses to replace a copy that holds other bytes: it may be mail someone still needs.
-    fn finish(mut self) -> io::Result<()> {
+    pub(super) fn finish(mut self) -> io::Result<()> {
         let Some(file) = self.file.take() else {
             return Err(storage("A retained mail copy was already closed"));
         };
@@ -729,7 +729,7 @@ impl Drop for Retention {
 
 /// Holds the converted messages in a private temporary file, so a long folder stays out of
 /// memory.
-struct Spool {
+pub(super) struct Spool {
     path: PathBuf,
     out: Counted<std::fs::File>,
     first: bool,
@@ -739,7 +739,7 @@ struct Spool {
 
 impl Spool {
     /// `base` is the kept file's size, so the destination bound is checked as messages are written.
-    fn create(directory: &Path, base: u64) -> io::Result<Self> {
+    pub(super) fn create(directory: &Path, base: u64) -> io::Result<Self> {
         let path = directory.join(format!(".tilo-{}.spool", Uuid::new_v4()));
         let out = Counted::create(&path)?;
         Ok(Self {
@@ -751,7 +751,7 @@ impl Spool {
         })
     }
 
-    fn push(&mut self, message: &CachedMessage) -> io::Result<()> {
+    pub(super) fn push(&mut self, message: &CachedMessage) -> io::Result<()> {
         if !self.first {
             self.out.write_all(b",")?;
         }
@@ -772,7 +772,7 @@ impl Drop for Spool {
     }
 }
 
-enum MergeError {
+pub(super) enum MergeError {
     Conflict,
     TooLarge,
     Failed(io::Error),
@@ -780,7 +780,7 @@ enum MergeError {
 
 /// Puts the merged file in place only if the kept file is still exactly the one that was read;
 /// otherwise it is merged again.
-fn publish_merge(
+pub(super) fn publish_merge(
     path: &Path,
     snapshot: Option<&[u8]>,
     kept: &Kept,
