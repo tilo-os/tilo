@@ -237,6 +237,11 @@ tilo_test_env::scenario! {
         let mut session = docked();
         let mut client = client(&mut session);
         assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
+        // Each display as it looks with and without the focus: the strip column's controls stand
+        // on the display in focus, so they move with it whatever the banner does.
+        focuses(&mut session, &mut client, 0);
+        let left_in_focus = shot(&mut session, "HEADLESS-1");
+        let right_away = shot(&mut session, "HEADLESS-2");
         focuses(&mut session, &mut client, 1);
         let left = shot(&mut session, "HEADLESS-1");
         let right = shot(&mut session, "HEADLESS-2");
@@ -288,11 +293,11 @@ tilo_test_env::scenario! {
             |session| {
                 session.step(Duration::from_millis(16)).expect("step");
                 let frame = shot(session, "HEADLESS-1");
-                (changed(&left, &frame, under_bar()) > 1_000).then_some(())
+                (changed(&left_in_focus, &frame, under_bar()) > 1_000).then_some(())
             },
         );
         assert_eq!(
-            changed(&right, &shot(&mut session, "HEADLESS-2"), under_bar()),
+            changed(&right_away, &shot(&mut session, "HEADLESS-2"), under_bar()),
             0,
             "and nothing of them stays behind"
         );

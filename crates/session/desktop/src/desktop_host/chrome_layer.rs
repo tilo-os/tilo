@@ -88,7 +88,7 @@ pub struct DesktopChrome {
     navigator_frame: StripFrame,
     /// What the navigator last read: the navigation and who-is-here revisions, whether the overview
     /// covered the desktop, and the content area.
-    navigator_seen: Option<(u64, u64, bool, Rect)>,
+    navigator_seen: Option<(u64, u64, bool, Rect, bool)>,
     /// The tree revision the open overview shows.
     overview_revision: u64,
     /// What the overview of the person's Tilo shows below their workspaces, as the embedding
@@ -1711,11 +1711,16 @@ impl DesktopChrome {
     fn observe_navigation(&mut self) {
         let covered = self.overview.is_open();
         let area = self.navigation_area();
+        // Whether the person may add a strip is read each frame too: what they may do in a
+        // workspace they just made arrives after its layout does, with no change to the layout to
+        // say so, and the New strip button waits on it.
+        let may_add = self.may_add_strip();
         let seen = (
             self.handle.navigation_revision(),
             self.rules.people_revision(),
             covered,
             area,
+            may_add,
         );
         if self.navigator_seen.replace(seen) == Some(seen) {
             return;
@@ -1734,7 +1739,6 @@ impl DesktopChrome {
         };
         let shown = self.handle.shown_tabs();
         let scroll = self.handle.presentation().pan.map_or(0.0, |pan| pan.offset);
-        let may_add = self.may_add_strip();
         self.navigator.set_model(StripNavigator::model_of(
             &tree,
             &Viewer {
@@ -1746,6 +1750,13 @@ impl DesktopChrome {
             },
         ));
         self.navigator_frame = StripFrame::of_tree(&tree, area, (&shown, scroll), covered, may_add);
+        self.navigator_frame.ribbon.new_len = self.navigator.new_strip_len();
+        // A display one column wide (a phone) has no edge to spare: the tabs would stand over the
+        // window's own controls, so its strips are listed and added from the bar's strip name.
+        if ui::tokens::Breakpoint::of(area.width(), &self.theme.tokens.metrics).is_compact() {
+            self.navigator_frame.ribbon_offered = false;
+            self.navigator_frame.new_strip_offered = false;
+        }
         self.navigator
             .observe(&self.navigator_frame, ui::time::now());
     }
@@ -2498,6 +2509,9 @@ impl Widget for DesktopChrome {
             theme,
             ui::time::now(),
         );
+        // The New strip button is as long as its words measured as it was drawn: it is pressed
+        // where it stands from the next event on.
+        self.navigator_frame.ribbon.new_len = self.navigator.new_strip_len();
         self.overview
             .draw_child(scene, transform, text, theme, presence);
         for bar in &mut self.compact {

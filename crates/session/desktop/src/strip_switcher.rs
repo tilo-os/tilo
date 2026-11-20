@@ -292,6 +292,9 @@ pub struct Placement {
     pub rows: Vec<(Row, Rect)>,
     /// Each label as painted.
     pub labels: Vec<(Row, Rect)>,
+    /// Whether the New strip tab stands at the column's foot, saying "New strip" itself: its label
+    /// then shows only while the keyboard is on it, and its pointer row is the tab's own.
+    pub new_strip_tab: bool,
 }
 
 impl Placement {
@@ -325,22 +328,28 @@ impl Placement {
             rows.push((Row::Strip(i), Rect::new(label.x0, hit.y0, edge, hit.y1)));
             bottom = hit.y1;
         }
+        let new_strip_tab = model.can_add && ribbon.new_strip_rect().is_some();
         if model.can_add {
             let w = width(Row::NewStrip).min(LABEL_MAX_W);
-            // Level with the button that stands at the column's foot, and clear of its plate: the
-            // words name the button beside them. Without one (a workspace with no strips yet) the
-            // row follows the last label as it always has.
-            let (right, y0) = ribbon
-                .new_strip_rect()
-                .map_or((x1, bottom + NEW_GAP), |button| {
-                    (button.x0 - LABEL_GAP, button.y0)
-                });
-            let label = Rect::new(right - w, y0, right, y0 + LABEL_H);
+            // Level with the top of the tab that stands at the column's foot, and clear of it. The
+            // tab says what it adds, so the pointer reaches it there and nowhere beside it. Without
+            // one the row follows the last label as it always has.
+            let label = if let (Some(button), Some(hit)) =
+                (ribbon.new_strip_rect(), ribbon.new_strip_hit_rect())
+            {
+                let right = button.x0 - LABEL_GAP;
+                rows.push((Row::NewStrip, Rect::new(hit.x0, bottom, edge, hit.y1)));
+                Rect::new(right - w, button.y0, right, button.y0 + LABEL_H)
+            } else {
+                let y0 = bottom + NEW_GAP;
+                let label = Rect::new(x1 - w, y0, x1, y0 + LABEL_H);
+                rows.push((
+                    Row::NewStrip,
+                    Rect::new(label.x0, bottom, edge, label.y1 + NEW_GAP),
+                ));
+                label
+            };
             labels.push((Row::NewStrip, label));
-            rows.push((
-                Row::NewStrip,
-                Rect::new(label.x0, bottom, edge, label.y1 + NEW_GAP),
-            ));
         }
         let bounds = rows
             .iter()
@@ -352,6 +361,7 @@ impl Placement {
             bounds,
             rows,
             labels,
+            new_strip_tab,
         }
     }
 
@@ -1287,6 +1297,11 @@ impl StripSwitcher {
             // The field takes the label's place.
             return;
         }
+        if row == Row::NewStrip && self.layout.new_strip_tab && self.selected != Some(row) {
+            // The tab beside it already says "New strip": the words stand twice only for the
+            // keyboard, which has no tab under it to read.
+            return;
+        }
         let (active, hover) = self.row_state(row);
         let radius = ui::chrome::ChromeRole::Control.radius(cx.theme, rect.height());
         let ground = ui::widget::floating_surface::card_ground(cx.theme);
@@ -1618,11 +1633,6 @@ fn draw_line(
     );
 }
 
-/// The ribbon's weight while nothing moves and the labels are closed: quiet,
-/// but there, so the switcher can be found, once there is more than one
-/// strip to switch between.
-pub const RIBBON_REST_ALPHA: f32 = 0.35;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1657,6 +1667,7 @@ mod tests {
             content: CONTENT,
             count,
             focused,
+            new_len: 116.0,
         }
     }
 
@@ -1764,12 +1775,12 @@ mod tests {
             let last = s.layout().label_rect(Row::Strip(2)).unwrap();
             let new = s.layout().label_rect(Row::NewStrip).unwrap();
             assert!(new.y0 >= last.y1, "New strip is under the last strip");
-            // It stands level with the button at the column's foot, clear of its plate, so the
-            // words name the button the pointer rests on.
+            // It starts level with the top of the tab at the column's foot, clear of its plate,
+            // so the words name the tab the pointer rests on.
             let button = r.new_strip_rect().expect("a mark to stand under");
             assert!(
-                (new.y0 - button.y0).abs() < 0.5 && (new.y1 - button.y1).abs() < 0.5,
-                "level with the button: {new:?} vs {button:?}"
+                (new.y0 - button.y0).abs() < 0.5 && new.y1 <= button.y1,
+                "level with the tab: {new:?} vs {button:?}"
             );
             assert!(
                 new.x1 <= button.x0,
@@ -1871,7 +1882,11 @@ mod tests {
             let (mut s, zone) = switcher(&["Lounge"]);
             let now = Instant::now();
             s.open_at(now, false);
-            let new = s.layout().label_rect(Row::NewStrip).unwrap().center();
+            // The tab says "New strip" itself, so its words beside it are drawn for the keyboard
+            // alone and the pointer reaches the tab, not the empty place beside it.
+            let label = s.layout().label_rect(Row::NewStrip).unwrap().center();
+            assert_eq!(s.press(label, now), Press::Outside, "beside the tab is not it");
+            let new = ribbon(1, 0).new_strip_rect().unwrap().center();
             assert_eq!(
                 s.press(new, now),
                 Press::Command(Command::Create(String::new())),

@@ -1318,9 +1318,14 @@ pub struct StripRibbon {
     pub content: Rect,
     pub count: usize,
     pub focused: usize,
+    /// How long the New strip button is along the edge: its plus and its words, as long as they
+    /// measure in the person's language where it is drawn. Nothing stands there until they did.
+    pub new_len: f64,
 }
 
-pub const RIBBON_SEG_W: f64 = 6.0;
+/// A tab at the screen's right edge, wide enough to carry its strip's number: a
+/// sliver there read as a scrollbar's thumb.
+pub const RIBBON_SEG_W: f64 = 24.0;
 pub const RIBBON_SEG_H: f64 = 22.0;
 /// Longer than [`RIBBON_SEG_H`], so the ribbon reads at a glance without needing colour to carry the
 /// signal — what keeps it legible on high-contrast.
@@ -1331,13 +1336,9 @@ pub const RIBBON_GAP: f64 = RIBBON_HIT_W - RIBBON_SEG_H;
 /// Flush with the screen's right edge: the segments are an edge mark, and a gap between them and the
 /// edge read as a stray, misplaced control.
 pub const RIBBON_MARGIN: f64 = 0.0;
-/// Minimum pointer target (HIG §9.6) — the segment itself is 6 px wide.
+/// Minimum pointer target (HIG §9.6), reaching inward past the tab.
 pub const RIBBON_HIT_W: f64 = 32.0;
-/// The New strip button's face: a bar control's height, a round plate in the gutter's width.
-pub const RIBBON_NEW_D: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
-/// The New strip button's pointer target: at least what every control's target takes.
-pub const RIBBON_NEW_HIT: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
-/// Between the last mark's pointer target and the New strip button under it.
+/// Between the last tab's pointer target and the New strip button under it.
 pub const RIBBON_NEW_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 const RIBBON_IDLE_ALPHA: u8 = 46;
@@ -1476,24 +1477,29 @@ impl StripRibbon {
         (0..self.count).find(|i| self.hit_rect(*i).is_some_and(|r| r.contains(p)))
     }
 
-    /// Where the New strip button stands: a round plate centred in the gutter the ribbon keeps on
-    /// the content's edge, a small step under the last mark's pointer target. `None` in a
-    /// workspace with no strip to stand under.
+    /// Where the New strip button stands: a tab as wide as the strips' own, flush with the edge,
+    /// running [`Self::new_len`] down it a small step under the last tab's pointer target; in a
+    /// workspace with no strip yet, in the middle of the edge. Nowhere until its words measured.
     pub fn new_strip_rect(&self) -> Option<Rect> {
-        let last = self.hit_rect(self.count.checked_sub(1)?)?;
-        let centre = Point::new(
-            self.content.x1 - RIBBON_HIT_W / 2.0,
-            last.y1 + RIBBON_NEW_GAP + RIBBON_NEW_D / 2.0,
-        );
-        Some(Rect::from_center_size(centre, (RIBBON_NEW_D, RIBBON_NEW_D)))
+        if self.new_len <= 0.0 {
+            return None;
+        }
+        let y0 = match self.count.checked_sub(1) {
+            Some(last) => self.hit_rect(last)?.y1 + RIBBON_NEW_GAP,
+            None => self.content.center().y - self.new_len / 2.0,
+        };
+        let x1 = self.content.x1 - RIBBON_MARGIN;
+        Some(Rect::new(x1 - RIBBON_SEG_W, y0, x1, y0 + self.new_len))
     }
 
-    /// The New strip button's pointer target: never under the minimum a target takes.
+    /// The New strip button's pointer target: reaching inward as the tabs' do.
     pub fn new_strip_hit_rect(&self) -> Option<Rect> {
         let face = self.new_strip_rect()?;
-        Some(Rect::from_center_size(
-            face.center(),
-            (RIBBON_NEW_HIT, RIBBON_NEW_HIT),
+        Some(Rect::new(
+            self.content.x1 - RIBBON_HIT_W,
+            face.y0,
+            self.content.x1,
+            face.y1,
         ))
     }
 
@@ -1882,6 +1888,7 @@ mod rail_tests {
                 content: Rect::new(0.0, 40.0, 1600.0, 900.0),
                 count: 3,
                 focused: 0,
+                new_len: 0.0,
             };
             let half = (
                 ribbon.segment_rect_at(0, 0.5).unwrap(),
@@ -1897,11 +1904,15 @@ mod ribbon_tests {
     use super::*;
     use vello::kurbo::Point;
 
+    /// A New strip button's length, as its words might measure.
+    const NEW_LEN: f64 = 116.0;
+
     fn ribbon(count: usize, focused: usize) -> StripRibbon {
         StripRibbon {
             content: Rect::new(0.0, 40.0, 1600.0, 900.0),
             count,
             focused,
+            new_len: NEW_LEN,
         }
     }
 
@@ -1941,6 +1952,7 @@ mod ribbon_tests {
                         content,
                         count: 4,
                         focused,
+                        new_len: NEW_LEN,
                     };
                     let first = r.segment_rect(0).unwrap();
                     let last = r.segment_rect(3).unwrap();
@@ -2056,48 +2068,45 @@ mod ribbon_tests {
             }
         }
 
-        phase the_new_strip_button_stands_under_the_last_mark_in_the_gutter;
+        phase the_new_strip_button_stands_under_the_last_tab_on_the_edge;
         {
             use crate::tokens::{Metrics, Spacing};
             for count in [1usize, 3] {
                 let r = ribbon(count, 0);
                 let last = r.hit_rect(count - 1).unwrap();
-                let face = r.new_strip_rect().expect("a mark to stand under");
+                let face = r.new_strip_rect().expect("a tab to stand under");
                 let hit = r.new_strip_hit_rect().unwrap();
                 assert!(
-                    (face.width() - f64::from(Metrics::BASE.bar_control_height)).abs() < 1e-6
-                        && (face.height() - f64::from(Metrics::BASE.bar_control_height)).abs() < 1e-6,
-                    "the plate is a bar control tall"
+                    (face.width() - RIBBON_SEG_W).abs() < 1e-6
+                        && (face.height() - NEW_LEN).abs() < 1e-6,
+                    "as wide as the tabs, long enough for its words"
                 );
                 assert!(
-                    (face.center().x - (r.content.x1 - RIBBON_HIT_W / 2.0)).abs() < 1e-6,
-                    "centred in the gutter"
+                    (face.x1 - r.content.x1).abs() < 1e-6,
+                    "flush with the edge, as the tabs are"
                 );
                 assert!(
                     (face.y0 - (last.y1 + f64::from(Spacing::BASE.s2))).abs() < 1e-6,
-                    "a step under the last mark's target"
+                    "a step under the last tab's target"
                 );
                 assert!(
                     hit.width() >= f64::from(Metrics::BASE.min_pointer_target)
                         && hit.height() >= f64::from(Metrics::BASE.min_pointer_target),
                     "a target no smaller than the minimum"
                 );
-                assert!(
-                    hit.contains(face.center()),
-                    "the target takes the whole plate"
-                );
+                assert!(hit.contains(face.center()), "the target takes the whole tab");
                 assert!(
                     hit.y0 >= last.y1,
-                    "the button's target never reaches into the last mark"
-                );
-                assert!(
-                    face.x0 >= r.content.x1 - RIBBON_HIT_W && face.x1 <= r.content.x1,
-                    "the plate stands inside the gutter"
+                    "the button's target never reaches into the last tab"
                 );
             }
+            let none = ribbon(0, 0);
+            let face = none
+                .new_strip_rect()
+                .expect("a workspace with no strip yet offers one too");
             assert!(
-                ribbon(0, 0).new_strip_rect().is_none(),
-                "nothing to stand under"
+                (face.center().y - none.content.center().y).abs() < 1e-6,
+                "in the middle of the edge"
             );
         }
     }

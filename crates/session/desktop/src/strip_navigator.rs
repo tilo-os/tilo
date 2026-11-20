@@ -23,7 +23,7 @@ use winit::keyboard::{Key, ModifiersState};
 
 use crate::strip_indicators::{SlidingFocus, StripIndicators, StripPosition};
 use crate::strip_switcher::{
-    Command, DrawCx, KeyAnswer, Press, RIBBON_REST_ALPHA, Row, StripSwitcher, SwitcherModel, Target,
+    Command, DrawCx, KeyAnswer, Press, Row, StripSwitcher, SwitcherModel, Target,
 };
 
 /// What the host does for the navigator.
@@ -76,6 +76,7 @@ impl StripFrame {
                 content,
                 count: 0,
                 focused: 0,
+                new_len: 0.0,
             },
             rail: StripRail {
                 content,
@@ -134,6 +135,8 @@ impl StripFrame {
                 content,
                 count: workspace.strips.len(),
                 focused: focused_strip,
+                // Its words are measured where it is drawn ([`StripNavigator::new_strip_len`]).
+                new_len: 0.0,
             },
             rail: StripRail {
                 content,
@@ -149,7 +152,9 @@ impl StripFrame {
             // where adding a strip is offered: the lone mark and the button at the column's foot
             // read together as "one strip, and another may join".
             ribbon_offered: !covered && (workspace.strips.len() > 1 || may_add),
-            new_strip_offered: !covered && may_add && !workspace.strips.is_empty(),
+            // A workspace with no strip yet offers one too: its welcome is the first thing a person
+            // sees in it.
+            new_strip_offered: !covered && may_add,
             switcher_offered: !covered,
             rail_offered: !covered,
         }
@@ -165,16 +170,17 @@ impl StripFrame {
             self.ribbon.hit_rect(0),
             self.ribbon.hit_rect(self.ribbon.count.saturating_sub(1)),
         ) {
-            (Some(first), Some(last)) => first.union(last),
-            _ => Rect::ZERO,
+            (Some(first), Some(last)) => Some(first.union(last)),
+            _ => None,
         };
-        match self
+        let button = self
             .new_strip_offered
             .then(|| self.ribbon.new_strip_hit_rect())
-            .flatten()
-        {
-            Some(button) => marks.union(button),
-            None => marks,
+            .flatten();
+        match (marks, button) {
+            (Some(marks), Some(button)) => marks.union(button),
+            (Some(only), None) | (None, Some(only)) => only,
+            (None, None) => Rect::ZERO,
         }
     }
 
@@ -212,6 +218,9 @@ pub struct StripNavigator {
     rail_hover: Option<usize>,
     /// The pointer is on the New strip button at the column's foot.
     new_strip_hover: bool,
+    /// How long the New strip button's words measured where it was last drawn: the length of its
+    /// tab along the edge.
+    new_strip_len: f64,
     /// A press the navigator took: its release is the navigator's too.
     owns_release: bool,
 }
@@ -546,6 +555,12 @@ impl StripNavigator {
         changed
     }
 
+    /// How long the New strip button is along the edge, as its words measured where it was last
+    /// drawn: what its frame's [`StripRibbon::new_len`] takes, so it is pressed where it stands.
+    pub fn new_strip_len(&self) -> f64 {
+        self.new_strip_len
+    }
+
     /// The ribbon mark to light: the one whose label the pointer or the keyboard is on while the
     /// labels are open, else the one under the pointer.
     pub fn lit_strip(&self) -> Option<usize> {
@@ -571,12 +586,11 @@ impl StripNavigator {
         if self.switcher.is_open() {
             return 1.0;
         }
-        // One strip is no news, so its mark alone said nothing and read as a stray sliver at the
-        // screen's edge. Beside the New strip button it reads as "one strip, and another may
-        // join", so it rests as a second strip's mark does; without the button it shows only while
-        // the pointer reaches for it (and while moving).
+        // The tabs are the strips' own control, numbered as the bar names them, so they stand
+        // whole at rest wherever there is a strip to choose or one to add. A lone strip, to whom
+        // may not add one, is no news: its tab shows only while the pointer reaches for it.
         let rest = if frame.ribbon.count > 1 || frame.new_strip_offered {
-            RIBBON_REST_ALPHA
+            1.0
         } else {
             0.0
         };
@@ -622,6 +636,26 @@ impl StripNavigator {
             (self.lit_strip(), alpha),
             focus,
         );
+        // Each tab carries its strip's number, as the bar calls an unnamed strip ("Strip 2"): ink
+        // on the shown strip's solid tab, dim on the others.
+        let colors = &cx.theme.tokens.colors;
+        let style = cx.theme.text(ui::TextRole::Caption);
+        for i in 0..ribbon.count {
+            let Some(tab) = ribbon.segment_rect_at(i, focus) else {
+                continue;
+            };
+            let number = i.saturating_add(1).to_string();
+            let ink = if i == ribbon.focused {
+                colors.surfaces.base
+            } else {
+                colors.text_dim
+            };
+            ui::widget::TextLineFace::styled(&number, &style, ui::TextRole::Caption).paint(
+                &mut ui::paint::PaintCtx::new(cx.scene, cx.transform, cx.text, cx.theme),
+                tab,
+                ink.multiply_alpha(alpha),
+            );
+        }
         // Where it painted at this focus: a sliding focus moves segments past the settled ends.
         drawn_extent((0..ribbon.count).map(|i| ribbon.segment_rect_at(i, focus)))
     }
@@ -637,19 +671,31 @@ impl StripNavigator {
         if !frame.new_strip_offered {
             return None;
         }
-        let rect = frame.ribbon.new_strip_rect()?;
-        // The toolkit's own raised control: a plate with its edge and primary ink, lifted under
-        // the pointer.
+        // The toolkit's own raised control, saying what it adds: its plus and "New strip", laid
+        // along the edge and turned a quarter to read down it, under the tabs it adds to, as long
+        // as its words are in the person's language.
         let name = crate::i18n::t("strip-switcher-new-strip");
-        ui::widget::Button::paint(
-            cx.scene,
-            cx.transform,
-            cx.text,
-            cx.theme,
-            &ui::widget::ButtonFace::icon_only(rect, ui::icons::Icon::Plus, &name)
+        let hovered = self.new_strip_hover;
+        let button = |face: Rect| {
+            ui::widget::ButtonFace::new(face, &name)
+                .icon(ui::icons::Icon::Plus)
                 .role(ui::widget::ButtonRole::Secondary)
-                .hovered(self.new_strip_hover),
-        );
+                .control_size(ui::widget::ControlSize::Small)
+                .hovered(hovered)
+        };
+        self.new_strip_len = button(Rect::ZERO).intrinsic_width(cx.text, cx.theme);
+        let rect = StripRibbon {
+            new_len: self.new_strip_len,
+            ..frame.ribbon
+        }
+        .new_strip_rect()?;
+        // The face is laid out lengthwise about its own centre, then turned and stood there.
+        let face = Rect::from_center_size(Point::ZERO, (rect.height(), rect.width()));
+        let turned = cx
+            .transform
+            .pre_translate(rect.center().to_vec2())
+            .pre_rotate(std::f64::consts::FRAC_PI_2);
+        ui::widget::Button::paint(cx.scene, turned, cx.text, cx.theme, &button(face));
         Some(rect.inflate(1.5, 1.5))
     }
 
@@ -925,8 +971,13 @@ mod tests {
         }
     }
 
+    /// A New strip button's length, as its words might measure where it is drawn.
+    const NEW_LEN: f64 = 116.0;
+
     fn frame(tree: &Layout, shown: &[(TabId, Rect)], scroll: f64) -> StripFrame {
-        StripFrame::of_tree(tree, CONTENT, (shown, scroll), false, true)
+        let mut frame = StripFrame::of_tree(tree, CONTENT, (shown, scroll), false, true);
+        frame.ribbon.new_len = NEW_LEN;
+        frame
     }
 
     fn navigator(tree: &Layout, t: Instant) -> (StripNavigator, StripFrame) {
