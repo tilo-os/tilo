@@ -376,6 +376,7 @@ profile-action-identities = Your identities
 profile-action-backup = Back up your identity
 profile-action-pair-device = Pair another device
 profile-action-connect-agent = Connect an agent or computer
+profile-action-settings = Settings
 profile-action-devices-access = Devices and access
 profile-name-not-saved = Your name was not saved
 

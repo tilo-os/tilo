@@ -381,6 +381,7 @@ profile-action-identities = Deine Identitäten
 profile-action-backup = Deine Identität sichern
 profile-action-pair-device = Ein weiteres Gerät koppeln
 profile-action-connect-agent = Agent oder Rechner verbinden
+profile-action-settings = Einstellungen
 profile-action-devices-access = Geräte und Zugriff
 profile-name-not-saved = Dein Name wurde nicht gespeichert
 

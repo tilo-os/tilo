@@ -130,6 +130,8 @@ pub(crate) struct Revoking {
 /// The page's host action that lets the person choose their name; the
 /// People panel offers it on the own name when the page lists it.
 const RENAME_ACTION: &str = "set-name";
+/// Settings itself, first on the person's own card: where a person looks for it.
+const OPEN_SETTINGS: &str = tilo_session::people::OPEN_SETTINGS;
 /// The avatar menu's "Report a problem…", which the page answers itself.
 const REPORT_PROBLEM: &str = "report-problem";
 /// Settings at one of its pages, which a person's own card opens.
@@ -1547,8 +1549,17 @@ impl BrowserShell {
                 })
             })
             .collect::<Vec<_>>();
-        // Reporting a problem, where the page holds a destination for it.
         let mut actions = actions;
+        actions.insert(
+            0,
+            ProfileAction {
+                id: OPEN_SETTINGS.into(),
+                title: tilo_desktop::i18n::t("profile-action-settings"),
+                group: ProfileGroup::Together,
+                icon: ui::icons::Icon::Settings,
+            },
+        );
+        // Reporting a problem, where the page holds a destination for it.
         if self.chrome.shared.feedback.borrow().is_some() {
             actions.push(ProfileAction {
                 id: REPORT_PROBLEM.into(),
@@ -1618,6 +1629,12 @@ impl BrowserShell {
                     .push(HostRequest::ShowInApp(settings_page(
                         "settings.section:devices_access".into(),
                     )));
+                return;
+            }
+            ProfileChoice::Action(id) if id == OPEN_SETTINGS => {
+                self.requests
+                    .borrow_mut()
+                    .push(HostRequest::ShowInApp(settings_page(String::new())));
                 return;
             }
             ProfileChoice::Action(id) if id == REPORT_PROBLEM => {

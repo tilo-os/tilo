@@ -134,6 +134,8 @@ pub const CONNECT_AGENT: &str = tilo_actions::remote::session_actions::CONNECT_A
 /// The own card's action that opens Settings' "Devices and access": everything that acts as the
 /// person, and taking any of it back.
 pub const DEVICES_ACCESS: &str = "devices-access";
+/// The own card's way to Settings itself.
+pub const OPEN_SETTINGS: &str = "settings";
 
 /// How the roster kept on screen stands at its edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -922,6 +924,16 @@ impl Panel {
                 icon: ui::icons::Icon::Fingerprint,
             })
             .collect();
+        // Settings itself, first on the card: where a person looks for it.
+        actions.insert(
+            0,
+            ProfileAction {
+                id: OPEN_SETTINGS.to_owned(),
+                title: crate::i18n::t("profile-action-settings"),
+                group: ProfileGroup::Together,
+                icon: ui::icons::Icon::Settings,
+            },
+        );
         actions.extend([
             ProfileAction {
                 id: "identities".to_owned(),
@@ -963,6 +975,7 @@ impl Panel {
     /// The Settings page an own-card action names.
     fn own_settings_link(id: &str) -> Option<&'static str> {
         match id {
+            OPEN_SETTINGS => Some("settings://"),
             "identities" => Some("settings://users"),
             "identity-backup" => Some("settings://about"),
             DEVICES_ACCESS => Some("settings://devices_access"),
