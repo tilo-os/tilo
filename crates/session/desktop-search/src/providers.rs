@@ -461,6 +461,13 @@ impl PublishedActions {
         })
     }
 
+    /// The app's name, as the registry's metadata (`app-fleet`) gives it; `None` for an app the
+    /// fleet does not know.
+    #[must_use]
+    pub fn app_name(&self) -> Option<&'static str> {
+        app_fleet::metadata(&self.app).map(|app| app.name)
+    }
+
     /// The other words the app is known by, from the registry's metadata
     /// (`app-fleet`): "youtube" for Tube, "channel", "videos". A query naming
     /// one names the app, so "youtube videos of mkbhd" is the video
@@ -591,11 +598,13 @@ impl Published {
             provider: provider.into(),
             id: Self::row_id(published, &action.address),
             title: action.action_label.clone(),
-            // An action whose description only repeats its name says it
-            // once: the row's line under the name is for what the name
-            // does not already say.
-            subtitle: action.description.clone().filter(|description| {
-                crate::model::spoken(description) != crate::model::spoken(&action.action_label)
+            // The app whose action it is: "Delete row" alone does not say what it deletes, and
+            // two apps may offer the same words. An app the fleet does not name says what its
+            // action does instead, where that says more than its name.
+            subtitle: published.app_name().map(str::to_owned).or_else(|| {
+                action.description.clone().filter(|description| {
+                    crate::model::spoken(description) != crate::model::spoken(&action.action_label)
+                })
             }),
             facts: Vec::new(),
             score,
