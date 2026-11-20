@@ -39,35 +39,106 @@ pub const DAMAGE_ONLY_REFUSED: &str =
     "a scene drawn for its damage only cannot repaint more than the damage";
 
 /// Whether a frame of `width` × `height` with `damage` (physical pixels, not empty) is repainted region
-/// by region rather than whole: a damage that covers half the target, or whose window does, is rendered
+/// by region rather than whole: a damage that covers half the target, or whose windows do, is rendered
 /// as one whole frame ([`repaint_damage`]).
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "damage bounds are clamped to the u32 surface before narrowing"
-)]
 pub(crate) fn repaints_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
     let full_pixels = u64::from(width).saturating_mul(u64::from(height));
-    let mut damage_pixels = 0u64;
-    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
-    for rect in damage {
-        let rx0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
-        let ry0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
-        let rx1 = rect.x1.ceil().max(0.0).min(f64::from(width)) as u32;
-        let ry1 = rect.y1.ceil().max(0.0).min(f64::from(height)) as u32;
-        let (region_width, region_height) = (rx1.saturating_sub(rx0), ry1.saturating_sub(ry0));
-        damage_pixels = damage_pixels
-            .saturating_add(u64::from(region_width).saturating_mul(u64::from(region_height)));
-        if region_width != 0 && region_height != 0 {
-            (x0, y0, x1, y1) = (x0.min(rx0), y0.min(ry0), x1.max(rx1), y1.max(ry1));
-        }
-    }
+    let regions: Vec<FineDamageRect> = damage
+        .iter()
+        .filter_map(|rect| pixel_rect(*rect, width, height))
+        .collect();
+    let damage_pixels = regions
+        .iter()
+        .fold(0u64, |sum, rect| sum.saturating_add(area(*rect)));
     if damage_pixels == 0 || damage_pixels >= full_pixels.saturating_div(2) {
         return false;
     }
-    let window_width = x1.saturating_sub(x0 / RASTER_TILE * RASTER_TILE);
-    let window_height = y1.saturating_sub(y0 / RASTER_TILE * RASTER_TILE);
-    u64::from(window_width).saturating_mul(u64::from(window_height)) < full_pixels.saturating_div(2)
+    window_pixels(&damage_windows(coalesce_regions(regions))) < full_pixels.saturating_div(2)
+}
+
+/// What one more window of damage costs beyond its own pixels, in pixels: each window is a Vello
+/// render of its own over the frame's scene, so two regions close enough are cheaper as one window
+/// than as two.
+const WINDOW_COST_PIXELS: u64 = 128 * 128;
+
+/// One window of a frame's damage: a rectangle from a tile corner, rendered alone, and the regions
+/// copied out of it into place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DamageWindow {
+    pub(crate) window: FineDamageRect,
+    pub(crate) regions: Vec<FineDamageRect>,
+}
+
+/// `region`'s window: from the tile corner at or before it, so its tiles are the full frame's and
+/// its pixels the same.
+fn tile_window(region: FineDamageRect) -> FineDamageRect {
+    let (x, y) = (
+        region.x / RASTER_TILE * RASTER_TILE,
+        region.y / RASTER_TILE * RASTER_TILE,
+    );
+    FineDamageRect {
+        x,
+        y,
+        width: region.x.saturating_add(region.width).saturating_sub(x),
+        height: region.y.saturating_add(region.height).saturating_sub(y),
+    }
+}
+
+/// The windows `regions` are repainted through: regions far apart each through a window of their
+/// own, so a change at the top of the screen and one at its bottom repaint two strips rather than
+/// everything between them; windows whose union costs no more than both apart
+/// ([`WINDOW_COST_PIXELS`]) are one. A list too long to group is one window around it all.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "the bounded two-index scan checks i < j < len before every access"
+)]
+pub(crate) fn damage_windows(regions: Vec<FineDamageRect>) -> Vec<DamageWindow> {
+    if regions.len() > 128 {
+        let Some(window) = regions
+            .iter()
+            .copied()
+            .map(tile_window)
+            .reduce(crate::damage::damage_union)
+        else {
+            return Vec::new();
+        };
+        return vec![DamageWindow { window, regions }];
+    }
+    let mut windows: Vec<DamageWindow> = regions
+        .into_iter()
+        .map(|region| DamageWindow {
+            window: tile_window(region),
+            regions: vec![region],
+        })
+        .collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        'scan: for i in 0..windows.len() {
+            for j in i.saturating_add(1)..windows.len() {
+                let union = crate::damage::damage_union(windows[i].window, windows[j].window);
+                if area(union)
+                    <= area(windows[i].window)
+                        .saturating_add(area(windows[j].window))
+                        .saturating_add(WINDOW_COST_PIXELS)
+                {
+                    let merged = windows.swap_remove(j);
+                    windows[i].window = union;
+                    windows[i].regions.extend(merged.regions);
+                    changed = true;
+                    break 'scan;
+                }
+            }
+        }
+    }
+    windows
+}
+
+/// The pixels `windows` render, each counted once per window it is in.
+fn window_pixels(windows: &[DamageWindow]) -> u64 {
+    windows
+        .iter()
+        .fold(0u64, |sum, window| sum.saturating_add(area(window.window)))
 }
 
 /// What a host keeps between frames to rasterize them into one retained target: the damage scratch, the
@@ -336,21 +407,21 @@ fn repaint_damage(
     }
 
     let regions = coalesce_regions(pixel_rects);
-    let prefix_width = regions
-        .iter()
-        .map(|r| r.x.saturating_add(r.width))
-        .max()
-        .unwrap_or(0);
-    let prefix_height = regions
-        .iter()
-        .map(|r| r.y.saturating_add(r.height))
-        .max()
-        .unwrap_or(0);
     // Vello's sparse fine pass is a second render path the web build would
-    // carry for this alone; it repaints through the window below instead.
+    // carry for this alone; it repaints through the windows below instead.
     // The native feature is only ever enabled off the web.
     #[cfg(feature = "native")]
     if renderer.sparse_fine_supported() {
+        let prefix_width = regions
+            .iter()
+            .map(|r| r.x.saturating_add(r.width))
+            .max()
+            .unwrap_or(0);
+        let prefix_height = regions
+            .iter()
+            .map(|r| r.y.saturating_add(r.height))
+            .max()
+            .unwrap_or(0);
         let raster_pixels = u64::from(prefix_width).saturating_mul(u64::from(prefix_height));
         if damage_cache.coarse_pool_high_water_pixels >= full_pixels.saturating_div(2)
             && raster_pixels.saturating_mul(4) <= damage_cache.coarse_pool_high_water_pixels
@@ -381,16 +452,12 @@ fn repaint_damage(
             return Ok(stats.fine_pixels);
         }
     }
-    // The window around the damage, from a tile corner so its tiles are the
-    // full frame's and its pixels the same: rendered alone, shifted to the
-    // target's origin, then copied into place region by region.
-    let origin = |at: fn(&FineDamageRect) -> u32| {
-        regions.iter().map(at).min().unwrap_or(0) / RASTER_TILE * RASTER_TILE
-    };
-    let (origin_x, origin_y) = (origin(|r| r.x), origin(|r| r.y));
-    let window_width = prefix_width.saturating_sub(origin_x);
-    let window_height = prefix_height.saturating_sub(origin_y);
-    let raster_pixels = u64::from(window_width).saturating_mul(u64::from(window_height));
+    // Each window of the damage, from a tile corner so its tiles are the full frame's and its
+    // pixels the same: rendered alone, shifted to the target's origin, then copied into place
+    // region by region. Regions far apart are windows of their own: one window around both would
+    // repaint everything between them.
+    let windows = damage_windows(regions);
+    let raster_pixels = window_pixels(&windows);
     if raster_pixels >= full_pixels.saturating_div(2) {
         return render_full(renderer, damage_cache);
     }
@@ -398,9 +465,17 @@ fn repaint_damage(
         renderer.trim_pooled_buffers();
     }
     damage_cache.last_region_count = Some(damage_region_count);
-    damage_cache.coarse_pool_high_water_pixels = damage_cache
-        .coarse_pool_high_water_pixels
-        .max(raster_pixels);
+    let largest = windows
+        .iter()
+        .map(|window| area(window.window))
+        .max()
+        .unwrap_or(0);
+    damage_cache.coarse_pool_high_water_pixels =
+        damage_cache.coarse_pool_high_water_pixels.max(largest);
+    // One scratch texture every window renders into in turn: as wide and as tall as the widest and
+    // the tallest of them.
+    let window_width = windows.iter().map(|w| w.window.width).max().unwrap_or(0);
+    let window_height = windows.iter().map(|w| w.window.height).max().unwrap_or(0);
     let texture_limit = device.limits().max_texture_dimension_2d;
     let allocated_width = if damage_cache.geometric_capacity {
         damage_texture_geometric_width_extent(window_width, width, texture_limit)
@@ -463,65 +538,70 @@ fn repaint_damage(
         .targets
         .first()
         .expect("damage target was inserted above");
-    let shifted;
-    let window_scene = if origin_x == 0 && origin_y == 0 {
-        scene
-    } else {
-        let mut scene_at_origin = Scene::new();
-        scene_at_origin.append(
-            scene,
-            Some(vello::kurbo::Affine::translate((
-                -f64::from(origin_x),
-                -f64::from(origin_y),
-            ))),
-        );
-        shifted = scene_at_origin;
-        &shifted
-    };
-    renderer.render_to_texture(
-        device,
-        queue,
-        window_scene,
-        &target.view,
-        &RenderParams {
-            base_color,
-            width: window_width,
-            height: window_height,
-            antialiasing_method: vello::AaConfig::Area,
-        },
-    )?;
-    let mut encoder =
-        device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor::default());
-    for region in &regions {
-        encoder.copy_texture_to_texture(
-            vello::wgpu::TexelCopyTextureInfo {
-                texture: &target.texture,
-                mip_level: 0,
-                origin: vello::wgpu::Origin3d {
-                    x: region.x - origin_x,
-                    y: region.y - origin_y,
-                    z: 0,
+    for DamageWindow { window, regions } in &windows {
+        let (origin_x, origin_y) = (window.x, window.y);
+        let shifted;
+        let window_scene = if origin_x == 0 && origin_y == 0 {
+            scene
+        } else {
+            let mut scene_at_origin = Scene::new();
+            scene_at_origin.append(
+                scene,
+                Some(vello::kurbo::Affine::translate((
+                    -f64::from(origin_x),
+                    -f64::from(origin_y),
+                ))),
+            );
+            shifted = scene_at_origin;
+            &shifted
+        };
+        renderer.render_to_texture(
+            device,
+            queue,
+            window_scene,
+            &target.view,
+            &RenderParams {
+                base_color,
+                width: window.width,
+                height: window.height,
+                antialiasing_method: vello::AaConfig::Area,
+            },
+        )?;
+        // The copies are submitted before the next window renders into the same texture, and the
+        // queue keeps that order.
+        let mut encoder =
+            device.create_command_encoder(&vello::wgpu::CommandEncoderDescriptor::default());
+        for region in regions {
+            encoder.copy_texture_to_texture(
+                vello::wgpu::TexelCopyTextureInfo {
+                    texture: &target.texture,
+                    mip_level: 0,
+                    origin: vello::wgpu::Origin3d {
+                        x: region.x - origin_x,
+                        y: region.y - origin_y,
+                        z: 0,
+                    },
+                    aspect: vello::wgpu::TextureAspect::All,
                 },
-                aspect: vello::wgpu::TextureAspect::All,
-            },
-            vello::wgpu::TexelCopyTextureInfo {
-                texture: retained.texture,
-                mip_level: 0,
-                origin: vello::wgpu::Origin3d {
-                    x: region.x,
-                    y: region.y,
-                    z: 0,
+                vello::wgpu::TexelCopyTextureInfo {
+                    texture: retained.texture,
+                    mip_level: 0,
+                    origin: vello::wgpu::Origin3d {
+                        x: region.x,
+                        y: region.y,
+                        z: 0,
+                    },
+                    aspect: vello::wgpu::TextureAspect::All,
                 },
-                aspect: vello::wgpu::TextureAspect::All,
-            },
-            vello::wgpu::Extent3d {
-                width: region.width,
-                height: region.height,
-                depth_or_array_layers: 1,
-            },
-        );
+                vello::wgpu::Extent3d {
+                    width: region.width,
+                    height: region.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        queue.submit([encoder.finish()]);
     }
-    queue.submit([encoder.finish()]);
     while damage_cache.targets.len() > 1 {
         let target = damage_cache.targets.pop().expect("length checked above");
         renderer.invalidate_texture_bindings(&target.view);
