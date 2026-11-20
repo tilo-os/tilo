@@ -67,6 +67,19 @@ fn an_out_of_band_join_under_a_private_umask_stays_group_readable() {
         ],
     );
     let device: serde_json::Value = serde_json::from_str(device_key.trim()).unwrap();
+    // The address an owner names this server by when it serves no site: its
+    // device key at its server's endpoint.
+    let holder = tilo_server::workspaces::IrohHolder::parse(device["holder"].as_str().unwrap())
+        .expect("an Iroh holder's address")
+        .unwrap();
+    assert_eq!(
+        hex::encode(holder.device),
+        device["device_public_key"].as_str().unwrap()
+    );
+    assert_eq!(
+        hex::encode(holder.addr.id.as_bytes()),
+        device["server_node_id"].as_str().unwrap()
+    );
     let device = device["device_public_key"].as_str().unwrap().to_owned();
 
     let root = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
