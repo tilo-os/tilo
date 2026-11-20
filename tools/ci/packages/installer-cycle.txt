@@ -1,0 +1,5 @@
+# What the live installer's framebuffer-driven cycle reads beside the OS VM tools
+# (tools/ci/packages/os-vm.txt, qemu-<arch>.txt): the installer publishes no state a test may
+# read, so its screens are verified by their text, recognised from the framebuffer
+# (os/dev/test-installer-cycle.sh).
+tesseract

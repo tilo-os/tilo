@@ -14,7 +14,14 @@
 #            a third device through one without the identity key, sibling unlock and, on
 #            x86_64, wake (os/dev/test-nearby-pairing.sh); device-admin reach through a server
 #            (os/dev/test-device-admin-reach.sh)
-#   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh)
+#   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh),
+#            whose guest-side checks are os/tests/boot_units_check.sh,
+#            os/tests/projection-boot-check.sh, os/tests/h264-boot-check.py,
+#            os/tests/session-context-check.sh, os/tests/input-hotplug-check.sh,
+#            os/tests/installed-admin-actions.sh, os/tests/installed_atspi_apps.sh,
+#            os/tests/native_atspi_smoke.sh, os/tests/recovery-boot-check.sh,
+#            os/tests/booted_app_store.sh, os/tests/booted_app_update.sh and
+#            os/tests/booted_flatpak_lifecycle.sh
 #   splash   the boot splash on a panel larger than the firmware's mode (os/dev/check-boot-splash.py)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"

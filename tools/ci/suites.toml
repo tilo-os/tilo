@@ -1863,10 +1863,12 @@ check = "encrypted-install-tpm-x86_64"
 [[unrequired]]
 suite = "os/tests/validation_drive_qemu.sh"
 reason = "requires a native ARM KVM host and QEMU"
+check = "validation-drive-aarch64"
 
 [[unrequired]]
 suite = "os/dev/test-joined-device-startup.sh"
 reason = "boots the guarded dev disk in a VM and signs in"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
@@ -1876,23 +1878,27 @@ check = "nearby-unlock-x86_64"
 [[unrequired]]
 suite = "os/dev/test-device-admin-reach.sh"
 reason = "boots three VMs (KVM) from the guarded dev disk on separate networks; two reach each other only through a server the third runs"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/dev/test-installed-desktop.sh"
 reason = "boots the guarded dev disk in a VM and signs in at its greeter"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
+check = "installer-cycle-x86_64"
 
 [[unrequired]]
 suite = "os/tests/native_atspi_smoke.sh"
 reason = "runs inside a booted guest: it drives the compositor's own surfaces over the AT-SPI bus, which only exists in a live session (os/dev/vm.sh test native-atspi-smoke.sh)"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/dev/test-internal-install-cycle.sh"
-reason = "boots VMs (KVM) from a built installer image"
+reason = "boots VMs (KVM) from a built installer image and a retained Fedora Cloud Base qcow2, which the release run pins through repository variables; a t check has no pinned Fedora image to name"
 
 [[unrequired]]
 suite = "os/dev/test-server-plan-install-cycle.sh"
@@ -1902,14 +1908,17 @@ check = "server-plan-install-cycle"
 [[unrequired]]
 suite = "os/dev/test-measured-boot.sh"
 reason = "boots a VM with a software TPM from a built image"
+check = "measured-boot-x86_64"
 
 [[unrequired]]
 suite = "os/dev/test-secureboot.sh"
 reason = "boots a VM with OVMF from a built image"
+check = "secureboot-enrolment-x86_64"
 
 [[unrequired]]
 suite = "os/kernel/tests/test-boot-smoke-compressed.sh"
 reason = "needs a C toolchain and QEMU"
+check = "kernel-boot-smoke-compressed"
 
 [[unrequired]]
 suite = "os/kernel/tests/test-cn20k-debugfs.py"
@@ -1935,18 +1944,22 @@ check = "dev-disk-boot-diagnostic-x86_64"
 [[unrequired]]
 suite = "os/tests/boot_units_check.sh"
 reason = "runs inside a booted guest, as root"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/booted_app_store.sh"
 reason = "needs a booted image (SSH into a VM)"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/booted_app_update.sh"
 reason = "drives a booted, logged-in dev VM over SSH (the dev image check)"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/booted_flatpak_lifecycle.sh"
 reason = "drives a booted, signed-in dev VM or tilo-vm slot and installs a real Flathub app"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"
@@ -2016,6 +2029,7 @@ reason = "needs the disposable root native container"
 [[unrequired]]
 suite = "os/tests/installed_atspi_apps.sh"
 reason = "needs a logged-in installed image session"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/installed_material_audit.py"
@@ -2028,14 +2042,17 @@ reason = "needs a built tilo-installer binary"
 [[unrequired]]
 suite = "os/tests/installed-admin-actions.sh"
 reason = "runs inside a booted guest as its device admin, after first login"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/live-update-check.sh"
 reason = "runs inside a booted dev VM as root and stages an update"
+check = "os-dev-check-{arch}"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"
 reason = "runs inside a booted guest's graphical session, partly as root"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
@@ -2044,15 +2061,16 @@ workflow = "release-imager.yml"
 
 [[unrequired]]
 suite = "os/tests/kernel-arm-capsule-smoke.py"
-reason = "boots QEMU from a native OCI root"
+reason = "boots QEMU on native ARM from a native OCI root, with the FEX, Proton and Steam runtime inputs and the exported capsule plans no check builds"
 
 [[unrequired]]
 suite = "os/tests/kernel-landlock-private-tmp.sh"
 reason = "needs a compiled kernel and QEMU"
+check = "kernel-landlock-x86_64"
 
 [[unrequired]]
 suite = "os/tests/kernel_runtime_probe.sh"
-reason = "needs a compiled kernel tree and QEMU"
+reason = "needs a local kernel source build tree (arch/x86/boot/bzImage, gen_init_cpio and a module built for one release), not the kernel image image-kernel packages; kernel-acceptance checks module trust through the packaged RPM (os/kernel/tests/test-rpm.sh)"
 
 [[unrequired]]
 suite = "os/tests/luks_enrolment.sh"
@@ -2065,10 +2083,12 @@ reason = "needs a FEX runtime container"
 [[unrequired]]
 suite = "os/tests/projection-boot-check.sh"
 reason = "runs inside a booted guest"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/h264-boot-check.py"
 reason = "runs inside a booted guest: it decodes with the image's own GStreamer and reads the decoder the kernel and the pipeline actually chose (os/dev/test-installed-desktop.sh)"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache.py"
@@ -2085,6 +2105,7 @@ reason = "needs rootful Podman to observe real firmware mount layer-cache reuse 
 [[unrequired]]
 suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/boot_assessment_rollback.sh"
@@ -2111,10 +2132,12 @@ check = "image-release-tools-x86_64"
 [[unrequired]]
 suite = "os/tests/registry_update_check.sh"
 reason = "runs inside a booted server, as root (tools/ci/host-assurance.sh)"
+check = "host-assurance-x86_64"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"
 reason = "runs inside a booted guest, as root (TPM, LUKS)"
+check = "measured-boot-x86_64"
 
 [[unrequired]]
 suite = "os/tests/rollback-wrappers.sh"
@@ -2127,10 +2150,12 @@ reason = "needs FEX sources and a guest rootfs container"
 [[unrequired]]
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU; kernel-acceptance-<arch> runs it"
+check = "kernel-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/session-context-check.sh"
 reason = "runs inside a booted guest after a greetd login"
+check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
@@ -2194,11 +2219,11 @@ reason = "needs the libvirt domain RelaxNG schema as an argument"
 
 [[unrequired]]
 suite = "os/usr/bin/fs-test.sh"
-reason = "runs inside the booted test image"
+reason = "runs as a boot service inside the Containerfile.test image os/verify-test.sh builds, which no check boots; the service's result is read from its journal on a machine someone started by hand"
 
 [[unrequired]]
 suite = "os/verify-test.sh"
-reason = "boots the test image in a VM"
+reason = "builds the Containerfile.test image and disk with Podman and prints how to boot the result by hand; it asserts nothing about the boot, so no check can make it pass or fail"
 
 [[unrequired]]
 suite = "scripts/two-host-sync-test.sh"
