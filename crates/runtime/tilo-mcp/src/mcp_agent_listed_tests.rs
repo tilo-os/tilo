@@ -162,3 +162,78 @@ async fn a_read_of_a_place_answers_no_read_without_reading_the_apps_root_again()
         );
     }
 }
+
+/// A page of a listing read on from the one before it resolves no path again: the app is
+/// asked for the rows on that page and nothing else, where a first page asks it for the
+/// workspace's installed apps and the app's own directory to find what the path names.
+#[tokio::test]
+async fn a_later_page_of_a_listing_resolves_no_path_again() {
+    let notes = Notes::new(true);
+    let mut rows = notes.rows("1");
+    rows.push(notes.row("", "settings", "settings", "Reading settings", None, true));
+    // More than a page of a directory level holds ([`PAGE_ROWS`]), so the level is read in
+    // pages and the listing's next cursor names one.
+    for index in 0..300 {
+        rows.push(notes.row(
+            "settings",
+            &format!("option:{index}"),
+            "option",
+            &format!("Option {index:02}"),
+            None,
+            false,
+        ));
+    }
+    *notes.published_kinds.lock().unwrap() = Some(rows);
+    // The directory answers in pages of a hundred rows, as an app's does.
+    let notes = notes.paging_levels(100);
+    let server = agent(&notes);
+    let (first, failed) = tool(
+        &server,
+        "tilo_ls",
+        json!({"path": "notes/settings", "limit": 200}),
+    )
+    .await;
+    assert!(!failed, "{first}");
+    let goes_on = first
+        .split("cursor \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("a first page goes on");
+    // The page after this one, from the directory page its 201st resource starts in: the
+    // cursor says how many rows stand before it (200) and the revision the directory was
+    // read at (`v1`), as the app's cursors do.
+    assert!(goes_on.starts_with("200.0.7631."), "{goes_on}");
+    let asked = notes.take_asked();
+    assert!(
+        asked.iter().any(|ask| ask.ends_with("under "))
+            && asked.iter().any(|ask| ask.contains("named ")),
+        "a first page finds what the path names: {asked:?}"
+    );
+    let (next, failed) = tool(
+        &server,
+        "tilo_ls",
+        json!({"path": "notes/settings", "limit": 200,
+            // The directory page the 201st resource starts at, in the fixture's own cursor
+            // (a row count), keeping the revision the page was read at.
+            "cursor": "200.0.7631.323030"}),
+    )
+    .await;
+    assert!(!failed, "{next}");
+    assert!(next.contains("Option 299"), "the rest of the directory: {next}");
+    let asked = notes.take_asked();
+    let settings = notes.id("settings");
+    assert!(
+        asked
+            .iter()
+            .any(|ask| ask.ends_with(&format!("under {settings}"))),
+        "the page reads its rows: {asked:?}"
+    );
+    assert!(
+        !asked.iter().any(|ask| ask.ends_with("under ")),
+        "the app's own directory is not resolved again: {asked:?}"
+    );
+    assert!(
+        !asked.iter().any(|ask| ask.contains("named ")),
+        "the workspace's installed apps are not asked again: {asked:?}"
+    );
+}

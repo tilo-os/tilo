@@ -103,6 +103,9 @@ const READ_CURSOR: &str = "read+";
 /// The longest pause between two reads of a directory level that keeps
 /// changing while it is read.
 const RESTART_PAUSE_MAX: std::time::Duration = std::time::Duration::from_millis(200);
+/// The most rows one page of a listing answers: a bound on what one call holds and sends,
+/// and enough that a tracker of a company's issues is listed in a couple of calls.
+const LS_PAGE_MAX: usize = 1_000;
 /// Longest label shown whole in a listing line.
 const LABEL_CHARS: usize = 60;
 /// Longest first sentence of an action's description in an action's page.
@@ -664,8 +667,15 @@ impl InstalledApp {
 /// A directory read once per call.
 type Levels = HashMap<String, Level>;
 
-/// A path, resolved against the live directory.
-struct Resolved {
+/// A path resolved against the live directory, kept for the pages that list on from it.
+pub(super) type ListingResolution = std::sync::Arc<Resolved>;
+
+/// The resolved paths one session keeps for its listings, at most: a page of any listing
+/// reads the one its cursor names, and a session of thousands of anything holds only these.
+const LISTING_RESOLUTIONS: usize = 32;
+
+/// A path resolved against the live directory.
+pub(super) struct Resolved {
     app_id: String,
     provider: String,
     /// Written back as a path: the app and the names down to the target.
@@ -1687,7 +1697,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .ok_or_else(|| "cursor is not one tilo_ls issued".to_owned())?,
         };
         let offset = cursor.offset;
-        let limit = args.limit.unwrap_or(LS_LINES).clamp(1, 200);
+        let limit = args.limit.unwrap_or(LS_LINES).clamp(1, LS_PAGE_MAX);
         let (want_resources, want_actions) = match args.kind.as_deref() {
             None | Some("") => (true, true),
             Some("resources") => (true, false),
@@ -1707,20 +1717,35 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let forms = self.program_forms().await.unwrap_or_default();
         super::timing_done("ls.forms", forms_timed);
         let resolving = super::timing_start();
-        let resolved = if names_files(&parsed.app) && parsed.action.is_none() {
-            self.files_resolved(&parsed, &forms).await?
-        } else {
-            match self.resolve_with(&parsed, Some(&forms)).await? {
-                Ok(resolved) => resolved,
-                Err(note) => {
-                    super::timing_done("ls.resolve", resolving);
-                    return Ok(Reply::ok(note));
+        // A page read on from one before it lists what the app's path named when that page
+        // was read, by the resolution kept for the directory revision its cursor names: the
+        // app's directory has not moved on since, or its pages would not be read from it. The
+        // path is resolved again only when no page of that revision was listed.
+        let mut reused = cursor
+            .resume
+            .as_ref()
+            .and_then(|(mark, _)| self.listing_resolution(path, &mark.revision));
+        let cached = reused.is_some();
+        let mut resolved = match reused.take() {
+            Some(resolved) => resolved,
+            None => std::sync::Arc::new(if names_files(&parsed.app) && parsed.action.is_none() {
+                self.files_resolved(&parsed, &forms).await?
+            } else {
+                match self.resolve_with(&parsed, Some(&forms)).await? {
+                    Ok(resolved) => resolved,
+                    Err(note) => {
+                        super::timing_done("ls.resolve", resolving);
+                        return Ok(Reply::ok(note));
+                    }
                 }
-            }
+            }),
         };
         super::timing_done("ls.resolve", resolving);
         self.acted_in(&resolved.provider, &resolved.app_id);
-        let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
+        // By value: a page that reads the directory as it moved on resolves the path again
+        // below, and what it lists is still named under the same app.
+        let listed_app = resolved.app_id.clone();
+        let called = |action: &ActionDescriptor| forms.called(action, &listed_app);
         if let Some(action) = &parsed.action {
             let (named_at, found) = self.pick_action_in(action, &resolved).await?;
             let mut reply = Reply::ok(action_page(&named_at, &found, called(&found)));
@@ -1749,48 +1774,57 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // read on from where the last one ended starts past the start.
         let mut first = 0usize;
         let mut read: Option<(Level, usize)> = None;
-        if want_resources
-            && let Some(node) = &resolved.node
-            && let Some(level) = resolved.levels.get(&node.id).cloned()
-        {
-            let resumed = match cursor.resume {
-                Some((mark, skip)) if offset > 0 => self
+        if want_resources && resolved.node.is_some() {
+            let resumed = match (&cursor.resume, &resolved.node) {
+                (Some((mark, skip)), Some(node)) if offset > 0 => self
                     .level_from(
                         &resolved.provider,
                         &node.id,
-                        mark,
+                        mark.clone(),
                         skip.saturating_add(limit),
                     )
                     .await?
-                    .filter(|level| level.children.len() >= skip)
-                    .map(|level| (level, skip)),
+                    .filter(|level| level.children.len() >= *skip)
+                    .map(|level| (level, *skip)),
                 _ => None,
             };
-            let (level, skipped, from_start) = if let Some((level, skip)) = resumed {
-                (level, skip, false)
-            } else {
-                let reading = super::timing_start();
-                let level = self
-                    .level_reaching(&resolved.provider, &node.id, level, end)
-                    .await?;
-                super::timing_done("ls.level", reading);
-                (level, offset, true)
-            };
-            first = offset.saturating_sub(skipped);
-            let related: Vec<Node> = resolved
-                .children
-                .iter()
-                .filter(|child| !level.children.iter().any(|read| read.id == child.id))
-                .cloned()
-                .collect();
-            children.clone_from(&level.children);
-            // What the resource names beside its directory follows the
-            // directory's last page, once: a page read on from a later page
-            // holds none of the first, which are no more related for that.
-            if !level.unread() && from_start {
-                children.extend(related);
+            if resumed.is_none() && cached && cursor.resume.is_some() {
+                // The app's directory moved on since that page was read, so this page lists
+                // what the path names now: resolved again, and read from its first page.
+                match self.resolve_with(&parsed, Some(&forms)).await? {
+                    Ok(fresh) => resolved = std::sync::Arc::new(fresh),
+                    Err(note) => return Ok(Reply::ok(note)),
+                }
             }
-            read = Some((level, first));
+            if let Some(node) = resolved.node.clone()
+                && let Some(level) = resolved.levels.get(&node.id).cloned()
+            {
+                let (level, skipped, from_start) = if let Some((level, skip)) = resumed {
+                    (level, skip, false)
+                } else {
+                    let reading = super::timing_start();
+                    let level = self
+                        .level_reaching(&resolved.provider, &node.id, level, end)
+                        .await?;
+                    super::timing_done("ls.level", reading);
+                    (level, offset, true)
+                };
+                first = offset.saturating_sub(skipped);
+                let related: Vec<Node> = resolved
+                    .children
+                    .iter()
+                    .filter(|child| !level.children.iter().any(|read| read.id == child.id))
+                    .cloned()
+                    .collect();
+                children.clone_from(&level.children);
+                // What the resource names beside its directory follows the
+                // directory's last page, once: a page read on from a later page
+                // holds none of the first, which are no more related for that.
+                if !level.unread() && from_start {
+                    children.extend(related);
+                }
+                read = Some((level, first));
+            }
         }
         let unread = read.as_ref().is_some_and(|(level, _)| level.unread());
         // Each entry is a resource's line, and its row; then the resource's
@@ -1933,8 +1967,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 offset: end,
                 resume,
             }
-            .write()
         });
+        // The page after this one lists by this path's resolution at the directory revision
+        // its cursor names, rather than resolving the path again.
+        if let Some(cursor) = &next
+            && let Some((mark, _)) = &cursor.resume
+        {
+            self.remember_listing_resolution(path, &mark.revision, &resolved);
+        }
+        let next = next.map(|cursor| cursor.write());
         if let Some(next) = &next {
             if unread {
                 let _ = write!(text, "\n… more: cursor \"{next}\"");
@@ -1970,6 +2011,40 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             reply.structured = Some(answer);
         }
         Ok(reply)
+    }
+
+    /// The resolution `path` was listed by at the app's directory revision `revision`, when
+    /// this session listed one: a later page reads by it instead of resolving the path again.
+    fn listing_resolution(&self, path: &str, revision: &str) -> Option<ListingResolution> {
+        if revision.is_empty() {
+            return None;
+        }
+        self.listing_resolutions
+            .lock_recover()
+            .get(&(path.to_owned(), revision.to_owned()))
+            .cloned()
+    }
+
+    /// Keep the resolution `path` was listed by at `revision`, for the page that reads on
+    /// from it. The newest [`LISTING_RESOLUTIONS`] are kept; what a session listed before
+    /// those is resolved again when it is listed again.
+    fn remember_listing_resolution(
+        &self,
+        path: &str,
+        revision: &str,
+        resolved: &ListingResolution,
+    ) {
+        if revision.is_empty() {
+            return;
+        }
+        let mut kept = self.listing_resolutions.lock_recover();
+        if kept.len() >= LISTING_RESOLUTIONS {
+            kept.clear();
+        }
+        kept.insert(
+            (path.to_owned(), revision.to_owned()),
+            std::sync::Arc::clone(resolved),
+        );
     }
 
     /// The surface `app_id` publishes, in the form it is kept by

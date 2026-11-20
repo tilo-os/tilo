@@ -310,7 +310,7 @@ fn literal_id(id: &str) -> bool {
 /// name a type with one name: [`Self::kind`] says what a listing prints for a resource's kind
 /// (`tasks.Task`), and [`Self::answers`] reads that same name back as its published kind, which
 /// is how a path walks to the resource a listing showed. One table serves both.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ProgramForms {
     /// By action id, each app's action of that id.
     actions: BTreeMap<String, Vec<Declared>>,
@@ -320,6 +320,7 @@ pub(crate) struct ProgramForms {
 }
 
 /// One app's action, as a program calls it and what it acts on.
+#[derive(Clone)]
 struct Declared {
     app: String,
     /// `session.place(resource: host.Resource, x: Option<Int> = .none)`.
@@ -1200,6 +1201,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // A program that failed to answer is started afresh next time, and
             // a listing in between reads no programs rather than wait on it.
             *link = None;
+            self.forget_forms();
             self.task_given_up.store(true, Ordering::SeqCst);
         } else {
             self.task_given_up.store(false, Ordering::SeqCst);
@@ -1217,15 +1219,28 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// How the task's programs write what a listing shows, when this API runs programs: each
     /// action as it is called and each type by its name ([`ProgramForms`]). `None` for an API
     /// that runs none, whose listing names actions as the API's own tools take them.
+    ///
+    /// Read from the task's host once a session ([`Self::forget_forms`] when that host is
+    /// replaced): the host's packages are the ones it started with, so every page of a listing
+    /// names what it shows by the same forms, and no page waits for the catalogue again.
     pub(super) async fn program_forms(&self) -> Option<ProgramForms> {
         if !self.starts_programs() {
             return None;
         }
+        let cached = self.forms.lock_recover().clone();
+        if let Some(forms) = cached {
+            return Some(forms);
+        }
         // optional-decode: a listing names actions by their ids when the catalogue is not there
-        self.catalogue()
-            .await
-            .ok()
-            .map(|catalogue| ProgramForms::of(&catalogue))
+        let forms = ProgramForms::of(&self.catalogue().await.ok()?);
+        *self.forms.lock_recover() = Some(forms.clone());
+        Some(forms)
+    }
+
+    /// Forget the forms the task's host declared: its connection ended, and the host started
+    /// after it declares whatever its packages hold then.
+    fn forget_forms(&self) {
+        *self.forms.lock_recover() = None;
     }
 
     /// The reference a listed resource (the published `id` of a resource of `kind`) goes by in
@@ -1318,6 +1333,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Ok(answer) => answer,
             Err(why) => {
                 *link = None;
+                self.forget_forms();
                 return Err(why);
             }
         };
@@ -1345,6 +1361,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // A host that went away takes the task's `let`s with it; the next program starts
             // another.
             *link = None;
+            self.forget_forms();
         }
         ran
     }

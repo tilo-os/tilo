@@ -141,6 +141,10 @@ pub struct McpServer<H> {
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
     /// The program connection to the task's host, once its first program started it.
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
+    /// How the task's programs write what the apps declare, once its host answered its
+    /// catalogue: a listing reads it once a session rather than every page
+    /// ([`McpServer::program_forms`]).
+    forms: std::sync::Mutex<Option<agent::ProgramForms>>,
     /// How long the task's program is given to start and answer a listing's
     /// catalogue ([`QUERY_ANSWER_WAIT`], the wait a listing gives its own
     /// answers).
@@ -170,6 +174,11 @@ pub struct McpServer<H> {
     /// at: reading every root resource to find it is done once, not once a
     /// call.
     swept_reads: std::sync::Mutex<std::collections::HashMap<(String, String), SweptRead>>,
+    /// The paths this session's listings resolved, by the path as written and the app's
+    /// directory revision they were resolved at: a listing's later pages list by one of these
+    /// instead of resolving the path again ([`McpServer::agent_ls`]).
+    listing_resolutions:
+        std::sync::Mutex<std::collections::HashMap<(String, String), agent::ListingResolution>>,
     /// The documents whose window this session's changes showed the person
     /// ([`McpServer::changed_shown`]).
     showed: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -630,12 +639,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             task_hosts: None,
             devices: None,
             task: tokio::sync::Mutex::new(None),
+            forms: std::sync::Mutex::default(),
             task_answer_wait: QUERY_ANSWER_WAIT,
             task_given_up: std::sync::atomic::AtomicBool::new(false),
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             resolved_paths: std::sync::Mutex::default(),
             swept_reads: std::sync::Mutex::default(),
+            listing_resolutions: std::sync::Mutex::default(),
             showed: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),

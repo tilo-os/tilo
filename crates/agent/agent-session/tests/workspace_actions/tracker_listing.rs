@@ -255,6 +255,21 @@ async fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
             );
             per_row.push((size, limit, row));
         }
+        if size == SIZES[1] {
+            // A page answers a thousand rows (the listing's bound): a tracker this size is
+            // listed in two calls, and each is still one answer's worth of memory.
+            let (status, page) = agent
+                .get(&format!("{base}/resources?path=tasks/Issues&limit=1000"))
+                .await;
+            assert_eq!(status, 200, "{page}");
+            assert_eq!(
+                page["rows"].as_array().map(Vec::len),
+                Some(1000),
+                "a page answers a thousand rows: {}",
+                page["rows"].as_array().map(Vec::len).unwrap_or_default()
+            );
+            assert!(page["next_cursor"].is_string(), "{page}");
+        }
     }
     let small = per_row
         .iter()
