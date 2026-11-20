@@ -54,9 +54,12 @@ build_programs() {
   cd "$repo"
   cargo build --locked --profile lounge-local --features tilo-server/agents \
     -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
-    -p tilo-account-probe --example mail_stand_in \
     --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo \
-    --bin tilolang-process
+    --bin tilolang-process || return
+  # An example is built with its package's dev-dependencies, and Cargo turns their features on
+  # for every package in the same build: built beside the server, it would build the server with
+  # its test-only features (fixture fonts its app workers cannot load). It is built on its own.
+  cargo build --locked --profile lounge-local -p tilo-account-probe --example mail_stand_in || return
   local dir=$CARGO_TARGET_DIR/$stage/programs program
   mkdir -p "$dir" "$dir/examples"
   for program in tilo-server discord-worker tilo-api fake-discord tilo tilolang-process; do

@@ -1429,11 +1429,15 @@ build_programs() {
     from=$repo/target/$builder_stage/programs
   else
     say "building the programs ($cargo build --profile $profile; only what changed compiles)"
+    # The stand-in mail server is an example, built apart: an example brings its package's
+    # dev-dependencies, whose features Cargo turns on for every package in the same build, and the
+    # server built with its test-only features loads fixture fonts its app workers cannot.
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
       -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
-      -p tilo-account-probe --example mail_stand_in \
       --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo \
-      --bin tilolang-process >&2) \
+      --bin tilolang-process >&2 \
+      && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
+        -p tilo-account-probe --example mail_stand_in >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
   fi
   copy_programs "$from"

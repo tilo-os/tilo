@@ -326,7 +326,7 @@ async fn keys_of(
 ///
 /// As [`GovernedWorkspace::readable_document`].
 pub(super) async fn readable_now(
-    reading: &super::readings::Reading,
+    reading: &super::views::Reading,
     (app, resource): (&str, &str),
 ) -> Result<Option<Vec<u8>>, String> {
     let sealed = reading
