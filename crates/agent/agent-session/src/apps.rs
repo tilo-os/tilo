@@ -325,6 +325,56 @@ pub struct Replica {
     /// What a plain listing of the app's resource has walked to, so its next
     /// page starts where the last ended ([`Self::survey_page_of`]).
     walked: std::cell::RefCell<Option<SurveyProgress>>,
+    /// The member access its permissions were made from, and when: what [`Self::renew`]
+    /// compares a later read of it with.
+    held_access: Option<HeldAccess>,
+}
+
+/// A member's access as a replica's permissions were made from it, at `unix_time`.
+#[derive(Clone)]
+struct HeldAccess {
+    access: policy::MemberAccess,
+    sandbox: Vec<collab_types::caps::CapOverride>,
+    unix_time: u64,
+}
+
+impl HeldAccess {
+    fn of(actor: &ReplicaActor) -> Option<Self> {
+        match actor {
+            ReplicaActor::Member {
+                access,
+                sandbox,
+                unix_time,
+                ..
+            } => Some(Self {
+                access: access.clone(),
+                sandbox: sandbox.clone(),
+                unix_time: *unix_time,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Whether the same access read again at `later` decides as it did: nothing it holds
+    /// changed, and no grant of it lapsed in between, which is the one thing time changes.
+    fn decides_alike(&self, later: &Self) -> bool {
+        let (from, to) = (
+            self.unix_time.saturating_mul(1000),
+            later.unix_time.saturating_mul(1000),
+        );
+        self.access == later.access
+            && self.sandbox == later.sandbox
+            && !self
+                .access
+                .policy
+                .grants
+                .iter()
+                .chain(&self.access.granted)
+                .any(|grant| match grant.lifetime {
+                    policy::Lifetime::Until(at) => from < at && at <= to,
+                    _ => false,
+                })
+    }
 }
 
 /// The tree a view publishes, shared with what reads it.
@@ -510,6 +560,7 @@ impl Replica {
             ReplicaActor::Agent { person, .. } => Some(person.clone()),
             _ => None,
         };
+        let held_access = HeldAccess::of(&actor);
         let (invoker, permissions) = replica_access(actor, workspace, member);
         let creator = acted_for.unwrap_or_else(|| {
             invoker
@@ -544,6 +595,7 @@ impl Replica {
             automated,
             runs_views,
             walked: std::cell::RefCell::new(None),
+            held_access,
         })
     }
 
@@ -1673,6 +1725,16 @@ impl Replica {
     ///
     /// [`AppError::Launch`] for any actor but a member.
     pub fn renew(&mut self, actor: ReplicaActor) -> Result<(), AppError> {
+        // The same access read again, with no grant lapsed since: the replica keeps the
+        // permissions it has, and with them everything its view laid out. Taking them in
+        // again laid the view out whole, which for a tracker of thousands of issues cost the
+        // next listing as much as the rest of it.
+        let later = HeldAccess::of(&actor);
+        if let (Some(held), Some(later)) = (&self.held_access, &later)
+            && held.decides_alike(later)
+        {
+            return Ok(());
+        }
         let ReplicaActor::Member {
             access,
             sandbox,
@@ -1684,6 +1746,7 @@ impl Replica {
         };
         self.view
             .set_permissions(member_permissions(access, sandbox, unix_time));
+        self.held_access = later;
         Ok(())
     }
 

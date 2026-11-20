@@ -318,3 +318,84 @@ fn an_issue_named_by_its_id_is_acted_on_without_building_the_tree() {
         }
     }
 }
+
+/// A tracker listed again by a member whose access was read again since, unchanged, lists
+/// from the tree it published the first time: the workspace reads a caller's access again every
+/// half minute, and taking the same access in again laid the view out and built its whole
+/// tree, which for a tracker of thousands of issues cost the next listing most of its time.
+#[test]
+fn a_tracker_listed_again_after_its_access_is_read_again_reuses_its_tree() {
+    let mut made = crate::common::open(
+        "so.tilo.tasks",
+        &MemberId::person("ada"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let actions: Vec<serde_json::Value> = (0..20)
+        .map(|n| serde_json::json!({"action": "create", "args": {"title": format!("Issue {n}")}}))
+        .collect();
+    made.invoke(
+        &ActionAddress::new(issues(), "group"),
+        serde_json::json!({"actions": actions}).as_object().unwrap(),
+        false,
+    )
+    .expect("the issues are filed");
+    let Some(DocumentMutation::Snapshot(tracker)) = made.take_mutation().unwrap() else {
+        panic!("a new tracker is published whole");
+    };
+    let parts = made.take_document_mutations().unwrap();
+    let access = ui::permissions::PermissionContext::member_of(
+        crate::common::WORKSPACE,
+        &MemberId::person("ada"),
+        ui::permissions::Role::Owner,
+    )
+    .access()
+    .clone()
+    .as_acting(tilo_action_policy::Acting::handed_agent("Claude Code", "ada").in_session("s1"))
+    .unwrap();
+    let member = |unix_time| ReplicaActor::Member {
+        access: access.clone(),
+        sandbox: Vec::new(),
+        unix_time,
+        agent_name: None,
+        device: None,
+    };
+    let mut page = crate::common::open(
+        "so.tilo.tasks",
+        &MemberId::person("ada"),
+        member(1_900_000_000),
+        Seed::Existing {
+            record: made.document_id().clone(),
+            changes: vec![tracker],
+        },
+    )
+    .unwrap();
+    for (id, part) in &parts {
+        page.apply_document(id, part).unwrap();
+    }
+    let listing = tilo_actions::remote::CatalogueQuery {
+        parent_resource: Some(issues()),
+        max_results: 2000,
+        ..tilo_actions::remote::CatalogueQuery::default()
+    };
+    let ((first, _), built_first) =
+        ui::tilo_resource::profiling::observe(|| page.survey_page(&listing, (false, (0, 2000))));
+    assert!(first >= 20, "every issue is listed: {first} rows");
+    assert_eq!(
+        built(&built_first).0,
+        1,
+        "the first listing builds the tree"
+    );
+
+    // The workspace reads the member's access again a minute later: nothing of it moved.
+    page.renew(member(1_900_000_060)).unwrap();
+    let (again, observed) =
+        ui::tilo_resource::profiling::observe(|| page.survey_page(&listing, (false, (0, 2000))).0);
+    assert_eq!(again, first, "the listing lists the same issues");
+    assert_eq!(
+        built(&observed),
+        (0, 0, 0),
+        "the tracker's view was laid out and its tree built again for access that did not move"
+    );
+}

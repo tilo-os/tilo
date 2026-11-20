@@ -1975,3 +1975,9 @@ reason = "The server's own agents (`HostAgents`) carrying out a turn's use of it
 words = ["host"]
 identifiers = ["HostAgents"]
 paths = ["crates/server/tilo-server/src/workspace_agents/vault_uses.rs"]
+
+[[allow]]
+reason = "The replica seed's existing field naming the document a replica opens, which the session's tests fill in."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/agent/agent-session/tests/*"]
