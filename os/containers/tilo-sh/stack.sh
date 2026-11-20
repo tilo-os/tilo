@@ -2650,7 +2650,7 @@ supervisor_pid() {
 # releases, the mail sink and the stand-in mail server's two, and the fake
 # Discord when one runs.
 forward_tcp() {
-  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
+  printf '%s\n' "$server_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$mail_stand_in_imap_port,$mail_stand_in_smtp_port,$fake_oauth_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
 }
 
 # The page reaches the server over QUIC (WebTransport, then iroh), which ssh
