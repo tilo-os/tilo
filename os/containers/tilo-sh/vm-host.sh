@@ -320,7 +320,9 @@ up() {
   guest_ref=$(cat "$vm/guest-ref")
 
   # The placer: the same image and command the cloud's placer runs, naming
-  # this stack's one host, with no cluster to start hosts on.
+  # this stack's one host, with no cluster to start hosts on. Its state is
+  # its own user's, as the cloud's volume is.
+  install -d -o 10001 -g 10001 -m 0700 "$vm/placer"
   podman rm -f "$placer_container" >/dev/null 2>&1 || true
   podman run -d --name "$placer_container" --network host --log-driver k8s-file \
     --user 10001:10001 --read-only --tmpfs /tmp \

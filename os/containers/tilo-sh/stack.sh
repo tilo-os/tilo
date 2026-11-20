@@ -2345,7 +2345,9 @@ make_secrets() {
   if [[ ! -s $state/secrets/discord-client-secret ]]; then
     printf 'local-fake-discord-secret' > "$state/secrets/discord-client-secret"
   fi
-  chmod 0400 "$state/secrets"/*
+  # The stack's own: the VM host writes its members and plans here as root,
+  # for the server and the host's own service to read.
+  find "$state/secrets" -maxdepth 1 -type f -user "$EUID" -exec chmod 0400 {} +
   if [[ ! -s $state/secrets/resend-key ]]; then
     chmod u+w "$state/secrets"
     printf 're_local_mail_sink' > "$state/secrets/resend-key"
