@@ -430,7 +430,10 @@ tilo_test_env::scenario! {
             let before = ns.document_index_rebuild_count();
             let page = ns.indexed_document_page(100_000, 128);
             assert_eq!(page.len(), 1);
-            assert_eq!(page[0].path, "/synthetic-100001");
+            assert_eq!(
+                ns.path_for_document(&page[0]).as_deref(),
+                Some("/synthetic-100001")
+            );
             assert_eq!(ns.document_index_rebuild_count(), before);
         }
         {
