@@ -359,7 +359,14 @@ async fn followed_invocation(
 
 /// The message `sent` delivered as `tilo migrate` delivers it: the message kept and each large
 /// part's pieces, uploaded. Its id in the mailbox.
-async fn deliver(client: &tilo_api::client::Client, workspace: &str, sent: &[u8]) -> String {
+/// Delivers `sent` the way the Thunderbird importer does, with the name and
+/// size of each attachment it carries.
+async fn deliver(
+    client: &tilo_api::client::Client,
+    workspace: &str,
+    sent: &[u8],
+    attached: &[(&str, usize)],
+) -> String {
     let split = tilo_mail_parts::split(sent);
     let original = uploaded(client, workspace, &split.rest).await;
     let mut parts = Vec::new();
@@ -385,6 +392,10 @@ async fn deliver(client: &tilo_api::client::Client, workspace: &str, sent: &[u8]
                 "message_id": "<scans@example.test>",
                 "original": original,
                 "parts": parts,
+                "attachments": attached
+                    .iter()
+                    .map(|(filename, size)| json!({"filename": filename, "size": size}))
+                    .collect::<Vec<_>>(),
             }),
             "migrate-thunderbird",
             "Bring Thunderbird in",
@@ -426,8 +437,27 @@ async fn an_attachment_and_an_export_larger_than_a_part_download_whole() {
     use tilo_mail_parts::fixture::{attachment_bytes, message_with_attachments};
     let (_on_server, client, workspace, _keys, _token) = importer().await;
     let size = 30 * 1024 * 1024;
-    let sent = message_with_attachments("scans@example.test", "Scans", &[("scans.pdf", size)]);
-    let id = deliver(&client, &workspace, &sent).await;
+    let attached = [("scans.pdf", size)];
+    let sent = message_with_attachments("scans@example.test", "Scans", &attached);
+    let id = deliver(&client, &workspace, &sent, &attached).await;
+
+    // Mail lists the attachment by its name and size.
+    let read = client
+        .act(
+            &workspace,
+            MESSAGES,
+            "read",
+            &json!({"item": id}),
+            "read the scans",
+        )
+        .await
+        .unwrap_or_else(|error| panic!("read: {error:#}"));
+    assert_eq!(read["status"], "ok", "{read}");
+    let read = value(&read);
+    assert_eq!(
+        read["message"]["attachments"][0]["name"], "scans.pdf",
+        "{read}"
+    );
 
     // Handed over as content larger than one part, it downloads as the file.
     let handed = client

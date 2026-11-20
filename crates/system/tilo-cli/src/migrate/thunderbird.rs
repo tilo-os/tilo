@@ -748,7 +748,7 @@ fn already_held(error: &anyhow::Error) -> bool {
 /// `None` for bytes that are not a message.
 #[must_use]
 pub fn delivery(bytes: &[u8], folder: &str, read: bool, account: &str) -> Option<Value> {
-    use mail_parser::MessageParser;
+    use mail_parser::{MessageParser, MimeHeaders as _};
     let parsed = MessageParser::default().parse(bytes)?;
     let addresses = |list: Option<&mail_parser::Address<'_>>| -> String {
         list.map(|list| {
@@ -801,6 +801,24 @@ pub fn delivery(bytes: &[u8], folder: &str, read: bool, account: &str) -> Option
         }
         if let Some(conversation) = conversation {
             fields.insert("conversation".into(), json!(conversation));
+        }
+        // Mail lists these before it holds the message's bytes.
+        let attachments: Vec<Value> = parsed
+            .attachments()
+            .map(|part| {
+                let media_type = part.content_type().map(|kind| {
+                    format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or_default())
+                        .to_ascii_lowercase()
+                });
+                json!({
+                    "filename": part.attachment_name().unwrap_or("attachment.bin"),
+                    "media_type": media_type,
+                    "size": part.contents().len(),
+                })
+            })
+            .collect();
+        if !attachments.is_empty() {
+            fields.insert("attachments".into(), json!(attachments));
         }
     }
     Some(delivery)

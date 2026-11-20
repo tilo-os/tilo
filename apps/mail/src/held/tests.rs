@@ -638,3 +638,58 @@ fn a_part_that_does_not_go_back_into_its_message_is_refused() {
     );
     assert!(refused.is_err(), "{refused:?}");
 }
+
+#[test]
+fn a_message_lists_its_attachments_before_its_original_is_here() {
+    use tilo_mail_parts::fixture::message_with_attachments;
+    let message =
+        message_with_attachments("plans@example.net", "Plans", &[("plans.pdf", 600 * 1024)]);
+    let split = tilo_mail_parts::split(&message);
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let keep = |bytes: &[u8]| app.content().put(bytes).unwrap();
+    let original = keep(&split.rest);
+    let parts: Vec<serde_json::Value> = split
+        .apart
+        .iter()
+        .map(|part| {
+            json!({
+                "at": part.at,
+                "size": part.size,
+                "pieces": part
+                    .pieces()
+                    .map(|piece| format!("tilo.content:{}", keep(piece)))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let id = deliver(
+        &mut app,
+        json!({
+            "from": "Grace Hopper <grace@example.net>",
+            "subject": "Plans",
+            "body": "The files are attached.",
+            "date": "2026-11-03T10:00:00Z",
+            "message_id": "plans@example.net",
+            "original": format!("tilo.content:{original}"),
+            "parts": parts,
+            "attachments": [{"filename": "plans.pdf", "size": 600 * 1024}],
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // A device that does not hold the original yet still lists the attachment, by the name and
+    // size the delivery gave, with the type its name says.
+    app.content().release(&original).unwrap();
+    let at = messages(&mut app);
+    let read = app
+        .call_on(&at, "read", json!({ "item": &id }))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        read["message"]["attachments"],
+        json!([{"name": "plans.pdf", "media_type": "application/pdf", "size": 600 * 1024}]),
+        "{read}"
+    );
+}

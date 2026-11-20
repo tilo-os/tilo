@@ -74,6 +74,20 @@ pub struct HeldMessage {
     /// The bodies of its large parts, kept apart from `original`, in the
     /// order they go back into it
     pub parts: Vec<HeldPart>,
+    /// Its attachments as its sender named them, in the order `original`
+    /// holds them: listed while `original` is not here to read them from
+    pub attachments: Vec<HeldAttachment>,
+}
+
+/// One attachment of a held message: its file's name, type and size.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct HeldAttachment {
+    /// The file's name
+    pub filename: String,
+    /// Its media type
+    pub media_type: String,
+    /// Its size once decoded
+    pub size: u64,
 }
 
 /// The body of one large part of a held message, kept apart from it.
@@ -259,8 +273,21 @@ impl HeldMessage {
     ) -> Option<(HeldReader, u64)> {
         let rest = self.original.as_ref()?.read(store)?;
         let parsed = mail_parser::MessageParser::default().parse(&rest)?;
-        let at = u64::from(parsed.attachments().nth(index)?.offset_body);
-        let part = self.parts.iter().find(|part| part.at == at)?;
+        let attachment = parsed.attachments().nth(index)?;
+        let at = u64::from(attachment.offset_body);
+        let Some(part) = self.parts.iter().find(|part| part.at == at) else {
+            // A small attachment stays in the message itself.
+            let bytes = attachment.contents().to_vec();
+            let size = bytes.len() as u64;
+            return Some((
+                HeldReader::new(
+                    store,
+                    std::collections::VecDeque::from([Stretch::Bytes(bytes)]),
+                    None,
+                )?,
+                size,
+            ));
+        };
         let decoder = tilo_mail_parts::Decoder::of_part(&rest, at)?;
         let stretches = part.pieces.iter().cloned().map(Stretch::Piece).collect();
         Some((HeldReader::new(store, stretches, Some(decoder))?, part.size))
@@ -360,11 +387,23 @@ impl HeldMessage {
     /// and size. Empty for one delivered as text, or while its original is
     /// not here.
     fn attachments(&self) -> Vec<serde_json::Value> {
+        let listed = || {
+            self.attachments
+                .iter()
+                .map(|attachment| {
+                    serde_json::json!({
+                        "name": attachment.filename,
+                        "media_type": attachment.media_type,
+                        "size": attachment.size,
+                    })
+                })
+                .collect()
+        };
         let Some(store) = tilo_resource::content::current() else {
-            return Vec::new();
+            return listed();
         };
         self.readable(&store, Folder::Inbox)
-            .map(|message| {
+            .map_or_else(listed, |message| {
                 message
                     .attachments
                     .iter()
@@ -377,7 +416,6 @@ impl HeldMessage {
                     })
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     /// The message as the window's mailbox shows one, in `state`'s folder.
@@ -392,7 +430,21 @@ impl HeldMessage {
             subject: self.subject.clone(),
             body: self.body.clone(),
             html_body: None,
-            attachments: Vec::new(),
+            attachments: self
+                .attachments
+                .iter()
+                .map(|attachment| {
+                    let mut shown = crate::model::Attachment::projected(
+                        attachment.filename.clone(),
+                        attachment.media_type.clone(),
+                        attachment.size,
+                    );
+                    // Read from the message where it is kept when it is opened.
+                    shown.hydrated = true;
+                    shown.apart = true;
+                    shown
+                })
+                .collect(),
             timestamp_min: self.minutes,
             read: state.read,
             starred: state.starred,
@@ -452,10 +504,27 @@ pub struct Delivery {
     /// delivered so, no one piece of it larger than one upload
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<DeliveredPart>,
+    /// Its attachments, in the order the message holds them: each file's
+    /// name, media type and size once decoded. Listed with the message
+    /// before its original is read, so each can be opened or handed over
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<DeliveredAttachment>,
     /// Filled in where it is delivered; leave it out: the `Message-ID` of
     /// the held message it answers (`reply_to`), wherever it is kept
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answers: Option<String>,
+}
+
+/// One attachment of a delivered message.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct DeliveredAttachment {
+    /// The file's name
+    pub filename: String,
+    /// Its media type, `application/octet-stream` when omitted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// Its size once decoded
+    pub size: u64,
 }
 
 /// The body of one large part of a delivered message, kept apart from its
@@ -468,6 +537,33 @@ pub struct DeliveredPart {
     pub size: u64,
     /// Its body as sent, in its transfer encoding: pieces of content in order
     pub pieces: Vec<Bytes>,
+}
+
+/// The attachments a delivery names, as a held message keeps them.
+fn held_attachments(delivered: &[DeliveredAttachment]) -> Result<Vec<HeldAttachment>, Refusal> {
+    delivered
+        .iter()
+        .map(|attachment| {
+            let filename = bounded_text(&attachment.filename, MAX_KEY_CHARS, false);
+            if filename.is_empty() {
+                return Err(Refusal::new("each attachment needs a file name"));
+            }
+            let media_type = attachment
+                .media_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|media_type| !media_type.is_empty())
+                .map_or_else(
+                    || crate::transport::mime_from_filename(&filename).to_owned(),
+                    str::to_owned,
+                );
+            Ok(HeldAttachment {
+                filename,
+                media_type: bounded_text(&media_type, MAX_KEY_CHARS, false),
+                size: attachment.size,
+            })
+        })
+        .collect()
 }
 
 /// Whether the parts kept apart (each where it goes back, and its pieces)
@@ -756,6 +852,7 @@ impl MessageStates {
             .clone()
             .filter(|original| !original.is_empty());
         let parts = held_parts(original.as_ref(), &delivery.parts)?;
+        let attachments = held_attachments(&delivery.attachments)?;
         let key = Id::from_raw(id.to_string());
         if self.held.contains(&key) || self.messages.contains(&key) {
             return Err(Refusal::coded(
@@ -797,6 +894,7 @@ impl MessageStates {
                 conversation,
                 original,
                 parts,
+                attachments,
             },
         );
         self.messages.push(
