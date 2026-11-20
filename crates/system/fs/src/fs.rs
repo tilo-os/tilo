@@ -38,7 +38,7 @@ use crate::availability::{AvailabilityRegistry, DocumentAvailability, EntryKind}
 use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
-use crate::namespace::{InodeQuery, InodeView, Namespace};
+use crate::namespace::{IndexedDocument, InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::smart::history::{AccessHistory, natural_cmp};
 use crate::smart::kept_history::{KeptHistory, KeptHistorySource};
@@ -2219,7 +2219,13 @@ impl QuickFS {
                 if page.is_empty() {
                     break;
                 }
-                rows.extend(page);
+                // Each row's path is derived here, where the tree is held, for the rows one
+                // page shows; opening a workspace built no path at all.
+                let paths: Vec<Option<String>> = page
+                    .iter()
+                    .map(|entry| namespace.path_for_document(entry))
+                    .collect();
+                rows.extend(page.into_iter().zip(paths));
             }
             drop(namespace);
             (source_revision, rows)
@@ -2229,25 +2235,26 @@ impl QuickFS {
         let mut acl_evaluations = 0_usize;
         let mut hidden = HashMap::new();
         let mut records = Vec::with_capacity(rows.len());
-        for entry in rows {
+        for (entry, path) in rows {
+            let Some(path) = path else { continue };
             let visible = reusable
                 .as_deref()
-                .and_then(|index| index.verdict(entry.document_id, &entry.path))
+                .and_then(|index| index.verdict(entry.document_id, &path))
                 .unwrap_or_else(|| {
                     #[cfg(test)]
                     {
                         acl_evaluations = acl_evaluations.saturating_add(1);
                     }
-                    enforcement.is_none_or(|(acl, identity)| acl.visible(identity, &entry.path))
+                    enforcement.is_none_or(|(acl, identity)| acl.visible(identity, &path))
                 });
             if visible {
                 records.push(DocumentIndexEntryV1 {
                     document_id: entry.document_id,
-                    path: entry.path,
+                    path,
                     is_dir: entry.is_dir,
                 });
             } else {
-                hidden.insert(entry.document_id, entry.path);
+                hidden.insert(entry.document_id, path);
             }
         }
 
@@ -2322,7 +2329,14 @@ impl QuickFS {
             return None;
         }
         let end = offset.saturating_add(page_entries).min(records);
-        let candidates = namespace.indexed_document_page(offset, page_entries);
+        let candidates: Vec<(IndexedDocument, Option<String>)> = namespace
+            .indexed_document_page(offset, page_entries)
+            .into_iter()
+            .map(|entry| {
+                let path = namespace.path_for_document(&entry);
+                (entry, path)
+            })
+            .collect();
         drop(namespace);
         let page = fs_protocol::projection::DocumentIndexPageV2 {
             schema_version: DOCUMENT_INDEX_V2_VERSION,
@@ -2331,11 +2345,13 @@ impl QuickFS {
             next_offset: (end < records).then_some(end),
             records: candidates
                 .into_iter()
-                .filter(|entry| self.in_view(&entry.path))
-                .map(|entry| DocumentIndexEntryV1 {
-                    document_id: entry.document_id,
-                    path: entry.path,
-                    is_dir: entry.is_dir,
+                .filter_map(|(entry, path)| {
+                    let path = path?;
+                    self.in_view(&path).then_some(DocumentIndexEntryV1 {
+                        document_id: entry.document_id,
+                        path,
+                        is_dir: entry.is_dir,
+                    })
                 })
                 .collect(),
         };

@@ -422,7 +422,7 @@ tilo_test_env::scenario! {
                         document_id,
                         node_id: format!("synthetic/{value}"),
                         parent_id: ROOT_ID.into(),
-                        path: format!("/synthetic-{value}"),
+                        name: format!("synthetic-{value}").into(),
                         is_dir: false,
                     },
                 );

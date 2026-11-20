@@ -168,7 +168,9 @@ pub struct IndexedDocument {
     pub document_id: FileDocumentId,
     pub node_id: String,
     pub parent_id: String,
-    pub path: String,
+    /// The name the node sits under: a page that shows a path derives it from the node when
+    /// it asks, so opening a tree never builds one path per file.
+    pub name: FileNameV1,
     pub is_dir: bool,
 }
 
@@ -292,12 +294,14 @@ struct DocumentIndexDigest([u64; 4]);
 impl DocumentIndexDigest {
     fn row(record: &IndexedDocument) -> [u64; 4] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo.fs.namespace-record-index.row.v2\0");
+        hasher.update(b"tilo.fs.namespace-record-index.row.v3\0");
         hasher.update(record.document_id.0.as_bytes());
-        for field in [&record.parent_id, &record.node_id, &record.path] {
+        for field in [&record.parent_id, &record.node_id] {
             hasher.update(&(field.len() as u64).to_be_bytes());
             hasher.update(field.as_bytes());
         }
+        hasher.update(&(record.name.as_bytes().len() as u64).to_be_bytes());
+        hasher.update(record.name.as_bytes());
         hasher.update(&[u8::from(record.is_dir)]);
         let bytes = hasher.finalize();
         let mut limbs = [0_u64; 4];

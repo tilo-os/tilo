@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use super::{
     DOCUMENT_ID_KEY, DocumentIndexDigest, IndexedDocument, NODES_KEY, Namespace, NodeKind, NodeRow,
-    NodeWalk, Obj, RECORD_ID_MIGRATION_DOMAIN, ROOT_DOCUMENT_ID_KEY, ROOT_ID, TreeIndex,
-    escape_path_name, read_name, str_at,
+    NodeWalk, Obj, RECORD_ID_MIGRATION_DOMAIN, ROOT_DOCUMENT_ID_KEY, ROOT_ID, TreeIndex, read_name,
+    str_at,
 };
 
 impl Namespace {
@@ -37,22 +37,18 @@ impl Namespace {
                 .insert(id.clone());
         }
         let mut record_index = BTreeMap::new();
-        let mut queue = VecDeque::from([(ROOT_ID.to_string(), String::from("/"))]);
+        let mut queue = VecDeque::from([ROOT_ID.to_string()]);
         let mut visited = HashSet::from([ROOT_ID.to_string()]);
-        while let Some((parent, parent_path)) = queue.pop_front() {
+        while let Some(parent) = queue.pop_front() {
             for id in children.get(&parent).into_iter().flatten() {
                 if !visited.insert(id.clone()) {
                     continue;
                 }
                 let Some(item) = raw.get(id) else { continue };
-                let path = if parent_path == "/" {
-                    format!("/{}", escape_path_name(item.name.as_bytes()))
-                } else {
-                    format!("{parent_path}/{}", escape_path_name(item.name.as_bytes()))
-                };
                 // Traverse all structurally reachable nodes, even a legacy duplicate-ID node;
-                // only the unique stable record is eligible for the public index.
-                queue.push_back((id.clone(), path.clone()));
+                // only the unique stable record is eligible for the public index. A node's
+                // path is derived when a page asks for it, never built per file here.
+                queue.push_back(id.clone());
                 let Some(document_id) = item.document_id else {
                     continue;
                 };
@@ -65,7 +61,7 @@ impl Namespace {
                         document_id,
                         node_id: id.clone(),
                         parent_id: item.parent_id.clone(),
-                        path,
+                        name: item.name.clone(),
                         is_dir: item.is_dir,
                     },
                 );
@@ -291,6 +287,13 @@ impl Namespace {
         self.document_index.get(&document_id).cloned()
     }
 
+    /// The path a catalogue row's node sits at, derived from where the node is now: computed
+    /// for the rows a page shows, never stored per file.
+    #[must_use]
+    pub fn path_for_document(&self, entry: &IndexedDocument) -> Option<String> {
+        self.path_for_id(&entry.node_id)
+    }
+
     /// Opaque generation captured when the index changed. Reading it is O(1): serving a
     /// manifest or page must never enumerate Automerge heads to validate a cursor.
     #[must_use]
@@ -332,11 +335,11 @@ impl Namespace {
         let desired = if self.document_index_ambiguous.contains(&document_id) {
             None
         } else {
-            self.path_for_id(id).map(|path| IndexedDocument {
+            self.reaches_root(id).then(|| IndexedDocument {
                 document_id,
                 node_id: id.to_string(),
                 parent_id: self.parent_of(id).unwrap_or_default(),
-                path,
+                name: self.name_of(id).unwrap_or_default(),
                 is_dir: self.kind_of(id) == NodeKind::Dir,
             })
         };
