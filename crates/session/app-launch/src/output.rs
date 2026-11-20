@@ -90,7 +90,10 @@ pub struct AppOutput {
     /// Set when the app ended: a reader following a stream that has not closed yet stops.
     stopping: Arc<AtomicBool>,
     relayed: AtomicU64,
+    /// Lines the log did not relay, over the whole launch, as its report says.
     dropped: AtomicU64,
+    /// Of those, the ones the log has not said it left out yet.
+    unsaid: AtomicU64,
 }
 
 impl AppOutput {
@@ -109,6 +112,7 @@ impl AppOutput {
             stopping: Arc::new(AtomicBool::new(false)),
             relayed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            unsaid: AtomicU64::new(0),
         }
     }
 
@@ -325,11 +329,11 @@ impl AppOutput {
         }
         let relayed = self.relayed.load(Ordering::Relaxed);
         if relayed >= RELAY_LINES_MAX {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.drop_line();
             return;
         }
         if !bucket.take() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.drop_line();
             return;
         }
         // A line that relayed after some that did not says what was left out:
@@ -353,9 +357,16 @@ impl AppOutput {
         }
     }
 
+    /// A line the log does not relay: counted for the report, and for the
+    /// next notice.
+    fn drop_line(&self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+        self.unsaid.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Say, once, how many lines of `stream` the log left out since it last said so.
     fn notice_dropped(&self, stream: &'static str) {
-        let dropped = self.dropped.swap(0, Ordering::Relaxed);
+        let dropped = self.unsaid.swap(0, Ordering::Relaxed);
         if dropped > 0 {
             tracing::info!(
                 target: TARGET,
