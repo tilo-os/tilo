@@ -80,6 +80,36 @@ pub struct VideoSaved {
     pub facing: Facing,
 }
 
+/// Store an encoded clip's bytes and name it where it lands: the content
+/// store always, and a directory when the capture has one.
+fn save_clip(
+    content: &ContentStore,
+    job: &VideoJob,
+    bytes: &[u8],
+    w: u32,
+    h: u32,
+    dur_ms: i64,
+) -> Result<VideoSaved, String> {
+    let media_id = crate::media::store(content, bytes)
+        .ok_or_else(|| "couldn't verify portable clip bytes".to_string())?;
+    let stamp = crate::library::timestamp_name();
+    let name = match job.dir.as_ref() {
+        Some(dir) => {
+            crate::video::write_clip(dir, bytes, &stamp).map_err(|error| error.to_string())?
+        }
+        None => crate::video::clip_name(&stamp, bytes),
+    };
+    Ok(VideoSaved {
+        local_path: job.dir.as_ref().map(|dir| dir.join(&name)),
+        name,
+        media_id,
+        w,
+        h,
+        dur_ms,
+        facing: job.facing,
+    })
+}
+
 /// One worker-owned recording session. The UI never JPEG-encodes a frame: it
 /// merely replaces `latest` and wakes this state machine. The single-slot
 /// wake channel coalesces bursts without growing a queue.
@@ -131,6 +161,10 @@ struct WorkerLoop {
     video_results: SyncSender<VideoResult>,
     scan_results: SyncSender<ScanResult>,
     content: ContentStore,
+    /// Wakes the window when a clip settles on a later task, which only the
+    /// page's asynchronous encoder needs.
+    #[cfg(target_arch = "wasm32")]
+    wake: ui::wake::WakeHandle,
 }
 
 impl WorkerLoop {
@@ -144,45 +178,47 @@ impl WorkerLoop {
         }
         if let (Some(recorder), Some(frame)) = (&mut self.recorder, frame) {
             // This is deliberately the only Recorder::push call: RGBA
-            // conversion and JPEG encode never touch UI.
+            // conversion, encoding and muxing never touch UI.
             recorder.push(&frame);
         }
         let Some(job) = finish else {
             return true;
         };
-        let (w, h, dur_ms) = self.recorder.as_ref().map_or((0, 0, 0), |recorder| {
-            let (w, h) = recorder.dimensions();
-            (w, h, recorder.duration_ms())
-        });
-        let result = self
-            .recorder
-            .take()
-            .and_then(crate::video::Recorder::finish)
-            .ok_or_else(|| "nothing recorded".to_string())
-            .and_then(|bytes| {
-                crate::media::store(&self.content, &bytes)
-                    .ok_or_else(|| "couldn't verify portable clip bytes".to_string())
-                    .and_then(|media_id| {
-                        let name = match job.dir.as_ref() {
-                            Some(dir) => crate::video::write_clip(
-                                dir,
-                                &bytes,
-                                &crate::library::timestamp_name(),
-                            )
-                            .map_err(|error| error.to_string())?,
-                            None => format!("VID_{}.avi", crate::library::timestamp_name()),
-                        };
-                        Ok(VideoSaved {
-                            local_path: job.dir.as_ref().map(|dir| dir.join(&name)),
-                            name,
-                            media_id,
-                            w,
-                            h,
-                            dur_ms,
-                            facing: job.facing,
-                        })
-                    })
-            });
+        let Some(recorder) = self.recorder.take() else {
+            return self.send_video(&job, Err("nothing recorded".to_string()));
+        };
+        let (w, h) = recorder.dimensions();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dur_ms = recorder.duration_ms();
+            let result = recorder
+                .finish()
+                .ok_or_else(|| "nothing recorded".to_string())
+                .and_then(|bytes| save_clip(&self.content, &job, &bytes, w, h, dur_ms));
+            self.send_video(&job, result)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // The page's encoder flushes on a later task: the clip is saved
+            // and settled from that callback, which then wakes the window.
+            let content = self.content.clone();
+            let results = self.video_results.clone();
+            let wake = self.wake.clone();
+            recorder.finish(Box::new(move |clip| {
+                let result = clip
+                    .and_then(|(bytes, dur_ms)| save_clip(&content, &job, &bytes, w, h, dur_ms));
+                let _ = results.send(VideoResult {
+                    invocation: job.invocation,
+                    generation: job.generation,
+                    result,
+                });
+                wake.wake();
+            }));
+            true
+        }
+    }
+
+    fn send_video(&self, job: &VideoJob, result: Result<VideoSaved, String>) -> bool {
         self.video_results
             .send(VideoResult {
                 invocation: job.invocation,
@@ -258,7 +294,11 @@ impl WorkerLoop {
 }
 
 impl CameraWorker {
-    pub fn new(content: ContentStore) -> Self {
+    pub fn new(content: ContentStore, wake: &ui::wake::WakeHandle) -> Self {
+        // A native worker finishes a clip synchronously, so it never wakes
+        // the window; only the page's later task does.
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = wake;
         // Every ingress and result queue is bounded. One sleeping event loop
         // replaces the former eager per-feature worker set.
         let threads = ui::rt::available(ui::rt::Feature::Threads);
@@ -279,40 +319,45 @@ impl CameraWorker {
             video_results,
             scan_results,
             content,
+            #[cfg(target_arch = "wasm32")]
+            wake: wake.clone(),
         };
-        if !threads {
+        // A page has no threads, and its recorder holds the browser's own
+        // objects, so only a native build keeps the worker off the UI.
+        #[cfg(not(target_arch = "wasm32"))]
+        if threads {
+            let started = ui::rt::spawn_thread("camera-bounded-worker", move || {
+                let mut worker = worker;
+                // Inspect recording state before blocking and after all jobs.
+                // A full unified queue can coalesce a recording wake, so this
+                // makes the slot observable even without a queued wake event.
+                while worker.process_recording_control() {
+                    let Ok(job) = jobs.recv() else {
+                        break;
+                    };
+                    if !worker.process_job(job) || !worker.process_recording_control() {
+                        break;
+                    }
+                }
+            })
+            .is_ok();
             return Self {
-                tx: Some(tx),
+                tx: started.then_some(tx),
                 rx,
                 video_rx,
                 recording,
                 scan_rx,
-                inline: Some(Mutex::new((worker, jobs))),
+                inline: None,
                 photos_outstanding: AtomicUsize::new(0),
             };
         }
-        let started = ui::rt::spawn_thread("camera-bounded-worker", move || {
-            let mut worker = worker;
-            // Inspect recording state before blocking and after all jobs.
-            // A full unified queue can coalesce a recording wake, so this
-            // makes the slot observable even without a queued wake event.
-            while worker.process_recording_control() {
-                let Ok(job) = jobs.recv() else {
-                    break;
-                };
-                if !worker.process_job(job) || !worker.process_recording_control() {
-                    break;
-                }
-            }
-        })
-        .is_ok();
         Self {
-            tx: started.then_some(tx),
+            tx: Some(tx),
             rx,
             video_rx,
             recording,
             scan_rx,
-            inline: None,
+            inline: Some(Mutex::new((worker, jobs))),
             photos_outstanding: AtomicUsize::new(0),
         }
     }
@@ -497,5 +542,47 @@ mod tests {
             assert_eq!(finish.map(|job| job.generation), Some(7));
             assert!(control.latest.is_none() && control.finish.is_none() && !control.start);
         }
+    }
+
+    #[test]
+    fn a_clip_recorded_on_the_page_is_stored_and_named_webm() {
+        // A WebM file's first bytes; naming reads the container, not the target.
+        let mut bytes = vec![0x1A, 0x45, 0xDF, 0xA3];
+        bytes.extend_from_slice(&[0; 24]);
+        let content = ContentStore::memory();
+        let job = VideoJob {
+            invocation: None,
+            generation: 3,
+            dir: None,
+            facing: Facing::Back,
+        };
+        let saved = save_clip(&content, &job, &bytes, 64, 48, 166).expect("saved");
+        assert!(
+            saved.name.starts_with("VID_")
+                && std::path::Path::new(&saved.name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("webm")),
+            "a page clip is handed on as {}",
+            saved.name
+        );
+        assert!(saved.local_path.is_none());
+        assert_eq!((saved.w, saved.h, saved.dur_ms), (64, 48, 166));
+        assert_eq!(
+            crate::media::read(&content, &saved.media_id).as_deref(),
+            Some(&bytes[..]),
+            "the clip's bytes are what the store verified"
+        );
+
+        // With a capture directory, the same clip lands under the same name.
+        let dir = std::env::temp_dir().join(format!("camera-webm-naming-{}", std::process::id()));
+        let job = VideoJob {
+            dir: Some(dir.clone()),
+            ..job
+        };
+        let saved = save_clip(&content, &job, &bytes, 64, 48, 166).expect("saved to disk");
+        let path = dir.join(&saved.name);
+        assert_eq!(saved.local_path.as_deref(), Some(path.as_path()));
+        assert_eq!(std::fs::read(&path).ok().as_deref(), Some(&bytes[..]));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

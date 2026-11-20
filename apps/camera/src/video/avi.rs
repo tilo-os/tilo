@@ -1,4 +1,4 @@
-//! Video recording: a self-contained Motion-JPEG / AVI encoder.
+//! The desktop recorder: a self-contained Motion-JPEG / AVI encoder.
 //!
 //! Each RGBA frame handed to [`Recorder`] is JPEG-encoded and the clip muxed
 //! into a RIFF/AVI container with an `MJPG` stream and an `idx1` index, so the
@@ -7,15 +7,12 @@
 //! ffmpeg or device needed. MJPEG needs no motion estimation or bitstream
 //! state, so the encoder stays small and deterministic.
 
-use std::io;
+#[cfg(test)]
 use std::path::Path;
 
 use crate::frame::{self, FrameBuf};
 
-/// Frames per second written into the container timing. A clip resources at
-/// whatever rate frames actually arrive; 30 is the standard assumption used
-/// for the `dwRate/dwScale` header and duration math.
-pub const FPS: u32 = 30;
+use super::FPS;
 
 /// JPEG quality for each recorded frame (0–100). 82 keeps files reasonable
 /// while staying visually clean.
@@ -169,7 +166,7 @@ fn strf(w: u32, h: u32) -> Vec<u8> {
     push_u32(&mut b, 40); // biSize
     push_u32(&mut b, w); // biWidth
     push_u32(&mut b, h); // biHeight
-    push_u16(&mut b, 1); // biPlanes
+    push_u16(&mut b, 1); // one surface, as MJPG decoders read it
     push_u16(&mut b, 24); // biBitCount
     push_tag(&mut b, *b"MJPG"); // biCompression
     push_u32(&mut b, w * h * 3); // biSizeImage
@@ -312,14 +309,6 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Persist an encoded clip to `dir` as a timestamped `.avi`, creating the
-/// directory on first use. Returns the written file name.
-pub fn write_clip(dir: &Path, bytes: &[u8], stamp: &str) -> io::Result<String> {
-    let name = format!("VID_{stamp}.avi");
-    crate::files::write(&dir.join(&name), bytes)?;
-    Ok(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,7 +378,7 @@ mod tests {
             let bytes = rec.finish().unwrap();
 
             let dir = std::env::temp_dir().join(format!("camera-vid-test-{}", std::process::id()));
-            let name = write_clip(&dir, &bytes, "20260101_000000_000").unwrap();
+            let name = crate::video::write_clip(&dir, &bytes, "20260101_000000_000").unwrap();
             assert!(
                 name.starts_with("VID_")
                     && Path::new(&name)

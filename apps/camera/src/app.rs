@@ -428,7 +428,8 @@ impl CameraApp {
     pub fn with_content(mut self, content: tilo_content::ContentStore) -> Self {
         // The worker keeps what it saves in the store it was made with: it keeps the lent one,
         // where the window reads its captures back to show and hand them on.
-        self.worker = crate::worker::CameraWorker::new(content.clone());
+        self.worker =
+            crate::worker::CameraWorker::new(content.clone(), &ui::wake::WakeHandle::new());
         self.content = content;
         self
     }
@@ -474,7 +475,7 @@ impl CameraApp {
             node: None,
             store: store::Store::shared(matches!(storage, Storage::Disk(_))),
             storage,
-            worker: crate::worker::CameraWorker::new(content.clone()),
+            worker: crate::worker::CameraWorker::new(content.clone(), &ui::wake::WakeHandle::new()),
             content,
             screen: initial_screen,
             mode: CaptureMode::Photo,

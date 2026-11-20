@@ -2025,6 +2025,7 @@ dependencies = [
  "anyhow",
  "camera-model",
  "image",
+ "js-sys",
  "qrcode",
  "rqrr",
  "runtime-dylib",
@@ -2044,6 +2045,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-vello",
  "tilo-winit",
+ "wasm-bindgen",
  "workspace-hack",
 ]
 
