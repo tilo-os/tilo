@@ -569,6 +569,26 @@ impl Replica {
         &self.view.checkout().id
     }
 
+    /// The document's view as a page shows it ([`AttachedView::composition`]),
+    /// and the theme it is laid out in.
+    #[must_use]
+    pub fn page(&self) -> (ui::composition::Composition, ui::Theme) {
+        (self.view.composition(), self.view.theme())
+    }
+
+    /// What its member did on the view's page ([`AttachedView::act_on_page`]).
+    ///
+    /// # Errors
+    /// The view has no such widget, or refuses the action.
+    pub fn act_on_page(
+        &mut self,
+        widget: &str,
+        target: Option<&str>,
+        action: &ui::a11y::Action,
+    ) -> Result<(), String> {
+        self.view.act_on_page(widget, target, action)
+    }
+
     /// Where the member's last operation left it, as the live session's
     /// selection anchors every member's window resolves against the
     /// record's own items: the paragraph it wrote and the caret at its end,

@@ -34,7 +34,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 10;
+pub(crate) const PROTOCOL_VERSION: u32 = 11;
 
 /// What a worker is started to do, and what each of its slots does. The
 /// process's mode decides what it prepares before it confines itself (a
@@ -49,6 +49,9 @@ pub(crate) enum Mode {
     Views,
     /// Mount one record's component to answer its registered reads.
     Read,
+    /// Hold one document as [`Self::Replica`] does, and show its view as a web
+    /// page a person acts on ([`ui::composition::page::Page`]).
+    Page,
 }
 
 impl Mode {
@@ -57,6 +60,7 @@ impl Mode {
             Self::Replica => "replica",
             Self::Views => "views",
             Self::Read => "read",
+            Self::Page => "page",
         }
     }
 
@@ -65,6 +69,7 @@ impl Mode {
             "replica" => Some(Self::Replica),
             "views" => Some(Self::Views),
             "read" => Some(Self::Read),
+            "page" => Some(Self::Page),
             _ => None,
         }
     }
@@ -228,6 +233,51 @@ pub(crate) enum Request {
     /// What the app stored since the last take and what it asked for but
     /// lacked; answered with [`Reply::Content`].
     TakeContent,
+    /// The held document's view as a whole page ([`Mode::Page`]), after
+    /// activating `show` when one is named (the note a page's address names):
+    /// answered with [`Reply::Shown`].
+    PageShow { show: Option<String> },
+    /// What a person did on the page: `action` on the element numbered `id`,
+    /// at the semantic `target` it carries; answered with [`Reply::Patches`].
+    PageAct {
+        id: u32,
+        target: Option<String>,
+        action: PageAction,
+    },
+    /// What changed on the page since it was last answered, after the document
+    /// took others' changes; answered with [`Reply::Patches`].
+    PagePatch,
+}
+
+/// What a person does on an element of a page, as the view's semantic action
+/// ([`ui::a11y::Action`]) it stands for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PageAction {
+    Activate,
+    Toggle,
+    Focus,
+    /// A field's or a block's whole text.
+    Value(String),
+    /// A selection in a field's text, in grapheme indices.
+    Select {
+        anchor: u32,
+        focus: u32,
+    },
+}
+
+impl PageAction {
+    pub(crate) fn semantic(&self) -> ui::a11y::Action {
+        match self {
+            Self::Activate => ui::a11y::Action::Activate,
+            Self::Toggle => ui::a11y::Action::ToggleCheck,
+            Self::Focus => ui::a11y::Action::Focus,
+            Self::Value(value) => ui::a11y::Action::SetValue(value.clone()),
+            Self::Select { anchor, focus } => ui::a11y::Action::SetSelection {
+                anchor: usize::try_from(*anchor).unwrap_or(usize::MAX),
+                focus: usize::try_from(*focus).unwrap_or(usize::MAX),
+            },
+        }
+    }
 }
 
 impl Request {
@@ -273,6 +323,9 @@ impl Request {
             Self::Probe { .. } => "probe",
             Self::PutContent { .. } => "put-content",
             Self::TakeContent => "take-content",
+            Self::PageShow { .. } => "page-show",
+            Self::PageAct { .. } => "page-act",
+            Self::PagePatch => "page-patch",
         }
     }
 }
@@ -327,6 +380,15 @@ pub(crate) enum Reply {
         offered: Vec<Vec<u8>>,
         wanted: Vec<String>,
     },
+    /// The page whole: what its document is called, the theme's stylesheet
+    /// and the body ([`ui::composition::page::Page::render`]).
+    Shown {
+        title: String,
+        css: String,
+        body: String,
+    },
+    /// The page's elements that changed, each by its number and new HTML.
+    Patches(Vec<(u32, String)>),
 }
 
 /// What the confinement let a probe do; every field must come back `false`.
@@ -449,7 +511,7 @@ mod tests {
 
     #[test]
     fn modes_round_trip_by_name() {
-        for mode in [Mode::Replica, Mode::Views, Mode::Read] {
+        for mode in [Mode::Replica, Mode::Views, Mode::Read, Mode::Page] {
             assert_eq!(Mode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(Mode::parse("other"), None);

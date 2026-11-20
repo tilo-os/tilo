@@ -13,7 +13,7 @@ use tilo_server_protocol::live::LiveAnchor;
 use ui::resource::DocumentId;
 
 use super::process::{Lease, Stopped};
-use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, Reply, Request};
+use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, PageAction, Reply, Request};
 use crate::apps::{AppCatalogue, AppError, ReplicaActor, Seed};
 use tilo_lock::MutexRecover as _;
 
@@ -60,6 +60,8 @@ const REMEMBERED_STORED_FORMS: usize = 256;
 type Members = std::sync::Arc<dyn Fn() -> Vec<(tilo_actions::MemberId, String)> + Send + Sync>;
 
 pub struct ConfinedReplica {
+    /// What its worker does with it: hold the document, or also show it as a page.
+    mode: Mode,
     app_id: String,
     workspace: String,
     member: tilo_actions::MemberId,
@@ -188,6 +190,43 @@ impl ConfinedReplica {
         seed: Seed,
         asks_workspace: bool,
     ) -> Result<Self, AppError> {
+        Self::open_in(
+            Mode::Replica,
+            catalogue,
+            (app_id, workspace),
+            member,
+            actor,
+            (seed, asks_workspace),
+        )
+    }
+
+    /// [`Self::open`], held where its worker also shows the document's view as a web
+    /// page its member acts on ([`Self::page_show`]).
+    pub fn open_page(
+        catalogue: &AppCatalogue,
+        (app_id, workspace): (&str, &str),
+        member: &tilo_actions::MemberId,
+        actor: &ReplicaActor,
+        seed: Seed,
+    ) -> Result<Self, AppError> {
+        Self::open_in(
+            Mode::Page,
+            catalogue,
+            (app_id, workspace),
+            member,
+            actor,
+            (seed, true),
+        )
+    }
+
+    fn open_in(
+        mode: Mode,
+        catalogue: &AppCatalogue,
+        (app_id, workspace): (&str, &str),
+        member: &tilo_actions::MemberId,
+        actor: &ReplicaActor,
+        (seed, asks_workspace): (Seed, bool),
+    ) -> Result<Self, AppError> {
         let actor =
             serde_json::to_string(actor).map_err(|error| worker_error(error.to_string()))?;
         let definition = catalogue
@@ -208,7 +247,7 @@ impl ConfinedReplica {
             }
         };
         let expected = seed.as_ref().map(|(record, _)| record.clone());
-        let mut process = Lease::new(Mode::Replica, workspace);
+        let mut process = Lease::new(mode, workspace);
         let reply = process
             .call(&Request::Open {
                 app_id: definition.app_id().to_owned(),
@@ -227,6 +266,7 @@ impl ConfinedReplica {
             _ => return Err(worker_error("the worker answered out of turn")),
         };
         let replica = Self {
+            mode,
             app_id: definition.app_id().to_owned(),
             workspace: workspace.to_owned(),
             member: member.clone(),
@@ -461,7 +501,7 @@ impl ConfinedReplica {
             }
             inner.revivals = inner.revivals.saturating_add(1);
         }
-        let mut process = Lease::new(Mode::Replica, &self.workspace);
+        let mut process = Lease::new(self.mode, &self.workspace);
         let worker = |stopped: Stopped| worker_error(stopped.to_string());
         match process
             .call(&Request::Open {
@@ -539,6 +579,60 @@ impl ConfinedReplica {
             }
             Reply::Failed(reason) => Err(worker_error(reason)),
             _ => Err(worker_error("the worker named another record")),
+        }
+    }
+
+    /// The document's view as a whole page, after activating `show` (what the
+    /// page's address names): its title, the theme's stylesheet and its body.
+    /// Only a document opened with [`Self::open_page`] shows one.
+    ///
+    /// # Errors
+    /// The worker could not show it.
+    pub fn page_show(&self, show: Option<&str>) -> Result<(String, String, String), AppError> {
+        let mut inner = self.lock();
+        match self.call(
+            &mut inner,
+            &Request::PageShow {
+                show: show.map(str::to_owned),
+            },
+        )? {
+            Reply::Shown { title, css, body } => {
+                // Showing it may have written (a note opened keeps where
+                // its person is): taken with the next take.
+                inner.dirty = true;
+                inner.beside_dirty = true;
+                Ok((title, css, body))
+            }
+            Reply::Failed(reason) => Err(worker_error(reason)),
+            _ => Err(worker_error("the worker answered out of turn")),
+        }
+    }
+
+    /// What its member did on the page ([`super::proto::PageAction`] on the
+    /// element numbered `id`, at `target`), and the page's elements that
+    /// changed, each by its number and new HTML. With no `act`, only what
+    /// changed since the page last answered: after the document took others'
+    /// changes.
+    ///
+    /// # Errors
+    /// The worker could not act or answer.
+    pub fn page_act(
+        &self,
+        act: Option<(u32, Option<String>, PageAction)>,
+    ) -> Result<Vec<(u32, String)>, AppError> {
+        let request = match act {
+            Some((id, target, action)) => Request::PageAct { id, target, action },
+            None => Request::PagePatch,
+        };
+        let mut inner = self.lock();
+        match self.call(&mut inner, &request)? {
+            Reply::Patches(patches) => {
+                inner.dirty = true;
+                inner.beside_dirty = true;
+                Ok(patches)
+            }
+            Reply::Failed(reason) => Err(worker_error(reason)),
+            _ => Err(worker_error("the worker answered out of turn")),
         }
     }
 

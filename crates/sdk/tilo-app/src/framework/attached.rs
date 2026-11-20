@@ -1768,5 +1768,7 @@ fn written_on_open(
     (!wrote.is_empty()).then(|| wrote.join(", "))
 }
 
+mod page;
+
 #[cfg(test)]
 mod tests;

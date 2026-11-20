@@ -61,7 +61,7 @@ mod serve;
 
 pub(crate) use process::Process;
 pub use process::{pool_size, prestart, set_affinity};
-pub use proto::ProbeReport;
+pub use proto::{PageAction, ProbeReport};
 pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
 pub use replica::ConfinedReplica;
 
