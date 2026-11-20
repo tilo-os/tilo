@@ -7677,7 +7677,7 @@ on = ["dispatch", "idle"]
 # private storage.
 [[check]]
 name = "disposable-root-podman"
-# Pulls the fixtures' pinned images from docker.io, which is no fixed host list the image store serves.
+# Pulls the fixtures' pinned images from docker.io, which no fixed host list covers.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = '''set -eu
 dnf install -y --setopt=install_weak_deps=False podman >/dev/null
@@ -7689,9 +7689,9 @@ buildkit=docker.io/moby/buildkit@sha256:5a8cd84cb3fcfd082789a08f92bd36f8e745c623
 python3 os/tests/rootfs_firmware_cache.py
 python3 os/tests/container_build_context.py
 bash os/tests/named_public_trust_context.sh podman
+python3 os/tests/prove_kernel_failure_cache_local.py --output /target/kernel-failure-cache-local
 tools=$("${podman[@]}" image inspect --format '{{.Id}}' "$busybox")
 python3 os/tests/trust_input_copy_equivalence.py --tools-image "$tools"
-python3 os/tests/prove_kernel_failure_cache_local.py --output /target/kernel-failure-cache-local
 '''
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -7724,7 +7724,6 @@ cargo build --locked -p tilo-crypto --bin tilo-crypto
 install -m 0755 -o root -g root "$CARGO_TARGET_DIR/debug/tilo-crypto" /usr/local/bin/tilo-crypto
 python3 os/tests/test_signing_spool.py
 '''
-requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 3600
 on = ["dispatch"]
@@ -7740,7 +7739,6 @@ dnf install -y --setopt=install_weak_deps=False shadow-utils util-linux >/dev/nu
 cargo build --locked --release -p tilo-session --bins
 TILO_SESSION_BIN="$CARGO_TARGET_DIR/release/tilo-session" bash dist/ci/test-installed-host-startup.sh
 '''
-requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 3600
 on = ["dispatch"]
