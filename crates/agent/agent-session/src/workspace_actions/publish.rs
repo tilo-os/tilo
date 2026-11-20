@@ -458,6 +458,15 @@ impl Worker {
         let handing = super::timing_start();
         self.hand_over(workspace_id, route, mutation, &written, is_roster)?;
         super::timing_done("commit.hand_over", handing);
+        // A write this service hands the workspace's store is kept there before the request
+        // answers, and what a find keeps is read from that store: it is read again as of now,
+        // whether or not the session's own word of the landing follows. A change the service
+        // hands an agent's session lands there as the session says it does.
+        if written.by.is_none()
+            && let Some(workspace) = self.workspaces.get_mut(&workspace_id)
+        {
+            workspace.write_landed(route);
+        }
         self.handed.entry(workspace_id).or_default().push(written);
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
