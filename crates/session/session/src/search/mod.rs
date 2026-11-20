@@ -167,6 +167,11 @@ pub trait AppActions {
             reason: "This host holds no workspace content to open".into(),
         })
     }
+
+    /// Open what a row of search asked for whose content was still on its way from the workspace,
+    /// now that it arrived: the file the person chose opens without being chosen again. A desktop
+    /// that holds content no further off than it reads has nothing to do here.
+    fn open_arrived(&self) {}
     /// Open the application `app` in `workspace`, where the person asked it:
     /// a window of its own beside theirs when `place` says so, else the
     /// window the app has there. A host that starts no windows arranges
@@ -1251,6 +1256,11 @@ impl SessionSearch {
                 .map(|held| held.id().to_string())
                 .unwrap_or_default()
         });
+        // What a row opened whose content was still on its way from the workspace opens the pass
+        // it arrives, without the person choosing it again.
+        if let Some(apps) = &self.apps {
+            apps.open_arrived();
+        }
         let mut refused = Vec::new();
         for choice in handle.take_search_choices() {
             if let Err(error) = self.perform(&workspace, choice.clone(), own) {

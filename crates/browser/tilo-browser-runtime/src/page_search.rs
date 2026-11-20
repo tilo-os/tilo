@@ -33,6 +33,12 @@ struct PageActions {
     reveals: crate::browser::Reveals,
     /// The content the page holds, which a workspace's files are by hash.
     content: tilo_content::ContentStore,
+    /// The page's peer with the workspace's server, which carries what the content store asks
+    /// for.
+    peer: Option<u32>,
+    /// Files the person chose in search whose bytes were still on their way from the workspace:
+    /// each by its content's hash and the name its row gave it, opened when it arrives.
+    pending: std::cell::RefCell<Vec<(String, String)>>,
 }
 
 impl AppActions for PageActions {
@@ -82,35 +88,81 @@ impl AppActions for PageActions {
 
     /// Open the workspace's content whose hash is `hash` in the app its bytes say opens it: read
     /// where the page keeps the workspace's content, and asked of the workspace when it is not
-    /// here yet.
+    /// here yet — the file opens the pass its bytes arrive.
     fn open_content(&self, hash: &str, name: &str) -> Result<(), ApiError> {
-        if self.content.read(hash).is_none() {
-            return Err(ApiError::Unavailable {
-                code: "content_on_its_way".into(),
-                reason: format!("{name} is still coming from the workspace"),
-            });
-        }
         // A tree names a file by the hash of its content manifest when it was kept in chunks, as a
         // workspace's own folder and a drop keep one: what the app opens is the file the manifest
         // lists, never the manifest's own bytes.
-        let app =
-            crate::content_open::opening_app(&self.content, hash, name).map_err(|reason| {
-                ApiError::Unavailable {
+        match crate::content_open::opening_app(&self.content, hash, name) {
+            Ok(crate::content_open::Opening::App(app)) => {
+                self.open(hash, name, &app)?;
+            }
+            // On its way from the workspace, which reading it asked for. The person chose it: it
+            // opens when it is here rather than being refused and chosen again.
+            Ok(crate::content_open::Opening::Coming) => {
+                {
+                    let mut pending = self.pending.borrow_mut();
+                    if pending.len() >= MAX_PENDING_OPENS
+                        || pending.iter().any(|held| held.0 == hash)
+                    {
+                        return Ok(());
+                    }
+                    pending.push((hash.to_owned(), name.to_owned()));
+                }
+                // Reading it queued the want on the workspace's files: send it now rather
+                // than on the frame that comes to ask.
+                if let Some(peer) = self.peer {
+                    crate::replicated::ask_content(peer);
+                }
+            }
+            Ok(crate::content_open::Opening::NoApp) => {
+                return Err(ApiError::Unavailable {
+                    code: "no_app".into(),
+                    reason: format!("No app here opens {name}"),
+                });
+            }
+            Err(reason) => {
+                return Err(ApiError::Unavailable {
                     code: "content_unreadable".into(),
                     reason,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn open_arrived(&self) {
+        let pending = std::mem::take(&mut *self.pending.borrow_mut());
+        for (hash, name) in pending {
+            match crate::content_open::opening_app(&self.content, &hash, &name) {
+                Ok(crate::content_open::Opening::App(app)) => {
+                    // A window that will not open is said by the app's own card: the row is gone
+                    // from the palette, which said what it could when it was chosen.
+                    let _ = self.open(&hash, &name, &app);
                 }
-            })?;
-        let Some(app) = app else {
-            return Err(ApiError::Unavailable {
-                code: "no_app".into(),
-                reason: format!("No app here opens {name}"),
-            });
-        };
+                Ok(crate::content_open::Opening::Coming) => {
+                    self.pending.borrow_mut().push((hash, name));
+                }
+                // Nothing opens it, or no app may be handed it: the row is gone from the palette,
+                // which said so when it was chosen.
+                Ok(crate::content_open::Opening::NoApp) | Err(_) => {}
+            }
+        }
+    }
+}
+
+/// How many files a person may choose from search before their bytes arrive, at most: past it a
+/// row is refused rather than kept waiting.
+const MAX_PENDING_OPENS: usize = 32;
+
+impl PageActions {
+    /// Open the file `hash`, called `name`, in `app`: the window names the file by the name the
+    /// tree gave it, so text opens as the Markdown a note is and a table as the table Sheets
+    /// imports.
+    fn open(&self, hash: &str, name: &str, app: &str) -> Result<(), ApiError> {
         self.handle
             .dispatch(ChromeEffect::OpenApp {
-                // The window it opens names the file by the name the tree gave it: a text document
-                // opens as the Markdown a note is, and a table as the table Sheets imports.
-                app: tilo_desktop_surface::session::named_content_launch(&app, hash, Some(name)),
+                app: tilo_desktop_surface::session::named_content_launch(app, hash, Some(name)),
                 beside: None,
                 background: None,
                 float: None,
@@ -118,8 +170,7 @@ impl AppActions for PageActions {
             .map_err(|reason| ApiError::Unavailable {
                 code: "application_unavailable".into(),
                 reason,
-            })?;
-        Ok(())
+            })
     }
 }
 
@@ -210,6 +261,8 @@ pub(crate) struct SearchParts {
 
 /// The session's search over this page's layout, mounted as a native desktop mounts it.
 fn mount(parts: SearchParts) -> Rc<SessionSearch> {
+    // What the palette reads a file's content through, before any of the parts are moved on.
+    let content = files_content(&parts);
     // The page holds the records of the apps it opened; the workspace's host holds the rest and
     // ranks them, over the session the page already holds with it.
     let served_here = parts.host.is_some();
@@ -244,7 +297,9 @@ fn mount(parts: SearchParts) -> Rc<SessionSearch> {
         Some(Rc::new(PageActions {
             handle: parts.handle.clone(),
             reveals: parts.reveals,
-            content: parts.content,
+            content,
+            peer: parts.peer,
+            pending: std::cell::RefCell::new(Vec::new()),
         }) as Rc<dyn AppActions>),
         Some(parts.wake),
         Some(Arc::new(PageGateway {
@@ -257,6 +312,30 @@ fn mount(parts: SearchParts) -> Rc<SessionSearch> {
         .handle
         .set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
     search
+}
+
+/// The workspace's files' content as the palette reads it: the page's content store joined to the
+/// workspace's files, so a file the page does not hold is asked of the workspace and what
+/// arrives is kept where the window that opens it reads it. A page showing no workspace files
+/// reads the store as it is.
+fn files_content(parts: &SearchParts) -> tilo_content::ContentStore {
+    let Some(peer) = parts.peer.filter(|_| parts.files.is_some()) else {
+        return parts.content.clone();
+    };
+    let Some(cluster) =
+        crate::replicated::workspace_uuid(peer).and_then(|uuid| uuid.parse::<uuid::Uuid>().ok())
+    else {
+        return parts.content.clone();
+    };
+    let route = ui::collaboration::RouteSpec::document(
+        fs_protocol::tree::FILES_APP,
+        cluster,
+        fs_protocol::tree::document_id(),
+    );
+    ui::collaboration::document_content::DocumentContent::store(
+        parts.content.clone(),
+        ui::collaboration::document_content::ContentLink::of(&route),
+    )
 }
 
 /// What the page asks of its search, as the trait object [`PAGE_SEARCH`] makes.

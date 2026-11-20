@@ -1378,14 +1378,20 @@ impl Joined {
         }
         let device = self.peer.status().device;
         let now = crate::shell::now_ms();
-        let records: BTreeSet<(String, String)> = self.open_resources().collect();
-        for (app, record) in records {
+        let mut asked: BTreeSet<(String, String)> = self.open_resources().collect();
+        // The workspace's files: the page's search and Files read a file's content through them
+        // whether or not a Files window is open, so what they ask for is asked here too.
+        asked.insert((
+            fs_protocol::tree::FILES_APP.to_owned(),
+            fs_protocol::tree::document_id(),
+        ));
+        for (app, name) in asked {
             // The record's windows each queue on a content link of their own.
-            for link in ContentLink::on_route(&self.content_route(&app, &record)) {
+            for link in ContentLink::on_route(&self.content_route(&app, &name)) {
                 for hash in link.take_requests().wants {
                     let Some(request) = self.content.ask(
                         &device,
-                        (app.clone(), record.clone()),
+                        (app.clone(), name.clone()),
                         (&app, &self.uuid),
                         &hash,
                         now,

@@ -59,19 +59,46 @@ pub(crate) fn opened_file(
     OpenFile::new(&name, media_type, bytes)
 }
 
-/// The app that opens the workspace's content `hash`, called `name`, in `content`: the file it is
-/// (a manifest and the chunks it lists, or its bytes whole), and which app its bytes name. `None`
-/// when no app opens it.
+/// What opening the workspace's content `hash`, called `name`, in `content` comes to: the file is
+/// here (or its bytes are whole), or it is still on its way.
+pub(crate) enum Opening {
+    /// The app that opens the file its bytes are.
+    App(String),
+    /// No app here opens it.
+    NoApp,
+    /// The file's bytes are not all here yet: the page asked the workspace for them.
+    Coming,
+}
+
+/// What opening `hash`, called `name`, in `content` comes to: the file it is (a manifest and the
+/// chunks it lists, or its bytes whole), and which app its bytes name.
 ///
 /// # Errors
-/// Content the page does not hold, or bytes no app may be handed.
+/// Bytes no app may be handed.
 pub(crate) fn opening_app(
     content: &ContentStore,
     hash: &str,
     name: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Opening, String> {
+    let Some(bytes) = content.read(hash) else {
+        return Ok(Opening::Coming);
+    };
+    // A manifest whose chunks the page has not all collected is a file still coming: reading each
+    // one asks the workspace for it.
+    if fs_content::is_manifest(&bytes) {
+        let manifest = fs_content::Manifest::decode(&bytes).map_err(|error| error.to_string())?;
+        let whole = manifest.chunks().iter().all(|chunk| {
+            content
+                .read(&hex::encode(chunk.hash))
+                .is_some_and(|part| part.len() == chunk.len as usize)
+        });
+        if !whole {
+            return Ok(Opening::Coming);
+        }
+    }
     let (file, _) = opened_file(hash, content, Some(name))?;
-    Ok(crate::dropped_files::opens_in(file.bytes(), file.name()))
+    Ok(crate::dropped_files::opens_in(file.bytes(), file.name())
+        .map_or(Opening::NoApp, Opening::App))
 }
 
 /// Keep the file whose content is `hash` in `kept` (its manifest and the chunks it lists, or its
@@ -192,35 +219,50 @@ mod tests {
         stream.push(&letter, &mut keep).unwrap();
         let (manifest, _) = stream.finish(&mut keep).unwrap();
         let text = content.put_public(&manifest.encode()).unwrap();
-        assert_eq!(
-            opening_app(&content, &text, "letter.txt")
-                .unwrap()
-                .as_deref(),
-            Some("so.tilo.notes"),
+        assert!(
+            matches!(
+                opening_app(&content, &text, "letter.txt").unwrap(),
+                Opening::App(app) if app == "so.tilo.notes"
+            ),
             "a text document kept as chunks opens in Notes"
         );
         // The table a command put in, kept whole, is what its name says.
         let table = content.put(b"item,cost\nrent,900\n").unwrap();
-        assert_eq!(
-            opening_app(&content, &table, "budget.csv")
-                .unwrap()
-                .as_deref(),
-            Some("so.tilo.sheets"),
+        assert!(
+            matches!(
+                opening_app(&content, &table, "budget.csv").unwrap(),
+                Opening::App(app) if app == "so.tilo.sheets"
+            ),
             "a table kept whole opens in Sheets"
         );
         let png = b"\x89PNG\r\n\x1a\n-a-capture".to_vec();
         let photo = content.put(&png).unwrap();
-        assert_eq!(
-            opening_app(&content, &photo, "spring.png")
-                .unwrap()
-                .as_deref(),
-            Some("so.tilo.photos")
-        );
+        assert!(matches!(
+            opening_app(&content, &photo, "spring.png").unwrap(),
+            Opening::App(app) if app == "so.tilo.photos"
+        ));
         let blob = content.put(&[0_u8, 1, 2, 3]).unwrap();
-        assert_eq!(opening_app(&content, &blob, "blob.bin").unwrap(), None);
+        assert!(matches!(
+            opening_app(&content, &blob, "blob.bin").unwrap(),
+            Opening::NoApp
+        ));
         assert!(
-            opening_app(&content, &"ab".repeat(32), "gone.txt").is_err(),
-            "content the page does not hold is no file to open"
+            matches!(
+                opening_app(&content, &"ab".repeat(32), "gone.txt").unwrap(),
+                Opening::Coming
+            ),
+            "content the page does not hold is a file still on its way"
+        );
+        // A manifest whose chunks have not all arrived is a file still coming, never one no app
+        // opens.
+        let bare = store();
+        let only_manifest = bare.put_public(&manifest.encode()).unwrap();
+        assert!(
+            matches!(
+                opening_app(&bare, &only_manifest, "letter.txt").unwrap(),
+                Opening::Coming
+            ),
+            "a file whose chunks are on their way is still coming"
         );
     }
 
