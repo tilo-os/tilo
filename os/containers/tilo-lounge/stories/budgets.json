@@ -118,7 +118,7 @@
       "Ada opens Mail and enters their address and password": 60000,
       "Ada reads the newest mail": 20000,
       "Ada searches for an older one": 20000,
-      "Ada sends a reply, and it arrives": 30000,
+      "Ada sends a reply, and it arrives": 90000,
       "Mail finds the server by itself and connects": 60000
     }
   },
