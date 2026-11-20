@@ -64,6 +64,26 @@
     "large-workspace": {
       "The workspace is filled": 3600000
     },
+    "files-in": {
+      "Ada opens Tilo": 15000,
+      "Ada gives their name": 10000,
+      "Ada makes a workspace, “Studio”": 15000,
+      "Ada drops a photo and a PDF on the page": 30000,
+      "Ada runs `tilo login` and copies a document into the workspace folder": 120000,
+      "Ada copies a spreadsheet in with the `tilo` command": 30000,
+      "Ada opens each file in the workspace": 30000
+    },
+    "agent-mcp": {
+      "Ada opens Tilo": 15000,
+      "Ada makes a workspace, “Workshop”": 15000,
+      "Ada connects their agent to the workspace": 90000,
+      "The agent writes a file": 30000,
+      "The agent adds a Tasks issue": 30000,
+      "The agent writes a note": 30000,
+      "The agent posts in Chat": 30000,
+      "Ada sees each change under the agent’s name": 30000,
+      "The agent asks Ada a question, and Ada answers it": 60000
+    },
     "big-folder": {
       "Ada copies the folder into their workspace folder": 120000,
       "Ada browses the big folder": 50,

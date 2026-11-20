@@ -503,6 +503,17 @@ export const waitUntil = async (tab, expression, what, timeout = stepLimit(3)) =
   throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s (the page: ${shown})`);
 };
 
+/** Wait until the desktop publishes `text` among its names and values, or
+ * fail with what the page said instead: what a person reads on the desktop,
+ * whichever app drew it. */
+export const showsText = async (tab, text, what, timeout = stepLimit(3)) => {
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  const found = await tab.waitFor(`(${TREE_TEXT}).includes(${JSON.stringify(text)})`, {timeout}).catch(() => false);
+  if (found) return found;
+  const tree = await tab.evaluate(TREE_TEXT).catch(() => '(the page did not answer)');
+  throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s; the page’s words were: ${JSON.stringify(String(tree).slice(0, 2000))}`);
+};
+
 /** The person's name, typed in the card the shell asks it with: the caller
  * has opened search and chosen "Set your name". */
 export const giveName = async (tab, name) => {

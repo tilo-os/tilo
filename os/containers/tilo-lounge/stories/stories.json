@@ -65,28 +65,33 @@
       "id": "files-in",
       "title": "Bring files in and open them",
       "intent": "A person brings their files into a workspace by dropping them on the page, through the workspace folder after `tilo login`, and with the `tilo` command, then opens each one.",
+      "driver": "files-in.mjs",
       "steps": [
+        "Ada opens Tilo",
+        "Ada gives their name",
+        "Ada makes a workspace, “Studio”",
         "Ada drops a photo and a PDF on the page",
         "Ada runs `tilo login` and copies a document into the workspace folder",
         "Ada copies a spreadsheet in with the `tilo` command",
         "Ada opens each file in the workspace"
-      ],
-      "needs": "A file drop through CDP (Input.dispatchDragEvent), and `tilo login` on the runner with the workspace folder mounted (FUSE in the check's sandbox)."
+      ]
     },
     {
       "id": "agent-mcp",
       "title": "Connect an agent over MCP and have it do real work",
       "intent": "A person connects their agent to a workspace over MCP. The agent writes a file, adds a Tasks issue, writes a note and posts in Chat, all shown under the agent's name, and when it asks a question the person sees it and answers.",
+      "driver": "agent-mcp.mjs",
       "steps": [
+        "Ada opens Tilo",
+        "Ada makes a workspace, “Workshop”",
         "Ada connects their agent to the workspace",
         "The agent writes a file",
         "The agent adds a Tasks issue",
         "The agent writes a note",
         "The agent posts in Chat",
-        "Ada sees each change under the agent's name",
+        "Ada sees each change under the agent’s name",
         "The agent asks Ada a question, and Ada answers it"
-      ],
-      "needs": "A scripted MCP client (the `tilo` MCP server over stdio, as agent-setup.mjs connects one) playing the agent, and a model only where the story is about the agent's own judgment."
+      ]
     },
     {
       "id": "mail-password",

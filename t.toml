@@ -6351,7 +6351,7 @@ outputs = ["/target/user-stories/{story}/index.html", "/target/user-stories/{sto
 evidence = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
 timeout_secs = 1800
 [check.matrix]
-story = ["invite-live", "wait-list-sign-up", "mail-password"]
+story = ["invite-live", "wait-list-sign-up", "mail-password", "agent-mcp"]
 
 # The user stories whose people meet a server of their own: a Nextcloud that
 # serves a person's files over WebDAV and their calendar over CalDAV. Each
@@ -6388,6 +6388,29 @@ evidence = ["/target/user-stories/{story}/index.html", "/target/user-stories/{st
 timeout_secs = 3600
 [check.matrix]
 story = ["calendar-invite", "nextcloud-files"]
+
+# The files-in user story: a person drops a photo and a PDF on the page, signs the computer they use
+# to the workspace with `tilo login` and copies a document into the workspace's folder, copies a
+# spreadsheet in with the `tilo` command, and opens each file there. The folder `tilo login` mounts
+# is FUSE, which needs a user namespace where the check is root (the comment on real-fuse says why);
+# the page, the stack and the browser stay outside it, and the story's `tilo` commands run in it.
+[[check]]
+name = "user-stories/files-in"
+on = ["schedule:0 8 * * *", "dispatch"]
+# The judge's model, at Anthropic's API; the stack itself meets its people on loopback.
+egress = { to = ["api.anthropic.com:443"] }
+run = "bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories/files-in files-in"
+needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+# Its setup is not pinned: dnf installs the newest builds Fedora's updates repository holds, and pip
+# the newest Anthropic SDK, from hosts no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx python3-pip openssl ffmpeg-free && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_VM_HOST = "0" }
+requires = ["/dev/fuse", "arch=x86_64"]
+isolation = "nested"
+cache = false
+outputs = ["/target/user-stories/files-in/index.html", "/target/user-stories/files-in/files-in/**"]
+evidence = ["/target/user-stories/files-in/index.html", "/target/user-stories/files-in/files-in/**"]
+timeout_secs = 1800
 
 # The big-folder user story: a person copies a photo library and a few long videos into their
 # workspace through its mounted folder, browses it, joins from a second computer and restarts the
