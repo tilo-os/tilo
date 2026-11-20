@@ -691,10 +691,16 @@ impl PortableStorage {
         doc: &mut automerge::AutoCommit,
         actor: Option<Vec<u8>>,
     ) -> Result<(), String> {
-        let bytes = doc.save();
         // Save serializes the full graph, including when the owner is viewing
         // historical heads through AutoCommit isolation.
         let heads = doc.document().get_heads();
+        // A document standing where the bytes held for it were saved is those bytes: it is not
+        // saved again. A writer ticks every document it holds open after each action, and saving
+        // them all made one write to a part of a chain cost every part the chain holds.
+        if automerge::transaction::Transactable::pending_ops(doc) == 0 && self.holds_at(&key, actor.as_deref(), &heads) {
+            return Ok(());
+        }
+        let bytes = doc.save();
         self.put(key.clone(), bytes, actor)?;
         // `put` synchronously installs these exact bytes. Retain the heads from
         // their canonical owner instead of decoding our own serialization.
@@ -705,6 +711,16 @@ impl PortableStorage {
             entry.document_heads = Some(DocumentHeads::new(&entry.current().bytes, Ok(heads)));
         }
         Ok(())
+    }
+    /// Whether the bytes held for `key` are a save of the document at `heads`, by `actor`.
+    fn holds_at(&self, key: &StorageKey, actor: Option<&[u8]>, heads: &[automerge::ChangeHash]) -> bool {
+        self.cache.borrow().entries.get(key).is_some_and(|entry| {
+            entry.current().actor.as_deref() == actor
+                && entry
+                    .document_heads
+                    .as_ref()
+                    .is_some_and(|held| matches!(held.heads.as_deref(), Ok(held) if held == heads))
+        })
     }
     pub fn pending_writes(&self) -> Vec<PendingWrite> {
         self.cache
