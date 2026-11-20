@@ -285,7 +285,10 @@ async fn measure_rung(
         let size = huge_size.min(huge_total.saturating_sub(huge_written));
         let fixture = fixtures.join(format!("huge{i:02}.bin"));
         write_fixture(&fixture, 100 + i, size);
-        let written = store_a.publish_file(&fixture, None, None).await.unwrap();
+        let (written, _) = store_a
+            .publish_file(&fixture, None, None, false)
+            .await
+            .unwrap();
         let (hash, len) = written.expect("a non-empty huge file has content");
         namespace
             .create_file(
