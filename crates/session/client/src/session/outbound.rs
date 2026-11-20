@@ -134,6 +134,8 @@ impl Task {
             .cloned()
             .collect();
         let mut refused = BTreeMap::new();
+        // Whether what is held changed: what did not change is not kept again.
+        let mut drained = false;
         for route in ready {
             // As many at a time as the document's history holds: a batch larger than that would
             // never fit, and its writes would wait for good.
@@ -160,14 +162,16 @@ impl Task {
                         if frames.is_empty() {
                             held.remove(&route);
                         }
+                        drained = true;
                     }
+                    drop(held);
                 }
                 if refused.contains_key(&route) {
                     break;
                 }
             }
         }
-        if self.engine.held_writes().lock().is_empty() {
+        if drained && self.engine.held_writes().lock().is_empty() {
             self.reports.change(|status| {
                 status.failures.retain(|failure| {
                     failure.kind != FailureKind::Session || !HELD_CODES.contains(&failure.code)
@@ -180,7 +184,7 @@ impl Task {
             self.held_since.retain(|route, _| held.contains_key(route));
             self.kept_why.retain(|route, _| held.contains_key(route));
         }
-        self.persist_keys(true);
+        self.persist_keys(drained);
         self.release_barriers(&refused);
     }
 

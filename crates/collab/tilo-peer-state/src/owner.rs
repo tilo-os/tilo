@@ -237,6 +237,9 @@ struct SharedOwner {
     /// ([`backlog::Backlog`]): every question about what ownership still holds
     /// reads it, and none of it changes once kept.
     backlogs: backlog::Backlog,
+    /// The outgoing entries of each workspace this device's replica was checked to hold: a
+    /// write's bytes never change, so a pass checks the entries it has not seen and no others.
+    verified: Mutex<BTreeMap<WorkspaceId, BTreeSet<[u8; 32]>>>,
 }
 #[derive(Default)]
 struct Current {
@@ -565,6 +568,7 @@ impl NativeWorkspaceOwner {
             history_keys: Mutex::new(None),
             resting: publication::Resting::default(),
             backlogs: backlog::Backlog::default(),
+            verified: Mutex::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -599,6 +603,7 @@ impl NativeWorkspaceOwner {
             history_keys: Mutex::new(None),
             resting: publication::Resting::default(),
             backlogs: backlog::Backlog::default(),
+            verified: Mutex::default(),
         })))
     }
     #[must_use]

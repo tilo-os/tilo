@@ -509,7 +509,7 @@ impl NativeWorkspaceOwner {
             let ready = numbered(live, workspace, device, writes, signed, now)?;
             let mut taken = Vec::new();
             let mut fresh = false;
-            for request in ready {
+            for (request, checked) in ready {
                 let outgoing = publication::prepare(&request)?;
                 let CommitOperation::Document {
                     app,
@@ -520,8 +520,15 @@ impl NativeWorkspaceOwner {
                 else {
                     return Err("unsupported native owner commit family".into());
                 };
-                match live.lookup_exact_local_document(app, document, envelope, now) {
-                    Ok(Some(_)) => {
+                // `checked`: the turn numbered this write itself, so nothing admits it yet.
+                let held = if checked {
+                    None
+                } else {
+                    Some(live.lookup_exact_local_document(app, document, envelope, now))
+                };
+                match held {
+                    None | Some(Ok(None)) => {}
+                    Some(Ok(Some(_))) => {
                         if !publication::has_exact(stored, &outgoing, runs)?
                             && !publication::retry_covered(live, stored, &outgoing)?
                         {
@@ -533,10 +540,9 @@ impl NativeWorkspaceOwner {
                         taken.push(request);
                         continue;
                     }
-                    Ok(None) => {}
                     // The workspace's rules refuse the change, as deciding it says: its author's
                     // session is told the same typed refusal a server's refusal is.
-                    Err(AdmissionError::ChangeRefused(change)) => {
+                    Some(Err(AdmissionError::ChangeRefused(change))) => {
                         *refused = Some(NeighbourMsg::AppDocument {
                             peer: crate::peer_handle(envelope.author.as_bytes()),
                             app_id: app.clone(),
@@ -549,7 +555,7 @@ impl NativeWorkspaceOwner {
                         waiting = Some(WriteRefusal::ChangeRefused(change));
                         return Err("the workspace refuses the change".into());
                     }
-                    Err(error) => return Err(error.to_string()),
+                    Some(Err(error)) => return Err(error.to_string()),
                 }
                 if !live.sealed_history_takes(app, document, envelope) {
                     full = Some((app.clone(), document.clone()));
@@ -655,6 +661,8 @@ impl NativeWorkspaceOwner {
 /// writes before them took, and signed by `signed`, which asks for every signature this run needs
 /// at once. A number is taken once: each write keeps it, so the turn's next run signs the same
 /// write. Without `signed`, every write is as it was signed.
+/// Whether the document was checked to hold each write already: it does not hold one the turn
+/// numbered and signed itself.
 fn numbered(
     live: &crate::StatePeer,
     workspace: WorkspaceId,
@@ -662,7 +670,7 @@ fn numbered(
     writes: &mut [OwnerCommitRequest],
     signed: Option<&Signatures>,
     now: SystemTime,
-) -> Result<Vec<OwnerCommitRequest>, String> {
+) -> Result<Vec<(OwnerCommitRequest, bool)>, String> {
     let mut taken = std::collections::BTreeMap::new();
     let mut ready = Vec::with_capacity(writes.len());
     for kept in writes.iter_mut() {
@@ -682,30 +690,35 @@ fn numbered(
         if envelope.author.as_bytes() != &device {
             return Err("native local publication signer differs from selected device".into());
         }
+        let mut checked = false;
         if let Some(signed) = signed {
             // A write signed before the turn (an app's, signed by the identity service) names the
             // governance this owner admits it under, and is signed again for it; one the document
-            // holds already is a retry, kept as it was taken.
-            if !matches!(
-                live.lookup_exact_local_document(app, document, envelope, now),
-                Ok(Some(_))
-            ) {
+            // holds already is a retry, kept as it was taken. A draft this turn made is admitted
+            // nowhere: the document is asked nothing of it.
+            let retry = collab_types::verify_op(envelope).is_ok()
+                && matches!(
+                    live.lookup_exact_local_document(app, document, envelope, now),
+                    Ok(Some(_))
+                );
+            if !retry {
                 envelope.name_governance(&live.governance_heads()?);
-            }
-            **envelope = live
-                .sequenced_local_document(app, document, (**envelope).clone(), now)?
-                .0;
-            let before = taken.entry((app.clone(), document.clone())).or_insert(0);
-            if envelope.seq <= *before {
-                envelope.seq = before.checked_add(1).ok_or("sequence exhausted")?;
-            }
-            *before = envelope.seq;
-            if collab_types::verify_op(envelope).is_err() {
-                collab_types::sign_op(envelope, signed).map_err(|error| error.to_string())?;
+                **envelope = live
+                    .sequenced_local_document(app, document, (**envelope).clone(), now)?
+                    .0;
+                let before = taken.entry((app.clone(), document.clone())).or_insert(0);
+                if envelope.seq <= *before {
+                    envelope.seq = before.checked_add(1).ok_or("sequence exhausted")?;
+                }
+                *before = envelope.seq;
+                if collab_types::verify_op(envelope).is_err() {
+                    collab_types::sign_op(envelope, signed).map_err(|error| error.to_string())?;
+                }
+                checked = true;
             }
             kept.clone_from(&request);
         }
-        ready.push(request);
+        ready.push((request, checked));
     }
     signed.map(Signatures::settled).transpose()?;
     Ok(ready)

@@ -574,7 +574,7 @@ pub(crate) fn status(
     now: SystemTime,
 ) -> Result<NativeOutgoingStatus, String> {
     let publication = state(view)?;
-    let allowed = allowed(view, now)?;
+    let allowed = allowed(view, now, &mut BTreeSet::new())?;
     // `bounds` caps both lists, so neither sum nor difference can wrap.
     let total = publication
         .governance
@@ -585,9 +585,13 @@ pub(crate) fn status(
         blocked: total.saturating_sub(allowed.iter().filter(|allowed| **allowed).count()),
     })
 }
+/// Which of ownership's entries may go now, `verified` holding the writes earlier passes checked:
+/// a write's bytes never change, so it is checked once and added. Governance entries are decided
+/// against the workspace as it stands, which their check reads.
 fn allowed(
     view: &NativeCommittedView,
     now: SystemTime,
+    verified: &mut BTreeSet<[u8; 32]>,
 ) -> Result<[bool; MAX_VISIBLE_ENTRIES], String> {
     let publication = state(view)?;
     bounds(publication)?;
@@ -646,15 +650,20 @@ fn allowed(
             );
             continue;
         }
-        if let Some(slot) = allowed.get_mut(governance_len.saturating_add(index)) {
-            *slot = envelope.author.as_bytes() == &view.device().device_public_key
-                && view
-                    .peer
-                    .lookup_exact_local_document(&app_id, &document_id, &envelope, now)
-                    .ok()
-                    .flatten()
-                    .is_some();
-            if !*slot {
+        if let Some(place) = allowed.get_mut(governance_len.saturating_add(index)) {
+            let admitted = verified.contains(&entry.id)
+                || (envelope.author.as_bytes() == &view.device().device_public_key
+                    && view
+                        .peer
+                        .lookup_exact_local_document(&app_id, &document_id, &envelope, now)
+                        .ok()
+                        .flatten()
+                        .is_some());
+            *place = admitted;
+            if admitted {
+                verified.insert(entry.id);
+            }
+            if !admitted {
                 tracing::debug!(
                     app = %app_id,
                     record = %document_id,
@@ -1729,18 +1738,36 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
         read: impl FnOnce(&NativeCommittedView, NativeOutgoing<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
-        self.with_current(workspace, |view| {
+        // What earlier passes checked here, out of the map while it is read and pruned to what
+        // ownership still holds: the set stays as small as the head.
+        let mut verified = self
+            .0
+            .verified
+            .lock()
+            .remove(&workspace)
+            .unwrap_or_default();
+        let result = self.with_current(workspace, |view| {
             view.peer
                 .permissions(view.device().device_public_key, now)
                 .map_err(|error| error.to_string())?;
+            let publication = state(view)?;
+            verified.retain(|id| {
+                publication
+                    .governance
+                    .iter()
+                    .chain(publication.entries.iter())
+                    .any(|entry| entry.id == *id)
+            });
             read(
                 view,
                 NativeOutgoing {
-                    state: state(view)?,
-                    allowed: allowed(view, now)?,
+                    state: publication,
+                    allowed: allowed(view, now, &mut verified)?,
                 },
             )
-        })
+        });
+        self.0.verified.lock().insert(workspace, verified);
+        result
     }
     /// How many of this device's committed writes to `workspace` are still in
     /// its outgoing ownership: not yet admitted by the workspace's governor.
