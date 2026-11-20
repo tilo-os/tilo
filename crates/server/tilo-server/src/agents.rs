@@ -763,11 +763,19 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         let workspaces = self.workspaces.clone();
         self.host_device.runtime.spawn(async move {
             let mut pending = pending;
-            // The person reads the workspace by its name, not its id.
-            if let Some(workspaces) = workspaces
-                && let Ok(summary) = workspaces.summary(&pending.workspace).await
-            {
-                pending.workspace = summary.name;
+            if let Some(workspaces) = workspaces {
+                // Who asks is what the workspace calls the agent, never the label of the client
+                // that connected it or its id: the person reads a name they know.
+                if let Some(name) = workspaces
+                    .agent_name(&pending.workspace, &pending.agent_id)
+                    .await
+                {
+                    pending.agent_label = name;
+                }
+                // The person reads the workspace by its name, not its id.
+                if let Ok(summary) = workspaces.summary(&pending.workspace).await {
+                    pending.workspace = summary.name;
+                }
             }
             completer.complete(match certification.confirm_for(person, pending).await {
                 Ok(ConfirmationAnswer::AllowOnce) => {

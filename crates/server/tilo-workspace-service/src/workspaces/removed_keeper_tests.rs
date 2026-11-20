@@ -49,7 +49,14 @@ async fn removing_a_member_retires_the_agents_they_kept_there() {
         Ok(JoinReply::Admitted { .. })
     ));
     let keeper = hex::encode(guest.user_public_key);
-    let helper = agent_the_governor_works(workspaces, &workspace, &cert, &keeper).await;
+    let helper = agent_the_governor_works(
+        workspaces,
+        &workspace,
+        &cert,
+        &keeper,
+        tilo_app_id::apps::CHAT,
+    )
+    .await;
     let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let before = workspaces
         .read_resource::<WorkspaceAgents>(&workspace, (tilo_app_id::apps::CHAT, &list))
@@ -94,6 +101,44 @@ async fn removing_a_member_retires_the_agents_they_kept_there() {
     server.shutdown().await;
 }
 
+/// A question an agent asks is put under the name the workspace's list gives it, never under the
+/// label of the client that connected it or its id: what the person reads at the bell.
+#[tokio::test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the server stays live until its consuming shutdown"
+)]
+async fn a_questions_asker_is_named_by_the_workspaces_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Demo").await.unwrap().workspace;
+    let keeper = hex::encode(cert.user_public_key);
+    let helper = agent_the_governor_works(
+        workspaces,
+        &workspace,
+        &cert,
+        &keeper,
+        tilo_workspace_agent::OWNER,
+    )
+    .await;
+    assert_eq!(
+        workspaces
+            .agent_name(&workspace, helper.as_str())
+            .await
+            .as_deref(),
+        Some("Cy's helper"),
+        "the agent asks under the name its person reads"
+    );
+    assert_eq!(
+        workspaces.agent_name(&workspace, "nobody").await,
+        None,
+        "an agent the list does not name has no name to be asked under"
+    );
+    server.shutdown().await;
+}
+
 /// The agent `helper` that `keeper` keeps in `workspace`, written into Chat's
 /// list of the workspace's agents by their own device and worked by the
 /// workspace's governor: the list a member's own device starts, and their own
@@ -103,11 +148,11 @@ async fn agent_the_governor_works(
     workspace: &str,
     governor: &DeviceCert,
     keeper: &str,
+    app: &'static str,
 ) -> tilo_resource::Id {
     use tilo_resource::{Id, NonBlank, Resource as _};
 
     let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    let app = tilo_app_id::apps::CHAT;
     let mut start = automerge::AutoCommit::new();
     WorkspaceAgents::initialize(&mut start).unwrap();
     start.commit_with(

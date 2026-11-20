@@ -207,6 +207,22 @@ impl Workspaces {
         })
     }
 
+    /// What `workspace`'s list of its agents calls the agent `agent`, when it names it: the name
+    /// its person reads, which a question it asks is put under. `None` while the list does not
+    /// name it, or cannot be read.
+    pub async fn agent_name(&self, workspace: &str, agent: &str) -> Option<String> {
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let agents = self
+            .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
+            .await
+            .ok()??;
+        let named = agents
+            .agents
+            .find(&tilo_resource::Id::from_raw(agent.to_owned()))?;
+        let name = named.name.trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    }
+
     /// Let `caller`, on the device `certificate` certifies, take `operation`
     /// in the workspace `workspace_id` carries (`None`: asked of the server
     /// itself), with `arguments`: at once for its person, and for their agent
