@@ -536,6 +536,11 @@ fn str_at_doc(doc: &AutoCommit, key: &str) -> Option<String> {
     }
 }
 
+/// The kind a node object names, read once so a listing asks for one node instead of two.
+fn node_kind(doc: &Chunks, obj: &Obj) -> NodeKind {
+    str_at(doc, obj, "kind").map_or(NodeKind::File, |k| NodeKind::from_str(&k))
+}
+
 fn read_name(doc: &Chunks, obj: &Obj, key: &str) -> Option<FileNameV1> {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -695,8 +700,8 @@ impl Namespace {
 
     fn kind_of(&self, id: &str) -> NodeKind {
         self.node(id)
-            .and_then(|o| str_at(&self.doc, &o, "kind"))
-            .map_or(NodeKind::File, |k| NodeKind::from_str(&k))
+            .map(|o| node_kind(&self.doc, &o))
+            .unwrap_or(NodeKind::File)
     }
 
     fn set_field(&mut self, id: &str, key: &str, val: impl Into<ScalarValue>) {
@@ -1521,8 +1526,11 @@ impl Namespace {
             .into_iter()
             .filter(|c| self.reaches_root(c))
             .filter_map(|c| {
-                let name = self.name_of(&c)?;
-                Some((c.clone(), name, self.kind_of(&c)))
+                // A listed entry's name and kind come from one read of its node: a folder of a
+                // thousand entries asks the document for each once, not twice.
+                let node = self.node(&c)?;
+                let name = read_name(&self.doc, &node, "name")?;
+                Some((c, name, node_kind(&self.doc, &node)))
             })
             .collect();
         kids.sort_by(|a, b| a.1.cmp(&b.1));
