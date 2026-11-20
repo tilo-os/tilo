@@ -2773,12 +2773,14 @@ remote_env() {
 #
 # A remote stack lives in the container its cargo drop-in builds in, and these commands have to act
 # there: a drop-in that routes other work elsewhere (exec handed to a builder) is asked for these
-# on the builder itself, since that other place holds neither the stack nor its state.
+# on the builder itself, since that other place holds neither the stack nor its state. `RCARGO_T`
+# is rcargo's own switch for that, and means nothing to another drop-in; rcargo does not take its
+# `--on-builder` before `exec`.
 remote_cmd() {
   local envs=()
   mapfile -t envs < <(remote_env)
   builder_flags
-  ( cd "$repo" && "$cargo" "${builder_flags[@]}" exec -- env "${envs[@]}" bash "$self" "$@" )
+  ( cd "$repo" && RCARGO_T=0 "$cargo" "${builder_flags[@]}" exec -- env "${envs[@]}" bash "$self" "$@" )
 }
 
 # remote_shell COMMAND: a command on the build server, for what stack.sh has
@@ -2787,7 +2789,7 @@ remote_shell() {
   local envs=()
   mapfile -t envs < <(remote_env)
   builder_flags
-  ( cd "$repo" && "$cargo" "${builder_flags[@]}" exec -- env "${envs[@]}" bash -c "$1" )
+  ( cd "$repo" && RCARGO_T=0 "$cargo" "${builder_flags[@]}" exec -- env "${envs[@]}" bash -c "$1" )
 }
 
 # start_supervisor ARGS…: the stack on the build server as one long-running
@@ -2801,7 +2803,7 @@ start_supervisor() {
   mapfile -t envs < <(remote_env)
   inner=$(printf 'bash %q ' "$self"; printf '%q ' "$@")
   builder_flags
-  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" "$cargo" "${builder_flags[@]}" exec \
+  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" "${builder_flags[@]}" exec \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
       -- env "${envs[@]}" bash -c "$inner && exec sleep infinity" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
