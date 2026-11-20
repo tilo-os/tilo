@@ -98,6 +98,11 @@ struct Inner {
     beside: BTreeMap<DocumentId, Deferred>,
     /// An operation ran since the last take of the records beside.
     beside_dirty: bool,
+    /// Changes to the documents beside, admitted to their mirrors by a take that failed on a
+    /// later one: the next take returns them first. The mirrors and the worker hold them, so
+    /// whatever is written there next builds on them: dropped, they were lost, and every later
+    /// change to those documents was refused as building on what the workspace never got.
+    beside_kept: Vec<(DocumentId, DocumentMutation)>,
     /// Content the worker holds, put again into a worker that replaces it.
     held: BTreeSet<String>,
     /// The record's store asks its workspace's hosts for what it lacks
@@ -296,6 +301,7 @@ impl ConfinedReplica {
                 dirty: true,
                 beside: BTreeMap::new(),
                 beside_dirty: false,
+                beside_kept: Vec::new(),
                 kept: Vec::new(),
                 held: BTreeSet::new(),
                 asks_workspace: asks_workspace.then(BTreeMap::new),
@@ -1611,29 +1617,37 @@ impl ConfinedReplica {
     /// As [`Self::take_mutation`].
     pub fn take_document_mutations(&self) -> Result<Vec<(DocumentId, DocumentMutation)>, AppError> {
         let mut inner = self.lock();
+        let mut out = std::mem::take(&mut inner.beside_kept);
         if !std::mem::take(&mut inner.beside_dirty) {
-            return Ok(Vec::new());
+            return Ok(out);
         }
-        let taken = match self.call(&mut inner, &Request::TakeDocumentMutations)? {
-            Reply::DocumentMutations(taken) => taken,
-            Reply::Failed(reason) => {
+        let taken = match self.call(&mut inner, &Request::TakeDocumentMutations) {
+            Ok(Reply::DocumentMutations(taken)) => taken,
+            Ok(Reply::Failed(reason)) => {
                 // The worker kept its changes: they are asked for again.
                 inner.beside_dirty = true;
+                inner.beside_kept = out;
                 return Err(worker_error(reason));
             }
-            _ => {
+            Ok(_) => {
                 inner.stop();
+                inner.beside_kept = out;
                 return Err(worker_error("the worker answered out of turn"));
             }
+            Err(error) => {
+                inner.beside_kept = out;
+                return Err(error);
+            }
         };
-        let mut out = Vec::new();
         for (record, snapshot, bytes) in taken {
             match self.admit_beside(&mut inner, &record, snapshot, bytes) {
-                Ok(taken) => out.push(taken),
+                Ok((document, mutation)) => joined(&mut out, document, mutation),
                 Err(error) => {
                     // A worker that sends what is not admitted is not asked
-                    // again.
+                    // again. What was admitted before it is in the mirrors, and goes out
+                    // with the next take.
                     inner.stop();
+                    inner.beside_kept = out;
                     return Err(error);
                 }
             }
@@ -1736,6 +1750,23 @@ impl ConfinedReplica {
         drop(inner);
         read
     }
+}
+
+/// `mutation` of `document` after what `out` holds: a change to a document `out` already changes
+/// joins that change, so each document is written once, its changes in the order they were made.
+fn joined(
+    out: &mut Vec<(DocumentId, DocumentMutation)>,
+    document: DocumentId,
+    mutation: DocumentMutation,
+) {
+    if let DocumentMutation::Incremental(bytes) = &mutation
+        && let Some((_, DocumentMutation::Incremental(earlier))) =
+            out.iter_mut().find(|(held, _)| held == &document)
+    {
+        earlier.extend_from_slice(bytes);
+        return;
+    }
+    out.push((document, mutation));
 }
 
 /// [`ConfinedReplica::written_keys`] of the held document's own `mirror`.
