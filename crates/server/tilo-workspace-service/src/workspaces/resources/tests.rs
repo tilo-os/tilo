@@ -658,3 +658,66 @@ async fn a_members_store_document_reads_back_the_content_its_cells_name() {
     );
     server.shutdown().await;
 }
+
+/// A write this device cannot seal, its readers' keys not being here yet, is refused, and
+/// nothing of it stays readable: the app never shows what no member will receive. Once the
+/// keys are here, the same write goes through.
+#[tokio::test]
+async fn a_write_this_device_cannot_send_is_not_read_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    let context = context(&workspace, &cert);
+    let put = |title: &str, invocation: &str| Command::Put {
+        kind: KIND.to_owned(),
+        id: "i-1".to_owned(),
+        resource: Resource {
+            readers: "*".into(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::from([("title".to_owned(), Cell::One(Value::Text(title.into())))]),
+        },
+        stamp: Stamp {
+            verb: "add".to_owned(),
+            invoker: "ada".to_owned(),
+            invocation: invocation.to_owned(),
+            ..Stamp::default()
+        },
+    };
+
+    workspaces
+        .resource_command(&context, put("Unsent", "i1"))
+        .await
+        .expect_err("no keys of the readers are here yet");
+    assert!(
+        title_through_service(&workspaces, &context, "i-1")
+            .await
+            .is_none(),
+        "the refused write is not read back"
+    );
+
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    let _ = workspaces.own_route_keys(&route, true).await.unwrap();
+    workspaces
+        .resource_command(&context, put("Sent", "i2"))
+        .await
+        .unwrap();
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        Some(Value::Text("Sent".into())),
+        "with the keys here, the write goes through"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}

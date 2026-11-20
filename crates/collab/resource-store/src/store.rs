@@ -1611,6 +1611,45 @@ impl Store {
         self.docs.remove(doc).map(|doc| doc.save())
     }
 
+    /// Takes back what `doc` took since `before`, the heads it stood at: a write its writer
+    /// could not send anywhere, which must not stay readable here as if it had been. A
+    /// document that held nothing before is let go whole. Open queries over what it held
+    /// are told it changed.
+    ///
+    /// # Errors
+    /// When the document cannot be read back at `before`.
+    pub fn take_back(&mut self, doc: &str, before: &[ChangeHash]) -> Result<(), StoreError> {
+        let Some(now) = self.docs.get(doc) else {
+            return Ok(());
+        };
+        let back = if before.is_empty() {
+            None
+        } else {
+            Some(now.fork_at(before)?)
+        };
+        let readers = self.index.readers(doc).map(str::to_owned);
+        let kinds: BTreeSet<String> = self
+            .index
+            .held(doc)
+            .map(|(kind, _)| kind.to_owned())
+            .collect();
+        self.index.forget(doc);
+        self.docs.remove(doc);
+        for (id, watched) in &self.watches {
+            if kinds.contains(watched) {
+                self.changed.insert(*id);
+            }
+        }
+        if let Some(back) = back {
+            let readers = readers
+                .or_else(|| text_at(&back, &ROOT, READERS))
+                .unwrap_or_default();
+            self.docs.insert(doc.to_owned(), back);
+            self.index_resources(doc, &readers, None)?;
+        }
+        Ok(())
+    }
+
     /// The document `doc` as it stands in memory, for whoever keeps or sends it whole.
     #[must_use]
     pub fn document(&self, doc: &str) -> Option<&Automerge> {

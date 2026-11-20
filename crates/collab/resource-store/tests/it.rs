@@ -617,6 +617,56 @@ mod store {
             .collect()
     }
 
+    /// A write taken back leaves the store as it stood before it: a changed resource reads
+    /// its earlier fields, one the write made is gone and not counted as removed, and an open
+    /// query over the kind is told.
+    #[test]
+    fn a_write_taken_back_leaves_the_store_as_it_was() {
+        let mut store = Store::new();
+        let held = put(&mut store, "a", resource("board", "a0", "Kept", "open"));
+        let watch = store.watch(ISSUE);
+        let _ = store.changed();
+        let renamed = put(&mut store, "a", resource("board", "a0", "Unsent", "open"));
+        let made = put(&mut store, "b", resource("board", "a1", "Unsent", "open"));
+        assert_eq!(made[0].doc, held[0].doc, "both resources share a document");
+        for write in renamed.iter().chain(&made).rev() {
+            store.take_back(&write.doc, write.change.deps()).unwrap();
+        }
+        let title = |store: &Store, id: &str| {
+            store
+                .get(ISSUE, id, &anyone)
+                .and_then(|held| held.fields.get("title").cloned())
+        };
+        assert_eq!(title(&store, "a"), Some(Cell::One("Kept".into())));
+        assert!(
+            store.get(ISSUE, "b", &anyone).is_none(),
+            "the made resource is gone"
+        );
+        assert!(
+            store.removed(ISSUE, None, &anyone).is_empty(),
+            "nothing was removed"
+        );
+        assert!(store.changed().contains(&watch), "the open query is told");
+
+        let founded = put(
+            &mut store,
+            "c",
+            read_by("ada", "board", "a0", "Alone", "open"),
+        );
+        assert_ne!(
+            founded[0].doc, held[0].doc,
+            "another reader set founds its document"
+        );
+        store
+            .take_back(&founded[0].doc, founded[0].change.deps())
+            .unwrap();
+        assert!(store.get(ISSUE, "c", &anyone).is_none());
+        assert!(
+            store.document(&founded[0].doc).is_none(),
+            "the founded document is let go"
+        );
+    }
+
     /// The newest version of each resource under a document, most recent first, a page of
     /// them: what changed last stands first, a removed one too, and a resource elsewhere is not
     /// among them.

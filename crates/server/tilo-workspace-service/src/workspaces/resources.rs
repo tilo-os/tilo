@@ -624,14 +624,28 @@ impl GovernedWorkspace {
                     (refused.written, Some(refusal))
                 }
             };
+        // Every write is drafted before any is kept: one this device cannot sign or seal (no
+        // keys of its readers yet) is taken back out of the store with the rest, so the app
+        // never reads what no peer will receive.
+        let mut requests = Vec::with_capacity(written.len());
+        for write in &written {
+            match self.draft_resource_document(device, app, write).await {
+                Ok(request) => requests.push(request),
+                Err(error) => {
+                    for write in written.iter().rev() {
+                        self.resources
+                            .store_mut()
+                            .take_back(&write.doc, write.change.deps())
+                            .map_err(|error| error.to_string())?;
+                    }
+                    return Err(error);
+                }
+            }
+        }
         // What the store took is kept before it answers: a document nobody's later change
         // reaches again would otherwise leave memory with nothing of it on disk.
         for write in &written {
             self.resources.kept(&write.doc, write.change.deps())?;
-        }
-        let mut requests = Vec::with_capacity(written.len());
-        for write in written {
-            requests.push(self.draft_resource_document(device, app, &write).await?);
         }
         Ok((requests, refused))
     }
