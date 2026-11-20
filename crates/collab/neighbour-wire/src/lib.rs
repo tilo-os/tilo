@@ -785,6 +785,29 @@ pub enum NeighbourMsg {
 }
 
 impl NeighbourMsg {
+    /// The message `bytes` hold, kept by a device or a server however long ago: a document write
+    /// kept before writes carried their reader set ends before it
+    /// ([`NeighbourMsg::AppDocument`]), and reads as naming none, the `None` a write of
+    /// today ends with there. Its envelope is the same bytes its author signed. Read live
+    /// messages with `postcard` itself: only kept bytes end early.
+    ///
+    /// # Errors
+    ///
+    /// `bytes` are not a message, nor a document write that ends before its reader set.
+    pub fn from_kept(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        match postcard::from_bytes(bytes) {
+            Err(postcard::Error::DeserializeUnexpectedEnd)
+                if bytes.first() == Some(&Self::APP_DOCUMENT_TAG) =>
+            {
+                let mut today = Vec::with_capacity(bytes.len().saturating_add(1));
+                today.extend_from_slice(bytes);
+                today.push(0);
+                postcard::from_bytes(&today)
+            }
+            read => read,
+        }
+    }
+
     /// Postcard variant index of [`NeighbourMsg::AppDocument`]. Variant order
     /// is wire-frozen (peers and hosts persist and exchange these frames), and
     /// a unit test pins this value to a real encoding.
@@ -1380,6 +1403,24 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{case} failed to decode: {error}"));
             assert_eq!(message, decoded, "{case} changed in transit");
         }
+    }
+
+    /// A document write kept before writes carried their reader set ends
+    /// before it: it reads whole as naming none, its envelope as signed.
+    #[test]
+    fn a_document_write_kept_before_reader_sets_reads_whole() {
+        let (_, message) = fixtures_app_crdt_and_scrollback()
+            .into_iter()
+            .find(|(case, _)| *case == "signed app document")
+            .unwrap();
+        let mut kept = postcard::to_allocvec(&message).unwrap();
+        // `None` is the last byte; that build wrote nothing there.
+        assert_eq!(kept.pop(), Some(0));
+        assert!(postcard::from_bytes::<NeighbourMsg>(&kept).is_err());
+        assert_eq!(NeighbourMsg::from_kept(&kept).unwrap(), message);
+        // A message cut short anywhere else stays refused.
+        kept.pop();
+        assert!(NeighbourMsg::from_kept(&kept).is_err());
     }
 
     /// The tag peek agrees with a full decode on a real encoding of every

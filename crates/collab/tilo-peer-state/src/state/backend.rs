@@ -31,6 +31,42 @@ pub(super) struct PeerDocument {
     /// admission order: the durable record of an encrypted document here.
     /// Restore validates every retained envelope before replay.
     pub(super) sealed: SealedLog,
+    /// The writes of the record sealed before reader sets
+    /// ([`collab_types::artifact_sealed_before_reader_sets`]) whose content a key holder has
+    /// since sealed again under the record's own scope, in a compaction it signed: each kept as
+    /// its author signed it, so who wrote what then stays provable. They are never history to
+    /// replay or merge again; the compaction that took their place says which they are.
+    pub(super) resealed: Arc<[collab_types::SignedOp]>,
+}
+
+impl PeerDocument {
+    /// Replace the record's sealed history with `history`, which a compaction made: of the writes
+    /// it folds away, those sealed before reader sets are kept as the record's originals
+    /// ([`Self::resealed`]), never dropped.
+    pub(super) fn fold_sealed(
+        &mut self,
+        history: SealedLog,
+        before_reader_sets: impl Fn(&collab_types::SignedOp) -> bool,
+    ) {
+        let kept: std::collections::HashSet<[u8; 64]> =
+            history.iter().map(|op| op.signature.0).collect();
+        let originals: Vec<collab_types::SignedOp> = self
+            .sealed
+            .iter()
+            .filter(|op| !kept.contains(&op.signature.0) && before_reader_sets(op))
+            .cloned()
+            .collect();
+        if !originals.is_empty() {
+            self.resealed = self.resealed.iter().cloned().chain(originals).collect();
+        }
+        self.sealed = history;
+    }
+
+    /// Whether the record keeps anything of a sealed history: writes to replay, or originals of
+    /// writes sealed again.
+    pub(super) fn keeps_sealed(&self) -> bool {
+        !self.sealed.is_empty() || !self.resealed.is_empty()
+    }
 }
 
 /// A record's sealed writes in admission order. Every admission decides in
@@ -143,6 +179,27 @@ impl SealedLog {
             })),
         }
     }
+    /// The head of a document's entry of the durable sealed histories, `(route, count)` as postcard
+    /// writes it, and the encoding of `resealed`, which lead the writes held in the entry. A
+    /// restore tells them apart by what they are ([`super::sealed_history::restore`]): writes
+    /// sealed before reader sets ahead of a compaction sealed since.
+    fn head(
+        route: &Route,
+        held: usize,
+        resealed: &[collab_types::SignedOp],
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+        let count = held.saturating_add(resealed.len());
+        let route_and_count = postcard::to_allocvec(&(route, count)).map_err(err)?;
+        if resealed.is_empty() {
+            return Ok((route_and_count, None));
+        }
+        let mut originals = Vec::new();
+        for op in resealed {
+            originals = postcard::to_extend(op, originals).map_err(err)?;
+        }
+        Ok((route_and_count, Some(originals)))
+    }
+
     /// What `postcard` makes of `(route, every write held)`, in parts: the
     /// route and count, then each chunk, encoded once per state of it and
     /// the same allocation while it lasts. A write changes the last chunk
@@ -153,13 +210,20 @@ impl SealedLog {
     pub(super) fn digested_parts(
         &self,
         route: &Route,
+        resealed: &[collab_types::SignedOp],
     ) -> Result<Vec<super::StretchDigest>, String> {
-        let head = postcard::to_allocvec(&(route, self.len)).map_err(err)?;
-        let mut parts = Vec::with_capacity(self.chunks.len().saturating_add(1));
+        let (head, originals) = Self::head(route, self.len, resealed)?;
+        let mut parts = Vec::with_capacity(self.chunks.len().saturating_add(2));
         parts.push((
             u64::try_from(head.len()).unwrap_or(u64::MAX),
             *blake3::hash(&head).as_bytes(),
         ));
+        if let Some(originals) = originals {
+            parts.push((
+                u64::try_from(originals.len()).unwrap_or(u64::MAX),
+                *blake3::hash(&originals).as_bytes(),
+            ));
+        }
         for chunk in &self.chunks {
             if let Some(stretch) = chunk.digest.get() {
                 parts.push(*stretch);
@@ -181,13 +245,17 @@ impl SealedLog {
         Ok(parts)
     }
 
-    pub(super) fn encode_parts(&self, route: &Route) -> Result<Vec<Arc<[u8]>>, String> {
-        let mut parts = Vec::with_capacity(self.chunks.len().saturating_add(1));
-        parts.push(
-            postcard::to_allocvec(&(route, self.len))
-                .map_err(err)?
-                .into(),
-        );
+    pub(super) fn encode_parts(
+        &self,
+        route: &Route,
+        resealed: &[collab_types::SignedOp],
+    ) -> Result<Vec<Arc<[u8]>>, String> {
+        let (head, originals) = Self::head(route, self.len, resealed)?;
+        let mut parts = Vec::with_capacity(self.chunks.len().saturating_add(2));
+        parts.push(head.into());
+        if let Some(originals) = originals {
+            parts.push(originals.into());
+        }
         for chunk in &self.chunks {
             if let Some(encoded) = chunk.encoded.get() {
                 parts.push(Arc::clone(encoded));
@@ -291,12 +359,16 @@ impl StoredDocument {
     }
     /// Install the sealed history a restore validated for this record, which
     /// the restore holds alone.
-    pub(super) fn restore_sealed(&mut self, sealed: SealedLog) -> Result<(), String> {
+    pub(super) fn restore_sealed(
+        &mut self,
+        sealed: SealedLog,
+        resealed: Arc<[collab_types::SignedOp]>,
+    ) -> Result<(), String> {
         self.encoded = Arc::default();
         self.digests = Arc::default();
-        Arc::get_mut(&mut self.document)
-            .ok_or("restored record is shared")?
-            .sealed = sealed;
+        let document = Arc::get_mut(&mut self.document).ok_or("restored record is shared")?;
+        document.sealed = sealed;
+        document.resealed = resealed;
         Ok(())
     }
     /// Encode the record again at its next durable encoding: what is kept
@@ -359,6 +431,7 @@ impl Clone for PeerDocument {
             covered: self.covered.clone(),
             covered_snapshot: self.covered_snapshot.clone(),
             sealed: self.sealed.clone(),
+            resealed: std::sync::Arc::clone(&self.resealed),
         }
     }
 }

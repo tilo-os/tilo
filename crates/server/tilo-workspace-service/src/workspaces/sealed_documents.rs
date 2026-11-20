@@ -1,13 +1,13 @@
-//! The governor's own reads and writes of records its members write sealed.
+//! The governor's own reads and writes of documents its members write sealed.
 //!
 //! In a workspace whose channels this server takes part in, members seal every
-//! write of a record, and the governor's copy keeps those writes as the
-//! record's ciphertext history
+//! write of a document, and the governor's copy keeps those writes as the
+//! document's ciphertext history
 //! ([`tilo_peer_state::PeerPublication::is_sealed_document`]). As a member of
-//! the channels the server holds their content keys: it reads such a record by
-//! opening that history over the record's cleartext base, writes to it
+//! the channels the server holds their content keys: it reads such a document by
+//! opening that history over the document's cleartext base, writes to it
 //! sealed like any member does, and compacts the history before it reaches
-//! its bound, so its copy goes on following the record however long the
+//! its bound, so its copy goes on following the document however long the
 //! workspace keeps writing. Every other device taking part in a channel does the
 //! same with its own copy and publishes the checkpoint
 //! ([`tilo_peer_state::PeerPublication::draft_sealed_compaction`]): the
@@ -42,6 +42,10 @@ const COMPACTION_RETRY: usize = 256;
 pub(super) struct DocumentKeys {
     keys: ContentKeys,
     artifact: ArtifactId,
+    /// The workspace's own keys, for a document only some of its members read: what its writes
+    /// sealed before reader sets were sealed under, as every document's were then
+    /// ([`collab_types::artifact_sealed_before_reader_sets`]).
+    before_reader_sets: Option<ContentKeys>,
 }
 
 impl DocumentKeys {
@@ -51,6 +55,24 @@ impl DocumentKeys {
         Self {
             keys,
             artifact: collab_types::content_artifact_id(workspace, readers, doc),
+            before_reader_sets: None,
+        }
+    }
+
+    /// `keys`, of the group of the readers of `document` of `app` in `workspace`, for the
+    /// document itself, under the scope its writes name ([`collab_types::document_artifact_id`]);
+    /// with `workspace_keys` for a document only some members read, which opens what it holds
+    /// sealed before reader sets.
+    fn of_document(
+        keys: ContentKeys,
+        workspace_keys: Option<ContentKeys>,
+        workspace: &str,
+        (app, document): (&str, &str),
+    ) -> Self {
+        Self {
+            keys,
+            artifact: collab_types::document_artifact_id(app, workspace, document),
+            before_reader_sets: workspace_keys,
         }
     }
 
@@ -77,8 +99,15 @@ impl DocumentKeys {
             let metadata = op.encryption.ok_or("the write is not sealed")?;
             let ciphertext =
                 collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
-            self.keys
-                .open_content(op.artifact, &metadata, &ciphertext)
+            let opened = self.keys.open_content(op.artifact, &metadata, &ciphertext);
+            // A write sealed before reader sets was sealed under the workspace's own keys.
+            let opened = match (opened, &self.before_reader_sets) {
+                (Err(_), Some(workspace_keys)) if op.artifact != self.artifact => {
+                    workspace_keys.open_content(op.artifact, &metadata, &ciphertext)
+                }
+                (opened, _) => opened,
+            };
+            opened
                 .map(|plaintext| plaintext.to_vec())
                 .map_err(|error| error.to_string())
         }
@@ -224,39 +253,63 @@ impl GovernedWorkspace {
         matches!(self.route_keys().await, Some(Ok(_)))
     }
 
-    /// The keys of `record` of `app`'s channel when the record is sealed:
-    /// `None` for a record written in the clear.
+    /// The keys of `document` of `app`'s channel when the document is sealed:
+    /// `None` for a document written in the clear.
     ///
     /// # Errors
     ///
-    /// The record is sealed and this host's device does not take part in its
+    /// The document is sealed and this server's device does not take part in its
     /// channel, or the channel's keys cannot be read.
     pub(super) async fn document_keys(
         &self,
         app: &str,
-        record: &str,
+        document: &str,
     ) -> Result<Option<DocumentKeys>, String> {
-        if !self.peer().publication().is_sealed_document(app, record) {
+        if !self.peer().publication().is_sealed_document(app, document) {
             return Ok(None);
         }
-        self.keys_of(
-            collab_types::EVERY_MEMBER,
-            &collab_types::app_document_id(app, record),
-        )
-        .await
-        .map(Some)
+        let waiting = |fallback: &str| {
+            self.waiting_for_update(app, document)
+                .unwrap_or_else(|| fallback.to_owned())
+        };
+        let device = self
+            .device
+            .as_ref()
+            .ok_or_else(|| waiting("this device holds no group keys"))?;
+        // A resource store's document is read by the set its id names, every member's for any
+        // other document.
+        let readers = match collab_types::store_document_readers(document) {
+            None | Some(collab_types::EVERY_MEMBER) => collab_types::EVERY_MEMBER.to_owned(),
+            Some(_) => self
+                .resources
+                .known_readers(document)
+                .ok_or("the reader set of the document is not known here")?,
+        };
+        let keys = device
+            .group_keys(self.workspace(), &readers, false)
+            .await
+            .ok_or_else(|| waiting("this device takes no part in the readers' group"))??;
+        let workspace_keys = if readers == collab_types::EVERY_MEMBER {
+            None
+        } else {
+            self.route_keys().await.and_then(Result::ok)
+        };
+        Ok(Some(DocumentKeys::of_document(
+            keys,
+            workspace_keys,
+            self.workspace(),
+            (app, document),
+        )))
     }
 
-    /// The keys of document `doc` that `readers` read, as the device this
-    /// service is on holds its readers' group's keys: what the document's
-    /// content opens and seals with.
-    ///
-    /// # Errors
-    ///
-    /// This device takes no part in the readers' group, or holds no
-    /// keys of it yet.
-    pub(super) async fn keys_of(&self, readers: &str, doc: &str) -> Result<DocumentKeys, String> {
-        keys_of(self.device.as_ref(), self.workspace(), readers, doc).await
+    /// What a reader of `document` of `app` is told on this device while it holds no keys to
+    /// read it and the document waits for a key holder to seal what was written before reader
+    /// sets again ([`tilo_peer_state::WaitingForUpdate`]).
+    fn waiting_for_update(&self, app: &str, document: &str) -> Option<String> {
+        self.peer()
+            .publication()
+            .waiting_for_update(app, document)
+            .map(|waiting| waiting.to_string())
     }
 
     /// The plaintext of `op`, a member's sealed write of `record` of `app`,
@@ -308,7 +361,7 @@ impl GovernedWorkspace {
 }
 
 /// The keys of document `doc` that `readers` of `workspace` read, as `device` holds its readers'
-/// group's keys ([`GovernedWorkspace::keys_of`]).
+/// group's keys.
 async fn keys_of(
     device: Option<&super::DeviceKeys>,
     workspace: &str,
@@ -346,15 +399,22 @@ pub(super) async fn readable_now(
         .replica
         .read(|peer| peer.publication().is_sealed_document(app, resource));
     let keys = if sealed {
-        Some(
-            keys_of(
-                reading.device.as_ref(),
-                &reading.workspace,
-                collab_types::EVERY_MEMBER,
-                &collab_types::app_document_id(app, resource),
-            )
-            .await?,
+        let keys = keys_of(
+            reading.device.as_ref(),
+            &reading.workspace,
+            collab_types::EVERY_MEMBER,
+            &collab_types::app_document_id(app, resource),
         )
+        .await;
+        // A document holding writes sealed before reader sets that no key holder has sealed again
+        // is shown as waiting for the device that will, not as missing.
+        let keys = keys.map_err(|missing| {
+            reading
+                .replica
+                .read(|peer| peer.publication().waiting_for_update(app, resource))
+                .map_or(missing, |waiting| waiting.to_string())
+        })?;
+        Some(keys)
     } else {
         None
     };
@@ -1074,6 +1134,58 @@ impl Workspaces {
                         %error, "a record's writes stuck behind a change their writer never sent were not folded away");
                 }
             }
+        }
+    }
+
+    /// Seal again what the workspaces governed here hold sealed before reader sets
+    /// ([`collab_types::artifact_sealed_before_reader_sets`]), as the first device holding their
+    /// keys to open them since: each such document's history is compacted by this server, its
+    /// content sealed under the document's own scope and signed as this server alone, and the
+    /// writes it folds kept beside the document as their authors signed them
+    /// ([`tilo_peer_state::PeerPublication::resealed_originals`]). A workspace whose keys this
+    /// device does not hold yet is tried again while they arrive; one it holds none of waits for
+    /// a device that does, and its readers are told so
+    /// ([`tilo_peer_state::WaitingForUpdate`]). Called as the server starts.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    pub(crate) async fn reseal_before_reader_sets(&self) {
+        const TRIES: usize = 60;
+        const BETWEEN: std::time::Duration = std::time::Duration::from_secs(5);
+        for attempt in 0..TRIES {
+            let workspaces: Vec<_> = self
+                .inner
+                .workspaces
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect();
+            let mut waiting = 0usize;
+            for state in workspaces {
+                let mut workspace = state.lock().await;
+                let awaiting = workspace.peer().publication().awaiting_reseals();
+                if awaiting.is_empty() {
+                    continue;
+                }
+                if !workspace.seals() || self.holds_as_store(&workspace) {
+                    tracing::info!(workspace = %workspace.workspace(), documents = awaiting.len(),
+                        "documents sealed before reader sets wait for a device holding the workspace's keys");
+                    continue;
+                }
+                workspace.compaction_wait = 0;
+                if let Err(error) = self.compact_sealed_histories(&mut workspace).await {
+                    tracing::warn!(workspace = %workspace.workspace(), %error,
+                        "documents sealed before reader sets were not sealed again");
+                }
+                let left = workspace.peer().publication().awaiting_reseals();
+                tracing::info!(workspace = %workspace.workspace(),
+                    sealed_again = awaiting.len().saturating_sub(left.len()), left = left.len(),
+                    "documents sealed before reader sets sealed again under their own scope");
+                waiting = waiting.saturating_add(left.len());
+            }
+            if waiting == 0 || attempt.saturating_add(1) == TRIES {
+                return;
+            }
+            tokio::time::sleep(BETWEEN).await;
         }
     }
 

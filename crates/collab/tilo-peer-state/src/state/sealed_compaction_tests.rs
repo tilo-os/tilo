@@ -1098,6 +1098,7 @@ tilo_test_env::scenario! {
                 .map(op)
                 .collect::<Vec<_>>()
                 .into(),
+            resealed: std::sync::Arc::default(),
         };
         let missing = "32cc8086d6eb9538799a44d9b6e5229f22d7626ef79e2d3ec867898a01224cf1";
 

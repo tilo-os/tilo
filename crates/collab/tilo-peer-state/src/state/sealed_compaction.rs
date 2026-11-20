@@ -394,6 +394,7 @@ impl PeerPublicationMut<'_> {
             .record_sealed_compaction(app, record, compaction)?;
         let segments = candidate.compaction_segments(&route, compaction)?;
         let gathered = !segments.is_empty();
+        let workspace = candidate.core.workspace.clone();
         let document = candidate
             .core
             .documents
@@ -415,7 +416,9 @@ impl PeerPublicationMut<'_> {
         if !history.within_bounds() {
             return Err("the record's history exceeds its bound".into());
         }
-        document.sealed = history;
+        document.fold_sealed(history, |op| {
+            route.sealed_before_reader_sets(&workspace, op)
+        });
         let floors = &mut document.channel.last_seq_per_author;
         for (author, seq) in wrapper
             .covers
@@ -1525,10 +1528,33 @@ impl PeerPublicationMut<'_> {
     }
 }
 
+/// A document a replica without its keys cannot show yet: it holds writes sealed before reader
+/// sets, and the device it names is the one whose update seals them again
+/// ([`PeerPublication::waiting_for_update`]). What its readers see in place of the document, not
+/// missing data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitingForUpdate {
+    /// The label of the workspace owner's device holding its keys, when this replica knows one.
+    pub device: Option<String>,
+}
+
+impl std::fmt::Display for WaitingForUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.device {
+            Some(device) => write!(f, "waiting for {device} to update this workspace"),
+            None => {
+                f.write_str("waiting for the workspace owner's device to update this workspace")
+            }
+        }
+    }
+}
+
 impl PeerPublication<'_> {
     /// Every encrypted record whose sealed history has used three quarters
     /// of its bound, as `(app, record)`: its key holder compacts it before
-    /// new writes are refused.
+    /// new writes are refused. A document holding writes sealed before
+    /// reader sets is due at once ([`Self::awaiting_reseal`]): the compaction
+    /// is what seals their content again under the document's own scope.
     #[must_use]
     pub fn sealed_to_compact(self) -> Vec<(String, String)> {
         let mut due: Vec<(String, String)> = self
@@ -1536,8 +1562,10 @@ impl PeerPublication<'_> {
             .core
             .documents
             .iter()
-            .filter(|(_, document)| document.sealed.due())
-            .map(|(route, _)| (route.app.clone(), route.record.clone()))
+            .filter(|(route, document)| {
+                document.sealed.due() || self.holds_sealed_before_reader_sets(route, document)
+            })
+            .map(|(route, _)| route.named())
             .collect();
         // Every sealed write leaves exact admission evidence until a
         // compaction folds it into its writer's mark. Many records each
@@ -1553,10 +1581,86 @@ impl PeerPublication<'_> {
                     .iter()
                     .filter(|(_, document)| document.sealed.writes().0 >= PRESSED_HISTORY)
                     .max_by_key(|(_, document)| document.sealed.writes().0)
-                    .map(|(route, _)| (route.app.clone(), route.record.clone())),
+                    .map(|(route, _)| route.named()),
             );
         }
         due
+    }
+
+    /// Whether `document` of `app` holds writes sealed before reader sets that no key holder has
+    /// sealed again under the document's own scope yet
+    /// ([`collab_types::artifact_sealed_before_reader_sets`]). A replica holding the document's
+    /// keys opens them as they are, and its compaction seals their content again
+    /// ([`Self::sealed_to_compact`]); one without them reads none of it until a key holder has.
+    #[must_use]
+    pub fn awaiting_reseal(self, app: &str, document: &str) -> bool {
+        let route = Route::of(app, document);
+        self.peer
+            .core
+            .documents
+            .get(&route)
+            .is_some_and(|held| self.holds_sealed_before_reader_sets(&route, held))
+    }
+
+    /// The documents holding writes sealed before reader sets that no key holder has sealed
+    /// again yet ([`Self::awaiting_reseal`]), as `(app, document)`.
+    #[must_use]
+    pub fn awaiting_reseals(self) -> Vec<(String, String)> {
+        self.peer
+            .core
+            .documents
+            .iter()
+            .filter(|(route, held)| self.holds_sealed_before_reader_sets(route, held))
+            .map(|(route, _)| route.named())
+            .collect()
+    }
+
+    /// The writes of `document` of `app` sealed before reader sets whose content a key holder
+    /// sealed again, each as its author signed it: kept beside the document so who wrote what
+    /// stays provable, and never replayed as its history.
+    #[must_use]
+    pub fn resealed_originals(self, app: &str, document: &str) -> Vec<SignedOp> {
+        self.peer
+            .core
+            .documents
+            .get(&Route::of(app, document))
+            .map(|held| held.resealed.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// What a reader of `document` of `app` on a replica without its keys is told while it
+    /// holds writes sealed before reader sets no key holder has sealed again
+    /// ([`Self::awaiting_reseal`]): which device it waits for. `None` when it waits for none.
+    #[must_use]
+    pub fn waiting_for_update(self, app: &str, document: &str) -> Option<WaitingForUpdate> {
+        if !self.awaiting_reseal(app, document) {
+            return None;
+        }
+        // The owner's devices hold the workspace's keys; the first of them to open the
+        // workspace after updating seals the document again.
+        let mut holders: Vec<String> = self
+            .peer
+            .core
+            .certificates
+            .values()
+            .filter(|cert| {
+                cert.user_public_key == self.peer.core.owner
+                    && cert.capabilities.holds_workspace_keys()
+            })
+            .map(|cert| cert.device_label.clone())
+            .filter(|label| !label.is_empty())
+            .collect();
+        holders.sort();
+        holders.dedup();
+        Some(WaitingForUpdate {
+            device: holders.into_iter().next(),
+        })
+    }
+
+    fn holds_sealed_before_reader_sets(self, route: &Route, held: &super::Document) -> bool {
+        held.sealed
+            .iter()
+            .any(|write| route.sealed_before_reader_sets(&self.peer.core.workspace, write))
     }
 }
 

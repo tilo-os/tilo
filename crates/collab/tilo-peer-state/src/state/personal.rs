@@ -1258,6 +1258,7 @@ impl PersonalStore {
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
                 sealed: backend::SealedLog::default(),
+                resealed: std::sync::Arc::default(),
             });
         let state = &mut candidate.channel;
         state
@@ -1479,6 +1480,7 @@ impl PersonalStore {
                     covered: BTreeMap::new(),
                     covered_snapshot: None,
                     sealed: backend::SealedLog::default(),
+                    resealed: std::sync::Arc::default(),
                 },
             );
         }

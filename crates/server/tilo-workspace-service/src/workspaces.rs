@@ -2063,68 +2063,6 @@ impl Workspaces {
         self.retire_kept_agents(workspace, &gone).await;
     }
 
-    /// Found every record of `workspace` that `retained` holds a write of and
-    /// this host holds none of, from the record's first retained write
-    /// ([`Self::absorb`]): the copy of a record the host was admitted to a
-    /// channel of after its members started writing it has to start
-    /// somewhere, and its later writes build on the first. A record found
-    /// first from a later write would refuse that one for the changes it
-    /// lacks, and never be founded.
-    #[cfg(any(feature = "agents", feature = "web"))]
-    async fn found_retained(
-        &self,
-        workspace: &str,
-        state: &tokio::sync::Mutex<GovernedWorkspace>,
-        retained: &[crate::workspace_documents::RetainedBody],
-    ) {
-        let mut first: std::collections::BTreeMap<
-            (String, String),
-            &crate::workspace_documents::RetainedBody,
-        > = std::collections::BTreeMap::new();
-        for retained in retained {
-            // What the server's own device wrote the governor holds already, or
-            // took in as it came ([`Self::recall_retained`]).
-            if retained.author == self.inner.host.cert.device_public_key {
-                continue;
-            }
-            let Ok(neighbour_wire::NeighbourMsg::AppDocument {
-                app_id,
-                document_id,
-                envelope,
-                ..
-            }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body)
-            else {
-                continue;
-            };
-            // A record the host may read in the clear was founded when its
-            // first write was handed to the governor: only a sealed one waits
-            // for the group to admit this host's device.
-            if envelope.encryption.is_none() {
-                continue;
-            }
-            first.entry((app_id, document_id)).or_insert(retained);
-        }
-        if first.is_empty() {
-            return;
-        }
-        let missing: Vec<_> = {
-            let workspace = state.lock().await;
-            first
-                .into_iter()
-                .filter(|((app, record), _)| !workspace.peer().holds_document(app, record))
-                .map(|(_, retained)| retained)
-                .collect()
-        };
-        for retained in missing {
-            if let Err(error) = self
-                .absorb_kept(workspace, retained.author, &retained.body)
-                .await
-            {
-                tracing::warn!(%workspace, %error, "governed workspace did not found a record its members wrote");
-            }
-        }
-    }
-
     /// Ask the key holders of `app`'s `record`'s channel in `workspace` to
     /// admit this host's device ([`Self::join_channel`]), apart from whatever
     /// asked for it: the group's answer arrives as another write of the

@@ -168,6 +168,16 @@ impl Resources {
         self.store_mut().index().readers(doc).map(str::to_owned)
     }
 
+    /// [`Self::readers`] while the workspace is read, not held alone.
+    pub(super) fn known_readers(&self, doc: &str) -> Option<String> {
+        use tilo_lock::MutexRecover as _;
+        self.store
+            .lock_recover()
+            .index()
+            .readers(doc)
+            .map(str::to_owned)
+    }
+
     /// Takes a member's `changes` to `doc`, read by `readers`, into the store: each is applied
     /// when `admit` lets its author make it, and kept beside the document without effect when
     /// not. What was applied is kept before this returns. Answers the changes refused, with why.

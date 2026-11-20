@@ -458,7 +458,10 @@ impl ServiceSessions {
 fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::workspaces::Workspaces) {
     compactor.with_group_keys(Arc::new(workspaces.clone()));
     let (repairing, compactor) = (workspaces.clone(), compactor.clone());
-    tokio::spawn(async move { repairing.fold_away_unsent(&compactor).await });
+    tokio::spawn(async move {
+        repairing.reseal_before_reader_sets().await;
+        repairing.fold_away_unsent(&compactor).await;
+    });
 }
 
 /// Whether a service asked to govern under `cert` may: governing a workspace is holding its

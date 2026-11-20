@@ -304,10 +304,10 @@ impl StatePeer {
     fn leaf(&self, route: &Route, entry: &backend::StoredDocument) -> Result<[u8; 32], String> {
         let own = self.core.own.get(route);
         let document = entry.digests(|| digest_document(route, entry, own))?;
-        let sealed = if entry.sealed.is_empty() {
-            Vec::new()
+        let sealed = if entry.keeps_sealed() {
+            entry.sealed.digested_parts(route, &entry.resealed)?
         } else {
-            entry.sealed.digested_parts(route)?
+            Vec::new()
         };
         Ok(leaf_of(document, &sealed))
     }
@@ -571,8 +571,12 @@ impl StatePeer {
             .core
             .documents
             .iter()
-            .filter(|(_, entry)| !entry.sealed.is_empty())
-            .map(|(route, entry)| (route.clone(), entry.sealed.to_vec()))
+            .filter(|(_, entry)| entry.keeps_sealed())
+            .map(|(route, entry)| {
+                let mut ops = entry.resealed.to_vec();
+                ops.extend(entry.sealed.iter().cloned());
+                (route.clone(), ops)
+            })
             .collect();
         if !sealed.is_empty() && !self.core.exact_selected {
             return Err("sealed record history requires exact admissions".into());
@@ -710,6 +714,7 @@ impl StatePeer {
                     covered: document.covered,
                     covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
                     sealed: backend::SealedLog::default(),
+                    resealed: std::sync::Arc::default(),
                 }
                 .into(),
             );
@@ -839,10 +844,10 @@ fn encode_document(
         ),
         Vec::new(),
     )?;
-    let sealed = if entry.sealed.is_empty() {
-        None
+    let sealed = if entry.keeps_sealed() {
+        Some(entry.sealed.encode_parts(route, &entry.resealed)?)
     } else {
-        Some(entry.sealed.encode_parts(route)?)
+        None
     };
     Ok(backend::EncodedDocument {
         route: route.clone(),

@@ -96,10 +96,7 @@ impl Documents {
         let mut guard = self.made.lock();
         let made = &mut *guard;
         for change in Ordered::changes(&made.sealed_of, &self.map, StoredDocument::same) {
-            if change
-                .after
-                .is_some_and(|document| !document.sealed.is_empty())
-            {
+            if change.after.is_some_and(|document| document.keeps_sealed()) {
                 made.sealed.insert(change.key.clone(), ());
             } else {
                 made.sealed.remove(change.key);
