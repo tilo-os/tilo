@@ -1028,6 +1028,12 @@ const TREE_BATCH_FILES: usize = 2_000;
 /// upload carries, so a large folder goes in a few changes rather than one
 /// no request carries.
 const TREE_BATCH_BYTES: usize = 32 * 1024 * 1024;
+/// How long one follow of a put Files is still saving waits, and how many
+/// follows in a row: a huge folder saved slowly is followed for a few minutes,
+/// and one that is never saved is a failure the command reports.
+const TREE_SAVE_WAIT_SECONDS: u64 = 10;
+/// How many follows of one put's save, at most.
+const TREE_SAVE_FOLLOWS: usize = 30;
 
 /// The most raw bytes one many-files call carries: under the 1 MiB request
 /// and session frame bounds once base64 and hex grow them.
@@ -1314,12 +1320,17 @@ async fn put_in_tree(
     let answer = client
         .act(workspace, "files", "open", &arguments, &title)
         .await?;
+    // A pending answer is a change Files has not saved yet: the command follows it and only
+    // then says where each file is, so a put that failed is a failure here rather than a path
+    // printed over nothing.
+    let answer = followed(client, workspace, answer).await?;
     // The open answers how many files it put, not each one: the paths are
     // where the tree keeps what was asked for.
     let counted = answer.pointer("/result/count").and_then(Value::as_u64);
-    if counted.is_some_and(|count| count != files.len() as u64) {
+    if counted != Some(files.len() as u64) {
         bail!(
-            "Files put {counted:?} of the {} files: {answer}",
+            "Files put {} of the {} files: {answer}",
+            counted.map_or_else(|| "none".to_owned(), |count| count.to_string()),
             files.len()
         );
     }
@@ -1335,6 +1346,28 @@ async fn put_in_tree(
             })
         })
         .collect())
+}
+
+/// `answer` of a put, held while it is still saving what it wrote: the invocation followed
+/// until it is done, refused or answered as failed. A put that never finishes is a failure, not
+/// a success: the files it names are not in the workspace.
+async fn followed(client: &Client, workspace: &str, mut answer: Value) -> Result<Value> {
+    for _ in 0..TREE_SAVE_FOLLOWS {
+        if answer.get("status").and_then(Value::as_str) != Some("pending") {
+            return Ok(answer);
+        }
+        let Some(invocation) = answer.get("invocation").and_then(Value::as_str) else {
+            bail!("Files is still saving this folder and named no invocation to follow: {answer}");
+        };
+        answer = client
+            .invocation(workspace, invocation, TREE_SAVE_WAIT_SECONDS)
+            .await?;
+    }
+    if answer.get("status").and_then(Value::as_str) == Some("pending") {
+        let waited = TREE_SAVE_WAIT_SECONDS.saturating_mul(TREE_SAVE_FOLLOWS as u64);
+        bail!("Files is still saving this folder after {waited}s: {answer}");
+    }
+    Ok(answer)
 }
 
 /// The folder part of an uploaded file's name in the workspace

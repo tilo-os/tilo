@@ -123,28 +123,40 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// What `tilo_ls files` lists: the workspace's folder as the workspace's own listing offers
-    /// it, its files by their paths, each with Files' `read-text` on it; not the apps it offers to
-    /// open beside it. The folder is the workspace's, wherever its tree is kept, so it is listed
-    /// whether or not Files is open anywhere.
+    /// it, its files and folders by their paths (a file with Files' `read-text` on it, a folder
+    /// with its `list`); not the apps it offers to open beside it. The folder is the
+    /// workspace's, wherever its tree is kept, so it is listed whether or not Files is open
+    /// anywhere.
     pub(super) async fn files_resolved(
         &self,
         parsed: &super::ParsedPath,
         forms: &super::ProgramForms,
     ) -> Result<super::Resolved, String> {
-        let provider = tilo_actions::remote::workspace_provider(&self.workspace);
-        let mut resolved = self
-            .resolve_in(
-                parsed,
-                fs_protocol::tree::FILES_APP.to_owned(),
-                provider,
-                true,
-                Some(forms),
-            )
-            .await?;
-        resolved
-            .children
-            .retain(|node| node.kind == tilo_actions::remote::FOUND_FILE);
+        let mut resolved = self.folder_resolved(parsed, forms).await?;
+        resolved.children.retain(|node| {
+            node.kind == tilo_actions::remote::FOUND_FILE
+                || node.kind == fs_protocol::tree::FOLDER_KIND
+        });
         Ok(resolved)
+    }
+
+    /// `parsed` resolved in the workspace's own folder, wherever its tree is kept — never in a
+    /// window of Files, whose rows are that device's own folder: the workspace's files and
+    /// folders are the rows the workspace's listing offers, and its reads are answered by
+    /// whoever keeps the tree.
+    pub(super) async fn folder_resolved(
+        &self,
+        parsed: &super::ParsedPath,
+        forms: &super::ProgramForms,
+    ) -> Result<super::Resolved, String> {
+        self.resolve_in(
+            parsed,
+            fs_protocol::tree::FILES_APP.to_owned(),
+            tilo_actions::remote::workspace_provider(&self.workspace),
+            true,
+            Some(forms),
+        )
+        .await
     }
 }
 

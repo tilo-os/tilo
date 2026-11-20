@@ -353,6 +353,11 @@ impl Worker {
         if let Some(path) = fs_protocol::tree::file_of_resource(&request.target.address.resource) {
             arguments.insert("file".to_owned(), Value::String(path.to_owned()));
         }
+        // So does a folder a listing offered: what it holds is listed by it.
+        if let Some(path) = fs_protocol::tree::folder_of_resource(&request.target.address.resource)
+        {
+            arguments.insert("folder".to_owned(), Value::String(path.to_owned()));
+        }
         if arguments.contains_key("device") {
             return Err(refused(
                 "a path in the workspace names no device: a device's own disk is read by Files \

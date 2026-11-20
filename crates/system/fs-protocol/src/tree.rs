@@ -169,6 +169,30 @@ pub fn file_of_resource(resource: &str) -> Option<&str> {
         .filter(|path| !path.is_empty())
 }
 
+/// What the resource a folder of the workspace's tree is starts with: the folder is named by
+/// its path there after it (`folder:Tasks/12 Plan`). A listing of the workspace's own folder
+/// offers each folder in it as one, with [`LIST`] on it, so a person or an agent that lists
+/// what the workspace holds goes into a folder rather than reading every file below it.
+pub const FOLDER_RESOURCE_PREFIX: &str = "folder:";
+
+/// The kind a folder of the workspace's tree is listed as, beside a file's `file`.
+pub const FOLDER_KIND: &str = "folder";
+
+/// The resource the folder at `path` in the workspace's tree is ([`FOLDER_RESOURCE_PREFIX`]).
+#[must_use]
+pub fn folder_resource(path: &str) -> String {
+    format!("{FOLDER_RESOURCE_PREFIX}{}", path.trim_matches('/'))
+}
+
+/// The path in the workspace's tree the resource `resource` names, when it is a folder's
+/// ([`folder_resource`]).
+#[must_use]
+pub fn folder_of_resource(resource: &str) -> Option<&str> {
+    resource
+        .strip_prefix(FOLDER_RESOURCE_PREFIX)
+        .filter(|path| !path.is_empty())
+}
+
 /// The read of Files that answers the changes of a workspace's own folder, newest last: what
 /// each did to which path, who did it and for whom, and the change [`UNDO`] takes back by its
 /// `step`. Whoever wrote it (a person, an agent through a mounted folder, a call by a path) is

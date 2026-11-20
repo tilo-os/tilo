@@ -1707,18 +1707,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let forms = self.program_forms().await.unwrap_or_default();
         super::timing_done("ls.forms", forms_timed);
         let resolving = super::timing_start();
-        let resolved =
-            if names_files(&parsed.app) && parsed.segments.is_empty() && parsed.action.is_none() {
-                self.files_resolved(&parsed, &forms).await?
-            } else {
-                match self.resolve_with(&parsed, Some(&forms)).await? {
-                    Ok(resolved) => resolved,
-                    Err(note) => {
-                        super::timing_done("ls.resolve", resolving);
-                        return Ok(Reply::ok(note));
-                    }
+        let resolved = if names_files(&parsed.app) && parsed.action.is_none() {
+            self.files_resolved(&parsed, &forms).await?
+        } else {
+            match self.resolve_with(&parsed, Some(&forms)).await? {
+                Ok(resolved) => resolved,
+                Err(note) => {
+                    super::timing_done("ls.resolve", resolving);
+                    return Ok(Reply::ok(note));
                 }
-            };
+            }
+        };
         super::timing_done("ls.resolve", resolving);
         self.acted_in(&resolved.provider, &resolved.app_id);
         let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
@@ -2035,9 +2034,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             return Ok(Self::app_surface(&parsed.app, &app_id, &surface));
         }
-        let (mut resolved, forms) = match self.resolve(&parsed).await? {
-            (Ok(resolved), forms) => (resolved, forms),
-            (Err(note), _) => return Ok(Reply::ok(note)),
+        // A path in Files reads the workspace's own folder, wherever its tree is kept: a file
+        // by its path, or what a folder holds. A window of Files shows another device's folder,
+        // which a path in the workspace does not name.
+        let (mut resolved, forms) = if names_files(&parsed.app) {
+            let forms = self.program_forms().await.unwrap_or_default();
+            let resolved = self.folder_resolved(&parsed, &forms).await?;
+            (resolved, Some(forms))
+        } else {
+            match self.resolve(&parsed).await? {
+                (Ok(resolved), forms) => (resolved, forms),
+                (Err(note), _) => return Ok(Reply::ok(note)),
+            }
         };
         self.acted_in(&resolved.provider, &resolved.app_id);
         // A typed read of an app, with no resource named, answers what the app publishes: the
