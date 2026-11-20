@@ -25,12 +25,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_session::workspaces::PersonalList;
 use tilo_session_client::device::Device as Entered;
 
 use crate::mcp::held::UNMOUNTING;
-use tree::FileBytes;
 
 /// One workspace, as this peer shows it.
 struct Held {
@@ -88,7 +88,26 @@ pub(crate) struct Peer {
     listed: tokio::sync::Mutex<Option<(Vec<Listed>, bool)>>,
     /// Why a workspace is not shown, by workspace.
     failed: std::sync::Mutex<Vec<(String, String)>>,
+    /// The workspaces this device could not enter, and when each is tried again: a workspace
+    /// whose server does not answer is not asked again at every look, each of which would wait
+    /// for it while no folder is added, moved or removed.
+    unentered: std::sync::Mutex<std::collections::HashMap<WorkspaceId, Unentered>>,
 }
+
+/// A workspace this device could not enter: why, how often in a row, and when it is tried again.
+struct Unentered {
+    why: String,
+    tries: u32,
+    next: Instant,
+}
+
+/// The longest one attempt to enter a workspace is waited for: its server's answer, and following
+/// what it started, otherwise take minutes when the server does not answer.
+const ENTERING_ONE: Duration = Duration::from_secs(30);
+/// How long a workspace that could not be entered waits before it is tried again, the first
+/// time: twice as long after each attempt in a row that failed, up to [`ENTERED_AT_MOST_EVERY`].
+const ENTERED_AGAIN_AFTER: Duration = Duration::from_secs(30);
+const ENTERED_AT_MOST_EVERY: Duration = Duration::from_secs(600);
 
 impl Peer {
     /// A peer keeping its files' state under `device_dir` and showing them
@@ -123,6 +142,7 @@ impl Peer {
             mount,
             listed: tokio::sync::Mutex::new(None),
             failed: std::sync::Mutex::new(Vec::new()),
+            unentered: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -292,9 +312,9 @@ impl Peer {
                 continue;
             }
             if entry.workspace != device.workspace_id()
-                && let Err(refusal) = device.enter_workspace(&id, "").await
+                && let Err(why) = self.enter(device, entry.workspace).await
             {
-                self.fail(entry.workspace, &format!("not entered: {refusal}"));
+                self.not_shown(entry.workspace, &why);
                 continue;
             }
             match self.hold(device, entry, (&folder.name, &folder.path)).await {
@@ -309,9 +329,68 @@ impl Peer {
 
     fn fail(&self, workspace: WorkspaceId, why: &str) {
         tracing::warn!(%workspace, why, "a workspace's files are not shown here");
+        self.not_shown(workspace, why);
+    }
+
+    /// Note why `workspace` is not shown, for `tilo status`, without saying it in the log again.
+    fn not_shown(&self, workspace: WorkspaceId, why: &str) {
         if let Ok(mut failed) = self.failed.lock() {
             failed.push((workspace.to_string(), why.to_owned()));
         }
+    }
+
+    /// Enter `workspace` on `device`'s session, waiting at most [`ENTERING_ONE`]; why not, when
+    /// it was not entered. A workspace that could not be entered is tried again only once its
+    /// wait is over, and until then answers why it was not.
+    async fn enter(&self, device: &Entered, workspace: WorkspaceId) -> Result<(), String> {
+        let now = Instant::now();
+        if let Some(unentered) = self
+            .unentered
+            .lock_recover()
+            .get(&workspace)
+            .filter(|unentered| now < unentered.next)
+        {
+            return Err(format!(
+                "{}; tried again in {}s",
+                unentered.why,
+                unentered
+                    .next
+                    .saturating_duration_since(now)
+                    .as_secs()
+                    .max(1)
+            ));
+        }
+        let id = workspace.to_string();
+        let entering = device.enter_workspace(&id, "");
+        let why = match tokio::time::timeout(ENTERING_ONE, entering).await {
+            Ok(Ok(_)) => {
+                self.unentered.lock_recover().remove(&workspace);
+                return Ok(());
+            }
+            Ok(Err(refusal)) => format!("not entered: {refusal}"),
+            Err(_) => format!(
+                "not entered: the workspace's server did not answer within {}s",
+                ENTERING_ONE.as_secs()
+            ),
+        };
+        let tries = self
+            .unentered
+            .lock_recover()
+            .get(&workspace)
+            .map_or(1, |unentered| unentered.tries.saturating_add(1));
+        let wait = ENTERED_AGAIN_AFTER
+            .saturating_mul(2_u32.saturating_pow(tries.saturating_sub(1).min(16)))
+            .min(ENTERED_AT_MOST_EVERY);
+        tracing::warn!(%workspace, why, tries, again_in = wait.as_secs(), "a workspace's files are not shown here");
+        self.unentered.lock_recover().insert(
+            workspace,
+            Unentered {
+                why: why.clone(),
+                tries,
+                next: Instant::now().checked_add(wait).unwrap_or(now),
+            },
+        );
+        Err(why)
     }
 
     /// Hold `entry`'s files at `at`.
@@ -370,17 +449,17 @@ impl Peer {
 
     /// What this peer shows, and where each stands.
     ///
-    /// Answered from what the sync last counted, never by reading the tree: a folder being
-    /// written into in bulk has a step over its whole tree under the tree's lock, and a status
-    /// ask waits behind nothing.
+    /// Answered from what the sync last counted, never by reading the tree or the content store:
+    /// a folder being written into in bulk has a step over its whole tree under the tree's lock
+    /// and keeps the store writing, and a status ask waits behind neither.
     pub(crate) async fn mounted(&self) -> Vec<Mounted> {
-        let shown: Vec<(Mounted, Vec<FileBytes>)> = self
-            .held
+        self.held
             .lock()
             .await
             .iter()
             .map(|shown| {
-                let mounted = Mounted {
+                let status = shown.replica.status();
+                Mounted {
                     workspace: shown.workspace.to_string(),
                     name: shown.name.clone(),
                     at: shown.showing.at.clone(),
@@ -390,27 +469,12 @@ impl Peer {
                         None,
                         fs_protocol::file_action::verbs::WRITE,
                     ),
-                    local_bytes: 0,
+                    local_bytes: status.local_bytes,
                     connected: true,
-                    status: shown.replica.status(),
-                };
-                (mounted, shown.replica.files())
-            })
-            .collect();
-        let mut mounted = Vec::with_capacity(shown.len());
-        for (mut folder, hashes) in shown {
-            for (hash, size) in hashes {
-                let here = match hash {
-                    Some(hash) => self.store.has(hash).await,
-                    None => true,
-                };
-                if here {
-                    folder.local_bytes = folder.local_bytes.saturating_add(size);
+                    status,
                 }
-            }
-            mounted.push(folder);
-        }
-        mounted
+            })
+            .collect()
     }
 
     /// The person's workspaces as last listed: id, name and role, and whether
@@ -474,7 +538,14 @@ impl Peer {
                     activity.quiet_for().as_millis()
                 ));
             }
-            if !status.paused && status.opened && !(status.sent && status.durable) {
+            // Changes that wait for part of the tree that has not arrived are kept on disk, and
+            // the next holder sends them as this one would: waiting for them would keep a newer
+            // Tilo out for as long as that part takes, which may be until a restart.
+            if !status.paused
+                && status.opened
+                && status.stuck.is_none()
+                && !(status.sent && status.durable)
+            {
                 return Some(format!(
                     "changes made in {} are still going out to the workspace",
                     at.display()
@@ -683,6 +754,10 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         .get("connected")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
+    let stuck = workspace
+        .get("stuck")
+        .and_then(serde_json::Value::as_str)
+        .map(|why| format!("changes made here wait: {why}"));
     let state = if field("paused") {
         "paused"
     } else if !connected {
@@ -691,6 +766,8 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         "waiting for the workspace's files"
     } else if field("sent") && field("durable") {
         "in sync"
+    } else if let Some(stuck) = &stuck {
+        stuck
     } else {
         "sending changes"
     };
@@ -724,6 +801,26 @@ mod tests {
         let offline = describe_folder(&folder(false));
         assert!(!offline.contains("in sync"), "{offline}");
         assert!(offline.contains("not connected"), "{offline}");
+    }
+
+    /// A folder whose changes wait for part of the workspace's file list that has not arrived
+    /// says so and why, rather than that it is sending changes for as long as that lasts.
+    #[test]
+    fn a_folder_whose_changes_wait_says_why() {
+        let folder = |stuck: Option<&str>| {
+            let mut folder = serde_json::json!({"name": "Tilo", "at": "/home/ada/Tilo",
+                "opened": true, "sent": false, "durable": true, "files": 1, "bytes": 1});
+            if let Some(stuck) = stuck {
+                folder["stuck"] = serde_json::json!(stuck);
+            }
+            folder
+        };
+        assert!(describe_folder(&folder(None)).contains("(sending changes;"));
+        let waiting = describe_folder(&folder(Some("a part has not arrived")));
+        assert!(
+            waiting.contains("(changes made here wait: a part has not arrived;"),
+            "{waiting}"
+        );
     }
 
     /// The host's list names each folder after its workspace, and the folder

@@ -59,6 +59,11 @@ impl SessionContent {
     }
 
     /// A piece of content a member sent this device.
+    /// The store this workspace's file bytes are kept in.
+    pub(crate) fn store(&self) -> Arc<tilo_fs::ContentStore> {
+        Arc::clone(&self.store)
+    }
+
     pub(crate) fn piece(&self, frame: &[u8]) {
         let Some(arrived) =
             self.wants

@@ -59,6 +59,17 @@ const LOOK_AGAIN: Duration = Duration::from_secs(1);
 const KEEP_EVERY: Duration = Duration::from_secs(2);
 /// How often the files and bytes the tree names are counted again while it changes, at most.
 const COUNT_EVERY: Duration = Duration::from_secs(1);
+/// How long a document of the tree that does not read here waits before it is asked of the
+/// workspace again, the first time: each time after waits twice as long, up to
+/// [`ASKED_AT_MOST_EVERY`].
+const ASKED_AGAIN_AFTER: Duration = Duration::from_secs(5);
+const ASKED_AT_MOST_EVERY: Duration = Duration::from_secs(300);
+/// How long changes made here may wait for a document of the tree that does not read here before
+/// the folder says they wait, and why, rather than that they are going out.
+const STUCK_AFTER: Duration = Duration::from_secs(120);
+/// How often the bytes this computer holds of the files are counted again while some are not
+/// here yet: content arrives without the tree changing.
+const LOCAL_AGAIN: Duration = Duration::from_secs(5);
 /// How long the changes after a first unsent one wait to go out with it: a
 /// burst of writes becomes one write per record, and a single write waits no
 /// longer than a person notices.
@@ -137,20 +148,25 @@ pub(crate) struct TreeStatus {
     pub(crate) files: usize,
     /// Their bytes, all of them.
     pub(crate) bytes: u64,
+    /// Of those bytes, the ones this computer holds, as last counted.
+    #[serde(skip)]
+    pub(crate) local_bytes: u64,
     /// Not syncing, as the person asked.
     pub(crate) paused: bool,
+    /// Why changes made here have waited for longer than [`STUCK_AFTER`] without going out,
+    /// while they do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stuck: Option<String>,
 }
 
 /// One workspace's tree, held while this value lives.
 pub(crate) struct TreeReplica {
     pub(crate) namespace: Arc<Mutex<Namespace>>,
     kept: Arc<KeptDocuments>,
+    /// Where the tree stands as last counted: `tilo status` answers from here, never from the
+    /// namespace (which a step over the whole tree holds for as long as it lasts) and never from
+    /// the content store (which a large change keeps writing into).
     status: Arc<Mutex<TreeStatus>>,
-    /// The files the tree names, each with the hash of its content (`None` for a text document
-    /// the tree holds itself) and its size, as the last count found them: `tilo status` answers
-    /// from here, never from the namespace, which a step over the whole tree holds for as long
-    /// as it lasts.
-    files: Arc<Mutex<Vec<FileBytes>>>,
     paused: Arc<std::sync::atomic::AtomicBool>,
     /// Set when the holder stops: the task keeps what changed and ends instead of syncing on
     /// into a session that is going.
@@ -231,7 +247,6 @@ impl TreeReplica {
         .map_err(std::io::Error::other)??;
         let namespace = Arc::new(Mutex::new(namespace));
         let status = Arc::new(Mutex::new(TreeStatus::default()));
-        let files = Arc::new(Mutex::new(Vec::new()));
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wake = Arc::new(tokio::sync::Notify::new());
@@ -245,6 +260,7 @@ impl TreeReplica {
             documents: BTreeMap::new(),
             unread: BTreeSet::new(),
             unreadable: BTreeSet::new(),
+            again: BTreeMap::new(),
             lacking: BTreeSet::new(),
             waiting: BTreeSet::new(),
             held_until: None,
@@ -256,7 +272,8 @@ impl TreeReplica {
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
             status: Arc::clone(&status),
-            files: Arc::clone(&files),
+            files: Arc::new(Vec::new()),
+            local_counted: None,
             content,
         };
         let task = tokio::spawn(sync.run());
@@ -264,7 +281,6 @@ impl TreeReplica {
             namespace,
             kept,
             status,
-            files,
             paused,
             stopping,
             wake,
@@ -293,11 +309,6 @@ impl TreeReplica {
         Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
     }
 
-    /// The files the tree names as last counted: the hash of each one's content and its size.
-    pub(crate) fn files(&self) -> Vec<FileBytes> {
-        self.files.lock_recover().clone()
-    }
-
     pub(crate) fn status(&self) -> TreeStatus {
         self.status.lock_recover().clone()
     }
@@ -310,6 +321,37 @@ impl TreeReplica {
         // Said at once rather than at the next pass: the pass may wait for a step over the tree.
         self.status.lock_recover().paused = paused;
         self.wake.notify_one();
+    }
+}
+
+/// A document of the tree that does not read here: since when, and when it is asked again.
+#[derive(Debug)]
+struct AskedAgain {
+    since: Instant,
+    next: Instant,
+    asked: u32,
+}
+
+impl AskedAgain {
+    fn new(now: Instant) -> Self {
+        Self {
+            since: now,
+            next: now.checked_add(ASKED_AGAIN_AFTER).unwrap_or(now),
+            asked: 0,
+        }
+    }
+
+    /// Whether it is asked again at `now`, setting when it is asked next if it is.
+    fn due(&mut self, now: Instant) -> bool {
+        if now < self.next {
+            return false;
+        }
+        self.asked = self.asked.saturating_add(1);
+        let wait = ASKED_AGAIN_AFTER
+            .saturating_mul(2_u32.saturating_pow(self.asked.min(16)))
+            .min(ASKED_AT_MOST_EVERY);
+        self.next = now.checked_add(wait).unwrap_or(now);
+        true
     }
 }
 
@@ -396,6 +438,10 @@ struct Sync {
     unread: BTreeSet<TreeChunk>,
     /// The records whose read failed, said once each.
     unreadable: BTreeSet<TreeChunk>,
+    /// The documents the workspace holds (or has not answered for) that do not read here, and
+    /// what changes of this device's wait for: each is asked of the workspace again, after a
+    /// wait that doubles each time.
+    again: BTreeMap<TreeChunk, AskedAgain>,
     /// The chunks the tree lists that neither this device nor the workspace holds, said once each.
     lacking: BTreeSet<TreeChunk>,
     /// The records whose changes waited to go out, said once each.
@@ -416,8 +462,12 @@ struct Sync {
     /// The heads the files and bytes in `status` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
     status: Arc<Mutex<TreeStatus>>,
-    /// The files the tree names as last counted, for `tilo status`.
-    files: Arc<Mutex<Vec<FileBytes>>>,
+    /// The files the tree names as last counted, each with the hash of its content and its size:
+    /// what the bytes this computer holds are counted again from as content arrives, without
+    /// walking the tree.
+    files: Arc<Vec<FileBytes>>,
+    /// When the bytes this computer holds were last counted.
+    local_counted: Option<Instant>,
     content: Arc<SessionContent>,
 }
 
@@ -465,6 +515,7 @@ impl Sync {
                 if session_moved || !self.unread.is_empty() {
                     self.pull_all().await;
                 }
+                self.ask_again();
                 self.confirmations();
                 self.push().await;
                 self.confirm();
@@ -504,6 +555,61 @@ impl Sync {
         // What changed here is on disk before this task ends: the holder is going, and the
         // module that made it goes with the process.
         self.keep().await;
+    }
+
+    /// Ask the workspace again for each document of the tree that does not read here and whose
+    /// wait is over: a document the workspace sent this device but whose changes did not all
+    /// arrive, or one it never answered for, would otherwise wait for a restart.
+    fn ask_again(&mut self) {
+        let now = Instant::now();
+        let due: Vec<TreeChunk> = self
+            .again
+            .iter_mut()
+            .filter_map(|(chunk, again)| again.due(now).then_some((*chunk, again.asked)))
+            .map(|(chunk, asked)| {
+                tracing::info!(chunk, asked, workspace = %self.workspace, "a document of the workspace's tree that does not read here is asked of the workspace again");
+                chunk
+            })
+            .collect();
+        for chunk in due {
+            self.open(chunk);
+        }
+    }
+
+    /// Why changes made here wait, once they waited for longer than [`STUCK_AFTER`] for documents
+    /// of the tree that do not read here; `None` while they go out or have not waited that long.
+    fn stuck(&self) -> Option<String> {
+        self.dirty_since?;
+        let waiting = self
+            .again
+            .values()
+            .filter(|again| again.since.elapsed() >= STUCK_AFTER)
+            .count();
+        let lacking = self.lacking.len();
+        if waiting == 0 && lacking == 0 {
+            return None;
+        }
+        let mut why = Vec::new();
+        if waiting > 0 {
+            why.push(format!(
+                "{waiting} part{} of the workspace's file list {} not arrived on this computer yet \
+                 and {} asked for again every few minutes",
+                if waiting == 1 { "" } else { "s" },
+                if waiting == 1 { "has" } else { "have" },
+                if waiting == 1 { "is" } else { "are" },
+            ));
+        }
+        if lacking > 0 {
+            why.push(format!(
+                "the file list names {lacking} part{} that neither this computer nor the workspace \
+                 holds",
+                if lacking == 1 { "" } else { "s" },
+            ));
+        }
+        Some(format!(
+            "{}; changes made here are kept on this computer until then",
+            why.join(", and ")
+        ))
     }
 
     /// Ask the host for record `chunk` of the tree, and to take part in its channel.
@@ -631,6 +737,7 @@ impl Sync {
                     if self.unreadable.remove(&chunk) {
                         tracing::info!(chunk, workspace = %self.workspace, "a document of the workspace's tree reads here now");
                     }
+                    self.again.remove(&chunk);
                     readings.push((chunk, heads, bytes));
                 }
                 Ok(ResourceReading::Unchanged(_)) => {}
@@ -705,9 +812,13 @@ impl Sync {
         let answered = self.documents.get(&chunk).and_then(|held| held.answered);
         if let Some(error) = error
             && holds_some(answered)
-            && self.unreadable.insert(chunk)
         {
-            tracing::warn!(%error, chunk, workspace = %self.workspace, "a record of the workspace's tree cannot be read here");
+            self.again
+                .entry(chunk)
+                .or_insert_with(|| AskedAgain::new(Instant::now()));
+            if self.unreadable.insert(chunk) {
+                tracing::warn!(%error, chunk, workspace = %self.workspace, "a document of the workspace's tree cannot be read here; it is asked of the workspace again");
+            }
         }
         // Nothing here yet: once the host answered with none, the workspace has no such
         // document, and this device's first change founds it.
@@ -876,6 +987,9 @@ impl Sync {
                     if self.waiting.insert(chunk) {
                         tracing::info!(chunk, ?answered, workspace = %self.workspace, "a record of the workspace's tree waits before this device's changes of it go out");
                     }
+                    self.again
+                        .entry(chunk)
+                        .or_insert_with(|| AskedAgain::new(now));
                     waiting = true;
                     continue;
                 }
@@ -891,6 +1005,7 @@ impl Sync {
                 if let Some(held) = self.documents.get_mut(&chunk) {
                     held.founded = true;
                 }
+                self.again.remove(&chunk);
             }
             let sent = self
                 .documents
@@ -980,30 +1095,27 @@ impl Sync {
         let counting =
             self.counted_heads.as_ref() != Some(&heads) && self.counting.due(Instant::now());
         let counted = if counting {
-            // Counting the files walks every node of the tree: off the runtime's workers, like
-            // a merge and a keep, so a client's status is answered meanwhile.
+            // Counting the files walks every node of the tree, and the bytes this computer holds
+            // are asked of the content store a file at a time: off the runtime's workers, like a
+            // merge and a keep, so a client's status is answered meanwhile.
             let namespace = Arc::clone(&self.namespace);
-            let files = Arc::clone(&self.files);
+            let store = self.content.store();
             let started = Instant::now();
             match tokio::task::spawn_blocking(move || {
                 let namespace = namespace.lock_recover();
                 let named = files_of(&namespace);
                 drop(namespace);
-                let counts = (
-                    named.len(),
-                    named
-                        .iter()
-                        .fold(0_u64, |bytes, (_, size)| bytes.saturating_add(*size)),
-                );
-                *files.lock_recover() = named;
-                counts
+                let local = local_bytes(&store, &named);
+                (Arc::new(named), local)
             })
             .await
             {
-                Ok(counted) => {
+                Ok((named, local)) => {
                     self.counting.ran(started, Instant::now());
                     self.counted_heads = Some(heads);
-                    Some(counted)
+                    self.local_counted = Some(Instant::now());
+                    self.files = named;
+                    Some((self.files.len(), total_bytes(&self.files), local))
                 }
                 Err(error) => {
                     tracing::warn!(%error, "counting the workspace's files could not be done");
@@ -1011,7 +1123,7 @@ impl Sync {
                 }
             }
         } else {
-            None
+            self.count_local_again().await
         };
         let sent = records.iter().all(|(chunk, heads)| {
             self.documents
@@ -1021,13 +1133,37 @@ impl Sync {
         let durable = !self.documents.keys().any(|chunk| self.holding(*chunk))
             && self.link.outgoing_pending() == 0;
         let mut status = self.status.lock_recover();
-        if let Some((files, bytes)) = counted {
+        if let Some((files, bytes, local)) = counted {
             status.files = files;
             status.bytes = bytes;
+            status.local_bytes = local;
         }
         status.paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
         status.sent = sent;
         status.durable = durable;
+        status.stuck = self.stuck();
+    }
+
+    /// The files, bytes and local bytes as last counted, with the local bytes counted again when
+    /// some of the files' content was not here at the last count and [`LOCAL_AGAIN`] went by.
+    async fn count_local_again(&mut self) -> Option<(usize, u64, u64)> {
+        let (bytes, local) = {
+            let status = self.status.lock_recover();
+            (status.bytes, status.local_bytes)
+        };
+        if local >= bytes
+            || self
+                .local_counted
+                .is_some_and(|counted| counted.elapsed() < LOCAL_AGAIN)
+        {
+            return None;
+        }
+        let (store, files) = (self.content.store(), Arc::clone(&self.files));
+        let local = tokio::task::spawn_blocking(move || local_bytes(&store, &files))
+            .await
+            .ok()?;
+        self.local_counted = Some(Instant::now());
+        Some((self.files.len(), bytes, local))
     }
 
     /// Save the documents that changed on disk, each in a file of its own, so a restart reads
@@ -1065,6 +1201,21 @@ fn files_of(namespace: &Namespace) -> Vec<FileBytes> {
         }
     }
     files
+}
+
+/// The bytes of `files` the content store holds: a text document the tree holds itself is here
+/// whenever the tree is.
+fn local_bytes(store: &tilo_fs::ContentStore, files: &[FileBytes]) -> u64 {
+    files
+        .iter()
+        .filter(|(hash, _)| hash.is_none_or(|hash| store.holds(hash)))
+        .fold(0_u64, |bytes, (_, size)| bytes.saturating_add(*size))
+}
+
+fn total_bytes(files: &[FileBytes]) -> u64 {
+    files
+        .iter()
+        .fold(0_u64, |bytes, (_, size)| bytes.saturating_add(*size))
 }
 
 impl Drop for Sync {
@@ -1109,6 +1260,28 @@ fn holds_some(answer: Option<DocumentAnswer>) -> bool {
 #[cfg(test)]
 mod tests {
     use tilo_server_protocol::DocumentAnswer;
+
+    /// A document of the tree that does not read here is asked of the workspace again after a
+    /// short wait, then less and less often, but never less often than every few minutes: a
+    /// document whose changes did not all arrive is fetched again rather than waited for until a
+    /// restart.
+    #[test]
+    fn a_record_that_does_not_read_here_is_asked_for_again_ever_less_often() {
+        let start = std::time::Instant::now();
+        let mut again = super::AskedAgain::new(start);
+        assert!(!again.due(start), "not at once");
+        let mut at = start + super::ASKED_AGAIN_AFTER;
+        let mut waits = Vec::new();
+        for _ in 0..12 {
+            assert!(again.due(at), "asked again once its wait is over");
+            assert!(!again.due(at), "and not twice for the same wait");
+            waits.push(again.next - at);
+            at = again.next;
+        }
+        assert_eq!(waits[0], super::ASKED_AGAIN_AFTER * 2);
+        assert!(waits.windows(2).all(|pair| pair[0] <= pair[1]), "{waits:?}");
+        assert_eq!(*waits.last().unwrap(), super::ASKED_AT_MOST_EVERY);
+    }
 
     #[test]
     fn a_refused_record_waits_longer_each_time_until_a_write_lands() {

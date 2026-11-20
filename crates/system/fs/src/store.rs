@@ -44,6 +44,13 @@ use crate::namespace::{LiveDocumentBlobRoots, LiveDocumentBlobScanError, Namespa
 use tilo_lock::MutexRecover as _;
 
 pub mod area;
+/// Whether `files` holds all of `key`: inline, as a whole blob, or as a resident chunk.
+fn area_holds(files: &FileArea, key: &[u8; 32]) -> bool {
+    files.has_inline(key)
+        || (files.is_blob(key) && files.entry(key).is_some_and(|entry| entry.complete()))
+        || files.find_chunk(key).is_some()
+}
+
 #[cfg(test)]
 mod cache_tests;
 mod content;
@@ -869,13 +876,17 @@ impl ContentStore {
         }
         let key = *hash.as_bytes();
         let files = Arc::clone(&self.files);
-        tokio::task::spawn_blocking(move || {
-            files.has_inline(&key)
-                || (files.is_blob(&key) && files.entry(&key).is_some_and(|entry| entry.complete()))
-                || files.find_chunk(&key).is_some()
-        })
-        .await
-        .unwrap_or(false)
+        tokio::task::spawn_blocking(move || area_holds(&files, &key))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Whether the store holds all of `hash`, asked from a thread that may wait on the disk: a
+    /// count over many files asks this for each from one blocking step, rather than a step of
+    /// the blocking pool per file.
+    #[must_use]
+    pub fn holds(&self, hash: Hash) -> bool {
+        self.cache.contains_key(&hash) || area_holds(&self.files, hash.as_bytes())
     }
 
     /// The status of blob `hash` in the one store: inline bytes and a whole blob's complete file
