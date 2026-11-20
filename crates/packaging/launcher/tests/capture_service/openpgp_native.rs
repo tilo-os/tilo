@@ -237,7 +237,7 @@ fn runtime(root: &Path) -> (PathBuf, String) {
 fn signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key() {
     const CHILD: &str = "TILO_OPENPGP_CAPSULE_CHILD";
     // The capsule mounts the source and gives it owners, in a mount namespace of its own: root's
-    // work. A user namespace's root cannot bind the host's filesystems, and a job sandbox's
+    // work. A user namespace's root cannot bind the machine's filesystems, and a job sandbox's
     // capability-dropped root cannot give files away.
     tilo_test_env::require_capability!(
         Root,

@@ -118,7 +118,7 @@ fn mounted_inputs(
 fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs() {
     const CHILD: &str = "TILO_MOUNTED_READER_CHILD";
     // Binding the approved roots, and giving them owners other than the caller, is root's: a user
-    // namespace's root cannot bind the host's filesystems, and a job sandbox's capability-dropped
+    // namespace's root cannot bind the machine's filesystems, and a job sandbox's capability-dropped
     // root cannot give files away. The micro-VM check `launcher-root` runs this as the guest's root.
     tilo_test_env::require_capability!(
         Root,

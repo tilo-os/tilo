@@ -369,7 +369,7 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
 fn signed_original_source_reader_drops_source_groups_only_after_namespace_confinement() {
     const CHILD: &str = "TILO_ORIGINAL_READER_QUALIFICATION_CHILD";
     // The reader drops root's groups inside a mount namespace of its own, which root alone may
-    // enter: a user namespace's root holds no mount privilege over the host, and a job sandbox's
+    // enter: a user namespace's root holds no mount privilege over the machine, and a job sandbox's
     // capability-dropped root has none at all.
     tilo_test_env::require_capability!(
         Root,

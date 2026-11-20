@@ -32,7 +32,7 @@ const LISTER: &str = "/tilo-view-lister";
 #[test]
 fn the_view_exposes_exactly_what_per_path_binds_did() {
     // Bind-mounting the system into a view takes root's mount privilege: a user namespace's root
-    // cannot bind the host's filesystems, and a job sandbox's capability-dropped root holds no
+    // cannot bind the machine's filesystems, and a job sandbox's capability-dropped root holds no
     // mount privilege at all. The micro-VM check `launcher-root` runs this as the guest's root.
     tilo_test_env::require_capability!(
         Root,
