@@ -3344,6 +3344,10 @@ mod tests {
     #[test]
     fn a_captures_preview_waits_for_bytes_the_page_lacks() {
         let (mut app, _, _) = sample_app();
+        // The sample store makes its previews without reading bytes, so a
+        // capture whose bytes are still on their way is never asked of the
+        // route. Read the preview's bytes from a real store instead.
+        app.storage = Storage::Disk(Some(std::env::temp_dir()));
         let route = ui::collaboration::RouteSpec::app("so.tilo.camera", uuid::Uuid::from_u128(1));
         let link = ui::collaboration::document_content::ContentLink::of(&route);
         let content = ui::collaboration::document_content::DocumentContent::store(
