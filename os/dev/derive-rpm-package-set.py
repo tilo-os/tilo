@@ -20,6 +20,8 @@ SOURCES = (
     "os/containers/tilo-api/Containerfile",
     "os/containers/tilo-vm-host/Containerfile",
     "os/Containerfile.env-runtime",
+    # The OS assembler image, which installs from the snapshot too.
+    "os/image/assembler.Containerfile",
     # The sealing tool stage's list, installed by name from this file (see its header).
     "os/dev/uki-tools.packages",
 )

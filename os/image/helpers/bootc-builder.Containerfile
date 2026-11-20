@@ -7,12 +7,12 @@
 # And an upgrade needs room only for the layers it does not have yet (0003):
 # upstream's composefs space check counted the whole image, so a laptop with
 # most of the new image's layers already stored refused to upgrade.
-# The frozen snapshot carries no ostree-devel, so this builds in the pinned
-# builder image as os/Containerfile.bootc-helper does, from that image's own
-# Fedora repositories, which os/dev/configure-fedora-mirrors.sh points at two
-# current mirrors (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of it
-# ships but the binary: the rootfs checks it runs against the base's own
-# libraries and reports the base's bootc version.
+# It builds in the pinned builder image as os/Containerfile.bootc-helper does,
+# with the headers it links against from the frozen RPM snapshot, so every
+# input is pinned (the crates by bootc's Cargo.lock) and the build is served
+# from t's cache while they are as they were. Nothing of it ships but the
+# binary: the rootfs checks it runs against the base's own libraries and
+# reports the base's bootc version.
 FROM ${BOOTC_BUILD_IMAGE} AS bootc-builder
 # v1.16.13, the base's bootc release.
 ARG BOOTC_VERSION=1.16.13
@@ -23,7 +23,8 @@ ARG BOOTC_SHA256=e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019a
 # build's network kept resetting, and cargo's retries ended the build with them.
 ARG COMPOSEFS_SOURCE=composefs-rs-f720d6c.tar.gz
 ARG COMPOSEFS_SHA256=ab52c9b237501aab5a02e36cab313a37efb66374d9a4cd0ac4eed56df15413d3
-ARG BOOTC_BUILD_PACKAGES="ostree-devel patch"
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch \
     os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch \
@@ -32,14 +33,12 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
 COPY vendor/zlink-macros /tilo-vendor/zlink-macros
-COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
-# Fetches from the internet (the build packages and the crates), so it runs in the
-# build job's own network: podman hands a nested build container public resolvers (the
-# job's /etc/resolv.conf names only its own), and the CI runners' egress serves those
-# unreliably.
+# Fetches the crates bootc's Cargo.lock pins, so it runs in the build job's own network:
+# podman hands a nested build container public resolvers (the job's /etc/resolv.conf names
+# only its own), and the CI runners' egress serves those unreliably.
 RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
-    configure-fedora-mirrors \
-    && dnf install -y ${BOOTC_BUILD_PACKAGES} \
+    --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    dnf install -y --setopt=reposdir=/repo ostree-devel patch \
     && dnf clean all \
     && echo "${BOOTC_SHA256}  /tilo-assets/${BOOTC_SOURCE}" | sha256sum -c - \
     && echo "${COMPOSEFS_SHA256}  /tilo-assets/${COMPOSEFS_SOURCE}" | sha256sum -c - \

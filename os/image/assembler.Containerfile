@@ -2,9 +2,11 @@
 # micro-VM step (os/image/build-layer.sh). The pinned base with what building and
 # verifying a layer takes, from the frozen RPM snapshot: podman builds the pieces,
 # skopeo and jq read the pinned inputs, fuse-overlayfs is podman's storage where the
-# guest's kernel overlay can't be, git names the commit. Baked here once, so no layer
-# action installs packages before it starts; rebuilt only when this file or the pins
-# change.
+# guest's kernel overlay can't be, git names the commit, and the dev disk's install
+# writes its partitions, filesystems and qcow2 with the rest. Baked here once, so no
+# step installs packages from a mirror before it starts; rebuilt only when this file
+# or the pins change. Its packages are part of the snapshot's set
+# (os/dev/derive-rpm-package-set.py).
 ARG BASE_REF
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
@@ -21,6 +23,8 @@ COPY --from=scripts --chmod=0755 clean-dnf-layer-state.sh /usr/libexec/tilo/clea
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo --setopt=install_weak_deps=False \
       podman skopeo fuse-overlayfs e2fsprogs util-linux jq python3 git-core \
+      dosfstools btrfs-progs systemd-container binutils qemu-img cryptsetup mtools zstd \
+      procps-ng curl \
     && dnf clean all \
     && podman --version && skopeo --version \
     && /usr/libexec/tilo/finalize-rpmdb
