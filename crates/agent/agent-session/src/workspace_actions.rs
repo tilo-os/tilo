@@ -91,6 +91,8 @@ mod run_context;
 mod search_access;
 mod search_activity;
 use search_activity::SearchActivity;
+mod sealed;
+use sealed::{GaveUp, sealed_for};
 mod session_voice;
 mod share;
 mod terminal;
@@ -928,53 +930,6 @@ pub(super) enum Needs<'a> {
     /// One record acted on: its keys, every time. Nothing acts on a record
     /// seen only in part.
     Act { app_id: &'a str, record: &'a str },
-}
-
-/// What a workspace's earlier waits for keys gave up on.
-#[derive(Default)]
-struct GaveUp {
-    listed: bool,
-    /// Records a listing by name waited for in vain.
-    records: HashSet<DocumentRoute>,
-}
-
-/// The routes of `workspace_id` in `routes` still undecided for `needs`:
-/// documents that arrived and open only once the member holds their keys, or
-/// has the surface they were written with and their workspace's governance.
-fn sealed_for(
-    routes: &BTreeSet<DocumentRoute>,
-    workspace_id: WorkspaceId,
-    needs: Needs<'_>,
-    gave_up: &GaveUp,
-) -> Vec<DocumentRoute> {
-    // A part of a chain is held beside a record of its app that keeps it:
-    // reading or acting on it needs that record open too, and any other
-    // part of the same chain, which the request's host sends beside it.
-    let named = |route: &DocumentRoute, app_id: &str, record: &str| {
-        let same_chain = match (opened::chain_of(record), opened::chain_of(&route.document)) {
-            (Some(asked), Some(held)) => asked == held,
-            _ => false,
-        };
-        route.app_id == app_id
-            && (route.document == record
-                || same_chain
-                || (is_part(record) && !is_part(&route.document)))
-    };
-    routes
-        .iter()
-        .filter(|route| {
-            WorkspaceId::parse(&route.cluster_id) == Some(workspace_id)
-                && match needs {
-                    Needs::Joined => false,
-                    Needs::Workspace => !gave_up.listed,
-                    Needs::Read { app_id, record } => {
-                        named(route, app_id, record) && !gave_up.records.contains(*route)
-                    }
-                    Needs::Act { app_id, record } => named(route, app_id, record),
-                }
-        })
-        .cloned()
-        .collect()
 }
 
 /// The service's membership of one workspace, on the host device's one
