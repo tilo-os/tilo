@@ -352,8 +352,9 @@ const HINT_TOP: f64 = 22.0;
 /// "Open an app" button's minimum height).
 const FOOTER_TOP: f64 = 14.0;
 const FOOTER_MIN_H: f64 = 36.0;
-/// Height of the heading band (title + subtitle) above the first card row.
-const HEADING_BAND: f64 = 90.0;
+/// Height of the heading band (title + subtitle, which a phone wraps onto two lines) above the
+/// first card row.
+const HEADING_BAND: f64 = 104.0;
 /// The band at the canvas's top the page's bar floats over.
 const TOP_BAND: f64 = 32.0;
 /// The band at the canvas's bottom kept for the persistent help affordance on laptops.
@@ -778,12 +779,13 @@ impl CollaborationLaunchpad {
         let subtitle = cx.part(
             "subtitle",
             "LaunchpadSubtitle",
-            Rect::new(left, subtitle_y, left + width, subtitle_y + caption_h),
+            Rect::new(left, subtitle_y, left + width, subtitle_y + 2.0 * caption_h),
         );
         subtitle.tag = Some("p");
+        // Two lines, so a phone wraps the sentence rather than cutting it off.
         subtitle.own = Some(ui::composition::Own::Text(
             ui::composition::TextLook::new(self.subtitle(), &caption_style, Some(ink))
-                .with_max_lines(Some(1)),
+                .with_max_lines(Some(2)),
         ));
     }
 
@@ -1021,8 +1023,9 @@ impl Widget for CollaborationLaunchpad {
             None,
         );
         let (_, title_h) = text.measure(&title, heading, None);
-        let subtitle = text.elide_to_width(&self.subtitle(), small, panel_width as f32);
-        let (_, subtitle_h) = text.measure(&subtitle, small, None);
+        // Wrapped to the cards' width, never cut mid-sentence: a narrow page reads it on two lines.
+        let subtitle = self.subtitle();
+        let (_, subtitle_h) = text.measure(&subtitle, small, Some(panel_width as f32));
         if f64::from(title_h + subtitle_h) + 9.0 <= HEADING_BAND {
             // On the bare wallpaper, like the hint under the cards: the dim tier's contrast holds
             // only on the theme's own surfaces.
@@ -1032,7 +1035,7 @@ impl Widget for CollaborationLaunchpad {
                 small,
                 theme.text_primary,
                 transform * Affine::translate((content_left, heading_y + f64::from(title_h) + 3.0)),
-                None,
+                Some(panel_width as f32),
             );
         }
 

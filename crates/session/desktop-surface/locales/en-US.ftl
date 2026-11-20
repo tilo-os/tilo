@@ -374,14 +374,14 @@ pairing-approve = Approve { $code }
 pairing-decline = Decline
 
 # Workspace settings
-workspace-settings-title = Workspace Settings
-workspace-settings-close = Close Settings
+workspace-settings-title = Workspace settings
+workspace-settings-close = Close
 workspace-settings-tab-general = General
 workspace-settings-tab-people = People
 workspace-settings-tab-agents = Agents
-workspace-settings-tab-privacy-security = Privacy & Security
+workspace-settings-tab-privacy-security = Privacy & security
 workspace-settings-tab-privacy = Privacy
-workspace-settings-tab-apps-files = Apps & Files
+workspace-settings-tab-apps-files = Apps & files
 workspace-settings-tab-apps = Apps
 workspace-settings-tab-emoji = Emoji
 workspace-settings-emoji-count = { $count ->
@@ -651,6 +651,7 @@ workspace-settings-servers-origin-label = Another server's site
 workspace-settings-servers-add = Add
 workspace-settings-servers-remove = Remove
 workspace-settings-servers-here = This server
+workspace-settings-servers-connected = You're connected here
 workspace-settings-servers-unnamed = Another server
 workspace-settings-leave = Leave workspace
 workspace-settings-leave-description = Takes it off this device, along with the windows and groups that belong to it. The workspace stays for everyone in it.

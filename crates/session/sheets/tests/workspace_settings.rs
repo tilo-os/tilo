@@ -285,9 +285,11 @@ tilo_test_env::scenario! {
     phase an_owner_sees_the_servers_keeping_the_workspace;
     {
         let mut owner = staged("general");
-        for text in ["Servers", "This server", "3f2b1c00", "8d4e0a11"] {
+        // Each server by its own name, the one the page is connected to saying so once.
+        for text in ["Servers", "eu1.tilo.sh", "You're connected here", "Ada's laptop"] {
             assert!(says(&mut owner, text), "{text:?} is shown");
         }
+        assert!(!says(&mut owner, "This server"), "no server reads by a stand-in name twice");
         // Only a server other than the one the page is connected to is let go here.
         assert_eq!(
             owner

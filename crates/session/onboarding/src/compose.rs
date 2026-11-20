@@ -2411,7 +2411,7 @@ mod tests {
                 .join(" ");
 
             for real_surface in [
-                "Workspace Settings",
+                "Workspace settings",
                 "Notes",
                 "Calendar",
                 "Chat",

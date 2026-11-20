@@ -414,7 +414,7 @@ pairing-decline = Ablehnen
 
 # Workspace settings
 workspace-settings-title = Arbeitsbereichseinstellungen
-workspace-settings-close = Einstellungen schließen
+workspace-settings-close = Schließen
 workspace-settings-tab-general = Allgemein
 workspace-settings-tab-people = Personen
 workspace-settings-tab-agents = Agenten
@@ -686,6 +686,7 @@ workspace-settings-servers-origin-label = Adresse eines anderen Servers
 workspace-settings-servers-add = Hinzufügen
 workspace-settings-servers-remove = Entfernen
 workspace-settings-servers-here = Dieser Server
+workspace-settings-servers-connected = Hierüber bist du verbunden
 workspace-settings-servers-unnamed = Ein weiterer Server
 workspace-settings-leave = Arbeitsbereich verlassen
 workspace-settings-leave-description = Nimmt ihn mit den Fenstern und Gruppen, die dazugehören, von diesem Gerät. Für alle, die darin sind, bleibt er bestehen.

@@ -512,13 +512,20 @@ impl PageWorkspaceSettings {
             origin_label: t("workspace-settings-servers-origin-label"),
             add_label: t("workspace-settings-servers-add"),
             remove_label: t("workspace-settings-servers-remove"),
-            here_label: t("workspace-settings-servers-here"),
             rows: servers
                 .iter()
-                .map(|server| sheet::Server {
-                    key: server.device.clone(),
-                    label: server_label(server, here.person(&server.person).map(|(name, _)| name)),
-                    here: server.here,
+                .map(|server| {
+                    let label =
+                        server_label(server, here.person(&server.person).map(|(name, _)| name));
+                    sheet::Server {
+                        key: server.device.clone(),
+                        // A server named by its own name says it is the one the page is on
+                        // beside it; one read as "This server" already said so.
+                        note: (server.here && !site_name(&server.label).is_empty())
+                            .then(|| t("workspace-settings-servers-connected")),
+                        label,
+                        here: server.here,
+                    }
                 })
                 .collect(),
         })
@@ -604,15 +611,25 @@ fn left_for(
     shared.wake();
 }
 
-/// What a server keeping the workspace is called: the one the page is connected to says so; any
-/// other by the name it gives itself, or whom it keeps the workspace for.
-fn server_label(server: &ServerEntry, kept_for: Option<String>) -> String {
-    if server.here {
-        return t("workspace-settings-servers-here");
+/// A server's name as people read it: the site it names itself by, without the port a
+/// machine dials it at (`tilo.localhost:26420` reads `tilo.localhost`).
+fn site_name(label: &str) -> &str {
+    let label = label.trim();
+    match label.rsplit_once(':') {
+        Some((site, port)) if !site.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => site,
+        _ => label,
     }
-    let named = server.label.trim();
+}
+
+/// What a server keeping the workspace is called: by the name it gives itself; else the one the
+/// page is connected to as "This server", any other by whom it keeps the workspace for.
+fn server_label(server: &ServerEntry, kept_for: Option<String>) -> String {
+    let named = site_name(&server.label);
     if !named.is_empty() {
         return named.to_owned();
+    }
+    if server.here {
+        return t("workspace-settings-servers-here");
     }
     kept_for.unwrap_or_else(|| t("workspace-settings-servers-unnamed"))
 }
@@ -724,5 +741,16 @@ impl OverSheet for PageWorkspaceSettings {
 
     fn sheet_name(&self) -> &'static str {
         "PageWorkspaceSettings"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_server_reads_by_its_site_without_the_port_it_is_dialled_at() {
+        assert_eq!(super::site_name(" tilo.localhost:26420 "), "tilo.localhost");
+        assert_eq!(super::site_name("eu1.tilo.sh"), "eu1.tilo.sh");
+        assert_eq!(super::site_name("Ada's laptop"), "Ada's laptop");
+        assert_eq!(super::site_name(""), "");
     }
 }

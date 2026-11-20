@@ -20,4 +20,4 @@ agent-confirm-deny = Don’t Allow
 # What an app asks before it first uses another app's action. $asker is the
 # asking app's name, $action and $app as above.
 app-grant-question = Let { $asker } use “{ $action }” in { $app }?
-app-grant-detail = It may from now on in this workspace. You can revoke this under Apps in Privacy & Security.
+app-grant-detail = It may from now on in this workspace. You can revoke this under Apps in Workspace settings, Privacy & security.

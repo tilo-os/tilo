@@ -46,9 +46,6 @@ pub struct Servers {
     pub origin_label: String,
     pub add_label: String,
     pub remove_label: String,
-    /// What marks the server the page is connected to, which is let go
-    /// from another one.
-    pub here_label: String,
     pub rows: Vec<Server>,
 }
 
@@ -58,8 +55,12 @@ pub struct Server {
     /// The device key the row is asked for by, and what removing it names.
     pub key: String,
     pub label: String,
-    /// Whether this is the server the page is connected to.
+    /// Whether this is the server the page is connected to, which is let go
+    /// from another one, so its row offers no Remove.
     pub here: bool,
+    /// What the row says of itself on its right, where its label alone does
+    /// not tell (the server the page is connected to, named by its own name).
+    pub note: Option<String>,
 }
 
 /// Everything the General tab shows, in the person's words.
@@ -171,15 +172,13 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
 fn servers_section(servers: &Servers, parts: &Parts) -> Element {
     let mut items: Vec<Element> = vec![caption(&servers.group.description)];
     for server in &servers.rows {
-        let trailing: Element = if server.here {
-            Box::new(
-                Text::new(&servers.here_label)
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-            )
+        let trailing: Option<Element> = if server.here {
+            server.note.as_ref().map(|note| -> Element {
+                Box::new(Text::new(note).with_role(TextRole::Caption).dimmed())
+            })
         } else {
             let key = server.key.clone();
-            Box::new(
+            Some(Box::new(
                 button(
                     parts,
                     &format!("ws-general-server-remove-{}", server.key),
@@ -189,15 +188,16 @@ fn servers_section(servers: &Servers, parts: &Parts) -> Element {
                     },
                 )
                 .role(ButtonRole::Destructive),
-            )
+            ))
         };
-        items.push(Box::new(
-            ListRow::new(
-                format!("ws-general-server-{}", server.key),
-                server.label.clone(),
-            )
-            .trailing(trailing),
-        ));
+        let row = ListRow::new(
+            format!("ws-general-server-{}", server.key),
+            server.label.clone(),
+        );
+        items.push(Box::new(match trailing {
+            Some(trailing) => row.trailing(trailing),
+            None => row,
+        }));
     }
     let submitting = parts.clone();
     let field = Box::new(
@@ -230,7 +230,9 @@ fn leaving(general: &General, parts: &Parts) -> Element {
         leaving.push(Box::new(
             ListRow::new("ws-general-leave-row", general.leave.title.clone())
                 .secondary(general.leave.description.clone())
-                .two_line_secondary()
+                // Up to four lines, so a phone shows the whole sentence: the
+                // row takes only the lines its words wrap to, and cuts none off.
+                .secondary_lines(4)
                 .trailing(Box::new(
                     button(parts, "ws-general-leave", &general.leave_label, || {
                         WorkspaceSettingsEffect::Delete
@@ -248,7 +250,7 @@ fn leaving(general: &General, parts: &Parts) -> Element {
         leaving.push(Box::new(
             ListRow::new("ws-general-delete-row", delete.title.clone())
                 .secondary(delete.description.clone())
-                .two_line_secondary()
+                .secondary_lines(4)
                 .trailing(Box::new(
                     Button::new("ws-general-delete", &general.delete_label)
                         .on_view(move || asking.confirm(Confirm::DeleteWorkspace))
@@ -398,17 +400,18 @@ pub(super) fn sample() -> General {
             origin_label: "Another server's site".to_owned(),
             add_label: "Add".to_owned(),
             remove_label: "Remove".to_owned(),
-            here_label: "This server".to_owned(),
             rows: vec![
                 Server {
                     key: "3f2b1c00".to_owned(),
-                    label: "3f2b1c00".to_owned(),
+                    label: "eu1.tilo.sh".to_owned(),
                     here: true,
+                    note: Some("You're connected here".to_owned()),
                 },
                 Server {
                     key: "8d4e0a11".to_owned(),
-                    label: "8d4e0a11".to_owned(),
+                    label: "Ada's laptop".to_owned(),
                     here: false,
+                    note: None,
                 },
             ],
         }),
