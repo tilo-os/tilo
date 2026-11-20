@@ -22,7 +22,9 @@ static REVISION: AtomicU64 = AtomicU64::new(0);
 /// until the next [`refresh`].
 #[must_use]
 pub fn current() -> RegionFormats {
-    #[cfg(not(target_family = "wasm"))]
+    // A thread the workspace renders for may have its own formats installed
+    // ([`install_here`]); a page installs only a zone, so its formats are the
+    // person's own.
     if let Some(formats) = HERE.with(|here| here.borrow().0) {
         return formats;
     }

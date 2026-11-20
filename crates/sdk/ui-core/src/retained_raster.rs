@@ -141,10 +141,10 @@ pub struct RetainedRaster {
 }
 
 impl DamageCache {
-    /// Whether damage textures grow in geometric buckets: always on a page, which reads no
-    /// environment to turn it off, so it carries no other sizing.
+    /// Whether damage textures grow in geometric buckets: the one sizing the environment
+    /// chose, which a page that reads no environment always gets.
     fn geometric(&self) -> bool {
-        cfg!(target_family = "wasm") || self.geometric_capacity
+        self.geometric_capacity
     }
 }
 
