@@ -798,14 +798,21 @@ impl Replica {
                 return None;
             }
             let named = self.view.chains_named_at_top(name);
-            if named.len() != 1 {
+            if let [chain] = named.as_slice() {
+                let surveyed = self.rows_of_item(chain, "");
+                return Some(Self::page_of(&surveyed, query, (can_render, window)));
+            }
+            if !named.is_empty() {
                 return None;
             }
-            let surveyed: Vec<_> = named
-                .iter()
-                .flat_map(|child| self.rows_of_item(child, ""))
-                .collect();
-            return Some(Self::page_of(&surveyed, query, (can_render, window)));
+            // A name that is a resource's own id (`mail.attachment:<id>:0`)
+            // is that resource, wherever the view keeps it: one it resolves
+            // only when asked by id (a loaded message's attachment) is never
+            // in a listing, so a name looked for there is never found.
+            let resource = self.view.resource(name.trim())?;
+            let surveyed = self.rows_of_item(&resource, "");
+            return (!surveyed.is_empty())
+                .then(|| Self::page_of(&surveyed, query, (can_render, window)));
         }
         let parent = query.parent_resource.as_deref()?;
         ui::resource::chain_of_resource_id(parent)?;
