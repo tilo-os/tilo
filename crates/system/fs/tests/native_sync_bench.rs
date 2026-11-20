@@ -1215,7 +1215,13 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// Bytes of the files under `root`, without following links and without
 /// reading file content.
+///
+/// Counted in allocated blocks, never in length: a device's content area makes a
+/// file-backed file its full size at once (`set_len`) and fills it as content arrives, so its
+/// length is the whole video even when a range read fetched one mebibyte of it.
 fn disk_bytes(root: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+
     let Ok(entries) = std::fs::read_dir(root) else {
         return 0;
     };
@@ -1227,7 +1233,7 @@ fn disk_bytes(root: &Path) -> u64 {
         if kind.is_dir() {
             total = total.saturating_add(disk_bytes(&entry.path()));
         } else if kind.is_file() {
-            total = total.saturating_add(entry.metadata().map_or(0, |m| m.len()));
+            total = total.saturating_add(entry.metadata().map_or(0, |m| m.blocks() * 512));
         }
     }
     total
