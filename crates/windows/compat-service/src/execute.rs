@@ -187,6 +187,10 @@ impl SandboxExecutor for BwrapExecutor {
             ));
         }
         let [prefix, home] = plan.directory_fds();
+        if plan.prefix_for_proton {
+            crate::store::prepare_for_proton(prefix)
+                .map_err(|error| ExecutionError::Io(std::io::Error::other(error.to_string())))?;
+        }
         inherited.push((duplicate_above_handed_numbers(prefix)?, PREFIX_CHILD_FD));
         inherited.push((duplicate_above_handed_numbers(home)?, HOME_CHILD_FD));
         for (name, contents, target) in identity_files(uid, gid) {

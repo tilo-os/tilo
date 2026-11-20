@@ -54,7 +54,7 @@ impl SecurityProfileRef {
 #[serde(rename_all = "lowercase")]
 pub enum Layer {
     Wine,
-    /// Proton through UMU/Steam Runtime. Never inferred for arbitrary apps.
+    /// Proton, with a recipe of UMU's database. Never inferred for arbitrary apps.
     Proton,
     /// The one managed Windows guest. Never selected implicitly.
     Vm,

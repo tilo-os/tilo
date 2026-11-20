@@ -16,11 +16,14 @@ COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /tree/usr
 COPY --from=windows-compat-artifacts /out/proton/ /tree/usr/lib/tilo/windows-runners/proton/
 COPY --from=windows-compat-artifacts /out/steam-runtime/ /tree/usr/lib/tilo/windows-runners/steam-runtime/
 COPY --from=windows-provider /out/usr/share/tilo/windows/provider.json /provider.json
-COPY os/dev/windows_provider.py os/dev/build-windows-compat-sysext.sh os/dev/sysext-image.py /tilo/
+COPY os/dev/windows_provider.py os/dev/proton_libraries.py os/dev/build-windows-compat-sysext.sh os/dev/sysext-image.py /tilo/
 # The native FEX binaries are checked against the hashes the provider record
 # pinned, and their dynamic-linker closure against the base plus this payload.
+# On x86 a capsule starts Proton on the system's libraries, so every library it
+# needs or loads by name must be in the base or this payload.
 # /out is made first: the shell opens the descriptor before the packer runs.
 RUN --network=none python3 /tilo/windows_provider.py host --manifest /provider.json --root /tree \
+    && python3 /tilo/proton_libraries.py /tree/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4 --tree /tree \
     && mkdir -p /out \
     && /tilo/build-windows-compat-sysext.sh /tree /out/tilo-windows-compat.raw > /out/descriptor.json
 

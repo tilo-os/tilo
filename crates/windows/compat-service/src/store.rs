@@ -757,6 +757,58 @@ fn mkdir_at(parent: &File, component: &str, mode: u32) -> Result<(), std::io::Er
     }
 }
 
+/// Lay a prefix out the way UMU lays it out before Proton opens it as its data directory: `pfx`
+/// names the prefix itself, Proton's shader cache and file list have their places, and the
+/// Windows user Proton signs in as (`steamuser`) and the capsule's own (`tilo`, whom Wine set the
+/// prefix up for) are one folder, so a program finds the settings it saved under either. The
+/// prefix holds what its programs wrote: nothing in it is followed.
+pub(crate) fn prepare_for_proton(prefix: BorrowedFd<'_>) -> Result<(), CapsuleError> {
+    let prefix = File::from(prefix.try_clone_to_owned()?);
+    match rustix::fs::readlinkat(&prefix, "pfx", Vec::new()) {
+        Ok(target) if target.as_bytes() == b"." => {}
+        Ok(_) => {
+            rustix::fs::unlinkat(&prefix, "pfx", AtFlags::empty()).map_err(std::io::Error::from)?;
+            rustix::fs::symlinkat(".", &prefix, "pfx").map_err(std::io::Error::from)?;
+        }
+        Err(Errno::NOENT) => {
+            rustix::fs::symlinkat(".", &prefix, "pfx").map_err(std::io::Error::from)?;
+        }
+        Err(error) => return Err(std::io::Error::from(error).into()),
+    }
+    mkdir_at(&prefix, "shadercache", 0o700)?;
+    drop(
+        rustix::fs::openat(
+            &prefix,
+            "tracked_files",
+            OFlags::WRONLY | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(std::io::Error::from)?,
+    );
+    mkdir_at(&prefix, "drive_c", 0o755)?;
+    let drive = open_directory_at(&prefix, "drive_c")?;
+    mkdir_at(&drive, "users", 0o755)?;
+    let users = open_directory_at(&drive, "users")?;
+    let kind = |name: &str| {
+        rustix::fs::statat(&users, name, AtFlags::SYMLINK_NOFOLLOW)
+            .map(|stat| rustix::fs::FileType::from_raw_mode(stat.st_mode))
+    };
+    match (kind("tilo"), kind("steamuser")) {
+        (Err(Errno::NOENT), Err(Errno::NOENT)) => {
+            mkdir_at(&users, "steamuser", 0o755)?;
+            rustix::fs::symlinkat("steamuser", &users, "tilo").map_err(std::io::Error::from)?;
+        }
+        (Ok(rustix::fs::FileType::Directory), Err(Errno::NOENT)) => {
+            rustix::fs::symlinkat("tilo", &users, "steamuser").map_err(std::io::Error::from)?;
+        }
+        (Err(Errno::NOENT), Ok(rustix::fs::FileType::Directory)) => {
+            rustix::fs::symlinkat("steamuser", &users, "tilo").map_err(std::io::Error::from)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn open_regular_nofollow(parent: &File, component: &str) -> Result<File, std::io::Error> {
     let file: File = rustix::fs::openat(
         parent,
@@ -1547,5 +1599,64 @@ mod tests {
                 Err(CapsuleError::InstallerChanged)
             ));
         }
+    }
+
+    #[test]
+    fn a_prefix_wine_set_up_is_laid_out_for_proton_without_following_its_links() {
+        let directory = TempDir::new().unwrap();
+        let prefix = directory.path().join("prefix");
+        let users = prefix.join("drive_c/users");
+        fs::create_dir_all(users.join("tilo/Documents")).unwrap();
+        fs::write(prefix.join("user.reg"), "settings").unwrap();
+        let open = |path: &Path| open_directory_nofollow(path).unwrap();
+
+        // Twice: a later start finds it laid out and changes nothing.
+        for _ in 0..2 {
+            prepare_for_proton(open(&prefix).as_fd()).unwrap();
+            assert_eq!(fs::read_link(prefix.join("pfx")).unwrap(), Path::new("."));
+            assert!(prefix.join("shadercache").is_dir());
+            assert!(prefix.join("tracked_files").is_file());
+            assert_eq!(
+                fs::read_link(users.join("steamuser")).unwrap(),
+                Path::new("tilo")
+            );
+            assert!(
+                users.join("tilo/Documents").is_dir(),
+                "Wine's user keeps its files"
+            );
+            assert_eq!(
+                fs::read_to_string(prefix.join("user.reg")).unwrap(),
+                "settings"
+            );
+        }
+
+        // A `pfx` a program pointed elsewhere names the prefix again.
+        fs::remove_file(prefix.join("pfx")).unwrap();
+        symlink("/", prefix.join("pfx")).unwrap();
+        prepare_for_proton(open(&prefix).as_fd()).unwrap();
+        assert_eq!(fs::read_link(prefix.join("pfx")).unwrap(), Path::new("."));
+
+        // A new prefix: Proton's user is a folder, the capsule's names it.
+        let fresh = directory.path().join("fresh");
+        fs::create_dir(&fresh).unwrap();
+        prepare_for_proton(open(&fresh).as_fd()).unwrap();
+        assert!(
+            fs::symlink_metadata(fresh.join("drive_c/users/steamuser"))
+                .unwrap()
+                .is_dir()
+        );
+        assert_eq!(
+            fs::read_link(fresh.join("drive_c/users/tilo")).unwrap(),
+            Path::new("steamuser")
+        );
+
+        // A prefix whose drive_c leads out of it is refused, and nothing is made out there.
+        let outside = directory.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let hostile = directory.path().join("hostile");
+        fs::create_dir(&hostile).unwrap();
+        symlink(&outside, hostile.join("drive_c")).unwrap();
+        assert!(prepare_for_proton(open(&hostile).as_fd()).is_err());
+        assert!(!outside.join("users").exists());
     }
 }

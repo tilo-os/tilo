@@ -1883,16 +1883,10 @@ fn explanation(
         security_profile: route.security_profile.as_str().to_string(),
         vm_fallback_was_explicit: vm_fallback == VmFallback::Explicit,
         summary: match route_kind {
-            RouteKind::Wine => format!(
+            RouteKind::Wine | RouteKind::Proton => format!(
                 "Runs in isolated capsule {} with {runner}",
                 route.runtime.id
             ),
-            RouteKind::Proton => {
-                format!(
-                    "Runs through UMU in isolated capsule {} with {runner}",
-                    route.runtime.id
-                )
-            }
             RouteKind::Vm => {
                 "Runs as one published app in the managed Windows fallback".to_string()
             }
@@ -2449,7 +2443,7 @@ mod tests {
     }
 
     /// A program added from a file opens with Proton once a person chose it: over the prefix its
-    /// setup filled, through UMU with the recipe for any program, while the program beside it in
+    /// setup filled, with the recipe for any program, while the program beside it in
     /// that capsule keeps opening with Wine. The choice is saved with the program, and back to
     /// the recommendation opens it with Wine again. The appliance and a 32-bit prefix are no
     /// choice for it.
@@ -2551,10 +2545,10 @@ mod tests {
                 .unwrap();
             (argv, explained)
         };
-        // UMU starts a Proton program: its launch names the Proton UMU starts.
-        let umu = |argv: &[String]| {
-            argv.windows(2)
-                .any(|words| words == ["--setenv", "PROTONPATH"])
+        // Proton's own script starts a Proton program.
+        let proton = |argv: &[String]| {
+            argv.windows(3)
+                .any(|words| words[0] == "/usr/bin/python3" && words[1].ends_with("/proton"))
         };
         let set = |environment: &str| -> Option<String> {
             let argv = argv.lock().unwrap();
@@ -2574,7 +2568,7 @@ mod tests {
             "Wine stays the recommendation"
         );
         assert_eq!(status.runner, "umu-proton UMU-Proton-10.0-4");
-        assert!(umu(&tool), "UMU starts it: {tool:?}");
+        assert!(proton(&tool), "Proton starts it: {tool:?}");
         assert_eq!(
             set("GAMEID").as_deref(),
             Some(compat_catalogue::PROTON_RECIPE_FOR_ANY_PROGRAM)
@@ -2601,7 +2595,7 @@ mod tests {
             "Proton opens the prefix Wine does"
         );
         assert_eq!(bound(&helper), tool_files, "over the capsule's own files");
-        assert!(!umu(&helper));
+        assert!(!proton(&helper));
         assert_eq!(set("GAMEID"), None);
 
         let reloaded = CapsuleStore::new(directory.path())
@@ -2619,7 +2613,7 @@ mod tests {
         service.set_opens_with(&capsule.id, "tool", None).unwrap();
         let (tool, (status, _)) = launch("tool");
         assert_eq!(status.route, RouteKind::Wine);
-        assert!(!umu(&tool));
+        assert!(!proton(&tool));
         service
             .set_opens_with(&capsule.id, "tool", Some(RouteKind::Wine))
             .unwrap();

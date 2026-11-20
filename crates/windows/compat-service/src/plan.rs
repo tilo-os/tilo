@@ -66,6 +66,8 @@ struct RuntimeBind {
 pub struct RuntimeImage {
     binds: Vec<RuntimeBind>,
     sandbox_entrypoint: PathBuf,
+    /// What the entrypoint is given before the program: the script it starts and its verb.
+    entry_arguments: Vec<String>,
     environment: Vec<(&'static str, String)>,
     needs_nested_runtime: bool,
     runtime_lock_mount: Option<PathBuf>,
@@ -272,6 +274,7 @@ impl SystemRuntimeRegistry {
                     runtime_bind("/usr/share/wine", "/usr/share/wine"),
                 ],
                 sandbox_entrypoint: PathBuf::from("/usr/bin/wine"),
+                entry_arguments: Vec::new(),
                 environment: Vec::new(),
                 needs_nested_runtime: false,
                 runtime_lock_mount: None,
@@ -282,59 +285,11 @@ impl SystemRuntimeRegistry {
                 runner.version
             ))),
             Layer::Proton if matches!(runner.version.as_str(), PINNED_PROTON | "10.0-4") => {
-                let mut image = RuntimeImage {
-                    binds: vec![
-                        runtime_bind("/usr/libexec/tilo-umu-run", "/usr/libexec/tilo-umu-run"),
-                        runtime_bind("/usr/libexec/umu_run.py", "/usr/libexec/umu_run.py"),
-                        // The pinned zipapp's shebang is `/usr/bin/env python3`.
-                        runtime_bind("/usr/bin/env", "/usr/bin/env"),
-                        runtime_bind("/usr/bin/python3", "/usr/bin/python3"),
-                        runtime_bind("/bin/sh", "/bin/sh"),
-                        runtime_bind("/usr/bin/readlink", "/usr/bin/readlink"),
-                        runtime_bind("/usr/bin/getopt", "/usr/bin/getopt"),
-                        runtime_bind("/usr/bin/true", "/usr/bin/true"),
-                        runtime_bind("/usr/bin/bwrap", "/usr/bin/bwrap"),
-                        runtime_bind(PROTON_HOST, PROTON_MOUNT),
-                    ],
-                    sandbox_entrypoint: PathBuf::from("/usr/libexec/tilo-umu-run"),
-                    environment: vec![
-                        ("PROTONPATH", PROTON_MOUNT.to_string()),
-                        ("UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT.to_string()),
-                        ("UMU_RUNTIME_UPDATE", "0".to_string()),
-                        ("PRESSURE_VESSEL_COPY_RUNTIME", "1".to_string()),
-                        (
-                            "PRESSURE_VESSEL_VARIABLE_DIR",
-                            "/tmp/tilo-runtime/var".to_string(),
-                        ),
-                        ("PROTON_USE_NTSYNC", "1".to_string()),
-                    ],
-                    needs_nested_runtime: true,
-                    translated: false,
-                    runtime_lock_mount: Some(
-                        Path::new(STEAM_RUNTIME_MOUNT)
-                            .join(STEAM_PLATFORM)
-                            .join("files/.ref"),
-                    ),
-                };
-                // Keep the parent writable for UMU's atomic install marker,
-                // but mount every executable and shared runtime tree read-only.
-                for entry in [
-                    "_v2-entry-point",
-                    "run",
-                    "run-in-sniper",
-                    "VERSIONS.txt",
-                    "toolmanifest.vdf",
-                    "mtree.txt.gz",
-                    "pressure-vessel",
-                    "pressure-vessel-arm64",
-                    STEAM_PLATFORM,
-                ] {
-                    image.binds.push(RuntimeBind {
-                        host: Path::new(STEAM_RUNTIME_HOST).join(entry),
-                        sandbox: Path::new(STEAM_RUNTIME_MOUNT).join(entry),
-                    });
-                }
-                Ok(image)
+                Ok(if host == "aarch64" {
+                    proton_through_steam_runtime()
+                } else {
+                    proton_on_the_system()
+                })
             }
             Layer::Proton => Err(PlanError::RunnerNotInstalled(format!(
                 "{} {}",
@@ -349,6 +304,99 @@ impl SystemRuntimeRegistry {
         }
         Ok(image)
     }
+}
+
+/// Proton started by its own `proton` script on the system's libraries, as Wine is. UMU would put it
+/// in the Steam runtime's container, which starts a sandbox of its own (new mounts, its own user
+/// map) inside the capsule's, and the capsule's Landlock refuses every mount: there it never
+/// started. Every library Proton loads comes from the image or the Windows extension
+/// (`os/dev/proton_libraries.py` checks it when the extension is built), and the prefix is
+/// laid out the way UMU lays it out before each start (`crate::store::prepare_for_proton`).
+fn proton_on_the_system() -> RuntimeImage {
+    RuntimeImage {
+        binds: vec![
+            runtime_bind("/usr/bin/python3", "/usr/bin/python3"),
+            runtime_bind(PROTON_HOST, PROTON_MOUNT),
+        ],
+        sandbox_entrypoint: PathBuf::from("/usr/bin/python3"),
+        // `waitforexitandrun` waits for the prefix's last program, so the capsule ends with it.
+        entry_arguments: vec![
+            format!("{PROTON_MOUNT}/proton"),
+            "waitforexitandrun".to_string(),
+        ],
+        environment: vec![
+            ("PROTON_USE_NTSYNC", "1".to_string()),
+            // A 32-bit part of a program goes through Wine's own WoW64, which needs no 32-bit
+            // system libraries: the image carries none.
+            ("PROTON_USE_WOW64", "1".to_string()),
+            ("STEAM_COMPAT_CLIENT_INSTALL_PATH", String::new()),
+            (
+                "STEAM_COMPAT_SHADER_PATH",
+                format!("{PREFIX_MOUNT}/shadercache"),
+            ),
+        ],
+        needs_nested_runtime: false,
+        runtime_lock_mount: None,
+        translated: false,
+    }
+}
+
+/// Proton through UMU in the Steam runtime, which the ARM route translates into x86.
+fn proton_through_steam_runtime() -> RuntimeImage {
+    let mut image = RuntimeImage {
+        binds: vec![
+            runtime_bind("/usr/libexec/tilo-umu-run", "/usr/libexec/tilo-umu-run"),
+            runtime_bind("/usr/libexec/umu_run.py", "/usr/libexec/umu_run.py"),
+            // The pinned zipapp's shebang is `/usr/bin/env python3`.
+            runtime_bind("/usr/bin/env", "/usr/bin/env"),
+            runtime_bind("/usr/bin/python3", "/usr/bin/python3"),
+            runtime_bind("/bin/sh", "/bin/sh"),
+            runtime_bind("/usr/bin/readlink", "/usr/bin/readlink"),
+            runtime_bind("/usr/bin/getopt", "/usr/bin/getopt"),
+            runtime_bind("/usr/bin/true", "/usr/bin/true"),
+            runtime_bind("/usr/bin/bwrap", "/usr/bin/bwrap"),
+            runtime_bind(PROTON_HOST, PROTON_MOUNT),
+        ],
+        sandbox_entrypoint: PathBuf::from("/usr/libexec/tilo-umu-run"),
+        environment: vec![
+            ("PROTONPATH", PROTON_MOUNT.to_string()),
+            ("UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT.to_string()),
+            ("UMU_RUNTIME_UPDATE", "0".to_string()),
+            ("PRESSURE_VESSEL_COPY_RUNTIME", "1".to_string()),
+            (
+                "PRESSURE_VESSEL_VARIABLE_DIR",
+                "/tmp/tilo-runtime/var".to_string(),
+            ),
+            ("PROTON_USE_NTSYNC", "1".to_string()),
+        ],
+        entry_arguments: Vec::new(),
+        needs_nested_runtime: true,
+        translated: false,
+        runtime_lock_mount: Some(
+            Path::new(STEAM_RUNTIME_MOUNT)
+                .join(STEAM_PLATFORM)
+                .join("files/.ref"),
+        ),
+    };
+    // Keep the parent writable for UMU's atomic install marker,
+    // but mount every executable and shared runtime tree read-only.
+    for entry in [
+        "_v2-entry-point",
+        "run",
+        "run-in-sniper",
+        "VERSIONS.txt",
+        "toolmanifest.vdf",
+        "mtree.txt.gz",
+        "pressure-vessel",
+        "pressure-vessel-arm64",
+        STEAM_PLATFORM,
+    ] {
+        image.binds.push(RuntimeBind {
+            host: Path::new(STEAM_RUNTIME_HOST).join(entry),
+            sandbox: Path::new(STEAM_RUNTIME_MOUNT).join(entry),
+        });
+    }
+    image
 }
 
 fn runtime_bind(host: &str, sandbox: &str) -> RuntimeBind {
@@ -640,6 +688,8 @@ pub struct CapsuleCommandPlan {
     // private so a plan cannot be copied after its authority-bearing handles.
     launch_paths: LaunchPaths,
     pub(crate) runtime_lock_required: bool,
+    /// Proton opens the prefix as its data directory: the prefix is laid out for it first.
+    pub(crate) prefix_for_proton: bool,
     pub(crate) identity_uid: u32,
 }
 
@@ -861,6 +911,19 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         for (key, value) in &runtime.environment {
             setenv(&mut argv, key, value);
         }
+        // Proton reads the folder a program was installed in for the fixes it applies.
+        if route.runtime.layer == Layer::Proton
+            && !runtime.translated
+            && let Some(folder) = Path::new(PREFIX_MOUNT)
+                .join(&program.prefix_relative_executable)
+                .parent()
+        {
+            setenv(
+                &mut argv,
+                "STEAM_COMPAT_INSTALL_PATH",
+                &folder.display().to_string(),
+            );
+        }
         launcher::sandbox::push_workspace_id(&mut argv, workspace_id);
         if runtime.seccomp_profile().is_some() {
             argv.extend(["--seccomp".to_string(), crate::SECCOMP_CHILD_FD.to_string()]);
@@ -896,6 +959,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         }
         argv.push("--".to_string());
         argv.push(runtime.sandbox_entrypoint().display().to_string());
+        argv.extend(runtime.entry_arguments.iter().cloned());
         if runtime.translated {
             let mode = match (capsule.layer, capsule.settings.architecture) {
                 (Layer::Wine, Architecture::Win32) => "wine32",
@@ -933,6 +997,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             network_proxy,
             launch_paths,
             runtime_lock_required: runtime.runtime_lock_mount.is_some(),
+            prefix_for_proton: route.runtime.layer == Layer::Proton && !runtime.translated,
             identity_uid: self.display.uid,
         })
     }
@@ -1088,7 +1153,9 @@ fn push_fixed_environment(
         ("XDG_CONFIG_HOME", "/run/tilo/capsule/home/.config"),
         ("XDG_CACHE_HOME", "/run/tilo/capsule/home/.cache"),
         ("WINEPREFIX", PREFIX_MOUNT),
-        ("STEAM_COMPAT_DATA_PATH", "/run/tilo/capsule"),
+        // Proton's data directory is the prefix itself: it finds its prefix at `pfx`, which
+        // `crate::store::prepare_for_proton` links back to the prefix, as UMU does.
+        ("STEAM_COMPAT_DATA_PATH", PREFIX_MOUNT),
         (
             "WINEARCH",
             match capsule.settings.architecture {
@@ -1110,6 +1177,13 @@ fn push_fixed_environment(
             .ok_or(PlanError::MissingProtonRecipe)?;
         validate_setting_value(recipe)?;
         setenv(argv, "GAMEID", recipe);
+        // What UMU tells Proton of a program's recipe, so the fixes Proton carries for a game
+        // find it by the same id.
+        setenv(argv, "UMU_ID", recipe);
+        let app_id = steam_app_id(recipe);
+        for key in ["SteamAppId", "SteamGameId", "STEAM_COMPAT_APP_ID"] {
+            setenv(argv, key, app_id);
+        }
     }
     let mut projected = BTreeMap::new();
     for (key, value) in &capsule.settings.environment {
@@ -1130,6 +1204,14 @@ fn push_fixed_environment(
         setenv(argv, key, &value);
     }
     Ok(())
+}
+
+/// The Steam app id UMU gives a recipe: the number of a `umu-<id>` recipe, else 0.
+fn steam_app_id(recipe: &str) -> &str {
+    recipe
+        .strip_prefix("umu-")
+        .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        .unwrap_or("0")
 }
 
 fn validate_environment(key: &str, value: &str) -> Result<String, PlanError> {
@@ -1378,43 +1460,76 @@ mod tests {
             );
             assert_eq!(wine.sandbox_entrypoint(), Path::new("/usr/bin/wine"));
 
+            // On x86, Proton's own script starts it on the system's libraries, in the capsule's
+            // sandbox alone: no UMU and no Steam runtime container inside it.
             let proton = SystemRuntimeRegistry::resolve_for_host(
                 Layer::Proton,
                 &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
                 "x86_64",
             )
             .unwrap();
-            assert!(
-                proton
-                    .host_paths()
-                    .any(|path| path == Path::new("/usr/libexec/tilo-umu-run"))
-            );
-            assert!(
-                proton
-                    .host_paths()
-                    .any(|path| path == Path::new("/usr/bin/env"))
+            assert_eq!(proton.sandbox_entrypoint(), Path::new("/usr/bin/python3"));
+            assert_eq!(
+                proton.entry_arguments,
+                [
+                    format!("{PROTON_MOUNT}/proton"),
+                    "waitforexitandrun".to_string()
+                ]
             );
             assert!(
                 proton
                     .host_paths()
                     .any(|path| path == Path::new(PROTON_HOST))
             );
+            assert!(!proton.host_paths().any(|path| {
+                path.starts_with(STEAM_RUNTIME_HOST)
+                    || path.ends_with("tilo-umu-run")
+                    || path == Path::new("/usr/bin/bwrap")
+            }));
+            for variable in [("PROTON_USE_NTSYNC", "1"), ("PROTON_USE_WOW64", "1")] {
+                assert!(
+                    proton
+                        .environment
+                        .contains(&(variable.0, variable.1.to_string()))
+                );
+            }
             assert!(
-                proton
+                !proton
+                    .environment
+                    .iter()
+                    .any(|(key, _)| key.starts_with("UMU_"))
+            );
+            assert!(!proton.needs_nested_runtime);
+            assert_eq!(proton.runtime_lock_mount, None);
+            assert_eq!(proton.seccomp_profile(), Some(SeccompProfile::TiloJit));
+
+            // ARM translates x86 Proton through UMU and the Steam runtime.
+            let translated = SystemRuntimeRegistry::resolve_for_host(
+                Layer::Proton,
+                &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
+                "aarch64",
+            )
+            .unwrap();
+            assert!(translated.translated);
+            assert!(
+                translated
+                    .host_paths()
+                    .any(|path| path == Path::new("/usr/libexec/tilo-umu-run"))
+            );
+            assert!(
+                translated
                     .environment
                     .contains(&("PROTONPATH", PROTON_MOUNT.to_string()))
             );
-            assert!(
-                proton
-                    .environment
-                    .contains(&("UMU_RUNTIME_UPDATE", "0".to_string()))
+            assert_eq!(
+                translated.runtime_lock_mount,
+                Some(
+                    Path::new(STEAM_RUNTIME_MOUNT)
+                        .join(STEAM_PLATFORM)
+                        .join("files/.ref")
+                )
             );
-            assert!(
-                proton
-                    .environment
-                    .contains(&("PROTON_USE_NTSYNC", "1".to_string()))
-            );
-            assert!(proton.needs_nested_runtime);
+            assert!(translated.needs_nested_runtime);
         }
         {
             for host in ["x86_64", "aarch64"] {
@@ -1436,8 +1551,10 @@ mod tests {
                                 &LaunchLease::deny_all("lease"),
                             )
                             .unwrap();
+                        // Only the Steam runtime ARM translates Proton through starts a sandbox
+                        // of its own, which the filter would refuse.
                         let expected_filter = match (host, layer) {
-                            (_, Layer::Proton) => None,
+                            ("aarch64", Layer::Proton) => None,
                             _ => Some(SeccompProfile::TiloJit),
                         };
                         assert_eq!(command.seccomp_profile, expected_filter);
@@ -2129,44 +2246,53 @@ mod tests {
                     &LaunchLease::deny_all("lease"),
                 )
                 .unwrap();
-            assert!(command.runtime_lock_required);
-            let platform = format!("{STEAM_RUNTIME_MOUNT}/{STEAM_PLATFORM}");
-            let lock = format!("{platform}/files/.ref");
-            let platform_bind = command
-                .bwrap_argv
-                .windows(3)
-                .position(|args| args[0] == "--ro-bind" && args[2] == platform)
-                .unwrap();
-            let lock_bind = command
-                .bwrap_argv
-                .windows(3)
-                .position(|args| {
-                    args == [
-                        "--bind-data",
-                        crate::execute::RUNTIME_LOCK_CHILD_FD.to_string().as_str(),
-                        &lock,
-                    ]
-                })
-                .unwrap();
-            assert!(lock_bind > platform_bind);
-            assert!(
+            // The prefix is Proton's data directory, and the program's recipe reaches the fixes
+            // Proton carries under the id UMU would give it.
+            let set = |key: &str| {
                 command
                     .bwrap_argv
                     .windows(3)
-                    .any(|args| { args == ["--setenv", "UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT] })
+                    .find(|args| args[0] == "--setenv" && args[1] == key)
+                    .map(|args| args[2].clone())
+            };
+            assert_eq!(set("STEAM_COMPAT_DATA_PATH").as_deref(), Some(PREFIX_MOUNT));
+            assert_eq!(set("WINEPREFIX").as_deref(), Some(PREFIX_MOUNT));
+            let recipe = route.proton_recipe.unwrap();
+            assert_eq!(set("SteamAppId").as_deref(), Some(steam_app_id(&recipe)));
+            assert_eq!(set("UMU_ID"), Some(recipe));
+            assert_eq!(set("STEAM_COMPAT_CLIENT_INSTALL_PATH").as_deref(), Some(""));
+            assert_eq!(
+                set("STEAM_COMPAT_INSTALL_PATH"),
+                Path::new(PREFIX_MOUNT)
+                    .join(&program.prefix_relative_executable)
+                    .parent()
+                    .map(|folder| folder.display().to_string())
             );
-            assert!(
-                command
-                    .bwrap_argv
-                    .windows(3)
-                    .any(|args| { args == ["--setenv", "UMU_RUNTIME_UPDATE", "0"] })
+            let entry = command
+                .bwrap_argv
+                .iter()
+                .position(|arg| arg == "--")
+                .unwrap();
+            assert_eq!(
+                command.bwrap_argv[entry + 1..entry + 4],
+                [
+                    "/usr/bin/python3".to_string(),
+                    format!("{PROTON_MOUNT}/proton"),
+                    "waitforexitandrun".to_string()
+                ]
             );
+            assert!(command.prefix_for_proton);
+            assert!(!command.runtime_lock_required);
             assert!(
                 !command
                     .bwrap_argv
-                    .windows(3)
-                    .any(|args| { args[0] == "--bind" && args[1].starts_with(STEAM_RUNTIME_HOST) })
+                    .iter()
+                    .any(|arg| arg.starts_with(STEAM_RUNTIME_HOST)
+                        || (arg.starts_with("UMU_") && arg != "UMU_ID"))
             );
+            assert_eq!(steam_app_id("umu-1091500"), "1091500");
+            assert_eq!(steam_app_id("umu-"), "0");
+            assert_eq!(steam_app_id("none"), "0");
             assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
         }
         {
@@ -2359,14 +2485,8 @@ mod tests {
             assert!(
                 command
                     .bwrap_argv
-                    .iter()
-                    .any(|arg| arg == "/usr/libexec/tilo-umu-run")
-            );
-            assert!(
-                command
-                    .bwrap_argv
-                    .windows(3)
-                    .any(|args| { args == ["--setenv", "PROTONPATH", PROTON_MOUNT] })
+                    .windows(2)
+                    .any(|args| args == ["--", "/usr/bin/python3"])
             );
             assert!(
                 command
@@ -2374,7 +2494,8 @@ mod tests {
                     .windows(3)
                     .any(|args| { args == ["--setenv", "PROTON_USE_NTSYNC", "1"] })
             );
-            assert!(command.seccomp_profile.is_none());
+            // Proton's Wine is held to the same system calls as Wine's.
+            assert_eq!(command.seccomp_profile, Some(SeccompProfile::TiloJit));
             assert!(command.latency_sensitive);
             assert!(
                 command
