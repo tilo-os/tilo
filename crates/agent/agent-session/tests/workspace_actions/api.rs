@@ -339,13 +339,15 @@ async fn a_key_works_through_the_api_on_the_server_and_ends_when_revoked() {
         filled.to_string().contains("Okafor"),
         "the form is filled: {filled}"
     );
-    // The generated types an SDK ships name the app's committed surface: a
-    // call made through them is answered, not refused as a surface the
-    // workspace does not publish.
-    let surface = tilo_api::v1::surface_version(
-        "so.tilo.pdf-viewer",
-        include_str!("../../../../../apps/pdf-viewer/surface.toml"),
-    );
+    // The generated types an SDK ships name the app's committed surface in the
+    // form it is kept by (`tilo sdk gen` reads the file that way): a call made
+    // through them is answered, not refused as a surface the workspace does
+    // not publish.
+    let (_, kept) = collab_types::surface::SurfaceFile::kept(include_bytes!(
+        "../../../../../apps/pdf-viewer/surface.toml"
+    ))
+    .expect("the app's committed surface parses");
+    let surface = tilo_api::v1::surface_version("so.tilo.pdf-viewer", &kept);
     let bearer = format!("Bearer {minted_key}");
     let typed = api
         .dispatch(
