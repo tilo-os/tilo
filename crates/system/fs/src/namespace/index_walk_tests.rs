@@ -104,10 +104,10 @@ tilo_test_env::scenario! {
             reopened.rebuild_document_index();
             let reads = reopened.node_lookup_count() - before;
             assert_eq!(reads, nodes as u64, "{row}: node documents read");
-            let indexed: std::collections::BTreeSet<&str> = reopened
+            let indexed: std::collections::BTreeSet<String> = reopened
                 .document_index
                 .values()
-                .map(|record| record.path.as_str())
+                .filter_map(|record| reopened.path_for_document(record))
                 .collect();
             assert_eq!(
                 indexed.into_iter().collect::<Vec<_>>(),
@@ -290,7 +290,7 @@ fn catalogue_paths(ns: &Namespace) -> Vec<String> {
     let mut paths: Vec<String> = ns
         .document_index
         .values()
-        .map(|record| record.path.clone())
+        .filter_map(|record| ns.path_for_document(record))
         .collect();
     paths.sort();
     paths
@@ -447,9 +447,11 @@ fn measure<T>(
 }
 
 fn indexed_path(ns: &Namespace, ino: u64) -> String {
-    ns.indexed_document(ns.document_id_for(ino).unwrap())
-        .expect("a live node has a catalogue row")
-        .path
+    let record = ns
+        .indexed_document(ns.document_id_for(ino).unwrap())
+        .expect("a live node has a catalogue row");
+    ns.path_for_document(&record)
+        .expect("a live node sits at a path")
 }
 
 fn local_changes(ns: &mut Namespace, rebuild_ms: u128) {
