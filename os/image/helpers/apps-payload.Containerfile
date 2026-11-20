@@ -1,10 +1,18 @@
 # ---- The runtime bundle, the browser engine runtime and the app store -------
 # Packed from the compiled tree (the `compiled` build context: os/image/compile.sh's
 # OUT) in the OS builder, whose rootfs is the base the runtime bundle collects its
-# native closure from. Nothing here compiles.
+# native closure from. Nothing here compiles, and nothing reads the sources: the
+# compile left what the packing takes of them in the tree (each app's manifest,
+# public surface and model crate under apps/, the language packs, the product
+# fonts), so a change to a crate that ships no app leaves this stage's inputs as
+# they were. The scripts it runs are copied, each to its repository path.
 FROM builder-base AS apps-payload
-COPY --from=builder-sources /build/ /build/
 COPY --from=compiled / /out/
+COPY os/scripts/pack-apps.sh os/scripts/stamp-runtime.sh os/scripts/check-shipped-runtimes.sh \
+     os/scripts/install-env-runtime.sh /build/os/scripts/
+COPY tools/apps/stage_sdk_services.py /build/tools/apps/
+COPY os/usr/share/tilo/system-interfaces.toml /build/os/usr/share/tilo/system-interfaces.toml
+COPY crates/packaging/tilo-app-package/max-app-bytes /build/crates/packaging/tilo-app-package/max-app-bytes
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_WITH_BROWSER
 # thin or off, as the compile was (os/image/compile.sh): a build without LTO only reports
@@ -21,11 +29,16 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
 # /usr/lib/tilo-runtime/<release>+native.<digest>/ that the launcher can find
 # without a post-boot `tilo-install runtime install`.
 #
-# The signing key is generated fresh per build. Its pubkey is baked into
+# The runtimes and the apps are signed by the identity in the
+# `publisher_identity` secret when the build is given one, else by one
+# generated for this build and discarded once they are signed. A development
+# image is given the development identity (os/image/build-layer.sh), the RFC
+# 8032 test-vector key it already trusts as its owner, so packing the same
+# files signs the same bytes and the payload is the same in every build; a
+# release generates its own. The publisher's pubkey is baked into
 # /usr/share/tilo/runtime-bundle-trusted-publishers.txt so the launcher's
-# signature-verify step accepts this bake. The private key is discarded
-# once the bundle is signed — this is fine for a build-time attestation
-# (nothing else ever needs to sign as this identity again).
+# signature-verify step accepts this bake. Secrets are not part of the layer
+# cache key and never enter a layer.
 # The release every app manifest under apps/ declares
 # (`runtime = "tilo-runtime/<release>"`). The bundle baked here is one build of
 # it, named by its ABI: `/usr/lib/tilo-runtime/<release>+native.<digest>/`,
@@ -55,7 +68,9 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # rather than at exec. The closure check then loads every bundled
 # object and thin app the way the launcher does, with only the bundle's lib/
 # on LD_LIBRARY_PATH.
-RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
+RUN --mount=type=secret,id=publisher_identity \
+    --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
+    --mount=type=bind,source=tools/font-catalog.py,target=/usr/local/libexec/tilo-font-catalog.py,ro \
     --mount=type=bind,source=os/scripts/collect-runtime-dependencies.py,target=/usr/local/libexec/tilo-collect-runtime-dependencies.py,ro \
     --mount=type=bind,source=os/registry-runtime-publisher.hex,target=/usr/local/share/tilo-registry-runtime-publisher.hex,ro \
     grep -Eqx '[0-9a-f]{64}' /usr/local/share/tilo-registry-runtime-publisher.hex \
@@ -69,14 +84,17 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
       && /out/tilo-runtime-bundle verify \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
-      && python3 /build/tools/font-catalog.py verify \
+      && python3 /usr/local/libexec/tilo-font-catalog.py verify \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)/lib/fonts" --scope product \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)"; \
     else \
-      python3 /build/tools/font-catalog.py prepare \
-        /build/crates/sdk/ui-core/assets/fonts /out/fonts --scope product \
-      && /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
+      test -d /out/fonts \
+      && if [ -s /run/secrets/publisher_identity ]; then \
+           cp /run/secrets/publisher_identity /out/runtime-bundle-identity.json; \
+         else \
+           /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json; \
+         fi \
       && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
       && [ -n "${RUST_LIBSTD}" ] \
       && /bin/bash -eu -o pipefail -c ' \
@@ -113,32 +131,33 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
 # publishers, because the Browser's manifest lists it in
 # `[package].optional-runtimes`. Its version is the browser's
 # ui::webview::chromium::runtime::RUNTIME_VERSION (scripts/browser/
-# test_engine_runtime.py keeps the two equal). Release builds sign it with the
-# runtime publisher key; other builds with a key made for this build alone.
+# test_engine_runtime.py keeps the two equal). It is signed by the build's
+# publisher identity, as the runtime bundle above; TILO_BROWSER_RUNTIME_PUBLISHER,
+# where a build names it, is the key that identity must have.
 # The engine is the `chromium-engine` build context's chromium-engine/: the compiled
 # tree where the compile built it, else the engine's own build (os-chromium-<arch>),
 # which a compile keeping its build directory leaves out (os/dev/build-image.sh).
 ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
 ARG CHROMIUM_RUNTIME_VERSION
-RUN --mount=type=secret,id=browser_runtime_identity \
+RUN --mount=type=secret,id=publisher_identity \
     --mount=type=bind,from=chromium-engine,source=/,target=/run/tilo-chromium,ro \
+    --mount=type=bind,source=crates/sdk/tilo-webview/src/chromium/runtime.rs,target=/run/tilo-chromium-runtime.rs,ro \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
-              /build/crates/sdk/tilo-webview/src/chromium/runtime.rs)" \
+              /run/tilo-chromium-runtime.rs)" \
          && test -n "$pinned" \
          && test "$pinned" = "${CHROMIUM_RUNTIME_VERSION}" \
          && test -x /run/tilo-chromium/chromium-engine/chromium/tilo-chromium-host \
-         && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
-              test -s /run/secrets/browser_runtime_identity \
-              && actual="$(/out/tilo-runtime-bundle key pubkey \
-                   --identity /run/secrets/browser_runtime_identity)" \
-              && test "$actual" = "$TILO_BROWSER_RUNTIME_PUBLISHER" \
-              && identity=/run/secrets/browser_runtime_identity; \
+         && if [ -s /run/secrets/publisher_identity ]; then \
+              identity=/run/secrets/publisher_identity; \
             else \
-              /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
+              test -z "$TILO_BROWSER_RUNTIME_PUBLISHER" \
+              && /out/tilo-runtime-bundle key generate --out /out/browser-runtime-identity.json \
               && identity=/out/browser-runtime-identity.json; \
             fi \
+         && { [ -z "$TILO_BROWSER_RUNTIME_PUBLISHER" ] \
+              || [ "$(/out/tilo-runtime-bundle key pubkey --identity "$identity")" = "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; } \
          && /out/tilo-runtime-bundle build \
               --version "${CHROMIUM_RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
               --include /run/tilo-chromium/chromium-engine/chromium \
@@ -170,11 +189,9 @@ COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
 #
-# Apps compiled here are signed by the identity in the `app_publisher_identity`
-# secret when the build is given one, else by one minted for this build and
-# discarded. The key is in no trust list: see the store's COPY below. Secrets
-# are not part of BuildKit's cache key and never enter a layer. The publisher
-# key is in each package's signed root, whose hash is its id, so a minted key
+# Apps compiled here are signed by the build's publisher identity, as the
+# runtimes above. The key is in no trust list: see the store's COPY below. The
+# publisher key is in each package's signed root, whose hash is its id, so a minted key
 # gives the same app a new id in every build; its installed tree is named by
 # its payload instead (os/scripts/signed-records.py), the same in every build
 # that packs the same files, and every row is verified again after the move.
@@ -183,13 +200,14 @@ COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 # dev VM daemon, the one reader of a complete archive, rebuilds it from those
 # (crates/dev/tilo-vmd/src/cohort.rs); a second copy of every app as a `.tapp`
 # was half of the app bytes in every update.
-RUN --mount=type=secret,id=app_publisher_identity \
+RUN --mount=type=secret,id=publisher_identity \
     --mount=type=bind,source=os/scripts/signed-records.py,target=/usr/local/libexec/tilo-signed-records.py,ro \
     export TILO_IMAGE_BUILD=1 \
-    && if [ -s /run/secrets/app_publisher_identity ]; then \
-         export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
+    && if [ -s /run/secrets/publisher_identity ]; then \
+         export IDENTITY_JSON=/run/secrets/publisher_identity; \
        fi \
-    && BIN_DIR=/out/thin-apps \
+    && REPO=/out \
+    BIN_DIR=/out/thin-apps \
     APP_MODELS=/out/app-models \
     TAPP_DIR=/out/prebuilt-apps \
     TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
@@ -202,10 +220,7 @@ RUN --mount=type=secret,id=app_publisher_identity \
     RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)" \
     /build/os/scripts/pack-apps.sh \
     && python3 /usr/local/libexec/tilo-signed-records.py name-trees /usr/share/tilo-apps \
-    && TILO_APPS_DATA_DIR=/usr/share/tilo-apps /out/tilo-install verify \
-    # The packages carry English only; every other language is a language
-    # pack, which the image installs under /usr/share/tilo/language-packs.
-    && python3 /build/tools/apps/language_packs.py build /build /out/language-packs
+    && TILO_APPS_DATA_DIR=/usr/share/tilo-apps /out/tilo-install verify
 
 # Buildah leaves the env-runtime mount out of the layer cache key; this ARG keys it on ENV_RUNTIME_REF.
 ARG ENV_RUNTIME_REF
@@ -220,4 +235,6 @@ RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/run/tilo-hardlink-identical.py,ro \
     /build/os/scripts/install-env-runtime.sh /tilo-env-runtime/env-runtime \
       /usr/share/tilo-apps /usr/share/tilo-apps /out/tilo-install \
-    && python3 /run/tilo-hardlink-identical.py /usr/share/tilo-apps/pkgs /usr/share/tilo-apps/trees
+    && python3 /run/tilo-hardlink-identical.py /usr/share/tilo-apps/pkgs /usr/share/tilo-apps/trees \
+    && (cd / && find usr/lib/tilo-runtime usr/share/tilo-apps out/language-packs -type f -print0 \
+        | LC_ALL=C sort -z | xargs -0 sha256sum) | sha256sum | cut -c1-64 > /out/payload-digest

@@ -1,31 +1,19 @@
 #!/usr/bin/env python3
-"""Keep the image builders' source copies complete, and narrow.
+"""Keep the apps' packing's source copies complete, and narrow.
 
-The Rust compiles of the OS image and of the dev image's components
-(os/image/compile.sh, outside any image build, keyed by what os/Containerfile's
-`builder-sources` stage copies) and the compiled tree's packing in the
-`apps-payload` stage read only what that stage copies, never the whole build
-context: with `COPY . /build`, editing a unit, an /etc file or a test script
-under os/ re-ran the compile and relinked every binary although none of them
-depends on it.
+The compiled tree's packing in os/Containerfile's `apps-payload` stage reads no
+sources: os/image/compile.sh, which compiles from the checkout itself, leaves
+what the packing takes of them in the tree (the apps' manifests, the language
+packs, the product fonts). The stage copies only the scripts it runs, so a
+change to a crate that ships no app leaves its inputs as they were. With a
+copy of the workspace, every commit packed every app again.
 
-A narrow copy fails the other way when it misses an input, so each stage must
-copy, to the same path under /build:
+A narrow copy fails the other way when it misses an input, so the stage must
+copy, to the same path under /build, every repository file its RUN steps name
+(as /build/<path> or relative to the stage's WORKDIR, /build), and every one the
+scripts it copies read beside themselves.
 
-  * the workspace manifests, Cargo.lock, rust-toolchain.toml, .cargo/ and every
-    workspace member (and vendor/, which the patches resolve to);
-  * every repository file a workspace crate include!s from outside the
-    workspace (tools/ci/suites.py finds them), except includes that only a
-    test compiles;
-  * every repository file its RUN steps name, as /build/<path> or relative to
-    the stage's WORKDIR, /build, and every one the scripts that compile from the
-    same copy name (os/image/compile.sh, run at the repository root).
-
-A compile stage may take these from a scratch stage whole
-(`COPY --from=<stage> /build/ /build/`, one layer instead of one per COPY);
-that stage's copies then count as its own.
-
-And neither stage may copy the whole context back in.
+And it may copy neither the whole context nor a workspace member's directory.
 
 Every finding names file:line, why it matters, and the fix.
 """
@@ -44,17 +32,17 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 RERUN = "python3 tools/policy/check_image_builder_inputs.py   (or tools/policy/run.sh)"
-# (Containerfile, compile stage, scripts run against the same copy) this policy covers.
-STAGES = (("os/Containerfile", "apps-payload", ("os/image/compile.sh",)),)
+# (Containerfile, packing stage) this policy covers.
+STAGES = (("os/Containerfile", "apps-payload"),)
 WORKDIR = "/build"
-# Always read by a workspace build.
-WORKSPACE_FILES = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml")
 # Under /build but not repository paths: cache mounts and build output.
 NOT_SOURCES = ("target", ".cargo-home", ".sccache")
-WHY_MISSING = ("the stage builds from a narrow copy of the repository; a file it reads but does not copy "
-               "fails the build, or worse, silently takes a fallback, and only after the cold compile")
+WHY_MISSING = ("the stage packs from a narrow copy of the repository; a file it reads but does not copy "
+               "fails the build, or worse, silently takes a fallback")
 WHY_WHOLE = ("copying the whole context makes every change anywhere in the repository, a unit, an /etc "
-             "file, a test script, re-run the compile and relink every binary")
+             "file, a test script, pack every app again")
+WHY_WORKSPACE = ("the stage is keyed by what it copies, so a copy of the sources makes every change to a "
+                 "crate pack every app again, although only the compile reads them")
 REPO_PATH = re.compile(r"(?<![\w./-])(?:/build/)?((?:os|tools|dist|docs|keys|scripts)/[A-Za-z0-9_.+/-]*[A-Za-z0-9_+-])")
 BUILD_PATH = re.compile(r"(?<![\w.-])/build/([A-Za-z0-9_.+-][A-Za-z0-9_.+/-]*)")
 
@@ -178,9 +166,7 @@ def covered(path: str, copies: list[Copy]) -> bool:
 
 
 def workspace_roots(repo: Path) -> list[str]:
-    """Every workspace member's directory, and vendor/: what the stage must copy whole. A member
-    is its own directory, not the top one it sits under, so a member beside other sources
-    (sdk/python/native) is copied without them."""
+    """Every workspace member's directory, and vendor/: the sources only the compile reads."""
     workspace = tomllib.loads((repo / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
     return sorted(set(workspace.get("members", [])) | {"vendor"})
 
@@ -188,36 +174,6 @@ def workspace_roots(repo: Path) -> list[str]:
 def under(path: str, roots: list[str]) -> bool:
     """Is repository `path` one of `roots` or inside one?"""
     return any(path == root or path.startswith(root + "/") for root in roots)
-
-
-def test_only(text: str, offset: int) -> bool:
-    """Is the include at `offset` inside a #[cfg(test)] module?"""
-    before = text[:offset]
-    marker = before.rfind("#[cfg(test)]")
-    return marker != -1 and re.match(r"#\[cfg\(test\)\]\s*(pub(\([^)]*\))?\s+)?mod\s", before[marker:]) is not None
-
-
-def compile_includes(repo: Path, tracked: list[str], roots: list[str]) -> dict[str, list[str]]:
-    """Repository files outside the workspace roots that release code include!s, and who does."""
-    suites = load_suites(repo)
-    packages = suites.cargo_packages(repo, tracked)
-    reads = suites.cross_package_reads(repo, tracked, packages)
-    found: dict[str, list[str]] = {}
-    for reader, entries in sorted(reads.items()):
-        if "/tests/" in f"/{reader}" or "/benches/" in f"/{reader}" or reader.endswith("/tests.rs"):
-            continue
-        text = (repo / reader).read_text(encoding="utf-8", errors="replace")
-        line_offsets = [0]
-        for line in text.splitlines(keepends=True):
-            line_offsets.append(line_offsets[-1] + len(line))
-        for read in entries:
-            target = read.target
-            if target is None or read.runtime or under(target, roots):
-                continue
-            if test_only(text, line_offsets[read.line - 1]):
-                continue
-            found.setdefault(target, []).append(f"{reader}:{read.line}")
-    return found
 
 
 def run_references(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -239,20 +195,6 @@ def run_references(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
             if "*" in path:
                 continue
             refs.append((number, path))
-    return refs
-
-
-def script_references(repo: Path, script: str) -> list[tuple[int, str]]:
-    """Repository paths a script run at the repository root names, comments left out."""
-    path = repo / script
-    if not path.exists():
-        return []
-    refs: list[tuple[int, str]] = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        code = line.split("#", 1)[0] if line.lstrip().startswith("#") else line
-        for match in REPO_PATH.finditer(code):
-            if "*" not in match.group(1):
-                refs.append((number, match.group(1)))
     return refs
 
 
@@ -280,8 +222,8 @@ def copied_script_references(repo: Path, copies: list[Copy], tracked: list[str],
     return refs
 
 
-def audit_stage(repo: Path, containerfile: str, stage: str, scripts: tuple[str, ...], tracked: list[str],
-                includes: dict[str, list[str]], roots: list[str]) -> list[Finding]:
+def audit_stage(repo: Path, containerfile: str, stage: str, tracked: list[str],
+                roots: list[str]) -> list[Finding]:
     text = (repo / containerfile).read_text(encoding="utf-8")
     lines = stage_lines(text, stage)
     if not lines:
@@ -294,17 +236,15 @@ def audit_stage(repo: Path, containerfile: str, stage: str, scripts: tuple[str, 
         if "." in copy.sources:
             findings.append(Finding(f"{containerfile}:{copy.line}", f"stage {stage} copies the whole build context",
                                     WHY_WHOLE, "copy only what the stage reads (see this policy's docstring)"))
+        for source in copy.sources:
+            if source != "." and any(root == source or root.startswith(source + "/") for root in roots):
+                findings.append(Finding(f"{containerfile}:{copy.line}", f"stage {stage} copies the sources in {source}",
+                                        WHY_WORKSPACE, "have os/image/compile.sh leave what the packing reads in "
+                                        "the compiled tree, and copy only the scripts the stage runs"))
     tracked_set = set(tracked)
-    required: list[tuple[str, str]] = []
-    for path in WORKSPACE_FILES:
-        required.append((path, "a workspace build reads it"))
-    for root in roots:
-        required.append((root, "it holds workspace members or the vendored patches"))
-    for target, readers in sorted(includes.items()):
-        required.append((target, f"{readers[0]} include!s it"))
     refs = [(f"{containerfile}:{number}", path) for number, path in run_references(lines)]
-    refs += [(f"{script}:{number}", path) for script in scripts for number, path in script_references(repo, script)]
     refs += copied_script_references(repo, copies, tracked, roots)
+    required: list[tuple[str, str]] = []
     for where, path in refs:
         if path in tracked_set or any(t.startswith(path + "/") for t in tracked):
             required.append((path, f"{where} reads it"))
@@ -323,11 +263,10 @@ def audit(repo: Path = REPO, tracked: list[str] | None = None) -> list[Finding]:
     if tracked is None:
         tracked = load_suites(repo).tracked_files(repo)
     roots = workspace_roots(repo)
-    includes = compile_includes(repo, tracked, roots)
     findings: list[Finding] = []
-    for containerfile, stage, scripts in STAGES:
+    for containerfile, stage in STAGES:
         if (repo / containerfile).exists():
-            findings.extend(audit_stage(repo, containerfile, stage, scripts, tracked, includes, roots))
+            findings.extend(audit_stage(repo, containerfile, stage, tracked, roots))
     return findings
 
 

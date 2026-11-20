@@ -5,8 +5,9 @@ os/dev/build-dev-image.sh rebuilds the base (os/dev/build-image.sh, TILO_IMAGE_O
 the files under these paths change, and skips it otherwise. They are:
 
   * what os/Containerfile takes from the build context: the sources of its COPY
-    instructions without --from and of its RUN bind mounts without from=. The builder-sources
-    stage among them names the workspace the compile (os/image/compile.sh) builds;
+    instructions without --from and of its RUN bind mounts without from=;
+  * what the compile (os/image/compile.sh, run in the checkout) reads: the workspace, the
+    repository files its crates include from outside it, and the scripts it runs;
   * the scripts and pins the build runs before podman does: os/dev, os/image, os/scripts,
     os/kernel, the os/*.env pins, and every os/Containerfile*, which the RPM package set is
     derived from (os/dev/derive-rpm-package-set.py);
@@ -32,6 +33,38 @@ FIXED = [
     "os/image",
     "os/scripts",
     "os/kernel",
+]
+# What os/image/compile.sh reads of the checkout besides os/: the workspace, the files its
+# crates include from outside it, and the tools its build steps run.
+COMPILE = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    ".cargo",
+    "keys/tpm2-pcr-signing.public.pem",
+    "crates",
+    "apps",
+    "examples",
+    "sdk/python/native",
+    "sdk/typescript/native",
+    "vendor",
+    "dist",
+    "docs/developers/tasks",
+    "scripts/browser",
+    "tools/apps",
+    "tools/ci/app-models.sh",
+    "tools/ci/measure.sh",
+    "tools/ci/runtime-dylib-lazy-link.py",
+    "tools/ci/rustc-thin-app-wrapper.sh",
+    "tools/ci/thin-app",
+    "tools/font-catalog.py",
+    "tools/policy/app_capability_usage.toml",
+    "tools/policy/app_portability_rules.toml",
+    "tools/protocols/airdrop_sender.py",
+    "tools/test-assets-build.rs",
+    "tools/test-assets.py",
+    "tools/web/wasm-opt-flags",
+    "tools/web/wasm-split",
 ]
 # Inputs of the dev image alone (os/Containerfile.dev and its build), which the base never reads.
 DEV_ONLY = {
@@ -97,7 +130,7 @@ def main() -> None:
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     args = parser.parse_args()
     repo: Path = args.repo
-    paths = set(FIXED) | context_sources(repo / "os/Containerfile")
+    paths = set(FIXED) | set(COMPILE) | context_sources(repo / "os/Containerfile")
     paths |= {p.relative_to(repo).as_posix() for p in (repo / "os").glob("Containerfile*")}
     paths |= {p.relative_to(repo).as_posix() for p in (repo / "os").glob("*.env")}
     paths -= DEV_ONLY

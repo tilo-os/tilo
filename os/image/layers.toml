@@ -10,7 +10,7 @@ helpers = [
   "kernel-rpms", "external-assets", "windows-provider", "virtio-win-media",
   "windows-compat-artifacts", "windows-compat-sysext", "doubletake-builder",
   "joycond-builder", "bootc-builder", "xwayland-satellite-builder", "uki-tools",
-  "image-tool-stages", "builder-sources", "builder-base", "apps-payload",
+  "image-tool-stages", "builder-base", "apps-payload",
   "native-builder-payload", "os-fonts", "plymouth-assets", "os-wallpapers",
   "runtime-image-payload", "engine-runtime-package", "dnf-build-clock",
   "virtio-gallivm-cpu", "component-files", "desktop-binaries", "remote-capture-files",

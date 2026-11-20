@@ -54,6 +54,12 @@ cd "$repo_root"
 # The RFC 8032 test-vector key: public and non-production, accepted only for development and
 # validation images (as tools/ci/publish/os-image.sh).
 dev_owner_key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+# Its secret half, which a development image's payload signs its runtimes and apps with
+# (os/image/helpers/apps-payload.Containerfile): the image already trusts the key as its owner,
+# so this trusts no one else, and packing the same files signs the same bytes in every build,
+# so the payload and every layer given it are served while the apps are as they were. A release
+# signs with keys it generates and discards.
+dev_owner_secret=9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60
 
 # How long each part of an action took, for finding what a build spends its time on.
 phase_started=$SECONDS phase_name=start
@@ -318,23 +324,33 @@ PY
   export SOURCE_DATE_EPOCH=$epoch
 }
 
-# Date every file NAME's Containerfile reads from the tree (given GIVEN) by the build's clock.
-# A COPY keeps a file's time where it is older than the clock, and the times t's checkout gives
-# a file differ from one checkout to the next, so a copied file would make its layer differ
-# between builds of the same tree.
-pin_source_times() {
+# The build context of NAME's Containerfile (given GIVEN), in DIR: the files it reads from the
+# tree (pieces.py inputs) and .containerignore, at their paths, and nothing else. t keys a step by
+# every file it reads, and podman given the whole checkout as its context reads more of it than
+# the pieces copy, so a change anywhere in the tree built every layer again, to the same bytes.
+# Every file is dated by the build's clock: a COPY keeps a file's time where it is older than the
+# clock, and the times t's checkout gives a file differ from one checkout to the next, so a copied
+# file would make its layer differ between builds of the same tree.
+build_context() {
   local globs
   mapfile -t globs < <(python3 -I tools/ci/os/pieces.py inputs "$1" --given "$2")
-  python3 -I - "$SOURCE_DATE_EPOCH" "${globs[@]}" <<'PY'
-import glob, os, sys
-clock = int(sys.argv[1])
-for pattern in sys.argv[2:]:
-    for path in glob.glob(pattern, recursive=True):
-        os.utime(path, (clock, clock), follow_symlinks=False)
-        parent = os.path.dirname(path)
-        while parent:
-            os.utime(parent, (clock, clock))
-            parent = os.path.dirname(parent)
+  python3 -I - "$SOURCE_DATE_EPOCH" "$3" .containerignore "${globs[@]}" <<'PY'
+import glob, os, shutil, sys
+clock, dest = int(sys.argv[1]), sys.argv[2]
+shutil.rmtree(dest, ignore_errors=True)
+os.makedirs(dest)
+for pattern in sys.argv[3:]:
+    for path in glob.glob(pattern, recursive=True, include_hidden=True):
+        target = os.path.join(dest, path)
+        if os.path.isdir(path) and not os.path.islink(path):
+            os.makedirs(target, exist_ok=True)
+        else:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(path, target, follow_symlinks=False)
+for root, dirs, files in os.walk(dest):
+    for entry in dirs + files:
+        os.utime(os.path.join(root, entry), (clock, clock), follow_symlinks=False)
+os.utime(dest, (clock, clock))
 PY
 }
 
@@ -344,10 +360,11 @@ build_target() {
   local name=$1 target=$2 given=$3 file
   file=$scratch/$name.Containerfile
   python3 -I tools/ci/os/pieces.py containerfile "$name" --given "$given" > "$file"
-  pin_source_times "$name" "$given"
+  build_context "$name" "$given" "$scratch/$name-context"
   # Its lines stamped with the seconds since the build began: a layer's build is one podman
   # build of many stages, and its own output names no times.
   TILO_IMAGE=$image TILO_LAYER_TARGET=$target TILO_CONTAINERFILE=$file \
+    TILO_BUILD_CONTEXT=$scratch/$name-context \
     TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh 2>&1 \
     | { local line; while IFS= read -r line; do printf '[+%ss] %s\n' "$((SECONDS - phase_started))" "$line"; done; }
 }
@@ -413,6 +430,10 @@ cmd_image() {
   # The stages FROM ${BASE_REF} build on the base as its layout has it, not pulled again.
   podman tag "$(load "$os/base/oci")" localhost/tilo-base:pinned
   layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
+  if [[ $flavour == dev ]]; then
+    printf '{"secret_key_hex":"%s"}\n' "$dev_owner_secret" > "$scratch/publisher.json"
+    layer_args+=(--secret "id=publisher_identity,src=$scratch/publisher.json")
+  fi
   for target in $(layer_field "$name" targets); do
     image=localhost/tilo-image:$name-$target
     build_target "$name" "$target" "$given"

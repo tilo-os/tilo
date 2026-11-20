@@ -21,27 +21,13 @@ SPEC.loader.exec_module(policy)
 NARROW = """\
 FROM base AS apps-payload
 WORKDIR /build
-COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
-COPY .cargo /build/.cargo
-COPY crates /build/crates
-COPY vendor /build/vendor
 COPY os/data.txt /build/os/data.txt
 COPY os/scripts/build.sh /build/os/scripts/
-RUN --mount=type=cache,target=/build/target sh os/scripts/build.sh && cp target/release/a /out/
+RUN sh os/scripts/build.sh os/data.txt && cp /out/a /usr/bin/
 
 FROM base AS rootfs
 COPY os/etc/unit.conf /etc/unit.conf
 """
-
-LIB = """\
-pub const DATA: &str = include_str!("../../../os/data.txt");
-
-#[cfg(test)]
-mod tests {
-    const FIXTURE: &str = include_str!("../../../os/tests/fixture.json");
-}
-"""
-
 
 class ImageBuilderInputsTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -54,7 +40,7 @@ class ImageBuilderInputsTests(unittest.TestCase):
         self.write("rust-toolchain.toml", "")
         self.write(".cargo/config.toml", "")
         self.write("crates/a/Cargo.toml", '[package]\nname = "a"\n')
-        self.write("crates/a/src/lib.rs", LIB)
+        self.write("crates/a/src/lib.rs", "")
         self.write("vendor/.keep", "")
         self.write("os/data.txt", "data\n")
         self.write("os/tests/fixture.json", "{}\n")
@@ -79,30 +65,10 @@ class ImageBuilderInputsTests(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
         self.assertIn("copies the whole build context", found[0])
 
-    def test_a_missing_release_include_is_named(self) -> None:
-        found = self.findings(NARROW.replace("COPY os/data.txt /build/os/data.txt\n", ""))
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("does not copy os/data.txt to /build/os/data.txt", found[0])
-        self.assertIn("crates/a/src/lib.rs:1 include!s it", found[0])
-
-    def test_a_test_only_include_is_not_required(self) -> None:
-        self.assertFalse(any("fixture.json" in f for f in self.findings(NARROW)))
-
     def test_a_script_the_stage_runs_must_be_copied(self) -> None:
         found = self.findings(NARROW.replace("COPY os/scripts/build.sh /build/os/scripts/\n", ""))
         self.assertEqual(len(found), 1, found)
         self.assertIn("os/scripts/build.sh", found[0])
-
-    def test_a_script_the_outside_compile_runs_must_be_copied(self) -> None:
-        self.write("os/scripts/compile-step.sh", "#!/bin/sh\n")
-        self.write("os/image/compile.sh", "#!/bin/sh\n# os/scripts/commented.sh is no input\nsh os/scripts/compile-step.sh\n")
-        found = self.findings(NARROW)
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("does not copy os/scripts/compile-step.sh", found[0])
-        self.assertIn("os/image/compile.sh:3 reads it", found[0])
-        self.assertEqual(self.findings(NARROW.replace(
-            "COPY os/scripts/build.sh /build/os/scripts/\n",
-            "COPY os/scripts/build.sh os/scripts/compile-step.sh /build/os/scripts/\n")), [])
 
     def test_what_a_copied_script_reads_beside_itself_must_be_copied(self) -> None:
         self.write("os/scripts/build.sh", '#!/bin/sh\npython3 "$(dirname "${BASH_SOURCE[0]}")/../../tools/stamp.py"\n')
@@ -115,20 +81,21 @@ class ImageBuilderInputsTests(unittest.TestCase):
             "COPY os/data.txt /build/os/data.txt\n",
             "COPY os/data.txt /build/os/data.txt\nCOPY tools/stamp.py /build/tools/stamp.py\n")), [])
 
-    def test_a_workspace_member_root_must_be_copied(self) -> None:
-        found = self.findings(NARROW.replace("COPY crates /build/crates\n", ""))
-        self.assertTrue(any("does not copy crates/a to /build/crates/a" in f for f in found), found)
-
-    def test_a_member_beside_other_sources_is_copied_alone(self) -> None:
-        self.write("Cargo.toml", '[workspace]\nmembers = ["crates/a", "sdk/py/native"]\n')
-        self.write("sdk/py/native/Cargo.toml", '[package]\nname = "native"\n')
-        self.write("sdk/py/package.py", "")
-        found = self.findings(NARROW)
+    def test_a_file_the_stage_names_must_be_copied(self) -> None:
+        found = self.findings(NARROW.replace("COPY os/data.txt /build/os/data.txt\n", ""))
         self.assertEqual(len(found), 1, found)
-        self.assertIn("does not copy sdk/py/native to /build/sdk/py/native", found[0])
+        self.assertIn("does not copy os/data.txt to /build/os/data.txt", found[0])
+
+    def test_copying_the_sources_is_refused(self) -> None:
+        for source in ("crates", "crates/a", "vendor"):
+            found = self.findings(NARROW.replace("WORKDIR /build\n", f"WORKDIR /build\nCOPY {source} /build/{source}\n"))
+            self.assertEqual(len(found), 1, (source, found))
+            self.assertIn(f"copies the sources in {source}", found[0])
+
+    def test_one_file_of_the_sources_may_be_copied(self) -> None:
+        self.write("crates/a/limit", "1\n")
         self.assertEqual(self.findings(NARROW.replace(
-            "COPY crates /build/crates\n",
-            "COPY crates /build/crates\nCOPY sdk/py/native /build/sdk/py/native\n")), [])
+            "WORKDIR /build\n", "WORKDIR /build\nCOPY crates/a/limit /build/crates/a/limit\n")), [])
 
     def test_a_copy_to_another_path_does_not_count(self) -> None:
         found = self.findings(NARROW.replace("/build/os/data.txt", "/build/data.txt"))
@@ -151,9 +118,9 @@ class ImageBuilderInputsTests(unittest.TestCase):
 
     def test_a_context_bind_mount_needs_no_copy(self) -> None:
         mounted = NARROW.replace(
-            "RUN --mount=type=cache,target=/build/target sh os/scripts/build.sh",
+            "RUN sh os/scripts/build.sh",
             "RUN --mount=type=bind,source=os/scripts/check.sh,target=/run/check.sh bash /run/check.sh\n"
-            "RUN --mount=type=cache,target=/build/target sh os/scripts/build.sh")
+            "RUN sh os/scripts/build.sh")
         self.write("os/scripts/check.sh", "#!/bin/sh\n")
         self.assertEqual(self.findings(mounted), [])
 

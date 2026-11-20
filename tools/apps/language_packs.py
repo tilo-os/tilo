@@ -26,6 +26,7 @@ runtime reads the person's packs first (ui::i18n::language_pack_roots).
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import json
@@ -47,15 +48,24 @@ LABELS = re.compile(
 )
 
 
+def manifests(repo: pathlib.Path) -> list[pathlib.Path]:
+    """Every crate's Cargo.toml, sorted, without entering build directories (`target`) or
+    hidden ones (`.git`, a checkout's worktrees), which hold none of the tree's crates."""
+    found = []
+    for root, dirs, files in os.walk(repo):
+        dirs[:] = [d for d in dirs if d != "target" and not d.startswith(".")]
+        if "Cargo.toml" in files:
+            found.append(pathlib.Path(root) / "Cargo.toml")
+    return sorted(found)
+
+
 def catalogues(repo: pathlib.Path) -> list[tuple[str, str, pathlib.Path]]:
     """`(locale, crate, path)` for every translated catalogue of a crate
     that declares its catalogue with the macro or names its declarations'
     words from it, sorted."""
     found = []
-    for manifest in sorted(repo.glob("**/Cargo.toml")):
+    for manifest in manifests(repo):
         crate_dir = manifest.parent
-        if "target" in crate_dir.relative_to(repo).parts:
-            continue
         locales = crate_dir / "locales"
         if not locales.is_dir():
             continue

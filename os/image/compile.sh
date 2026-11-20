@@ -86,7 +86,8 @@ if [[ ${1:-} == --dev ]]; then
 fi
 # --apps: of a compiled tree FROM, what the apps and their runtimes are packed from (the payload
 # action of os/image/layers.toml): the thin apps, the runtime and its engines, the app models,
-# the prebuilt apps and the packing tools, copied into OUT. A step of its own that t never
+# the prebuilt apps, the packing tools and what the packing reads of the sources (the apps'
+# manifests, the language packs, the product fonts), copied into OUT. A step of its own that t never
 # caches, so the payload is keyed by these files' bytes rather than by the compile's key: a
 # change that relinks only system programs leaves them as they were, and the payload is served.
 if [[ ${1:-} == --apps ]]; then
@@ -96,7 +97,8 @@ if [[ ${1:-} == --apps ]]; then
   files=(libruntime_dylib.so tilo-runtime-account-capability runtime-engines
          tilo-runtime-bundle tilo-app-package tilo-install tilo-cli-shim)
   [[ ! -f $from/runtime-engines ]] || mapfile -t -O "${#files[@]}" files < "$from/runtime-engines"
-  for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime; do
+  files+=(apps language-packs)
+  for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime fonts; do
     [[ -e $from/$f ]] || continue
     cp -a "$from/$f" "$out/"
   done
@@ -486,6 +488,24 @@ case "$TILO_RUST_LTO" in \
     || exit
 # errexit ignores a failure anywhere in the list above but in its last command,
 # so `|| exit` is what stops the build at a phase that fails.
+
+# What the apps' packing (os/image/helpers/apps-payload.Containerfile) reads of the sources,
+# so the packing reads no checkout and is keyed by the bytes it packs: each app's manifest,
+# public surface and model crate (apps/), every language's pack (the packages carry English
+# only) and, for the runtime bundle, the product font catalog's faces.
+build_phase app-sources
+rm -rf "$out/apps" "$out/language-packs" "$out/fonts"
+for manifest in apps/*/tilo-app.toml; do
+  app=$(dirname "$manifest")
+  install -D -m 0644 "$manifest" "$out/$app/tilo-app.toml"
+  [[ ! -f $app/surface.toml ]] || install -m 0644 "$app/surface.toml" "$out/$app/surface.toml"
+  [[ ! -f $app-model-wasm/Cargo.toml ]] \
+    || install -D -m 0644 "$app-model-wasm/Cargo.toml" "$out/$app-model-wasm/Cargo.toml"
+done
+python3 -I tools/apps/language_packs.py build . "$out/language-packs"
+if [[ $TILO_PREBUILT_APPS != 1 ]]; then
+  python3 -I tools/font-catalog.py prepare crates/sdk/ui-core/assets/fonts "$out/fonts" --scope product
+fi
 
 build_phase elf-hardening
 os/scripts/verify-elf-hardening.sh "$out" \

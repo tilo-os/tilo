@@ -1,16 +1,15 @@
 # The runtimes travel with their publishers' keys from the one builder result:
-# a non-publishing build signs them with keys it generates, so a key taken from
-# another stage (native-builder-payload, which buildkit may serve from an
-# earlier invocation's cache while the builder re-runs) would not be theirs.
-# What those keys sign (each bundle's bundle.toml) and the keys themselves leave
-# /image for /signatures, so the runtimes' bytes are the same layer in every
-# build that bakes the same runtimes, and only the signatures' small one is new.
+# a release generates its keys, so a key taken from another stage
+# (native-builder-payload, which buildkit may serve from an earlier invocation's
+# cache while the builder re-runs) would not be theirs. What those keys sign
+# (each bundle's bundle.toml) and the keys themselves leave /image for
+# /signatures, so the runtimes' bytes are the same layer in every build that
+# bakes the same runtimes, and only the signatures' small one is new.
 FROM ${BASE_REF} AS runtime-image-payload
 # Buildah keys a RUN by its instruction and the layer below, not by what a bind mount from
 # another stage holds, so this RUN would be served from an earlier build's cache however the
-# runtimes changed. Copying their publishers' keys first keys it: the payload's builder
-# signs with a key it generates, so that key is new whenever the payload is built again.
-COPY --from=apps-payload /out/runtime-bundle-publisher.hex /out/browser-runtime-publisher.hex /tilo-payload-keys/
+# runtimes changed. Copying the digest of the payload's files first keys it on them.
+COPY --from=apps-payload /out/payload-digest /tilo-payload-keys/
 RUN --network=none \
     --mount=type=bind,from=apps-payload,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
     --mount=type=bind,from=apps-payload,source=/out/runtime-version,target=/tilo-runtime-version,ro \

@@ -15,7 +15,8 @@
 #   2. rootless `podman build` of the bootc container image from os/Containerfile
 #      (os/image/'s pieces in one file), given the compiled tree as the `compiled`
 #      build context: no image build compiles. The build context is the REPO ROOT;
-#      .containerignore trims target/, os/output and .git.
+#      .containerignore trims target/, os/output and .git. TILO_BUILD_CONTEXT=<dir>
+#      names another, holding only what the Containerfile reads (a layer action's).
 #      With TILO_LAYER_TARGET=<stage> and TILO_CONTAINERFILE=<one piece's
 #      Containerfile>, it builds that stage alone, with TILO_LAYER_ARGS (the
 #      layers below given as images), tags it TILO_IMAGE and stops: one layer
@@ -615,7 +616,7 @@ build_image() {
     --build-arg "TILO_CFS_DIGEST=$seal_digest" \
     --source-date-epoch "$layer_epoch" --rewrite-timestamp \
     "$@" \
-    "$TILO_REPO"
+    "${TILO_BUILD_CONTEXT:-$TILO_REPO}"
 }
 
 # Rewrite the composefs digest inside the UKI the image already carries, as a layer

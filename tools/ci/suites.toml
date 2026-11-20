@@ -354,6 +354,7 @@ inputs = [
   "bin/",
   "sdk/python/native", "sdk/typescript/native",
   "docs/developers/tasks/", "tools/perf/tapp-size-budget/",
+  "crates/packaging/tilo-app-package/max-app-bytes",
   "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules",
   "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service",
   "crates/dev/tilo-vmd/data/tilo-vm-restore.service", "crates/dev/tilo-vmd/data/tilo-vm-session@.service",
