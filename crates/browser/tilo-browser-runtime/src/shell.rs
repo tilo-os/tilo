@@ -950,8 +950,11 @@ impl BrowserShell {
                 // Their app, where no window here shows their record by the name it is noted
                 // under: a window of that app here already is where they are, as a native shell
                 // brings it forward. Following never opens a second window beside it; it opens
-                // the app only where none stands.
-                if !self.handle.focus_app(&app) {
+                // the app only where none stands. An app this page cannot open is no place to
+                // bring forward: following waits for their next move, and never stands this
+                // page's search over the screen in its place.
+                if !self.handle.focus_app(&app) && crate::desktop::known_application(&app).is_some()
+                {
                     self.launch(&app);
                 }
                 true
