@@ -860,7 +860,12 @@ fn report(scenario: &str, metric: &str, value: f64, unit: &str) {
 /// (`TILO_FS_FUSE_REQUESTS=1`).
 fn report_requests(scenario: &str, work: &str, counts: &[(String, u64)]) {
     let total: u64 = counts.iter().map(|(_, count)| *count).sum();
-    report(scenario, &format!("{work}_requests"), total as f64, "requests");
+    report(
+        scenario,
+        &format!("{work}_requests"),
+        total as f64,
+        "requests",
+    );
     for (kind, count) in counts {
         report(
             scenario,
@@ -1301,11 +1306,13 @@ fn preserved_copies(root: &Path) -> (usize, usize) {
                 continue;
             }
             let name = entry.file_name();
-            let Some((base, _)) = name.to_str().and_then(|name| name.split_once(".unsaved-")) else {
+            let Some((base, _)) = name.to_str().and_then(|name| name.split_once(".unsaved-"))
+            else {
                 continue;
             };
             copies = copies.saturating_add(1);
-            if let (Ok(copy), Ok(file)) = (std::fs::read(entry.path()), std::fs::read(dir.join(base)))
+            if let (Ok(copy), Ok(file)) =
+                (std::fs::read(entry.path()), std::fs::read(dir.join(base)))
                 && copy == file
             {
                 wrong = wrong.saturating_add(1);
