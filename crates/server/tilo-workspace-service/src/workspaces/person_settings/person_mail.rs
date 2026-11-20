@@ -596,6 +596,7 @@ fn link_calendar(root: &Path, id: &str, calendar: &str, server: &str) -> Result<
 
 /// Forget `account`'s calendar account: what its settings say of one is
 /// taken away with the calendar account itself.
+#[cfg(feature = "agents")]
 fn unlink_calendar(root: &Path, account: &str) -> Result<(), String> {
     change_config(root, account, |settings| {
         settings.remove("calendar_account");

@@ -54,9 +54,10 @@ use super::person_models::kept_location;
 use super::{Workspaces, system_time};
 
 mod person_mail;
+#[cfg(feature = "agents")]
+use person_mail::answers_in_public;
 use person_mail::{
-    answers_in_public, kept_mail, linked_calendar, mail_accounts, provider_of_servers,
-    remove_calendar,
+    kept_mail, linked_calendar, mail_accounts, provider_of_servers, remove_calendar,
 };
 
 /// A person's calendars, kept beside their mail accounts.
