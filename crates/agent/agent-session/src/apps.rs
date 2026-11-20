@@ -1203,11 +1203,21 @@ impl Replica {
             } else {
                 self.view.past_page_len_under(root)
             };
+            // The rows an item past the pages is taken to offer: what the
+            // level's own items offered each. A window is counted in rows, and an
+            // issue offers a couple of dozen, so building as many items as
+            // there are rows left would build every item to the end.
+            let rows_each = level_rows.checked_div(level.len()).unwrap_or(1).max(1);
             while complete && walk.total < walk.end && next_child < past_len {
-                // The rows the page still needs: each item may offer none, so
-                // the walk asks again from where this window ended.
-                let room = walk.end.saturating_sub(walk.total).max(1);
-                let children = self.view.past_page_range_under(root, next_child, room);
+                // The items the rows the page still needs take: each item may
+                // offer fewer, so the walk asks again from where this window
+                // ended.
+                let rows_left = walk.end.saturating_sub(walk.total).max(1);
+                let children = self.view.past_page_range_under(
+                    root,
+                    next_child,
+                    rows_left.div_ceil(rows_each),
+                );
                 if children.is_empty() {
                     break;
                 }

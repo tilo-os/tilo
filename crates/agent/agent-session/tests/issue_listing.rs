@@ -244,3 +244,52 @@ fn listing_every_issue_costs_each_page_and_not_its_offset() {
         );
     }
 }
+
+/// A page of a listing past the pages a tracker's parts publish builds about
+/// the issues it lists, not every issue after them: a page is asked for in
+/// rows, and each issue offers a couple of dozen, so a page of ten thousand
+/// rows is a few hundred issues and never the thousands still to come.
+#[test]
+fn a_page_past_the_parts_pages_builds_the_issues_it_lists() {
+    const ROWS: usize = 10_000;
+    let mut page = crate::common::open(
+        "so.tilo.tasks",
+        &MemberId::person("ada"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    fill(&mut page, 2_000);
+    let query = CatalogueQuery {
+        parent_resource: Some(issues()),
+        max_results: u32::try_from(ROWS).unwrap(),
+        by_resource: true,
+        ..CatalogueQuery::default()
+    };
+    // The first page lists the issues the parts publish and counts them; the
+    // second starts past those pages.
+    let (_, first) = page.survey_page(&query, (false, (0, ROWS)));
+    let offered = |rows: &[CatalogueRow]| -> usize {
+        rows.iter()
+            .map(|row| {
+                row.offered
+                    .as_ref()
+                    .map_or(1, |offered| offered.actions.len().max(1))
+            })
+            .sum()
+    };
+    let next = offered(&first);
+    assert_eq!(next, ROWS, "the first page is full");
+    let ((_, second), observed) = observe(|| page.survey_page(&query, (false, (next, ROWS))));
+    let listed = resources(&second).len();
+    let built: usize = observed
+        .iter()
+        .filter(|sample| sample.phase == "resource.group_spec")
+        .map(|sample| sample.calls)
+        .sum();
+    assert!(listed > 0, "the second page lists issues");
+    assert!(
+        built <= listed * 2,
+        "a page listing {listed} issues built {built} of them"
+    );
+}
