@@ -103,22 +103,25 @@ pub enum ServersCmd {
     Ls,
     /// Have the server whose site is ORIGIN keep the workspace (-w) as well.
     #[command(
-        after_help = "Example:\n  tilo workspace servers add https://tilo.sh -w Tilo\n\n\
+        after_help = "Examples:\n  tilo workspace servers add https://tilo.sh -w Tilo\n  \
+                      tilo workspace servers add iroh:<device key>@<endpoint id> -w Tilo\n\n\
                       Both servers keep the workspace from then on: a change on either reaches \
                       the other, and its people reach it at either. Only its owners choose its \
                       servers, and the other server takes it only if it let you in and has \
-                      capacity for it: sign in there first."
+                      capacity for it: sign in there first. A server that serves no site is \
+                      named by its Iroh address, as `tilo-enroll device-key` prints it there."
     )]
     Add {
-        /// The other server's site, like `https://tilo.sh`.
+        /// The other server's site, like `https://tilo.sh`, or its Iroh
+        /// address, `iroh:<device key>@<endpoint id>`.
         origin: String,
     },
     /// Have a server keep the workspace (-w) no more.
     #[command(
         after_help = "Example:\n  tilo workspace servers remove https://tilo.sh -w Tilo\n\n\
-                      SERVER is its site, or its device key as `tilo workspace servers ls` names \
-                      it. It is no longer named to anyone at once, and lets the workspace go when \
-                      it hears so."
+                      SERVER is its site, its Iroh address, or its device key as `tilo workspace \
+                      servers ls` names it. It is no longer named to anyone at once, and lets the \
+                      workspace go when it hears so."
     )]
     Remove {
         /// The server's site, or its device key.
@@ -130,12 +133,13 @@ pub enum ServersCmd {
         after_help = "Example:\n  tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo\n\n\
                       TO keeps the workspace first, then FROM keeps it no more. If TO refuses, \
                       the workspace stays where it was. FROM is a site, or a device key as \
-                      `tilo workspace servers ls` names it; TO is a site."
+                      `tilo workspace servers ls` names it; TO is a site or an Iroh address."
     )]
     Move {
         /// The server it moves from: its site, or its device key.
         from: String,
-        /// The site of the server it moves to, like `https://tilo.sh`.
+        /// The site of the server it moves to, like `https://tilo.sh`, or its
+        /// Iroh address.
         to: String,
     },
 }
