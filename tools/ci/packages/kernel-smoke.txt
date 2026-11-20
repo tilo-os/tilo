@@ -1,0 +1,6 @@
+# What the diskless kernel boots need beside the builder image, which carries gcc, binutils and
+# python3: the initramfs the tests build is a cpio archive, and the module they ship is zstd
+# compressed only when the test compresses it (os/kernel/tests/test-boot-smoke-compressed.sh,
+# os/tests/kernel-landlock-private-tmp.sh).
+cpio
+zstd
