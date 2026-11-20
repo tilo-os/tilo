@@ -38,8 +38,8 @@ fn part<'a>(bar: &'a Composed, key: &str) -> &'a Composed {
 }
 
 /// The workspace's name is a real button with its words and chevron, the time is words, the
-/// invite is a button with its glyph, and the faces are pictures of their paint: each where the
-/// bar's layout stood it, never one picture of the whole bar.
+/// invite is a button with its glyph, and each face is a button of its own over the picture of
+/// its paint: each where the bar's layout stood it, never one picture of the whole bar.
 #[test]
 fn the_bar_shows_its_parts_as_what_they_are() {
     let bar = bar_of(&[("ada", "Ada Lovelace")]);
@@ -81,25 +81,106 @@ fn the_bar_shows_its_parts_as_what_they_are() {
     let faces = part(&composed, "faces");
     assert!(matches!(faces.own, Some(Own::Painted { .. })));
 
-    // Every control a reader reaches is a button where its target stands.
+    // Every control a reader reaches is a button where its target stands. Each face is a button
+    // of its own, named for its person; nothing here opens everyone, so none says it does.
     let buttons: Vec<&Composed> = composed
         .children
         .iter()
         .filter(|child| child.tag == Some("button"))
         .collect();
+    let target_of = |button: &Composed| {
+        button
+            .semantics
+            .as_ref()
+            .and_then(|node| node.action_target.clone())
+    };
     for target in [
         TopBarChrome::CONTROL_WORKSPACE_SETTINGS,
         TopBarChrome::CONTROL_NOTIFICATIONS,
-        TopBarChrome::CONTROL_PEOPLE,
         TopBarChrome::CONTROL_INVITE,
+        &TopBarChrome::face_target("ada"),
     ] {
         assert!(
-            buttons.iter().any(|button| button
-                .semantics
-                .as_ref()
-                .and_then(|node| node.action_target.as_deref())
-                == Some(target)),
+            buttons
+                .iter()
+                .any(|button| target_of(button).as_deref() == Some(target)),
             "{target} is a button: {buttons:#?}"
         );
     }
+    assert!(
+        !buttons
+            .iter()
+            .any(|button| target_of(button).as_deref() == Some(TopBarChrome::CONTROL_PEOPLE)),
+        "nothing in the bar opens everyone: the one face opens its person"
+    );
+
+    let ada = part(&composed, "face-ada");
+    assert_eq!(ada.tag, Some("button"), "the face is a button of its own");
+    let face_rect = bar.face_rect("ada").expect("Ada's face");
+    assert_eq!(
+        ada.rect,
+        [
+            face_rect.x0,
+            face_rect.y0,
+            face_rect.width(),
+            face_rect.height()
+        ],
+        "where a press reaches it"
+    );
+    assert_eq!(
+        ada.semantics.as_ref().and_then(|node| node.name.as_deref()),
+        Some("Ada Lovelace"),
+        "named for the person it opens"
+    );
+}
+
+/// Where the bar counts people past the faces, the "+N" badge is the button that opens everyone,
+/// at the badge's own place.
+#[test]
+fn the_badge_that_counts_the_rest_is_the_button_that_opens_everyone() {
+    let people: Vec<(String, String)> = (0..6)
+        .map(|i| (format!("p{i}"), format!("Person {i}")))
+        .collect();
+    let people: Vec<(&str, &str)> = people
+        .iter()
+        .map(|(id, name)| (id.as_str(), name.as_str()))
+        .collect();
+    let bar = bar_of(&people);
+    assert!(bar.face_overflow() > 0, "crowded: a +N badge");
+    let composed = ui::composition::compose_alone(&bar, &Theme::default(), "topbar");
+    let button = composed
+        .children
+        .iter()
+        .find(|child| {
+            child.tag == Some("button")
+                && child
+                    .semantics
+                    .as_ref()
+                    .and_then(|node| node.action_target.as_deref())
+                    == Some(TopBarChrome::CONTROL_PEOPLE)
+        })
+        .expect("the badge is the button for everyone here");
+    assert_eq!(
+        button
+            .semantics
+            .as_ref()
+            .and_then(|node| node.name.as_deref()),
+        Some("Everyone here"),
+        "named for what a press opens"
+    );
+    let everyone = bar.control_rect(TopBarChrome::CONTROL_PEOPLE);
+    assert_eq!(
+        button.rect,
+        [
+            everyone.x0,
+            everyone.y0,
+            everyone.width(),
+            everyone.height()
+        ],
+        "where a press opens everyone"
+    );
+    assert_eq!(
+        everyone, bar.face_badge_rect,
+        "the badge itself, not the faces beside it"
+    );
 }

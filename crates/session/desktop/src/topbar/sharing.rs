@@ -13,10 +13,19 @@ impl TopBarChrome {
         self.control_rect(Self::CONTROL_PROFILE)
     }
 
-    /// Where the others' faces (or the sharing indicator) were last drawn,
-    /// for anchoring who is here; zero when neither is shown.
+    /// Where who is here was last drawn — the faces, the button that stands for them where no
+    /// face had room, or the sharing pill — for anchoring the panel that lists them; zero when
+    /// nothing of who is here shows.
     pub fn roster_rect(&self) -> Rect {
-        self.control_rect(Self::CONTROL_PEOPLE)
+        [
+            self.avatar_stack_rect,
+            self.people_button_rect,
+            self.sharing_indicator_rect,
+        ]
+        .into_iter()
+        .filter(|rect| !rect.is_zero_area())
+        .reduce(|a, b| a.union(b))
+        .unwrap_or(Rect::ZERO)
     }
 
     /// What the own avatar is called to assistive technology.
@@ -25,56 +34,26 @@ impl TopBarChrome {
         t_args("topbar-profile", &[("name", name.into())])
     }
 
-    /// The faces in the people control, one named control each, then the "+N" chip for those
-    /// beyond them. Keyed by the roster id, so a reader's place survives someone arriving or
-    /// leaving, and each stands where the pointer reaches it: a reader presses a face where a
-    /// person does, and it opens that person's card.
-    pub(super) fn face_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, Role};
-        // A bar not drawn yet stands the first few of everyone, as a wide bar does.
-        let drawn: Vec<usize> = if self.face_rects.is_empty() {
-            (0..self.faces_shown).collect()
-        } else {
-            self.shown_faces.clone()
-        };
-        let mut faces: Vec<AccessNode> = drawn
-            .iter()
-            .enumerate()
-            .filter_map(|(drawn, &index)| {
-                let name = self.face_names.get(index)?;
-                let name = if self
-                    .face_members
-                    .get(index)
-                    .is_some_and(|member| !member.is_person())
-                {
-                    t_args("topbar-face-agent", &[("name", name.as_str().into())])
-                } else {
-                    name.clone()
-                };
-                let id = self.face_ids.get(index).map_or("", String::as_str);
-                let mut face = AccessNode::new(Role::Button)
-                    .with_name(name)
-                    .with_action_target(format!("{}{id}", Self::FACE_TARGET))
-                    .with_hashed_key(("topbar-face", id));
-                if let Some(rect) = self.face_rects.get(drawn) {
-                    face = face.with_bounds(*rect);
-                }
-                Some(face)
-            })
-            .collect();
-        if self.face_overflow > 0 {
-            let mut more = AccessNode::new(Role::StaticText)
-                .with_name(t_args(
-                    "topbar-faces-more",
-                    &[("count", self.face_overflow.into())],
-                ))
-                .with_hashed_key("topbar-faces-more");
-            if !self.people_count_rect.is_zero_area() {
-                more = more.with_bounds(self.people_count_rect);
-            }
-            faces.push(more);
-        }
-        faces
+    /// The roster index of the person whose face `id` names.
+    pub(super) fn face_index(&self, id: &str) -> Option<usize> {
+        self.face_ids.iter().position(|shown| shown == id)
+    }
+
+    /// What a reader calls the face of the person at roster index `index`: their name, and that
+    /// they are software where they are an agent.
+    pub(super) fn face_control_name(&self, index: usize) -> Option<String> {
+        let name = self.face_names.get(index)?;
+        Some(
+            if self
+                .face_members
+                .get(index)
+                .is_some_and(|member| !member.is_person())
+            {
+                t_args("topbar-face-agent", &[("name", name.as_str().into())])
+            } else {
+                name.clone()
+            },
+        )
     }
 
     /// The person's own avatar, when the bar shows it.
@@ -137,12 +116,6 @@ impl TopBarChrome {
     /// regressing.
     pub fn overview_glyph_icon() -> ui::icons::Icon {
         ui::icons::Icon::LayoutGrid
-    }
-
-    pub(super) fn roster_visible(&self) -> bool {
-        !self.face_initials.is_empty()
-            || self.face_overflow > 0
-            || self.sharing_summary().viewers > 0
     }
 
     /// How the shared windows stand with the devices that asked to see them, from the compositor

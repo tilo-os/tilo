@@ -16,6 +16,14 @@ impl TopBarChrome {
         if !self.rect.contains(point) && !self.ask.pill.contains(point) {
             return None;
         }
+        // The badge past the faces is drawn over the last one and opens everyone; the faces
+        // overlap left over right, so the one drawn on top is the one a press reaches.
+        if self.face_badge_rect.contains(point) {
+            return Some(Self::CONTROL_PEOPLE.to_string());
+        }
+        if let Some(id) = self.face_at(point) {
+            return Some(Self::face_target(&id));
+        }
         self.control_targets()
             .into_iter()
             .find(|target| self.control_rect(target).contains(point))
@@ -40,7 +48,10 @@ impl TopBarChrome {
         if !self.bell.only {
             controls.push(Self::CONTROL_QUICK_SETTINGS.to_string());
         }
-        if self.roster_visible() {
+        // Who is here: each face is a control of its own, named for the person it opens, and the
+        // one control named for everyone here stands only where a press opens everyone.
+        controls.extend(self.face_targets().into_iter().map(|(target, _)| target));
+        if !self.everyone_rect().is_zero_area() {
             controls.push(Self::CONTROL_PEOPLE.to_string());
         }
         if !self.invite_rect.is_zero_area() {
@@ -71,6 +82,10 @@ impl TopBarChrome {
     }
 
     pub(super) fn control_rect(&self, target: &str) -> Rect {
+        // Each face stands where it is drawn, as its own control.
+        if let Some(id) = Self::face_target_id(target) {
+            return self.face_rect(id).unwrap_or(Rect::ZERO);
+        }
         match target {
             Self::CONTROL_TILO_MARK => self.tilo_mark_rect,
             Self::CONTROL_WORKSPACE_SETTINGS => self.ws_pill_rect,
@@ -79,22 +94,9 @@ impl TopBarChrome {
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_PROFILE => self.own_avatar_rect,
             Self::CONTROL_INVITE => self.invite_rect,
-            // Who is here, as one control: the faces (each opening its person in the panel, the
-            // badge everyone), or the people button where no face had room.
-            Self::CONTROL_PEOPLE => {
-                let people = if self.people_button_rect.is_zero_area() {
-                    self.avatar_stack_rect
-                } else {
-                    self.people_button_rect
-                };
-                if people.is_zero_area() {
-                    self.sharing_indicator_rect
-                } else if self.sharing_indicator_rect.is_zero_area() {
-                    people
-                } else {
-                    people.union(self.sharing_indicator_rect)
-                }
-            }
+            // Where a press opens everyone here — the people button, the "+N" badge counting who
+            // is here, the sharing pill — and nowhere else: the faces are controls of their own.
+            Self::CONTROL_PEOPLE => self.everyone_rect(),
             Self::CONTROL_MEDIA => self.media_hit_rect(),
             Self::CONTROL_CONTINUITY => self.continuity_rect,
             Self::CONTROL_CONTINUITY_DISMISS => self.continuity_dismiss_rect,
@@ -145,6 +147,13 @@ impl TopBarChrome {
     }
 
     pub(super) fn control_name(&self, target: &str) -> String {
+        // A face is named for its person, and an agent as software.
+        if let Some(id) = Self::face_target_id(target) {
+            return self
+                .face_index(id)
+                .and_then(|index| self.face_control_name(index))
+                .unwrap_or_else(|| t("topbar-control"));
+        }
         if let Some(key) = Self::tray_target_key(target) {
             // The application's own name for its icon, never its bus address: an item is one app's
             // window or state, said in the words that app chose.
@@ -346,6 +355,10 @@ impl TopBarChrome {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        // A face opens the person it draws, as a press on it does.
+        if let Some(id) = Self::face_target_id(target) {
+            return chrome.intent(ChromeIntent::ShowPerson(id.to_owned()));
+        }
         if let Some(key) = Self::tray_target_key(target) {
             // A key or a reader's activation does what a left click does: the item's primary
             // action, or its own menu when it has none.

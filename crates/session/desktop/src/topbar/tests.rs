@@ -999,11 +999,9 @@ tilo_test_env::scenario! {
         // Removing an optional target leaves the focus stop intact and End resolves against the newly
         // published control set.
         bar.media_indicator_rect = Rect::ZERO;
+        let last = bar.control_targets().last().cloned().expect("controls");
         assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
-        assert_eq!(
-            bar.focused_control.as_deref(),
-            Some(TopBarChrome::CONTROL_PEOPLE)
-        );
+        assert_eq!(bar.focused_control.as_deref(), Some(last.as_str()));
     }
 
     phase keyboard_activation_matches_pointer_actions;
@@ -1815,7 +1813,7 @@ tilo_test_env::scenario! {
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
-        bar.avatar_stack_rect = chip;
+        bar.face_badge_rect = chip;
         bar.last_cursor = Some(chip.center());
 
         let mut handled = false;
@@ -2437,21 +2435,33 @@ tilo_test_env::scenario! {
                 collab_types::MemberId::agent("scribe")
             ]
         );
-        // Each face is named for a reader, an agent as one.
+        // Each face is a control of its own, named for a reader, an agent as one.
         paint(&mut bar);
         let node = bar.accessibility().expect("topbar semantics");
-        let people = node
+        let faces: Vec<_> = node
             .children
             .iter()
-            .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_PEOPLE))
-            .expect("the people control");
-        let faces: Vec<_> = people
-            .children
-            .iter()
-            .filter_map(|face| face.name.as_deref())
+            .filter(|child| {
+                child
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with(TopBarChrome::FACE_TARGET))
+            })
             .collect();
-        assert_eq!(faces, ["Ada", "Scribe, agent"]);
-        assert!(people.children.iter().all(|face| face.bounds.is_some()));
+        assert_eq!(
+            faces
+                .iter()
+                .filter_map(|face| face.name.as_deref())
+                .collect::<Vec<_>>(),
+            ["Ada", "Scribe, agent"]
+        );
+        assert!(faces.iter().all(|face| face.bounds.is_some()));
+        assert!(
+            !node.children.iter().any(|child| {
+                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_PEOPLE)
+            }),
+            "every face has room, so nothing in the bar opens everyone"
+        );
     }
 
     phase a_phone_bar_keeps_its_clock_band_to_itself;

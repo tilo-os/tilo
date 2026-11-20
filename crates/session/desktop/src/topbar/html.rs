@@ -1,9 +1,10 @@
 //! The bar as a page shows it: each part where [`TopBarChrome::lay_out_bar`] stood it, as what
 //! it is. A control with words or one glyph is a real button with its face (the workspace's name,
 //! the strip, the invite, the people and the media chips); the time is words; what is genuinely
-//! drawn (the Tilo mark, faces with their rings, the status cluster's gauges, an application's
-//! icon, the notices) is a picture of its own paint. Every control is a button a reader and the
-//! keyboard reach, where its target stands.
+//! drawn (the Tilo mark, the status cluster's gauges, an application's icon, the notices) is a
+//! picture of its own paint, and each face is a button of its own over the picture of the stack,
+//! named for the person it opens. Every control is a button a reader and the keyboard reach, where
+//! its target stands.
 
 use super::{Rect, TextRole, Theme, TopBarChrome, TopBarPresence};
 use ui::composition::{HtmlCx, Own, TextLook};
@@ -174,6 +175,15 @@ impl TopBarChrome {
         }
         if !self.avatar_stack_rect.is_zero_area() {
             part(cx, "faces", self.avatar_stack_rect, None);
+            // Each face over that picture is a button of its own, named for the person it opens.
+            for (target, rect) in self.face_targets() {
+                let Some(id) = Self::face_target_id(&target) else {
+                    continue;
+                };
+                if !rect.is_zero_area() {
+                    part(cx, &format!("face-{id}"), rect, Some(&target));
+                }
+            }
         }
         if let Some(hovered) = self.placed.people_button {
             part(cx, "people", self.people_button_rect, None);
@@ -243,8 +253,8 @@ impl Parts {
     }
 
     /// Every control no part stood for still answers where its target is: the bell and the
-    /// quick settings inside the status cluster's one picture, who is here across the faces,
-    /// the ask's two choices.
+    /// quick settings inside the status cluster's one picture, the button or badge that opens
+    /// everyone here, the ask's two choices.
     fn compose_targets(&self, cx: &mut HtmlCx<'_>) {
         for node in &self.controls {
             let Some(key) = node.action_target.as_deref() else {

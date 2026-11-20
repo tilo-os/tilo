@@ -465,6 +465,9 @@ pub struct TopBarChrome {
     /// The others' faces (and the "+N" badge): each face opens that person's card, the badge
     /// everyone.
     avatar_stack_rect: Rect,
+    /// The stack's own "+N" badge, where the faces past it are counted: a press there opens
+    /// everyone, as the faces each open their person. Zero when every face here has room.
+    face_badge_rect: Rect,
     /// The people button beside the faces, which opens everyone here (the panel and its pin); zero
     /// when nobody else is here.
     people_button_rect: Rect,
@@ -594,6 +597,7 @@ impl TopBarChrome {
             media_expanded: false,
             bell: TrayBell::default(),
             avatar_stack_rect: Rect::ZERO,
+            face_badge_rect: Rect::ZERO,
             people_button_rect: Rect::ZERO,
             invite_rect: Rect::ZERO,
             arrival_rect: Rect::ZERO,
@@ -1482,13 +1486,11 @@ impl Widget for TopBarChrome {
                 "topbar_media_indicator".to_string(),
                 self.control_rect(Self::CONTROL_MEDIA),
             ),
-            (
-                "topbar_avatar_stack".to_string(),
-                self.control_rect(Self::CONTROL_PEOPLE),
-            ),
+            ("topbar_avatar_stack".to_string(), self.avatar_stack_rect),
+            ("topbar_people".to_string(), self.everyone_rect()),
             (
                 "topbar_sharing_indicator".to_string(),
-                self.control_rect(Self::CONTROL_PEOPLE),
+                self.sharing_indicator_rect,
             ),
             (
                 "topbar_continuity".to_string(),
@@ -1505,6 +1507,18 @@ impl Widget for TopBarChrome {
             ("topbar_arrival".to_string(), self.arrival_rect),
         ];
         rects.extend(app_tray);
+        // Each face a person can press, by the roster id it opens.
+        rects.extend(
+            self.face_targets()
+                .into_iter()
+                .filter(|(_, rect)| !rect.is_zero_area())
+                .filter_map(|(target, rect)| {
+                    Some((
+                        format!("topbar_face_{}", Self::face_target_id(&target)?),
+                        rect,
+                    ))
+                }),
+        );
         rects
     }
 
@@ -1555,9 +1569,13 @@ impl Widget for TopBarChrome {
                         &[("count", unread.min(99).into())],
                     ));
                 }
-                // Each face in the people control is someone here: say who.
-                if target == Self::CONTROL_PEOPLE {
-                    node = node.with_children(self.face_accessibility());
+                // The control that opens everyone is the button or the "+N" badge: it says how
+                // many it counts, as the badge paints them.
+                if target == Self::CONTROL_PEOPLE && self.face_overflow > 0 {
+                    node = node.with_description(t_args(
+                        "topbar-faces-more",
+                        &[("count", self.face_overflow.into())],
+                    ));
                 }
                 // An ask waiting on their own avatar: beside it as the pill when the bar has room,
                 // and as the dot on the avatar when it has none or the person folded it. Folded,

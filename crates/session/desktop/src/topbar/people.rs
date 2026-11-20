@@ -85,14 +85,32 @@ impl TopBarChrome {
         if self.invite_rect.contains(point) {
             return Some(ChromeIntent::Invite);
         }
+        // The "+N" badge is drawn over the face before it and stands for everyone past the faces.
+        if self.face_badge_rect.contains(point) {
+            return Some(ChromeIntent::TogglePeople);
+        }
         if let Some(id) = self.face_at(point) {
             return Some(ChromeIntent::ShowPerson(id));
         }
-        (self.people_button_rect.contains(point)
-            || self.people_count_rect.contains(point)
-            || self.avatar_stack_rect.contains(point)
-            || self.sharing_indicator_rect.contains(point))
-        .then_some(ChromeIntent::TogglePeople)
+        self.everyone_rect()
+            .contains(point)
+            .then_some(ChromeIntent::TogglePeople)
+    }
+
+    /// Where a press opens everyone here: the people button, or the "+N" badge counting who is
+    /// here (on that button, or past the faces); the sharing pill where neither stands, as it
+    /// opens everyone too. Zero where nothing in the bar opens everyone: each face opens only its
+    /// own person, and the ground between them nothing.
+    pub(super) fn everyone_rect(&self) -> Rect {
+        [
+            self.people_button_rect,
+            self.people_count_rect,
+            self.face_badge_rect,
+        ]
+        .into_iter()
+        .filter(|rect| !rect.is_zero_area())
+        .reduce(|a, b| a.union(b))
+        .unwrap_or(self.sharing_indicator_rect)
     }
 
     /// Where the people button was last drawn; zero when it is not shown.
@@ -311,8 +329,12 @@ impl TopBarChrome {
             .into_iter()
             .chain(shown.iter().map(|&i| self.face_of(i, theme)))
             .collect();
-        let (rects, _) = ui::presence::FaceStack::BAR.layout(anchor, (&faces, more));
+        let (rects, badge) = ui::presence::FaceStack::BAR.layout(anchor, (&faces, more));
         drop(faces);
+        // The badge is drawn over the last face's edge: a press reaches it whole.
+        self.face_badge_rect = badge.map_or(Rect::ZERO, |rect| {
+            rect.inflate(ui::presence::Face::REACH, ui::presence::Face::REACH)
+        });
         let mut rects = Self::faces_drawn(rects);
         self.own_avatar_rect = if own.is_some() {
             rects.remove(0)
@@ -381,6 +403,43 @@ impl TopBarChrome {
     /// What pressing a face stands for, by the roster id it opens: the bar's own target, so a
     /// reader presses a face where the pointer does.
     pub(super) const FACE_TARGET: &'static str = "topbar:face:";
+
+    /// The target the face of the person with roster id `id` answers to.
+    pub(super) fn face_target(id: &str) -> String {
+        format!("{}{id}", Self::FACE_TARGET)
+    }
+
+    /// The roster id `target` names, where it names a face.
+    pub(super) fn face_target_id(target: &str) -> Option<&str> {
+        target
+            .strip_prefix(Self::FACE_TARGET)
+            .filter(|id| !id.is_empty())
+    }
+
+    /// The faces the last draw stood, in reading order, each where a press reaches it and the
+    /// target it answers with. Before the first draw the first few of everyone stand, as a wide
+    /// bar's would, with no place yet.
+    pub(super) fn face_targets(&self) -> Vec<(String, Rect)> {
+        let drawn: Vec<(usize, Rect)> = if self.face_rects.is_empty() {
+            (0..self.faces_shown)
+                .map(|index| (index, Rect::ZERO))
+                .collect()
+        } else {
+            self.shown_faces
+                .iter()
+                .copied()
+                .zip(self.face_rects.iter().copied())
+                .collect()
+        };
+        drawn
+            .into_iter()
+            .filter_map(|(index, rect)| {
+                self.face_ids
+                    .get(index)
+                    .map(|id| (Self::face_target(id), rect))
+            })
+            .collect()
+    }
 
     /// The faces drawn, each where a press reaches it: the disc the stack painted, with the ring
     /// and the ground drawn around it. Where a face stands is decided once, here, for the pointer
@@ -482,6 +541,7 @@ impl TopBarChrome {
         self.people_button_rect = Rect::ZERO;
         self.placed.people_button = None;
         self.placed.faces = None;
+        self.face_badge_rect = Rect::ZERO;
         self.avatar_stack_rect = self.place_avatar_chips(theme, center_y, right_x);
         // Someone is here but the bar had no room for their face or the count: the people button
         // is who is here then.
@@ -701,7 +761,7 @@ mod tests {
         {
             let tree = shell(&[(MemberId::person("ada"), "Ada Lovelace"), (MemberId::person("bo"), "Bo Brave")]);
             let (bar, _chrome) = bar_over(&tree, true);
-            let faces = bar.face_accessibility();
+            let faces = face_nodes(&bar);
             assert_eq!(faces.len(), 2, "one node per face");
             for (face, id) in faces.iter().zip(["ada", "bo"]) {
                 let bounds = face.bounds.expect("placed");
@@ -782,13 +842,124 @@ mod tests {
             .collect();
         let (mut bar, chrome) = bar_over(&shell(&crowd), true);
         assert!(bar.face_overflow() > 0, "crowded: a +N badge");
-        let badge_x = bar.face_rects.last().unwrap().x1 + 4.0;
-        let stack_y = bar.avatar_stack_rect.center().y;
-        assert!(press(&mut bar, Point::new(badge_x + 6.0, stack_y)));
+        let badge = bar.face_badge_rect.center();
+        assert!(press(&mut bar, badge));
         assert_eq!(
             chrome.borrow().intents.last(),
             Some(&ChromeIntent::TogglePeople)
         );
+    }
+
+    /// Every face the bar draws is a control of its own, named for the person it opens: a press
+    /// at its middle opens that person, and so does the keyboard's activation. The one control
+    /// named for everyone here stands only where a press opens everyone.
+    #[test]
+    fn each_face_opens_its_person_and_everyone_here_opens_the_panel() {
+        let tree = shell(&[
+            (MemberId::person("ada"), "Ada Lovelace"),
+            (MemberId::agent("cc"), "Claude Code"),
+        ]);
+        let (mut bar, chrome) = bar_over(&tree, true);
+        assert!(
+            bar.control_rect(TopBarChrome::CONTROL_PEOPLE)
+                .is_zero_area(),
+            "every face has room: nothing in the bar opens everyone"
+        );
+        assert!(
+            !bar.control_targets()
+                .contains(&TopBarChrome::CONTROL_PEOPLE.to_string()),
+            "so the bar publishes no control saying it does"
+        );
+        for (id, name) in [("ada", "Ada Lovelace"), ("cc", "Claude Code, agent")] {
+            let target = TopBarChrome::face_target(id);
+            assert!(
+                bar.control_targets().contains(&target),
+                "{name} is a control the keyboard reaches"
+            );
+            assert_eq!(bar.control_name(&target), name);
+            let rect = bar.control_rect(&target);
+            assert_eq!(
+                Some(rect),
+                bar.face_rect(id),
+                "where a press reaches the face"
+            );
+            assert!(press(&mut bar, rect.center()));
+            assert_eq!(
+                chrome.borrow().intents.last(),
+                Some(&ChromeIntent::ShowPerson(id.into())),
+                "{name}'s middle opens {name}"
+            );
+            assert!(bar.activate_control(&target));
+            assert_eq!(
+                chrome.borrow().intents.last(),
+                Some(&ChromeIntent::ShowPerson(id.into())),
+                "the keyboard opens {name} too"
+            );
+        }
+
+        // Crowded, the "+N" badge is what opens everyone, and it stands for nothing else.
+        let crowd: Vec<(String, String)> = (0..6)
+            .map(|i| (format!("p{i}"), format!("Person {i}")))
+            .collect();
+        let crowd: Vec<(MemberId, &str)> = crowd
+            .iter()
+            .map(|(a, b)| (MemberId::person(a), b.as_str()))
+            .collect();
+        let (mut bar, chrome) = bar_over(&shell(&crowd), true);
+        assert!(bar.face_overflow() > 0, "crowded: a +N badge");
+        let everyone = bar.control_rect(TopBarChrome::CONTROL_PEOPLE);
+        assert_eq!(
+            everyone, bar.face_badge_rect,
+            "the badge alone, not the faces"
+        );
+        assert_eq!(
+            bar.control_name(TopBarChrome::CONTROL_PEOPLE),
+            t("topbar-show-people"),
+            "named for what a press there opens"
+        );
+        assert!(press(&mut bar, everyone.center()));
+        assert_eq!(
+            chrome.borrow().intents.last(),
+            Some(&ChromeIntent::TogglePeople),
+            "the middle of everyone here opens the people panel"
+        );
+
+        // A face on the same crowded bar still opens its own person.
+        let target = TopBarChrome::face_target("p0");
+        let rect = bar.control_rect(&target);
+        assert!(press(&mut bar, rect.center()));
+        assert_eq!(
+            chrome.borrow().intents.last(),
+            Some(&ChromeIntent::ShowPerson("p0".into()))
+        );
+
+        // The sharing pill opens everyone too, and stands away from the badge: the control
+        // stands at the badge, never as a box across the faces between them.
+        chrome
+            .borrow_mut()
+            .set_active_exposures(vec![crate::chrome::ActiveExposure {
+                peer: 7,
+                surface: 42,
+                can_control: true,
+                streaming: true,
+                name: "Ada".into(),
+            }]);
+        super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
+        assert!(
+            !bar.sharing_indicator_rect.is_zero_area(),
+            "the pill stands"
+        );
+        let everyone = bar.control_rect(TopBarChrome::CONTROL_PEOPLE);
+        assert_eq!(
+            everyone, bar.face_badge_rect,
+            "the badge, never across the faces between the pill and it"
+        );
+        assert!(press(&mut bar, everyone.center()));
+        assert_eq!(
+            chrome.borrow().intents.last(),
+            Some(&ChromeIntent::TogglePeople)
+        );
+        assert!(bar.face_at(everyone.center()).is_none());
     }
 
     /// An agent here wears its face on the bar whether or not it works, and while it works its
@@ -846,16 +1017,25 @@ mod tests {
         ])
     }
 
-    /// What the bar tells a reader its faces are, in the order drawn. A face is a control of its
-    /// own (`FACE_TARGET`), so the "+N" counted beside them is not one of them.
-    fn face_names(bar: &TopBarChrome) -> Vec<String> {
-        bar.face_accessibility()
+    /// The faces the bar publishes to a reader, in the order drawn: each a control of its own
+    /// (`FACE_TARGET`), never part of one control for everyone here.
+    fn face_nodes(bar: &TopBarChrome) -> Vec<ui::a11y::AccessNode> {
+        ui::widget::Widget::accessibility(bar)
+            .map(|node| node.children)
+            .unwrap_or_default()
             .into_iter()
             .filter(|node| {
                 node.action_target
                     .as_deref()
                     .is_some_and(|target| target.starts_with(TopBarChrome::FACE_TARGET))
             })
+            .collect()
+    }
+
+    /// What the bar tells a reader its faces are, in the order drawn.
+    fn face_names(bar: &TopBarChrome) -> Vec<String> {
+        face_nodes(bar)
+            .into_iter()
             .filter_map(|node| node.name)
             .collect()
     }
@@ -954,7 +1134,7 @@ mod tests {
                     "with their face at {width}: {chip:?}"
                 );
                 assert!(!stop.is_zero_area(), "and Stop at {width}: {chip:?}");
-                let people = bar.control_rect(TopBarChrome::CONTROL_PEOPLE);
+                let people = bar.roster_rect();
                 assert!(!people.is_zero_area(), "who is here stands at {width}");
                 let mut beside: Vec<(&str, Rect)> = vec![
                     ("the workspace's name", bar.ws_pill_rect),
@@ -988,7 +1168,7 @@ mod tests {
                 // Whatever the bar can hold, nothing of who is here stands in the banner's area...
                 assert!(
                     people.x0 >= bar.center_area.x1 + gap,
-                    "the people button keeps clear of the banner at {width}: {people:?}"
+                    "who is here keeps clear of the banner at {width}: {people:?}"
                 );
                 // ...and where it cannot hold the invite too, the invite waits in the panel the
                 // people button opens, rather than pressing the button into the banner.
