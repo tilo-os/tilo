@@ -51,16 +51,6 @@ cd "$repo_root"
 # The kernel an action installs from: the pinned one, unless the run names another.
 . os/image/kernel-env.sh
 
-# The RFC 8032 test-vector key: public and non-production, accepted only for development and
-# validation images (as tools/ci/publish/os-image.sh).
-dev_owner_key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
-# Its secret half, which a development image's payload signs its runtimes and apps with
-# (os/image/helpers/apps-payload.Containerfile): the image already trusts the key as its owner,
-# so this trusts no one else, and packing the same files signs the same bytes in every build,
-# so the payload and every layer given it are served while the apps are as they were. A release
-# signs with keys it generates and discards.
-dev_owner_secret=9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60
-
 # How long each part of an action took, for finding what a build spends its time on.
 phase_started=$SECONDS phase_name=start
 phase() {

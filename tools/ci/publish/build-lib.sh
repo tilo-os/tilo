@@ -117,15 +117,36 @@ index_digest() {
   printf '%s' "$digests"
 }
 
+# The RFC 8032 test-vector key: public and non-production, accepted only for development and
+# validation images (as tools/ci/publish/os-image.sh).
+dev_owner_key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
+# Its secret half, which a development image's payload signs its runtimes and apps with
+# (os/image/helpers/apps-payload.Containerfile, through os/image/build-layer.sh) and its
+# environment runtime is sealed with (env-runtime.sh dev): the image already trusts the key as
+# its owner, so this trusts no one else, and packing the same files signs the same bytes in every
+# build, so what is given them is served while they are as they were. A release signs with keys
+# it generates and discards.
+dev_owner_secret=9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60
+
 # The manifest digest of the single image in an OCI archive, from its index.json.
 archive_digest() {
   tar -xOf "$1" index.json | index_digest "$1 index.json"
 }
 
 # The resealing bootc a sealed image's composefs digest is computed with
-# (os/Containerfile.bootc-helper): the published build of these sources, else built here.
+# (os/Containerfile.bootc-helper), as an image whose /bootc it is: the one a step of its own built
+# (tools/ci/publish/bootc-helper.sh reseal) when TILO_BOOTC_RESEAL names it, else the published
+# build of these sources, else built here.
 bootc_helper() {
   local key ref
+  if [[ -n ${TILO_BOOTC_RESEAL:-} ]]; then
+    [[ -f $TILO_BOOTC_RESEAL && -x $TILO_BOOTC_RESEAL ]] || die "TILO_BOOTC_RESEAL is not a built bootc: $TILO_BOOTC_RESEAL"
+    ref=localhost/tilo-bootc-reseal:given
+    printf 'FROM scratch\nCOPY bootc /bootc\n' \
+      | podman build -q --network=none -t "$ref" -f - "$(dirname -- "$TILO_BOOTC_RESEAL")" >/dev/null
+    printf '%s' "$ref"
+    return
+  fi
   key=$(cat os/Containerfile.bootc-helper os/external-assets/bootc-install-reseal/*.patch | sha256sum | cut -c1-16)
   ref=registry.tilo.so/tilo/bootc-install-helper:$key-$(uname -m)
   if ! podman pull -q "$ref" >/dev/null 2>&1; then

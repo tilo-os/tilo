@@ -20,7 +20,7 @@
 #                                           this run (RPMS: its image.oci.tar and digest), for dev
 #                                           images; no release seals it (buildah image, native)
 #   env-runtime.sh dev ARCH TREES PACKER OUT
-#                                           seal ARCH's dev tree with a throwaway key into OUT as
+#                                           seal ARCH's dev tree with the dev key into OUT as
 #                                           seal lays it out: the runtime a run's dev images ship
 #                                           (os-dev-image-ARCH); nothing publishes it (builder)
 #   env-runtime.sh local-dev ARCH RPMS_REF PACKER OUT
@@ -162,11 +162,16 @@ case ${1:-} in
     packer=${4:?}/tilo-app-package
     out=${5:?}
     unset TAPP_PUBLISHER_IDENTITY
-    echo "sealing this run's $arch runtime with a throwaway key for its dev images: nothing is published"
+    # The dev key (build-lib.sh's dev_owner_secret), so the same tree seals to the same bytes
+    # and the dev images given it are served while it is as it was.
+    echo "sealing this run's $arch runtime with the dev key for its dev images: nothing is published"
     rm -rf "$out"
     mkdir -p "$out"
+    identity=$scratch/env-runtime-dev-publisher.json
+    printf '{"secret_key_hex":"%s"}\n' "$dev_owner_secret" > "$identity"
     seal_tree "$arch" "$trees/env-runtime-tree-$arch.tar" "$trees/env-runtime-rpms-$arch.txt" \
-      "$packer" "$out"
+      "$packer" "$out" --identity "$identity"
+    rm -f "$identity"
     seal_index "$out" "$packer" "$arch"
     ;;
   local-dev)

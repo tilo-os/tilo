@@ -183,8 +183,11 @@ fn check_metadata(metadata: &Map<String, Value>, development: bool) -> Result<()
         "target metadata does not pin a supported CI image",
     )?;
     if development {
+        // The commit its image names, or none: the server image's build reads no Git, so a
+        // medium made from it names none (the image's labels decide, below).
+        let source = text("source_revision");
         require(
-            is_hex(text("source_revision"), 40) && is_positive_decimal(text("ci_run_id")),
+            (source.is_empty() || is_hex(source, 40)) && is_positive_decimal(text("ci_run_id")),
             "development target source or CI run identity is invalid",
         )?;
     }
@@ -379,7 +382,9 @@ fn manifest_refs(
             let source = get(metadata, "source_revision").as_str();
             require(
                 match flavour {
-                    Some("dev") => revision == source,
+                    Some("dev") => {
+                        revision.is_some_and(|value| !value.is_empty()) && revision == source
+                    }
                     Some("server") => {
                         revision.is_none_or(|value| value.is_empty() || Some(value) == source)
                     }

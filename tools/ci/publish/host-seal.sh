@@ -29,12 +29,20 @@ cd "$repo_root"
 usage='usage: host-seal.sh seal IMAGE OUT | apply SEALED SIGNED OUT'
 name=localhost/tilo-host:seal
 
-# What the seal, the install and the measurement need: podman, the disk tools build-image.sh
-# installs with, and binutils, which reads the UKI's sections for the PCR 11 measurement.
+# What the install and the measurement need: podman, the disk tools build-image.sh installs
+# with, and binutils, which reads the UKI's sections for the PCR 11 measurement. The seal runs in
+# the OS assembler image, which carries them all from the frozen snapshot (t's seal-host), so it
+# installs nothing and reads no mirror.
 tools() {
-  bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
-  rpm -q binutils systemd-container >/dev/null 2>&1 \
-    || dnf install -y --setopt=install_weak_deps=False binutils systemd-container >/dev/null
+  if [[ ${1:-} != seal ]]; then
+    bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
+    rpm -q binutils systemd-container >/dev/null 2>&1 \
+      || dnf install -y --setopt=install_weak_deps=False binutils systemd-container >/dev/null
+  fi
+  local tool
+  for tool in podman skopeo objcopy objdump python3; do
+    command -v "$tool" >/dev/null || die "missing $tool"
+  done
   modprobe fuse 2>/dev/null || true
   modprobe loop 2>/dev/null || true
   mkdir -p "$scratch/boot-output" "$scratch/boot-run"
@@ -42,7 +50,7 @@ tools() {
 
 cmd_seal() {
   local image=$1 out=$2
-  tools
+  tools seal
   rm -rf "$out"
   mkdir -p "$out"
   [[ $(archive_digest "$image/image.oci.tar") == "$(cat "$image/digest")" ]] \

@@ -87,7 +87,8 @@ def verify(directory, *, development=False):
             and TAG.fullmatch(origin.removeprefix(repository + ":")) is not None,
             "target metadata does not pin a supported CI image")
     if development:
-        require(re.fullmatch(r"[0-9a-f]{40}", metadata["source_revision"])
+        # The commit its image names, or none: the server image's build reads no Git.
+        require(re.fullmatch(r"(?:[0-9a-f]{40})?", metadata["source_revision"])
                 and re.fullmatch(r"[1-9][0-9]*", metadata["ci_run_id"]),
                 "development target source or CI run identity is invalid")
     layout = directory / "oci"
@@ -132,7 +133,7 @@ def verify(directory, *, development=False):
                 # A dev image's build names its commit; the server image's build
                 # reads no history (its cache is commit-free), so its digest
                 # binds the build and its revision label is empty.
-                require((flavour == "dev" and revision == metadata["source_revision"])
+                require((flavour == "dev" and bool(revision) and revision == metadata["source_revision"])
                         or (flavour == "server"
                             and revision in (None, "", metadata["source_revision"])),
                         "development target source or flavour label differs")

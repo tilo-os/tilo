@@ -8,7 +8,8 @@
 # actions as an OCI layout (oci/) and its digest. The medium is made from that exact image,
 # never a registry tag, and writes OUT/disk.qcow2 with its
 # SHA-256, the media-provenance sidecar the canonical disk step records, and source.json naming
-# the image commit and OCI digest the medium was made from.
+# the OCI digest the medium was made from. It reads no Git: the image names no commit, so a medium
+# is keyed by the images it is made from and served while they are as they were.
 #
 # A preloaded target is optional and is any OCI archive the same run built
 # (TILO_INSTALLER_TARGET_OCI), with TILO_INSTALLER_TARGET_REPOSITORY,
@@ -40,9 +41,6 @@ case $arch in
 esac
 [[ $(uname -m) == "$arch" ]] || die "the $arch medium builds natively, not on $(uname -m)"
 
-# The image is composed from layer actions keyed by what they read, so it names no commit
-# itself; the medium is of the commit whose run composed it.
-revision=$(git rev-parse --verify HEAD) || die 'the medium names its commit: git = true'
 expected_digest=$(tr -d '[:space:]' < "$in/digest") || die "$in/digest is not readable"
 [[ $expected_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$in/digest does not name an image: $expected_digest"
 [[ -f $in/oci/index.json ]] || die "$in holds no OS image layout (oci/)"
@@ -98,9 +96,6 @@ podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -c '
 ' || die "$in/oci has no graphical installer or no single sealed UKI"
 
 source_epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$id" 2>/dev/null || true)
-if ! [[ $source_epoch =~ ^[1-9][0-9]*$ ]] && git cat-file -e "$revision^{commit}" 2>/dev/null; then
-  source_epoch=$(git show -s --format=%ct "$revision")
-fi
 if [[ $source_epoch =~ ^[1-9][0-9]*$ ]]; then
   export SOURCE_DATE_EPOCH=$source_epoch
 fi
@@ -128,10 +123,14 @@ if [ -n "${TILO_INSTALLER_TARGET_OCI:-}" ]; then
   skopeo copy --preserve-digests "oci-archive:$TILO_INSTALLER_TARGET_OCI" \
     "oci:$target_dir/oci:target" >/dev/null \
     || die "could not stage $TILO_INSTALLER_TARGET_OCI as the preloaded target"
+  # The commit the target names, if any: a dev image's build names its commit, the server
+  # image's reads no Git and names none.
+  target_revision=$(skopeo inspect --config "oci:$target_dir/oci:target" \
+    | jq -r '.config.Labels["org.opencontainers.image.revision"] // ""')
   python3 - "$target_dir/target.json" \
     "$TILO_INSTALLER_TARGET_REPOSITORY" "$TILO_INSTALLER_TARGET_DIGEST" \
     "$TILO_INSTALLER_TARGET_ARCHITECTURE" "$TILO_INSTALLER_TARGET_PROFILE" \
-    "$TILO_INSTALLER_TARGET_UPDATE_ORIGIN" "$revision" "${source_epoch:-1}" <<'PY'
+    "$TILO_INSTALLER_TARGET_UPDATE_ORIGIN" "$target_revision" "${source_epoch:-1}" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -155,7 +154,7 @@ PY
   export TILO_INSTALLER_DEV_TARGET=1
 fi
 # A unique local tag keeps the medium apart from another architecture's images in one guest.
-tag="dev-installer-medium-$arch-${revision:0:12}"
+tag="dev-installer-medium-$arch-${actual_digest:7:12}"
 export TILO_DISTROBOX=
 export TILO_LOCAL_TAG=$tag
 export TILO_IMAGE="localhost/tilo:$tag"
@@ -208,13 +207,13 @@ python3 apps/imager/packaging/media-provenance.py validate "$medium" "$arch" gen
   || die "the medium does not match the media provenance the disk step recorded"
 
 sha256sum "$medium" | awk '{print $1 "  disk.qcow2"}' > "$medium.sha256"
-python3 - "$medium" "$medium.hardware.json" "$out/source.json" "$arch" "$revision" "$actual_digest" "$rootfs" "$target_json" <<'PY'
+python3 - "$medium" "$medium.hardware.json" "$out/source.json" "$arch" "$actual_digest" "$rootfs" "$target_json" <<'PY'
 import hashlib
 import json
 from pathlib import Path
 import sys
 
-medium, hardware, destination, arch, revision, digest, rootfs, target = sys.argv[1:]
+medium, hardware, destination, arch, digest, rootfs, target = sys.argv[1:]
 medium_path = Path(medium)
 with medium_path.open("rb") as stream:
     medium_digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -223,7 +222,6 @@ target = json.loads(Path(target).read_text()) if target else None
 source = {
     "schema": "tilo.dev-installer-medium.v1",
     "architecture": arch,
-    "source_commit": revision,
     "source_image_digest": digest,
     "source_image_id": record["source_image_id"],
     "hardware_profile": record["hardware_profile"],
@@ -242,4 +240,4 @@ source = {
 }
 Path(destination).write_text(json.dumps(source, indent=2, sort_keys=True) + "\n")
 PY
-printf 'built %s of %s from %s\n' "$medium" "$revision" "$actual_digest"
+printf 'built %s from %s\n' "$medium" "$actual_digest"

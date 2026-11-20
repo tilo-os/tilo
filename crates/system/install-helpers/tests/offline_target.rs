@@ -192,6 +192,18 @@ fn digest_of(metadata: &Map<String, Value>) -> String {
 }
 
 fn development_transport(dir: &Path, target: &mut Target) {
+    development_transport_of(dir, target, "dev", SOURCE, SOURCE);
+}
+
+/// A development transport of an image of FLAVOUR whose revision label is LABEL, its
+/// target.json naming SOURCE.
+fn development_transport_of(
+    dir: &Path,
+    target: &mut Target,
+    flavour: &str,
+    label: &str,
+    source: &str,
+) {
     let blobs = target.root.join("oci/blobs/sha256");
     let blob = |data: Value| {
         let raw = serde_json::to_vec(&data).unwrap();
@@ -201,7 +213,7 @@ fn development_transport(dir: &Path, target: &mut Target) {
     };
     let config = blob(
         json!({"architecture": "arm64", "os": "linux", "config": {"Labels": {
-        "sh.tilo.image.flavour": "dev", "org.opencontainers.image.revision": SOURCE}}}),
+        "sh.tilo.image.flavour": flavour, "org.opencontainers.image.revision": label}}}),
     );
     let layer = blob(json!({"fixture": "payload"}));
     let mut manifest = blob(json!({"schemaVersion": 2,
@@ -233,7 +245,7 @@ fn development_transport(dir: &Path, target: &mut Target) {
         "update_origin".into(),
         json!("registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci"),
     );
-    metadata.insert("source_revision".into(), json!(SOURCE));
+    metadata.insert("source_revision".into(), json!(source));
     metadata.insert("ci_run_id".into(), json!("75356"));
     write_metadata(&target.root, metadata);
     let _ = dir;
@@ -511,6 +523,28 @@ tilo_test_env::scenario! {
         fs::write(dir.path().join("flavour"), "production\n").unwrap();
         let error = read_target(&host, &target.root).unwrap_err();
         assert!(error.0.contains("development VM installer"), "{error}");
+    }
+
+    phase a_server_image_names_no_commit_and_a_dev_image_must;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("vm-marker"), "VM-only").unwrap();
+        fs::write(dir.path().join("flavour"), "dev\n").unwrap();
+        let mut installer = Fixture::new(dir.path());
+        installer.proof_port = true;
+        installer.respond = Box::new(|_| Ok(String::new()));
+        let mut target = fixture(dir.path());
+        development_transport_of(dir.path(), &mut target, "server", "", "");
+        let (selected, _) = read_target(&installer, &target.root).unwrap();
+        assert_eq!(selected["source_revision"], "");
+        let mut target = fixture(dir.path());
+        development_transport_of(dir.path(), &mut target, "dev", "", "");
+        let error = read_target(&installer, &target.root).unwrap_err();
+        assert!(error.0.contains("flavour label differs"), "{error}");
+        let mut target = fixture(dir.path());
+        development_transport_of(dir.path(), &mut target, "dev", SOURCE, "");
+        let error = read_target(&installer, &target.root).unwrap_err();
+        assert!(error.0.contains("flavour label differs"), "{error}");
     }
 
     phase development_import_validates_boot_layout_without_changing_image;

@@ -3692,8 +3692,9 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "image-env-runtime-dev-tree-{arch}"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: it installs from the snapshot image-rpms-ARCH built, on the base os/base-snapshot.env
+# pins by digest, with every file dated 0.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/env-runtime.sh dev-tree {arch} /target/publish/rpms/{arch} /target/publish/env-runtime/dev-trees"
 needs = ["image-rpms-{arch}"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -3706,8 +3707,7 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "env-runtime-dev-{arch}"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# No network: it seals the tree with the dev key, so the same tree seals to the same bytes.
 run = "bash tools/ci/publish/env-runtime.sh dev {arch} /target/publish/env-runtime/dev-trees /target/publish/env-runtime/packer /target/publish/env-runtime/dev/{arch}"
 needs = ["image-env-runtime-dev-tree-{arch}", "env-runtime-packer"]
 requires = ["arch=x86_64"]
@@ -3718,8 +3718,8 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "env-runtime-packer"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: its crates come by Cargo.lock.
+egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/publish/env-runtime.sh packer /target/publish/env-runtime/packer"
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/env-runtime/packer/tilo-app-package"]
@@ -4654,17 +4654,34 @@ default = false
 arch = ["x86_64", "aarch64"]
 
 # The bootc a live installer carries to install beside another system, built once for its sources
-# (tools/ci/publish/bootc-alongside.sh) instead of inside every medium.
+# (tools/ci/publish/bootc-helper.sh) instead of inside every medium.
 [[check]]
 name = "bootc-alongside-{arch}"
 # Pinned: bootc's source archive is checked by SHA-256, its crates by its Cargo.lock and the build
 # image by digest. The build's dnf adds the ostree headers bootc links against, by their stable
 # soname, from Fedora's mirrors, which no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
-run = "bash tools/ci/publish/bootc-alongside.sh /target/bootc-alongside/{arch}"
+run = "bash tools/ci/publish/bootc-helper.sh alongside /target/bootc-alongside/{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 isolation = "vm"
 outputs = ["/target/bootc-alongside/{arch}/bootc"]
+timeout_secs = 3600
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# The bootc that computes the composefs digest a sealed image's UKI carries, built once for its
+# sources (tools/ci/publish/bootc-helper.sh) instead of in every seal.
+[[check]]
+name = "bootc-reseal-{arch}"
+# Pinned: bootc's and composefs-rs's source archives are checked by SHA-256, its crates by its
+# Cargo.lock and the build image by digest. The build's dnf adds the ostree headers bootc links
+# against, by their stable soname, from Fedora's mirrors, which no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash tools/ci/publish/bootc-helper.sh reseal /target/bootc-reseal/{arch}"
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+isolation = "vm"
+outputs = ["/target/bootc-reseal/{arch}/bootc"]
 timeout_secs = 3600
 default = false
 [check.matrix]
@@ -4680,7 +4697,6 @@ env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/{arch}/bootc" 
 requires = ["disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/dev-installer-medium/{arch}/disk.qcow2", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.sha256", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.hardware.json", "/target/publish/dev-installer-medium/{arch}/source.json"]
-git = true
 timeout_secs = 7200
 default = false
 [check.matrix]
@@ -4688,20 +4704,22 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "server-installer-medium-x86_64"
-# dnf installs from Fedora's mirrors, which are no fixed host list; the server image itself
-# comes from seal-host's archive, the image with its UKI sealed. Beside the medium, its live ESP
+# Pinned: it runs in the OS assembler image, which carries the install's tools, and the only image
+# it pulls is the scratch registry's, by digest (os/scratch-registry.env). It reads no
+# Git: the server image itself comes from seal-host's archive, the image with its UKI sealed, and
+# its update origin is named by that image's digest. Beside the medium, its live ESP
 # and root as the internal bundle the Imager stages onto a machine's own disk
 # (os/dev/export-internal-bundle.sh, which loop-mounts private copies of both). The bundle
 # shrinks the live root to what it holds, which only Btrfs does, so this medium's root is Btrfs.
 # Only this run's steps read the medium, so it is left uncompressed.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host-sealed/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host-sealed/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-$(git rev-parse --short=12 HEAD)\nexport TILO_INSTALLER_ROOTFS=btrfs TILO_QCOW2_COMPRESS=0\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64\nstarted=$SECONDS\nrm -rf /target/publish/server-installer-bundle/x86_64\nmkdir -p /target/publish/server-installer-bundle\nTMPDIR=/var/tmp bash os/dev/export-internal-bundle.sh /target/publish/server-installer-medium/x86_64/disk.qcow2 x86_64 imager-v0.0.0 /target/publish/server-installer-bundle/x86_64\necho \"TILO_MEDIUM_TIMING phase=bundle seconds=$((SECONDS - started))\""
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host-sealed/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host-sealed/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-$(cut -c8-19 /target/publish/host-sealed/digest)\nexport TILO_INSTALLER_ROOTFS=btrfs TILO_QCOW2_COMPRESS=0\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64\nstarted=$SECONDS\nrm -rf /target/publish/server-installer-bundle/x86_64\nmkdir -p /target/publish/server-installer-bundle\nTMPDIR=/var/tmp bash os/dev/export-internal-bundle.sh /target/publish/server-installer-medium/x86_64/disk.qcow2 x86_64 imager-v0.0.0 /target/publish/server-installer-bundle/x86_64\necho \"TILO_MEDIUM_TIMING phase=bundle seconds=$((SECONDS - started))\""
 needs = ["os-image-x86_64", "seal-host", "bootc-alongside-x86_64"]
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/x86_64/bootc" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/server-installer-medium/x86_64/disk.qcow2", "/target/publish/server-installer-medium/x86_64/disk.qcow2.sha256", "/target/publish/server-installer-medium/x86_64/disk.qcow2.hardware.json", "/target/publish/server-installer-medium/x86_64/source.json", "/target/publish/server-installer-bundle/x86_64/**"]
-git = true
 timeout_secs = 7200
 default = false
 
@@ -5325,8 +5343,9 @@ default = false
 
 [[check]]
 name = "os-compile-x86_64"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the build image comes by digest, the crates by Cargo.lock, and the font catalog's faces
+# from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled"
 needs = ["test-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
@@ -5338,8 +5357,9 @@ default = false
 
 [[check]]
 name = "os-compile-release-x86_64"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the build image comes by digest, the crates by Cargo.lock, and the font catalog's faces
+# from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled-release"
 needs = ["test-assets", "os-chromium-x86_64", "app-models"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
@@ -5351,8 +5371,9 @@ default = false
 
 [[check]]
 name = "os-compile-dev-x86_64"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the build image comes by digest, the crates by Cargo.lock, and the font catalog's faces
+# from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh --dev /target/os/x86_64/compiled-dev"
 needs = ["test-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
@@ -5612,8 +5633,9 @@ default = false
 
 [[check]]
 name = "os-compile-aarch64"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the build image comes by digest, the crates by Cargo.lock, and the font catalog's faces
+# from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled"
 needs = ["test-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
@@ -5625,8 +5647,9 @@ default = false
 
 [[check]]
 name = "os-compile-release-aarch64"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the build image comes by digest, the crates by Cargo.lock, and the font catalog's faces
+# from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled-release"
 needs = ["test-assets", "os-chromium-aarch64", "app-models"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
@@ -5638,8 +5661,9 @@ default = false
 
 [[check]]
 name = "os-compile-dev-aarch64"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the build image comes by digest, the crates by Cargo.lock, and the font catalog's faces
+# from tilo's package store by the SHA-256 the catalog pins (tools/font-catalog.py).
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh --dev /target/os/aarch64/compiled-dev"
 needs = ["test-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
@@ -7051,12 +7075,15 @@ id_token = ["sts.amazonaws.com"]
 # publishes this image; a release's is the one sign-host-loader signed the boot loader into.
 [[check]]
 name = "seal-host"
-# dnf installs from Fedora's mirrors and the resealing bootc comes from registry.tilo.so, or is
-# built from Fedora's: no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: it runs in the OS assembler image, which carries what sealing takes from the frozen
+# snapshot, with the resealing bootc bootc-reseal-x86_64 built, and pulls only the pinned base by
+# digest.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "image=/target/publish/host-loader-signed\nif [ ! -s \"$image/image.oci.tar\" ]; then\n  image=/target/publish/host\n  case \"${T_REF:-}\" in tag:*) echo 'a release signs its boot loader before it seals; sign-host-loader produced nothing' >&2; exit 1 ;; esac\nfi\nbash tools/ci/publish/host-seal.sh seal \"$image\" /target/publish/host-sealed"
-needs = ["image-host"]
+needs = ["image-host", "bootc-reseal-x86_64"]
 optional_needs = ["sign-host-loader"]
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
+env = { TILO_BOOTC_RESEAL = "/target/bootc-reseal/x86_64/bootc" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/host-sealed/**"]
