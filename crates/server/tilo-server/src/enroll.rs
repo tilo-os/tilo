@@ -1751,11 +1751,22 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
 fn device_key(identity_root: &std::path::Path) -> anyhow::Result<()> {
     let paths = IdentityPaths::under(identity_root);
     let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
+    let node = tilo_server::daemon::server_node_id(&device);
+    // What an owner names this server by to have it keep a workspace when it
+    // serves no site (`tilo workspace servers add`).
+    let holder = iroh::EndpointId::from_bytes(&node).map(|endpoint| {
+        tilo_server::workspaces::IrohHolder {
+            device: device.verifying_key().to_bytes(),
+            addr: iroh::EndpointAddr::new(endpoint),
+        }
+        .to_string()
+    })?;
     println!(
         "{}",
         serde_json::json!({
             "device_public_key": hex::encode(device.verifying_key().to_bytes()),
-            "server_node_id": hex::encode(tilo_server::daemon::server_node_id(&device)),
+            "server_node_id": hex::encode(node),
+            "holder": holder,
         })
     );
     Ok(())
