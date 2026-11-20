@@ -1306,16 +1306,25 @@ impl Layouts {
             if self.held(&key, |held| held.writing.is_some()) {
                 continue;
             }
-            // The windows of the person's own stand on their layout wherever it is shown: the
-            // layout a workspace shares never holds them, so they come from the view this device
-            // read last, whether or not the workspace changed it since.
-            if let Some(view) = self.held(&key, |held| match &held.written {
-                Some(Written::View(view)) => Some(view.clone()),
-                _ => None,
-            }) && let Some(workspace) = tree
-                .workspaces
-                .iter_mut()
-                .find(|held| held.id() == workspace_id)
+            // The windows of the person's own go on their layout wherever it is shown: the layout
+            // a workspace shares never holds them, so they come from the view this device keeps of
+            // it — the changes it made that the workspace does not hold yet, else what it read
+            // last. A workspace that holds no view of them yet is no different: they are the
+            // person's, and the session shows them before the workspace has one.
+            let kept = self.held(&key, |held| {
+                held.pending_view
+                    .last()
+                    .map(|step| step.changed.clone())
+                    .or_else(|| match &held.written {
+                        Some(Written::View(view)) => Some(view.clone()),
+                        _ => None,
+                    })
+            });
+            if let Some(view) = kept
+                && let Some(workspace) = tree
+                    .workspaces
+                    .iter_mut()
+                    .find(|held| held.id() == workspace_id)
             {
                 changed |= view.place_own(workspace);
             }
