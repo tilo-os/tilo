@@ -1136,3 +1136,63 @@ async fn a_team_is_answered_to_a_turn_of_the_agents_keeper_alone() {
     stands_as(&workspaces, &workspace, "find-the-deck", Stands::Working).await;
     page.peer.close();
 }
+
+/// On a server that keeps people's own workspaces, the server's own person keeps an assistant
+/// in a workspace no server keeps as theirs. A listing leaves the server's own account out of
+/// the workspace's members, and the assistant's turn still starts a sub-agent: what it may do
+/// is decided by who the workspace's governance keeps, its own person among them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_servers_own_persons_turn_starts_a_sub_agent_where_peoples_own_workspaces_are_kept() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    assert!(
+        workspaces
+            .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                "tilo.test"
+            ))
+            .unwrap(),
+        "the server keeps people's own workspaces from now on"
+    );
+    let (_, listed) = workspaces.membership(&workspace).await.unwrap();
+    assert!(
+        !listed.contains_key(&person),
+        "a listing leaves the server's own account out"
+    );
+    let (_, kept) = workspaces.kept_membership(&workspace).await.unwrap();
+    assert!(
+        kept.get(&person)
+            .is_some_and(|mark| !mark.removed && !mark.banned && mark.role == "owner"),
+        "the workspace's governance keeps its own person, its owner: {kept:?}"
+    );
+
+    let ada = themselves(&root, &browser, &workspace);
+    let thread = direct(&person, SCOUT);
+    let plans = Plans::default();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = worked(&workspaces, &actions, plans.model(&asked));
+    plans.set(
+        MAIN,
+        "Find the deck.",
+        vec![(
+            START,
+            json!({"name": "Find the deck", "job": "Find the Q3 board deck in Files."}),
+        )],
+        "Started.",
+    );
+    let first = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (thread.as_str(), "Find the deck."),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    reply_of(&workspaces, &workspace, &first, SCOUT).await;
+    let said = plans.answers(MAIN);
+    assert!(
+        said.len() == 1 && !said[0].1 && said[0].0.contains("find-the-deck"),
+        "the server's own person's assistant started a sub-agent: {said:?}"
+    );
+    stands_as(&workspaces, &workspace, "find-the-deck", Stands::Working).await;
+    page.peer.close();
+}

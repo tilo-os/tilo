@@ -1707,15 +1707,42 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<std::collections::BTreeSet<String>, CollaborationError> {
+        Ok(self
+            .kept_membership(workspace)
+            .await?
+            .1
+            .into_iter()
+            .filter(|(_, mark)| !mark.removed)
+            .map(|(person, _)| person)
+            .collect())
+    }
+
+    /// Every person `workspace`'s governance has, by person (hex root), with the
+    /// workspace's governance generation: its owner among them, also where the owner is
+    /// this host's own person. What the server decides who acts here by, an agent through
+    /// its keeper, never what [`Self::membership`] shows a person: that leaves the
+    /// server's own account out.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here.
+    pub async fn kept_membership(
+        &self,
+        workspace: &str,
+    ) -> Result<(u64, std::collections::BTreeMap<String, MemberMark>), CollaborationError> {
+        let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
-        Ok(governed
-            .summary()
-            .members
-            .into_iter()
-            .filter(|member| !member.removed)
-            .filter_map(|member| member.id.person_id().map(str::to_owned))
-            .collect())
+        let policy = governed
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, now)?
+            .policy;
+        let people = governed.summary();
+        drop(governed);
+        Ok((
+            people.generation,
+            Self::marks(people, |person| policy.is_blocked(person)),
+        ))
     }
 
     /// Every person `workspace` has, as [`Self::people`] lists them, by person
@@ -1738,7 +1765,20 @@ impl Workspaces {
             .policy;
         let people = self.people(&governed);
         drop(governed);
-        let marks = people
+        Ok((
+            people.generation,
+            Self::marks(people, |person| policy.is_blocked(person)),
+        ))
+    }
+
+    /// `people` as [`Self::membership`] and [`Self::kept_membership`] answer them: each
+    /// person's role, whether they were removed, and whether the host's policy keeps them
+    /// out now (`banned`).
+    fn marks(
+        people: WorkspaceSummary,
+        banned: impl Fn(&str) -> bool,
+    ) -> std::collections::BTreeMap<String, MemberMark> {
+        people
             .members
             .into_iter()
             .map(|member| {
@@ -1751,12 +1791,11 @@ impl Workspaces {
                 let mark = MemberMark {
                     role: role.to_owned(),
                     removed: member.removed,
-                    banned: policy.is_blocked(&person),
+                    banned: banned(&person),
                 };
                 (person, mark)
             })
-            .collect();
-        Ok((people.generation, marks))
+            .collect()
     }
 
     /// The workspace-join contract's membership answer for `device`, a

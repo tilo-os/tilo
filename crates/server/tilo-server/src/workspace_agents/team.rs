@@ -212,15 +212,16 @@ impl TurnTeam {
     }
 
     /// Whether the person `caller` acts for changes the workspace's own documents as a
-    /// member: an editor or more, admitted now.
+    /// member: an editor or more, admitted now. The server's own person keeps theirs: a
+    /// listing leaves the server's own account out, and its agents work all the same.
     async fn keeper_edits(&self, caller: &Caller) -> bool {
         let Some(person) = caller.user_public_key().map(hex::encode) else {
             return false;
         };
-        let Ok((_, people)) = self.workspaces.membership(&self.workspace).await else {
+        let Ok((_, kept)) = self.workspaces.kept_membership(&self.workspace).await else {
             return false;
         };
-        people.get(&person).is_some_and(|mark| {
+        kept.get(&person).is_some_and(|mark| {
             !mark.removed
                 && !mark.banned
                 && Role::parse(&mark.role).is_some_and(|role| role.includes(Role::Editor))
