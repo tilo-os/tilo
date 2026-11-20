@@ -30,8 +30,9 @@ fn first_part(workspace: &str) -> DocumentRoute {
     }
 }
 
-/// What `page` holds of the messages `part` keeps, oldest first.
-fn held_texts(page: &mut Browser, part: &DocumentRoute) -> Vec<String> {
+/// What `page` holds of the messages `part` keeps, oldest first: each one's text, and the name
+/// its byline gives whoever wrote it.
+fn held_texts(page: &mut Browser, part: &DocumentRoute) -> Vec<(String, Option<String>)> {
     page.pump();
     let mut doc = automerge::AutoCommit::new();
     for (_, bytes) in page.documents.get(part).cloned().unwrap_or_default() {
@@ -40,7 +41,7 @@ fn held_texts(page: &mut Browser, part: &DocumentRoute) -> Vec<String> {
     chat::messages::read_part(&doc)
         .messages
         .iter()
-        .map(|(_, message)| message.text.clone())
+        .map(|(_, message)| (message.text.clone(), message.author_name.clone()))
         .collect()
 }
 
@@ -60,7 +61,8 @@ async fn an_agent_posts_to_chat_a_page_made_after_it_joined() {
         token: key,
         session: None,
     };
-    let (status, initialized) = agent.initialize().await;
+    // Its harness calls the session "Release prep": the name it goes by, not its key's.
+    let (status, initialized) = agent.initialize_named("Release prep").await;
     assert_eq!(status, 200, "{initialized}");
     // A first call makes the workspace's actions join the workspace, before
     // Chat exists there: a listing writes nothing, and nothing is held of the chat.
@@ -126,12 +128,15 @@ async fn an_agent_posts_to_chat_a_page_made_after_it_joined() {
             .await;
     }
 
-    // The page follows the chain and reads what the agent said.
+    // The page follows the chain and reads what the agent said, by the session's name, as the
+    // agent's windows and its face among the people here name it.
     let part = first_part(&lobby);
     page.follow_chain(CHAT, chat::parts::chain().chain_head().as_str());
     loop {
         page.pump();
-        if held_texts(&mut page, &part).iter().any(|said| said == TEXT) {
+        let held = held_texts(&mut page, &part);
+        if let Some((_, by)) = held.iter().find(|(said, _)| said == TEXT) {
+            assert_eq!(by.as_deref(), Some("Release prep"), "the message's byline");
             break;
         }
         assert!(

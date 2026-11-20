@@ -1438,9 +1438,10 @@ pub struct ActionInvoker {
     /// API that admitted the invocation, and only for a bot allowed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<crate::Appearance>,
-    /// The name an agent goes by, as the host that admitted it knows it from
-    /// the key its person certified for it ("Jane Doe's agent"): what History
-    /// names it by. Never taken from the request.
+    /// The name an agent goes by: the name its harness gave the session it works
+    /// in ("Release prep"), else the one the host that admitted it knows from the
+    /// key its person certified for it ("Jane Doe's agent"). What History and a
+    /// message's byline name it by; display only, never authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The other device of its person's an agent works from, when it came to

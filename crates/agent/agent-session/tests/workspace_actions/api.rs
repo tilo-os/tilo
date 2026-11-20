@@ -53,9 +53,20 @@ impl Mcp<'_> {
     }
 
     pub(super) async fn initialize(&mut self) -> (u16, Value) {
+        self.initialize_with(json!({})).await
+    }
+
+    /// [`Self::initialize`] for a client whose harness calls its session `name`, as
+    /// `tilo mcp` says it.
+    pub(super) async fn initialize_named(&mut self, name: &str) -> (u16, Value) {
+        self.initialize_with(json!({"experimental": {"so.tilo": {"session-name": name}}}))
+            .await
+    }
+
+    async fn initialize_with(&mut self, capabilities: Value) -> (u16, Value) {
         let (status, reply) = self
             .post(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
-                         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                         "params": {"protocolVersion": "2025-06-18", "capabilities": capabilities,
                                     "clientInfo": {"name": "visa-backend", "version": "1"}}}))
             .await;
         // A 200 with no session is a refusal in JSON-RPC: say it, so the

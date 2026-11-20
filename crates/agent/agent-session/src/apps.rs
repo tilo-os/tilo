@@ -1524,10 +1524,26 @@ impl Replica {
         confirm: bool,
     ) -> Result<ActionOutput, ApiError> {
         let effect = self.agent_effect(address, arguments)?;
+        // An agent goes by the name of the session the call came in, as its window's mark names
+        // it, whatever name this replica was opened under: one agent's replica serves each of its
+        // sessions.
+        let session = context
+            .as_ref()
+            .and_then(|context| context.group.as_ref())
+            .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
+            .and_then(|group| group.session.clone());
         let previous = context.as_ref().map(|_| self.view.context().cloned());
         if context.is_some() {
             self.view.set_context(context);
         }
+        let invoker = invoker.or_else(|| {
+            let session = session?;
+            let acting = self.view.invoker_appearing(None);
+            acting
+                .acting
+                .is_agent()
+                .then(|| acting.named(Some(session)))
+        });
         let output = match (invoker, effect) {
             // An agent's effect answers with what it ended as: a job (a
             // render, an export) is waited for, bounded.

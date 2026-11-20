@@ -430,6 +430,9 @@ impl crate::AppActionServer for WorkspaceActionsServer {
         caller: &tilo_actions::remote::Caller,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        // An agent goes by its session's name in all a call makes (its Chat byline, its History
+        // rows, its questions), as its window's mark names it.
+        let caller = &caller.clone().in_named_session(&message);
         // A person's events are the host's own to answer, for their device
         // and their page as for their assistant's turn.
         if self.serve_events && crate::workspace_bots::events::addresses(&message) {
