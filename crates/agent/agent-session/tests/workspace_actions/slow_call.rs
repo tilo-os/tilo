@@ -14,13 +14,15 @@ use tilo_server::workspace_agents::{WorkspaceActionProvider, invoke_named};
 
 const TASKS: &str = "so.tilo.tasks";
 const NOTES: &str = "so.tilo.notes";
-/// How many listings each measure takes the middle one of.
-const SAMPLES: usize = 7;
+/// How many rounds each measure takes the middle of: in each, a listing with nothing running,
+/// then a slowed write, then the first listing asked while it runs.
+const ROUNDS: usize = 5;
 /// How many times a listing's normal cost one served while the write goes on may take.
 const RATIO: u32 = 3;
-/// What a listing may take beyond that, for the machine running the test being busy: far less
-/// than the slow write.
-const SLACK: Duration = Duration::from_millis(30);
+/// What a listing may take beyond that: the thread waits the app call's grace (20 ms) before
+/// the call goes on off it, and a machine running the whole suite stretches that wait and the
+/// listing behind it. Far less than the slow write, which holds the thread for seconds.
+const SLACK: Duration = Duration::from_millis(100);
 /// How long the write's worker takes at most before it answers.
 const SLOW: Duration = Duration::from_secs(4);
 /// How many workspaces are made at most to find one served with the first.
@@ -55,17 +57,20 @@ async fn listed(
     started.elapsed()
 }
 
-/// [`SAMPLES`] listings' times.
-async fn measured(
-    service: &WorkspaceActionProvider,
-    person: &Caller,
-    notes: &DocumentRoute,
-) -> Vec<Duration> {
-    let mut samples = Vec::new();
-    for _ in 0..SAMPLES {
-        samples.push(listed(service, person, notes).await);
+/// Wait until the tracker's worker has started on the slowed write `write`.
+async fn started<T>(slowed: &Slowed, write: &tokio::task::JoinHandle<T>) {
+    let deadline = tilo_test_env::hang_deadline();
+    while slowed.entered() == 0 {
+        assert!(
+            !write.is_finished(),
+            "the write is answered without its worker"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "the write asks the tracker's worker"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    samples
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -176,55 +181,57 @@ async fn a_slow_write_leaves_its_thread_answering() {
     first.expect("a first issue is made");
     listed(&busy_service, &busy_person, &busy_notes).await;
     listed(&other_service, &other_person, &other_notes).await;
-    // What a listing costs with nothing running: the middle of a few.
-    let other_normal = median(measured(&other_service, &other_person, &other_notes).await);
-    let busy_normal = median(measured(&busy_service, &busy_person, &busy_notes).await);
 
-    // The tracker's worker takes long to answer a write.
-    let slowed = Slowed::new(&busy, TASKS, SLOW);
-    let asked = Instant::now();
-    let slow = create("Slow");
-    let deadline = tilo_test_env::hang_deadline();
-    while slowed.entered() == 0 {
-        assert!(
-            !slow.is_finished(),
-            "the write is answered without its worker"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "the write asks the tracker's worker"
-        );
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    // A second write of the same workspace waits for the first.
-    let next = create("Next");
-    // What a listing costs while the write goes on: the longest of a few, as the first one asked
-    // is the one a thread held by the write keeps waiting.
-    let longest = |samples: Vec<Duration>| samples.into_iter().max().unwrap_or_default();
-    let other_beside = longest(measured(&other_service, &other_person, &other_notes).await);
-    let busy_beside = longest(measured(&busy_service, &busy_person, &busy_notes).await);
-    for (what, normal, beside) in [
-        ("another workspace", other_normal, other_beside),
-        ("the same workspace", busy_normal, busy_beside),
+    // Each round measures a listing with nothing running, then the first one asked while the
+    // tracker's worker takes long to answer a write. The middle of the rounds is compared: a
+    // machine running many other checks shifts both the same way, where the slowest of a few
+    // against the middle of another few marked an uneven moment as the write holding the thread.
+    for (what, service, person, notes) in [
+        ("another workspace", &other_service, &other_person, &other_notes),
+        ("the same workspace", &busy_service, &busy_person, &busy_notes),
     ] {
+        let mut normal = Vec::new();
+        let mut beside = Vec::new();
+        for round in 0..ROUNDS {
+            normal.push(listed(service, person, notes).await);
+            // The tracker's worker takes long to answer a write.
+            let slowed = Slowed::new(&busy, TASKS, SLOW);
+            let write = create(&format!("Slow {round}"));
+            started(&slowed, &write).await;
+            beside.push(listed(service, person, notes).await);
+            drop(slowed);
+            let (answer, _) = write.await.unwrap();
+            answer.unwrap_or_else(|error| panic!("the slow write lands: {error:?}"));
+        }
+        let (normal, beside) = (median(normal), median(beside));
         let ratio = beside.as_secs_f64() / normal.as_secs_f64().max(1e-6);
         println!(
-            "a listing of {what} took {normal:?} with nothing running and {beside:?} while a \
-             slow write ran: {ratio:.1}x"
+            "the first listing of {what} took {normal:?} with nothing running and {beside:?} \
+             while a slow write ran: {ratio:.1}x"
         );
         assert!(
             beside <= normal * RATIO + SLACK,
-            "a listing of {what} took {beside:?} while a slow write ran, against {normal:?} \
-             with nothing running ({ratio:.1}x)"
+            "the first listing of {what} took {beside:?} while a slow write ran, against \
+             {normal:?} with nothing running ({ratio:.1}x)"
         );
     }
 
+    // A second write of the same workspace waits for the first.
+    let slowed = Slowed::new(&busy, TASKS, SLOW);
+    let asked = Instant::now();
+    let slow = create("Slow");
+    started(&slowed, &slow).await;
+    let next = create("Next");
+    // Given the time a fast write takes, the second one has not landed: it waits for the first.
+    while asked.elapsed() < Duration::from_millis(200) {
+        assert!(!next.is_finished(), "the second write waits for the first");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert!(
         asked.elapsed() < SLOW,
-        "the listings were measured while the write ran"
+        "the second write was checked while the first was slowed"
     );
     assert!(!slow.is_finished(), "the slow write goes on");
-    assert!(!next.is_finished(), "the second write waits for the first");
 
     // Let go, both writes land with their answers, in the order they were asked.
     drop(slowed);
