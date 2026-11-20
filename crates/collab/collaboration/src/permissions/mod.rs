@@ -1567,7 +1567,7 @@ mod own_resource_tests {
     #[test]
     fn a_window_on_a_members_own_record_is_its_persons_alone() {
         let ada = "ad".repeat(32);
-        let own = collab_types::OwnResource::of_person(&ada, "mail.mailbox")
+        let own = collab_types::OwnResource::of_person(&ada, "mail.copies")
             .unwrap()
             .document_id();
         let effect =
@@ -1581,14 +1581,14 @@ mod own_resource_tests {
         );
         for action in [&edit, &effect] {
             assert!(
-                !viewer.permits_action("so.tilo.mail", "mail.mailbox", "mail.mailbox", action),
+                !viewer.permits_action("so.tilo.mail", "mail.copies", "mail.copies", action),
                 "a viewer changes nothing of the workspace's: {}",
                 action.id
             );
             assert!(
                 viewer.action_decider_on("so.tilo.mail", &own).permits(
-                    "mail.mailbox",
-                    "mail.mailbox",
+                    "mail.copies",
+                    "mail.copies",
                     action
                 ),
                 "a viewer changes their own record: {}",
@@ -1604,14 +1604,14 @@ mod own_resource_tests {
             Role::Owner,
         );
         assert!(owner.own_person("so.tilo.mail", &own).is_none());
-        let mailbox = tilo_actions::ResourceSpec::new("mail.mailbox", "mail.mailbox", "Mail")
+        let copies = tilo_actions::ResourceSpec::new("mail.copies", "mail.copies", "Copies")
             .with_action(edit.clone());
         assert!(
             viewer
-                .permitted_resource_on("so.tilo.mail", &own, mailbox.clone())
+                .permitted_resource_on("so.tilo.mail", &own, copies.clone())
                 .is_some()
         );
-        assert!(viewer.permitted_resource("so.tilo.mail", mailbox).is_none());
+        assert!(viewer.permitted_resource("so.tilo.mail", copies).is_none());
     }
 
     /// An agent is shown what it is denied as not allowed, beside what it may do on the same

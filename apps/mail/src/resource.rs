@@ -1421,7 +1421,7 @@ impl ResourceApp for MailShell {
         COMMANDS
     }
 
-    /// The messages, kept in parts beside the person's mailbox.
+    /// The messages, kept in parts beside the workspace's mailbox.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
         resources.chain::<crate::message_states::MessageStates>();
     }
@@ -2342,39 +2342,23 @@ ui::reach_tests!(
 );
 
 #[cfg(test)]
-mod own_resource_tests {
-    /// A window naming no resource opens the person's own mailbox, never the
-    /// workspace's: a reader of the workspace keeps their own mail like
-    /// anyone else, and no other member reads it.
+mod workspace_mailbox_tests {
+    /// A window naming no resource opens the workspace's mailbox, never one
+    /// of the person's own: mail an import or an account brings into the
+    /// workspace reads the same in every member's Mail.
     #[test]
-    fn mail_opens_the_persons_own_resource() {
+    fn mail_opens_the_workspaces_mailbox() {
+        type Messages = crate::message_states::MessageStates;
         let definition = ui::framework::definition::<super::MailShell>();
         let person = ui::permissions::MemberId::person("ad".repeat(32));
-        let own = definition
-            .member_resource_of(&person)
-            .expect("each member keeps their own Mail resource");
+        assert!(definition.member_resource_of(&person).is_none());
+        assert!(definition.keeps_workspace_resource());
         assert_eq!(
-            own.id,
-            ui::resource::DocumentId::of_member(person.id(), "mail.mailbox").unwrap()
+            <Messages as ui::framework::Chained>::chain_beside(
+                &ui::resource::DocumentId::package_primary()
+            ),
+            <Messages as ui::framework::Chained>::chain(),
+            "the messages a delivery writes are the ones the window reads"
         );
-        assert_eq!(own.kind.as_str(), "mail.mailbox");
-    }
-
-    /// A Viewer reads the workspace only, yet their own mailbox is theirs:
-    /// its window is not view-only and their edits of it apply.
-    #[test]
-    fn a_viewer_writes_their_own_mailbox() {
-        let person = "ad".repeat(32);
-        let mut app = ui::framework::testing::TestApp::<super::MailShell>::for_person_with_role(
-            &person,
-            ui::permissions::Role::Viewer,
-        )
-        .unwrap();
-        app.call("start-draft-body", serde_json::json!({"text": "Only mine"}))
-            .expect("a viewer writes their own mailbox");
-        app.settle();
-        assert!(app.state().draft.rich_body.is_some());
-        let tree = app.harness().inspection_json().unwrap();
-        assert!(!tree.contains("view only"), "{tree}");
     }
 }

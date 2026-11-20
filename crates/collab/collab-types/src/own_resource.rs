@@ -120,16 +120,13 @@ mod tests {
 
     #[test]
     fn a_part_of_an_own_record_is_the_persons_own() {
-        let mailbox = OwnResource::of_person(&hex::encode([3; 32]), "mail.mailbox").unwrap();
-        let part = crate::document::DocumentId::parse(&mailbox.document_id())
+        let copies = OwnResource::of_person(&hex::encode([3; 32]), "mail.copies").unwrap();
+        let part = crate::document::DocumentId::parse(&copies.document_id())
             .unwrap()
             .part(2);
         let recognised = OwnResource::recognise("so.tilo.mail", part.as_str(), [3; 32])
-            .expect("a part of the mailbox is the mailbox's own");
-        assert_eq!(
-            recognised, mailbox,
-            "recognised as the record it belongs to"
-        );
+            .expect("a part of the copies is the copies' own");
+        assert_eq!(recognised, copies, "recognised as the record it belongs to");
         assert!(
             OwnResource::recognise("so.tilo.mail", part.as_str(), [4; 32]).is_none(),
             "another person's root recognises none of it"
@@ -148,7 +145,7 @@ mod tests {
         assert!(ada.names(&ada.document_id()));
         assert!(crate::document::DocumentId::parse(&ada.document_id()).is_some());
         let bo = OwnResource::new("chat.drafts", [2; 32]).unwrap();
-        let other_kind = OwnResource::new("mail.mailbox", [1; 32]).unwrap();
+        let other_kind = OwnResource::new("mail.copies", [1; 32]).unwrap();
         assert_ne!(ada.document_id(), bo.document_id());
         assert_ne!(ada.document_id(), other_kind.document_id());
         assert!(!ada.document_id().contains("chat.drafts"));
@@ -165,13 +162,13 @@ mod tests {
 
     #[test]
     fn a_device_recognises_its_own_record_of_a_kind_the_manifest_declares() {
-        let mailbox = OwnResource::new("mail.mailbox", [3; 32]).unwrap();
+        let copies = OwnResource::new("mail.copies", [3; 32]).unwrap();
         assert_eq!(
-            OwnResource::recognise("so.tilo.mail", &mailbox.document_id(), [3; 32]),
-            Some(mailbox.clone())
+            OwnResource::recognise("so.tilo.mail", &copies.document_id(), [3; 32]),
+            Some(copies.clone())
         );
         assert_eq!(
-            OwnResource::recognise("so.tilo.mail", &mailbox.document_id(), [4; 32]),
+            OwnResource::recognise("so.tilo.mail", &copies.document_id(), [4; 32]),
             None,
             "another person derives another id"
         );

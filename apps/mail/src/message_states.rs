@@ -1,5 +1,5 @@
 //! What the mailbox knows of each message: a collection the framework keeps
-//! beside the person's own mailbox, which decides where each message is
+//! beside the workspace's mailbox, which decides where each message is
 //! stored, so that marking one message read in a mailbox of fifty thousand
 //! costs that message. The mailbox itself ([`crate::resource::Mail`]) keeps
 //! its folders, drafts, sends and checks, none of which grow with the mail.
@@ -630,25 +630,13 @@ pub fn owed(part: &MessageStates) -> Vec<(Id, ServerUpdate)> {
 impl ui::framework::Chained for MessageStates {
     type Base = Mail;
 
-    /// Never used: the messages live only beside the person's mailbox.
+    /// The workspace's messages, beside its one mailbox: where every
+    /// window of Mail reads them, and where an import or an agent delivers.
     fn chain() -> ui::resource::DocumentId {
         ui::resource::DocumentId::derived(
             "mail-messages",
             &ui::resource::DocumentId::workspace_default(),
         )
-    }
-
-    /// The parts are the person's own mailbox's (`mailbox.part(n)`),
-    /// so they are as private as it and sync with it. A mailbox kept as the
-    /// app's own document of the workspace (someone with no root identity,
-    /// on one device) has its parts under the chain's own name: that
-    /// document has no parts of its own.
-    fn chain_beside(base: &ui::resource::DocumentId) -> ui::resource::DocumentId {
-        if base.is_package_primary() {
-            Self::chain()
-        } else {
-            base.clone()
-        }
     }
 
     fn prepare(

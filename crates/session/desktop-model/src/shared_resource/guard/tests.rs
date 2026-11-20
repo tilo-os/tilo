@@ -566,7 +566,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(own_person(DESKTOP_APP, DESKTOP_DOCUMENT, None), None);
         assert_eq!(own_person("so.tilo.notes", &resource_of(ADA), None), None);
-        let mailbox = collab_types::OwnResource::new("mail.mailbox", [7; 32]).unwrap();
+        let mailbox = collab_types::OwnResource::new("mail.copies", [7; 32]).unwrap();
         assert_eq!(
             own_person("so.tilo.mail", &mailbox.document_id(), Some(&mailbox)).as_deref(),
             Some(mailbox.person().as_str()),

@@ -147,8 +147,8 @@ tilo_test_env::scenario! {
     {
         let (_memory, store) = page();
         let theirs = DocumentCheckout::new(
-            DocumentId::of_member(&"b0".repeat(32), "mail.mailbox").unwrap(),
-            ResourceType::new("mail.mailbox"),
+            DocumentId::of_member(&"b0".repeat(32), "mail.copies").unwrap(),
+            ResourceType::new("mail.copies"),
         );
         assert!(matches!(
             store.try_open_resource(&theirs),

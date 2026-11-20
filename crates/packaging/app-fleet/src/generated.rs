@@ -21,7 +21,6 @@ pub(super) const OWN_KINDS: &[(&str, &str)] = &[
     ("so.tilo.feeds", "tilo.chain-unsent"),
     ("so.tilo.file-explorer", "files.recent"),
     ("so.tilo.firewall", "firewall.applied"),
-    ("so.tilo.mail", "mail.mailbox"),
     ("so.tilo.mail", "mail.copies"),
     ("so.tilo.mail", "mail.trusted-senders"),
     ("so.tilo.mail", "tilo.chain-unsent"),
@@ -42,7 +41,7 @@ pub(super) const OWN_KINDS: &[(&str, &str)] = &[
 ];
 
 /// The apps whose window opens a kind each member keeps as their own.
-pub(super) const OWN_WINDOWS: &[&str] = &["so.tilo.mail", "so.tilo.settings"];
+pub(super) const OWN_WINDOWS: &[&str] = &["so.tilo.settings"];
 
 /// The apps each window of which shows a document of its own (`ResourceApp::WINDOW_RESOURCE`).
 pub(super) const DOCUMENT_WINDOWS: &[&str] = &[

@@ -118,10 +118,10 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_persons_own_windows_stay_off_the_shared_desktop;
 
-        phase settings_and_mail_are_personal_and_chat_is_not;
+        phase settings_is_personal_and_mail_and_chat_are_not;
         {
             assert!(is_personal_app("so.tilo.settings"));
-            assert!(is_personal_app("so.tilo.mail"));
+            assert!(!is_personal_app("so.tilo.mail"));
             assert!(!is_personal_app("so.tilo.chat"));
         }
 
