@@ -354,6 +354,53 @@ fn a_person_without_a_name_is_asked_for_one() {
     assert!(said.contains(&t("profile-name-hint")));
 }
 
+/// Someone nobody has named yet opens their name field empty, with words inviting a name: the
+/// stand-in everyone reads in place of a name is never a value to select and delete first.
+/// Writing a name keeps it; leaving the field empty changes nothing.
+#[test]
+fn an_unnamed_person_writes_a_name_into_an_empty_field() {
+    let unnamed = || ProfileModel {
+        name: ui::presence::unnamed_person_label(),
+        ..model()
+    };
+    let mut frame = framed_model(&unnamed());
+    assert_eq!(frame.draft(), "", "the field starts empty");
+    {
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        let field = harness
+            .a11y_node_named(&t("profile-name"))
+            .and_then(|id| {
+                harness
+                    .a11y_nodes()
+                    .into_iter()
+                    .find(|(node, _)| *node == id)
+                    .map(|(_, node)| node)
+            })
+            .expect("the name field is there");
+        assert!(
+            field.value().is_none_or(str::is_empty),
+            "nothing to delete: {:?}",
+            field.value()
+        );
+        assert_eq!(
+            field.description(),
+            Some(t("profile-name-placeholder").as_str()),
+            "an empty field shows what to write"
+        );
+    }
+    frame.set_draft("Kim Lee");
+    frame.close();
+    assert_eq!(
+        frame.take_choice(),
+        Some(ProfileChoice::Rename("Kim Lee".into()))
+    );
+
+    let mut frame = framed_model(&unnamed());
+    frame.set_draft("   ");
+    frame.close();
+    assert_eq!(frame.take_choice(), None, "an empty field names nobody");
+}
+
 /// Of the host's ways to keep who you are, the card offers the two it lists first: keeping the
 /// identity and backing it up. A third overlapping ask stays in search, where it does not
 /// compete here. Devices stay as listed.

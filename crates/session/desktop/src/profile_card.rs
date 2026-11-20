@@ -1746,8 +1746,12 @@ impl ProfileCard {
         }
         self.shown.clone_from(&model.name);
         self.status_shown.clone_from(&model.status);
-        // Asked for a name: the field starts empty, showing what to type.
-        self.draft.set(if model.ask_name && !model.can_rename {
+        // Asked for a name, or nobody named them yet: the field starts empty, showing what to
+        // type. The words said in place of a name are what everyone else reads, never a value to
+        // select and delete before writing one.
+        let asked = model.ask_name && !model.can_rename;
+        let unnamed = ui::presence::is_unnamed_person(&model.name);
+        self.draft.set(if asked || unnamed {
             String::new()
         } else {
             model.name.clone()
