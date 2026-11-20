@@ -949,6 +949,9 @@ fn move_to_strip(
             .is_ok()
         });
     if moved {
+        // The shell moved: counted as [`Layout::external_revision`] counts it, so the look that
+        // follows writes the layout as it is.
+        tree.external_revision = tree.external_revision.wrapping_add(1);
         // The person stays with the window they moved: the shell shows the strip it landed in, with
         // it in front, as dragging it there does.
         tree.active_strip.insert(ids.workspace, strip);
@@ -1009,6 +1012,9 @@ fn join_group(shared: &mut Shared, ids: RouteIds, into_strip: StripId, into: Gro
         .is_some()
     };
     if moved {
+        // The shell moved: counted as [`Layout::external_revision`] counts it, so the look that
+        // follows writes the layout as it is.
+        tree.external_revision = tree.external_revision.wrapping_add(1);
         // The window the tab joined is the one in front, showing the tab that just arrived: the
         // window it left may have gone with its last tab, so the shell would be left with nothing in
         // front.
@@ -1081,6 +1087,11 @@ fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceId) -> boo
     let Shared { tree, minter, .. } = shared;
     let tree = tree.edit();
     let moved = move_tab_to_workspace(tree, ids.tab, to, &mut || Ok(minter.mint())).is_ok();
+    // The shell moved: counted as [`Layout::external_revision`] counts it, so the look that follows
+    // writes the layout as it is and a session that ends keeps it for the one after.
+    if moved {
+        tree.external_revision = tree.external_revision.wrapping_add(1);
+    }
     shared.replaced |= moved;
     moved
 }
