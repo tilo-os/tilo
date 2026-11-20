@@ -1959,4 +1959,4 @@ paths = ["tools/policy/check_resource_placement.py", "tools/tests/test_check_res
 reason = "The Flatpak transfer `Runner`'s method that reads a Flatpak installation's list; a platform with no Flatpak still implements the trait, refusing."
 words = ["run"]
 identifiers = ["run"]
-paths = ["crates/platform/imager-backend/src/setup/flatpak_transfer/portable_absent.rs"]
+paths = ["crates/platform/imager-backend/src/setup/flatpak_transfer/native_absent.rs"]
