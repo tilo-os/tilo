@@ -255,10 +255,10 @@ try {
     await shows(ada.tab, 'is added', 'the account being added', stepLimit(5));
     story.web.action(ada, Date.now() - signing, 'signing the account in');
     console.log(`the account was added`);
-    // Mail's own window then holds the account: it is opened again so it is the
-    // window in front.
-    await searchAgain(ada.tab, 'mail', 'Mail', 'so.tilo.mail');
-    await shows(ada.tab, mail.address, 'the account in Mail', stepLimit(5));
+    // Mail's own window takes the account it was given. Nothing is reloaded here:
+    // a window that shows it only after a reload is the gap this step means to
+    // find.
+    await shows(ada.tab, mail.address, 'the account in Mail, with no reload', stepLimit(4));
   });
 
   await story.step('Ada reads the newest mail', async () => {

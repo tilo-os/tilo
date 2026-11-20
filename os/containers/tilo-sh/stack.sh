@@ -66,6 +66,8 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          the build server
   stack.sh mail          the mail the entry sent (wait-list confirmations,
                          invitations), with the links in each
+  stack.sh mail-name     the address that stand-in mail server takes, before the
+                         stack is up: its domain publishes the settings document
   stack.sh mail-account  the account of this stack's stand-in mail server, as
                          a person types it into Mail's settings: a made-up
                          address at this stack's own site name, its password,
@@ -972,7 +974,7 @@ start_mail_stand_in() {
   # The account is at this stack's own site name, so the address's domain is a
   # name this machine answers: the stand-in publishes the settings document a
   # mail provider keeps there, and Mail finds the servers from the address.
-  login="lab@$site_host"
+  login=$(mail_name)
   password=$(cat "$dir/password" 2>/dev/null || true)
   if [[ -z $password ]]; then
     password=$(od -An -tx1 -N12 /dev/urandom | tr -d ' \n')
@@ -1050,6 +1052,12 @@ stop_mail_stand_in() {
   deadline=$((SECONDS + 10))
   while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do sleep 0.1; done
   rm -f "$pidfile"
+}
+
+# mail-name: the address the stack's stand-in mail server takes, known before the
+# stack is up: what a person types, and the domain its provider publishes under.
+mail_name() {
+  printf '%s\n' "lab@$site_host"
 }
 
 # mail-account: what a person types into a mail account's settings to reach
@@ -3026,6 +3034,7 @@ if remote_here && [[ $cmd != up ]]; then
     logs)
       if [[ ${1:-} == remote ]]; then cat "$state/logs/remote.log"; else remote_cmd logs "$@"; fi ;;
     mail) remote_cmd mail ;;
+    mail-name) remote_cmd mail-name ;;
     mail-account) remote_cmd mail-account ;;
     keys) remote_cmd keys ;;
     browser) browser "$@" ;;
@@ -3044,6 +3053,7 @@ case $cmd in
   restart) restart "$@" ;;
   logs) [[ -n ${1:-} ]] || die 'logs NAME: server, tls, api, web, discord, releases, mail, bundle'; cat "$state/logs/$1.log" ;;
   mail) list_mail ;;
+  mail-name) mail_name ;;
   mail-account) mail_account ;;
   keys) keys_apart ;;
   owner) declare_owner "$@" ;;

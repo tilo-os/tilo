@@ -89,32 +89,35 @@ flags = struct.unpack("16sH", fcntl.ioctl(sock, SIOCGIFFLAGS, struct.pack("16sH"
 fcntl.ioctl(sock, SIOCSIFFLAGS, struct.pack("16sH", b"lo", flags | IFF_UP))
 '
   fi
+  # The provider's names answer inside this namespace and nowhere else: the
+  # address's domain and the name a mail program asks its settings document
+  # under, both at this stack's own loopback. They are given before the stack's
+  # services start, each in a mount namespace of its own cloned from this one. A
+  # test network names its provider the way a real one is named.
+  if [[ ${private_network:-0} == 1 ]]; then
+    local domain
+    domain=$(bash "$tilo_sh/stack.sh" mail-name | sed 's/^[^@]*@//')
+    if [[ -z $domain ]]; then
+      echo "FAIL: $story: the stack names no stand-in account, so its provider's names are unknown"
+      printf '{"id": "%s", "at": "%s", "seconds": 0, "completed": false, "withinBudget": false, "brokeAt": null, "error": "the stack names no stand-in account", "steps": [], "timings": {}, "videos": []}\n' \
+        "$story" "$(date -u +%FT%TZ)" > "$out/story.json"
+      return 1
+    fi
+    mkdir -p "$TILO_SH_STATE"
+    { cat /etc/hosts
+      for name in "$domain" "autoconfig.$domain"; do
+        printf '127.0.0.1 %s\n::1 %s\n' "$name" "$name"
+      done; } > "$TILO_SH_STATE/private-hosts"
+    if ! mount --bind "$TILO_SH_STATE/private-hosts" /etc/hosts; then
+      echo "FAIL: $story: the namespace would not take its own hosts file"
+      return 1
+    fi
+    echo "the namespace names $domain and autoconfig.$domain at its own loopback"
+  fi
   trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
   if bash "$tilo_sh/stack.sh" up --fresh > "$out/stack.log" 2>&1; then
     # shellcheck source=tilo-sh/stack.sh
     . "$tilo_sh/stack.sh"
-    if [[ ${private_network:-0} == 1 ]]; then
-      # The provider's names answer inside this namespace and nowhere else: the
-      # address's domain and the name a mail program asks its settings document
-      # under, both at this stack's own loopback. A test network names its
-      # provider the way a real one is named.
-      domain=$(bash "$tilo_sh/stack.sh" mail-account 2>/dev/null | sed -n 's/^ *Email address: *[^@]*@//p' | head -1)
-      if [[ -z $domain ]]; then
-        echo "FAIL: $story: the stack printed no account, so the names its provider publishes under are unknown"
-        printf '{"id": "%s", "at": "%s", "seconds": 0, "completed": false, "withinBudget": false, "brokeAt": null, "error": "the stack printed no account", "steps": [], "timings": {}, "videos": []}\n' \
-          "$story" "$(date -u +%FT%TZ)" > "$out/story.json"
-        bash "$tilo_sh/stack.sh" down > /dev/null 2>&1 || true
-        trap - EXIT
-        return 1
-      fi
-      hosts=$TILO_SH_STATE/private-hosts
-      { cat /etc/hosts
-        for name in "$domain" "autoconfig.$domain"; do
-          printf '127.0.0.1 %s\n::1 %s\n' "$name" "$name"
-        done; } > "$hosts"
-      mount --bind "$hosts" /etc/hosts || { echo "FAIL: $story: the namespace would not take its own hosts file"; return 1; }
-      echo "the namespace names $domain and autoconfig.$domain at its own loopback"
-    fi
     status=0
     STORY_STACK=$tilo_sh/stack.sh node "$stories/$driver" "$site_origin" "$out" "$TILO_SH_STATE"/logs/{server,api,web}.log 2>&1 | tee "$out/driver.log" || status=$?
   else
