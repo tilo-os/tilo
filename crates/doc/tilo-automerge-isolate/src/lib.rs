@@ -206,6 +206,14 @@ pub fn change_hashes(incoming: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
     engine::change_hashes(incoming)
 }
 
+/// The heads of the document `bytes` saves when it is one whole document, read off its
+/// stored form without loading it: naming a whole document written costs a fraction of
+/// what loading it does. `None` for anything else, which only loading answers.
+#[must_use]
+pub fn document_heads(bytes: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
+    automerge::stored_document_heads(bytes)
+}
+
 /// The changes [`change_hashes`] names, as they are carried: what a caller
 /// reading what they write takes instead of building each again from a
 /// document that holds them.

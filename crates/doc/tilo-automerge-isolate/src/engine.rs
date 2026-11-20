@@ -74,6 +74,11 @@ pub(crate) fn verified_hashes(bytes: &[u8]) -> Result<Vec<ChangeHash>, Rejected>
 /// a document, a bundle, or a tail no chunk frames — so the caller cannot say
 /// which changes are its own.
 pub(crate) fn change_hashes(incoming: &[u8]) -> Option<Vec<ChangeHash>> {
+    // Read off the chunks' headers where they are plain changes: decoding each change only to
+    // name it cost a write of 200 issues tens of milliseconds every time it was named.
+    if let Some(hashes) = automerge::stored_change_hashes(incoming) {
+        return Some(hashes);
+    }
     Some(
         changes(incoming)?
             .iter()

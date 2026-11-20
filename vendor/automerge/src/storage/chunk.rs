@@ -299,6 +299,37 @@ impl Header {
     }
 }
 
+/// The hash of each change `bytes` holds, in order, read off the chunks' headers without
+/// decoding a change: only when `bytes` is exactly a run of uncompressed change chunks, each
+/// whose checksum agrees with its hash. `None` otherwise, which only parsing the changes can
+/// answer.
+pub fn stored_change_hashes(bytes: &[u8]) -> Option<Vec<ChangeHash>> {
+    let mut rest = bytes;
+    let mut hashes = Vec::new();
+    while !rest.is_empty() {
+        let (_, header) = Header::parse::<error::Chunk>(parse::Input::new(rest)).ok()?;
+        if header.chunk_type != ChunkType::Change || !header.checksum_valid() {
+            return None;
+        }
+        hashes.push(header.hash());
+        rest = rest.get(header.header_size.checked_add(header.data_len)?..)?;
+    }
+    (!hashes.is_empty()).then_some(hashes)
+}
+
+/// The heads of the document `bytes` saves, read off its document chunk without loading it:
+/// only when `bytes` is exactly one document chunk whose checksum agrees with its hash.
+pub fn stored_document_heads(bytes: &[u8]) -> Option<Vec<ChangeHash>> {
+    let (rest, chunk) = Chunk::parse(parse::Input::new(bytes)).ok()?;
+    if !rest.is_empty() {
+        return None;
+    }
+    match chunk {
+        Chunk::Document(document) if document.checksum_valid() => Some(document.heads().to_vec()),
+        _ => None,
+    }
+}
+
 fn hash(typ: ChunkType, data: &[u8]) -> ChangeHash {
     let mut header = Vec::with_capacity(5);
     header.push(u8::from(typ));

@@ -410,13 +410,17 @@ fn log_saved(written: &[Written], outcome: &Result<(), String>) {
 
 /// The changes `mutation` carries, short hashes, for the log: each change of
 /// an invocation of them, or the heads of a whole record.
-fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
+pub(super) fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
     let hashes = match mutation {
         DocumentMutation::Incremental(bytes) => {
             tilo_automerge_isolate::change_hashes(bytes).unwrap_or_default()
         }
-        DocumentMutation::Snapshot(bytes) => automerge::AutoCommit::load(bytes)
-            .map(|mut doc| doc.get_heads())
+        DocumentMutation::Snapshot(bytes) => tilo_automerge_isolate::document_heads(bytes)
+            .or_else(|| {
+                automerge::AutoCommit::load(bytes)
+                    .ok()
+                    .map(|mut doc| doc.get_heads())
+            })
             .unwrap_or_default(),
     };
     hashes
@@ -448,12 +452,13 @@ impl Worker {
             .writing_as
             .as_ref()
             .is_some_and(|caller| caller.roster_created_at().is_some());
-        let by = self.writer(workspace_id, route)?;
-        self.hand_over(workspace_id, route, mutation, by.as_ref(), is_roster)?;
-        self.handed
-            .entry(workspace_id)
-            .or_default()
-            .push(Written::of(route, mutation, by));
+        // Named once: what it carries is read off its bytes, and a whole document's
+        // heads off its stored form, never by loading it.
+        let written = Written::of(route, mutation, self.writer(workspace_id, route)?);
+        let handing = super::timing_start();
+        self.hand_over(workspace_id, route, mutation, &written, is_roster)?;
+        super::timing_done("commit.hand_over", handing);
+        self.handed.entry(workspace_id).or_default().push(written);
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
         if !is_roster {
@@ -502,9 +507,10 @@ impl Worker {
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
         mutation: &DocumentMutation,
-        by: Option<&Link>,
+        written: &Written,
         is_roster: bool,
     ) -> Result<(), String> {
+        let by = written.by.as_ref();
         if !self.workspaces.contains_key(&workspace_id) {
             return Err("the workspace was not joined".into());
         }
@@ -564,7 +570,6 @@ impl Worker {
             let handed = workspace.unlanded.entry(route.clone()).or_default();
             *handed = handed.saturating_add(1);
         }
-        let written = Written::of(route, mutation, None);
         tracing::debug!(
             app = %written.app,
             workspace = %written.workspace,
