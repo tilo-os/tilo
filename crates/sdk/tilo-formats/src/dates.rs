@@ -207,6 +207,31 @@ pub fn time(formats: RegionFormats, at: impl Into<Time>, words: &dyn Words) -> S
     formats.time.format(at.into(), words)
 }
 
+/// A time of day with its seconds: `14:05:09` or `2:05:09 PM`. For a fact that tells one moment
+/// from another a few seconds away, where [`time`] would read alike.
+#[must_use]
+pub fn time_with_seconds(formats: RegionFormats, at: impl Into<Time>, words: &dyn Words) -> String {
+    let at = at.into();
+    let hour = u32::from(at.hour().unsigned_abs());
+    let minute = u32::from(at.minute().unsigned_abs());
+    let second = u32::from(at.second().unsigned_abs());
+    formats.time.format_hms(hour, minute, second, words)
+}
+
+/// A time of day with its seconds and milliseconds: `14:05:09.402` or `2:05:09.402 PM`. For two
+/// moments within one second that a list still has to tell apart.
+#[must_use]
+pub fn time_with_millis(formats: RegionFormats, at: impl Into<Time>, words: &dyn Words) -> String {
+    let at = at.into();
+    let hour = u32::from(at.hour().unsigned_abs());
+    let minute = u32::from(at.minute().unsigned_abs());
+    let second = u32::from(at.second().unsigned_abs());
+    let millisecond = u32::from(at.millisecond().unsigned_abs());
+    formats
+        .time
+        .format_hms_millis(hour, minute, second, millisecond, words)
+}
+
 /// The **day heading** style, for the top of a day, a lock screen or a detail view:
 /// `Tuesday, June 30` (`Tuesday, June 30, 2026` with `with_year`).
 #[must_use]

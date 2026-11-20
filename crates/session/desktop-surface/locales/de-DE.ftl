@@ -765,6 +765,8 @@ people-panel-agent-tag = Agent
 people-panel-bot-tag = Bot
 people-panel-viewing = Sieht sich { $title } an
 people-panel-in-app = In { $app }
+# Jemand ohne Namen: die eine Angabe, die sie von jeder anderen namenlosen Person unterscheidet.
+people-panel-joined = Beigetreten um { $time }
 people-panel-here-count = { $count ->
     [0] Nur du
     [one] Du und 1 weitere Person

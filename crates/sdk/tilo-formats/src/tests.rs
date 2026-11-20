@@ -137,6 +137,36 @@ fn a_clock_reads_in_the_style_the_person_chose() {
 }
 
 #[test]
+fn a_clock_with_seconds_tells_apart_times_a_minute_would_read_alike() {
+    let words = English;
+    let twelve = formats(TimeStyle::H12, DateStyle::Language);
+    let twenty_four = formats(TimeStyle::H24, DateStyle::Language);
+    assert_eq!(
+        crate::time_with_seconds(twenty_four, at(10, 41), &words),
+        "10:41:00"
+    );
+    assert_eq!(
+        crate::time_with_seconds(twelve, at(15, 9), &words),
+        "3:09:00 PM"
+    );
+    assert_eq!(
+        twelve.time.format_hms(0, 7, 42, &words),
+        "12:07:42 AM",
+        "midnight is twelve, not nothing"
+    );
+    assert_eq!(twenty_four.time.format_hms(23, 59, 9, &words), "23:59:09");
+    assert_eq!(
+        twenty_four.time.format_hms_millis(23, 59, 9, 402, &words),
+        "23:59:09.402",
+        "two moments within one second read apart"
+    );
+    assert_eq!(
+        twelve.time.format_hms_millis(0, 7, 42, 7, &words),
+        "12:07:42.007 AM"
+    );
+}
+
+#[test]
 fn a_day_in_a_sentence_reads_as_the_person_reads_it() {
     let words = English;
     let today = date(2026, 6, 30);

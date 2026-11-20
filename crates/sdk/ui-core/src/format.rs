@@ -259,6 +259,18 @@ impl Formats {
         tilo_formats::time(self.region, time, words())
     }
 
+    /// A time of day with its seconds: `14:05:09` or `2:05:09 PM`.
+    #[must_use]
+    pub fn time_with_seconds(&self, time: impl Into<Time>) -> String {
+        tilo_formats::time_with_seconds(self.region, time, words())
+    }
+
+    /// A time of day with its seconds and milliseconds: `14:05:09.402` or `2:05:09.402 PM`.
+    #[must_use]
+    pub fn time_with_millis(&self, time: impl Into<Time>) -> String {
+        tilo_formats::time_with_millis(self.region, time, words())
+    }
+
     /// The **day heading** style: `Tuesday, June 30`. See `tilo_formats::day_heading`.
     #[must_use]
     pub fn day_heading(&self, day: Date, with_year: bool) -> String {
@@ -423,6 +435,19 @@ impl Moment for UnixSecs {
     }
 }
 
+/// Milliseconds since the Unix epoch, as this codebase keeps an instant it tells apart from
+/// another within the same second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnixMillis(pub i64);
+
+impl Moment for UnixMillis {
+    fn local(&self) -> Option<DateTime> {
+        jiff::Timestamp::from_millisecond(self.0)
+            .ok()
+            .and_then(|at| at.local())
+    }
+}
+
 /// The **list** style for `at`, relative to now: `16:02`, `Yesterday`,
 /// `Sun`, `Jun 30`, `Jun 30, 2025`. See [`Formats::list_date`].
 #[must_use]
@@ -451,6 +476,22 @@ pub fn date_of(at: &impl Moment) -> String {
 pub fn time_of(at: &impl Moment) -> String {
     at.local()
         .map_or_else(String::new, |at| Formats::current().time(at))
+}
+
+/// The time of day of a moment with its seconds: `14:05:09` or `2:05:09 PM`. For a fact that
+/// tells one moment from another a few seconds away, where [`time_of`] would read alike.
+#[must_use]
+pub fn time_of_with_seconds(at: &impl Moment) -> String {
+    at.local()
+        .map_or_else(String::new, |at| Formats::current().time_with_seconds(at))
+}
+
+/// The time of day of a moment with its seconds and milliseconds: `14:05:09.402` or
+/// `2:05:09.402 PM`. For two moments within one second that still have to read apart.
+#[must_use]
+pub fn time_of_with_millis(at: &impl Moment) -> String {
+    at.local()
+        .map_or_else(String::new, |at| Formats::current().time_with_millis(at))
 }
 
 /// The **date** style: `Jun 30, 2026` by default. See [`Formats::date`].

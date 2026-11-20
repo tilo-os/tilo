@@ -730,6 +730,8 @@ people-panel-agent-tag = Agent
 people-panel-bot-tag = Bot
 people-panel-viewing = Viewing { $title }
 people-panel-in-app = In { $app }
+# Someone nobody named: the one fact that tells them apart from every other unnamed person here.
+people-panel-joined = Joined { $time }
 people-panel-here-count = { $count ->
     [0] Just you
     [one] You and 1 other

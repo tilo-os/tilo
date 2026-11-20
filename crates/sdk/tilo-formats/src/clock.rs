@@ -88,6 +88,65 @@ impl TimeStyle {
         }
     }
 
+    /// `hour:minute:second` (hour `0..24`) in this style: `14:05:09` or `2:05:09 PM`. For a time
+    /// that has to be told apart from one a few seconds away, where minutes would read alike.
+    #[must_use]
+    pub fn format_hms(self, hour: u32, minute: u32, second: u32, words: &dyn Words) -> String {
+        match self.resolved(words) {
+            TimeStyle::Language | TimeStyle::H24 => {
+                format!("{hour:02}:{minute:02}:{second:02}")
+            }
+            TimeStyle::H12 => {
+                let half = words.word(
+                    if hour % 24 < 12 {
+                        "format-time-am"
+                    } else {
+                        "format-time-pm"
+                    },
+                    &[],
+                );
+                let hour = match hour % 12 {
+                    0 => 12,
+                    hour => hour,
+                };
+                format!("{hour}:{minute:02}:{second:02} {half}")
+            }
+        }
+    }
+
+    /// `hour:minute:second.millisecond` (hour `0..24`) in this style: `14:05:09.402` or
+    /// `2:05:09.402 PM`. For two moments within one second that still have to read apart.
+    #[must_use]
+    pub fn format_hms_millis(
+        self,
+        hour: u32,
+        minute: u32,
+        second: u32,
+        millisecond: u32,
+        words: &dyn Words,
+    ) -> String {
+        match self.resolved(words) {
+            TimeStyle::Language | TimeStyle::H24 => {
+                format!("{hour:02}:{minute:02}:{second:02}.{millisecond:03}")
+            }
+            TimeStyle::H12 => {
+                let half = words.word(
+                    if hour % 24 < 12 {
+                        "format-time-am"
+                    } else {
+                        "format-time-pm"
+                    },
+                    &[],
+                );
+                let hour = match hour % 12 {
+                    0 => 12,
+                    hour => hour,
+                };
+                format!("{hour}:{minute:02}:{second:02}.{millisecond:03} {half}")
+            }
+        }
+    }
+
     /// A worked example, 14:05 in this style.
     #[must_use]
     pub fn example(self, words: &dyn Words) -> String {
