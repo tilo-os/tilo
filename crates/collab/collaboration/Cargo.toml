@@ -29,8 +29,6 @@ audio = ["native", "dep:media"]
 test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/settings-host"]
 
 [dependencies]
-# What an app asks of the device's one store, and its answers.
-tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
 collab-types = { version = "0.1.0", path = "../collab-types" }
 key-group = { version = "0.1.0", path = "../key-group" }
 # The members' content secret a record's content is sealed under.

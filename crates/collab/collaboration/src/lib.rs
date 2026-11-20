@@ -630,10 +630,12 @@ pub enum CollabRequest {
         on_behalf_of: Option<tilo_actions::InvocationId>,
     },
     /// Write or read this app's resources in the device's one store, which answers with
-    /// [`CollabEvent::ResourceCommandResult`]. The app holds no store of its own.
+    /// [`CollabEvent::ResourceCommandResult`]. The app holds no store of its own; the command is
+    /// in the store's encoding (`tilo_resource_store::wire::Command`), which the connection
+    /// carries as bytes.
     ResourceCommand {
         request_id: u64,
-        command: tilo_resource_store::wire::Command,
+        command: Vec<u8>,
     },
 }
 

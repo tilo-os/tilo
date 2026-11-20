@@ -444,6 +444,9 @@ pub struct ChannelHandle {
     descriptors: Descriptors,
 }
 
+/// The most a resource command or its reply takes on the wire, as the store bounds them.
+const MAX_RESOURCE_WIRE_BYTES: usize = 4 << 20;
+
 /// Encode one `what` control command, refusing it when it is invalid or
 /// larger than `max_bytes`.
 fn encode_bounded_command<C: serde::Serialize>(
@@ -642,21 +645,26 @@ impl ChannelHandle {
             .await
     }
 
-    /// Ask the device's one store `command` for this app's resources: a write, or a read as the
-    /// person the app acts for may read.
+    /// Ask the device's one store `command` for this app's resources, a write or a read as the
+    /// person the app acts for may read, and answer its reply. Both are the store's encoding
+    /// (`tilo_resource_store::wire`), which only the apps and services that read it build: a
+    /// connection carries them as bytes, and the page's start never holds the store's types.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] when the device refuses the command, the connection fails, or
-    /// the answer is not one.
-    pub async fn resource_command(
-        &self,
-        command: &tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, NotAvailable> {
-        use tilo_resource_store::wire::MAX_WIRE_BYTES;
-        let body = encode_bounded_command("resource", command, true, MAX_WIRE_BYTES)?;
-        let reply = self.command(Service::Resources, body, &[]).await?;
-        decode_bounded_reply("resource", &reply, MAX_WIRE_BYTES, |_| true)
+    /// either exceeds the wire bound.
+    pub async fn resource_command(&self, command: &[u8]) -> Result<Vec<u8>, NotAvailable> {
+        if command.len() > MAX_RESOURCE_WIRE_BYTES {
+            return Err(refused("resource command exceeds wire bound"));
+        }
+        let reply = self
+            .command(Service::Resources, command.to_vec(), &[])
+            .await?;
+        if reply.len() > MAX_RESOURCE_WIRE_BYTES {
+            return Err(refused("resource reply exceeds wire bound"));
+        }
+        Ok(reply)
     }
 
     /// Submit one bounded Nearby Send control command. File contents stay on

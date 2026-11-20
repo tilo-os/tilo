@@ -246,10 +246,11 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     /// receives these.
     ApplicationsChanged,
     Realtime(collab_types::realtime::RealtimeEvent),
-    /// The store's answer to the app's resource command `request_id`.
+    /// The store's answer to the app's resource command `request_id`, in the store's encoding
+    /// (`tilo_resource_store::wire::Reply`).
     ResourceCommandResult {
         request_id: u64,
-        result: Result<tilo_resource_store::wire::Reply, String>,
+        result: Result<Vec<u8>, String>,
     },
 }
 
