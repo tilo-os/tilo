@@ -249,6 +249,10 @@ class NextestPolicyTests(unittest.TestCase):
 
 
 PACKAGE = re.compile(r"package\(\s*([^)\s]+)\s*\)")
+# A filter's test terms: the part of a test's name `test(term)` asks for, and the whole name
+# `test(=name)` asks for.
+TEST_TERM = re.compile(r"\btest\(\s*([^=)][^)]*)\)")
+TEST_EXACT = re.compile(r"\btest\(\s*=\s*([^)\s]+)\s*\)")
 
 
 def started(entry: str) -> tuple[str, str, tuple[str, ...]]:
@@ -271,6 +275,10 @@ class SetupHandedProgramTests(unittest.TestCase):
     only what the run was not handed: t's family build builds and names what t.toml's `starts` give
     the tested package. So every artifact a setup names belongs in the `starts` of every package
     whose tests run that setup, or each shard of them compiles the program again.
+
+    Nextest runs a setup only for a test its rule's filter enables it for, and only where the run
+    holds such a test. A rule that names a test module is owed by the families that run a test of
+    it, not by every family that tests the package.
     """
 
     HANDED = "tools/build-sibling-binaries.sh"
@@ -292,14 +300,52 @@ class SetupHandedProgramTests(unittest.TestCase):
                 builds[name] = command[2:]
         return builds
 
-    def packages_running(self, setup: str) -> set[str]:
-        """The packages whose tests run `setup`, as the rules that name it say."""
-        packages = set()
+    def rules_running(self, setup: str) -> list[tuple[str, list[str] | None]]:
+        """(package, test terms) for every rule that runs `setup`.
+
+        `terms` is None where a rule names its tests in a way this check does not read (a regex),
+        which leaves every test of the package running the setup.
+        """
+        rules = []
         for profile in ("default", "ci"):
             for rule in self.config().get("profile", {}).get(profile, {}).get("scripts", []):
-                if rule.get("setup") == setup:
-                    packages |= set(PACKAGE.findall(rule["filter"]))
-        return packages
+                if rule.get("setup") != setup:
+                    continue
+                terms = TEST_TERM.findall(rule["filter"])
+                if any(term.startswith("/") for term in terms):
+                    terms = None
+                for package in PACKAGE.findall(rule["filter"]):
+                    rules.append((package, terms))
+        return rules
+
+    @staticmethod
+    def exact_names(family: dict) -> list[str] | None:
+        """The tests a family's run picks by exact name, or None where its selection is not one
+        this check reads.
+
+        A `-E` that asks for whole names (`test(=name)`) and says no `not` runs those heard
+        alone. A
+        selection by substring, by regex, under `not`, or none at all (the package's every test)
+        leaves open which tests the run holds.
+        """
+        arguments = family.get("args", [])
+        expression = next((arguments[index + 1] for index, argument in enumerate(arguments)
+                           if argument in ("-E", "--filter-expr", "--filterset")), None)
+        if expression is None:
+            return None
+        if re.search(r"\bnot\b", expression) or re.search(r"\btest\(\s*[^=]", expression):
+            return None
+        return TEST_EXACT.findall(expression) or None
+
+    @classmethod
+    def runs_any(cls, family: dict, terms: list[str] | None) -> bool:
+        """Whether `family`'s run holds a test a rule naming `terms` enables the setup for."""
+        if not terms:
+            return True
+        names = cls.exact_names(family)
+        if names is None:
+            return True
+        return any(term in name for name in names for term in terms)
 
     @staticmethod
     def packages_tested(family: dict, members: set[str]) -> set[str] | None:
@@ -330,10 +376,14 @@ class SetupHandedProgramTests(unittest.TestCase):
         self.assertIn("session-siblings", setups, "the setups that build programs are read")
         checked = 0
         for name, entries in setups.items():
-            for tested in sorted(self.packages_running(name)):
+            for tested, terms in self.rules_running(name):
                 testing = self.families_testing(tested)
                 self.assertTrue(testing, f"{tested} is a package a family tests")
                 for family in testing:
+                    # Only the tests the rule asks for enable the setup, and only where the run
+                    # holds one: a family that picks another test of the package owes nothing.
+                    if not self.runs_any(family, terms):
+                        continue
                     handed = {
                         started(entry) for entry in family.get("starts", {}).get(tested, [])
                     }
@@ -348,6 +398,29 @@ class SetupHandedProgramTests(unittest.TestCase):
                             )
                             checked += 1
         self.assertGreater(checked, 0, "a program a setup builds is checked")
+
+    def test_a_family_that_picks_its_tests_by_name_owes_the_setups_of_their_modules(self):
+        # The throughput family's shape: one test by whole name, whose module a setup of another
+        # package's tests does not serve.
+        family = {"name": "throughput", "tool": "nextest", "packages": ["first"],
+                  "args": ["--tests", "--run-ignored", "only", "-E",
+                           "test(=workspace_actions::throughput::a_workspace_is_measured)"]}
+        self.assertEqual(self.exact_names(family),
+                         ["workspace_actions::throughput::a_workspace_is_measured"])
+        self.assertFalse(self.runs_any(family, ["hosted_coding_agents::"]))
+        self.assertTrue(self.runs_any(family, ["workspace_actions::throughput::"]))
+
+    def test_a_family_whose_selection_is_not_read_owes_every_setup(self):
+        # A substring term, a regex or a `not` leaves open which tests run.
+        for expression in ("package(first) & test(workspace_actions::)",
+                           "not (package(first) & test(=one))",
+                           "test(/^throughput::/)"):
+            family = {"name": "some", "tool": "nextest", "args": ["-E", expression]}
+            with self.subTest(expression=expression):
+                self.assertIsNone(self.exact_names(family))
+                self.assertTrue(self.runs_any(family, ["hosted_coding_agents::"]))
+        self.assertTrue(self.runs_any({"name": "whole"}, ["hosted_coding_agents::"]),
+                        "a family running a package whole owes every module's setup")
 
     def test_a_family_that_names_its_packages_is_read_whatever_its_filter_leaves_out(self):
         # The per-arch family's shape: its packages by name, and an `-E` that leaves some of
