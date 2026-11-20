@@ -1173,6 +1173,7 @@ fn someone_elses_window_is_theirs_to_share_with_the_workspace() {
         TabHolder {
             name: "Ben".into(),
             rgb: (200, 120, 40),
+            keeps: true,
         },
     )])));
     let rows = handle.window_menu(tab);
@@ -1540,6 +1541,7 @@ fn someone_elses_window_offers_no_move_nor_close() {
         TabHolder {
             name: "Ben".into(),
             rgb: (200, 120, 40),
+            keeps: true,
         }
     )])));
     let rows = handle.window_menu(route.tab);

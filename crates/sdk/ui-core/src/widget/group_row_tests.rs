@@ -1874,6 +1874,7 @@ tilo_test_env::scenario! {
             Some(crate::widget::TabHolder {
                 name: "Ben".into(),
                 rgb: (200, 80, 40),
+                keeps: true,
             }),
         );
         assert!(row.groups[0].is_held());
@@ -1924,6 +1925,7 @@ tilo_test_env::scenario! {
             Some(crate::widget::TabHolder {
                 name: "Ben".into(),
                 rgb: (200, 80, 40),
+                keeps: true,
             }),
         );
         let grab = group_grab_point(&row, 0);

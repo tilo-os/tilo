@@ -2,7 +2,9 @@
 //!
 //! A shared desktop keeps, beside its tree, who made each strip and opened
 //! each window (`authors`, by strip or tab id). People close, move and
-//! rename what they made themselves as an ordinary edit of the desktop.
+//! rename what they made themselves as an ordinary edit of the desktop, and
+//! a member of the workspace closes and moves any of its windows the same
+//! way ([`shares_windows`]): a window on a shared desktop is everyone's there.
 //! Doing it to what someone else made acts on other people's content, which
 //! is moderation ([`tilo_action_policy::roles::MODERATION_FIELD`]): it is
 //! decided on that strip's or window's `moderation` node, which the
@@ -171,6 +173,14 @@ pub fn released(authors: &Authors, id: u64, members: Option<&BTreeSet<String>>) 
     })
 }
 
+/// Whether `person` is among the workspace's `members`, who share its windows: each of them
+/// closes, moves and reorders any window there, whoever opened it. `None` while the members are
+/// not known: then nobody shares what someone else opened yet.
+#[must_use]
+pub fn shares_windows(person: &str, members: Option<&BTreeSet<String>>) -> bool {
+    members.is_some_and(|members| members.contains(person))
+}
+
 /// Where a window is: its workspace, strip and group.
 type Place = (WorkspaceId, StripId, GroupId);
 
@@ -202,6 +212,8 @@ fn index(tree: &Layout) -> Index {
 /// window `writer` opened, or one opened since `before`, is theirs to
 /// arrange; so is the order of their own windows among others', since a
 /// state cannot tell moving one's own window past another from the reverse.
+/// Every window is a member's to close, move and reorder ([`shares_windows`]),
+/// so for a member only strips and who made what count.
 #[must_use]
 pub fn foreign_acts(
     before: &SharedDesktop,
@@ -211,6 +223,8 @@ pub fn foreign_acts(
 ) -> Vec<Touched> {
     let foreign =
         |id: u64| !made_by(&before.authors, id, writer) && !released(&before.authors, id, members);
+    let shares = shares_windows(writer, members);
+    let foreign_window = |id: u64| !shares && foreign(id);
     let owner = |id: u64| before.authors.get(&id).cloned();
     let was = index(&before.tree);
     let now = index(&after.tree);
@@ -228,14 +242,21 @@ pub fn foreign_acts(
     };
     for workspace in &before.tree.workspaces {
         for strip in &workspace.strips {
-            strip_acts(strip, &was, &now, after, &foreign, &mut note);
+            strip_acts(
+                strip,
+                &was,
+                &now,
+                after,
+                (&foreign, &foreign_window),
+                &mut note,
+            );
         }
         let later = after
             .tree
             .workspaces
             .iter()
             .find(|w| w.id() == workspace.id());
-        for tab in moved_on_canvas(workspace, later, &foreign) {
+        for tab in moved_on_canvas(workspace, later, &foreign_window) {
             note(tab, Act::Move);
         }
     }
@@ -258,18 +279,18 @@ pub fn foreign_acts(
     touched
 }
 
-/// What `after` did to `strip` and the windows in it that `foreign` names:
-/// the strip closed or renamed, its windows closed or moved, and other
+/// What `after` did to `strip`, when the first of `foreign` names it, and to the windows in it
+/// that the second names: the strip closed or renamed, its windows closed or moved, and other
 /// people's windows reordered among themselves.
 fn strip_acts(
     strip: &crate::layout::Strip,
     was: &Index,
     now: &Index,
     after: &SharedDesktop,
-    foreign: &dyn Fn(u64) -> bool,
+    (foreign_strip, foreign): (&dyn Fn(u64) -> bool, &dyn Fn(u64) -> bool),
     note: &mut dyn FnMut(u64, Act),
 ) {
-    if foreign(strip.id.0) {
+    if foreign_strip(strip.id.0) {
         match now.strips.get(&strip.id) {
             None => note(strip.id.0, Act::Close),
             Some(name) if *name != strip.name => note(strip.id.0, Act::Rename),
@@ -498,6 +519,46 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec![(10, Act::Close)],
                 "the workspace's own strip is nobody's to release"
+            );
+        }
+
+        phase a_member_closes_moves_and_reorders_anyones_window_but_not_their_strips;
+        // Ada and Ben are both members: the workspace's windows are each of theirs to close, move
+        // and reorder, while its own strip and who made what stay as they were.
+        {
+            let members: BTreeSet<String> = [ADA.to_owned(), BEN.to_owned()].into();
+            let by_member = |after: &SharedDesktop| {
+                foreign_acts(&desktop(), after, ADA, Some(&members))
+                    .into_iter()
+                    .map(|t| (t.id, t.act))
+                    .collect::<Vec<_>>()
+            };
+            let mut closed = desktop();
+            strip_mut(&mut closed, 10).window_groups.remove(1);
+            assert!(by_member(&closed).is_empty(), "closing Ben's window");
+            let mut moved = desktop();
+            let bens = strip_mut(&mut moved, 10).window_groups.remove(2);
+            strip_mut(&mut moved, 20).window_groups.push(bens);
+            assert!(by_member(&moved).is_empty(), "moving Ben's window");
+            let mut swapped = desktop();
+            strip_mut(&mut swapped, 10).window_groups.swap(1, 2);
+            assert!(by_member(&swapped).is_empty(), "reordering Ben's windows");
+            let mut removed = desktop();
+            removed.tree.workspaces[0]
+                .strips
+                .retain(|s| s.id != StripId(10));
+            assert_eq!(by_member(&removed), vec![(10, Act::Close)], "the workspace's strip");
+            let mut claimed = desktop();
+            claimed.authors.insert(2, ADA.into());
+            assert_eq!(by_member(&claimed), vec![(2, Act::Attribute)], "taking Ben's window");
+            let visitor: BTreeSet<String> = [BEN.to_owned()].into();
+            assert_eq!(
+                foreign_acts(&desktop(), &closed, ADA, Some(&visitor))
+                    .into_iter()
+                    .map(|t| (t.id, t.act))
+                    .collect::<Vec<_>>(),
+                vec![(2, Act::Close)],
+                "someone who is not a member closes only their own"
             );
         }
 

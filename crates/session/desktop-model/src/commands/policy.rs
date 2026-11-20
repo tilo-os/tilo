@@ -4,11 +4,13 @@
 //!
 //! A workspace belongs to whoever governs it, its owner and moderators:
 //! they name it and manage its strips. Everyone who writes in the
-//! workspace opens windows, and closes, moves and arranges the windows they
-//! opened and the strips they made; what someone else made is theirs, or a
-//! moderator's, to change ([`crate::ownership`]). A public workspace is no
-//! different: its guests write in it as members do, so they open and close
-//! their own windows, and leave its name and strips to whoever governs it.
+//! workspace opens windows, and closes, moves and arranges the strips they
+//! made. Its windows are shared: every member who writes there closes, moves
+//! and arranges any of them, whoever opened it. A strip someone else made is
+//! theirs, or a moderator's, to change ([`crate::ownership`]). A visitor of a
+//! public workspace who is not one of its members writes in it too, but
+//! closes and moves only the windows they opened, and leaves its name and
+//! strips to whoever governs it.
 //!
 //! Commands outside the workspace's topology (shortcuts, grant sets,
 //! receipts, namespace claims) are decided by their own governance checks
@@ -17,7 +19,7 @@
 use tilo_action_policy::Role;
 
 use super::DesktopCommand;
-use crate::ownership::{Authors, made_by, released};
+use crate::ownership::{Authors, made_by, released, shares_windows};
 use crate::workspace::Workspace;
 
 /// Who asks, and the role the workspace holds them to.
@@ -93,7 +95,9 @@ impl std::fmt::Display for Refusal {
             Self::Governed(Governed::Workspaces) => {
                 "Only the workspace's owner and moderators add workspaces"
             }
-            Self::Others { .. } => "Only whoever opened it, or a moderator, can change it",
+            Self::Others { .. } => {
+                "Only whoever opened it, a member of the workspace or a moderator can change it"
+            }
             Self::ReadOnly => "You can look at this workspace, not change it",
         })
     }
@@ -118,12 +122,15 @@ fn write(requester: &Requester<'_>) -> Result<(), Refusal> {
 }
 
 /// Whether `requester` may close, move or reorder the window `tab`: they
-/// opened it, whoever did has left the workspace, or they govern the workspace.
+/// opened it, they are a member who writes in the workspace (its windows are
+/// every member's), whoever opened it has left the workspace, or they govern
+/// the workspace.
 ///
 /// # Errors
 ///
-/// [`Refusal::Others`] for a window someone else (or nobody) opened;
-/// [`Refusal::ReadOnly`] for a viewer's.
+/// [`Refusal::Others`] for a window someone else (or nobody) opened, asked by
+/// someone who is not among the workspace's members (or while they are not
+/// known); [`Refusal::ReadOnly`] for a viewer's.
 pub fn may_rearrange_window(
     requester: &Requester<'_>,
     authors: &Authors,
@@ -131,7 +138,9 @@ pub fn may_rearrange_window(
 ) -> Result<(), Refusal> {
     if requester.governs()
         || made_by(authors, tab, requester.person)
-        || (requester.writes() && released(authors, tab, requester.members))
+        || (requester.writes()
+            && (shares_windows(requester.person, requester.members)
+                || released(authors, tab, requester.members)))
     {
         Ok(())
     } else {
@@ -372,15 +381,16 @@ mod tests {
 
         phase a_window_of_someone_who_left_is_anyones_to_close;
         // A window whose opener has left the workspace holds nobody: whoever
-        // writes there closes or moves it. While the members are not known,
-        // or while the opener is still a member, it stays theirs.
+        // writes there closes or moves it, a visitor who is no member too.
+        // While the members are not known, or while the opener is still a
+        // member, it stays theirs for that visitor.
         {
             let theirs = DesktopCommand::CloseTab {
                 location: at(2, 200),
             };
             let still_here: std::collections::BTreeSet<String> =
-                ["guest", OTHER_GUEST].map(str::to_owned).into();
-            let left: std::collections::BTreeSet<String> = ["guest"].map(str::to_owned).into();
+                [OTHER_GUEST].map(str::to_owned).into();
+            let left = std::collections::BTreeSet::new();
             let guest = |members| Requester { members, ..GUEST };
             assert!(asks(&guest(None), &theirs).is_err(), "members not known");
             assert!(asks(&guest(Some(&still_here)), &theirs).is_err());
@@ -437,6 +447,54 @@ mod tests {
                 before: None,
             };
             assert_eq!(asks(&GUEST, &reorder_mine), Ok(()));
+        }
+
+        phase members_close_and_move_each_others_windows;
+        // The workspace's windows are shared: a member who writes there
+        // closes, moves and reorders a window another member opened, and one
+        // the workspace itself lists. Someone who only looks still changes
+        // nothing, and its strips stay whoever governs it's.
+        {
+            let members: std::collections::BTreeSet<String> =
+                ["guest", OTHER_GUEST].map(str::to_owned).into();
+            let member = Requester {
+                members: Some(&members),
+                ..GUEST
+            };
+            let theirs = DesktopCommand::CloseTab {
+                location: at(2, 200),
+            };
+            let move_theirs = DesktopCommand::MoveTab {
+                location: at(2, 200),
+                placement: TabPlacement::NewGroup {
+                    strip: 10,
+                    after: None,
+                },
+            };
+            let reorder_theirs = DesktopCommand::ReorderGroup {
+                strip: 10,
+                group: 200,
+                before: Some(100),
+            };
+            for command in [&theirs, &move_theirs, &reorder_theirs] {
+                assert_eq!(asks(&member, command), Ok(()), "{command:?}");
+            }
+            let (workspace, mut authors) = lounge();
+            authors.remove(&2);
+            assert_eq!(
+                may_command(&member, &authors, &workspace, &theirs),
+                Ok(()),
+                "a window nobody opened is the members' too"
+            );
+            let viewer = Requester {
+                role: Some(Role::Viewer),
+                ..member
+            };
+            assert!(asks(&viewer, &theirs).is_err(), "someone who only looks closes nothing");
+            assert_eq!(
+                asks(&member, &DesktopCommand::RemoveStrip { strip: 10 }),
+                Err(Refusal::Governed(Governed::Strips))
+            );
         }
 
         phase only_owner_and_moderators_add_workspaces;

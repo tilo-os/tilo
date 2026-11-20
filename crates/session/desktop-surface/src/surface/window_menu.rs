@@ -1243,7 +1243,7 @@ mod tests;
 pub mod popup;
 
 impl crate::surface::DesktopHandle {
-    /// Who holds tab `tab` on a shared desktop, when someone else does: the menu offers that
+    /// Who keeps tab `tab` on a shared desktop, when someone else does: the menu offers that
     /// person's window only what a viewer may do to it.
     #[must_use]
     pub fn held_by(&self, tab: TabId) -> Option<String> {
@@ -1251,6 +1251,7 @@ impl crate::surface::DesktopHandle {
             .borrow()
             .holders
             .get(&tab)
+            .filter(|holder| holder.keeps)
             .map(|holder| holder.name.clone())
     }
 
@@ -1291,7 +1292,11 @@ impl crate::surface::DesktopHandle {
                 .find(|window| window.tab == tab)
                 .cloned();
             (
-                shared.holders.get(&tab).map(|holder| holder.name.clone()),
+                shared
+                    .holders
+                    .get(&tab)
+                    .filter(|holder| holder.keeps)
+                    .map(|holder| holder.name.clone()),
                 shared.asking.contains(&tab),
                 tilo_desktop_model::peer_salt_of(tab) == shared.minter.salt(),
                 shared.opens,

@@ -1072,7 +1072,7 @@ impl DesktopSurface {
             (
                 windows(&shared.tree, &shared.holders),
                 commands(&shared.tree, &shared.host_actions, &|tab| {
-                    shared.holders.contains_key(&tab)
+                    super::keeps(&shared.holders, tab)
                 }),
                 shared
                     .tree
@@ -1468,7 +1468,7 @@ impl DesktopSurface {
                     None
                 } else if id == CLOSE_WINDOW {
                     match active {
-                        Some(ids) if shared.holders.contains_key(&ids.tab) => {
+                        Some(ids) if super::keeps(&shared.holders, ids.tab) => {
                             let refusal = holder_refusal(&shared.holders, ids.tab);
                             shared.say(ui::window_toolbar::ToolbarNotice::new(
                                 refusal,

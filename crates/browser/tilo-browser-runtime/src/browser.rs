@@ -854,19 +854,27 @@ impl Desktop {
         let holders = if in_workspace {
             let here = self.here.borrow();
             let mut people = self.people.borrow_mut();
-            let mut person = |user: &str| match here.person(user) {
-                Some(seen) => {
-                    people.insert(user.to_owned(), seen.clone());
-                    seen
-                }
-                None => people.get(user).cloned().unwrap_or_else(|| {
-                    (
-                        tilo_desktop::here::unnamed_person_label(),
-                        ui::presence::user_color(user),
-                    )
-                }),
-            };
+            let shown = tilo_desktop_model::WorkspaceId::parse(&self.workspace);
             self.handle.read(|tree| {
+                let held = tree.workspaces.iter().find(|held| Some(held.id()) == shown);
+                // As presence names them, else as the workspace's governance does (someone not
+                // here now keeps their name), and only then as someone without a name yet: one
+                // name and one colour for a person on every window they opened.
+                let mut person = |user: &str| match here.person(user) {
+                    Some(seen) => {
+                        people.insert(user.to_owned(), seen.clone());
+                        seen
+                    }
+                    None => people.get(user).cloned().unwrap_or_else(|| {
+                        (
+                            held.and_then(|held| held.person_name(user))
+                                .map_or_else(tilo_desktop::here::unnamed_person_label, |name| {
+                                    ui::presence::person_label(name)
+                                }),
+                            ui::presence::user_color(user),
+                        )
+                    }),
+                };
                 let workspace = tree
                     .workspaces
                     .first()

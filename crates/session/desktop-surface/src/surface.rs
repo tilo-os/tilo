@@ -636,7 +636,7 @@ impl DesktopHandle {
             }
             // A window someone else holds is theirs (or a moderator's) to close: refused here, said
             // at once, and nothing moves.
-            (Admitted::Close(ids), _) if shared.holders.contains_key(&ids.tab) => {
+            (Admitted::Close(ids), _) if keeps(&shared.holders, ids.tab) => {
                 let refusal = holder_refusal(&shared.holders, ids.tab);
                 shared.say(ui::window_toolbar::ToolbarNotice::new(
                     refusal.clone(),
@@ -907,13 +907,18 @@ impl DesktopHandle {
     }
 }
 
-/// Why the window `tab` someone else holds cannot be closed here.
+/// Whether someone else keeps the window `tab`: this person may not close or move it.
+pub(crate) fn keeps(holders: &HashMap<TabId, ui::widget::TabHolder>, tab: TabId) -> bool {
+    holders.get(&tab).is_some_and(|holder| holder.keeps)
+}
+
+/// Why the window `tab` someone else keeps cannot be closed here.
 fn holder_refusal(holders: &HashMap<TabId, ui::widget::TabHolder>, tab: TabId) -> String {
     holders.get(&tab).map_or_else(
-        || "Only whoever opened this window, or a moderator, can close it".to_owned(),
+        || "Only whoever opened this window, a member of the workspace or a moderator can close it".to_owned(),
         |holder| {
             format!(
-                "Only {}, who opened this window, or a moderator can close it",
+                "Only {}, who opened this window, a member of the workspace or a moderator can close it",
                 holder.name
             )
         },

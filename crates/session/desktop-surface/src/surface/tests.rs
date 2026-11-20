@@ -118,6 +118,7 @@ fn held_by(name: &str) -> ui::widget::TabHolder {
     ui::widget::TabHolder {
         name: name.into(),
         rgb: (200, 120, 40),
+        keeps: true,
     }
 }
 
@@ -1763,6 +1764,7 @@ fn notes_opened_out_of_sight() -> (ui::headless::FrameHarness, TabId) {
     let kim = ui::widget::TabHolder {
         name: "Kim".into(),
         rgb: ui::presence::user_color("kim"),
+        keeps: true,
     };
     let holders = windows
         .into_iter()

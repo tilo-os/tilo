@@ -757,12 +757,14 @@ impl Shared {
         std::mem::take(&mut *self.app_actions.borrow_mut())
     }
 
-    /// Who holds each window of `tree` this desktop's person `me` may not
-    /// close or move, named as `person` (by user root) names people here:
-    /// the windows the desktop's policy keeps for whoever opened them
-    /// ([`tilo_desktop_model::commands::policy::may_rearrange_window`]),
-    /// everyone's but their own unless they moderate the workspace. A
-    /// window nobody opened is the workspace's, named `workspace`.
+    /// Who opened each window of `tree` that this desktop's person `me` did not, named as
+    /// `person` (by user root) names people here, and whether they keep it: whether the
+    /// desktop's policy leaves it theirs to close and move
+    /// ([`tilo_desktop_model::commands::policy::may_rearrange_window`]). The workspace's windows
+    /// are every member's to arrange, so only a visitor who is not one of its members is kept
+    /// from someone else's. A window nobody opened is the workspace's, named `workspace`, and
+    /// named only where it is kept. A window an agent opened names its agent instead
+    /// ([`Self::opened_for`]) unless it is kept.
     pub fn holders(
         &self,
         tree: &Layout,
@@ -770,29 +772,31 @@ impl Shared {
         workspace: &str,
         person: &mut dyn FnMut(&str) -> PersonIdentity,
     ) -> HashMap<TabId, ui::widget::TabHolder> {
-        if self.moderates.load(Ordering::Relaxed) {
-            return HashMap::new();
-        }
+        let moderates = self.moderates.load(Ordering::Relaxed);
         let members = self.members.borrow();
         let requester = self.requester_of(me, members.as_ref());
         let authors = self.authors.borrow();
+        let opened_by = self.opened_by.borrow();
         tree.workspaces
             .iter()
             .flat_map(|w| &w.strips)
             .flat_map(|s| &s.window_groups)
             .flat_map(|g| &g.tabs)
-            .filter(|tab| {
-                tilo_desktop_model::commands::policy::may_rearrange_window(
-                    &requester, &authors, tab.id,
-                )
-                .is_err()
-            })
-            .map(|tab| {
-                let (name, rgb) = match authors.get(&tab.id) {
+            .filter_map(|tab| {
+                let keeps = !moderates
+                    && tilo_desktop_model::commands::policy::may_rearrange_window(
+                        &requester, &authors, tab.id,
+                    )
+                    .is_err();
+                let author = authors.get(&tab.id).filter(|author| author.as_str() != me);
+                if !keeps && (author.is_none() || opened_by.contains_key(&tab.id)) {
+                    return None;
+                }
+                let (name, rgb) = match author {
                     Some(author) => person(author),
                     None => (workspace.to_owned(), ui::presence::user_color(workspace)),
                 };
-                (tab.id, ui::widget::TabHolder { name, rgb })
+                Some((tab.id, ui::widget::TabHolder { name, rgb, keeps }))
             })
             .collect()
     }

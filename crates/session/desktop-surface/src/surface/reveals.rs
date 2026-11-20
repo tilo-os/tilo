@@ -167,7 +167,7 @@ impl DesktopSurface {
         } = &mut *shared;
         let mut newest: Option<(Instant, TabId)> = None;
         for arrival in arrivals.iter_mut().filter(|arrival| !arrival.revealed) {
-            if opened_by.contains_key(&arrival.tab) && !holders.contains_key(&arrival.tab) {
+            if opened_by.contains_key(&arrival.tab) && !super::keeps(holders, arrival.tab) {
                 arrival.revealed = true;
                 if newest.is_none_or(|(at, _)| at <= arrival.at) {
                     newest = Some((arrival.at, arrival.tab));

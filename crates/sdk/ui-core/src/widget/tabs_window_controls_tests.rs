@@ -29,6 +29,7 @@ tilo_test_env::scenario! {
             Some(TabHolder {
                 name: "Lounge".into(),
                 rgb: (1, 2, 3),
+                keeps: true,
             }),
         );
         lay_out_at_width_with(&mut b, 900.0, &theme);

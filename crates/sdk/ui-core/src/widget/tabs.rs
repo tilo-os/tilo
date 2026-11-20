@@ -212,12 +212,16 @@ struct ClosingTab {
     started_at: Instant,
 }
 
-/// Whoever opened a tab on a shared shell, when it is not this shell's person and they may not
-/// rearrange it: no close, a drag that springs back, and hovering names them.
+/// Whoever opened a tab on a shared shell, when it is not this shell's person: hovering the tab
+/// names them in their colour. When they keep it ([`Self::keeps`]) it offers no close and a drag
+/// springs back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabHolder {
     pub name: String,
     pub rgb: (u8, u8, u8),
+    /// Whether the window is theirs alone to close and move: this shell's person shares the
+    /// workspace's windows only as a visitor who is not one of its members.
+    pub keeps: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -409,7 +413,7 @@ pub struct TabBar {
     /// Tab ids whose content has unsaved changes: a modified tab holds its close part open at rest
     /// and paints a dot there, and hovering swaps the × back in, so it stays closable.
     pub(crate) modified_ids: HashSet<u64>,
-    /// Tabs someone else holds ([`TabHolder`]), by id. Sidecar for the same
+    /// Tabs someone else opened ([`TabHolder`]), by id. Sidecar for the same
     /// reason as the three above.
     held_ids: HashMap<u64, TabHolder>,
     /// Tabs an agent opened for their person, and where the agent's mark was
@@ -1829,7 +1833,7 @@ impl TabBar {
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = self.idle_ink(theme);
         let close_rect_target = self.close_rects.get(i).copied().unwrap_or(Rect::ZERO);
-        let is_held = self.held_ids.contains_key(&t.id);
+        let is_held = self.is_held(t.id);
         if !(close_affordance_visible(look, is_pinned || is_held) && close_rect_target.area() > 0.0)
         {
             return;
@@ -2633,7 +2637,7 @@ impl TabBar {
     pub fn is_pinned(&self, id: u64) -> bool {
         self.pinned_ids.contains(&id)
     }
-    /// Mark `id` as held by someone else ([`TabHolder`]), or clear the mark.
+    /// Mark `id` as opened by someone else ([`TabHolder`]), or clear the mark.
     /// `true` when that changed what the tab offers.
     pub fn set_holder(&mut self, id: u64, holder: Option<TabHolder>) -> bool {
         self.touch();
@@ -2642,16 +2646,17 @@ impl TabBar {
             None => self.held_ids.remove(&id).is_some(),
         }
     }
-    /// Who holds `id`, when someone else does.
+    /// Who opened `id`, when someone else did.
     pub fn holder(&self, id: u64) -> Option<&TabHolder> {
         self.held_ids.get(&id)
     }
-    /// Whether someone else holds `id`.
+    /// Whether someone else keeps `id`: this person may not close or move it.
     pub fn is_held(&self, id: u64) -> bool {
-        self.held_ids.contains_key(&id)
+        self.held_ids.get(&id).is_some_and(|holder| holder.keeps)
     }
-    /// Name whoever holds the tab under the pointer, in their colour, beside it: on someone else's
-    /// window that explains why it offers no close and will not move. Within the strip's band.
+    /// Name whoever opened the tab under the pointer, in their colour, beside it: on a window
+    /// someone else keeps that also explains why it offers no close and will not move. Within the
+    /// strip's band.
     pub(crate) fn draw_holder_chip(
         &self,
         scene: &mut Scene,
@@ -2672,7 +2677,10 @@ impl TabBar {
         let Some(holder) = self.held_ids.get(&t.id) else {
             return;
         };
-        let label = widget_format("tab-held-by", &[("name", holder.name.clone().into())]);
+        let label = widget_format(
+            "tab-opened-by-person",
+            &[("name", holder.name.clone().into())],
+        );
         let color = theme.tokens.colors.presence.of_rgb(holder.rgb);
         super::tooltip::draw_person_tooltip_on(
             scene,
@@ -3883,7 +3891,7 @@ impl Widget for TabBar {
             } else {
                 super::window_controls::WindowControls::lay_out(self.tab_row())
             };
-            self.controls = if self.held_ids.contains_key(&self.active_id) {
+            self.controls = if self.is_held(self.active_id) {
                 controls.without_close()
             } else {
                 controls
@@ -4254,25 +4262,23 @@ impl Widget for TabBar {
                     .with_position(i.saturating_add(1), count);
                 // The unsaved-changes dot is colour-and-shape only, so a reader that can't see
                 // it gets it as a description instead.
-                let node = if self.pinned_ids.contains(&t.id)
-                    || !self.closable
-                    || self.held_ids.contains_key(&t.id)
-                {
-                    node
-                } else {
-                    node.with_children(vec![
-                        drawn(&self.close_rects, AccessNode::new(Role::Button))
-                            .with_name(crate::i18n::I18nManager::format(
-                                "tab-close-named",
-                                &[("title", t.title.clone().into())],
-                            ))
-                            .with_action_target(format!("tab-close:{}", t.id))
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            }),
-                    ])
-                };
+                let node =
+                    if self.pinned_ids.contains(&t.id) || !self.closable || self.is_held(t.id) {
+                        node
+                    } else {
+                        node.with_children(vec![
+                            drawn(&self.close_rects, AccessNode::new(Role::Button))
+                                .with_name(crate::i18n::I18nManager::format(
+                                    "tab-close-named",
+                                    &[("title", t.title.clone().into())],
+                                ))
+                                .with_action_target(format!("tab-close:{}", t.id))
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                }),
+                        ])
+                    };
                 let mut node = if self.modified_ids.contains(&t.id) {
                     node.with_description(widget_text("tab-modified"))
                 } else {
@@ -8702,6 +8708,7 @@ mod tests {
         TabHolder {
             name: "Ben".into(),
             rgb: (200, 80, 40),
+            keeps: true,
         }
     }
 
