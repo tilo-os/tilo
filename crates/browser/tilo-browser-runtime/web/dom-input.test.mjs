@@ -81,12 +81,21 @@ test('moving between the layer\'s own elements neither enters nor leaves the sur
 // leaving the surface and end the press in hand, so a control that acts when
 // a press ends — a slot in the window's bar, a button that raises a dialog —
 // would never act.
-test('a frame that replaces the element under a still pointer is no leave', () => {
+test('a frame that replaces the element under a still pointer is no leave, nor an entry', () => {
   const {layer, canvas} = setup();
-  layer.fire('pointerout', {pointerType: 'mouse', relatedTarget: null, clientX: 140, clientY: 20});
-  assert.equal(canvas.sent.length, 0, 'the pointer is still over the surface');
   layer.fire('pointerover', {pointerType: 'mouse', relatedTarget: null, clientX: 140, clientY: 20});
-  assert.deepEqual(canvas.sent.map(event => event.type), ['pointerover']);
+  assert.deepEqual(canvas.sent.map(event => event.type), ['pointerover'], 'the pointer enters the surface');
+  layer.fire('pointerdown', {pointerType: 'mouse', pointerId: 1, clientX: 140, clientY: 20, button: 0, buttons: 1});
+  // The press's frame replaced the element under it.
+  layer.fire('pointerout', {pointerType: 'mouse', relatedTarget: null, clientX: 140, clientY: 20});
+  layer.fire('pointerover', {pointerType: 'mouse', relatedTarget: null, clientX: 140, clientY: 20});
+  layer.fire('pointerup', {pointerType: 'mouse', pointerId: 1, clientX: 140, clientY: 20, button: 0, buttons: 0});
+  assert.deepEqual(canvas.sent.map(event => event.type), ['pointerover', 'pointerdown', 'pointerup'],
+    'the press ends where it began, so it is a click');
+  // Leaving past the layer's edge and coming back is a leave and an entry.
+  layer.fire('pointerout', {pointerType: 'mouse', relatedTarget: null, clientX: 1200, clientY: 20});
+  layer.fire('pointerover', {pointerType: 'mouse', relatedTarget: null, clientX: 140, clientY: 20});
+  assert.deepEqual(canvas.sent.map(event => event.type).slice(3), ['pointerout', 'pointerover']);
 });
 
 test('a touch on a scroll container is the browser\'s pan: the runtime hears it begin and end', () => {
