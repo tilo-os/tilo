@@ -2183,6 +2183,9 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // must unmount the old FUSE session and wait for its worker before this process returns to
     // systemd.
     let mut mount_task = tokio::task::spawn_blocking(move || {
+        // A daemon that ended without unmounting (a kill, a crash) leaves its mount answering
+        // nothing; the path cannot be mounted again until it is gone.
+        fs::fuse_session::clear_stale_mount(&mp)?;
         let session = fuser::spawn_mount(fs, &mp, &config)?;
         // Held until the session ends: dropping it stops the signals.
         #[cfg(target_os = "linux")]

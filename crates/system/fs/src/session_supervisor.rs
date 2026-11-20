@@ -2,13 +2,14 @@
 //!
 //! A mount ends one of two ways: the session ends by itself (an external
 //! unmount, a crash in its thread), or the daemon asks for an unmount (a
-//! signal, a rebind) and then waits for the session's thread so the old
-//! mount is gone before the process returns to systemd. The supervisor
-//! used to learn of the first by waking every 50 ms to look: 20 wakeups a
-//! second for the life of every mount. Now the session's thread
-//! is joined on a watcher thread that reports its end on the same channel
-//! the unmount request comes in on, and the supervisor blocks on that
-//! channel with no timeout.
+//! signal, a rebind). The supervisor used to learn of the first by waking
+//! every 50 ms to look: 20 wakeups a second for the life of every mount.
+//! Now the session's thread is joined on a watcher thread that reports its
+//! end on the same channel the unmount request comes in on, and the
+//! supervisor blocks on that channel with no timeout. An unmount request is
+//! answered as soon as the unmount was asked for, never by waiting for the
+//! session's thread: a mount this process may not unmount leaves that
+//! thread reading its device until the process ends.
 
 use std::io;
 use std::sync::mpsc::{Receiver, Sender};
@@ -80,14 +81,15 @@ fn supervise_watching_on<S: SupervisedSession>(
     // The watcher holds a sender until it reports, so `recv` fails only
     // after an `Ended` it already returned.
     match events.recv() {
-        Ok(SessionEvent::Ended(result)) => return result,
-        Ok(SessionEvent::Unmount) | Err(_) => session.unmount()?,
-    }
-    loop {
-        match events.recv() {
-            Ok(SessionEvent::Ended(result)) => return result,
-            Ok(SessionEvent::Unmount) => {}
-            Err(_) => return Ok(()),
+        Ok(SessionEvent::Ended(result)) => result,
+        Ok(SessionEvent::Unmount) | Err(_) => {
+            // The unmount ends the connection, and the session's thread with it. It is not waited
+            // for: a mount this process may not unmount on its own (a fusermount3 mount in another
+            // user namespace, for one) leaves the thread reading its device, and waiting on that
+            // thread is what kept a stopping daemon alive forever. The process's own end closes
+            // the device.
+            session.unmount()?;
+            Ok(())
         }
     }
 }
