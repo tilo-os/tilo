@@ -288,6 +288,7 @@ mail-messages-trash = Move to Trash
 mail-messages-move-messages = Move messages
 mail-messages-ingest = Add fetched messages
 mail-messages-server-applied = Server applied the update
+mail-messages-take-in = Bring in a member's own messages
 mail-messages-deliver-message = Deliver message
 mail-mailbox = Mail
 mail-mailbox-server-applied = Server applied the update

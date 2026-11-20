@@ -70,6 +70,7 @@ pub mod message_states;
 pub mod model;
 pub mod notice;
 pub mod oauth;
+pub mod own_mailbox;
 pub mod reader;
 pub mod resource;
 #[cfg(all(feature = "live", any(test, feature = "fake-servers")))]

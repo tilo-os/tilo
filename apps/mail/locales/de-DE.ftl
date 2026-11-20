@@ -285,6 +285,7 @@ mail-messages-trash = In den Papierkorb
 mail-messages-move-messages = Nachrichten verschieben
 mail-messages-ingest = Abgerufene Nachrichten übernehmen
 mail-messages-server-applied = Server hat die Änderung übernommen
+mail-messages-take-in = Eigene Nachrichten eines Mitglieds übernehmen
 mail-messages-deliver-message = Nachricht zustellen
 mail-mailbox = E-Mail
 mail-mailbox-server-applied = Server hat die Änderung übernommen

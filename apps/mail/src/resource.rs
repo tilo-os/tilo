@@ -72,6 +72,11 @@ pub struct Mail {
     /// fetch of it never brings it back.
     #[model(readonly)]
     pub retired: Collection<RetiredCopy>,
+    /// The mailboxes members kept as their own before the workspace kept
+    /// one for everyone, by document id, once what each held was brought in
+    /// here ([`crate::own_mailbox`]): each is brought in once.
+    #[model(readonly)]
+    pub taken_in: Set<String>,
 }
 
 /// A copy of a draft its server no longer needs to keep.
@@ -1295,7 +1300,7 @@ impl TestMail {
         *doc = mail.doc().clone();
     }
 
-    /// Record how the delivery of the outbox message `id` settled, as the
+    /// Note how the delivery of the outbox message `id` settled, as the
     /// outbox drain does.
     pub(crate) fn settle_delivery(doc: &mut tilo_resource::Doc, id: &str, settled: &Settled) {
         Self::change(
@@ -1419,6 +1424,12 @@ impl ResourceApp for MailShell {
 
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS
+    }
+
+    /// What the person's own mailbox held, from when each member kept one,
+    /// joins the workspace's the first time it opens on their device.
+    fn import_resource(context: &ui::application::ProcessContext) -> Result<(), String> {
+        crate::own_mailbox::take_in(context)
     }
 
     /// The messages, kept in parts beside the workspace's mailbox.
@@ -1633,7 +1644,7 @@ mod tests {
                 .collect();
             let mut alice = TestApp::<MailShell>::new().unwrap();
             let mut joined =
-                automerge::AutoCommit::load(&alice.resource_document(&alice.record().clone()).unwrap())
+                automerge::AutoCommit::load(&alice.resource_document(&alice.checkout().id.clone()).unwrap())
                     .unwrap();
             let mut bob = TestApp::<MailShell>::with_workspace_resource(&mut joined).unwrap();
             let handed = alice.content().put(&file).unwrap();
@@ -1671,7 +1682,7 @@ mod tests {
             );
 
             let mut later =
-                automerge::AutoCommit::load(&alice.resource_document(&alice.record().clone()).unwrap())
+                automerge::AutoCommit::load(&alice.resource_document(&alice.checkout().id.clone()).unwrap())
                     .unwrap();
             let carol = TestApp::<MailShell>::with_workspace_resource(&mut later).unwrap();
             carol.content().put_public(&ciphertext).unwrap();

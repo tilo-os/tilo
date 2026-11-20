@@ -1252,6 +1252,27 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .window_resources(&definition::<A>().resource_type)
     }
 
+    /// Keep `stored`, the bytes an earlier build stored of the document `id`
+    /// of the app in this window's workspace, as that build left them on
+    /// this device: what a test of a conversion reads, which the next launch
+    /// ([`Self::reopen`]) finds as the device would after updating.
+    ///
+    /// # Errors
+    /// The window keeps its documents nowhere durable, or the store refuses.
+    pub fn keep_stored(&self, id: &DocumentId, stored: Vec<u8>) -> Result<(), String> {
+        let documents = &self.records;
+        let store = documents
+            .backend()
+            .ok_or("the window keeps its documents nowhere durable")?;
+        let (package, home) = documents.app_and_home();
+        let key = durable_store::StorageKey::document(package.as_str(), home, id.storage_key());
+        let _lease = store.lease(&key).map_err(|error| error.to_string())?;
+        store
+            .write(&key, durable_store::WriteOp::Replace(stored), None)
+            .map_err(|error| error.to_string())?;
+        store.flush(Some(&key)).map_err(|error| error.to_string())
+    }
+
     /// Open what a launch naming `arguments` opens in this window, as the
     /// app's view does with [`ResourceEnv::open_here`](super::ResourceEnv::open_here),
     /// and run the frame that shows it.

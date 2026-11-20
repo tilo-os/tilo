@@ -354,6 +354,33 @@ impl MessageStates {
         }
     }
 
+    /// Bring in a member's own messages
+    ///
+    /// Messages a member's own mailbox kept before the workspace kept one
+    /// for everyone ([`crate::own_mailbox`]), each as that mailbox held it:
+    /// what the member did with it, what its server holds, and a message
+    /// held whole. One the mailbox knows already stays as it is here.
+    #[action(external, by_app, items = messages)]
+    pub fn take_in(
+        &mut self,
+        #[param("The messages, as the member's own mailbox kept them")] messages: Vec<
+            crate::own_mailbox::KeptMessage,
+        >,
+    ) {
+        for kept in messages {
+            let Some(key) = message_key(&kept.id) else {
+                continue;
+            };
+            if self.holds(&key) {
+                continue;
+            }
+            self.messages.push(key.clone(), kept.state.0);
+            if let Some(held) = kept.held {
+                self.held.push(key, held.0);
+            }
+        }
+    }
+
     /// Deliver message
     ///
     /// Puts an incoming message in the mailbox itself, in a folder, as mail
@@ -398,7 +425,7 @@ pub(crate) fn show_flags(
 }
 
 /// The message id `id` names, trimmed, when it can name one.
-fn message_key(id: &str) -> Option<Id> {
+pub(crate) fn message_key(id: &str) -> Option<Id> {
     let id = id.trim();
     (!id.is_empty() && id.chars().count() <= MAX_MESSAGE_ID_CHARS).then(|| Id::from_raw(id))
 }
@@ -463,6 +490,13 @@ pub fn prepare(
             }
             MessageStatesAction::DeliverMessage(verb::DeliverMessage { message }) => {
                 crate::held::prepare_delivery(message, parts)?;
+            }
+            // A message another part keeps already stays as it is there.
+            MessageStatesAction::TakeIn(verb::TakeIn { messages }) => {
+                messages.retain(|kept| {
+                    message_key(&kept.id)
+                        .is_some_and(|key| !parts.iter().any(|(_, part)| part.holds(&key)))
+                });
             }
             _ => {}
         }

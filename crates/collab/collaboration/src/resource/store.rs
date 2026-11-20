@@ -3466,6 +3466,7 @@ mod identity_tests;
 mod arrival;
 mod canonical_read;
 mod opening;
+mod stored;
 pub use opening::ResourceOpening;
 #[cfg(test)]
 #[cfg(feature = "broker-transport")]
