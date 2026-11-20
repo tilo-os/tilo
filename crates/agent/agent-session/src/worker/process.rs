@@ -29,6 +29,27 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// slot answering it is let go and what it held is given again, while the
 /// worker and every other slot in it go on.
 const REQUEST_PATIENCE: Duration = Duration::from_secs(60);
+
+#[cfg(test)]
+thread_local! {
+    /// How long the leases a test thread makes wait, in place of [`REQUEST_PATIENCE`].
+    static PATIENCE: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Have the leases this test thread makes from now on wait `patience` for a request.
+#[cfg(test)]
+pub(crate) fn wait_in_this_thread(patience: Duration) {
+    PATIENCE.with(|set| set.set(Some(patience)));
+}
+
+/// How long a new lease waits for a request.
+fn patience() -> Duration {
+    #[cfg(test)]
+    if let Some(patience) = PATIENCE.with(std::cell::Cell::get) {
+        return patience;
+    }
+    REQUEST_PATIENCE
+}
 /// How long a pooled worker that holds no slot is kept for the next one
 /// before it ends: the server's memory follows what is open, not what was.
 #[cfg(not(test))]
@@ -522,7 +543,7 @@ impl Lease {
             slot: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             mode,
             generation: None,
-            patience: REQUEST_PATIENCE,
+            patience: patience(),
             slow: false,
         }
     }

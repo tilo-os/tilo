@@ -154,6 +154,12 @@ pub enum PageRefusal {
     NoSuchApp,
     /// The page cannot be shown now; the reason is for logs.
     Unavailable(String),
+    /// The app was still working on `request` (its kind) past the bound the
+    /// server waits: the page's document was opened again from what the
+    /// workspace holds, and nothing that request or anything sent after it
+    /// did was applied. The page shows the document again and sends what the
+    /// person did since as new acts.
+    Reopened { request: String },
 }
 
 #[cfg(test)]

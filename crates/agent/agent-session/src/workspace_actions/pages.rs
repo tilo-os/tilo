@@ -68,6 +68,15 @@ fn unavailable(error: impl std::fmt::Display) -> PageRefusal {
     PageRefusal::Unavailable(error.to_string())
 }
 
+/// What a page's app answered with nothing: its document opened again past
+/// a slow request ([`PageRefusal::Reopened`]), or otherwise not shown now.
+fn not_shown(error: crate::apps::AppError) -> PageRefusal {
+    match error {
+        crate::apps::AppError::Reopened { request } => PageRefusal::Reopened { request },
+        error => unavailable(error),
+    }
+}
+
 fn refused(error: ActionCallError) -> PageRefusal {
     match error {
         ActionCallError::NotPermitted => PageRefusal::NotMember,
@@ -243,7 +252,7 @@ impl Worker {
             .held
             .app
             .page_show(address.show.as_deref())
-            .map_err(unavailable)?;
+            .map_err(not_shown)?;
         self.save_page(workspace_id, &key, (&who, &route, &state))?;
         self.pages.held.insert(
             page,
@@ -291,7 +300,7 @@ impl Worker {
             .held
             .app
             .page_act(act)
-            .map_err(unavailable)?;
+            .map_err(not_shown)?;
         let acted = started.elapsed();
         self.save_page(workspace_id, &key, (&who, &route, &state))?;
         tracing::debug!(
@@ -320,7 +329,7 @@ impl Worker {
             return Ok(());
         };
         let holder = key.0.clone();
-        let taken = super::take_all(&held.held.app, &holder).map_err(unavailable);
+        let taken = super::take_all(&held.held.app, &holder).map_err(not_shown);
         let saved = taken.and_then(|taken| {
             let wrote: Vec<DocumentRoute> = taken.iter().map(|(route, _)| route.clone()).collect();
             if taken.is_empty() {

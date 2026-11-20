@@ -273,6 +273,12 @@ pub enum AppError {
     /// The app worker that holds the record did not start, could not
     /// confine itself, or stopped ([`crate::worker`]).
     Confinement(String),
+    /// The app was still working on `request` (its kind, as a log line names
+    /// it) past the bound a caller waits: the document was opened again from
+    /// what the workspace holds, and nothing that request or the caller sent
+    /// after it was applied. A caller acting for a person shows the document
+    /// again and sends what the person did since as new acts.
+    Reopened { request: String },
 }
 
 impl std::fmt::Display for AppError {
@@ -282,6 +288,11 @@ impl std::fmt::Display for AppError {
             Self::Launch(reason) => write!(f, "the record could not be created: {reason}"),
             Self::Merge(reason) => write!(f, "the record did not merge: {reason}"),
             Self::Confinement(reason) => write!(f, "the app worker failed: {reason}"),
+            Self::Reopened { request } => write!(
+                f,
+                "the app was still working on {request}; the document was opened again \
+                 and nothing sent after it was applied"
+            ),
         }
     }
 }

@@ -458,6 +458,18 @@ impl ConfinedReplica {
             (inner.dirty, inner.beside_dirty) = pending;
             answer = Self::send(inner, request);
         }
+        // The worker was still working on the request past the caller's bound:
+        // only its slot is let go, and the document is held again from the
+        // mirror at once, which holds nothing of that request. The caller
+        // learns which request it was; the document answers the next as usual.
+        if matches!(answer, Err(Stopped::Slow)) {
+            inner.stop();
+            self.revive(inner, false)?;
+            (inner.dirty, inner.beside_dirty) = pending;
+            return Err(AppError::Reopened {
+                request: request.kind().to_owned(),
+            });
+        }
         // A request that reads the record's view may lay it out, and the view
         // may write as it takes up what changed (a file it now names opened
         // for the first time): what it wrote is collected with the next take.
@@ -2078,6 +2090,40 @@ mod tests {
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
     /// A replica of a new notes record, at the change that began it.
+    /// A request the app is still working on past the bound a caller waits is
+    /// answered as the document opened again, naming the request; the worker
+    /// goes on, and the next request is applied as usual.
+    #[test]
+    fn a_request_past_the_bound_reopens_the_document_and_the_next_applies() {
+        super::super::process::wait_in_this_thread(std::time::Duration::from_millis(500));
+        let replica = begun();
+        let worker = replica.worker_id();
+        let mut inner = replica.lock();
+        let answer = replica.call(&mut inner, &Request::Stall { millis: 5_000 });
+        drop(inner);
+        assert!(
+            matches!(&answer, Err(AppError::Reopened { request }) if request == "stall"),
+            "{answer:?}"
+        );
+        assert_eq!(replica.worker_id(), worker, "the worker was not stopped");
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("name".into(), "Made after a slow request".into());
+        replica
+            .invoke(
+                &ActionAddress::new("notes.notebook", "new-tag"),
+                &arguments,
+                false,
+            )
+            .expect("the reopened document takes the next act");
+        assert!(
+            matches!(
+                replica.take_mutation(),
+                Ok(Some(DocumentMutation::Incremental(_)))
+            ),
+            "what the next act wrote is published"
+        );
+    }
+
     fn begun() -> ConfinedReplica {
         let replica = ConfinedReplica::open(
             &AppCatalogue::native(),
