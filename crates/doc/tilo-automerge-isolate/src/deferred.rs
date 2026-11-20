@@ -100,6 +100,13 @@ impl Deferred {
         hashes.iter().map(|hash| self.parsed.get(hash)).collect()
     }
 
+    /// Every change admitted and not yet applied, as its admission parsed it: what a reader of
+    /// what they write takes when it holds no change's hash to ask by.
+    #[must_use]
+    pub fn pending_changes(&self) -> Vec<&Change> {
+        self.parsed.values().collect()
+    }
+
     /// The heads the document stands at, every admitted change counted.
     pub fn heads(&mut self) -> Vec<ChangeHash> {
         if self.pending.is_empty() {

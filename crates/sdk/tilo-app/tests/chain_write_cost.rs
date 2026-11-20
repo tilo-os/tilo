@@ -146,9 +146,11 @@ fn hand_over(writer: &mut AttachedView, keeper: &mut AttachedView) -> Vec<Docume
         keeper.merge(&change).unwrap();
     }
     let mut parts = Vec::new();
-    for (part, change) in writer.take_resources_beside_changes().unwrap() {
-        keeper.merge_resource(&part, &change).unwrap();
-        parts.push(part);
+    for handed in writer.take_resources_beside_changes().unwrap() {
+        keeper
+            .merge_resource(&handed.document, &handed.mutation())
+            .unwrap();
+        parts.push(handed.document);
     }
     parts
 }
@@ -243,9 +245,15 @@ tilo_test_env::scenario! {
         let handed = writer.take_resources_beside_changes().unwrap();
         assert_eq!(handed.len(), 1, "every card went into the one part");
         tilo_automerge::shared::clear();
-        for (part, whole) in &handed {
+        for handed in &handed {
             assert!(
-                keeper.merge_resource(part, whole).unwrap(),
+                handed.whole.is_some(),
+                "the part is handed whole the first time"
+            );
+            assert!(
+                keeper
+                    .merge_resource(&handed.document, &handed.mutation())
+                    .unwrap(),
                 "the part is new to the copy"
             );
         }

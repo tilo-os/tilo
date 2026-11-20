@@ -980,15 +980,20 @@ fn taken_mutation(replica: &mut crate::Replica) -> Reply {
     }
 }
 
-/// [`taken_mutation`], for the records held beside the replica's own.
+/// [`taken_mutation`], for the records held beside the replica's own: the
+/// changes it made, and, for a part it started, the part whole.
 fn taken_document_mutations(replica: &mut crate::Replica) -> Reply {
-    match replica.take_document_mutations() {
+    match replica.take_document_handover() {
         Ok(taken) => Reply::DocumentMutations(
             taken
                 .into_iter()
-                .map(|(record, mutation)| {
-                    let (snapshot, bytes) = wire_mutation(mutation);
-                    (record.as_str().to_owned(), snapshot, bytes)
+                .map(|handed| super::proto::TakenDocument {
+                    record: handed.document.as_str().to_owned(),
+                    changes: match handed.changes {
+                        DocumentMutation::Snapshot(bytes)
+                        | DocumentMutation::Incremental(bytes) => bytes,
+                    },
+                    whole: handed.whole,
                 })
                 .collect(),
         ),

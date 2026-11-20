@@ -79,6 +79,28 @@ struct TreeInputs {
     permissions: u64,
 }
 
+/// What a view hands over of one record it holds beside its own.
+pub struct BesideChange {
+    /// The record that changed.
+    pub document: ui_core::resource::DocumentId,
+    /// This member's changes since the last take.
+    pub changes: DocumentMutation,
+    /// The record whole, when this member started it here: what a peer that
+    /// holds none of it founds it from.
+    pub whole: Option<Vec<u8>>,
+}
+
+impl BesideChange {
+    /// What a peer that holds none of the record takes: the whole record when
+    /// this member started it, the changes otherwise.
+    #[must_use]
+    pub fn mutation(&self) -> DocumentMutation {
+        self.whole
+            .clone()
+            .map_or_else(|| self.changes.clone(), DocumentMutation::Snapshot)
+    }
+}
+
 /// One record held in its app's view, attached and never drawn. See the
 /// module docs.
 pub struct AttachedView {
@@ -1458,17 +1480,18 @@ impl AttachedView {
     }
 
     /// The member's changes to `record`, one the view holds beside
-    /// its own ([`Self::resources_beside`]), since the last call: the whole
-    /// document the first time, for one the member started.
+    /// its own ([`Self::resources_beside`]), since the last call: the changes
+    /// it made, and, for a part the member started, the part whole, which a
+    /// peer that holds none of it founds it from.
     ///
     /// # Errors
     /// As [`Self::take_changes`].
     pub fn take_resource_changes(
         &mut self,
         record: &ui_core::resource::DocumentId,
-    ) -> Result<Option<DocumentMutation>, String> {
+    ) -> Result<Option<BesideChange>, String> {
         let sync = self.beside.entry(record.clone()).or_default();
-        publish(sync, &self.records, record)
+        publish_beside(sync, &self.records, record)
     }
 
     /// The member's changes to every document the view holds beside its
@@ -1477,20 +1500,18 @@ impl AttachedView {
     /// # Errors
     /// As [`Self::take_changes`], for any one of them: those taken before it
     /// are kept to go with the next call, so a write is never half reported.
-    pub fn take_resources_beside_changes(
-        &mut self,
-    ) -> Result<Vec<(ui_core::resource::DocumentId, DocumentMutation)>, String> {
+    pub fn take_resources_beside_changes(&mut self) -> Result<Vec<BesideChange>, String> {
         let mut taken = Vec::new();
         let mut held = self.resources_beside();
         held.extend(self.kept_changed());
         for checkout in held {
             match self.take_resource_changes(&checkout.id) {
-                Ok(Some(mutation)) => taken.push((checkout.id, mutation)),
+                Ok(Some(handed)) => taken.push(handed),
                 Ok(None) => {}
                 Err(error) => {
-                    for (record, mutation) in taken {
-                        if let Some(sync) = self.beside.get_mut(&record) {
-                            sync.put_back(mutation);
+                    for handed in taken {
+                        if let Some(sync) = self.beside.get_mut(&handed.document) {
+                            sync.put_back(handed.mutation());
                         }
                     }
                     return Err(error);
@@ -1657,6 +1678,44 @@ fn publish(
     }
     sync.set_aside(records, id).map_err(failed)?;
     Ok(sync.take_set_aside())
+}
+
+/// [`publish`] of a record held beside the view's own: the changes this member
+/// made, and, for a record it started, the record whole. A peer that holds
+/// none of the record founds it from the whole; the changes are what its
+/// host admits without loading the record again.
+///
+/// # Errors
+/// As [`publish`].
+fn publish_beside(
+    sync: &mut DocumentSync,
+    records: &ResourceStore,
+    id: &ui_core::resource::DocumentId,
+) -> Result<Option<BesideChange>, String> {
+    let failed = |error: String| {
+        format!(
+            "this member's change to {} could not be collected: {error}",
+            id.as_str()
+        )
+    };
+    let (changes, whole) = if sync.snapshotted() {
+        sync.set_aside(records, id).map_err(failed)?;
+        let Some(changes) = sync.take_set_aside() else {
+            return Ok(None);
+        };
+        (changes, None)
+    } else {
+        let (whole, changes, heads) = records
+            .replication_whole_and_changes(id)
+            .map_err(|error| failed(error.to_string()))?;
+        sync.advance(heads);
+        (DocumentMutation::Incremental(changes), Some(whole))
+    };
+    Ok(Some(BesideChange {
+        document: id.clone(),
+        changes,
+        whole,
+    }))
 }
 
 /// Why a peer's change to `record` was not merged: this member's own

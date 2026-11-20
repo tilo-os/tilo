@@ -9,6 +9,7 @@ use tilo_automerge::ApplyIncoming as _;
 use crate::{Applied, Dependencies, Rejected};
 
 pub(crate) fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
+    tilo_automerge::shared::note_decoded();
     AutoCommit::load_with_options(bytes, strict()).map_err(|e| Rejected::Invalid(e.to_string()))
 }
 
@@ -27,6 +28,7 @@ pub(crate) fn load_validated(bytes: &[u8], hashes: &[ChangeHash]) -> Result<Auto
     if hashes.is_empty() {
         return load(bytes);
     }
+    tilo_automerge::shared::note_decoded();
     AutoCommit::load_with_options(bytes, strict().known_change_hashes(hashes))
         .map_err(|e| Rejected::Invalid(e.to_string()))
 }

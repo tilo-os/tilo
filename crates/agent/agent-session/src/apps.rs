@@ -27,7 +27,7 @@ use tilo_server_protocol::live::LiveAnchor;
 use tilo_server_protocol::live::presence_anchors;
 use ui::application::ApplicationDefinition;
 use ui::collaboration::PresencePayload;
-use ui::framework::{AttachedView, ResourceSelection};
+use ui::framework::{AttachedView, BesideChange, ResourceSelection};
 use ui::permissions::{PermissionContext, Role, policy};
 use ui::portable_storage::PortableStorage;
 use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
@@ -1856,6 +1856,23 @@ impl Replica {
     pub fn take_document_mutations(
         &mut self,
     ) -> Result<Vec<(DocumentId, DocumentMutation)>, AppError> {
+        Ok(self
+            .take_document_handover()?
+            .into_iter()
+            .map(|handed| {
+                let written = handed.mutation();
+                (handed.document, written)
+            })
+            .collect())
+    }
+
+    /// [`Self::take_document_mutations`] as a worker hands them to its host:
+    /// this member's changes, and, for a part it started, the part whole.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::take_mutation`].
+    pub fn take_document_handover(&mut self) -> Result<Vec<BesideChange>, AppError> {
         self.view
             .take_resources_beside_changes()
             .map_err(AppError::Merge)

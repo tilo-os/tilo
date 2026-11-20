@@ -3331,6 +3331,24 @@ impl ResourceStore {
         })
     }
 
+    /// The open record `id` whole, as its changes from the empty document, and
+    /// its heads: for a replica handing a record it started to a host as the
+    /// changes it made, while the host founds the record from the whole.
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy.
+    pub fn replication_whole_and_changes(
+        &self,
+        id: &DocumentId,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<automerge::ChangeHash>), ResourceOpenError> {
+        self.with_action_state(id, |doc, _, actions| {
+            actions.commit_for_save(doc);
+            let heads = doc.get_heads();
+            actions.notices.sent(&heads);
+            (doc.save(), doc.save_after(&[]), heads)
+        })
+    }
+
     /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &DocumentId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
         let mut set = self.set_mut();

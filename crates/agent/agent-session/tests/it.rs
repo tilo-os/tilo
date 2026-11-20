@@ -62,6 +62,8 @@ mod mail_for_agents;
 mod messages_for_agents;
 #[path = "page_view.rs"]
 mod page_view;
+#[path = "part_handover.rs"]
+mod part_handover;
 #[path = "render_video.rs"]
 mod render_video;
 #[path = "replicas.rs"]

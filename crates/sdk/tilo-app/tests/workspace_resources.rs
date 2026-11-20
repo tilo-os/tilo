@@ -461,7 +461,9 @@ fn a_view_with_no_window_holds_the_workspaces_emoji_once_told_what_the_workspace
         .unwrap();
     let mut sent = first.take_resources_beside_changes().unwrap();
     assert_eq!(sent.len(), 1, "the emoji, and nothing else it keeps");
-    let (emoji_id, whole) = sent.remove(0);
+    let handed = sent.remove(0);
+    let whole = handed.mutation();
+    let emoji_id = handed.document;
     assert!(
         matches!(whole, DocumentMutation::Snapshot(_)),
         "the first change goes out with the document it founded"

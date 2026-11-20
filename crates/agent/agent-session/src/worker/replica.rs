@@ -1743,7 +1743,7 @@ impl ConfinedReplica {
     /// This member's changes to the documents held beside this one since
     /// the last call, by record, admitted here first:
     /// [`crate::Replica::take_document_mutations`]. A part the worker started
-    /// comes whole; it must be a part of a chain not held here yet.
+    /// comes as the changes it made and whole, which founds it here.
     ///
     /// # Errors
     ///
@@ -1772,8 +1772,8 @@ impl ConfinedReplica {
                 return Err(error);
             }
         };
-        for (record, snapshot, bytes) in taken {
-            match self.admit_beside(&mut inner, &record, snapshot, bytes) {
+        for taken in taken {
+            match self.admit_beside(&mut inner, &taken.record, taken.changes, taken.whole) {
                 Ok((document, mutation)) => joined(&mut out, document, mutation),
                 Err(error) => {
                     // A worker that sends what is not admitted is not asked
@@ -1790,14 +1790,14 @@ impl ConfinedReplica {
     }
 
     /// Admit one change the worker made to a document held beside this one
-    /// to its mirror: a part it started whole, a part held here as changes
-    /// on top of it.
+    /// to its mirror: a part it started, as the changes it made and the part
+    /// whole; a part held here, as changes on top of it.
     fn admit_beside(
         &self,
         inner: &mut Inner,
         record: &str,
-        snapshot: bool,
-        bytes: Vec<u8>,
+        changes: Vec<u8>,
+        whole: Option<Vec<u8>>,
     ) -> Result<(DocumentId, DocumentMutation), AppError> {
         let parsed = DocumentId::parse(record);
         // Whether the store asked its workspace for it, read before its mirror is borrowed.
@@ -1814,24 +1814,55 @@ impl ConfinedReplica {
                     && document != &self.record
             })
             .ok_or_else(|| worker_error("the worker named one it does not hold beside"))?;
-        match (snapshot, beside.get_mut(&document)) {
-            (true, None) => {
-                let mirror = tilo_automerge_isolate::load(&bytes)
-                    .map_err(|error| AppError::Merge(error.to_string()))?;
-                beside.insert(document.clone(), Deferred::from(mirror));
-                Ok((document, DocumentMutation::Snapshot(bytes)))
+        match (whole, beside.get_mut(&document)) {
+            // A part the worker started: its changes were made on the empty document, so
+            // they wait here unapplied, applied in an isolate first only once the part is
+            // read. What founds it at a peer is the part whole.
+            (Some(whole), None) => {
+                let mut mirror = Deferred::default();
+                match mirror.admit_unapplied(&changes) {
+                    Ok(Applied::Changed(_)) => {
+                        beside.insert(document.clone(), mirror);
+                        Ok((document, DocumentMutation::Snapshot(whole)))
+                    }
+                    Ok(Applied::MissingDependencies) => Err(AppError::Merge(
+                        "the worker's changes to a part it started build on nothing it made".into(),
+                    )),
+                    Err(error) => Err(AppError::Merge(error.to_string())),
+                }
+            }
+            // The worker handed the part over again, after a take that failed on a later one:
+            // what is new of its changes waits as any change does, and the whole still founds
+            // it where the first take did not reach.
+            (Some(whole), Some(mirror)) => {
+                let held = tilo_automerge_isolate::change_hashes(&changes)
+                    .is_some_and(|carried| carried.iter().all(|hash| mirror.holds(hash)));
+                if !held {
+                    match mirror.admit_unapplied(&changes) {
+                        Ok(Applied::Changed(_)) => {}
+                        Ok(Applied::MissingDependencies) => {
+                            return Err(AppError::Merge(
+                                "the worker's changes to a part it started build on nothing it \
+                                 made"
+                                    .into(),
+                            ));
+                        }
+                        Err(error) => return Err(AppError::Merge(error.to_string())),
+                    }
+                }
+                Ok((document, DocumentMutation::Snapshot(whole)))
             }
             // The worker made this change on the state the mirror holds: it waits there
             // unapplied, and is applied, in an isolate first, only once the mirror is read.
-            (false, Some(mirror)) => match mirror.admit_unapplied(&bytes) {
-                Ok(Applied::Changed(_)) => Ok((document, DocumentMutation::Incremental(bytes))),
+            (None, Some(mirror)) => match mirror.admit_unapplied(&changes) {
+                Ok(Applied::Changed(_)) => Ok((document, DocumentMutation::Incremental(changes))),
                 Ok(Applied::MissingDependencies) => Err(AppError::Merge(
                     "the worker's change builds on nothing the part holds".into(),
                 )),
                 Err(error) => Err(AppError::Merge(error.to_string())),
             },
-            _ => Err(worker_error(
-                "the worker replaced a part it did not start, or changed one it does not hold",
+            (None, None) => Err(worker_error(
+                "the worker changed a part it did not start, and gave no whole for it",
             )),
         }
     }
@@ -1942,8 +1973,17 @@ fn beside_keys_written(
             ui::framework::keys_written(mirror.unsettled().0, &changes)
                 .or_else(|| ui::framework::keys_written(mirror.settled().ok()?, &changes))
         }
-        // A part it started whole is every change it holds.
+        // A part it started is every change it holds; a part the worker started and this
+        // replica has not read yet keeps those changes parsed while they wait, so what they
+        // wrote is read without applying the part here.
         DocumentMutation::Snapshot(_) => {
+            let pending = mirror.pending_changes();
+            if !pending.is_empty() {
+                let (doc, _) = mirror.unsettled();
+                if let Some(written) = ui::framework::keys_written(doc, pending.iter().copied()) {
+                    return Some(written);
+                }
+            }
             let doc = mirror.settled().ok()?;
             let changes = doc.get_changes(&[]);
             ui::framework::keys_written(doc, &changes)
