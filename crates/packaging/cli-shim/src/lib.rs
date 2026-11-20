@@ -48,7 +48,7 @@ pub fn missing_sidecar_message(exe: &Path, error: &str) -> String {
             "{TEMPLATE_NAME} is the program `tilo-install` copies for each command an \
              installed app declares; it does nothing run by itself.\n\
              Run that command by name, or `tilo` for this desktop's apps and actions \
-             (`tilo actions`, `tilo do <action>`, `tilo open <app>`)."
+             (`tilo action list`, `tilo do <action>`, `tilo open <app>`)."
         );
     }
     format!(
@@ -69,7 +69,7 @@ mod tests {
             "No such file or directory",
         );
         assert!(message.contains("tilo-install"), "{message}");
-        assert!(message.contains("`tilo actions`"), "{message}");
+        assert!(message.contains("`tilo action list`"), "{message}");
         assert!(!message.contains("sidecar"), "{message}");
     }
 

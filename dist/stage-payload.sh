@@ -32,7 +32,7 @@ fi
 
 mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,pipewire,systemd-user,license}
 install -pm 0755 "$bin_dir/tilo-session"      "$stage/bin/tilo-session"
-# `tilo`: the desktop's apps and actions from any terminal (`tilo actions`,
+# `tilo`: the desktop's apps and actions from any terminal (`tilo action list`,
 # `tilo do`, `tilo open`). Every host package ships it, as the OS image does.
 install -pm 0755 "$bin_dir/tilo"              "$stage/bin/tilo"
 # The program a task's tilolang programs run in, which `tilo` and the session start beside

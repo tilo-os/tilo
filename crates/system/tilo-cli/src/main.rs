@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! tilo open calculator      open an app (getting it first when it isn't here)
-//! tilo actions              what this desktop can do
+//! tilo action list          what this desktop can do
 //! tilo do mute              do one of those things
 //! tilo app u browser        update one app
 //! tilo system update        move onto the newest system made for this machine
@@ -180,7 +180,7 @@ enum Cmd {
     },
     /// See what this desktop can do, and do it.
     #[command(
-        after_help = "Examples:\n  tilo actions             Everything this desktop can do now\n  tilo actions volume      Only what matches\n  tilo action show mute    What an action does and takes\n  tilo do mute             Do it"
+        after_help = "Examples:\n  tilo action list         Everything this desktop can do now\n  tilo action list volume  Only what matches\n  tilo action show mute    What an action does and takes\n  tilo do mute             Do it"
     )]
     Action {
         #[command(subcommand)]
@@ -190,13 +190,14 @@ enum Cmd {
     #[command(
         after_help = "Examples:\n  tilo do new-terminal-window\n  tilo do rename-note title=Groceries\n  tilo do set-volume 40\n  \
                       tilo -w jane-doe do pdf-viewer/application.pdf#read-form-fields\n\n\
-                      `tilo actions` lists what there is. Options are written name=value; a single\n\
-                      value goes to the one the action needs. With -w, the path is app/resource#action\n\
-                      in that hosted workspace, over Tilo's API (key: TILO_API_KEY, or this computer's\n\
-                      own when it logged in)."
+                      `tilo action list` shows what this desktop can do; in a hosted workspace,\n\
+                      `tilo ls -w <workspace>` lists what it holds. Options are written name=value; a\n\
+                      single value goes to the one the action needs. With -w, the path is\n\
+                      app/resource#action in that hosted workspace, over Tilo's API (key:\n\
+                      TILO_API_KEY, or this computer's own when it logged in)."
     )]
     Do {
-        /// The action's name, as `tilo actions` lists it, or words of its title.
+        /// The action's name, as `tilo action list` lists it, or words of its title.
         action: String,
         /// Its options, as name=value.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -326,12 +327,6 @@ enum Cmd {
     Sdk {
         #[command(subcommand)]
         cmd: sdk::SdkCmd,
-    },
-    /// List what this desktop can do.
-    #[command(hide = true)]
-    Actions {
-        /// Words to look for.
-        filter: Vec<String>,
     },
     /// The same as `tilo app`.
     #[command(hide = true, disable_help_flag = true)]
@@ -642,7 +637,7 @@ fn command_here(here: Here) -> clap::Command {
 /// The tree completion offers: every noun and verb, the shortcuts too.
 fn completing(here: Here) -> clap::Command {
     command_here(here).mut_subcommands(|sub| match sub.get_name() {
-        "open" | "do" | "ls" | "read" | "view" | "actions" | "update" | "status" | "rollback" => {
+        "open" | "do" | "ls" | "read" | "view" | "update" | "status" | "rollback" => {
             sub.hide(false)
         }
         _ => sub,
@@ -718,7 +713,7 @@ fn examples(here: Here) -> String {
         lines.extend([
             ("tilo open calculator", "Open Calculator"),
             ("tilo open notes ~/plan.md", "Open a file in Notes"),
-            ("tilo actions", "What this desktop can do"),
+            ("tilo action list", "What this desktop can do"),
             ("tilo do new-terminal-window", "Do one of those things"),
         ]);
     }
@@ -1202,11 +1197,6 @@ fn workspace_or_entered(cli: &Cli) -> Result<Option<String>> {
     }))
 }
 
-/// `tilo actions [filter]`: every action this desktop offers, as the palette lists them.
-fn list_actions(filter: Vec<String>, spelling: &tilo_control::front::Spelling) -> ExitCode {
-    desktop::run_action(desktop::ActionCmd::List { filter }, false, spelling)
-}
-
 /// `tilo login` where no tab approves this computer: one that holds the person's identity, or one
 /// following an invitation link. `None` for every other command.
 fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
@@ -1296,7 +1286,6 @@ fn run(cli: Cli) -> Result<ExitCode> {
         | Cmd::Sdk { .. } => bail!("run_hosted answers the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, cli.json, &spelling)),
-        Cmd::Actions { filter } => Ok(list_actions(filter, &spelling)),
         Cmd::Server { cmd } => server::serve(cmd),
         Cmd::Machine { cmd } => machine::serve(cmd),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
@@ -2494,7 +2483,7 @@ mod tests {
                     "Examples:\n",
                     "  tilo open calculator              Open Calculator\n",
                     "  tilo open notes ~/plan.md         Open a file in Notes\n",
-                    "  tilo actions                      What this desktop can do\n",
+                    "  tilo action list                  What this desktop can do\n",
                     "  tilo do new-terminal-window       Do one of those things\n",
                     "  tilo app search pdf               Find apps\n",
                     "  tilo app update                   Update every app\n",
@@ -2509,6 +2498,17 @@ mod tests {
                     "  tilo ls notes -w jane-doe         What a hosted workspace holds\n",
                 )
             );
+            // `do` names commands that exist: this desktop's own listing,
+            // and the one a hosted workspace answers.
+            let mut everywhere = command_here(EVERYWHERE);
+            let doing = everywhere
+                .find_subcommand_mut("do")
+                .expect("do")
+                .render_help()
+                .to_string();
+            assert!(doing.contains("`tilo action list`"), "{doing}");
+            assert!(doing.contains("`tilo ls -w <workspace>`"), "{doing}");
+            assert!(!doing.contains("tilo actions"), "{doing}");
         }
 
         phase help_elsewhere_leaves_out_what_cannot_work;
@@ -2530,7 +2530,7 @@ mod tests {
             );
             let help = command_here(elsewhere).render_help().to_string();
             // `do` stays: acting in a hosted workspace (-w) needs no desktop.
-            for absent in ["tilo open", "tilo actions", "device update", "status"] {
+            for absent in ["tilo open", "tilo action list", "device update", "status"] {
                 assert!(!help.contains(absent), "{absent} in:\n{help}");
             }
             let nothing = Here {
@@ -2746,8 +2746,13 @@ mod tests {
                     }
                 } if from == "https://old.test" && to == "https://tilo.sh"
             ));
-            let list = Cli::try_parse_from(["tilo", "actions", "volume"]).expect("actions parses");
-            assert!(matches!(list.cmd, Cmd::Actions { ref filter } if filter == &["volume"]));
+            let list = Cli::try_parse_from(["tilo", "action", "list", "volume"]).expect("action list parses");
+            assert!(matches!(
+                list.cmd,
+                Cmd::Action {
+                    cmd: desktop::ActionCmd::List { ref filter }
+                } if filter == &["volume"]
+            ));
             let show = Cli::try_parse_from(["tilo", "action", "show", "mute"]).expect("show parses");
             assert!(matches!(
                 show.cmd,

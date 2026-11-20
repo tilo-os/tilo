@@ -37,7 +37,7 @@ pub enum ActionCmd {
                       Options are written name=value; a single value goes to the one the action needs."
     )]
     Run {
-        /// The action's name, as `tilo actions` lists it, or words of its title.
+        /// The action's name, as `tilo action list` lists it, or words of its title.
         action: String,
         /// Its options, as name=value.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -45,7 +45,7 @@ pub enum ActionCmd {
     },
     /// Show what an action does and what it takes.
     Show {
-        /// The action's name, as `tilo actions` lists it, or words of its title.
+        /// The action's name, as `tilo action list` lists it, or words of its title.
         action: String,
     },
 }

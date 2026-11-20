@@ -40,13 +40,13 @@ pub struct Spelling {
 }
 
 impl Spelling {
-    /// `tilo do`, `tilo action show`, `tilo actions`, `tilo open`.
+    /// `tilo do`, `tilo action show`, `tilo action list`, `tilo open`.
     #[must_use]
     pub fn tilo() -> Self {
         Self {
             run: "tilo do".into(),
             show: "tilo action show".into(),
-            list: "tilo actions".into(),
+            list: "tilo action list".into(),
             open: "tilo open".into(),
         }
     }
@@ -594,11 +594,22 @@ fn connect(sockets: &[ControlSocket]) -> Result<Desktop, Failure> {
     Desktop::connect(sockets).map_err(Failure::Unreachable)
 }
 
-/// `tilo actions [filter]`: what this desktop can do, grouped by kind.
+/// `tilo action list [filter]`: what this desktop can do, grouped by kind.
 pub fn list(sockets: &[ControlSocket], filter: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
     let result = connect(sockets).and_then(|mut desktop| listing(&mut desktop, filter.trim(), &[]));
     let listing = match result {
         Ok(listing) => listing,
+        // A desktop is where this desktop's actions are; a hosted workspace
+        // lists what it holds with `tilo ls`, which is the command to reach
+        // instead when there is no session here.
+        Err(Failure::Unreachable(Unreachable::NoDesktop)) => {
+            let _ = writeln!(
+                io.err,
+                "This needs a Tilo desktop session. In a hosted workspace, `tilo ls -w <workspace>` \
+                 lists what it holds."
+            );
+            return 1;
+        }
         Err(failure) => return report(&failure, spelling, io),
     };
     if listing.actions.is_empty() {

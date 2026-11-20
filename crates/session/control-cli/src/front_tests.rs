@@ -476,6 +476,20 @@ fn an_action_answer_says_what_ran_and_where_it_is() {
     assert_eq!(answer_text(&running), "pending inv-3: still going");
 }
 
+/// A listing with no desktop to list from says what a hosted workspace's
+/// listing is, rather than only that a session is missing.
+#[test]
+fn the_listing_without_a_desktop_names_the_hosted_way() {
+    let spelling = Spelling::tilo();
+    let listed = ran(|io| list(&[], "", &spelling, io));
+    assert_eq!(listed.code, 1);
+    assert_eq!(
+        listed.err,
+        "This needs a Tilo desktop session. In a hosted workspace, `tilo ls -w <workspace>` lists \
+         what it holds.\n"
+    );
+}
+
 /// From inside an app — the Terminal app and what runs in it — the admin
 /// socket turns the process away. The same commands then list and run
 /// through the session's MCP server, which acts with that terminal's
