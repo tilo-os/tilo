@@ -218,7 +218,20 @@ impl Store {
     pub fn open_device() -> std::io::Result<Arc<Self>> {
         let dir = tilo_paths::profile_root()
             .ok_or_else(|| std::io::Error::other("no configuration directory"))?;
-        Self::open_on(app_state::shared_native_store(), dir, true)
+        Self::open_device_in(&app_state::native_data_home(), &dir)
+    }
+
+    /// [`Self::open_device`] for a profile named by its roots rather than this process's
+    /// environment: its documents in the device store at `data_home`, its holder's socket at
+    /// `profile_root`. A caller that seeds another profile's settings — a test preparing the
+    /// profile it starts a session on — names them instead of rewriting the environment every
+    /// thread of this process reads.
+    pub fn open_device_in(data_home: &Path, profile_root: &Path) -> std::io::Result<Arc<Self>> {
+        Self::open_on(
+            app_state::shared_store(data_home),
+            profile_root.to_path_buf(),
+            true,
+        )
     }
 
     /// Open the profile kept in `kept`, its holder's socket at `dir/settings.sock`: as its holder

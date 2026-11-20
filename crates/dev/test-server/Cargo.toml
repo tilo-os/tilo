@@ -27,8 +27,6 @@ iroh.workspace = true
 # The QUIC address discovery service, and its self-signed certificate, as iroh-relay serves them.
 iroh-relay = { version = "1.0.3", features = ["server", "test-utils"] }
 tilo-net = { path = "../../platform/tilo-net" }
-# The environment a profile's settings are seeded under ([`tilo_test_env::ScopedEnv`]).
-tilo-test-env = { path = "../test-env" }
 
 [lints]
 workspace = true

@@ -65,12 +65,19 @@ pub fn shared_store(root: impl Into<PathBuf>) -> Arc<FsStore> {
     )
 }
 
+/// [`shared_native_store`]'s root: the platform data directory, where the device's own documents
+/// (its settings, and whatever a service beside them keeps) live.
+#[must_use]
+pub fn native_data_home() -> PathBuf {
+    cli::data_home()
+}
+
 /// [`shared_store`] over the platform data directory: the device's one store for the documents
 /// that are the device's rather than an app's (its settings, and whatever a service beside them
 /// keeps).
 #[must_use]
 pub fn shared_native_store() -> Arc<FsStore> {
-    shared_store(cli::data_home())
+    shared_store(native_data_home())
 }
 
 #[cfg(test)]

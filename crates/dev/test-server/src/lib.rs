@@ -285,13 +285,15 @@ pub fn loopback_url() -> String {
 ///
 /// The settings a session reads live in the device document store at its data home, which is the
 /// store written here, not the configuration directory a profile's other files sit in.
+///
+/// The profile is named by its roots, never by this process's environment: identity lookups on
+/// other threads read the environment, and a profile written by rewriting it would answer those
+/// threads the child's paths.
 pub fn relay_through_loopback_in(config_home: &std::path::Path, data_home: &std::path::Path) {
     use settings_store::SettingsSource as _;
 
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", config_home)
-        .set("XDG_DATA_HOME", data_home);
-    let store = settings_store::Store::open_device().expect("the device's settings");
+    let store = settings_store::Store::open_device_in(data_home, &config_home.join("tilo"))
+        .expect("the device's settings");
     settings_store::relay::RELAY
         .set_in(
             store.as_ref(),
@@ -462,13 +464,44 @@ mod tests {
         std::fs::create_dir_all(&config).expect("the configuration directory");
         std::fs::create_dir_all(&data).expect("the data directory");
         relay_through_loopback_in(&config, &data);
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &config)
-            .set("XDG_DATA_HOME", &data);
-        let store = settings_store::Store::open_device().expect("the device's settings");
+        let store = settings_store::Store::open_device_in(&data, &config.join("tilo"))
+            .expect("the device's settings");
         assert_eq!(
             settings_store::relay::RELAY.get_in(store.as_ref()),
             settings_store::relay::Relays::Own(loopback_url())
+        );
+    }
+
+    /// Seeding a profile writes its settings and changes nothing this process reads: another
+    /// profile's lookups, on any thread, keep answering this process's own identity.
+    #[test]
+    fn seeding_a_profile_leaves_the_process_environment_alone() {
+        let home = tempfile::tempdir().expect("a device's home");
+        let (config, data) = (home.path().join("config"), home.path().join("data"));
+        std::fs::create_dir_all(&config).expect("the configuration directory");
+        std::fs::create_dir_all(&data).expect("the data directory");
+        let before: Vec<_> = [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "TILO_IDENTITY_ROOT",
+        ]
+        .into_iter()
+        .map(std::env::var_os)
+        .collect();
+        relay_through_loopback_in(&config, &data);
+        let after: Vec<_> = [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "TILO_IDENTITY_ROOT",
+        ]
+        .into_iter()
+        .map(std::env::var_os)
+        .collect();
+        assert_eq!(
+            before, after,
+            "seeding a profile leaves the environment alone"
         );
     }
 
