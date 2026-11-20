@@ -81,11 +81,3 @@ action = "import-notion-export"
 label = "Import Notion export"
 kind = "outside"
 icon = "download"
-[[offers]]
-resource = "chain:derived:pages@derived:default@tab:0000000000000000"
-resource-kind = "notes.pages"
-action = "new-note"
-label = "New note"
-asks = "title"
-keywords = ["new page", "create note", "add note", "memo"]
-icon = "file-plus"

@@ -154,7 +154,11 @@ fn report_surface(
 /// Left out: what the framework publishes on every app (its undo, its
 /// `open`), save the link a scheme the app takes is opened with; what the
 /// shell publishes into the view (its search, its controls); the person's own
-/// documents; and the items of a list, which a closed app has none of.
+/// documents; the items of a list, which a closed app has none of; what acts
+/// on one document (`…@…`), whose address names the document a window opens, so
+/// an offer of it would hold that window's id; and Settings' pages and
+/// settings, save its link, which the shell's own search finds on every
+/// desktop whether Settings is open or not.
 fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value> {
     use tilo_actions::{Collects, ConfirmationPolicy, InputSpec};
 
@@ -164,13 +168,15 @@ fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value>
         let contract = &action.contract;
         let resource = action.address.resource.as_str();
         let id = action.address.action.as_str();
+        let opens_links = id == tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION;
         if !contract.offered_to_people()
             || !contract.availability.is_available()
-            || (reserved.iter().any(|framework| framework == id)
-                && id != tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION)
+            || (reserved.iter().any(|framework| framework == id) && !opens_links)
             || resource.starts_with("tilo.")
             || resource.starts_with("person:")
-            || resource.contains('/')
+            || ((resource.starts_with("settings.") || resource.starts_with("settings:"))
+                && !opens_links)
+            || resource.contains(['/', '@'])
         {
             continue;
         }

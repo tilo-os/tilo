@@ -122,15 +122,3 @@ label = "Export contact"
 kind = "outside"
 confirm = true
 asks = "contact"
-[[offers]]
-resource = "chain:derived:contacts@derived:default@tab:0000000000000000"
-resource-kind = "contacts.contacts"
-action = "new-contact"
-label = "New contact"
-asks = "name"
-[[offers]]
-resource = "chain:derived:contacts@derived:default@tab:0000000000000000"
-resource-kind = "contacts.contacts"
-action = "add-contacts"
-label = "Add contacts"
-asks = "contacts"
