@@ -317,3 +317,23 @@ fn the_view_carries_the_extensions_the_host_merged() {
         .is_err()
     );
 }
+
+/// A directory extension `/var/lib/extensions` keeps is a link to the tree the daemon stores. The
+/// view stacks the tree the link names, so the link's own mode never stands in for the tree's.
+#[test]
+fn a_merged_directory_extension_is_stacked_from_the_tree_its_link_names() {
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("layers/generation");
+    fs::create_dir_all(tree.join("usr")).unwrap();
+    let extensions = root.path().join("extensions");
+    fs::create_dir_all(&extensions).unwrap();
+    let link = extensions.join("tilo-vmd");
+    std::os::unix::fs::symlink(&tree, &link).unwrap();
+    assert_eq!(directory_tree(&link).unwrap(), tree.canonicalize().unwrap());
+    let file = root.path().join("not-a-tree");
+    fs::write(&file, b"x").unwrap();
+    assert!(
+        directory_tree(&file).is_err(),
+        "a merged extension is a tree"
+    );
+}

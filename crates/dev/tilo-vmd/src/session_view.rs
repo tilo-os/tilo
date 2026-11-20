@@ -319,7 +319,7 @@ fn merged_extensions(root: &Path) -> Result<Vec<PathBuf>, DaemonError> {
     let mut kept = Vec::with_capacity(extensions.len());
     for extension in extensions {
         let tree = match extension.kind {
-            ExtensionKind::Directory => extension.path,
+            ExtensionKind::Directory => directory_tree(&extension.path)?,
             ExtensionKind::Image => {
                 let identity = fs::metadata(&extension.path).map_err(io)?;
                 let tree = root.join(format!(
@@ -349,6 +349,19 @@ fn merged_extensions(root: &Path) -> Result<Vec<PathBuf>, DaemonError> {
     }
     release_replaced_extensions(root, &kept)?;
     Ok(trees)
+}
+
+/// The tree a merged directory extension is stacked from: `/var/lib/extensions` keeps it as a
+/// link, and the link's own mode says nothing about the tree it names, so the tree is what is
+/// resolved and stacked.
+fn directory_tree(path: &Path) -> Result<PathBuf, DaemonError> {
+    let tree = path.canonicalize().map_err(io)?;
+    if !tree.is_dir() {
+        return Err(DaemonError::InvalidParams(
+            "a merged extension is not a directory".into(),
+        ));
+    }
+    Ok(tree)
 }
 
 /// An extension image replaced since an earlier view was mounted is let go once nothing holds it:
