@@ -50,6 +50,7 @@ pub mod installation;
 /// Running an offloadable invocation on another device, through the offer
 /// round.
 pub mod offload;
+pub mod opening;
 mod ordered;
 mod postcard_sink;
 pub mod replica;

@@ -254,6 +254,10 @@ struct Opened {
     /// place in the history: tried again on every read, so one whose base turns up after all is
     /// taken in.
     stuck: Vec<(usize, collab_types::DocumentMutation)>,
+    /// Writes opened by a read that stopped when its turn was over (`crate::opening`) and that
+    /// wait for a change a write not opened yet may carry: merged with the writes the next read
+    /// opens.
+    waiting: Vec<(usize, collab_types::DocumentMutation)>,
 }
 
 impl Opened {
@@ -467,6 +471,7 @@ fn open_history<'a>(
             transfers: crate::document_frame::Transfers::default(),
             captured: None,
             stuck: Vec::new(),
+            waiting: Vec::new(),
             document: match &document.covered_snapshot {
                 Some(base) => base
                     .decoded()
@@ -477,32 +482,6 @@ fn open_history<'a>(
             },
         },
     };
-    let mut writes = Vec::new();
-    // A write too large for one frame was written as segments, each a sealed write of its own:
-    // it is read once all of them are held.
-    for (index, op) in document.sealed.iter().enumerate().skip(opened.count) {
-        let plaintext = match open(op) {
-            Ok(plaintext) => plaintext,
-            // A write whose key has not reached this reader yet is read without, with every write
-            // after it, until the key is here: what opened before it still reads, as the reader
-            // read it a moment ago. A record none of whose writes open is still arriving.
-            Err(_) if index > 0 && opened.transfers.is_empty() => break,
-            Err(why) => return Err(PeerDocumentReadError::Opening(why)),
-        };
-        opened.size = opened.size.saturating_add(plaintext.len());
-        if opened.size > maximum {
-            return Err(PeerDocumentReadError::Capacity);
-        }
-        if let Some(mutation) = opened
-            .transfers
-            .take(*op.author.as_bytes(), &plaintext)
-            .map_err(PeerDocumentReadError::Opening)?
-        {
-            writes.push((index, mutation));
-        }
-        opened.count = index.saturating_add(1);
-        opened.last = Some(op.signature);
-    }
     // Admission order may differ from causal order on a keyless replica. A
     // write whose sequences the record already holds is folded away: the
     // record cannot carry both changes of one writer's sequence, and the
@@ -522,42 +501,150 @@ fn open_history<'a>(
         of: &|index| signed.get(index).copied(),
         held: &|| super::unsent_bases::HeldThrough::of(document),
     };
-    let (mut merged, left) = super::sealed_compaction::merge_writes(
-        opened.document,
-        writes,
-        super::sealed_compaction::LeftOut::Named,
-        Some(&signers),
-    )
-    .map_err(PeerDocumentReadError::Opening)?;
-    // A write read without before stays so until what it builds on is here: only its arrival
-    // changes that, and the merge tells it.
-    let mut stuck = Vec::new();
-    for (index, mutation) in std::mem::take(&mut opened.stuck) {
-        match super::sealed_compaction::merge_write(&mut merged, &mutation) {
-            super::sealed_compaction::WriteMerge::Waiting => stuck.push((index, mutation)),
-            super::sealed_compaction::WriteMerge::Applied
-            | super::sealed_compaction::WriteMerge::AlreadyHeld { .. } => {}
-            super::sealed_compaction::WriteMerge::Refused(why)
-            | super::sealed_compaction::WriteMerge::Device(why) => {
-                return Err(PeerDocumentReadError::Opening(why));
+    // Within a turn (`crate::opening`) the writes merge a few at a time, and the read stops once
+    // the turn is over: what it opened is kept, with the writes still waiting for a change a later
+    // write may carry, and the next read goes on from there.
+    let in_turns = crate::opening::in_a_turn();
+    let mut writes = std::mem::take(&mut opened.waiting);
+    let mut fresh = 0_usize;
+    let mut ops = document
+        .sealed
+        .iter()
+        .enumerate()
+        .skip(opened.count)
+        .peekable();
+    // A write too large for one frame was written as segments, each a sealed write of its own:
+    // it is read once all of them are held.
+    while let Some((index, op)) = ops.next() {
+        let plaintext = match open(op) {
+            Ok(plaintext) => plaintext,
+            // A write whose key has not reached this reader yet is read without, with every write
+            // after it, until the key is here: what opened before it still reads, as the reader
+            // read it a moment ago. A record none of whose writes open is still arriving.
+            Err(_) if index > 0 && opened.transfers.is_empty() => break,
+            Err(why) => return Err(PeerDocumentReadError::Opening(why)),
+        };
+        opened.size = opened.size.saturating_add(plaintext.len());
+        if opened.size > maximum {
+            return Err(PeerDocumentReadError::Capacity);
+        }
+        if let Some(mutation) = opened
+            .transfers
+            .take(*op.author.as_bytes(), &plaintext)
+            .map_err(PeerDocumentReadError::Opening)?
+        {
+            writes.push((index, mutation));
+            fresh = fresh.saturating_add(1);
+        }
+        opened.count = index.saturating_add(1);
+        opened.last = Some(op.signature);
+        if in_turns && fresh >= WRITES_PER_LOOK && ops.peek().is_some() {
+            fresh = 0;
+            let (merged, waiting) = merge_some(
+                std::mem::take(&mut opened.document),
+                std::mem::take(&mut writes),
+                &signers,
+            )?;
+            opened.document = merged;
+            writes = waiting;
+            if crate::opening::due() {
+                opened.waiting = writes;
+                kept.0 = Some(opened);
+                crate::opening::stopped();
+                return Err(PeerDocumentReadError::Incomplete);
             }
         }
     }
-    opened.stuck = stuck;
+    opened.merge_last(writes, &signers)?;
+    Ok(kept.0.insert(opened).read())
+}
+
+impl Opened {
+    /// Merge `writes`, the last of the history, and the writes read without before, over the
+    /// document.
+    ///
+    /// # Errors
+    /// A write does not read, or one waits for a change the history does not hold.
+    fn merge_last(
+        &mut self,
+        writes: Vec<(usize, collab_types::DocumentMutation)>,
+        signers: &super::sealed_compaction::Signers<'_>,
+    ) -> Result<(), PeerDocumentReadError> {
+        let (mut merged, left) = super::sealed_compaction::merge_writes(
+            std::mem::take(&mut self.document),
+            writes,
+            super::sealed_compaction::LeftOut::Named,
+            Some(signers),
+        )
+        .map_err(PeerDocumentReadError::Opening)?;
+        // A write read without before stays so until what it builds on is here: only its arrival
+        // changes that, and the merge tells it.
+        let mut stuck = Vec::new();
+        for (index, mutation) in std::mem::take(&mut self.stuck) {
+            match super::sealed_compaction::merge_write(&mut merged, &mutation) {
+                super::sealed_compaction::WriteMerge::Waiting => stuck.push((index, mutation)),
+                super::sealed_compaction::WriteMerge::Applied
+                | super::sealed_compaction::WriteMerge::AlreadyHeld { .. } => {}
+                super::sealed_compaction::WriteMerge::Refused(why)
+                | super::sealed_compaction::WriteMerge::Device(why) => {
+                    return Err(PeerDocumentReadError::Opening(why));
+                }
+            }
+        }
+        self.stuck = stuck;
+        for (index, reason, mutation) in left {
+            match reason {
+                super::sealed_compaction::UnmergedReason::AlreadyHeld { .. } => {}
+                super::sealed_compaction::UnmergedReason::BehindUnsent { .. } => {
+                    self.stuck.push((index, mutation));
+                }
+                super::sealed_compaction::UnmergedReason::MissingDependencies { .. } => {
+                    return Err(PeerDocumentReadError::Incomplete);
+                }
+                super::sealed_compaction::UnmergedReason::Unreadable(why) => {
+                    return Err(PeerDocumentReadError::Opening(why));
+                }
+            }
+        }
+        self.document = merged;
+        Ok(())
+    }
+}
+
+/// Writes a read within a turn merges between looks at whether the turn is over. Each: merging a
+/// write into a large document costs milliseconds already, and a look costs nothing beside it.
+pub(super) const WRITES_PER_LOOK: usize = 1;
+
+/// Merge `writes`, some of a history whose later writes are still to open, over `document`: the
+/// document, and the writes that wait for a change not in it yet, which a later write may carry.
+/// A write whose sequences the document holds is folded away, as at the end of a read.
+///
+/// # Errors
+/// A write does not read, or this device could not decide one.
+fn merge_some(
+    document: AutoCommit,
+    writes: Vec<(usize, collab_types::DocumentMutation)>,
+    signers: &super::sealed_compaction::Signers<'_>,
+) -> Result<(AutoCommit, Vec<(usize, collab_types::DocumentMutation)>), PeerDocumentReadError> {
+    let (merged, left) = super::sealed_compaction::merge_writes(
+        document,
+        writes,
+        super::sealed_compaction::LeftOut::Named,
+        Some(signers),
+    )
+    .map_err(PeerDocumentReadError::Opening)?;
+    let mut waiting = Vec::new();
     for (index, reason, mutation) in left {
         match reason {
             super::sealed_compaction::UnmergedReason::AlreadyHeld { .. } => {}
-            super::sealed_compaction::UnmergedReason::BehindUnsent { .. } => {
-                opened.stuck.push((index, mutation));
-            }
-            super::sealed_compaction::UnmergedReason::MissingDependencies { .. } => {
-                return Err(PeerDocumentReadError::Incomplete);
+            super::sealed_compaction::UnmergedReason::BehindUnsent { .. }
+            | super::sealed_compaction::UnmergedReason::MissingDependencies { .. } => {
+                waiting.push((index, mutation));
             }
             super::sealed_compaction::UnmergedReason::Unreadable(why) => {
                 return Err(PeerDocumentReadError::Opening(why));
             }
         }
     }
-    opened.document = merged;
-    Ok(kept.0.insert(opened).read())
+    Ok((merged, waiting))
 }

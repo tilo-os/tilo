@@ -192,6 +192,9 @@ pub(crate) struct Joined {
     /// writes are sealed under, are on their way. Each is read again whenever anything reaches the
     /// workspace's replica, since what completes one need not land on it.
     arriving: BTreeSet<DocumentRoute>,
+    /// Documents that landed and are not taken in yet because a pass ran out of its turn
+    /// ([`TURN_MS`]): read again in the next turn, which goes on from what was opened.
+    unfinished: Unfinished,
     /// Changes this page made to the workspace: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
@@ -287,6 +290,7 @@ pub(crate) fn open(
         read_answers: HashMap::new(),
         verifying: (BTreeSet::new(), 0),
         arriving: BTreeSet::new(),
+        unfinished: Unfinished::default(),
         authored: 0,
         moderates: Arc::default(),
         invitable: Arc::default(),
@@ -740,7 +744,63 @@ pub(crate) fn detach(id: u32, mount: u64) {
     }
 }
 
-/// Apply everything the host delivered since the last call.
+/// Documents that landed and are not taken in yet, because a pass ran out of its turn.
+#[derive(Default)]
+struct Unfinished {
+    routes: BTreeSet<DocumentRoute>,
+    /// Whether a turn is armed to go on with them.
+    armed: bool,
+}
+
+/// How long one pass over what landed may hold the page's thread, in milliseconds: well inside a
+/// frame. A newcomer's replica lands every document of the workspace at once, seconds of work,
+/// and input waits for whatever task holds the thread; what is left goes on in the page's next
+/// task.
+pub(crate) const TURN_MS: f64 = 8.0;
+
+/// A task of the page's own later: what input and frames arrived meanwhile
+/// go first. `scheduler.yield()` where the browser has it, which lets them
+/// through and comes back ahead of other tasks; a timer otherwise, which
+/// browsers hold back a few milliseconds once timers chain.
+pub(crate) async fn next_task() {
+    use wasm_bindgen::JsCast as _;
+    let global = js_sys::global();
+    let yielded = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("scheduler"))
+        .ok()
+        .filter(wasm_bindgen::JsValue::is_object)
+        .and_then(|scheduler| {
+            let yields =
+                js_sys::Reflect::get(&scheduler, &wasm_bindgen::JsValue::from_str("yield"))
+                    .ok()?
+                    .dyn_into::<js_sys::Function>()
+                    .ok()?;
+            yields
+                .call0(&scheduler)
+                .ok()?
+                .dyn_into::<js_sys::Promise>()
+                .ok()
+        });
+    if let Some(yielded) = yielded {
+        let _ = wasm_bindgen_futures::JsFuture::from(yielded).await;
+        return;
+    }
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let armed = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("setTimeout"))
+            .ok()
+            .and_then(|set| set.dyn_into::<js_sys::Function>().ok())
+            .is_some_and(|set| {
+                set.call2(&global, &resolve, &wasm_bindgen::JsValue::from_f64(0.0))
+                    .is_ok()
+            });
+        if !armed {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+/// Apply what the workspace delivered since the last call, for a turn of [`TURN_MS`]; what is left
+/// goes on in a task of its own, after the input and frames waiting meanwhile.
 pub(crate) fn pump(id: u32) {
     let Some(joined) = replica_of(id) else {
         return;
@@ -750,6 +810,19 @@ pub(crate) fn pump(id: u32) {
         notify();
     }
     publish(id);
+    let mut held = joined.borrow_mut();
+    if held.unfinished.routes.is_empty() || held.unfinished.armed {
+        return;
+    }
+    held.unfinished.armed = true;
+    drop(held);
+    wasm_bindgen_futures::spawn_local(async move {
+        next_task().await;
+        if let Some(joined) = replica_of(id) {
+            joined.borrow_mut().unfinished.armed = false;
+            pump(id);
+        }
+    });
 }
 
 /// The page's record worker finished a verification: every replica reads the
@@ -1259,11 +1332,21 @@ impl Joined {
         if arrived {
             landed.append(&mut self.arriving);
         }
-        for route in read_order(landed) {
+        landed.append(&mut self.unfinished.routes);
+        let due = js_sys::Date::now() + TURN_MS;
+        let mut order = read_order(landed).into_iter();
+        while let Some(route) = order.next() {
+            // A turn is over: the rest is read in the next, each document whole when it is, so
+            // nothing shows half of one.
+            if js_sys::Date::now() >= due {
+                self.unfinished.routes.insert(route);
+                self.unfinished.routes.extend(order);
+                break;
+            }
             // A record kept for whoever opens it is read as what changed since the store took
             // it last: a record that lands a write at a time (a sealed chat's history, written
             // by many) would otherwise be read, loaded and saved whole once per write.
-            let Some(read) = self.read_landed(&route) else {
+            let Some(read) = self.read_landed(&route, due) else {
                 continue;
             };
             // What reaches a record is news only once the workspace replayed what it held, and
@@ -1325,16 +1408,31 @@ impl Joined {
     /// changed since the store took it last, where it keeps the record. `None` while the
     /// record waits for the page's record worker to verify it (`crate::record_verify`): the
     /// records that are ready show meanwhile, and this one lands again once it is verified.
-    fn read_landed(&mut self, route: &DocumentRoute) -> Option<Result<ResourceReading, String>> {
+    /// `None` too when its history did not all open before `due` (`tilo_peer_state::opening`):
+    /// the next turn goes on from what opened.
+    fn read_landed(
+        &mut self,
+        route: &DocumentRoute,
+        due: f64,
+    ) -> Option<Result<ResourceReading, String>> {
         let kept = self.kept_heads(route);
-        let read = tilo_automerge_isolate::away::deferring(|| {
-            self.peer.engine().document_update(
-                &route.cluster_id,
-                &route.app_id,
-                &route.document,
-                kept.as_deref(),
-            )
-        });
+        let (read, stopped) = tilo_peer_state::opening::in_turns(
+            move || js_sys::Date::now() >= due,
+            || {
+                tilo_automerge_isolate::away::deferring(|| {
+                    self.peer.engine().document_update(
+                        &route.cluster_id,
+                        &route.app_id,
+                        &route.document,
+                        kept.as_deref(),
+                    )
+                })
+            },
+        );
+        if stopped {
+            self.unfinished.routes.insert(route.clone());
+            return None;
+        }
         if read.is_err() && tilo_automerge_isolate::away::verifying() {
             self.verifying.1 = tilo_automerge_isolate::away::verified();
             self.verifying.0.insert(route.clone());

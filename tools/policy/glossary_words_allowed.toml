@@ -1931,3 +1931,9 @@ reason = "A stored tile's field names (`TileContent::HostedWindow`'s `host` and 
 words = ["host"]
 identifiers = ["host", "host_label"]
 paths = ["crates/session/desktop-model/tests/stored_tiles.rs"]
+
+[[allow]]
+reason = "The sealed-history tests' fixture, whose replica field and resource constant are named as these tests always named them: a test of a long history reads through them."
+words = ["host", "record"]
+identifiers = ["host", "RECORD"]
+paths = ["crates/collab/tilo-peer-state/src/state/kept_open_tests.rs"]

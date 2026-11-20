@@ -66,8 +66,8 @@ impl tilo_automerge_isolate::away::Verifier for PageWorker {
 }
 
 /// How long one step of a load may hold the page's thread, in milliseconds:
-/// well inside a frame, so input and drawing go on between steps.
-const STEP_MS: f64 = 8.0;
+/// as long as a pass over what landed, well inside a frame.
+const STEP_MS: f64 = crate::replication::TURN_MS;
 
 /// Load `bytes` with the `hashes` the worker verified, a step at a time with
 /// the page's tasks between, sized to [`STEP_MS`]; the record's read then takes
@@ -92,30 +92,11 @@ async fn load_between_frames(bytes: Vec<u8>, hashes: Vec<ChangeHash>) {
         {
             ops = ((ops as f64 * STEP_MS / spent) as usize).clamp(256, 262_144);
         }
-        next_task().await;
+        crate::replication::next_task().await;
     }
     loading.finish();
     // The read the record waited for is a task of its own.
-    next_task().await;
-}
-
-/// A task of the page's own later: what input and frames arrived meanwhile
-/// run first.
-async fn next_task() {
-    let promise = Promise::new(&mut |resolve, _| {
-        let global = js_sys::global();
-        let armed = Reflect::get(&global, &JsValue::from_str("setTimeout"))
-            .ok()
-            .and_then(|set| set.dyn_into::<Function>().ok())
-            .is_some_and(|set| {
-                set.call2(&global, &resolve, &JsValue::from_f64(0.0))
-                    .is_ok()
-            });
-        if !armed {
-            let _ = resolve.call0(&JsValue::NULL);
-        }
-    });
-    let _ = JsFuture::from(promise).await;
+    crate::replication::next_task().await;
 }
 
 fn hashes_of(bytes: &[u8]) -> Result<Vec<ChangeHash>, String> {
