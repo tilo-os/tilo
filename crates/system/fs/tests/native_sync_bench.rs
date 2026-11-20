@@ -421,6 +421,16 @@ impl Daemon {
         counts.into_iter().collect()
     }
 
+    /// The last line it said that contains `needle`: what a failure is really about, in one
+    /// line small enough to travel in a panic's first line.
+    fn last_saying(&self, needle: &str) -> Option<String> {
+        let logs = self.logs.lock_recover();
+        logs.iter()
+            .rev()
+            .find(|line| line.contains(needle))
+            .cloned()
+    }
+
     fn alive(&mut self) {
         if let Some(status) = self.child.try_wait().unwrap() {
             panic!("{} exited {status}; logs:\n{}", self.name, self.dump());
@@ -1450,7 +1460,10 @@ fn a_photo_the_second_device_never_fetched_opens() {
         }
         Backend::Fuse => (None, None),
     };
+    // Each step says so as it starts, so a stop shows which one it was in.
+    eprintln!("photo: starting the two computers");
     let mut pair = start_pair_joining(store_a.as_deref(), store_b.as_deref(), 0x5a, false, false);
+    eprintln!("photo: the first computer serves");
     let flat = pair.host.mount.join("flat");
     std::fs::create_dir_all(&flat).unwrap();
     let mut buf = vec![0_u8; usize::try_from(bytes).unwrap_or(262_144)];
@@ -1458,7 +1471,7 @@ fn a_photo_the_second_device_never_fetched_opens() {
         fill(i, 0, &mut buf);
         std::fs::write(flat.join(format!("f{i:07}")), &buf).unwrap();
     }
-    mark("the photos are written through the first computer's mount");
+    eprintln!("photo: the photos are written through the first computer's mount");
     // A joining device is handed the documents the first computer keeps: wait
     // until this device has written the photos into them, or the second
     // computer is handed a tree from before the copy. The extra name written
@@ -1478,7 +1491,9 @@ fn a_photo_the_second_device_never_fetched_opens() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    eprintln!("photo: its tree holds the photos; the second computer joins");
     let _ = pair.join_peer();
+    eprintln!("photo: the second computer lists the folder");
     let peer_flat = pair.peer_mount().join("flat");
     // The list comes first, so the open below is a fetch and not a race with
     // the tree arriving.
@@ -1495,6 +1510,7 @@ fn a_photo_the_second_device_never_fetched_opens() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let target = peer_flat.join("f0000000");
+    eprintln!("photo: opening {target:?}");
     let started = Instant::now();
     let read = read_range(&target, 0, 4096).unwrap_or_else(|error| {
         // Whether the first computer can still open the photo itself says
@@ -1833,11 +1849,16 @@ fn a_workspace_of_files_on_a_size_ladder() {
     let small = read_range(&small_target, 0, 4096).unwrap_or_else(|error| {
         // The daemons say why the bytes did not arrive: a refusal, a peer
         // that never answered, or content the first computer does not hold.
+        let why = pair
+            .peer
+            .as_ref()
+            .and_then(|peer| peer.last_saying("content hydration"));
         panic!(
-            "the joining device holds {} of the {} files the writer holds ({error}); its log:\n{}\nthe \
+            "the joining device holds {} of the {} files the writer holds ({error}){}; its log:\n{}\nthe \
              first computer's log:\n{}",
             list_directory(&m2.join("flat")),
             host_flat,
+            why.map_or_else(String::new, |why| format!(": {why}")),
             pair.peer.as_ref().expect("the peer is serving").dump(),
             pair.host.dump()
         )
