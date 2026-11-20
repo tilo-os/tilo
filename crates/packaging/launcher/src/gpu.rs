@@ -5,7 +5,6 @@
 //! anything.
 
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
 use tilo_lock::MutexRecover as _;
 
 /// The device an app declares and is granted to reach the GPU itself.
@@ -114,7 +113,6 @@ fn site_integrator(claim: Option<&Claim>, probe: &impl IcdProbe) -> Option<SiteI
 }
 
 /// Directories the EGL vendor JSONs are installed in, most-specific first.
-#[cfg(target_os = "linux")]
 const EGL_VENDOR_DIRS: &[&str] = &[
     "/etc/glvnd/egl_vendor.d",
     "/usr/share/glvnd/egl_vendor.d",
@@ -122,7 +120,6 @@ const EGL_VENDOR_DIRS: &[&str] = &[
 ];
 
 /// Directories the Vulkan ICD manifests are installed in.
-#[cfg(target_os = "linux")]
 const VULKAN_ICD_DIRS: &[&str] = &[
     "/etc/vulkan/icd.d",
     "/usr/share/vulkan/icd.d",
@@ -141,7 +138,6 @@ pub struct IcdSearch {
     pub vulkan_icd_dirs: Vec<PathBuf>,
 }
 
-#[cfg(target_os = "linux")]
 impl Default for IcdSearch {
     fn default() -> Self {
         Self {
@@ -216,7 +212,6 @@ impl GpuSelection {
 }
 
 /// Kernel driver bound to a render node, read out of sysfs.
-#[cfg(target_os = "linux")]
 pub fn driver_for(node: &Path) -> Option<String> {
     let name = node.file_name()?.to_str()?;
     let link = Path::new("/sys/class/drm").join(name).join("device/driver");
@@ -360,7 +355,6 @@ pub trait IcdProbe {
 }
 
 /// `(major, minor)` of a device node.
-#[cfg(target_os = "linux")]
 fn node_numbers(node: &Path) -> std::io::Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt as _;
     let rdev = std::fs::metadata(node)?.rdev();
@@ -368,7 +362,6 @@ fn node_numbers(node: &Path) -> std::io::Result<(u64, u64)> {
 }
 
 /// Derive the loader pinning for `node` by asking every installed ICD.
-#[cfg(target_os = "linux")]
 pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -429,7 +422,6 @@ pub fn select_for_node(node: &Path, search: &IcdSearch) -> GpuSelection {
 }
 
 /// Run `probe` where the drivers it loads cannot affect the caller.
-#[cfg(target_os = "linux")]
 pub fn in_isolation<T: serde::Serialize + serde::de::DeserializeOwned>(
     probe: impl FnOnce() -> T,
 ) -> Result<T, String> {
@@ -439,7 +431,6 @@ pub fn in_isolation<T: serde::Serialize + serde::de::DeserializeOwned>(
     isolated::in_child(probe)
 }
 
-#[cfg(target_os = "linux")]
 mod isolated {
     use std::io::{Read as _, Write as _};
     use std::os::fd::{FromRawFd as _, OwnedFd};
@@ -505,7 +496,7 @@ pub fn inherited_selection(node: &Path) -> Option<GpuSelection> {
     let vulkan_icd_json = single_file(VK_DRIVER_FILES_ENV)?;
     Some(GpuSelection {
         node: node.to_path_buf(),
-        driver: driver_name(node),
+        driver: driver_for(node),
         egl_vendor_json: single_file(EGL_VENDOR_ENV),
         vulkan_icd_json: Some(vulkan_icd_json),
         vulkan_device: None,
@@ -589,11 +580,8 @@ impl LoaderPin {
         let mut selection = inherited_selection(node)
             .unwrap_or_else(|| select_for_node(node, &IcdSearch::default()));
         selection.pipeline_seed = host_pipeline_seed();
-        #[cfg(target_os = "linux")]
         let software =
             unclaimed_node_pin(&selection, inherited_software_pin(), &IcdSearch::default());
-        #[cfg(not(target_os = "linux"))]
-        let software = None;
         Self::Node {
             selection,
             software,
@@ -702,16 +690,6 @@ fn software_pin_from(
         vulkan_icd_json,
         egl_vendor_json,
     })
-}
-
-#[cfg(target_os = "linux")]
-fn driver_name(node: &Path) -> Option<String> {
-    driver_for(node)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn driver_name(_node: &Path) -> Option<String> {
-    None
 }
 
 /// The GLVND vendor library shipped by the vendor of a Vulkan driver.
@@ -887,7 +865,6 @@ fn egl_vendor_after(claim: Option<&Claim>, search: &IcdSearch) -> Result<PathBuf
 
 /// Asking a real ICD: load its library and talk to it directly, without the loader, so one answer
 /// belongs to exactly one manifest.
-#[cfg(target_os = "linux")]
 mod loaded {
     use super::{Feature, IcdProbe, VulkanDevice};
     use ash::vk;
@@ -1807,7 +1784,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
     fn host_render_node_resolves_to_files_that_exist() {
         // The path the compositor actually calls, against this machine's real drivers: whatever it
         // pins has to exist.
