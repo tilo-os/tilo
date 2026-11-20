@@ -138,6 +138,10 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
             mesh_remote(made),
         ))
     }),
+    #[cfg(not(feature = "tilo-os"))]
+    (225, |_, made| {
+        Box::new(region::zone::ZoneArea::new(mesh_remote(made)))
+    }),
 ];
 
 pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
@@ -194,6 +198,8 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (280, devices_access::DevicesAccessEffect::FAMILY),
     #[cfg(not(feature = "tilo-os"))]
     (290, person_settings::PersonSettingsEffect::FAMILY),
+    #[cfg(not(feature = "tilo-os"))]
+    (265, region::zone::ZoneEffect::FAMILY),
     #[cfg(not(feature = "tilo-os"))]
     (
         295,

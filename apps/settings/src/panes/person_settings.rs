@@ -279,7 +279,7 @@ fn labelled_field(label: &str, input: TextInput) -> Item {
 
 /// The host's answer to a request that has finished, or `None` while it
 /// still runs.
-fn settled(call: &ui::InvocationCall) -> Option<Result<serde_json::Value, String>> {
+pub(crate) fn settled(call: &ui::InvocationCall) -> Option<Result<serde_json::Value, String>> {
     use ui::tilo_actions::InvocationUpdate;
     match call.get() {
         ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => {

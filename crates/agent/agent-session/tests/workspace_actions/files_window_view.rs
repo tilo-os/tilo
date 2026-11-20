@@ -174,14 +174,14 @@ async fn an_agents_view_of_files_lists_the_folder_the_persons_files_hold() {
 }
 
 /// The person's page tells the workspace's server `action` of their formats with `argument`,
-/// as the page does once it is in the workspace, and the server answers it.
+/// as the page does once it is in the workspace: what the server answers.
 async fn page_tells(
     page: &Browser,
     server: [u8; 32],
     person: &str,
     action: &str,
     argument: serde_json::Value,
-) {
+) -> serde_json::Value {
     use tilo_actions::remote::{ReceiptStatus, UpdateMark};
     let api = SessionActions::new(&page.peer, page.workspace, server);
     let caller =
@@ -215,10 +215,10 @@ async fn page_tells(
         seen = UpdateMark::of(&state.update);
         receipt = state.receipt();
     }
-    assert!(
-        matches!(receipt.status, ReceiptStatus::Completed { .. }),
-        "{action}: {receipt:?}"
-    );
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("{action}: {receipt:?}");
+    };
+    output.value.unwrap_or_default()
 }
 
 /// An agent reads a file's time in the Files window the server renders for it as its person
@@ -286,5 +286,107 @@ async fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone(
     assert!(
         !lines.contains(&on_the_server),
         "never the server's {on_the_server:?}: {lines}"
+    );
+}
+
+/// What the agent's view of Files shows once it lists the folder with `wanted` in it.
+async fn agent_reads(server: &McpServer<SessionActions>, wanted: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let lines = view(server).await;
+        if lines.contains(FOLDER) && lines.contains(wanted) {
+            return lines;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent never reads {wanted:?}: {lines}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// What Files on the person's page shows for `changed` once the page read what the server keeps
+/// of them: their formats, and the zone they chose, else the browser's own.
+fn on_the_page(
+    kept: &tilo_actions::remote::person_formats::PersonFormats,
+    changed: jiff::Timestamp,
+) -> String {
+    let formats =
+        ui::format::region::RegionFormats::from_section(kept.formats.clone().unwrap_or_default());
+    ui::format::region::install_here(
+        Some(formats),
+        ui::format::region::chosen_zone(kept.chosen_zone.as_deref()),
+    );
+    let shown = file_explorer::i18n::format_datetime(changed);
+    ui::format::region::install_here(None, None);
+    shown
+}
+
+/// A zone the person chooses in Region & Formats on their page is the one both their page and
+/// their agent read times in; back on Automatic, both read the browser's again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() {
+    use tilo_actions::remote::person_formats::{
+        BROWSER_ZONE, CHOOSE_ZONE, PersonFormats, READ, SET,
+    };
+    const BROWSER: &str = "Pacific/Auckland";
+    const CHOSEN: &str = "Europe/Vienna";
+    let (Ok(auckland), Ok(vienna)) = (
+        jiff::tz::TimeZone::get(BROWSER),
+        jiff::tz::TimeZone::get(CHOSEN),
+    ) else {
+        // A system without a zone database renders every zone as UTC.
+        return;
+    };
+    let state = crate::support::scratch_dir();
+    let (hosted, person, server, page) = agent_viewing_files(state.path()).await;
+    let (on, device, who) = (&page, hosted.device, person.as_str());
+    let tell = move |action: &'static str, argument: serde_json::Value| {
+        page_tells(on, device, who, action, argument)
+    };
+    tell(SET, json!({"formats": {"time_format": "H24"}})).await;
+    tell(BROWSER_ZONE, json!({"zone": BROWSER})).await;
+    // The folder last changed at 14:05 on 15 March 2026, UTC.
+    let changed = jiff::Timestamp::from_second(1_773_583_500).unwrap();
+    person_keeps_a_folder_from(
+        &page,
+        FOLDER,
+        (u64::try_from(changed.as_millisecond()).unwrap(), &person),
+    );
+    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let hers = ui::format::region::RegionFormats {
+        time: ui::clock::TimeStyle::H24,
+        ..ui::format::region::RegionFormats::default()
+    };
+    let read_in = |zone: &jiff::tz::TimeZone| {
+        ui::format::Formats::with(hers).timestamp(changed.to_zoned(zone.clone()).datetime())
+    };
+    let (in_auckland, in_vienna) = (read_in(&auckland), read_in(&vienna));
+    assert_ne!(in_auckland, in_vienna, "the zones read it apart");
+
+    // She chooses Vienna, and her page reads what the server keeps, as it does on choosing.
+    tell(CHOOSE_ZONE, json!({"zone": CHOSEN})).await;
+    let kept: PersonFormats = serde_json::from_value(tell(READ, json!({})).await).unwrap();
+    assert_eq!(kept.chosen_zone.as_deref(), Some(CHOSEN));
+    let hers_shows = on_the_page(&kept, changed);
+    assert_eq!(hers_shows, in_vienna, "her page reads Vienna's clock");
+    let lines = agent_reads(&server, &hers_shows).await;
+    assert!(
+        !lines.contains(&in_auckland),
+        "the agent reads Vienna's {in_vienna:?}, not the browser's {in_auckland:?}: {lines}"
+    );
+
+    // Back to Automatic: the page reads the browser's own zone again, and so does the agent.
+    tell(CHOOSE_ZONE, json!({"zone": null})).await;
+    let kept: PersonFormats = serde_json::from_value(tell(READ, json!({})).await).unwrap();
+    assert_eq!(kept.chosen_zone, None);
+    assert!(
+        ui::format::region::chosen_zone(kept.chosen_zone.as_deref()).is_none(),
+        "the page reads its browser's zone, {BROWSER}, again"
+    );
+    let lines = agent_reads(&server, &in_auckland).await;
+    assert!(
+        !lines.contains(&in_vienna),
+        "the agent reads the browser's {in_auckland:?} again, not {in_vienna:?}: {lines}"
     );
 }

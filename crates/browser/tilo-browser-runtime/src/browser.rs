@@ -158,7 +158,7 @@ pub(crate) fn wake_desktops() {
 /// Schedule a frame for every mount, shell or single application: the page
 /// draws at another device pixel ratio, and each lays out at it on its next
 /// frame.
-fn wake_mounts() {
+pub(crate) fn wake_mounts() {
     let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
     LOOP.with_borrow(|proxy| {
         if let Some(proxy) = proxy {
