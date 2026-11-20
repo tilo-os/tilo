@@ -117,10 +117,9 @@ impl AppBrokerState {
                 .certificate_when_named(workspace, person)
                 .map_err(|error| {
                     tracing::warn!(%error, "this device's identity is not ready for an action yet");
-                    ActionCallError::Unavailable {
-                        reason: "this device's identity is not ready yet; try again in a moment"
-                            .into(),
-                    }
+                    // The identity's own words: an action that cannot be taken as the person
+                    // says what stopped it, not that something did.
+                    ActionCallError::Unavailable { reason: error }
                 })?;
             if caller
                 .user_public_key()

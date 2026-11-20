@@ -16,6 +16,7 @@ use crate::workspaces::Workspaces;
 use crate::workspaces::servers::{self, Servers, WaitingPlan};
 use serde_json::Value;
 use tilo_actions::remote::ActionCallError;
+use tilo_user_identity::DeviceCert;
 
 /// Where the person's devices serve the installer, unless something names
 /// another site.
@@ -43,11 +44,7 @@ pub(super) async fn invoke(
 /// making that workspace when this device holds none. Answers how the plan
 /// reaches its machine: what the command prints.
 async fn plan_machine(workspaces: &Workspaces, args: &Args) -> Result<Value, ActionCallError> {
-    if !workspaces
-        .serving_certificate()
-        .capabilities
-        .can_admit_devices
-    {
+    if !may_admit_devices(workspaces.serving_certificate()) {
         return Err(refused(
             &"this device may not admit another device; plan it from one of your own devices",
         ));
@@ -74,6 +71,17 @@ async fn plan_machine(workspaces: &Workspaces, args: &Args) -> Result<Value, Act
         &token_file,
         &installer_url,
     )))
+}
+
+/// Whether the certificate this host serves under is the person's device that
+/// may admit another: its own certificate when the host is that device, or the
+/// workspace service's, whose issuer is the device that certified it.
+fn may_admit_devices(certificate: &DeviceCert) -> bool {
+    certificate.capabilities.can_admit_devices
+        || certificate
+            .issuer
+            .as_deref()
+            .is_some_and(|device| device.capabilities.can_admit_devices)
 }
 
 /// What the person sees of the machine a plan describes: its name and id, the

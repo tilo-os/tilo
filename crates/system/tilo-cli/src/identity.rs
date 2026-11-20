@@ -2,11 +2,11 @@
 //! and what that root lets this computer do without a browser: approve the
 //! key `tilo keys create` asks for, as the person's Tilo on the web does.
 //!
-//! The identity is kept under `$XDG_STATE_HOME/tilo/identity`: the person's
-//! root in an identity store of its own (`person/`, its secret where the
-//! session keeps identity secrets), and in Tilo's own layout ([`IdentityPaths`])
-//! this computer's device key and the member certificate the root signed for it.
-//! With `--identity-dir` naming that store, `tilo-enroll
+//! The identity is kept in the one identity directory this account's session
+//! reads (`$XDG_CONFIG_HOME/tilo/identity`): the person's root there, under the
+//! key the identity names, and in Tilo's own layout ([`IdentityPaths`]) this
+//! computer's device key and the member certificate the root signed for it.
+//! With `--identity-dir` naming that directory, `tilo-enroll
 //! certify --identity-root` reads the same files. A host lets the person in
 //! once its operator declares their user public key an owner (the local
 //! stack's `stack.sh owner KEY`), or it joins with an invitation.
@@ -18,10 +18,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{
-    read_device_cert, read_public_key, read_signing_key, write_device_cert, write_public_key,
-    write_signing_key,
-};
+use tilo_device_identity::persist::{read_device_cert, read_public_key, read_signing_key};
 use tilo_identity::certification_ceremony::PersonSigner;
 use tilo_server_client::https::{self, Origin};
 use tilo_session_client::device::{self, Entering, Held};
@@ -80,43 +77,40 @@ impl Person {
     }
 }
 
-/// Where the identity is kept: [`DIR_ENV`], else this account's own device
-/// identity when it holds one — the one their session is, in the
-/// profile's `tilo/identity` — else `$XDG_STATE_HOME/tilo/identity`, where
-/// `tilo login --new-identity` keeps one a computer has not signed in with.
+/// Where the identity is kept: [`DIR_ENV`], else the one identity directory
+/// this account's session reads (`$XDG_CONFIG_HOME/tilo/identity`).
 pub fn dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os(DIR_ENV).filter(|dir| !dir.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
-    if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
-        let dir = config.join("tilo").join("identity");
-        // The session's own device key is what makes it this account's
-        // identity: a profile without one never signed in.
-        if IdentityPaths::under(&dir).device_privkey.exists() {
-            return Ok(dir);
-        }
-    }
-    Ok(tilo_paths::state_dir()
-        .context("this account has no state directory (no HOME)")?
-        .join("tilo/identity"))
+    // The one identity directory this computer's session reads
+    // (`tilo_identity::store::identity_dir_from_env`): a person and their
+    // session are never two identities.
+    tilo_identity::store::identity_dir_from_env()
+        .context("this account has no identity directory (no HOME)")
 }
 
-/// The identity store the person's root is kept in, under [`dir`].
-fn store(dir: &std::path::Path) -> PathBuf {
-    dir.join("person")
+/// The device key and its certificates: the tree this computer's session reads
+/// (`TILO_IDENTITY_ROOT`), which a profile may keep apart from the identity
+/// directory, else the identity directory's own.
+fn device_paths(dir: &std::path::Path) -> IdentityPaths {
+    match std::env::var_os("TILO_IDENTITY_ROOT").filter(|root| !root.is_empty()) {
+        Some(root) if std::path::Path::new(&root) != dir => IdentityPaths::under(root),
+        _ => IdentityPaths::under(dir),
+    }
 }
 
 /// Whether this computer keeps a person's root, without reading it: a process
 /// that reads it makes itself undumpable ([`held`]).
 pub fn holds_root() -> bool {
-    dir().is_ok_and(|dir| tilo_identity_client::resolve_active_identity(&store(&dir)).is_some())
+    dir().is_ok_and(|dir| tilo_identity_client::resolve_active_identity(&dir).is_some())
 }
 
 /// The person kept here, if this computer holds one.
 pub fn held() -> Result<Option<Person>> {
     let dir = dir()?;
-    let paths = IdentityPaths::under(&dir);
-    let Some(active) = tilo_identity_client::resolve_active_identity(&store(&dir)) else {
+    let paths = device_paths(&dir);
+    let Some(active) = tilo_identity_client::resolve_active_identity(&dir) else {
         return Ok(None);
     };
     let identity = tilo_identity::store::load_from_path(active)
@@ -142,38 +136,26 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
         return Ok((person, false));
     }
     let dir = dir()?;
-    let paths = IdentityPaths::under(&dir);
-    paths.ensure_directories()?;
+    let paths = device_paths(&dir);
     // A person goes by the name they give, else by none until they give one: never their
     // computer's account name or a made-up one.
     let name = name.map(str::trim).unwrap_or_default().to_owned();
     let root = SigningKey::from_bytes(&rand::random());
-    let device = SigningKey::from_bytes(&rand::random());
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: login::label("tilo", &login::hostname()),
-        // The root is here: this is the person's primary device, and the one
-        // that admits their others.
-        capabilities: DeviceCapabilities::primary(),
-        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root)?;
     std::fs::write(dir.join("name"), format!("{name}\n"))?;
-    write_signing_key(&paths.device_privkey, &device)?;
-    write_device_cert(&paths.device_cert, &cert)?;
-    write_public_key(&paths.user_pubkey, &root.verifying_key().to_bytes())?;
+    let storage = tilo_identity::provisioning::IdentityStorage::for_session();
     // Last: the identity is there once its root is.
-    tilo_identity::provisioning::import_single_device_root(
-        &store(&dir),
-        &root,
-        &name,
-        tilo_identity::provisioning::IdentityStorage::for_session(),
+    tilo_identity::provisioning::import_single_device_root(&dir, &root, &name, storage)
+        .with_context(|| format!("keep the root in {}", dir.display()))?;
+    // The rest of the identity is the one setup a session reads: the device key, the
+    // certificate the session's broker admits this computer's own actions by, and this
+    // device's entry in the identity's fleet.
+    tilo_identity::provisioning::ensure_collaboration_identity_with_device_label(
+        &dir,
+        &paths,
+        storage,
+        &login::label("tilo", &login::hostname()),
     )
-    .with_context(|| format!("keep the root in {}", store(&dir).display()))?;
+    .with_context(|| format!("set up this computer's device in {}", dir.display()))?;
     let person = held()?.context("the identity just made is not there")?;
     Ok((person, true))
 }
@@ -470,21 +452,27 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", home.path())
             .set("XDG_CONFIG_HOME", home.path().join("config"))
-            .set("XDG_STATE_HOME", home.path().join("state"))
-            .remove(DIR_ENV);
+            .remove(DIR_ENV)
+            .remove("TILO_IDENTITY_ROOT");
         assert_eq!(
             dir().unwrap(),
-            home.path().join("state/tilo/identity"),
-            "a computer with no device identity keeps one under its state"
+            profile,
+            "the identity is the one this account's session reads"
         );
-        let paths = IdentityPaths::under(&profile);
-        paths.ensure_directories().unwrap();
-        tilo_device_identity::persist::write_device_key(
-            &paths.device_privkey,
-            &SigningKey::from_bytes(&[3; 32]),
-        )
-        .unwrap();
-        assert_eq!(dir().unwrap(), profile);
+        // A profile that keeps the device key in a tree of its own keeps the
+        // person in the identity directory and the key where the session reads it.
+        assert_eq!(
+            device_paths(&profile).device_privkey,
+            IdentityPaths::under(&profile).device_privkey,
+            "with no tree named, the identity directory holds the device key"
+        );
+        let system = home.path().join("system");
+        env.set("TILO_IDENTITY_ROOT", &system);
+        assert_eq!(
+            device_paths(&profile).device_privkey,
+            IdentityPaths::under(&system).device_privkey,
+            "a named tree is where the session reads the device key"
+        );
         env.set(DIR_ENV, profile.join("named"));
         assert_eq!(dir().unwrap(), profile.join("named"));
     }

@@ -125,13 +125,17 @@ impl tilo_workspace_service::apps::services::LocalPersonServices for NativeLocal
         device_certificate(workspace, person)
     }
 
-    /// Waits while the identity registry has not named the person yet, and answers as
-    /// [`Self::certificate`] once it does.
+    /// Waits a moment while the identity registry has not named the person yet, and answers as
+    /// [`Self::certificate`] once it does. A device no registry ever names is told so instead:
+    /// an action that cannot be carried out answers with its reason, never by waiting forever.
     fn certificate_when_named(
         &self,
         workspace: &str,
         person: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
+        let until = std::time::Instant::now()
+            .checked_add(NAMING_WAIT)
+            .unwrap_or_else(std::time::Instant::now);
         let mut waiting = false;
         loop {
             match device_readiness(workspace, person) {
@@ -146,14 +150,26 @@ impl tilo_workspace_service::apps::services::LocalPersonServices for NativeLocal
                              action waits for it"
                         );
                     }
-                    // Woken by the identity landing, never by a clock: a wait nothing
-                    // announces is a wait nothing ends, so there is no timeout either.
-                    tilo_identity::policy_change::wait_for_a_change(None);
+                    // Woken by the identity landing: a login writes it within a moment.
+                    // Past that, the answer is the reason and not another wait.
+                    let left = until.saturating_duration_since(std::time::Instant::now());
+                    if left.is_zero() {
+                        return Err(format!(
+                            "this computer's identity has not named you in workspace {workspace} \
+                             yet; if a sign-in is still finishing, try again in a moment"
+                        ));
+                    }
+                    tilo_identity::policy_change::wait_for_a_change(Some(left));
                 }
             }
         }
     }
 }
+
+/// How long an action waits for the identity registry to name its person: a
+/// login writes the identity within a moment, and one that never comes answers
+/// with its reason rather than holding the action.
+const NAMING_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The identity store's device-certificate checks, as a session's broker asks
 /// them.
@@ -313,8 +329,8 @@ mod tests {
     }
 
     /// An action asked in the first moment of a login waits for the identity the login is still
-    /// writing, and is answered once the registry names its person: never refused, and never on a
-    /// clock of its own.
+    /// writing, and is answered once the registry names its person: never refused for the moment
+    /// a login takes.
     #[test]
     fn the_first_action_of_a_login_waits_until_the_registry_names_its_person() {
         let login = login(true);
@@ -336,7 +352,7 @@ mod tests {
                 .certificate_when_named(WORKSPACE, &person)
                 .expect("the identity names its person")
         });
-        // Nothing has named the person yet: the wait is not over, and nothing about it is timed.
+        // Nothing has named the person yet: the wait is not over.
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(
             !waiting.is_finished(),
@@ -360,6 +376,29 @@ mod tests {
         assert_eq!(
             certificate.device_public_key, held.device_public_key,
             "the action is taken under this device's certificate"
+        );
+    }
+
+    /// An identity the registry never names answers with its reason once the moment a login
+    /// takes has passed: an action that cannot be carried out is told what stopped it, never held forever.
+    #[test]
+    fn an_identity_the_registry_never_names_answers_with_its_reason() {
+        let login = login(true);
+        let person = login.person();
+        for (path, _) in login.naming() {
+            std::fs::remove_file(path).expect("the login has not written it yet");
+        }
+        let started = std::time::Instant::now();
+        let why = NativeLocalPerson
+            .certificate_when_named(WORKSPACE, &person)
+            .expect_err("nothing names this person");
+        assert!(why.contains("has not named you"), "{why}");
+        assert!(
+            NAMING_WAIT
+                .checked_add(std::time::Duration::from_secs(10))
+                .is_some_and(|bound| started.elapsed() < bound),
+            "the answer is the moment's, not a wait: {:?}",
+            started.elapsed()
         );
     }
 
