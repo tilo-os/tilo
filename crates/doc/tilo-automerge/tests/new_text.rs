@@ -152,3 +152,107 @@ fn a_long_new_text_costs_the_columns_no_more_runs_than_a_short_one() {
     let long = runs_to_write(10_000);
     assert_eq!(long, short, "runs for 10,000 letters against 100");
 }
+
+/// A paragraph as a rich text keeps it: a map holding a text and a list.
+fn paragraph(words: &str) -> hydrate::Value {
+    let mut block = std::collections::HashMap::new();
+    block.insert("kind", hydrate::Value::from("paragraph"));
+    block.insert(
+        "text",
+        hydrate::Value::text(TextEncoding::UnicodeCodePoint, words),
+    );
+    block.insert(
+        "tags",
+        hydrate::Value::List(vec![hydrate::Value::from("a"), hydrate::Value::from(2)].into()),
+    );
+    hydrate::Value::Map(block.into())
+}
+
+/// The document `keys` made under one map makes, at once or one by one in
+/// key order, after `held` were set there, merged with a peer's concurrent
+/// writes into that map.
+fn made(keys: &[&str], held: &[&str], at_once: bool) -> Vec<u8> {
+    let mut doc = AutoCommit::new().with_actor(ActorId::from(&[1u8][..]));
+    let parent = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+    for key in held {
+        doc.put(&parent, *key, "held").unwrap();
+    }
+    doc.commit_with(CommitOptions::default().with_time(1));
+    let mut peer = doc.fork().with_actor(ActorId::from(&[2u8][..]));
+    let values: Vec<hydrate::Value> = keys.iter().map(|key| paragraph(key)).collect();
+    if at_once {
+        let pairs: Vec<(&str, &hydrate::Value)> = keys.iter().copied().zip(&values).collect();
+        let ids = doc.batch_create_objects(&parent, &pairs).unwrap();
+        for (key, id) in keys.iter().zip(ids) {
+            if keys.iter().filter(|other| *other == key).count() > 1 {
+                continue;
+            }
+            assert_eq!(doc.get(&parent, *key).unwrap().unwrap().1, id, "{key}");
+        }
+    } else {
+        let mut sorted: Vec<(&str, &hydrate::Value)> = keys.iter().copied().zip(&values).collect();
+        sorted.sort_by_key(|(key, _)| *key);
+        for (key, value) in sorted {
+            doc.batch_create_object(&parent, key, value, false).unwrap();
+        }
+    }
+    doc.commit_with(CommitOptions::default().with_time(2));
+    peer.put(&parent, "b", "the peer's").unwrap();
+    peer.put(&parent, "zz", "the peer's own").unwrap();
+    peer.commit_with(CommitOptions::default().with_time(3));
+    doc.merge_incoming(&mut peer).unwrap();
+    doc.save()
+}
+
+#[test]
+fn objects_made_side_by_side_are_the_document_each_made_in_turn_makes() {
+    for (keys, held) in [
+        (&["b", "a", "c"][..], &[][..]),
+        (&["p1", "p3", "p2", "p10"], &["p0", "p4"]),
+        (&["a", "b"], &["b"]),
+        (&["a", "a"], &[]),
+    ] {
+        assert!(
+            made(keys, held, true) == made(keys, held, false),
+            "{keys:?} under {held:?}"
+        );
+    }
+}
+
+/// The op-set splices making `objects` objects under a map just made costs.
+fn splices_to_make(objects: usize) -> u64 {
+    let mut doc = AutoCommit::new().with_actor(ActorId::from(&[1u8][..]));
+    let parent = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+    let keys: Vec<String> = (0..objects).map(|at| format!("p{at}")).collect();
+    let values: Vec<hydrate::Value> = keys.iter().map(|key| paragraph(key)).collect();
+    let pairs: Vec<(&str, &hydrate::Value)> =
+        keys.iter().map(String::as_str).zip(&values).collect();
+    let before = automerge::work().op_set_splices;
+    doc.batch_create_objects(&parent, &pairs).unwrap();
+    automerge::work().op_set_splices - before
+}
+
+#[test]
+fn objects_made_side_by_side_cost_two_splices_however_many() {
+    assert_eq!(splices_to_make(2), 2);
+    assert_eq!(splices_to_make(50), 2);
+}
+
+#[test]
+fn objects_made_side_by_side_leave_nothing_behind_when_rolled_back() {
+    for held in [&[][..], &["p0", "p2", "p9"]] {
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(&[1u8][..]));
+        let parent = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+        for key in held {
+            doc.put(&parent, *key, "held").unwrap();
+        }
+        doc.commit_with(CommitOptions::default().with_time(1));
+        let before = doc.save();
+        let keys = ["p3", "p1", "p5", "p4"];
+        let values: Vec<hydrate::Value> = keys.iter().map(|key| paragraph(key)).collect();
+        let pairs: Vec<(&str, &hydrate::Value)> = keys.iter().copied().zip(&values).collect();
+        doc.batch_create_objects(&parent, &pairs).unwrap();
+        doc.rollback();
+        assert!(doc.save() == before, "under {held:?}");
+    }
+}

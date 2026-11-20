@@ -283,6 +283,7 @@ impl OpSet {
     }
 
     pub(crate) fn splice<O: OpLike>(&mut self, pos: usize, ops: &[O]) -> usize {
+        crate::work::spliced_op_set();
         let added = self.cols.splice(pos, ops, self.text_encoding);
         self.splice_objects(ops);
         // TILO(op-id-index): the ops `Columns::splice` stored.

@@ -660,3 +660,20 @@ letters to read them back out of. The op set, the changes and the saved
 document are byte for byte the ones made before. The marked spots are
 `TILO(run-splice)` and `TILO(written-text)`; `Work::column_runs` counts the
 runs. Pinned by `crates/doc/tilo-automerge/tests/new_text.rs`.
+
+# Tilo patch: objects made side by side go into the op set together
+
+A rich text written from markdown makes each paragraph as an object under its
+own key of the text's map of paragraphs, and each made object cost two
+splices into the op set: one for the op making it, one for what it holds.
+A splice costs every column a seek to its place and a rewrite of the slab
+there whatever it carries, so a list of 200 issues of five paragraphs each
+spent a third of its time on 2,000 splices of next to nothing.
+`AutoCommit::batch_create_objects` makes several objects under keys of one
+map at once: the keys' ops go in with one splice wherever they sit side by
+side (always, under a map just made), and everything the objects hold with
+one more. A key that already holds something, a key given twice, or a
+transaction reading an older document puts each key's op in as before. The
+document is the one making each object in key order gives, byte for byte.
+The marked spot is `TILO(batch-siblings)`; `Work::op_set_splices` counts the
+splices. Pinned by `crates/doc/tilo-automerge/tests/new_text.rs`.

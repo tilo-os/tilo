@@ -1380,6 +1380,121 @@ impl TransactionInner {
         Ok(doc.id_to_exid(root_id))
     }
 
+    /// TILO(batch-siblings): objects made at once under keys of the map
+    /// `ex_parent`, each as [`Self::batch_create_object`] makes it. Where
+    /// none of the keys holds anything yet, their ops go into the op set
+    /// together wherever they sit side by side, and everything inside the
+    /// objects goes in with one splice. The objects' ids, in the order of
+    /// `values`.
+    pub(crate) fn batch_create_objects(
+        &mut self,
+        doc: &mut Automerge,
+        patch_log: &mut PatchLog,
+        ex_parent: &ExId,
+        values: &[(&str, &hydrate::Value)],
+    ) -> Result<Vec<ExId>, AutomergeError> {
+        let parent = self.exid_to_obj(doc, ex_parent)?;
+        if parent.typ != ObjType::Map {
+            return Err(AutomergeError::InvalidOp(parent.typ));
+        }
+        let mut roots = Vec::with_capacity(values.len());
+        for (at, (key, value)) in values.iter().enumerate() {
+            check_written_marks(value, doc.text_encoding())?;
+            let typ = match value {
+                hydrate::Value::Map(_) => ObjType::Map,
+                hydrate::Value::List(_) => ObjType::List,
+                hydrate::Value::Text(_) => ObjType::Text,
+                hydrate::Value::Scalar(_) => return Err(AutomergeError::NotAnObject),
+            };
+            roots.push((*key, typ, *value, at));
+        }
+        // The keys' ops are made in the order the op set holds them.
+        roots.sort_by(|a, b| a.0.cmp(b.0));
+        // Where each key's op goes; `None` when a key holds something, or a
+        // key comes twice, or the transaction reads an older document: then
+        // each object is made on its own.
+        let places: Option<Vec<(usize, ResolvedAction)>> =
+            if self.scope.is_some() || roots.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                None
+            } else {
+                roots
+                    .iter()
+                    .map(|(key, typ, _, _)| {
+                        let mut query = doc.ops().seek_ops_by_map_key(&parent.id, key, None);
+                        if !query.range.is_empty() {
+                            return None;
+                        }
+                        let action = query.resolve_action(OpType::Make(*typ))?;
+                        Some((query.end_pos, action))
+                    })
+                    .collect()
+            };
+        let Some(places) = places else {
+            let mut ids = vec![None; roots.len()];
+            for (key, _, value, at) in &roots {
+                let prop = Prop::Map((*key).to_owned());
+                let id = self.batch_create_object(doc, patch_log, ex_parent, prop, value, false)?;
+                ids[*at] = Some(id);
+            }
+            return Ok(ids.into_iter().flatten().collect());
+        };
+        // Each key's op and then what its object holds are made in turn, so
+        // the ops are numbered as making the objects one by one numbers
+        // them. The keys' ops go into the op set first, where they sit,
+        // and what the objects hold after them, at its end. An op's `pos`
+        // is where it sits with only the ops made before it in, as undoing
+        // the transaction takes them out last first.
+        let end = doc.ops().len();
+        let mut ids = vec![OpId::new(0, 0); roots.len()];
+        let mut batch = BatchInsertion::new(self, doc, patch_log, end);
+        let mut keyed = Vec::with_capacity(roots.len());
+        for (made, ((key, typ, value, at), (pos, action))) in roots.iter().zip(places).enumerate() {
+            let id = batch.inner.next_id();
+            let op = TxOp::map(
+                id,
+                parent,
+                pos + made,
+                action,
+                (*key).to_owned(),
+                Vec::new(),
+            );
+            batch
+                .inner
+                .finalize_op(batch.doc.text_encoding(), batch.patch_log, &op, None, None);
+            keyed.push(batch.inner.pending.len());
+            batch.inner.pending.push(op);
+            ids[*at] = id;
+            let mut queue: VecDeque<(ObjMeta, &hydrate::Value)> = VecDeque::new();
+            queue.push_back((
+                ObjMeta {
+                    id: crate::types::ObjId(id),
+                    typ: *typ,
+                },
+                *value,
+            ));
+            batch_bfs(&mut batch, &mut queue)?;
+        }
+        // Keys' ops that sit side by side go in with one splice.
+        let mut start = 0;
+        while start < keyed.len() {
+            let pending = &batch.inner.pending;
+            let base = pending[keyed[start]].pos - start;
+            let end = start
+                + keyed[start..]
+                    .iter()
+                    .enumerate()
+                    .take_while(|(made, at)| pending[**at].pos - start - made == base)
+                    .count();
+            let group: Vec<&TxOp> = keyed[start..end].iter().map(|at| &pending[*at]).collect();
+            batch.doc.ops_mut().splice(base + start, &group);
+            start = end;
+        }
+        batch.insert_pos += keyed.len();
+        batch.held = keyed;
+        batch.finish();
+        Ok(ids.into_iter().map(|id| doc.id_to_exid(id)).collect())
+    }
+
     /// Initialize the root object of an empty document from a `hydrate::Map`.
     pub(crate) fn batch_init_root_map(
         &mut self,
@@ -1496,6 +1611,9 @@ struct BatchInsertion<'a> {
     /// over them): the run's first index, and the op-set order of its ops,
     /// as offsets from it.
     reordered: Vec<(usize, Vec<usize>)>,
+    /// TILO(batch-siblings): indexes of `pending` already in the op set,
+    /// left out of the splice that ends the batch.
+    held: Vec<usize>,
 }
 
 impl<'a> BatchInsertion<'a> {
@@ -1513,6 +1631,7 @@ impl<'a> BatchInsertion<'a> {
             pending_start,
             insert_pos: start_pos,
             reordered: Vec::new(),
+            held: Vec::new(),
         }
     }
 
@@ -1722,19 +1841,26 @@ impl<'a> BatchInsertion<'a> {
         if new_ops.is_empty() {
             return;
         }
-        if self.reordered.is_empty() {
+        if self.reordered.is_empty() && self.held.is_empty() {
             self.doc.ops_mut().splice(self.insert_pos, new_ops);
             return;
         }
         let pending = &self.inner.pending;
-        let mut ordered: Vec<&TxOp> = Vec::with_capacity(new_ops.len());
+        let mut ordered: Vec<usize> = Vec::with_capacity(new_ops.len());
         let mut at = self.pending_start;
         for (start, order) in &self.reordered {
-            ordered.extend(&pending[at..*start]);
-            ordered.extend(order.iter().map(|offset| &pending[start + offset]));
+            ordered.extend(at..*start);
+            ordered.extend(order.iter().map(|offset| start + offset));
             at = start + order.len();
         }
-        ordered.extend(&pending[at..]);
+        ordered.extend(at..pending.len());
+        // `held` is in order, as `pending` made it.
+        let mut held = self.held.iter().peekable();
+        let ordered: Vec<&TxOp> = ordered
+            .into_iter()
+            .filter(|at| held.next_if(|held| *held == at).is_none())
+            .map(|at| &pending[at])
+            .collect();
         self.doc.ops_mut().splice(self.insert_pos, &ordered);
     }
 }
