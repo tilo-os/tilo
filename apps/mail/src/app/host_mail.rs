@@ -737,15 +737,10 @@ fn asking(
         EngineRequest::StoreFlag {
             account, message, ..
         } => {
-            let at = message.server?;
             let marking = MarkMail {
-                account: account.email.clone(),
-                folder: at.folder.as_key().to_owned(),
-                uid: at.uid,
-                uid_validity: at.uid_validity,
                 read: Some(message.read),
                 starred: Some(message.starred),
-                ..MarkMail::default()
+                ..marking_of(account, message)?
             };
             (person_accounts::MARK, map(&marking)?)
         }
@@ -755,33 +750,47 @@ fn asking(
             to,
             ..
         } => {
-            let at = message.server?;
             let marking = MarkMail {
-                account: account.email.clone(),
-                folder: at.folder.as_key().to_owned(),
-                uid: at.uid,
-                uid_validity: at.uid_validity,
                 to_folder: Some(to.as_key().to_owned()),
-                ..MarkMail::default()
+                ..marking_of(account, message)?
             };
             (person_accounts::MARK, map(&marking)?)
         }
         EngineRequest::Purge {
             account, message, ..
         } => {
-            let at = message.server?;
             let marking = MarkMail {
-                account: account.email.clone(),
-                folder: at.folder.as_key().to_owned(),
-                uid: at.uid,
-                uid_validity: at.uid_validity,
                 delete: true,
-                ..MarkMail::default()
+                ..marking_of(account, message)?
             };
             (person_accounts::MARK, map(&marking)?)
         }
     };
     Some((person_accounts::target(action), argument))
+}
+
+/// Which message a change is for: where its server holds it, or, for one
+/// this window never read from there (a draft's earlier copy), its
+/// `Message-ID` in the folder it is in.
+fn marking_of(account: &crate::model::AccountConfig, message: &Message) -> Option<MarkMail> {
+    let marking = MarkMail {
+        account: account.email.clone(),
+        message_id: message.rfc_message_id.clone().filter(|id| !id.is_empty()),
+        ..MarkMail::default()
+    };
+    match message.server {
+        Some(at) => Some(MarkMail {
+            folder: at.folder.as_key().to_owned(),
+            uid: at.uid,
+            uid_validity: at.uid_validity,
+            ..marking
+        }),
+        None if marking.message_id.is_some() => Some(MarkMail {
+            folder: message.folder.as_key().to_owned(),
+            ..marking
+        }),
+        None => None,
+    }
 }
 
 fn map(argument: &impl serde::Serialize) -> Option<InvokeArgument> {
@@ -1580,5 +1589,30 @@ mod tests {
             panic!("a piece is a map");
         };
         assert_eq!(second["offset"], json!(MAX_SEND_PIECE_BYTES as u64));
+    }
+
+    /// A draft's earlier copy, which the window never read from its server,
+    /// is deleted there by its `Message-ID`, in Drafts.
+    #[test]
+    fn a_drafts_earlier_copy_is_deleted_by_its_message_id() {
+        let retired = crate::actions::ServerUpdate::Remove {
+            id: "draft-1".into(),
+            account: "ada@example.test".into(),
+            locator: "<draft-1@example.test>".into(),
+            folder: Folder::Drafts,
+        };
+        let config = crate::model::AccountConfig {
+            email: "ada@example.test".into(),
+            ..crate::model::AccountConfig::default()
+        };
+        let request = EngineRequest::purge(config, Box::new(retired.locate()));
+        let Some((target, InvokeArgument::Json(asked))) = asking(&request) else {
+            panic!("the window asks to delete the copy");
+        };
+        assert_eq!(target, person_accounts::target(person_accounts::MARK));
+        assert_eq!(asked["folder"], json!("drafts"));
+        assert_eq!(asked["uid"], json!(0));
+        assert_eq!(asked["messageId"], json!("<draft-1@example.test>"));
+        assert_eq!(asked["delete"], json!(true));
     }
 }

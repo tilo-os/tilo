@@ -496,6 +496,7 @@ fn a_host_pages_reads_searches_and_drafts_over_one_session() {
                 to: "bob@example.test".into(),
                 subject: "Not yet".into(),
                 body: "Still thinking.".into(),
+                message_id: Some("not-yet@example.test".into()),
                 ..SendMail::default()
             },
             &[],
@@ -506,6 +507,24 @@ fn a_host_pages_reads_searches_and_drafts_over_one_session() {
     assert_eq!(drafts.len(), 1);
     assert!(drafts[0].flags.iter().any(|flag| flag == "\\Draft"));
     assert!(String::from_utf8_lossy(&drafts[0].raw).contains("Subject: Not yet"));
+
+    // A copy written over is deleted by its `Message-ID`, the only thing a
+    // window knows of a draft's earlier copy, and deleting it again is no
+    // failure: it is gone.
+    let retiring = MarkMail {
+        account: "ada@example.test".into(),
+        folder: "drafts".into(),
+        message_id: Some("<not-yet@example.test>".into()),
+        delete: true,
+        ..MarkMail::default()
+    };
+    session
+        .mark(&account, &secret, &retiring)
+        .expect("the earlier copy is deleted");
+    assert!(imap.messages("Drafts").is_empty());
+    session
+        .mark(&account, &secret, &retiring)
+        .expect("a copy gone already is deleted");
 
     assert_eq!(
         imap.logins(),

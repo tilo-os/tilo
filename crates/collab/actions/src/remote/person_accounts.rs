@@ -873,6 +873,11 @@ pub struct MarkMail {
     pub folder: String,
     pub uid: u32,
     pub uid_validity: u32,
+    /// Its `Message-ID`, which finds it when where it is held is not known
+    /// (`uid` 0) or its folder was numbered anew: a draft's earlier copy is
+    /// known by nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     /// Its read state, when that changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read: Option<bool>,

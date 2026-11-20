@@ -1221,9 +1221,27 @@ async fn mark_message(session: &mut ImapSession, marking: &MarkMail) -> Result<(
     let mailbox = folder_name(&listing, &marking.folder)
         .ok_or_else(|| format!("this account's server has no {} folder", marking.folder))?;
     let selected = session.select(&mailbox).await.map_err(|e| e.to_string())?;
-    if selected.uid_validity.unwrap_or(0) != marking.uid_validity {
+    let placed = marking.uid != 0 && selected.uid_validity.unwrap_or(0) == marking.uid_validity;
+    let uid = if placed {
+        marking.uid
+    } else if let Some(search) = marking.message_id.as_deref().and_then(message_id_query) {
+        let found = session
+            .uid_search(search)
+            .await
+            .map_err(|e| e.to_string())?;
+        match found.into_iter().max() {
+            Some(uid) => uid,
+            // A copy to delete that is gone already is deleted.
+            None if marking.delete => return Ok(()),
+            None => return Err("the message is no longer on its server".into()),
+        }
+    } else {
         return Err("the folder changed; its messages are read again".into());
-    }
+    };
+    let marking = &MarkMail {
+        uid,
+        ..marking.clone()
+    };
     if let Some(read) = marking.read {
         let flags = format!("{}SILENT (\\Seen)", if read { "+" } else { "-" });
         let stored = session
@@ -1311,7 +1329,13 @@ async fn file_sent(
 /// when it carries one a server can be asked for.
 fn message_id_search(mime: &[u8]) -> Option<String> {
     let parsed = mail_parser::MessageParser::default().parse(mime)?;
-    let id = parsed.message_id()?;
+    message_id_query(parsed.message_id()?)
+}
+
+/// The search that finds a message by its `Message-ID`, written with or
+/// without its angle brackets, when it is one a server can be asked for.
+fn message_id_query(id: &str) -> Option<String> {
+    let id = id.trim().trim_start_matches('<').trim_end_matches('>');
     let askable = !id.is_empty()
         && id
             .chars()
