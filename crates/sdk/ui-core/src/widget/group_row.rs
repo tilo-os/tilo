@@ -3116,6 +3116,27 @@ impl GroupRow {
             LetGo::Here => {}
             LetGo::CarriedAway => return claimed,
             LetGo::Joined => {
+                // The place the window shows becomes a tab of the window it is let go over, in
+                // front there: the row moves it as a tab drag does, and the window it left goes
+                // with its last tab.
+                if commit && drag.moved {
+                    crate::control_hints::performed::note(
+                        crate::control_hints::performed::Performed::MovedWindow,
+                    );
+                }
+                if let Some(into) = self.groups.iter().position(|group| {
+                    group.id != drag.group_id && group.get_rect().contains(self.last_cursor)
+                }) && let Some(tab) = self
+                    .groups
+                    .get(drag.src_idx)
+                    .map(WindowGroup::active_tab_id)
+                {
+                    let at = self
+                        .groups
+                        .get(into)
+                        .map_or(0, |group| group.drop_index_for(self.last_cursor));
+                    let _ = self.transfer_tab(drag.src_idx, into, tab, at);
+                }
                 self.group_reorder_target = None;
                 self.group_reorder_section = None;
                 return claimed;

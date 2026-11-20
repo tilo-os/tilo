@@ -58,17 +58,16 @@ impl GroupRow {
     /// devices, so nothing here is rearranged and no window floats.
     ///
     /// Let go over another window of this strip, a window carried from a tab or a lone window's
-    /// title lands as a place of that window: the same drop another of the person's devices'
-    /// windows lands by ([`Self::take_window_drop`]), so a window tabbed in by the pointer and one
-    /// carried between devices join the same way. A window carried by its bar's empty area
+    /// title joins it as its tab: the row moves the place over, as the tab drag does, and the
+    /// strip does not also rearrange the window. A window carried by its bar's empty area
     /// rearranges the strip instead.
     pub(super) fn let_the_window_go(&mut self, id: u64, land: bool) -> LetGo {
-        if !self.carried.published {
-            return LetGo::Here;
-        }
-        self.carried.published = false;
-        if crate::widget::drag_bus::current().is_none() {
+        let published = std::mem::take(&mut self.carried.published);
+        let here = !published || crate::widget::drag_bus::current().is_some();
+        if published {
             crate::widget::drag_bus::end(None);
+        }
+        if !here {
             self.put_back_drag(id);
             return LetGo::CarriedAway;
         }
@@ -82,25 +81,7 @@ impl GroupRow {
                 .groups
                 .iter()
                 .any(|group| group.id != id && group.get_rect().contains(self.last_cursor));
-        let carries = self
-            .groups
-            .iter()
-            .find(|group| group.id == id)
-            .and_then(|group| group.carries())
-            .map(str::to_owned);
-        if let Some(carries) = carries.filter(|_| onto) {
-            crate::widget::drag_bus::end(Some(crate::widget::drag_bus::Landed {
-                source: format!("window:{id}"),
-                payload: crate::dnd::DragPayload::Custom {
-                    kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
-                    blob: carries.into_bytes(),
-                },
-                pointer: self.last_cursor,
-            }));
-            return LetGo::Joined;
-        }
-        crate::widget::drag_bus::end(None);
-        LetGo::Here
+        if onto { LetGo::Joined } else { LetGo::Here }
     }
 
     /// A window carried here by another of the person's devices was let go: the window of this row

@@ -2907,12 +2907,6 @@ fn the_desktop_composes_as_its_strips() {
 #[test]
 fn a_window_let_go_over_another_joins_it_as_a_tab() {
     let (surface, handle) = tabbed_shell(1, 1);
-    let resources = handle.read(|tree| {
-        tree.tabs()
-            .map(|tab| (tab.id, resource_of(tab.id)))
-            .collect()
-    });
-    handle.set_window_resources(resources);
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
     for _ in 0..4 {
