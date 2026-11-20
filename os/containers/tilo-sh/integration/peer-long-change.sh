@@ -22,6 +22,9 @@ tilo=$(realpath "$tilo")
 minutes=${TILO_LONG_MINUTES:-20}
 # The longest a status or a listing may take, in seconds.
 answer_within=${TILO_LONG_ANSWER_WITHIN:-10}
+# The minute of the change the holder is killed at with SIGKILL, as a computer's service is when it
+# does not stop in time, and the next one started by a status; 0 keeps the first holder throughout.
+kill_at_minute=${TILO_LONG_KILL_AT_MINUTE:-12}
 
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/tilo-peer-long.XXXXXX")
 logs=${TILO_LONG_LOGS:-$scratch}
@@ -37,6 +40,8 @@ finish() {
   unmount_scratch
   # The holder's own log, whatever the outcome: what it did while it was asked.
   find "$scratch" -name '*.log' -type f -exec cp {} "$logs/" \; 2>/dev/null || true
+  # What the device keeps on disk, largest last: how much of the tree's history it holds.
+  du -ab "$scratch" 2>/dev/null | sort -n | tail -n 30 >"$logs/kept-sizes.txt" || true
   if [[ $status != 0 ]]; then
     for log in "$logs"/*.log; do echo "== $log" >&2; tail -n 40 "$log" >&2 || true; done
   fi
@@ -80,23 +85,44 @@ asking &
 pids+=("$!")
 
 # The holder's age, CPU seconds, threads and resident memory, every few seconds.
-watching() {
+watching() { # PID
   local ticks
   ticks=$(getconf CLK_TCK)
-  while kill -0 "$holder" 2>/dev/null; do
-    awk -v t="$ticks" -v now="$(date +%s)" '{print now, ($14 + $15) / t, $20, $24 * 4096}' \
-      "/proc/$holder/stat" >>"$logs/holder.log" 2>/dev/null || true
+  while kill -0 "$1" 2>/dev/null; do
+    awk -v t="$ticks" -v now="$(date +%s)" -v pid="$1" \
+      '{print now, ($14 + $15) / t, $20, $24 * 4096, pid}' \
+      "/proc/$1/stat" >>"$logs/holder.log" 2>/dev/null || true
     sleep 5
   done
 }
-watching &
+watching "$holder" &
 pids+=("$!")
+
+# The holder killed and the next one started, between two rounds of the change: when, and by whom.
+restart_holder() {
+  local first=$holder
+  say "killing the holder $first with SIGKILL"
+  echo "$(date +%s.%N) killed" >>"$logs/restart.log"
+  kill -9 "$first"
+  wait_for 30 "the holder $first ended" bash -c "! kill -0 '$first' 2>/dev/null"
+  wait_for 180 "a new holder shows the folder" shown
+  holder=$(holder_pid)
+  [[ -n $holder && $holder != "$first" ]] || { say "no new holder after the kill (saw '$holder')"; exit 1; }
+  echo "$(date +%s.%N) shown" >>"$logs/restart.log"
+  say "the holder $holder shows the folder again"
+  watching "$holder" &
+  pids+=("$!")
+}
 
 # The change: a round writes a batch of files into a directory of their own, rewrites some of
 # the last round's, renames some and removes others, for as long as the change lasts.
 changing() {
-  local round=0 until=$((SECONDS + minutes * 60)) dir last
+  local round=0 began=$SECONDS until=$((SECONDS + minutes * 60)) dir last killed=0
   while ((SECONDS < until)); do
+    if ((kill_at_minute > 0 && !killed && SECONDS - began >= kill_at_minute * 60)); then
+      restart_holder
+      killed=1
+    fi
     dir=$folder/long/r$((round / 20))/b$round
     mkdir -p "$dir"
     for ((i = 0; i < 50; i++)); do
@@ -127,10 +153,15 @@ kill "${pids[0]}" 2>/dev/null || true
 wait "${pids[0]}" 2>/dev/null || true
 
 say "every status and listing answered within ${answer_within}s, and none said the sync was busy"
-python3 - "$logs/asked.log" "$logs/holder.log" "$answer_within" <<'EOF'
+touch "$logs/restart.log"
+python3 - "$logs/asked.log" "$logs/holder.log" "$answer_within" "$logs/restart.log" <<'EOF'
 import sys
-asked, holder, within = sys.argv[1], sys.argv[2], float(sys.argv[3])
+asked, holder, within, restart = sys.argv[1], sys.argv[2], float(sys.argv[3]), sys.argv[4]
+marks = {what: float(at) for at, what in (line.split() for line in open(restart) if line.strip())}
+# While a killed holder's successor starts, nothing answers: those asks are not counted.
+gap = (marks["killed"] - 1, marks["shown"] + 30) if "killed" in marks and "shown" in marks else None
 rows = [line.split() for line in open(asked) if line.strip()]
+rows = [r for r in rows if gap is None or float(r[0]) + float(r[2]) < gap[0] or float(r[0]) > gap[1]]
 if len(rows) < 20:
     sys.exit(f"only {len(rows)} statuses and listings were asked")
 failed = 0
@@ -144,12 +175,17 @@ for name in ("status", "ls"):
           f"{len(slow)} over {within}s, {len(bad)} failed, {len(busy)} said busy")
     failed += len(slow) + len(bad) + len(busy)
 lines = [line.split() for line in open(holder) if line.strip()]
-if len(lines) >= 2:
-    (t0, c0, n0, m0), (t1, c1, n1, m1) = lines[0], lines[-1]
-    span = max(float(t1) - float(t0), 1)
-    print(f"holder: {span:.0f}s, {float(c1) - float(c0):.0f} CPU seconds, threads {n0} -> {n1}, "
-          f"memory {int(m0) >> 20} -> {int(m1) >> 20} MiB")
+for pid in dict.fromkeys(line[4] for line in lines):
+    mine = [line for line in lines if line[4] == pid]
+    if len(mine) >= 2:
+        (t0, c0, n0, m0, _), (t1, c1, n1, m1, _) = mine[0], mine[-1]
+        span = max(float(t1) - float(t0), 1)
+        print(f"holder {pid}: {span:.0f}s, {float(c1) - float(c0):.0f} CPU seconds, threads {n0} -> {n1}, "
+              f"memory {int(m0) >> 20} -> {int(m1) >> 20} MiB")
 sys.exit(1 if failed else 0)
 EOF
 kill -0 "$holder" || { say "the holder $holder ended"; exit 1; }
+say "every part of the file list read here, across the restart"
+unreadable=$(find "$scratch" -name '*.log' -type f -exec grep -h "cannot be read here" {} + 2>/dev/null || true)
+[[ -z $unreadable ]] || { say "parts of the file list did not read: $(head -n 3 <<<"$unreadable")"; exit 1; }
 say "ok: $rounds rounds over $minutes minutes; status and listings answered throughout"
