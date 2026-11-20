@@ -1274,6 +1274,66 @@ fn each_kept_window_takes_back_exactly_its_own_tab() {
     );
 }
 
+/// A kept window of a dialog's shape (a fixed size, as a setup wizard has) that stood in a tab
+/// before an in-place restart takes that tab back rather than floating over the strip, and its
+/// tab closes with it when the program ends.
+#[test]
+fn a_kept_window_of_a_dialogs_shape_takes_back_its_tab() {
+    let (mut driver, mut policy) = mount();
+    map(&mut driver, &mut policy, 1, "org.example.Setup");
+    let saved = policy.tab_of(1).expect("a tab");
+    let mut tree = policy.handle().read(Clone::clone);
+    for tab in tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.strips)
+        .flat_map(|strip| &mut strip.window_groups)
+        .flat_map(|group| &mut group.tabs)
+    {
+        tab.tile = TileContent::LocalApp {
+            app_id: "org.example.Setup".into(),
+            label: "Setup".into(),
+            note: String::new(),
+        };
+    }
+    policy.handle().replace_tree(tree);
+    settle(&mut driver);
+    let held = tilo_desktop_policy::KeptWindow {
+        keeper: 50,
+        tag: "wizard".into(),
+    };
+    assert!(policy.adopt("org.example.Setup", saved, Some(held)));
+    let wizard = Window {
+        min_size: Some((500, 380)),
+        max_size: Some((500, 380)),
+        ..kept(11, "org.example.Setup", 50, "wizard")
+    };
+    assert!(
+        tilo_desktop_policy::floating::floats(&wizard, Some((1280.0, 800.0))),
+        "the wizard has a dialog's shape"
+    );
+    policy.map(wizard).unwrap();
+    settle(&mut driver);
+    assert_eq!(
+        policy.tab_of(11),
+        Some(saved),
+        "the kept wizard is back in its tab"
+    );
+    policy.unmap(11);
+    settle(&mut driver);
+    assert!(
+        !policy.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| tab.id == saved)
+        }),
+        "its tab closes with it"
+    );
+}
+
 /// Only the windows that stand on a display are in view: a strip lays out every window on it, and
 /// the ones scrolled past stand off the display. What sets an app's tier (and its memory floor) is
 /// this, so an app whose windows are all scrolled away yields to the ones the person sees.

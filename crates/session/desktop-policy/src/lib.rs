@@ -892,7 +892,9 @@ impl DesktopPolicy {
         let display = self
             .working_display()
             .map(|display| (display.width, display.height));
-        if floating::floats(&window, display) {
+        // A kept window held a tab before the desktop restarted: it takes that tab back whatever
+        // its shape, or it would float over the strip and leave its tab empty for good.
+        if floating::floats(&window, display) && !self.held_exactly(&window) {
             let parent = window.parent.filter(|parent| self.holds(*parent));
             self.floating.insert(window.id, parent);
             self.note_mapped(Mapped {
@@ -1334,6 +1336,17 @@ impl DesktopPolicy {
             tabs(tree)
                 .find(|found| found.id == tab)
                 .is_some_and(|found| matches!(found.tile, TileContent::AppPlaceholder { .. }))
+        })
+    }
+
+    /// Whether a tab is held for exactly `window`, a kept app's window after an in-place restart.
+    fn held_exactly(&self, window: &Window) -> bool {
+        KeptWindow::of(window).is_some_and(|kept| {
+            self.held
+                .borrow()
+                .values()
+                .flatten()
+                .any(|waiting| waiting.tab.is_some() && waiting.window.as_ref() == Some(&kept))
         })
     }
 
