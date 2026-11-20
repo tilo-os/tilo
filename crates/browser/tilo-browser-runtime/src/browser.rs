@@ -2640,6 +2640,14 @@ impl Mount {
             let conservative = self.viewport.caps() != SurfaceCaps::STANDARD;
             self.pending |= drive_pixels(&handle.device, &handle.queue, conservative);
         }
+        // Who is here changed on the board: the frame puts them on the desktop, whose people
+        // lists read them, even when nothing else on the page moved.
+        if !self.pending && presence::moved(self.peer, &self.workspace, self.presence.revision) {
+            if let Some(reasons) = &mut reasons {
+                reasons.push("presence".into());
+            }
+            self.pending = true;
+        }
         if !self.pending {
             // A skipped layout waits for input or a wake: say that, not idleness.
             if !self.skipped_frame {
@@ -3107,32 +3115,6 @@ impl Mount {
         Ok(())
     }
 
-    /// The published caret or selection as live selection anchors
-    /// (`{anchor, head}`, hex), for the page's live layer: the keyboard
-    /// focus's when it is in the focused window (or this mount's
-    /// application), else that window's editor caret
-    /// ([`tilo_desktop_surface::published_selection`]).
-    fn focus_presence_value(&self) -> Option<serde_json::Value> {
-        use ui::collaboration::PresencePayload;
-        let keyboard = self.frame.focus_presence();
-        let (key, payload) = match &self.desktop {
-            Some(desktop) => desktop.handle.published_selection(keyboard),
-            None => tilo_desktop_surface::published_selection(
-                keyboard,
-                &ui::presence::capability::subtree_presence(self.frame.root_widget()),
-            ),
-        }?;
-        let (start, end) = match payload {
-            PresencePayload::Caret { pos } => (pos, pos),
-            PresencePayload::Selection { start, end } => (start, end),
-            _ => return None,
-        };
-        let (anchor, head) = tilo_server_protocol::live::presence_anchors(&key, start, end)?;
-        Some(
-            serde_json::json!({"anchor": hex::encode(anchor.cursor), "head": hex::encode(head.cursor)}),
-        )
-    }
-
     /// Tell a page showing one application the colours it is drawn in, when
     /// they changed: the page's own bar over it takes them, so the two read
     /// as one surface in whatever theme the person chose. `pageTheme`:
@@ -3162,30 +3144,6 @@ impl Mount {
                 "line": hex(theme.border_standard),
             }),
         );
-    }
-
-    /// Add the focus presence and the place in the workspace to a status where
-    /// they differ from what the page was last told.
-    fn add_presence_changes(&self, value: &mut serde_json::Value) {
-        let Some(object) = value.as_object_mut() else {
-            return;
-        };
-        let presence = self.focus_presence_value();
-        if *self.focus_presence.borrow() != presence {
-            object.insert(
-                "focusPresence".into(),
-                presence.clone().unwrap_or(serde_json::Value::Null),
-            );
-            *self.focus_presence.borrow_mut() = presence;
-        }
-        let place = self.live_place_value();
-        if *self.live_place.borrow() != place {
-            object.insert(
-                "livePlace".into(),
-                place.clone().unwrap_or(serde_json::Value::Null),
-            );
-            *self.live_place.borrow_mut() = place;
-        }
     }
 
     /// A frame failed with `error`. When the GPU is what failed (its device
