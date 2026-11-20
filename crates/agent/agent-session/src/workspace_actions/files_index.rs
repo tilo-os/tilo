@@ -57,6 +57,22 @@ impl FilesIndex {
         }
     }
 
+    /// Look for the folder's documents again where the index has none of them: a find over a
+    /// workspace whose folder was founded after an earlier one gave up on the tree that was not
+    /// there yet reads it now, and one that read the tree before a chunk was written reads the
+    /// chunk now, whether or not its write was heard since.
+    pub(super) fn look_for_the_tree(&mut self) {
+        if !self.listed || self.tree.listed().is_empty() {
+            self.given_up.remove(&0);
+            self.stale.insert(0);
+        }
+        for chunk in self.tree.listed() {
+            if !self.read.contains(&chunk) {
+                self.given_up.remove(&chunk);
+            }
+        }
+    }
+
     /// The next chunk document to read: the tree's own document first, then each chunk it lists
     /// that was not read or changed since. `None` when nothing waits.
     pub(super) fn next(&self) -> Option<TreeChunk> {
@@ -225,6 +241,43 @@ mod tests {
             index.next(),
             Some(0),
             "the write landing reads the document again"
+        );
+    }
+
+    #[test]
+    fn a_find_reads_the_tree_that_was_not_there_yet_again() {
+        let mut index = FilesIndex::default();
+        assert_eq!(index.next(), Some(0));
+        index.pending(0);
+        assert!(index.settled(), "the tree is not here yet");
+        // The folder was founded since: the next find looks for the tree again.
+        index.look_for_the_tree();
+        assert_eq!(
+            index.next(),
+            Some(0),
+            "a find looks for a tree it never read"
+        );
+        // The tree read before its chunks were listed is read again too.
+        assert_eq!(index.read(0, &index_of(&[]), None), 0);
+        index.look_for_the_tree();
+        assert_eq!(
+            index.next(),
+            Some(0),
+            "a find looks again at a tree that lists no chunk"
+        );
+        assert_eq!(index.read(0, &index_of(&[1]), None), 0);
+        index.pending(1);
+        index.look_for_the_tree();
+        assert_eq!(
+            index.next(),
+            Some(1),
+            "a find looks again at a chunk it never read"
+        );
+        assert_eq!(index.read(1, &chunk_of("a.txt"), None), 1);
+        index.look_for_the_tree();
+        assert!(
+            index.settled(),
+            "what the folder listed and the index read is not looked for again"
         );
     }
 }

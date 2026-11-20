@@ -49,6 +49,7 @@ impl Worker {
         };
         // What the index has not read yet: the documents whose write landed since the last pass
         // between requests. A document this replica cannot answer for yet is answered next time.
+        workspace.files.look_for_the_tree();
         while let Some(chunk) = workspace.files.next() {
             let route = DocumentRoute {
                 app_id: FILES_APP.to_owned(),
