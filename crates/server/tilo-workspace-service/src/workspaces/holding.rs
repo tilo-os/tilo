@@ -362,7 +362,9 @@ impl Workspaces {
             )
             .map_err(|error| error.to_string())?;
             governed.handed_by = Some(holder.clone());
+            let reading = governed.reading();
             let state = Arc::new(AsyncMutex::new(governed));
+            self.inner.readings.hold(&workspace, &state, reading);
             self.inner
                 .workspaces
                 .lock()

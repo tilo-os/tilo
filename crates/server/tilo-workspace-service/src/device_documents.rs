@@ -124,8 +124,7 @@ impl DeviceDocuments for ServiceDocuments {
             .0
             .copies()
             .ok_or("this device's workspace service holds no workspaces")?;
-        let workspace = workspace.to_owned();
-        on_its_own(async move { workspaces.own_listing(&workspace).await })
+        workspaces.own_listing(workspace)
     }
 
     fn own_records(
@@ -135,24 +134,21 @@ impl DeviceDocuments for ServiceDocuments {
         let Some(workspaces) = self.0.copies() else {
             return std::collections::BTreeMap::new();
         };
-        let workspace = workspace.to_owned();
-        on_its_own(async move { workspaces.own_records(&workspace).await })
+        workspaces.own_records(workspace)
     }
 
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
         let Some(workspaces) = self.0.copies() else {
             return false;
         };
-        let (workspace, app, resource) =
-            (workspace.to_owned(), app.to_owned(), resource.to_owned());
-        on_its_own(async move { workspaces.holds_resource(&workspace, &app, &resource).await })
+        workspaces.holds_resource(workspace, app, resource)
     }
 
     fn workspaces(&self) -> Vec<String> {
         let Some(workspaces) = self.0.copies() else {
             return Vec::new();
         };
-        on_its_own(async move { workspaces.held_workspaces().await })
+        workspaces.held_workspaces()
     }
 }
 

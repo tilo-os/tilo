@@ -22,13 +22,6 @@ pub(super) struct Reading {
     pub(super) workspace: String,
     /// The keys a sealed document is opened with; a build that opens none
     /// reads only what is in the clear.
-    #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
-        allow(
-            dead_code,
-            reason = "sealed documents are read only where a page or an agent reads them"
-        )
-    )]
     pub(super) device: Option<DeviceKeys>,
     /// What the last reads of its sealed documents opened ([`super::sealed_documents::readable_now`]).
     #[cfg_attr(
@@ -41,6 +34,8 @@ pub(super) struct Reading {
     pub(super) opened: std::sync::Arc<super::sealed_documents::MergedDocuments>,
     /// The invitations the workspace honours, as its last write left them.
     pub(super) invitations: Invitations,
+    /// Whether the workspace is a member copy, read as this device's member.
+    pub(super) member: bool,
 }
 
 /// What a workspace's join log and entry say of the invitations it issued,
@@ -97,7 +92,10 @@ impl Invitations {
 
 type Governed = std::sync::Weak<tokio::sync::Mutex<GovernedWorkspace>>;
 
-/// The [`Reading`] of each workspace governed here, once one was read.
+/// The [`Reading`] of each workspace governed here, kept from the moment it is held. A read of a
+/// session's own reads only this: such a read often waits with its whole thread, and a task of
+/// that thread queued for a workspace's lock, or for the registry's, would be handed the lock's
+/// next turn and never be polled to take it.
 #[derive(Default)]
 pub(super) struct Readings(pub(super) std::sync::Mutex<HashMap<WorkspaceId, (Governed, Reading)>>);
 
@@ -122,6 +120,45 @@ impl Readings {
         known.retain(|_, (of, _)| of.strong_count() > 0);
         known.insert(workspace, (std::sync::Arc::downgrade(governed), reading));
     }
+
+    /// Read `governed`, held here as `workspace`, from now on.
+    pub(super) fn hold(
+        &self,
+        workspace: &str,
+        governed: &std::sync::Arc<tokio::sync::Mutex<GovernedWorkspace>>,
+        reading: Reading,
+    ) {
+        if let Some(workspace) = WorkspaceId::parse(workspace) {
+            self.keep(workspace, governed, reading);
+        }
+    }
+
+    /// Read `workspace` no more: it is not held here.
+    pub(super) fn forget(&self, workspace: &str) {
+        if let Some(workspace) = WorkspaceId::parse(workspace) {
+            self.0.lock_recover().remove(&workspace);
+        }
+    }
+
+    /// What `workspace`, held here, is read through.
+    pub(super) fn held(&self, workspace: &str) -> Option<Reading> {
+        let (of, reading) = self
+            .0
+            .lock_recover()
+            .get(&WorkspaceId::parse(workspace)?)?
+            .clone();
+        (of.strong_count() > 0).then_some(reading)
+    }
+
+    /// The workspaces held here, by their ids.
+    pub(super) fn workspaces(&self) -> Vec<String> {
+        self.0
+            .lock_recover()
+            .iter()
+            .filter(|(_, (of, _))| of.strong_count() > 0)
+            .map(|(workspace, _)| workspace.to_string())
+            .collect()
+    }
 }
 
 impl GovernedWorkspace {
@@ -133,6 +170,7 @@ impl GovernedWorkspace {
             device: self.device.clone(),
             opened: std::sync::Arc::default(),
             invitations: self.invitations.clone(),
+            member: self.member.is_some(),
         }
     }
 }

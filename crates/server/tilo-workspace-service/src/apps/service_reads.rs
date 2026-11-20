@@ -71,7 +71,7 @@ impl ServiceReads {
 impl NativeDocumentReads for ServiceReads {
     fn seals_documents(&self, workspace: &str) -> bool {
         self.workspaces()
-            .is_some_and(|workspaces| block_on(workspaces.seals_resources(workspace)))
+            .is_some_and(|workspaces| workspaces.seals_resources(workspace))
     }
 
     fn own_resource(
@@ -80,12 +80,12 @@ impl NativeDocumentReads for ServiceReads {
         app: &str,
         resource: &str,
     ) -> Option<collab_types::OwnResource> {
-        block_on(self.workspaces()?.own_resource(workspace, app, resource))
+        self.workspaces()?.own_resource(workspace, app, resource)
     }
 
     fn resource_read(&self, workspace: &str, app: &str, resource: &str) -> ResourceRead {
         match self.workspaces() {
-            Some(workspaces) if block_on(workspaces.holds_resource(workspace, app, resource)) => {
+            Some(workspaces) if workspaces.holds_resource(workspace, app, resource) => {
                 ResourceRead::Sealed
             }
             _ => ResourceRead::Own,
@@ -94,7 +94,7 @@ impl NativeDocumentReads for ServiceReads {
 
     fn holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
         self.workspaces()
-            .is_some_and(|workspaces| block_on(workspaces.holds_resource(workspace, app, resource)))
+            .is_some_and(|workspaces| workspaces.holds_resource(workspace, app, resource))
     }
 
     fn await_arriving_document(
@@ -116,11 +116,8 @@ impl NativeDocumentReads for ServiceReads {
         }
         let workspaces = self.workspaces()?;
         Some(
-            if block_on(workspaces.chain_head_has_part(
-                &route.cluster_id,
-                &route.app_id,
-                &route.document_id,
-            )) {
+            if workspaces.chain_head_has_part(&route.cluster_id, &route.app_id, &route.document_id)
+            {
                 ChainHeadAnswer::NewestPartOnItsWay
             } else {
                 ChainHeadAnswer::NoPart
@@ -134,12 +131,12 @@ impl NativeDocumentReads for ServiceReads {
         let workspaces = self
             .workspaces()
             .ok_or("this device's workspace service holds no workspaces")?;
-        block_on(workspaces.authorizes_resource_read(
+        workspaces.authorizes_resource_read(
             &route.cluster_id,
             context.certificate(),
             &route.app_id,
             &route.document_id,
-        ))?;
+        )?;
         context.revalidate()
     }
 
@@ -161,7 +158,7 @@ impl NativeDocumentReads for ServiceReads {
                 route.app_id.as_str(),
                 route.document_id.as_str(),
             );
-            if !workspaces.holds_resource(workspace, app, resource).await {
+            if !workspaces.holds_resource(workspace, app, resource) {
                 return Ok::<NativeDocumentRead, String>(NativeDocumentRead::Absent);
             }
             // A reader that holds a revision reads again only what changed: the capture below
@@ -174,7 +171,7 @@ impl NativeDocumentReads for ServiceReads {
             {
                 return Ok(NativeDocumentRead::Unchanged(revision));
             }
-            if workspaces.resource_arriving(workspace, app, resource).await {
+            if workspaces.resource_arriving(workspace, app, resource) {
                 return Ok(NativeDocumentRead::Pending);
             }
             // On its way (sealed under keys this device has not taken yet, or missing a write
@@ -207,11 +204,7 @@ impl NativeDocumentReads for ServiceReads {
         let Some(workspaces) = self.workspaces() else {
             return Ok(None);
         };
-        if !block_on(workspaces.holds_resource(
-            &route.cluster_id,
-            &route.app_id,
-            &route.document_id,
-        )) {
+        if !workspaces.holds_resource(&route.cluster_id, &route.app_id, &route.document_id) {
             // A resource the service holds nothing of is new here: the broker captures.
             return Ok(None);
         }

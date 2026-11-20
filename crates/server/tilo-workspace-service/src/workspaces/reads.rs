@@ -20,7 +20,7 @@ use tilo_user_identity::DeviceCert;
 
 #[cfg(feature = "apps")]
 use super::SystemTime;
-use super::{DeviceKeys, GovernedWorkspace, Workspaces};
+use super::{DeviceKeys, Workspaces};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_documents::DocumentRead;
 
@@ -41,7 +41,6 @@ impl Workspaces {
     ) -> Result<DocumentRead, String> {
         let (peer, device) = self
             .replica(workspace)
-            .await
             .ok_or("this service does not hold the workspace")?;
         if !peer.holds_document(app, resource) {
             return Ok(DocumentRead::Absent);
@@ -51,7 +50,6 @@ impl Workspaces {
         }
         let reader = self
             .own_reader(workspace)
-            .await
             .ok_or("this service acts as no device here")?;
         let keys = match content_keys(&peer, device.as_ref(), workspace, (app, resource))
             .await
@@ -123,13 +121,13 @@ impl Workspaces {
         workspace: &str,
         (app, resource): (&str, &str),
     ) -> bool {
-        let Some((peer, device)) = self.replica(workspace).await else {
+        let Some((peer, device)) = self.replica(workspace) else {
             return false;
         };
         if !peer.holds_document(app, resource) || peer.checkpoint_pending(app, resource) {
             return false;
         }
-        let Some(reader) = self.own_reader(workspace).await else {
+        let Some(reader) = self.own_reader(workspace) else {
             return true;
         };
         let sealed = match content_keys(&peer, device.as_ref(), workspace, (app, resource)).await {
@@ -149,52 +147,41 @@ impl Workspaces {
     /// # Errors
     ///
     /// This service holds no such workspace.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the governor's guard lives only while its routes are copied out"
-    )]
-    pub(crate) async fn own_listing(
-        &self,
-        workspace: &str,
-    ) -> Result<Vec<(String, String)>, String> {
+    pub(crate) fn own_listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let held = self
-            .held_workspace(workspace)
-            .await
+            .inner
+            .readings
+            .held(workspace)
             .ok_or("this service does not hold the workspace")?;
-        let listing = {
-            let held = held.lock().await;
-            let peer = held.peer();
+        Ok(held.replica.read(|peer| {
             peer.plaintext_routes()
                 .into_iter()
                 .chain(peer.sealed_routes())
                 .collect()
-        };
-        Ok(listing)
+        }))
     }
 
     /// The members' own records `workspace`'s copy here knows, by app and route, each with whose
     /// it is: none for a workspace this service does not hold.
-    pub(crate) async fn own_records(
+    pub(crate) fn own_records(
         &self,
         workspace: &str,
     ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-        let Some(held) = self.held_workspace(workspace).await else {
+        let Some(held) = self.inner.readings.held(workspace) else {
             return std::collections::BTreeMap::new();
         };
-        held.lock().await.peer().own_resources()
+        held.replica.read(StatePeer::own_resources)
     }
 
     /// The workspaces this service holds, by their ids.
-    pub(crate) async fn held_workspaces(&self) -> Vec<String> {
-        self.inner.workspaces.lock().await.keys().cloned().collect()
+    pub(crate) fn held_workspaces(&self) -> Vec<String> {
+        self.inner.readings.workspaces()
     }
 
     /// The device this service reads `workspace` as: its own where it governs the workspace, the
     /// device its member copy acts as where it joins one.
-    async fn own_reader(&self, workspace: &str) -> Option<[u8; 32]> {
-        let held = self.held_workspace(workspace).await?;
-        let member = held.lock().await.member.is_some();
-        if member {
+    fn own_reader(&self, workspace: &str) -> Option<[u8; 32]> {
+        if self.inner.readings.held(workspace)?.member {
             return self.member_identity().ok().map(|device| device.device());
         }
         Some(self.governor().device_public_key)
@@ -203,33 +190,32 @@ impl Workspaces {
     /// Whether `workspace` seals every write of its resources: its device takes part in the
     /// workspace's key group and holds its keys.
     #[cfg(feature = "apps")]
-    pub(crate) async fn seals_resources(&self, workspace: &str) -> bool {
-        match self.held_workspace(workspace).await {
-            Some(held) => held.lock().await.seals(),
-            None => false,
-        }
+    pub(crate) fn seals_resources(&self, workspace: &str) -> bool {
+        self.inner
+            .readings
+            .held(workspace)
+            .is_some_and(|held| held.device.is_some())
     }
 
     /// The member's own resource `app`'s `resource` in `workspace` is, when it is one.
     #[cfg(feature = "apps")]
-    pub(crate) async fn own_resource(
+    pub(crate) fn own_resource(
         &self,
         workspace: &str,
         app: &str,
         resource: &str,
     ) -> Option<OwnResource> {
-        let held = self.held_workspace(workspace).await?;
-        let held = held.lock().await;
-        held.peer().own_resource(app, resource)
+        let held = self.inner.readings.held(workspace)?;
+        held.replica.read(|peer| peer.own_resource(app, resource))
     }
 
     /// Whether this service holds anything of `app`'s `resource` in `workspace`, committed or
     /// sealed alike.
-    pub(crate) async fn holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
-        match self.held_workspace(workspace).await {
-            Some(held) => held.lock().await.peer().holds_document(app, resource),
-            None => false,
-        }
+    pub(crate) fn holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        self.inner
+            .readings
+            .held(workspace)
+            .is_some_and(|held| held.replica.read(|peer| peer.holds_document(app, resource)))
     }
 
     /// The revision `app`'s `resource` of `workspace` stands at for the device `reader`: decided
@@ -249,7 +235,6 @@ impl Workspaces {
     ) -> Result<Option<[u8; 32]>, String> {
         let (peer, device) = self
             .replica(workspace)
-            .await
             .ok_or("this service does not hold the workspace")?;
         resource_revision(
             &peer,
@@ -265,23 +250,18 @@ impl Workspaces {
     /// Whether `app`'s `resource` of `workspace` is still arriving: its governed checkpoint is
     /// cut in flight, so it reads once that body is admitted.
     #[cfg(feature = "apps")]
-    pub(crate) async fn resource_arriving(
-        &self,
-        workspace: &str,
-        app: &str,
-        resource: &str,
-    ) -> bool {
-        match self.held_workspace(workspace).await {
-            Some(held) => held.lock().await.peer().checkpoint_pending(app, resource),
-            None => false,
-        }
+    pub(crate) fn resource_arriving(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        self.inner.readings.held(workspace).is_some_and(|held| {
+            held.replica
+                .read(|peer| peer.checkpoint_pending(app, resource))
+        })
     }
 
     /// Whether `certificate`'s device may read `app`'s `resource` of `workspace` now: a device the
     /// workspace certifies, a current member, and the resource's Read permission as its governance
     /// grants it.
     #[cfg(feature = "apps")]
-    pub(crate) async fn authorizes_resource_read(
+    pub(crate) fn authorizes_resource_read(
         &self,
         workspace: &str,
         certificate: &DeviceCert,
@@ -289,11 +269,11 @@ impl Workspaces {
         resource: &str,
     ) -> Result<(), String> {
         let held = self
-            .held_workspace(workspace)
-            .await
+            .inner
+            .readings
+            .held(workspace)
             .ok_or("this service does not hold the workspace")?;
-        let guard = held.lock().await;
-        let peer = guard.peer();
+        let peer = held.replica.lock();
         let certified = peer.certificates().iter().any(|known| {
             known.device_public_key == certificate.device_public_key
                 && known.user_public_key == certificate.user_public_key
@@ -308,7 +288,6 @@ impl Workspaces {
             tilo_clock::wall(),
         );
         drop(peer);
-        drop(guard);
         checked
     }
 
@@ -331,7 +310,6 @@ impl Workspaces {
     ) -> Result<Option<PeerDocumentCapture>, PeerDocumentReadError> {
         let (peer, device) = self
             .replica(workspace)
-            .await
             .ok_or(PeerDocumentReadError::Missing)?;
         capture_resource(
             &peer,
@@ -347,27 +325,10 @@ impl Workspaces {
 
     /// Whether a part of the chain `app`'s `resource` names is held here: the answer an Open of a
     /// chain's head is decided by.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the replica's guard is held only while its routes are copied out"
-    )]
     #[cfg(feature = "apps")]
-    pub(crate) async fn chain_head_has_part(
-        &self,
-        workspace: &str,
-        app: &str,
-        resource: &str,
-    ) -> bool {
-        let Some(held) = self.held_workspace(workspace).await else {
+    pub(crate) fn chain_head_has_part(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        let Ok(routes) = self.own_listing(workspace) else {
             return false;
-        };
-        let routes: Vec<_> = {
-            let held = held.lock().await;
-            let peer = held.peer();
-            peer.plaintext_routes()
-                .into_iter()
-                .chain(peer.sealed_routes())
-                .collect()
         };
         routes.into_iter().any(|(other_app, other)| {
             other_app == app
@@ -381,19 +342,9 @@ impl Workspaces {
 
     /// The replica of `workspace` and the content keys its device holds, taken in a moment: the
     /// governor stays free while a read opens a sealed history.
-    async fn replica(&self, workspace: &str) -> Option<(StatePeer, Option<DeviceKeys>)> {
-        let held = self.held_workspace(workspace).await?;
-        let held = held.lock().await;
-        Some((held.peer().clone(), held.device.clone()))
-    }
-
-    /// The bit of `workspace`'s governor the reads above ask: its replica, or `None` for a
-    /// workspace not governed here.
-    async fn held_workspace(
-        &self,
-        workspace: &str,
-    ) -> Option<std::sync::Arc<tokio::sync::Mutex<GovernedWorkspace>>> {
-        self.workspace(workspace).await.ok()
+    fn replica(&self, workspace: &str) -> Option<(StatePeer, Option<DeviceKeys>)> {
+        let held = self.inner.readings.held(workspace)?;
+        Some((held.replica.read(StatePeer::clone), held.device))
     }
 }
 

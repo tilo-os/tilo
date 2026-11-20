@@ -1429,6 +1429,7 @@ impl Workspaces {
         let marker = governed.path.with_extension(RELEASED);
         tilo_files::native::atomic::write(&marker, b"").map_err(|error| error.to_string())?;
         self.inner.workspaces.lock().await.remove(workspace);
+        self.inner.readings.forget(workspace);
         self.inner.direct.release(governed.workspace_id());
         // Its sessions to the other holders end with it, and what it was
         // publishing lands before what this host served of it goes.

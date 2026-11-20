@@ -15,6 +15,7 @@ use super::*;
 use crate::apps::route::CrdtRoute;
 use crate::workspace_documents::DocumentRead;
 use crate::workspaces::fixtures::{TestHost, device_cert, governor, test_host_taking_part};
+use std::sync::Arc;
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
 const APP: &str = "so.tilo.notes";
@@ -339,10 +340,10 @@ async fn a_device_reads_what_changed_since_its_heads() {
     ));
     let workspaces = server.workspaces();
     assert_eq!(
-        workspaces.own_listing(&workspace).await.unwrap(),
+        workspaces.own_listing(&workspace).unwrap(),
         vec![(APP.to_owned(), RESOURCE.to_owned())]
     );
-    assert!(workspaces.held_workspaces().await.contains(&workspace));
+    assert!(workspaces.held_workspaces().contains(&workspace));
     assert_eq!(
         workspaces
             .own_read(&workspace, (APP, "nothing-here"), &[], MAXIMUM)

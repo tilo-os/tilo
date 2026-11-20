@@ -90,6 +90,7 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())??;
         self.inner.workspaces.lock().await.remove(workspace);
+        self.inner.readings.forget(workspace);
         // A workspace gone from here admits nobody at the handshake either.
         self.inner.host.access.forget_workspace(workspace_id);
         self.inner.direct.delete(workspace_id);
@@ -354,6 +355,7 @@ impl Workspaces {
         if let Some(governed) = governed {
             let governed = governed.lock().await;
             self.inner.workspaces.lock().await.remove(branch);
+            self.inner.readings.forget(branch);
             self.inner.host.access.forget_workspace(workspace_id);
             // Served no more, and not refused as deleted: it can come again.
             self.inner.direct.release(workspace_id);

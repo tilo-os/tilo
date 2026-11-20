@@ -158,7 +158,11 @@ impl super::Workspaces {
         };
         self.bind(&workspace).await?;
         let summary = self.people(&workspace);
+        let reading = workspace.reading();
         let workspace = Arc::new(AsyncMutex::new(workspace));
+        self.inner
+            .readings
+            .hold(&summary.workspace, &workspace, reading);
         self.inner
             .workspaces
             .lock()

@@ -540,6 +540,7 @@ impl Workspaces {
                 governed.persist()?;
                 self.bind_member(&governed).await?;
                 self.inner.direct.release(workspace);
+                self.inner.readings.hold(&name, &held, governed.reading());
             }
             if let Err(error) = keep_member(&governed.path, hint) {
                 tracing::warn!(%name, %error, "a member copy's device address was not kept");
@@ -583,7 +584,9 @@ impl Workspaces {
                 tracing::warn!(%name, %error, "a member copy's device address was not kept");
             }
             self.bind_member(&governed).await?;
+            let reading = governed.reading();
             let state = Arc::new(tokio::sync::Mutex::new(governed));
+            self.inner.readings.hold(&name, &state, reading);
             self.inner
                 .workspaces
                 .lock()
@@ -1195,6 +1198,7 @@ impl Workspaces {
         let mut workspaces = std::collections::BTreeMap::new();
         for workspace in opened {
             let name = workspace.workspace().to_owned();
+            let reading = workspace.reading();
             let state = if let Some(member) = workspace.member.clone() {
                 if let Ok(mut materials) = self.inner.member.materials.lock() {
                     materials.insert(workspace.workspace_id(), (member.hint, member.continuity));
@@ -1204,6 +1208,7 @@ impl Workspaces {
                 self.serve_direct(&workspace)?;
                 Arc::new(tokio::sync::Mutex::new(workspace))
             };
+            self.inner.readings.hold(&name, &state, reading);
             workspaces.insert(name, state);
         }
         Ok(workspaces)
