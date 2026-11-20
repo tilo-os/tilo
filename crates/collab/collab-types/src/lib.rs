@@ -74,6 +74,7 @@ pub mod redaction;
 pub mod role;
 pub mod scope;
 pub mod signer;
+pub mod stamp;
 pub mod surface;
 pub mod units;
 pub mod validator;
@@ -155,6 +156,7 @@ pub use redaction::{
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
 pub use role::{ArtifactKind, OpKind, Role};
+pub use stamp::Stamp;
 pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,

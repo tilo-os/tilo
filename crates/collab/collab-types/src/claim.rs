@@ -280,9 +280,16 @@ impl ChangeClaim {
             None if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) => {
                 ClaimedAction::of_continuation(message).ok_or(ClaimError::Unnamed)?
             }
-            None => ClaimedAction::of(
-                &ActionContext::from_change_message(message).ok_or(ClaimError::Unnamed)?,
-            )?,
+            None => match ActionContext::from_change_message(message) {
+                Some(context) => ClaimedAction::of(&context)?,
+                // A resource store's change names its verb in its stamp, and the store that
+                // takes it judges that verb's write-set against it: the claim is an edit of the
+                // resource, as a native write's is.
+                None if crate::Stamp::of_message(message).is_some() => {
+                    ClaimedAction::whole_resource_edit(String::new())
+                }
+                None => return Err(ClaimError::Unnamed),
+            },
         };
         Ok(Self {
             change: hash,
@@ -488,6 +495,29 @@ pub fn check_claimed(op: &crate::op::SignedOp) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resource_store_change_is_claimed_by_its_stamp_and_an_unnamed_one_is_not() {
+        let stamp = crate::Stamp {
+            verb: "$origin".into(),
+            invocation: "i1".into(),
+            ..crate::Stamp::default()
+        };
+        let claim = ChangeClaim::of_change([7; 32], Some(&stamp.message()), Vec::new()).unwrap();
+        assert_eq!(
+            claim.action,
+            ClaimedAction::whole_resource_edit(String::new())
+        );
+        assert_eq!(
+            claim.invoker, None,
+            "decided as the person whose device signed it"
+        );
+        assert_eq!(
+            ChangeClaim::of_change([7; 32], Some(r#"{"verb":"add"}"#), Vec::new()),
+            Err(ClaimError::Unnamed),
+            "a message that names a verb and nothing else is no stamp"
+        );
+    }
     use tilo_actions::{EditOp, FieldEdit, GroupOf, HistoryStep, VerbCall};
 
     fn edit(field: &str) -> Did {
