@@ -1,0 +1,27 @@
+From: Tilo <noreply@tilo.so>
+Subject: [PATCH] composefs: export the booted image with uncompressed layers
+
+`bootc image copy-to-storage` writes the booted image as an OCI layout in
+/var/tmp and has skopeo copy it into containers-storage, which keeps layers
+uncompressed. The layout was gzipped on one thread only for skopeo to
+decompress it again, which made copying a multi-gigabyte image take minutes.
+Write its layers uncompressed: the tar streams, their diff ids and so the
+image's config and ID stay as they were.
+---
+diff --git a/crates/lib/src/bootc_composefs/export.rs b/crates/lib/src/bootc_composefs/export.rs
+index 745519a..2e14abc 100644
+--- a/crates/lib/src/bootc_composefs/export.rs
++++ b/crates/lib/src/bootc_composefs/export.rs
+@@ -79,7 +79,11 @@ pub async fn export_repo_to_image(
+ 
+         let mut layer_stream = booted_cfs.repo.open_stream("", Some(layer_verity), None)?;
+ 
+-        let mut layer_writer = oci_dir.create_layer(None)?;
++        // Uncompressed: this layout is only scratch on its way into
++        // containers-storage, which stores layers uncompressed. Compressing
++        // the whole image with single-threaded gzip only for skopeo to
++        // decompress it again cost the self-install minutes.
++        let mut layer_writer = tar::Builder::new(oci_dir.create_uncompressed_layer()?);
+         layer_writer.follow_symlinks(false);
+ 
+         let mut got_zero_block = false;

@@ -7,6 +7,8 @@
 # And an upgrade needs room only for the layers it does not have yet (0003):
 # upstream's composefs space check counted the whole image, so a laptop with
 # most of the new image's layers already stored refused to upgrade.
+# And the installer's copy of the booted image writes its layers uncompressed
+# (0005): they were gzipped on one thread only to be unpacked again.
 # It builds in the OS builder (the base's own libraries, Fedora's Rust), with
 # the ostree, zstd and OpenSSL headers it links against from the frozen RPM snapshot: the CI
 # builder image is an older Fedora, whose installed libraries the snapshot's
@@ -29,7 +31,8 @@ ARG RPMS_REF
 COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch \
     os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch \
-    os/external-assets/bootc-runtime/0004-composefs-rs-from-its-source-archive.patch /patches/
+    os/external-assets/bootc-runtime/0004-composefs-rs-from-its-source-archive.patch \
+    os/external-assets/bootc-runtime/0005-export-uncompressed-layers.patch /patches/
 # zlink-macros with its generated enum variants in a fixed order (0002 patches
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
