@@ -127,12 +127,17 @@ impl Deferred {
     /// this copy, once something reads the document ([`Self::settled`]). Anything else is
     /// admitted as [`Self::admit`] admits it.
     ///
+    /// Whether the writer's changes are taken depends on them alone: another writer's change
+    /// waiting here for what it builds on (it arrived first) is no reason to refuse them. They
+    /// are [`Applied::MissingDependencies`] only when one of them builds on what the document
+    /// lacks, and the document is then as it was.
+    ///
     /// # Errors
     ///
     /// A [`Rejected`] reason; the document is then unchanged.
     pub fn admit_unapplied(&mut self, incoming: &[u8]) -> Result<Applied, Rejected> {
         let Some((after, carried)) = self.heads_after(incoming) else {
-            return self.admit(incoming, Dependencies::RequireComplete);
+            return self.admit_own(incoming);
         };
         crate::precheck::check(incoming, Isolate::shared().limits())?;
         self.pending.extend_from_slice(incoming);
@@ -140,6 +145,26 @@ impl Deferred {
         self.heads = after;
         self.unchecked = true;
         Ok(Applied::Changed(true))
+    }
+
+    /// [`Self::admit_unapplied`] of what cannot wait unapplied: applied at once, keeping any
+    /// other writer's change that waits for its base, and taken when every change of `incoming`
+    /// is in the document after it. Changes that do not name themselves (a whole document) are
+    /// admitted complete or not at all.
+    fn admit_own(&mut self, incoming: &[u8]) -> Result<Applied, Rejected> {
+        let Some(own) = engine::change_hashes(incoming) else {
+            return self.admit(incoming, Dependencies::RequireComplete);
+        };
+        // Tried on a copy: a change of the writer's that builds on what is not here must not
+        // wait in the document, which would then hold what its writer was refused.
+        let mut candidate = self.clone();
+        match candidate.admit(incoming, Dependencies::RetainOrphans)? {
+            Applied::Changed(changed) if own.iter().all(|hash| candidate.holds(hash)) => {
+                *self = candidate;
+                Ok(Applied::Changed(changed))
+            }
+            _ => Ok(Applied::MissingDependencies),
+        }
     }
 
     /// The heads after `incoming` and the hash of each change it carries, when it is a sequence of new changes that build

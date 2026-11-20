@@ -176,3 +176,54 @@ fn a_change_after_unapplied_ones_never_waits_for_the_pool_it_holds() {
     );
     assert_eq!(*read, Some(true), "the copy reads as the writer's document");
 }
+
+/// Another writer's change that arrived before what it builds on waits in the copy, and is no
+/// reason to refuse a writer's own change made on what the copy holds: the own change is taken,
+/// and the other one is applied once what it waits for comes. A change that itself builds on
+/// what the copy lacks is still refused, and leaves the copy as it was.
+#[test]
+fn a_writers_own_change_is_taken_beside_another_waiting_for_its_base() {
+    let mut writer = AutoCommit::new().with_actor(ActorId::from(vec![0x59; 16]));
+    writer.put(ROOT, "seed", "resident").unwrap();
+    writer.commit();
+    let mut copy = Deferred::from(writer.clone());
+
+    // Another member writes twice; only their second change has reached the copy.
+    let mut other = writer.fork().with_actor(ActorId::from(vec![0x60; 16]));
+    let first = written(&mut other, "other first");
+    let second = written(&mut other, "other second");
+    assert_eq!(
+        copy.admit(&second, Dependencies::RetainOrphans),
+        Ok(Applied::Changed(false))
+    );
+
+    // The writer's own change, made on what the copy holds, is taken.
+    let own = written(&mut writer, "own");
+    assert_eq!(copy.admit_unapplied(&own), Ok(Applied::Changed(true)));
+
+    // One that builds on a change the copy never got is refused, and the copy keeps what it had.
+    let mut ahead = writer.fork().with_actor(ActorId::from(vec![0x61; 16]));
+    let _never_sent = written(&mut ahead, "never sent");
+    let after = written(&mut ahead, "after it");
+    let before = copy.settled().unwrap().save();
+    assert_eq!(
+        copy.admit_unapplied(&after),
+        Ok(Applied::MissingDependencies)
+    );
+    assert_eq!(copy.settled().unwrap().save(), before);
+
+    // The other member's first change arrives: both of theirs are in, beside the writer's own.
+    assert_eq!(
+        copy.admit(&first, Dependencies::RetainOrphans),
+        Ok(Applied::Changed(true))
+    );
+    for change in [&first, &second] {
+        Isolate::shared()
+            .apply(&mut writer, change, Dependencies::RequireComplete)
+            .unwrap();
+    }
+    let (mut want, mut have) = (writer.get_heads(), copy.heads());
+    want.sort_unstable();
+    have.sort_unstable();
+    assert_eq!(have, want);
+}
