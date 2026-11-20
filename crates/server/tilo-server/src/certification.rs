@@ -973,7 +973,9 @@ impl CertificationProtocol {
             } => {
                 let mut pending = self.lock();
                 let Some(entry) = pending.get_mut(&request_digest).filter(|entry| {
-                    !entry.decided() && entry.entry.request.user_public_key == *approver
+                    !entry.decided()
+                        && entry.entry.request.expires_at_ns > now_ns
+                        && entry.entry.request.user_public_key == *approver
                 }) else {
                     return refused("no such pending request");
                 };

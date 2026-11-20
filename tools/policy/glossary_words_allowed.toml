@@ -1807,3 +1807,21 @@ paths = ["os/containers/tilo-sh/stack.sh"]
 reason = "The mail account settings' own field names for its incoming and outgoing server, which a test of the mail session writes."
 words = ["host"]
 identifiers = ["imap_host", "smtp_host"]
+
+[[allow]]
+reason = "The Rust mpsc and Tokio oneshot constructors hand a signing peer its admission answer and signal when the peer closes."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/agent/agent-session/src/host.rs"]
+
+[[allow]]
+reason = "The existing agent supervisor traits and endpoint fields used by its two ways of joining a peer."
+words = ["host"]
+identifiers = ["AgentHostLink", "HostEndpoint", "host"]
+paths = ["crates/agent/agent-session/src/host.rs", "crates/server/tilo-server/src/agents.rs"]
+
+[[allow]]
+reason = "The existing server instance holding the trust facts and the roster field choosing which machine runs an agent."
+words = ["host"]
+identifiers = ["host", "on_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/agent_members.rs"]

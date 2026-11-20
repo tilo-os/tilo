@@ -41,7 +41,8 @@ use tilo_user_identity::DeviceCert;
 
 use crate::apps::AppCatalogue;
 use crate::control::{
-    AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, SupervisorSnapshot,
+    AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, RosterCreatedAt,
+    SupervisorSnapshot,
 };
 use crate::member::{AgentMember, MemberConfig};
 use crate::model::MakeTurns;
@@ -77,7 +78,17 @@ impl HostEndpoint {
             server_cert,
         }
     }
+
+    fn member_config(self, workspace: String) -> MemberConfig {
+        MemberConfig {
+            host: self.host,
+            server_cert: self.server_cert,
+            workspace,
+        }
+    }
 }
+
+type MemberThread = (JoinHandle<()>, Arc<dyn Fn() + Send + Sync>);
 
 struct Shared {
     state_dir: PathBuf,
@@ -90,7 +101,7 @@ struct Shared {
     runtime: OnceLock<tokio::runtime::Handle>,
     stopping: AtomicBool,
     /// Each agent's thread, with its control to wake it for shutdown.
-    threads: Mutex<Vec<(JoinHandle<()>, Arc<AgentControl>)>>,
+    threads: Mutex<Vec<MemberThread>>,
     /// Each workspace's content store: the host's one store, which its
     /// workspace actions use too.
     content: Arc<WorkspaceStores>,
@@ -170,6 +181,11 @@ impl AgentHost {
             user_public_key,
             Arc::new(move |identity, control| spawn_agent(&spawning, identity, control)),
         );
+        let joining = Arc::clone(&shared);
+        let supervised = Arc::downgrade(&supervisor);
+        supervisor.set_roster_spawner(Arc::new(move |identity, created_at| {
+            spawn_roster_session(&joining, identity, created_at, supervised.clone())
+        }));
         Self {
             supervisor,
             shared,
@@ -328,8 +344,8 @@ impl AgentHost {
             let _ = ticker.join();
         }
         let threads = std::mem::take(&mut *self.shared.threads.lock_recover());
-        for (_, control) in &threads {
-            control.wake();
+        for (_, wake) in &threads {
+            wake();
         }
         for (thread, _) in threads {
             let _ = thread.join();
@@ -350,7 +366,7 @@ fn spawn_agent(
         .endpoint
         .get()
         .cloned()
-        .ok_or("the agent host has not started")?;
+        .ok_or("the agent supervisor has not started")?;
     let workspace = control
         .workspace()
         .or_else(|| {
@@ -377,11 +393,123 @@ fn spawn_agent(
             );
         })
         .map_err(|error| error.to_string())?;
+    keep_thread(shared, handle, Arc::new(move || control.wake()));
+    Ok(())
+}
+
+fn keep_thread(shared: &Shared, handle: JoinHandle<()>, wake: Arc<dyn Fn() + Send + Sync>) {
     let mut threads = shared.threads.lock_recover();
     threads.retain(|(thread, _)| !thread.is_finished());
-    threads.push((handle, control));
+    threads.push((handle, wake));
+}
+
+fn spawn_roster_session(
+    shared: &Arc<Shared>,
+    identity: AgentIdentity,
+    created_at: RosterCreatedAt,
+    supervisor: std::sync::Weak<AgentSupervisor>,
+) -> Result<(), String> {
+    let endpoint = shared
+        .endpoint
+        .get()
+        .cloned()
+        .ok_or("the agent supervisor has not started")?;
+    let runtime = shared
+        .runtime
+        .get()
+        .cloned()
+        .ok_or("the agent supervisor has not started")?;
+    let joining = Arc::clone(shared);
+    let mut threads = shared.threads.lock_recover();
+    if shared.stopping.load(Ordering::Acquire) {
+        return Err("the agent supervisor is stopping".into());
+    }
+    let thread = std::thread::Builder::new()
+        .name(format!(
+            "roster-{}",
+            crate::control::agent_id(&identity.delegation)
+        ))
+        .spawn(move || {
+            let _runtime = runtime.enter();
+            if let Err(error) = join_roster_session(&joining, endpoint, &identity, created_at) {
+                tracing::warn!(agent = %crate::control::agent_id(&identity.delegation), %error,
+                    "the roster agent's signing session ended");
+                if !joining.stopping.load(Ordering::Acquire)
+                    && let Some(supervisor) = supervisor.upgrade()
+                {
+                    supervisor.roster_session_failed(identity.cert.device_public_key, &error);
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    let unpark = thread.thread().clone();
+    threads.retain(|(thread, _)| !thread.is_finished());
+    threads.push((thread, Arc::new(move || unpark.unpark())));
     drop(threads);
     Ok(())
+}
+
+fn join_roster_session(
+    shared: &Shared,
+    endpoint: HostEndpoint,
+    identity: &AgentIdentity,
+    created_at: RosterCreatedAt,
+) -> Result<(), String> {
+    let link = shared
+        .link
+        .get()
+        .ok_or("the agent supervisor has not started")?;
+    let [workspace] = identity.delegation.scope.workspaces.as_slice() else {
+        return Err("a roster signing session joins exactly one workspace".into());
+    };
+    let (admitted, reply) = std::sync::mpsc::channel();
+    let (_open, lifetime) = tokio::sync::oneshot::channel();
+    link.admit_roster_session(
+        identity,
+        created_at,
+        lifetime,
+        Box::new(move |result| {
+            let _ = admitted.send(result);
+        }),
+    );
+    reply
+        .recv_timeout(ADMISSION_WAIT)
+        .map_err(|error| error.to_string())??;
+    if shared.stopping.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let config = endpoint.member_config(workspace.to_string());
+    let thread = std::thread::current();
+    let (peer, events) = crate::member::join(
+        &config,
+        identity,
+        *workspace,
+        Arc::new(tilo_session_client::MemoryPeerStore::default()),
+        Arc::new(move || thread.unpark()),
+    )?;
+    drop(events);
+    let device = identity.cert.device_public_key;
+    shared.agent_sessions.joined(
+        device,
+        peer.clone(),
+        Some((created_at, identity.delegation.clone())),
+    );
+    let result = loop {
+        if shared.stopping.load(Ordering::Acquire) {
+            break Ok(());
+        }
+        if matches!(
+            peer.status().phase,
+            tilo_session_client::TransportPhase::Failed
+                | tilo_session_client::TransportPhase::Closed
+        ) {
+            break Err("the roster agent's signing session closed".into());
+        }
+        std::thread::park();
+    };
+    peer.close();
+    shared.agent_sessions.left(&device);
+    result
 }
 
 fn run_agent(
@@ -393,7 +521,7 @@ fn run_agent(
 ) {
     let agent_id = crate::control::agent_id(&identity.delegation).to_owned();
     let Some(runtime) = shared.runtime.get() else {
-        control.fail("the agent host has not started");
+        control.fail("the agent supervisor has not started");
         return;
     };
     let _runtime = runtime.enter();
@@ -413,11 +541,7 @@ fn run_agent(
     );
     let device = identity.cert.device_public_key;
     let mut member = match AgentMember::start_with_store(
-        MemberConfig {
-            host: endpoint.host,
-            server_cert: endpoint.server_cert,
-            workspace,
-        },
+        endpoint.member_config(workspace),
         identity,
         control.clone(),
         Arc::clone(&shared.model),
@@ -430,7 +554,9 @@ fn run_agent(
             return;
         }
     };
-    shared.agent_sessions.joined(device, member.peer().clone());
+    shared
+        .agent_sessions
+        .joined(device, member.peer().clone(), None);
     tracing::info!(agent = %agent_id, "agent joined its workspace");
     member.run_until(None, |_| {
         shared.stopping.load(Ordering::Acquire) || control.status() == AgentStatus::Stopped
@@ -483,10 +609,10 @@ fn read_state(file: &Path) -> Result<SupervisorSnapshot, String> {
 /// Write the snapshot if it changed since the last write: a private file
 /// replaced whole, so a reader never sees half of it.
 fn persist(supervisor: &AgentSupervisor, file: &Path, written: &Mutex<String>) {
+    let mut last = written.lock_recover();
     let Ok(text) = serde_json::to_string_pretty(&supervisor.snapshot()) else {
         return;
     };
-    let mut last = written.lock_recover();
     if *last == text {
         return;
     }

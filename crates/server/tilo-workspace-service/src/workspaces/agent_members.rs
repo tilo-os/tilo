@@ -41,9 +41,7 @@ impl Workspaces {
             policy: &host.trust_policy,
             own_user: &host.cert.user_public_key,
             agents: &host.agents,
-            // No action service here asks about a browser environment's device: one
-            // asks to join as a delegated agent, which an environment is not.
-            environments: crate::environment::none(),
+            environments: &host.environments,
         }
     }
 
@@ -74,6 +72,112 @@ impl Workspaces {
                 reason = reason.reason(), "an agent is not admitted to the workspace");
         }
         decision == Decision::Admit
+    }
+
+    /// Read the current hosted agent entry for the server's own keeper.
+    /// Where a requester is supplied, that exact certified person device must
+    /// still be admitted to the workspace.
+    pub async fn hosted_roster_agent(
+        &self,
+        workspace: WorkspaceId,
+        agent: &str,
+        keeper: &[u8; 32],
+        requester: Option<&DeviceCert>,
+    ) -> Option<tilo_workspace_agent::Agent> {
+        if keeper != &self.governor().user_public_key {
+            return None;
+        }
+        let id = workspace.to_string();
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let agents = self
+            .read_resource::<tilo_workspace_agent::WorkspaceAgents>(
+                &id,
+                (tilo_workspace_agent::OWNER, &list),
+            )
+            .await
+            .ok()??;
+        let entry = agents.get(&tilo_resource::Id::from_raw(agent.to_owned()))?;
+        if !entry.is_active()
+            || !entry.on_host
+            || tilo_action_policy::PersonId::parse(&entry.keeper)
+                .ok()?
+                .root()
+                .as_ref()
+                != Some(keeper)
+        {
+            return None;
+        }
+        if let Some(cert) = requester {
+            if !self.roster_keeper_device(workspace, keeper, cert).await {
+                return None;
+            }
+        } else {
+            self.person_device(workspace, *keeper).await?;
+        }
+        Some(entry.clone())
+    }
+
+    /// Check the requesting keeper's certificate against current governance.
+    pub async fn roster_keeper_device(
+        &self,
+        workspace: WorkspaceId,
+        keeper: &[u8; 32],
+        cert: &DeviceCert,
+    ) -> bool {
+        if keeper != &self.governor().user_public_key || &cert.user_public_key != keeper {
+            return false;
+        }
+        let Ok(governed) = self.workspace(&workspace.to_string()).await else {
+            return false;
+        };
+        let governed = governed.lock().await;
+        let now = tilo_clock::unix_now_ns();
+        let peer = AuthenticatedPeer {
+            user_public_key: cert.user_public_key,
+            device_public_key: cert.device_public_key,
+            cert: cert.clone(),
+        };
+        let trust = self.trust();
+        workspace_access::person_device(cert)
+            && !trust.is_agent(&cert.device_public_key)
+            && trust
+                .environments
+                .of(&cert.device_public_key, now)
+                .is_none()
+            && trust.cert(&peer, now).is_ok()
+            && governed
+                .peer()
+                .permissions(cert.device_public_key, system_time(now))
+                .is_ok()
+    }
+
+    /// Admit this signing device to its one workspace, refusing a different
+    /// certified device that still holds the same roster assignment.
+    pub async fn admit_roster_agent(
+        &self,
+        workspace: WorkspaceId,
+        agent: &str,
+        cert: &DeviceCert,
+    ) -> Result<(), String> {
+        let governed = self
+            .workspace(&workspace.to_string())
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = governed.lock().await;
+        let device = cert.device_public_key;
+        if governed
+            .peer()
+            .governance()
+            .governed_agents(tilo_clock::wall())?
+            .iter()
+            .any(|entry| {
+                entry.acting && entry.agent_id == agent && entry.device_public_key != device
+            })
+        {
+            return Err("another device already holds this roster assignment".into());
+        }
+        self.reconcile_agent_in(&mut governed, device, Some(cert))
+            .await
     }
 
     /// The certified device of an exact, currently approved agent on this workspace's

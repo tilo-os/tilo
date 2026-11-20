@@ -688,19 +688,65 @@ fn push_bounded<T>(list: &mut Vec<T>, item: T, max: usize) {
 /// with its own key.
 #[derive(Clone, Default)]
 pub struct AgentSessions {
-    links: Arc<Mutex<BTreeMap<[u8; 32], tilo_session_client::Link>>>,
+    links: Arc<Mutex<BTreeMap<[u8; 32], AgentSession>>>,
+}
+
+struct AgentSession {
+    link: tilo_session_client::Link,
+    roster: Option<(RosterCreatedAt, Delegation)>,
 }
 
 impl AgentSessions {
     /// The session of agent `device`, while it is open here.
     #[must_use]
     pub fn link(&self, device: &[u8; 32]) -> Option<tilo_session_client::Link> {
-        self.links.lock_recover().get(device).cloned()
+        self.links
+            .lock_recover()
+            .get(device)
+            .map(|session| session.link.clone())
+    }
+
+    /// Whether this peer was opened solely to sign for a hosted roster entry.
+    #[must_use]
+    pub fn is_roster_signer(&self, device: &[u8; 32]) -> bool {
+        self.links
+            .lock_recover()
+            .get(device)
+            .is_some_and(|session| session.roster.is_some())
+    }
+
+    /// Whether this signing peer was opened for the exact roster assignment.
+    #[must_use]
+    pub fn matches_roster(
+        &self,
+        device: &[u8; 32],
+        workspace: WorkspaceId,
+        agent: &str,
+        keeper: &[u8; 32],
+        created_at: RosterCreatedAt,
+    ) -> bool {
+        self.links
+            .lock_recover()
+            .get(device)
+            .and_then(|session| session.roster.as_ref())
+            .is_some_and(|(created, delegation)| {
+                *created == created_at
+                    && delegation.scope.workspaces.as_slice() == [workspace]
+                    && delegation.delegate.agent_id() == Some(agent)
+                    && &delegation.user_public_key == keeper
+            })
     }
 
     /// `link` now serves agent `device`'s changes.
-    pub(crate) fn joined(&self, device: [u8; 32], link: tilo_session_client::Link) {
-        self.links.lock_recover().insert(device, link);
+    pub(crate) fn joined(
+        &self,
+        device: [u8; 32],
+        link: tilo_session_client::Link,
+        roster: Option<(RosterCreatedAt, Delegation)>,
+    ) {
+        self.links
+            .lock_recover()
+            .insert(device, AgentSession { link, roster });
     }
 
     /// Agent `device`'s session ended.
@@ -713,6 +759,13 @@ impl AgentSessions {
 /// on its own thread in a host, on the test's thread in a test.
 pub type Spawner =
     Arc<dyn Fn(AgentIdentity, Arc<AgentControl>) -> Result<(), String> + Send + Sync>;
+
+/// The incarnation of an existing hosted roster entry. The signed proposal supplies
+/// its id, keeper and single workspace.
+pub type RosterCreatedAt = i64;
+
+pub(crate) type RosterSpawner =
+    Arc<dyn Fn(AgentIdentity, RosterCreatedAt) -> Result<(), String> + Send + Sync>;
 
 /// What a host gives its supervisor: the approver for new grants, and the
 /// server's register of agent devices.
@@ -727,6 +780,33 @@ pub trait AgentHostLink: Send + Sync {
         proposal: &DelegateProposal,
         done: ApprovalDone,
     ) -> Result<String, String>;
+
+    /// Request the same approval for an existing hosted roster entry.
+    fn request_roster_approval(
+        &self,
+        key: &SigningKey,
+        proposal: &DelegateProposal,
+        created_at: RosterCreatedAt,
+        requester: &DeviceCert,
+        done: ApprovalDone,
+    ) -> Result<String, String> {
+        let _ = (key, proposal, created_at, requester, done);
+        Err("this supervisor does not provision roster agents".into())
+    }
+
+    /// Recheck the roster entry before admitting its passive signing session.
+    fn admit_roster_session(
+        &self,
+        identity: &AgentIdentity,
+        created_at: RosterCreatedAt,
+        lifetime: tokio::sync::oneshot::Receiver<()>,
+        done: RosterAdmissionDone,
+    ) {
+        let _ = (identity, created_at, lifetime);
+        done(Err(
+            "this supervisor does not provision roster agents".into()
+        ));
+    }
 
     /// Admit the agent device `cert` of `delegation` to its workspaces.
     fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String>;
@@ -743,6 +823,9 @@ pub trait AgentHostLink: Send + Sync {
     fn withdraw(&self, device_public_key: [u8; 32]);
 }
 
+/// Receives the outcome of admitting a roster agent's signing session.
+pub type RosterAdmissionDone = Box<dyn FnOnce(Result<(), String>) + Send>;
+
 /// Receives the outcome of [`AgentHostLink::request_approval`].
 pub type ApprovalDone = Box<dyn FnOnce(Result<(DeviceCert, Delegation), String>) + Send>;
 
@@ -754,6 +837,7 @@ pub type AdmissionDone = Box<dyn FnOnce() + Send>;
 #[derive(Clone)]
 struct Grant {
     proposal: DelegateProposal,
+    roster_created_at: Option<RosterCreatedAt>,
     state: GrantState,
     /// The agent's key while the approver has not answered.
     key: Option<SigningKey>,
@@ -773,6 +857,7 @@ impl Grant {
                 scope: delegation.scope.clone(),
                 expires_at_ns: delegation.expires_at_ns,
             },
+            roster_created_at: None,
             state: GrantState::Approved,
             key: None,
             identity: Some(identity),
@@ -783,6 +868,10 @@ impl Grant {
 
     fn id(&self) -> &str {
         self.proposal.delegate.agent_id().unwrap_or_default()
+    }
+
+    fn is_roster_in(&self, workspace: WorkspaceId) -> bool {
+        self.roster_created_at.is_some() && self.proposal.scope.workspaces.as_slice() == [workspace]
     }
 
     /// Settle the grant: drop its key material and say why.
@@ -802,6 +891,9 @@ impl Grant {
 pub struct GrantRecord {
     /// What was asked.
     pub proposal: DelegateProposal,
+    /// Which existing roster entry this grant provisions, where it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roster_created_at: Option<RosterCreatedAt>,
     /// Where it stands.
     pub state: GrantState,
     /// The agent device's key seed (hex), while approved.
@@ -835,6 +927,7 @@ struct SupervisorState {
 pub struct AgentSupervisor {
     user_public_key: [u8; 32],
     spawner: Spawner,
+    roster_spawner: OnceLock<RosterSpawner>,
     link: Mutex<Option<Arc<dyn AgentHostLink>>>,
     state: Mutex<SupervisorState>,
     log: Mutex<InvocationLog<InvocationState>>,
@@ -849,6 +942,7 @@ impl AgentSupervisor {
         Arc::new_cyclic(|me| Self {
             user_public_key,
             spawner,
+            roster_spawner: OnceLock::new(),
             link: Mutex::new(None),
             state: Mutex::new(SupervisorState {
                 grants: Vec::new(),
@@ -894,13 +988,63 @@ impl AgentSupervisor {
         *self.link.lock_recover() = Some(link);
     }
 
+    pub(crate) fn set_roster_spawner(&self, spawner: RosterSpawner) {
+        let _ = self.roster_spawner.set(spawner);
+    }
+
+    /// Ask for the certified signing session of a verified existing roster entry.
+    pub fn invoke_roster_grant(
+        &self,
+        caller: &Caller,
+        invocation: &InvokeRequest,
+        request: &GrantRequest,
+        agent: &str,
+        created_at: RosterCreatedAt,
+        requester: &DeviceCert,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        tilo_actions::appearance::refuse_here(invocation)?;
+        if !self.authorized(caller)
+            || caller.device_public_key() != Some(&requester.device_public_key)
+        {
+            return Err(ActionCallError::UnknownAction);
+        }
+        self.invoke_once(caller, invocation, || {
+            let (id, pairing_code) = self
+                .request_grant_for(
+                    request,
+                    tilo_clock::unix_now_ns(),
+                    Some((agent, created_at, requester)),
+                )
+                .map_err(refused)?;
+            Ok(grant_output(&id, &pairing_code))
+        })
+    }
+
+    fn invoke_once(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        dispatch: impl FnOnce() -> Result<ActionOutput, ActionCallError>,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let invocation = request.invocation;
+        self.log()
+            .admit(caller, request, || {
+                let output = dispatch()?;
+                Ok(InvocationState::new(
+                    invocation,
+                    InvocationUpdate::Succeeded { invocation, output },
+                ))
+            })
+            .map(|(state, _)| state.receipt())
+    }
+
     /// Offer an approved agent identity for spawning. The host has already
     /// registered its delegation.
     pub fn add_grant(&self, identity: AgentIdentity) {
         let mut state = self.state();
-        state
-            .grants
-            .retain(|grant| grant.id() != agent_id(&identity.delegation));
+        state.grants.retain(|grant| {
+            grant.roster_created_at.is_some() || grant.id() != agent_id(&identity.delegation)
+        });
         state.grants.push(Grant::approved(identity));
         drop(state);
         self.changes.raise();
@@ -913,70 +1057,81 @@ impl AgentSupervisor {
         request: &GrantRequest,
         now_ns: u64,
     ) -> Result<(String, String), String> {
+        self.request_grant_for(request, now_ns, None)
+    }
+
+    fn request_grant_for(
+        &self,
+        request: &GrantRequest,
+        now_ns: u64,
+        roster: Option<(&str, RosterCreatedAt, &DeviceCert)>,
+    ) -> Result<(String, String), String> {
         let link = self.link().ok_or("this host cannot ask for agent grants")?;
-        let label = request.label.trim();
-        if label.is_empty() || label.len() > MAX_DELEGATE_TEXT_BYTES {
-            return Err(format!(
-                "a grant's label is 1 to {MAX_DELEGATE_TEXT_BYTES} bytes"
-            ));
-        }
-        if request.workspaces.is_empty() || request.workspaces.len() > MAX_DELEGATED_WORKSPACES {
-            return Err(format!(
-                "a grant names 1 to {MAX_DELEGATED_WORKSPACES} workspaces"
-            ));
-        }
-        if request.apps.len() > MAX_DELEGATED_APPS {
-            return Err(format!("a grant names at most {MAX_DELEGATED_APPS} apps"));
-        }
-        if !GRANT_SECS.contains(&request.expires_in_secs) {
-            return Err("a grant lasts from a minute to 30 days".into());
-        }
         let mut secret = [0_u8; 32];
         getrandom::fill(&mut secret).map_err(|error| error.to_string())?;
         let key = SigningKey::from_bytes(&secret);
         let seed = key.verifying_key().to_bytes();
-        let agent_id = grant_id(label, &seed);
-        // A grant that names no colour wears the one the agent member it is wears everywhere.
-        let color = if let Some(text) = &request.color {
-            parse_color_hex(text).ok_or("a grant's colour is #rrggbb")?
-        } else {
-            let (r, g, b) = collab_types::presence::identity_rgb(
-                collab_types::presence::PresenceHue::of_member(&collab_types::MemberId::agent(
-                    &agent_id,
-                )),
-            );
-            [r, g, b]
-        };
-        let proposal = DelegateProposal {
-            delegate: Delegate::Agent { agent_id },
-            label: label.to_owned(),
-            color,
-            scope: DelegateScope {
-                workspaces: request
-                    .workspaces
-                    .iter()
-                    .filter_map(|workspace| WorkspaceId::parse(workspace))
-                    .collect(),
-                apps: request.apps.clone(),
-            },
-            expires_at_ns: now_ns
-                .saturating_add(request.expires_in_secs.saturating_mul(1_000_000_000)),
-        };
+        let proposal = grant_proposal(request, now_ns, &seed, roster.map(|(agent, _, _)| agent))?;
         let id = proposal.delegate.agent_id().unwrap_or_default().to_owned();
+        let roster_created_at = roster.map(|(_, created_at, _)| created_at);
+        let mut state = self.state();
+        if state
+            .grants
+            .iter()
+            .any(|grant| grant.id() == id && grant.roster_created_at.is_some() != roster.is_some())
+        {
+            return Err("that agent id already belongs to another grant".into());
+        }
+        let prior = state.grants.iter().position(|grant| {
+            grant.id() == id
+                && match roster {
+                    None => grant.roster_created_at.is_none(),
+                    Some(_) => {
+                        grant.roster_created_at.is_some()
+                            && grant.proposal.scope.workspaces == proposal.scope.workspaces
+                    }
+                }
+        });
+        if let Some(grant) = prior.and_then(|index| state.grants.get(index)) {
+            if roster.is_none() || grant.roster_created_at != roster_created_at {
+                return Err("that agent id already belongs to another grant".into());
+            }
+            match grant.state {
+                GrantState::Pending
+                    if grant.proposal.label == proposal.label
+                        && grant.proposal.color == proposal.color
+                        && grant.proposal.scope == proposal.scope =>
+                {
+                    return Ok((id, grant.pairing_code.clone().unwrap_or_default()));
+                }
+                GrantState::Approved if grant.proposal.scope == proposal.scope => {
+                    return Ok((id, String::new()));
+                }
+                GrantState::Denied | GrantState::Expired => {}
+                _ => return Err("that agent already has a different or withdrawn grant".into()),
+            }
+        }
         let me = self.me.clone();
         let answered = id.clone();
-        let pairing_code = link.request_approval(
-            &key,
-            &proposal,
-            Box::new(move |outcome| {
-                if let Some(supervisor) = me.upgrade() {
-                    supervisor.approval_answered(&answered, outcome);
-                }
-            }),
-        )?;
-        let mut state = self.state();
+        let done: ApprovalDone = Box::new(move |outcome| {
+            if let Some(supervisor) = me.upgrade() {
+                supervisor.approval_answered(&answered, seed, outcome);
+            }
+        });
+        // Hold the state across enqueue so a fast answer sees its pending grant,
+        // and simultaneous requests for this roster id share only one proposal.
+        let pairing_code = match roster {
+            Some((_, created_at, requester)) => {
+                link.request_roster_approval(&key, &proposal, created_at, requester, done)?
+            }
+            None => link.request_approval(&key, &proposal, done)?,
+        };
+        if let Some(index) = prior {
+            state.grants.remove(index);
+        }
         state.grants.push(Grant {
             proposal,
+            roster_created_at,
             state: GrantState::Pending,
             key: Some(key),
             identity: None,
@@ -989,50 +1144,92 @@ impl AgentSupervisor {
         Ok((id, pairing_code))
     }
 
-    fn approval_answered(&self, id: &str, outcome: Result<(DeviceCert, Delegation), String>) {
-        let link = self.link();
-        let mut state = self.state();
-        Self::answer_grant(&mut state, link.as_deref(), id, outcome);
-        drop(state);
-        self.changes.raise();
-    }
-
-    fn answer_grant(
-        state: &mut SupervisorState,
-        link: Option<&dyn AgentHostLink>,
+    fn approval_answered(
+        &self,
         id: &str,
+        device: [u8; 32],
         outcome: Result<(DeviceCert, Delegation), String>,
     ) {
-        let Some(grant) = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.id() == id && grant.state == GrantState::Pending)
-        else {
+        let link = self.link();
+        let mut state = self.state();
+        let Some(grant) = state.grants.iter_mut().find(|grant| {
+            grant.id() == id
+                && grant.state == GrantState::Pending
+                && grant
+                    .key
+                    .as_ref()
+                    .is_some_and(|key| key.verifying_key().to_bytes() == device)
+        }) else {
             return;
         };
         let Some(key) = grant.key.take() else {
             return;
         };
-        match outcome {
-            Ok((cert, delegation)) => {
-                let registered = link.map_or(Ok(()), |link| link.register(&cert, &delegation));
-                match registered {
-                    Ok(()) => {
-                        grant.proposal.scope = delegation.scope.clone();
-                        grant.proposal.expires_at_ns = delegation.expires_at_ns;
-                        grant.state = GrantState::Approved;
-                        grant.pairing_code = None;
-                        grant.identity = Some(AgentIdentity {
-                            key,
-                            cert,
-                            delegation,
-                        });
-                    }
-                    Err(reason) => grant.settle(GrantState::Denied, &reason),
+        let approved = outcome.and_then(|(cert, delegation)| {
+            if cert.device_public_key != device
+                || delegation.device_public_key != device
+                || delegation.user_public_key != self.user_public_key
+            {
+                return Err("the approval names a different identity".into());
+            }
+            grant.proposal.admits(&delegation).map_err(str::to_owned)?;
+            if let Some(created_at) = grant.roster_created_at {
+                if delegation.scope.workspaces != grant.proposal.scope.workspaces {
+                    return Err("the approval does not cover the roster workspace".into());
                 }
+                let spawn = self
+                    .roster_spawner
+                    .get()
+                    .ok_or("this supervisor cannot join roster sessions")?;
+                let identity = AgentIdentity {
+                    key,
+                    cert,
+                    delegation,
+                };
+                spawn(identity.clone(), created_at)?;
+                Ok(identity)
+            } else {
+                if let Some(link) = &link {
+                    link.register(&cert, &delegation)?;
+                }
+                Ok(AgentIdentity {
+                    key,
+                    cert,
+                    delegation,
+                })
+            }
+        });
+        match approved {
+            Ok(identity) => {
+                grant.proposal.scope = identity.delegation.scope.clone();
+                grant.proposal.expires_at_ns = identity.delegation.expires_at_ns;
+                grant.state = GrantState::Approved;
+                grant.pairing_code = None;
+                grant.identity = Some(identity);
             }
             Err(reason) => grant.settle(GrantState::Denied, &reason),
         }
+        drop(state);
+        self.changes.raise();
+    }
+
+    pub(crate) fn roster_session_failed(&self, device: [u8; 32], reason: &str) {
+        let mut state = self.state();
+        let Some(grant) = state.grants.iter_mut().find(|grant| {
+            grant.roster_created_at.is_some()
+                && grant
+                    .identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.cert.device_public_key == device)
+        }) else {
+            return;
+        };
+        if let Some(link) = self.link() {
+            link.withdraw(device);
+        }
+        grant.settle(GrantState::Denied, reason);
+        drop(state);
+        self.changes.raise();
     }
 
     /// Withdraw grant `id`: its agent stops, the host refuses its device
@@ -1042,47 +1239,98 @@ impl AgentSupervisor {
     ///
     /// Returns [`ControlError::Unknown`] for an unknown grant.
     pub fn revoke(&self, id: &str) -> Result<(), ControlError> {
-        self.settle(id, GrantState::Revoked, "revoked by a person")
+        self.revoke_in(id, None)
     }
 
-    fn settle(&self, id: &str, to: GrantState, reason: &str) -> Result<(), ControlError> {
+    /// Whether this id has a signing grant in this exact workspace.
+    #[must_use]
+    pub fn has_roster_grant(&self, workspace: WorkspaceId, id: &str) -> bool {
+        self.state()
+            .grants
+            .iter()
+            .any(|grant| grant.id() == id && grant.is_roster_in(workspace))
+    }
+
+    /// Withdraw the signing grant in the workspace of this certified request.
+    pub fn invoke_roster_revoke(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        workspace: WorkspaceId,
+        id: &str,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        tilo_actions::appearance::refuse_here(request)?;
+        if !self.authorized(caller) {
+            return Err(ActionCallError::UnknownAction);
+        }
+        self.invoke_once(
+            &caller.clone().in_workspace(workspace.to_string()),
+            request,
+            || {
+                self.revoke_in(id, Some(workspace))
+                    .map_err(|error| refused(error.to_string()))?;
+                Ok(ActionOutput {
+                    value: Some(serde_json::json!({})),
+                    resources: Vec::new(),
+                })
+            },
+        )
+    }
+
+    fn revoke_in(&self, id: &str, workspace: Option<WorkspaceId>) -> Result<(), ControlError> {
         let mut state = self.state();
         let grant = state
             .grants
             .iter_mut()
-            .find(|grant| grant.id() == id)
+            .find(|grant| {
+                grant.id() == id
+                    && workspace.map_or_else(
+                        || grant.roster_created_at.is_none(),
+                        |workspace| grant.is_roster_in(workspace),
+                    )
+            })
             .ok_or(ControlError::Unknown)?;
-        let device = grant
-            .identity
-            .as_ref()
-            .map(|identity| identity.delegation.device_public_key);
-        grant.settle(to, reason);
-        let agent = state.agents.get(id).cloned();
-        drop(state);
-        self.changes.raise();
-        if let Some(agent) = agent {
+        if let (Some(identity), Some(link)) = (&grant.identity, self.link()) {
+            link.withdraw(identity.cert.device_public_key);
+        }
+        grant.settle(GrantState::Revoked, "revoked by a person");
+        if workspace.is_none()
+            && let Some(agent) = state.agents.get(id)
+        {
             agent.stop();
         }
-        if let (Some(device), Some(link)) = (device, self.link()) {
-            link.withdraw(device);
-        }
+        drop(state);
+        self.changes.raise();
         Ok(())
     }
 
     /// Settle every approved grant that expired by `now_ns`: its agent
     /// stops and the host refuses its device. Returns the grants expired.
     pub fn expire(&self, now_ns: u64) -> Vec<String> {
-        let due: Vec<String> = self
-            .state()
-            .grants
-            .iter()
-            .filter(|grant| {
-                grant.state == GrantState::Approved && grant.proposal.expires_at_ns <= now_ns
+        let mut state = self.state();
+        let link = self.link();
+        let SupervisorState { grants, agents } = &mut *state;
+        let due = grants
+            .iter_mut()
+            .filter_map(|grant| {
+                if grant.state != GrantState::Approved || grant.proposal.expires_at_ns > now_ns {
+                    return None;
+                }
+                if let (Some(identity), Some(link)) = (&grant.identity, &link) {
+                    link.withdraw(identity.cert.device_public_key);
+                }
+                if grant.roster_created_at.is_none()
+                    && let Some(agent) = agents.get(grant.id())
+                {
+                    agent.stop();
+                }
+                grant.settle(GrantState::Expired, "the grant expired");
+                Some(grant.id().to_owned())
             })
-            .map(|grant| grant.id().to_owned())
-            .collect();
-        for id in &due {
-            let _ = self.settle(id, GrantState::Expired, "the grant expired");
+            .collect::<Vec<_>>();
+        drop(state);
+        if !due.is_empty() {
+            self.changes.raise();
         }
         due
     }
@@ -1105,7 +1353,7 @@ impl AgentSupervisor {
             let entry = state
                 .grants
                 .iter()
-                .find(|entry| entry.id() == grant)
+                .find(|entry| entry.id() == grant && entry.roster_created_at.is_none())
                 .ok_or_else(|| ControlError::Unknown.to_string())?;
             let identity = match (&entry.identity, entry.state) {
                 (Some(identity), GrantState::Approved) => identity.clone(),
@@ -1180,10 +1428,11 @@ impl AgentSupervisor {
                         .map(ToString::to_string)
                         .collect(),
                     apps: grant.proposal.scope.apps.clone(),
-                    in_use: state
-                        .agents
-                        .get(grant.id())
-                        .is_some_and(|agent| !agent.ended()),
+                    in_use: grant.roster_created_at.is_none()
+                        && state
+                            .agents
+                            .get(grant.id())
+                            .is_some_and(|agent| !agent.ended()),
                     state: grant.state,
                     color: color_hex(grant.proposal.color),
                     expires_at_ms: grant.proposal.expires_at_ns / 1_000_000,
@@ -1204,6 +1453,7 @@ impl AgentSupervisor {
                 .iter()
                 .map(|grant| GrantRecord {
                     proposal: grant.proposal.clone(),
+                    roster_created_at: grant.roster_created_at,
                     state: grant.state,
                     key: grant
                         .identity
@@ -1237,26 +1487,40 @@ impl AgentSupervisor {
     ) -> Vec<(AgentIdentity, Arc<AgentControl>)> {
         let link = self.link();
         let mut grants = Vec::new();
-        for record in snapshot.grants {
+        for saved in snapshot.grants {
             let mut grant = Grant {
-                proposal: record.proposal,
-                state: record.state,
+                proposal: saved.proposal,
+                roster_created_at: saved.roster_created_at,
+                state: saved.state,
                 key: None,
                 identity: None,
                 pairing_code: None,
-                reason: record.reason,
+                reason: saved.reason,
             };
             match grant.state {
                 GrantState::Pending => {
                     grant.settle(GrantState::Denied, "the host restarted before the approval");
                 }
                 GrantState::Approved => {
-                    match restore_identity(record.key, record.cert, record.delegation) {
+                    match restore_identity(saved.key, saved.cert, saved.delegation) {
                         Some(identity) if identity.delegation.expires_at_ns <= now_ns => {
                             if let Some(link) = &link {
                                 link.withdraw(identity.delegation.device_public_key);
                             }
                             grant.settle(GrantState::Expired, "the grant expired");
+                        }
+                        Some(identity) if grant.roster_created_at.is_some() => {
+                            if grant.proposal.scope.workspaces
+                                == identity.delegation.scope.workspaces
+                                && grant.proposal.admits(&identity.delegation).is_ok()
+                            {
+                                grant.identity = Some(identity);
+                            } else {
+                                grant.settle(
+                                    GrantState::Denied,
+                                    "its roster grant could not be read back",
+                                );
+                            }
                         }
                         Some(identity) => {
                             match link.as_ref().map_or(Ok(()), |link| {
@@ -1280,7 +1544,7 @@ impl AgentSupervisor {
         for info in snapshot.agents {
             let identity = grants
                 .iter()
-                .find(|grant| grant.id() == info.id)
+                .find(|grant| grant.id() == info.id && grant.roster_created_at.is_none())
                 .and_then(|grant| grant.identity.clone());
             let delegation = match (&identity, hex::decode(&info.delegation)) {
                 (Some(identity), _) => identity.delegation.clone(),
@@ -1302,6 +1566,18 @@ impl AgentSupervisor {
         let mut state = self.state();
         state.grants = grants;
         state.agents = agents;
+        for grant in &mut state.grants {
+            if let (Some(created_at), Some(identity)) = (grant.roster_created_at, &grant.identity) {
+                let spawned = self
+                    .roster_spawner
+                    .get()
+                    .ok_or_else(|| "this supervisor cannot join roster sessions".to_owned())
+                    .and_then(|spawn| spawn(identity.clone(), created_at));
+                if let Err(reason) = spawned {
+                    grant.settle(GrantState::Denied, &reason);
+                }
+            }
+        }
         drop(state);
         self.changes.raise();
         resume
@@ -1313,7 +1589,7 @@ impl AgentSupervisor {
         caller.acting().is_person() && caller.user_public_key() == Some(&self.user_public_key)
     }
 
-    fn run(&self, request: &InvokeRequest) -> Result<ActionOutput, ActionCallError> {
+    fn dispatch(&self, request: &InvokeRequest) -> Result<ActionOutput, ActionCallError> {
         let address = &request.target.address;
         let value = if address.resource == SUPERVISOR_RESOURCE {
             match address.action.as_str() {
@@ -1339,20 +1615,7 @@ impl AgentSupervisor {
                         .map_err(refused)?;
                     serde_json::json!({"agentId": agent, "taskId": task})
                 }
-                REQUEST_GRANT_ACTION => {
-                    let InvokeArgument::Json(arguments) = &request.argument else {
-                        return Err(invalid(
-                            "request-grant takes {label, workspaces, apps, expiresInSecs}",
-                        ));
-                    };
-                    let grant: GrantRequest =
-                        serde_json::from_value(serde_json::Value::Object(arguments.clone()))
-                            .map_err(|error| invalid(&error.to_string()))?;
-                    let (id, pairing_code) = self
-                        .request_grant(&grant, tilo_clock::unix_now_ns())
-                        .map_err(refused)?;
-                    serde_json::json!({"grant": id, "pairingCode": pairing_code})
-                }
+                REQUEST_GRANT_ACTION => return self.request_new_grant(&request.argument),
                 _ => return Err(ActionCallError::UnknownAction),
             }
         } else {
@@ -1411,6 +1674,29 @@ impl AgentSupervisor {
             value: Some(value),
             resources: Vec::new(),
         })
+    }
+
+    fn request_new_grant(
+        &self,
+        argument: &InvokeArgument,
+    ) -> Result<ActionOutput, ActionCallError> {
+        let InvokeArgument::Json(arguments) = argument else {
+            return Err(invalid(
+                "request-grant takes {label, workspaces, apps, expiresInSecs}",
+            ));
+        };
+        if arguments.contains_key("agentId") {
+            return Err(refused(
+                "a roster grant needs a certified workspace session".into(),
+            ));
+        }
+        let grant: GrantRequest =
+            serde_json::from_value(serde_json::Value::Object(arguments.clone()))
+                .map_err(|error| invalid(&error.to_string()))?;
+        let (id, pairing_code) = self
+            .request_grant(&grant, tilo_clock::unix_now_ns())
+            .map_err(refused)?;
+        Ok(grant_output(&id, &pairing_code))
     }
 
     fn rows(&self) -> Vec<CatalogueRow> {
@@ -1547,6 +1833,63 @@ fn row(
     }
 }
 
+fn grant_proposal(
+    request: &GrantRequest,
+    now_ns: u64,
+    seed: &[u8; 32],
+    agent: Option<&str>,
+) -> Result<DelegateProposal, String> {
+    let label = request.label.trim();
+    if label.is_empty() || label.len() > MAX_DELEGATE_TEXT_BYTES {
+        return Err(format!(
+            "a grant's label is 1 to {MAX_DELEGATE_TEXT_BYTES} bytes"
+        ));
+    }
+    if request.workspaces.is_empty() || request.workspaces.len() > MAX_DELEGATED_WORKSPACES {
+        return Err(format!(
+            "a grant names 1 to {MAX_DELEGATED_WORKSPACES} workspaces"
+        ));
+    }
+    if request.apps.len() > MAX_DELEGATED_APPS {
+        return Err(format!("a grant names at most {MAX_DELEGATED_APPS} apps"));
+    }
+    if !GRANT_SECS.contains(&request.expires_in_secs) {
+        return Err("a grant lasts from a minute to 30 days".into());
+    }
+    let agent_id = agent.map_or_else(|| grant_id(label, seed), str::to_owned);
+    // A grant that names no colour wears the one the agent member it is wears everywhere.
+    let color = if let Some(text) = &request.color {
+        parse_color_hex(text).ok_or("a grant's colour is #rrggbb")?
+    } else {
+        let (r, g, b) =
+            collab_types::presence::identity_rgb(collab_types::presence::PresenceHue::of_member(
+                &collab_types::MemberId::agent(&agent_id),
+            ));
+        [r, g, b]
+    };
+    Ok(DelegateProposal {
+        delegate: Delegate::Agent { agent_id },
+        label: label.to_owned(),
+        color,
+        scope: DelegateScope {
+            workspaces: request
+                .workspaces
+                .iter()
+                .filter_map(|workspace| WorkspaceId::parse(workspace))
+                .collect(),
+            apps: request.apps.clone(),
+        },
+        expires_at_ns: now_ns.saturating_add(request.expires_in_secs.saturating_mul(1_000_000_000)),
+    })
+}
+
+fn grant_output(id: &str, pairing_code: &str) -> ActionOutput {
+    ActionOutput {
+        value: Some(serde_json::json!({"grant": id, "pairingCode": pairing_code})),
+        resources: Vec::new(),
+    }
+}
+
 fn invalid(reason: &str) -> ActionCallError {
     ActionCallError::InvalidRequest {
         reason: reason.into(),
@@ -1589,19 +1932,8 @@ impl ActionProvider for SupervisorHost {
         if !self.0.authorized(caller) {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
-        let invocation = request.invocation;
         let supervisor = &self.0;
-        let receipt = supervisor
-            .log()
-            .admit(caller, &request, || {
-                let output = supervisor.run(&request)?;
-                Ok(InvocationState::new(
-                    invocation,
-                    InvocationUpdate::Succeeded { invocation, output },
-                ))
-            })
-            .map(|(state, _)| state.receipt());
-        Pending::ready(receipt)
+        Pending::ready(supervisor.invoke_once(caller, &request, || supervisor.dispatch(&request)))
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {

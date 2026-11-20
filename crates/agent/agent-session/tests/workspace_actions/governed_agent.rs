@@ -31,6 +31,26 @@ use super::{
 use crate::harness::script::{doing, task};
 use tilo_server_protocol::WorkspaceId;
 
+fn issue_delegate(
+    root: &SigningKey,
+    pending: &tilo_server_protocol::certify::PendingCertification,
+    proposal: &tilo_server_protocol::delegation::DelegateProposal,
+) -> ApproverDecision {
+    let now = tilo_clock::unix_now_ns();
+    let cert = issue_device_cert(
+        &pending.request,
+        root,
+        &CertificationPolicy::agent(),
+        &RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let delegation = proposal
+        .sign(root, pending.request.device_public_key, now)
+        .unwrap();
+    ApproverDecision::IssueDelegate { cert, delegation }
+}
+
 /// The laptop: a root holder denying the named proposal and approving the others
 /// with the agent's certificate and the delegation of exactly what was proposed.
 fn approve_agents(
@@ -62,20 +82,7 @@ fn approve_agents(
                 let decision = if agent.proposal.label == denied {
                     ApproverDecision::Deny
                 } else {
-                    let now = tilo_clock::unix_now_ns();
-                    let cert = issue_device_cert(
-                        &pending.request,
-                        &root,
-                        &CertificationPolicy::agent(),
-                        &RevocationList::new(),
-                        now,
-                    )
-                    .unwrap();
-                    let delegation = agent
-                        .proposal
-                        .sign(&root, pending.request.device_public_key, now)
-                        .unwrap();
-                    ApproverDecision::IssueDelegate { cert, delegation }
+                    issue_delegate(&root, &pending, &agent.proposal)
                 };
                 assert_eq!(
                     approver
@@ -305,7 +312,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     }
     assert_eq!(
         server
-            .roster_session_device(&sessions, workspace.workspace_id, declined, &keeper)
+            .approved_session_device(&sessions, workspace.workspace_id, declined, &keeper)
             .await,
         None
     );
@@ -362,7 +369,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
 
     assert_eq!(
         server
-            .roster_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
+            .approved_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
             .await,
         None,
         "approval alone does not open a session"
@@ -434,9 +441,16 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
 
     assert_eq!(
         server
-            .roster_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
+            .approved_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
             .await,
         Some(agent_key)
+    );
+    assert_eq!(
+        server
+            .roster_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
+            .await,
+        None,
+        "a supervisor task agent is not a signing session for a hosted roster agent"
     );
     assert_eq!(
         workspaces
@@ -446,7 +460,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     );
     assert_eq!(
         server
-            .roster_session_device(&sessions, unjoined.workspace_id, &grant, &keeper)
+            .approved_session_device(&sessions, unjoined.workspace_id, &grant, &keeper)
             .await,
         None,
         "the grant covers this workspace but the session joined only the other one"
@@ -462,7 +476,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     ] {
         assert_eq!(
             server
-                .roster_session_device(&sessions, workspace, id, &keeper)
+                .approved_session_device(&sessions, workspace, id, &keeper)
                 .await,
             None
         );
@@ -507,7 +521,7 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     .await;
     assert_eq!(
         server
-            .roster_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
+            .approved_session_device(&sessions, workspace.workspace_id, &grant, &keeper)
             .await,
         None,
         "withdrawal invalidates the match as soon as the action answers"
@@ -534,4 +548,395 @@ async fn a_delegated_agent_acts_on_sealed_records_of_a_governed_workspace_as_its
     hosted.agents.shutdown();
     drop(hosted.web);
     hosted.server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner() {
+    use super::hosted_agent_turns::make_agent;
+    use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    use tilo_session_client::Outbox as _;
+    use ui::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents, workspace_agents::RetireAgent};
+
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (other, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
+    let node = enrol(&owner, "node", DeviceCapabilities::member());
+    let laptop = enrol(&owner, "laptop", DeviceCapabilities::primary());
+    let page_device = enrol(&owner, "page", DeviceCapabilities::member());
+    let other_device = enrol(&other, "guest", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let options = || crate::harness::hosted::Options {
+        roster: true,
+        ..crate::harness::hosted::Options::offering(
+            crate::common::catalogue,
+            tilo_agent_session::ModelChoice::Scripted,
+        )
+    };
+    let hosted = crate::harness::hosted::start(&owner, &node, state.path(), options()).await;
+    let sessions = hosted.agents.agent_sessions();
+    let server = hosted.server.agent_link();
+    let keeper = owner.verifying_key().to_bytes();
+    let workspaces = hosted.server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Existing hosted agent").await.unwrap();
+    let elsewhere = workspaces.create("Another workspace").await.unwrap();
+    let mut page =
+        Browser::open_workspace(&hosted, &page_device, &node, &workspace.workspace).await;
+    let mut second = Browser::open_workspace(&hosted, &laptop, &node, &workspace.workspace).await;
+    let mut wrong =
+        Browser::open_workspace(&hosted, &page_device, &node, &elsewhere.workspace).await;
+    admit_person(
+        &hosted,
+        &node,
+        &workspace.workspace,
+        &other_device,
+        Role::Editor,
+    )
+    .await;
+    let mut guest = open_admitted_peer(&hosted, &other_device, &node, &workspace.workspace).await;
+    make_agent(
+        &page,
+        &workspaces,
+        &workspace.workspace,
+        &hex::encode(keeper),
+        None,
+    )
+    .await;
+    let agent = super::hosted_agent_turns::SCOUT;
+    let ask = || {
+        request(
+            AGENTS_PROVIDER,
+            ActionAddress::new(SUPERVISOR_RESOURCE, REQUEST_GRANT_ACTION),
+            json(&serde_json::json!({
+                "agentId": agent,
+                "workspaces": [workspace.workspace],
+                "apps": [SHEETS],
+                "expiresInSecs": 3600,
+            })),
+        )
+    };
+    for receipt in [
+        guest.invoke(ask()).await,
+        wrong.invoke(ask()).await,
+        wrong
+            .invoke(request(
+                AGENTS_PROVIDER,
+                ActionAddress::new(SUPERVISOR_RESOURCE, REQUEST_GRANT_ACTION),
+                json(&serde_json::json!({
+                    "agentId": agent,
+                    "workspaces": [elsewhere.workspace],
+                    "expiresInSecs": 3600,
+                })),
+            ))
+            .await,
+    ] {
+        assert!(
+            matches!(receipt.status, ReceiptStatus::Rejected { .. }),
+            "{receipt:?}"
+        );
+    }
+    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let mut approver = Approver::connect(
+        &endpoint,
+        hosted.server.node_addr(),
+        laptop.cert.clone(),
+        &laptop.key,
+        &RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    assert!(approver.list_agent_proposals().await.unwrap().is_empty());
+
+    let declined = ask();
+    let (first, repeated) = tokio::join!(page.invoke(declined.clone()), second.invoke(ask()));
+    let output = |receipt: tilo_actions::remote::InvocationReceipt| match receipt.status {
+        ReceiptStatus::Completed { output } => output.value.unwrap(),
+        other => panic!("the roster grant request failed: {other:?}"),
+    };
+    let first = output(first);
+    assert_eq!(first["grant"], agent);
+    assert_eq!(first, output(repeated));
+    let proposals = approver.list_agent_proposals().await.unwrap();
+    assert_eq!(proposals.len(), 1);
+    let proposal = &proposals[0];
+    assert_eq!(proposal.proposal.delegate.agent_id(), Some(agent));
+    assert_eq!(proposal.proposal.scope.workspaces, [workspace.workspace_id]);
+    let first_device = approver.list_pending().await.unwrap()[0]
+        .request
+        .device_public_key;
+    assert_eq!(
+        approver
+            .decide(proposal.request_digest, ApproverDecision::Deny)
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if status(&mut page)
+            .await
+            .grants
+            .iter()
+            .any(|g| g.id == agent && g.state == GrantState::Denied)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the keeper's denial was not recorded"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(sessions.link(&first_device).is_none());
+    assert_eq!(output(page.invoke(declined).await), first);
+    assert!(approver.list_agent_proposals().await.unwrap().is_empty());
+
+    assert_eq!(output(page.invoke(ask()).await)["grant"], agent);
+    let proposals = approver.list_agent_proposals().await.unwrap();
+    assert_eq!(proposals.len(), 1);
+    let proposal = &proposals[0];
+    let pending = approver
+        .list_pending()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.request_digest == proposal.request_digest)
+        .unwrap();
+    let device = pending.request.device_public_key;
+    assert_ne!(first_device, device);
+    assert_ne!(page_device.cert.device_public_key, device);
+    assert_eq!(
+        approver
+            .decide(
+                proposal.request_digest,
+                issue_delegate(&owner, &pending, &proposal.proposal)
+            )
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+
+    let deadline = tilo_test_env::hang_deadline();
+    while server
+        .roster_session_device(&sessions, workspace.workspace_id, agent, &keeper)
+        .await
+        != Some(device)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the approved device did not join: {:?}",
+            status(&mut page).await
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        status(&mut page).await.agents.is_empty(),
+        "approval must leave task execution to the roster runner"
+    );
+    let spawn = page.invoke(request(
+        AGENTS_PROVIDER,
+        ActionAddress::new(SUPERVISOR_RESOURCE, SPAWN_ACTION),
+        json(&serde_json::json!({"grant": agent, "task": "Do something", "workspace": workspace.workspace})),
+    )).await;
+    assert!(
+        matches!(spawn.status, ReceiptStatus::Rejected { .. }),
+        "{spawn:?}"
+    );
+    for (workspace, id, keeper) in [
+        (elsewhere.workspace_id, agent, keeper),
+        (workspace.workspace_id, "another-agent", keeper),
+        (
+            workspace.workspace_id,
+            agent,
+            other.verifying_key().to_bytes(),
+        ),
+    ] {
+        assert_eq!(
+            server
+                .roster_session_device(&sessions, workspace, id, &keeper)
+                .await,
+            None
+        );
+    }
+
+    // The actual signing peer cannot use its connection to invoke an unbound write.
+    let signer = sessions.link(&device).unwrap();
+    let events = signer.events();
+    let write = request(
+        tilo_agent_session::member::actions::RESOURCE_PROVIDER,
+        ActionAddress::new("sheets", "new-sheet"),
+        json(&serde_json::json!({"name": "Unbound"})),
+    );
+    let invocation = write.invocation;
+    signer
+        .send(tilo_session_client::Cmd::RemoteAction(
+            workspace.workspace_id,
+            node.cert.device_public_key,
+            RemoteActionFrame::new(RemoteActionMessage::Invoke(write))
+                .encode()
+                .unwrap(),
+        ))
+        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let denied = events.drain().into_iter().any(|event| {
+            if let tilo_session_client::Event::Remote(tilo_session_actions::Heard::Action { frame, .. }) = event
+                && let Ok(RemoteActionFrame { message: RemoteActionMessage::Receipt(receipt), .. }) = RemoteActionFrame::decode(&frame)
+                && receipt.invocation == invocation
+            {
+                assert!(matches!(receipt.status, ReceiptStatus::Rejected { error: tilo_actions::remote::ActionCallError::Refused { ref reason } } if reason.contains("signing session")), "{receipt:?}");
+                return true;
+            }
+            false
+        });
+        if denied {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the signing peer did not receive a refusal"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // The same roster id can exist in another workspace. An answer for that
+    // occurrence cannot borrow the first device or outlive its own roster row.
+    make_agent(
+        &wrong,
+        &workspaces,
+        &elsewhere.workspace,
+        &hex::encode(keeper),
+        None,
+    )
+    .await;
+    let elsewhere_ask = request(
+        AGENTS_PROVIDER,
+        ActionAddress::new(SUPERVISOR_RESOURCE, REQUEST_GRANT_ACTION),
+        json(&serde_json::json!({
+            "agentId": agent,
+            "workspaces": [elsewhere.workspace],
+            "apps": [SHEETS],
+            "expiresInSecs": 3600,
+        })),
+    );
+    assert_eq!(output(wrong.invoke(elsewhere_ask).await)["grant"], agent);
+    let proposals = approver.list_agent_proposals().await.unwrap();
+    assert_eq!(proposals.len(), 1);
+    let stale = &proposals[0];
+    assert_eq!(stale.proposal.scope.workspaces, [elsewhere.workspace_id]);
+    let pending = approver
+        .list_pending()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.request_digest == stale.request_digest)
+        .unwrap();
+    let stale_device = pending.request.device_public_key;
+    assert_ne!(stale_device, device);
+
+    let document = collab_types::workspace_document_id(KIND);
+    let saved = workspaces
+        .resource_document(&elsewhere.workspace, OWNER, &document)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut roster = ui::tilo_resource::Replica::<WorkspaceAgents>::from_doc(
+        automerge::AutoCommit::load(&saved).unwrap(),
+    )
+    .as_author(&hex::encode(keeper));
+    roster
+        .apply(WorkspaceAgents::RETIRE_AGENT.with(RetireAgent {
+            agent: ui::tilo_resource::Id::from_raw(agent.to_owned()),
+        }))
+        .unwrap();
+    wrong
+        .peer
+        .write(
+            DocumentRoute {
+                app_id: OWNER.into(),
+                cluster_id: elsewhere.workspace.clone(),
+                document: document.clone(),
+            },
+            &collab_types::DocumentMutation::Snapshot(std::mem::take(roster.doc_mut()).save()),
+        )
+        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let current = workspaces
+            .read_resource::<WorkspaceAgents>(&elsewhere.workspace, (OWNER, &document))
+            .await
+            .unwrap()
+            .unwrap();
+        if !current
+            .get(&ui::tilo_resource::Id::from_raw(agent.to_owned()))
+            .unwrap()
+            .is_active()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the roster retirement did not land"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        approver
+            .decide(
+                stale.request_digest,
+                issue_delegate(&owner, &pending, &stale.proposal)
+            )
+            .await
+            .unwrap(),
+        ApproverReply::Decided
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if status(&mut wrong).await.grants.iter().any(|g| {
+            g.id == agent
+                && g.workspaces == [elsewhere.workspace.as_str()]
+                && g.state == GrantState::Denied
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the stale approval should be denied"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(sessions.link(&stale_device).is_none());
+    assert_eq!(
+        server
+            .roster_session_device(&sessions, workspace.workspace_id, agent, &keeper)
+            .await,
+        Some(device)
+    );
+
+    supervise(
+        &mut page,
+        &agent_resource(agent),
+        REVOKE_ACTION,
+        InvokeArgument::None,
+    )
+    .await;
+    assert_eq!(
+        server
+            .roster_session_device(&sessions, workspace.workspace_id, agent, &keeper)
+            .await,
+        None
+    );
+    assert!(matches!(
+        page.invoke(ask()).await.status,
+        ReceiptStatus::Rejected { .. }
+    ));
+    for page in [&page, &second, &wrong, &guest] {
+        page.peer.close();
+    }
+    drop(approver);
+    hosted.agents.shutdown();
+    drop(hosted.web);
+    hosted.server.shutdown().await;
+    endpoint.close().await;
 }

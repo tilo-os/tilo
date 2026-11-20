@@ -338,9 +338,12 @@ pub(crate) fn register_agent_in(
     if cert.device_public_key != delegation.device_public_key {
         return Err("the delegation names another device".into());
     }
-    agents
-        .write_recover()
-        .insert(delegation.device_public_key, Some(delegation.clone()));
+    let mut agents = agents.write_recover();
+    if matches!(agents.get(&delegation.device_public_key), Some(None)) {
+        return Err("the agent device was withdrawn".into());
+    }
+    agents.insert(delegation.device_public_key, Some(delegation.clone()));
+    drop(agents);
     // A replacement may narrow an earlier delegation's workspaces.
     crate::authority_epoch::bump();
     Ok(())

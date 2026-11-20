@@ -84,6 +84,18 @@ pub struct GrantRequest {
     pub expires_in_secs: u64,
 }
 
+/// The existing roster form of `request-grant`. Its workspace must be the
+/// one that carried the request. The server reads the name and keeper from the roster.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterGrantRequest {
+    pub agent_id: String,
+    pub workspaces: Vec<String>,
+    #[serde(default)]
+    pub apps: Vec<String>,
+    pub expires_in_secs: u64,
+}
+
 /// Parse `#rrggbb`.
 #[must_use]
 pub fn parse_color_hex(text: &str) -> Option<[u8; 3]> {

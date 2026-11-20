@@ -29,6 +29,9 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{ActionCallError, Caller, Pending};
+
+mod roster;
+use roster::RosterProvisioning;
 use tilo_agent_session::workspace_actions::{
     HostDevice, PackagedCall, ShellRan, Watching, WorkspaceShell,
 };
@@ -88,10 +91,28 @@ impl Server {
 }
 
 impl ServerAgentLink {
-    /// Resolve the agent device of an existing roster entry to its authenticated member session.
-    /// The caller supplies the entry's id and keeper. Approval, membership and the connection
-    /// must all cover this exact workspace.
+    /// Resolve an existing roster entry to the exact authenticated signing session.
     pub async fn roster_session_device(
+        &self,
+        sessions: &tilo_agent_session::AgentSessions,
+        workspace: WorkspaceId,
+        agent: &str,
+        keeper: &[u8; 32],
+    ) -> Option<[u8; 32]> {
+        let workspaces = self.workspaces.as_ref()?;
+        let entry = workspaces
+            .hosted_roster_agent(workspace, agent, keeper, None)
+            .await?;
+        let device = self
+            .approved_session_device(sessions, workspace, agent, keeper)
+            .await?;
+        sessions
+            .matches_roster(&device, workspace, agent, keeper, entry.created_at)
+            .then_some(device)
+    }
+
+    /// Resolve a governed delegation to the authenticated session serving its workspace.
+    pub async fn approved_session_device(
         &self,
         sessions: &tilo_agent_session::AgentSessions,
         workspace: WorkspaceId,
@@ -113,6 +134,38 @@ impl ServerAgentLink {
         .then_some(device)
     }
 
+    fn enqueue_approval(
+        &self,
+        key: &SigningKey,
+        proposal: &DelegateProposal,
+    ) -> Result<([u8; 32], String), String> {
+        let now = tilo_clock::unix_now_ns();
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
+        let request = CertificationRequest {
+            version: CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: self.user_public_key,
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: format!("Agent: {}", proposal.label),
+            requested: DeviceCapabilities::nothing(),
+            nonce,
+            invite: [0; 16],
+            issued_at_ns: now,
+            expires_at_ns: now.saturating_add(APPROVAL_WAIT_NS),
+            signature: [0; 64],
+        }
+        .sign(key)
+        .map_err(|error| error.to_string())?;
+        self.certification
+            .enqueue_delegate(request, proposal.clone(), now)
+    }
+
+    fn withdraw_device(&self, device: [u8; 32]) {
+        self.agents.write_recover().insert(device, None);
+        crate::authority_epoch::bump();
+        self.reconcile_workspaces(device, None);
+    }
+
     /// Bring agent `device`'s place on the rosters of the governed workspaces in
     /// line with the register, off the caller's thread. `cert` is the
     /// agent's certificate when it was just approved or restored.
@@ -132,31 +185,33 @@ impl AgentHostLink for ServerAgentLink {
         proposal: &DelegateProposal,
         done: ApprovalDone,
     ) -> Result<String, String> {
-        let now = tilo_clock::unix_now_ns();
-        let mut nonce = [0_u8; 16];
-        getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
-        let request = CertificationRequest {
-            version: CERTIFICATION_SCHEMA_VERSION,
-            user_public_key: self.user_public_key,
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: format!("Agent: {}", proposal.label),
-            requested: DeviceCapabilities::nothing(),
-            nonce,
-            invite: [0; 16],
-            issued_at_ns: now,
-            expires_at_ns: now.saturating_add(APPROVAL_WAIT_NS),
-            signature: [0; 64],
-        }
-        .sign(key)
-        .map_err(|error| error.to_string())?;
-        let (digest, pairing_code) =
-            self.certification
-                .enqueue_delegate(request, proposal.clone(), now)?;
+        let (digest, pairing_code) = self.enqueue_approval(key, proposal)?;
         let certification = self.certification.clone();
         self.runtime.spawn(async move {
             done(certification.delegate_answer(&digest).await);
         });
         Ok(pairing_code)
+    }
+
+    fn request_roster_approval(
+        &self,
+        key: &SigningKey,
+        proposal: &DelegateProposal,
+        created_at: i64,
+        requester: &DeviceCert,
+        done: ApprovalDone,
+    ) -> Result<String, String> {
+        self.approve_roster(key, proposal, created_at, requester, done)
+    }
+
+    fn admit_roster_session(
+        &self,
+        identity: &tilo_agent_session::AgentIdentity,
+        created_at: i64,
+        lifetime: tokio::sync::oneshot::Receiver<()>,
+        done: tilo_agent_session::control::RosterAdmissionDone,
+    ) {
+        self.join_roster(identity, created_at, lifetime, done);
     }
 
     fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String> {
@@ -167,10 +222,7 @@ impl AgentHostLink for ServerAgentLink {
     }
 
     fn withdraw(&self, device_public_key: [u8; 32]) {
-        self.agents.write_recover().insert(device_public_key, None);
-        crate::authority_epoch::bump();
-        // Governed workspaces take it off their documents and refuse its writes.
-        self.reconcile_workspaces(device_public_key, None);
+        self.withdraw_device(device_public_key);
     }
 
     fn when_admitted(&self, cert: &DeviceCert, delegation: &Delegation, done: AdmissionDone) {
@@ -326,6 +378,7 @@ impl WorkspaceShell for HostShells {
 /// The workspace action server, with the supervisor where the host offers one.
 struct WorkspaceActionsServer {
     supervisor: Option<HostActions>,
+    roster: Option<RosterProvisioning>,
     serve_events: bool,
     actions: WorkspaceActions,
     pages: ActionPages,
@@ -426,6 +479,27 @@ impl crate::AppActionServer for WorkspaceActionsServer {
         )
     }
 
+    fn serve_certified(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>> {
+        if let (Some(roster), Some(supervisor)) = (&self.roster, &self.supervisor)
+            && let Some(answer) = roster.serve(
+                workspace,
+                caller,
+                certificate,
+                &message,
+                &supervisor.supervisor.0,
+            )
+        {
+            return Some(answer);
+        }
+        self.serve(workspace, caller, message)
+    }
+
     fn route(
         &self,
         workspace_id: WorkspaceId,
@@ -442,6 +516,13 @@ impl crate::AppActionServer for WorkspaceActionsServer {
         certificate: &tilo_user_identity::DeviceCert,
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
+        if self
+            .roster
+            .as_ref()
+            .is_some_and(|roster| roster.is_signer(caller))
+        {
+            return None;
+        }
         self.browsers
             .as_ref()?
             .route_certified(workspace_id, caller, certificate, message)
@@ -1152,6 +1233,7 @@ pub async fn start_serving_documents_and_events(
     let actions = WorkspaceActions::new(catalogue);
     let app_server = Arc::new(WorkspaceActionsServer {
         supervisor: None,
+        roster: None,
         serve_events: true,
         pages: ActionPages(actions.clone()),
         actions,
@@ -1338,11 +1420,12 @@ async fn start_inner(
     );
     cfg.services.app_serving = true;
     let actions = WorkspaceActions::new(catalogue);
-    let host_actions = Arc::new(WorkspaceActionsServer {
+    let action_server = Arc::new(WorkspaceActionsServer {
         supervisor: Some(HostActions {
             supervisor: SupervisorHost(agents.supervisor().clone()),
             actions: actions.clone(),
         }),
+        roster: roster.then(|| RosterProvisioning::new(agents.agent_sessions())),
         serve_events: roster,
         pages: ActionPages(actions.clone()),
         actions,
@@ -1357,26 +1440,29 @@ async fn start_inner(
             Server::start_with_app_serving_and_relay_mode(
                 cfg,
                 identity,
-                Some(host_actions.clone()),
+                Some(action_server.clone()),
                 mode,
             )
             .await?
         }
-        None => Server::start_with_app_serving(cfg, identity, Some(host_actions.clone())).await?,
+        None => Server::start_with_app_serving(cfg, identity, Some(action_server.clone())).await?,
     };
     attach_resources(
-        &host_actions.actions,
+        &action_server.actions,
         &server,
         &server_cert,
         web_entry,
         (options.feedback_reviewer, options.shell, options.browsers),
         Some(agents.agent_sessions()),
     )?;
-    agents
-        .start(
-            HostEndpoint::iroh(server.node_addr(), server_cert),
-            Arc::new(server.agent_link()),
-        )
-        .map_err(ServerError::Identity)?;
-    Ok((server, agents, host_actions))
+    {
+        let link = Arc::new(server.agent_link());
+        if let Some(roster) = &action_server.roster {
+            roster.start(&link);
+        }
+        agents
+            .start(HostEndpoint::iroh(server.node_addr(), server_cert), link)
+            .map_err(ServerError::Identity)?;
+    }
+    Ok((server, agents, action_server))
 }

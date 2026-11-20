@@ -153,7 +153,14 @@ impl AgentMember {
         if !identity.delegation.permits_workspace(workspace_id) {
             return Err("the agent is not delegated this workspace".into());
         }
-        let (peer, events) = join(&config, &identity, workspace_id, store, &control)?;
+        let woken = Arc::clone(&control);
+        let (peer, events) = join(
+            &config,
+            &identity,
+            workspace_id,
+            store,
+            Arc::new(move || woken.wake()),
+        )?;
         let presence = tilo_session_client::saying::enter(
             &peer,
             &identity.cert,
@@ -547,12 +554,12 @@ fn step_of(call: &ToolCall) -> Option<(String, String, String)> {
 
 /// The agent's session with the workspace's host, joined to the workspace,
 /// waking the agent whenever something arrives.
-fn join(
+pub(crate) fn join(
     config: &MemberConfig,
     identity: &AgentIdentity,
     workspace_id: WorkspaceId,
     store: Arc<dyn tilo_session_client::PeerStore>,
-    control: &Arc<AgentControl>,
+    wake: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(Link, Events), String> {
     let peer = tilo_session_client::start_session(
         PeerConfig::member(
@@ -564,8 +571,7 @@ fn join(
         store,
     );
     let events = peer.events();
-    let woken = Arc::clone(control);
-    peer.on_change(Arc::new(move || woken.wake()));
+    peer.on_change(wake);
     peer.send(Cmd::Join(workspace_id))?;
     Ok((peer, events))
 }
