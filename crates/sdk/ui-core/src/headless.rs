@@ -7655,7 +7655,6 @@ impl FrameHarness {
     /// Move the pointer to logical `(x, y)` with no button held: what a person pointing there
     /// sees (a hover, a chart's readout).
     pub fn hover_at(&mut self, x: f64, y: f64) {
-        self.pump_component_wakes();
         self.send(&crate::synthetic_input::cursor_moved(
             x * self.input_scale,
             y * self.input_scale,

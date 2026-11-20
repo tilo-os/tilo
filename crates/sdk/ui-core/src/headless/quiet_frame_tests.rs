@@ -311,6 +311,11 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
     },
     QuietEntry {
         file: "headless.rs",
+        entry: "hover_at",
+        why: "a pointer move through `send`, which judges it: a hover that changed what a widget shows counts, one that moved nothing stays quiet, as on the live window.",
+    },
+    QuietEntry {
+        file: "headless.rs",
         entry: "idle",
         why: "invalidates when its control tick or save offer moved the document.",
     },
