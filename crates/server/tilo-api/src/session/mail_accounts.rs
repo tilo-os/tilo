@@ -136,11 +136,11 @@ impl Session {
 /// `error` said without the value it was about, which may be the password.
 fn without_values(error: &serde_json::Error) -> String {
     let said = error.to_string();
-    // serde names a field it did not know or missed, never a value of a
-    // string field it could not read; its words are kept up to the first
-    // quoted value all the same.
-    match said.split_once(": \"") {
-        Some((before, _)) => before.to_owned(),
+    // serde names a field it missed between backticks, and quotes a value
+    // it could not read (`invalid type: string "…", expected u16`): its
+    // words are kept up to the first quoted value.
+    match said.split_once('"') {
+        Some((before, _)) => before.trim_end().to_owned(),
         None => said,
     }
 }
@@ -177,11 +177,14 @@ mod tests {
             "incomingHost": "imap.example.test",
             "outgoingHost": "smtp.example.test",
             "password": "a-secret-value",
-            "unexpected": "x",
+            // A field it does not know is read past, so what it cannot
+            // read is a value of the wrong type, which serde quotes.
+            "incomingPort": "a-secret-value",
         }))
         .unwrap_err();
+        assert!(error.to_string().contains("a-secret-value"), "{error}");
         let said = without_values(&error);
         assert!(!said.contains("a-secret-value"), "{said}");
-        assert!(said.contains("unexpected"), "{said}");
+        assert!(said.contains("invalid type"), "{said}");
     }
 }
