@@ -291,6 +291,10 @@ impl Workspace for PageWorkspace {
         roles
     }
 
+    fn people_known(&self) -> bool {
+        self.shared.members.borrow().is_some()
+    }
+
     fn people(&self) -> Vec<sheet::Person> {
         let Some(members) = self.shared.members.borrow().clone() else {
             return Vec::new();

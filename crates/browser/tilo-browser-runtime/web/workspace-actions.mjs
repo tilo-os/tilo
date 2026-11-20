@@ -32,6 +32,10 @@ import {freeName} from './workspaces.mjs';
 
 export const NEW_WORKSPACE = Object.freeze({id: 'new-workspace', title: 'New workspace',
   subtitle: 'Create a workspace on a machine you set up', source: 'workspace'});
+/** What a new workspace is where the site this page is on makes it, as one
+ * that keeps people's workspaces does: one more of the person's own, opened
+ * right here, which nobody else sees until they invite them. */
+const HERE = 'Start another workspace of your own. Only people you invite see it';
 /** Join a workspace a site lists: the desktop's directory sheet, which the
  * desktop opens itself (it needs nothing of the page but its site). */
 export const JOIN_WORKSPACE = Object.freeze({id: 'join-workspace', title: 'Join a workspace',
@@ -96,7 +100,8 @@ export function createWorkspaceActions({
     ...(lettingIn ? [INVITE_LINK] : []),
     JOIN_WORKSPACE,
     ...(lettingIn ? [WAITING] : []),
-  ];
+  ].map(action => action === NEW_WORKSPACE && (keepsOwn(peer) || !machines().length)
+    ? {...action, subtitle: HERE} : action);
   const refresh = () => mount?.setHostActions?.(actions());
   const say = (error, what) => {
     onError(error);

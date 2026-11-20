@@ -156,6 +156,8 @@ pub struct Invite {
     /// Who the link is for: anyone holding it, or a person here.
     pub for_label: String,
     pub people: Vec<Person>,
+    /// Whether `people` is read yet: a page asks its server for them after the sheet opens.
+    pub people_known: bool,
     pub anyone: String,
     /// The button that makes the link, and the one that makes another once
     /// a link is shown.
@@ -357,6 +359,10 @@ pub trait Invitations {
     fn people(&self) -> Vec<Person> {
         Vec::new()
     }
+    /// Whether [`Invitations::people`] answers yet, or is still being asked for.
+    fn people_known(&self) -> bool {
+        true
+    }
     /// The links that still work.
     fn pending(&self) -> Vec<Pending> {
         Vec::new()
@@ -417,6 +423,7 @@ pub fn view(invitations: &dyn Invitations) -> Invite {
         } else {
             Vec::new()
         },
+        people_known: !may_invite || invitations.people_known(),
         anyone: word("invite-anyone"),
         create: word("invite-create"),
         create_another: word("invite-create-another"),
@@ -460,9 +467,46 @@ pub fn answer(asked: &[InviteEffect], invitations: &dyn Invitations) {
 pub struct Choosing {
     pub role: Option<usize>,
     pub whose: Option<usize>,
+    /// The people there when the sheet opened, by key, once they are known: whoever arrives
+    /// while it is open is said to have joined, and the sheet keeps the rows it opened with.
+    pub opened_with: Option<Vec<String>>,
 }
 
 impl Choosing {
+    /// Whether the sheet asks whom the link is for: only when it opened with people to choose
+    /// from, so someone joining while it is open never moves the link out of view.
+    fn asks_whose(&self, invite: &Invite) -> bool {
+        !invite.people.is_empty()
+            && self
+                .opened_with
+                .as_ref()
+                .is_some_and(|keys| !keys.is_empty())
+    }
+
+    /// Who joined since the sheet opened, said plainly: by name when they have one, else
+    /// without one. Nothing while nobody did.
+    fn joined(&self, invite: &Invite) -> Option<String> {
+        let opened_with = self.opened_with.as_ref()?;
+        let new: Vec<&Person> = invite
+            .people
+            .iter()
+            .filter(|person| !opened_with.contains(&person.key))
+            .collect();
+        if new.is_empty() {
+            return None;
+        }
+        let named: Vec<&str> = new
+            .iter()
+            .map(|person| person.name.as_str())
+            .filter(|name| !ui::presence::is_unnamed_person(name))
+            .collect();
+        Some(if named.is_empty() {
+            word("invite-joined-someone")
+        } else {
+            words("invite-joined", &[("names", &named.join(", "))])
+        })
+    }
+
     /// The segments the choosers stand on in `invite`: the part, and whose.
     fn segments(&self, invite: &Invite) -> (usize, usize) {
         let made = invite.created.as_ref();
@@ -588,12 +632,27 @@ pub fn sheet(
     // In the order the person goes: who the link brings in and as what, then the link made at those
     // choices with the buttons that copy it, take it back and make another, or the button that
     // makes it. What a press did is said under the press.
+    if choosing.get().opened_with.is_none() && invite.people_known {
+        let keys = invite
+            .people
+            .iter()
+            .map(|person| person.key.clone())
+            .collect();
+        choosing.update(|choosing| choosing.opened_with = Some(keys));
+    }
     let picked = choosing.get();
     let shown = picked.shown(invite);
-    body = body.push(composing(invite, choosing, &picked));
+    let joined = picked.joined(invite);
+    body = body.push(composing(
+        invite,
+        choosing,
+        &picked,
+        joined.as_deref(),
+        shown.is_none(),
+    ));
     if invite.may_invite {
         let mut handing: Vec<Element> = if let Some(created) = shown {
-            handover(invite, created, choosing, link, ask)
+            handover(invite, created, choosing, link, ask, joined.as_deref())
         } else {
             let create = create_button(invite, choosing, ask, false);
             vec![Box::new(Row::new().push(Box::new(create)))]
@@ -640,7 +699,13 @@ fn notice(note: &Note, ask: &Ask) -> Element {
 /// The choices a link is made at: the part it brings someone in at, with
 /// what that part may do, and who it is for. Without the grant, why there is
 /// nothing to make.
-fn composing(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing) -> Element {
+fn composing(
+    invite: &Invite,
+    choosing: &LocalState<Choosing>,
+    picked: &Choosing,
+    joined: Option<&str>,
+    say_joined: bool,
+) -> Element {
     let mut items: Vec<Element> = Vec::new();
     if !invite.may_invite {
         items.push(caption(&invite.refusal));
@@ -654,9 +719,13 @@ fn composing(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing
             items.push(caption(&role.brings));
         }
     }
-    if !invite.people.is_empty() {
+    if picked.asks_whose(invite) {
         items.push(caption(&invite.for_label));
         items.push(whose(invite, choosing, whose_at));
+    }
+    // With a link shown, who joined is said beside how long it works, in the line already there.
+    if let Some(joined) = joined.filter(|_| say_joined) {
+        items.push(caption(joined));
     }
     Box::new(Section::new(items))
 }
@@ -734,6 +803,7 @@ fn handover(
     choosing: &LocalState<Choosing>,
     link: &LocalState<String>,
     ask: &Ask,
+    joined: Option<&str>,
 ) -> Vec<Element> {
     if link.get() != created.link {
         link.set(created.link.clone());
@@ -748,7 +818,10 @@ fn handover(
         .with_accessible_name(&created.link_label);
     vec![
         crate::centred(code(&created.link, "invite-code", &created.alt)),
-        caption(&created.lasts),
+        caption(&match joined {
+            Some(joined) => format!("{joined} {}", created.lasts),
+            None => created.lasts.clone(),
+        }),
         Box::new(text),
         Box::new(
             Row::new()
@@ -1138,5 +1211,53 @@ mod tests {
             "Gilt für die nächsten 12 Minuten."
         );
         ui::i18n::I18nManager::set_locale("en-US");
+    }
+    tilo_test_env::scenario! {
+        /// Someone joining while the sheet is open: said in words, and the sheet keeps its rows.
+        fn someone_joining_while_the_sheet_is_open_is_said_and_moves_nothing;
+
+        phase a_sheet_opened_alone_never_grows_the_chooser_and_says_who_joined;
+        {
+            let person = |key: &str, name: &str| Person {
+                key: key.to_owned(),
+                name: name.to_owned(),
+            };
+            let opened = Choosing {
+                opened_with: Some(Vec::new()),
+                ..Choosing::default()
+            };
+            let mut invite = Invite {
+                people: vec![person("ab", "Grace")],
+                people_known: true,
+                ..Invite::default()
+            };
+            assert!(!opened.asks_whose(&invite), "the link stays where it was");
+            assert_eq!(opened.joined(&invite), Some(words("invite-joined", &[("names", "Grace")])));
+            invite.people = vec![person("ab", &ui::presence::unnamed_person_label())];
+            assert_eq!(
+                opened.joined(&invite),
+                Some(word("invite-joined-someone")),
+                "someone without a name yet is said to have joined without the placeholder"
+            );
+        }
+
+        phase a_sheet_opened_with_people_keeps_asking_and_says_nothing_until_someone_comes;
+        {
+            let opened = Choosing {
+                opened_with: Some(vec!["cd".to_owned()]),
+                ..Choosing::default()
+            };
+            let invite = Invite {
+                people: vec![Person {
+                    key: "cd".to_owned(),
+                    name: "Bo".to_owned(),
+                }],
+                people_known: true,
+                ..Invite::default()
+            };
+            assert!(opened.asks_whose(&invite));
+            assert_eq!(opened.joined(&invite), None);
+            assert_eq!(Choosing::default().joined(&invite), None, "before the people are known");
+        }
     }
 }

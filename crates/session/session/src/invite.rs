@@ -60,6 +60,10 @@ pub trait Workspace {
     fn roles(&self) -> Vec<sheet::Role>;
     /// The people a link may be made for.
     fn people(&self) -> Vec<sheet::Person>;
+    /// Whether [`Workspace::people`] answers yet, or is still being asked for.
+    fn people_known(&self) -> bool {
+        true
+    }
     /// The links that still work.
     fn pending(&self) -> Vec<sheet::Pending>;
     /// Make a link at `role`, which only `recipient`'s device redeems when one is named.
@@ -131,6 +135,10 @@ impl sheet::Invitations for Invite {
 
     fn people(&self) -> Vec<sheet::Person> {
         self.workspace.people()
+    }
+
+    fn people_known(&self) -> bool {
+        self.workspace.people_known()
     }
 
     fn pending(&self) -> Vec<sheet::Pending> {

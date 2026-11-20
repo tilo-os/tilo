@@ -243,19 +243,61 @@ document.addEventListener('click',function(e){
 if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis.__tiloAdapter=navigator.gpu.requestAdapter({powerPreference:'low-power'}).catch(function(){return null;});
 </script>
   <style>
-    html, body { margin: 0; height: 100%; overscroll-behavior: none; background: #121214; color: #ddd; font: 14px system-ui, sans-serif; }
+    /* The entry's colours, in the person's light or dark: the browser's until the desktop says
+       which it draws in (data-look, src/page_theme.rs), so the entry and the desktop behind it
+       always match. */
+    :root {
+      color-scheme: dark; --e-ground: #121214; --e-ink: #ddd; --e-sheet: #1c1d21; --e-text: #e6e6e9; --e-edge: #34363d;
+      --e-button-ink: #d4d4d8; --e-hover: #26282e; --e-strong: #f2f2f4; --e-strongest: #ffffff;
+      --e-field-edge: #3a3d44; --e-field: #14161a; --e-problem: #ff8a80; --e-line: #2c2e34; --e-quiet: #9b9ba3;
+      --e-focus: #9ab4ff; --e-rule: #2a2c32; --e-faint: #8f8f99; --e-done-ink: #9fd3ae; --e-soft: #c4c4cc;
+      --e-dim: #6c6c76; --e-heading: #ececf0; --e-body: #a8a8b2; --e-well: #17181c; --e-invalid: #b4574f;
+      --e-done: #1a2a20; --e-done-text: #cfe9d6; --e-note: #7f7f89; --e-link: #c9d3ff; --e-link-hover: #e4e9ff;
+      --e-divider: #23252a; --e-well-hover: #1f2025; --e-disabled: #c9c9cf; --e-mono: #b4b4bd;
+      --e-track: rgba(255, 255, 255, .08); --e-link-line: rgb(201 211 255 / 35%);
+      --e-faint-line: rgb(143 143 153 / 35%); --e-spin-track: rgb(18 18 20 / 25%); --entry-sheet: #1c1d21;
+      --entry-line: #2c2e34; --entry-inset: #24252b; --entry-face: #2c2e34; --entry-text: #e6e6e9;
+      --entry-strong: #f2f2f4; --entry-quiet: #9b9ba3; --entry-focus: #9ab4ff;
+    }
+    @media (prefers-color-scheme: light) { :root:not([data-look=dark]) {
+      color-scheme: light; --e-ground: #f7f7f9; --e-ink: #2a2b31; --e-sheet: #ffffff; --e-text: #1f2026;
+      --e-edge: #c9cad2; --e-button-ink: #2a2b31; --e-hover: #ebebef; --e-strong: #17181c; --e-strongest: #000000;
+      --e-field-edge: #c9cad2; --e-field: #ffffff; --e-problem: #b3261e; --e-line: #e1e2e7; --e-quiet: #5f606a;
+      --e-focus: #2a3fd1; --e-rule: #e1e2e7; --e-faint: #6a6b74; --e-done-ink: #2f7a4b; --e-soft: #3a3b42;
+      --e-dim: #9a9ba3; --e-heading: #17181c; --e-body: #55565f; --e-well: #ffffff; --e-invalid: #b3261e;
+      --e-done: #e3f3e8; --e-done-text: #1d5a35; --e-note: #73747d; --e-link: #2a3fd1; --e-link-hover: #1a2aa0;
+      --e-divider: #e1e2e7; --e-well-hover: #ebebef; --e-disabled: #9a9ba3; --e-mono: #3a3b42;
+      --e-track: rgba(0, 0, 0, .08); --e-link-line: rgb(42 63 209 / 35%); --e-faint-line: rgb(106 107 116 / 35%);
+      --e-spin-track: rgb(247 247 249 / 25%); --entry-sheet: #ffffff; --entry-line: #e1e2e7; --entry-inset: #f0f0f3;
+      --entry-face: #e1e2e7; --entry-text: #1f2026; --entry-strong: #17181c; --entry-quiet: #5f606a;
+      --entry-focus: #2a3fd1;
+    } }
+    :root[data-look=light] {
+      color-scheme: light; --e-ground: #f7f7f9; --e-ink: #2a2b31; --e-sheet: #ffffff; --e-text: #1f2026;
+      --e-edge: #c9cad2; --e-button-ink: #2a2b31; --e-hover: #ebebef; --e-strong: #17181c; --e-strongest: #000000;
+      --e-field-edge: #c9cad2; --e-field: #ffffff; --e-problem: #b3261e; --e-line: #e1e2e7; --e-quiet: #5f606a;
+      --e-focus: #2a3fd1; --e-rule: #e1e2e7; --e-faint: #6a6b74; --e-done-ink: #2f7a4b; --e-soft: #3a3b42;
+      --e-dim: #9a9ba3; --e-heading: #17181c; --e-body: #55565f; --e-well: #ffffff; --e-invalid: #b3261e;
+      --e-done: #e3f3e8; --e-done-text: #1d5a35; --e-note: #73747d; --e-link: #2a3fd1; --e-link-hover: #1a2aa0;
+      --e-divider: #e1e2e7; --e-well-hover: #ebebef; --e-disabled: #9a9ba3; --e-mono: #3a3b42;
+      --e-track: rgba(0, 0, 0, .08); --e-link-line: rgb(42 63 209 / 35%); --e-faint-line: rgb(106 107 116 / 35%);
+      --e-spin-track: rgb(247 247 249 / 25%); --entry-sheet: #ffffff; --entry-line: #e1e2e7; --entry-inset: #f0f0f3;
+      --entry-face: #e1e2e7; --entry-text: #1f2026; --entry-strong: #17181c; --entry-quiet: #5f606a;
+      --entry-focus: #2a3fd1;
+    }
+    html, body { margin: 0; height: 100%; overscroll-behavior: none; background: var(--e-ground); color: var(--e-ink); font: 14px system-ui, sans-serif; }
     #surface { height: 100%; }
     /* Until the desktop is up, #status is placed by the arrival rules below;
        after, it speaks to screen readers only, and the desktop is the whole
        page. */
     #bar { display: contents; }
     [data-arrival=done] #bar { display: block; position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: #1c1d21; border: 1px solid #2c2e34; box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
-    .tilo-entry-card p { margin: 0; line-height: 1.5; color: #e6e6e9; }
-    .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #34363d; background: transparent; color: #d4d4d8; cursor: pointer; }
-    .tilo-entry-card button:hover { background: #26282e; }
-    .tilo-entry-card button.tilo-entry-primary { border-color: transparent; background: #f2f2f4; color: #121214; font-weight: 500; }
-    .tilo-entry-card button.tilo-entry-primary:hover { background: #ffffff; }
+    .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: var(--e-sheet); border: 1px solid var(--e-line); box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
+    .tilo-entry-card p { margin: 0; line-height: 1.5; color: var(--e-text); }
+    .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--e-edge); background: transparent; color: var(--e-button-ink); cursor: pointer; }
+    .tilo-entry-card button:hover { background: var(--e-hover); }
+    .tilo-entry-card button.tilo-entry-primary { border-color: transparent; background: var(--e-strong); color: var(--e-ground); font-weight: 500; }
+    .tilo-entry-card button.tilo-entry-primary:hover { background: var(--e-strongest); }
     .tilo-entry-actions { display: flex; flex-direction: row-reverse; justify-content: flex-start; gap: 8px; }
     .tilo-entry-options { display: grid; gap: 6px; }
     .tilo-entry-options button { text-align: left; }
@@ -263,14 +305,13 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        no breathing mark, line, bar or note that the network is slow. */
     body:has(.tilo-entry-card) :is(#arrival > *, #arrival-note, #arrival-bar, #status) { visibility: hidden; }
     .tilo-entry-card label { display: grid; gap: 6px; }
-    .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: inherit; }
-    .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }
+    .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--e-field-edge); background: var(--e-field); color: inherit; }
+    .tilo-entry-card .tilo-entry-error { margin: 0; color: var(--e-problem); }
     /* An invitation, before the person joins (entry-page.mjs
        `invitationCard`): one sentence, who invited them and then the
        workspace as the heading, how many people are in it, and the role as
        the desktop's role chooser shows one, its name over what it lets them
        do. Its colours are the entry cards' tokens. */
-    :root { --entry-sheet: #1c1d21; --entry-line: #2c2e34; --entry-inset: #24252b; --entry-face: #2c2e34; --entry-text: #e6e6e9; --entry-strong: #f2f2f4; --entry-quiet: #9b9ba3; --entry-focus: #9ab4ff; }
     .tilo-invite { width: min(380px, calc(100vw - 32px)); gap: 20px; padding: 24px; background: var(--entry-sheet); border-color: var(--entry-line); color: var(--entry-text); }
     .tilo-invite-head { display: grid; gap: 2px; min-width: 0; }
     .tilo-entry-card .tilo-invite-from { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 6px; font-size: 14px; line-height: 20px; color: var(--entry-quiet); white-space: nowrap; }
@@ -291,33 +332,33 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     /* Who waits to join and the workspace's wait list (entry-page.mjs
        `waitingCard`): a row each, the person or address, then its answers. */
     .tilo-waiting { width: min(480px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
-    .tilo-waiting h2 { margin: 0; font-size: 17px; font-weight: 600; color: #f2f2f4; }
-    .tilo-waiting h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: #e6e6e9; }
+    .tilo-waiting h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--e-strong); }
+    .tilo-waiting h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: var(--e-text); }
     .tilo-waiting ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
     .tilo-waiting ul[hidden] { display: none; }
-    .tilo-waiting li { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; border-top: 1px solid #2a2c32; }
+    .tilo-waiting li { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; border-top: 1px solid var(--e-rule); }
     .tilo-waiting li:first-child { border-top: 0; }
-    .tilo-waiting .tilo-waiting-who { display: grid; flex: 1; min-width: 0; color: #e6e6e9; }
+    .tilo-waiting .tilo-waiting-who { display: grid; flex: 1; min-width: 0; color: var(--e-text); }
     .tilo-waiting .tilo-waiting-contact { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tilo-waiting time { font-size: 12px; color: #8f8f99; }
-    .tilo-waiting time.tilo-waiting-invited { color: #9fd3ae; }
+    .tilo-waiting time { font-size: 12px; color: var(--e-faint); }
+    .tilo-waiting time.tilo-waiting-invited { color: var(--e-done-ink); }
     .tilo-waiting li button { flex: none; padding: 6px 12px; }
-    .tilo-waiting .tilo-waiting-none { color: #9b9ba3; }
+    .tilo-waiting .tilo-waiting-none { color: var(--e-quiet); }
     .tilo-waiting section:empty { display: none; }
-    .tilo-waiting .tilo-waiting-note { margin: 0 0 8px; font-size: 13px; color: #9b9ba3; }
+    .tilo-waiting .tilo-waiting-note { margin: 0 0 8px; font-size: 13px; color: var(--e-quiet); }
     /* Who is in a workspace, and who may remove them (entry-page.mjs
        `peopleCard`): a row each, the person and their part, then Remove. */
     /* Pairing a device: the link's sheet, the ask on the device that sent
        it, and the code a new device shows while it waits (entry-page.mjs). */
     .tilo-pair { width: min(400px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
-    .tilo-pair h2 { margin: 0; font-size: 17px; font-weight: 600; color: #f2f2f4; }
-    .tilo-pair .tilo-pair-note { font-size: 13px; color: #9b9ba3; }
-    .tilo-pair input { min-width: 0; text-overflow: ellipsis; color: #c4c4cc; }
+    .tilo-pair h2 { margin: 0; font-size: 17px; font-weight: 600; color: var(--e-strong); }
+    .tilo-pair .tilo-pair-note { font-size: 13px; color: var(--e-quiet); }
+    .tilo-pair input { min-width: 0; text-overflow: ellipsis; color: var(--e-soft); }
     .tilo-pair-qr { display: block; width: min(240px, 100%); height: auto; aspect-ratio: 1; margin: 0 auto; border-radius: 10px; image-rendering: pixelated; }
-    .tilo-pair .tilo-pair-digits { font: 600 32px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; text-align: center; color: #f2f2f4; }
+    .tilo-pair .tilo-pair-digits { font: 600 32px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; text-align: center; color: var(--e-strong); }
     .tilo-pair-device { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
-    .tilo-pair-device dt { color: #9b9ba3; }
-    .tilo-pair-device dd { margin: 0; color: #e6e6e9; overflow-wrap: anywhere; }
+    .tilo-pair-device dt { color: var(--e-quiet); }
+    .tilo-pair-device dd { margin: 0; color: var(--e-text); overflow-wrap: anywhere; }
     .tilo-pair-done { justify-items: center; text-align: center; animation: tilo-pair-in 420ms ease-out both; }
     .tilo-pair-check { position: relative; width: 44px; height: 44px; border-radius: 50%; background: #2f8f5b; animation: tilo-pair-pop 480ms cubic-bezier(.2, 1.4, .4, 1) both; }
     .tilo-pair-check::after { content: ''; position: absolute; left: 16px; top: 10px; width: 9px; height: 18px; border: solid #fff; border-width: 0 3px 3px 0; transform: rotate(45deg); }
@@ -334,24 +375,24 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        leaves only its words and a way to try again. Then the screen fades
        and the desktop is under it. Steps come from entry-page.mjs
        (`data-arrival`). */
-    #arrival { position: fixed; inset: 0; z-index: 1; display: grid; place-content: center; justify-items: center; background: #121214; transition: opacity 360ms ease-out, visibility 0s linear 360ms; }
+    #arrival { position: fixed; inset: 0; z-index: 1; display: grid; place-content: center; justify-items: center; background: var(--e-ground); transition: opacity 360ms ease-out, visibility 0s linear 360ms; }
     #arrival > svg { display: block; margin-bottom: 16px; animation: tilo-breathe 5s ease-in-out infinite; }
     @keyframes tilo-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }
     [data-arrival=stopped] #arrival > svg { visibility: hidden; }
     /* Fading out, it no longer takes the pointer: a click on the desktop as it shows reaches it. */
     [data-arrival=done] #arrival { opacity: 0; visibility: hidden; pointer-events: none; }
-    #arrival > p, #arrival-note, html:not([data-arrival=done]) #status { position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); width: min(36em, calc(100% - 48px)); margin: 0; text-align: center; line-height: 1.5; color: #c4c4cc; }
+    #arrival > p, #arrival-note, html:not([data-arrival=done]) #status { position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); width: min(36em, calc(100% - 48px)); margin: 0; text-align: center; line-height: 1.5; color: var(--e-soft); }
     /* Stopped before the page's modules ran (stall.inline.js): its words
        grow upwards from just above Try again, so a sentence of any length
        never runs under the button. */
     [data-arrival=stopped] #status { top: auto; bottom: calc(50% - 64px); }
     #arrival > p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 240ms ease-out; }
     #arrival > p.shown { opacity: 1; }
-    #arrival > p .label { color: #9b9ba3; margin-right: .5em; }
-    #arrival-bar { position: fixed; left: 50%; top: calc(50% + 58px); width: 96px; margin-left: -48px; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .08); overflow: hidden; }
-    #arrival-bar > span { display: block; height: 100%; background: #6c6c76; transform-origin: left; transform: scaleX(var(--progress, 0)); transition: transform 200ms linear; }
+    #arrival > p .label { color: var(--e-quiet); margin-right: .5em; }
+    #arrival-bar { position: fixed; left: 50%; top: calc(50% + 58px); width: 96px; margin-left: -48px; height: 2px; border-radius: 1px; background: var(--e-track); overflow: hidden; }
+    #arrival-bar > span { display: block; height: 100%; background: var(--e-dim); transform-origin: left; transform: scaleX(var(--progress, 0)); transition: transform 200ms linear; }
     #arrival-retry, #arrival-own { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
-    #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 2px; }
     [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]):not([data-failure]) #arrival-retry { display: block; }
     /* A step that does not move on: Try again beside the wait (arrival.mjs, stall.inline.js). */
     [data-arrival-stalled]:not([data-arrival=done]):not([data-arrival=stopped]) body:not(:has(.tilo-entry-card)) #arrival-retry { display: block; }
@@ -369,24 +410,24 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        (entry-page.mjs `offerFront`), over the page still loading; the ways
        to sign in show once the runtime that signs in is there. */
     [data-front]:not([data-arrival=stopped]) .refusal-alt { visibility: hidden; }
-    :is([data-front], [data-arrival=stopped][data-entry=refused])[data-refusal] #arrival-refusal { position: fixed; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 230px)) 24px 0; overflow-y: auto; text-align: center; background: #121214; }
+    :is([data-front], [data-arrival=stopped][data-entry=refused])[data-refusal] #arrival-refusal { position: fixed; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 230px)) 24px 0; overflow-y: auto; text-align: center; background: var(--e-ground); }
     [data-refusal] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .refusal-main { display: flex; flex-direction: column; align-items: center; width: min(400px, 100%); }
     .refusal-main > svg { display: block; margin-bottom: 24px; }
-    #arrival-refusal h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #ececf0; text-wrap: balance; }
-    #arrival-refusal-body { margin: 0 0 28px; font-size: 15px; line-height: 1.5; color: #a8a8b2; text-wrap: balance; }
+    #arrival-refusal h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: var(--e-heading); text-wrap: balance; }
+    #arrival-refusal-body { margin: 0 0 28px; font-size: 15px; line-height: 1.5; color: var(--e-body); text-wrap: balance; }
     .refusal-field { display: grid; grid-template-columns: 1fr auto; gap: 8px; width: 100%; margin: 0; }
-    .refusal-field input { box-sizing: border-box; height: 40px; min-width: 0; font: inherit; font-size: 15px; padding: 0 12px; border-radius: 8px; border: 1px solid #3a3d44; background: #17181c; color: #ececf0; }
-    .refusal-field input::placeholder { color: #6c6c76; }
-    .refusal-field input:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 1px; border-color: transparent; }
-    .refusal-field input[aria-invalid=true] { border-color: #b4574f; }
-    .refusal-field button { box-sizing: border-box; height: 40px; font: inherit; font-size: 15px; font-weight: 500; padding: 0 16px; border-radius: 8px; border: 0; background: #f2f2f4; color: #121214; cursor: pointer; white-space: nowrap; }
-    .refusal-field button:hover { background: #ffffff; }
+    .refusal-field input { box-sizing: border-box; height: 40px; min-width: 0; font: inherit; font-size: 15px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--e-field-edge); background: var(--e-well); color: var(--e-heading); }
+    .refusal-field input::placeholder { color: var(--e-dim); }
+    .refusal-field input:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 1px; border-color: transparent; }
+    .refusal-field input[aria-invalid=true] { border-color: var(--e-invalid); }
+    .refusal-field button { box-sizing: border-box; height: 40px; font: inherit; font-size: 15px; font-weight: 500; padding: 0 16px; border-radius: 8px; border: 0; background: var(--e-strong); color: var(--e-ground); cursor: pointer; white-space: nowrap; }
+    .refusal-field button:hover { background: var(--e-strongest); }
     .refusal-field button:disabled { cursor: default; opacity: .6; }
-    .refusal-field button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    .refusal-field button:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 2px; }
     /* The wait list once it took the address: the same height as the field
        it replaces. */
-    #arrival-wait-done { display: none; box-sizing: border-box; width: 100%; min-height: 40px; margin: 0; padding: 9px 12px; border-radius: 8px; background: #1a2a20; color: #cfe9d6; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
+    #arrival-wait-done { display: none; box-sizing: border-box; width: 100%; min-height: 40px; margin: 0; padding: 9px 12px; border-radius: 8px; background: var(--e-done); color: var(--e-done-text); font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
     [data-wait-listed] #arrival-wait { display: none; }
     [data-wait-listed] #arrival-wait-done { display: block; }
     /* Taking the address off again, under the confirmation; the note under
@@ -401,33 +442,33 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     /* Where questions go, when the host names it. */
     #arrival-wait-contact { min-height: 0; margin-top: 4px; }
     #arrival-wait-contact:empty { display: none; }
-    .refusal-note { width: 100%; margin: 10px 0 0; min-height: 3em; font-size: 13px; line-height: 1.5; color: #7f7f89; text-wrap: pretty; }
+    .refusal-note { width: 100%; margin: 10px 0 0; min-height: 3em; font-size: 13px; line-height: 1.5; color: var(--e-note); text-wrap: pretty; }
     .refusal-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
-    .refusal-note a:hover { color: #c4c4cc; }
-    .refusal-note.refusal-problem, .refusal-problem { color: #ff8a80; }
-    .refusal-alt { width: 100%; margin: 20px 0 0; padding-top: 20px; border-top: 1px solid #23252a; }
-    .refusal-alt p { margin: 0; font-size: 14px; line-height: 1.5; color: #a8a8b2; }
+    .refusal-note a:hover { color: var(--e-soft); }
+    .refusal-note.refusal-problem, .refusal-problem { color: var(--e-problem); }
+    .refusal-alt { width: 100%; margin: 20px 0 0; padding-top: 20px; border-top: 1px solid var(--e-divider); }
+    .refusal-alt p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--e-body); }
     .refusal-alt p + p { margin-top: 8px; }
-    .refusal-link { font: inherit; padding: 0; border: 0; background: none; color: #c9d3ff; cursor: pointer; text-decoration: underline; text-decoration-color: rgb(201 211 255 / 35%); text-underline-offset: 3px; }
-    .refusal-link:hover { color: #e4e9ff; text-decoration-color: currentColor; }
-    .refusal-link:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 3px; border-radius: 2px; }
+    .refusal-link { font: inherit; padding: 0; border: 0; background: none; color: var(--e-link); cursor: pointer; text-decoration: underline; text-decoration-color: var(--e-link-line); text-underline-offset: 3px; }
+    .refusal-link:hover { color: var(--e-link-hover); text-decoration-color: currentColor; }
+    .refusal-link:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 3px; border-radius: 2px; }
     .refusal-link:disabled { cursor: default; opacity: .6; }
     #arrival-sign-in-note:empty, #arrival-invite-error:empty { display: none; }
     /* The ways to sign in wrap as one, after the question; the dot between them only while both show. */
     .refusal-ways { display: inline-block; white-space: nowrap; }
     .refusal-ways [hidden] + .refusal-or, .refusal-or:has(+ [hidden]) { display: none; }
-    #arrival-invite-toggle { font-size: 13px; color: #8f8f99; text-decoration-color: rgb(143 143 153 / 35%); }
-    #arrival-invite-toggle:hover { color: #c4c4cc; }
+    #arrival-invite-toggle { font-size: 13px; color: var(--e-faint); text-decoration-color: var(--e-faint-line); }
+    #arrival-invite-toggle:hover { color: var(--e-soft); }
     #arrival-invite { margin-top: 12px; }
     #arrival-invite[hidden] { display: none; }
-    #arrival-invite-error { grid-column: 1 / -1; margin: 0; font-size: 13px; line-height: 1.5; color: #ff8a80; text-align: center; }
+    #arrival-invite-error { grid-column: 1 / -1; margin: 0; font-size: 13px; line-height: 1.5; color: var(--e-problem); text-align: center; }
     /* An entry without a wait list: the invite link is the way in, shown. */
     [data-refusal=invite] #arrival-wait, [data-refusal=invite] #arrival-wait-note, [data-refusal=invite] #arrival-wait-off, [data-refusal=invite] #arrival-wait-again-line, [data-refusal=invite] #arrival-wait-contact, [data-refusal=invite] #arrival-invite-toggle { display: none; }
     [data-refusal=invite] #arrival-invite { margin-top: 0; }
     [data-refusal=invite] .refusal-alt { margin-top: 24px; }
     .refusal-foot { margin-top: auto; padding: 32px 0 24px; }
-    #arrival-refusal #arrival-own { display: block; visibility: hidden; position: static; transform: none; padding: 0; border: 0; border-radius: 2px; background: none; font-size: 13px; color: #8f8f99; text-decoration: underline; text-decoration-color: rgb(143 143 153 / 35%); text-underline-offset: 3px; }
-    #arrival-refusal #arrival-own:hover { color: #c4c4cc; }
+    #arrival-refusal #arrival-own { display: block; visibility: hidden; position: static; transform: none; padding: 0; border: 0; border-radius: 2px; background: none; font-size: 13px; color: var(--e-faint); text-decoration: underline; text-decoration-color: var(--e-faint-line); text-underline-offset: 3px; }
+    #arrival-refusal #arrival-own:hover { color: var(--e-soft); }
     [data-own-desktop] #arrival-refusal #arrival-own { visibility: visible; }
     @media (max-width: 480px) {
       :is([data-front], [data-arrival=stopped][data-entry=refused])[data-refusal] #arrival-refusal { padding-top: max(32px, calc(42vh - 230px)); }
@@ -446,31 +487,31 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        screen shows under it, and no card over it; #status keeps its words
        for screen readers. */
     #arrival-failure { display: none; }
-    [data-failure] #arrival-failure { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 190px)) 24px 32px; overflow-y: auto; text-align: center; background: #121214; }
+    [data-failure] #arrival-failure { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 190px)) 24px 32px; overflow-y: auto; text-align: center; background: var(--e-ground); }
     [data-failure] :is(#arrival, #arrival-note, #arrival-retry, #arrival-own, #arrival-reconnect, .tilo-entry-card) { display: none; }
     [data-failure] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .failure-main { display: flex; flex-direction: column; align-items: center; width: min(420px, 100%); }
     .failure-main > svg { display: block; margin-bottom: 24px; }
-    #arrival-failure h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #ececf0; text-wrap: balance; overflow-wrap: anywhere; }
-    #arrival-failure-body { margin: 0 0 24px; font-size: 15px; line-height: 1.5; color: #a8a8b2; text-wrap: pretty; overflow-wrap: anywhere; }
+    #arrival-failure h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: var(--e-heading); text-wrap: balance; overflow-wrap: anywhere; }
+    #arrival-failure-body { margin: 0 0 24px; font-size: 15px; line-height: 1.5; color: var(--e-body); text-wrap: pretty; overflow-wrap: anywhere; }
     .failure-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
     .failure-actions button { box-sizing: border-box; min-width: 136px; height: 40px; padding: 0 18px; font: inherit; font-size: 15px; font-weight: 500; border-radius: 8px; cursor: pointer; }
     .failure-actions button[hidden] { display: none; }
-    .failure-actions .failure-primary { border: 0; background: #f2f2f4; color: #121214; }
-    .failure-actions .failure-primary:hover { background: #ffffff; }
-    .failure-actions .failure-secondary { border: 1px solid #34363d; background: transparent; color: #d4d4d8; }
-    .failure-actions .failure-secondary:hover { background: #26282e; }
-    .failure-actions button:focus-visible, #arrival-failure-others button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
-    #arrival-failure-elsewhere { width: 100%; margin-top: 32px; padding-top: 20px; border-top: 1px solid #23252a; }
+    .failure-actions .failure-primary { border: 0; background: var(--e-strong); color: var(--e-ground); }
+    .failure-actions .failure-primary:hover { background: var(--e-strongest); }
+    .failure-actions .failure-secondary { border: 1px solid var(--e-edge); background: transparent; color: var(--e-button-ink); }
+    .failure-actions .failure-secondary:hover { background: var(--e-hover); }
+    .failure-actions button:focus-visible, #arrival-failure-others button:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 2px; }
+    #arrival-failure-elsewhere { width: 100%; margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--e-divider); }
     /* Nothing to try again: the other workspaces follow the words closely. */
     .failure-actions:not(:has(button:not([hidden]))) { display: none; }
     .failure-actions:not(:has(button:not([hidden]))) + #arrival-failure-elsewhere { margin-top: 8px; }
     #arrival-failure-elsewhere[hidden] { display: none; }
-    #arrival-failure-others-heading { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: #8f8f99; }
+    #arrival-failure-others-heading { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: var(--e-faint); }
     #arrival-failure-others { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
-    #arrival-failure-others button { width: 100%; box-sizing: border-box; padding: 10px 12px; font: inherit; font-size: 15px; text-align: left; border-radius: 8px; border: 1px solid #23252a; background: #17181c; color: #d4d4d8; cursor: pointer; overflow-wrap: anywhere; }
-    #arrival-failure-others .failure-note { display: block; font-size: 13px; color: #8f8f99; }
-    #arrival-failure-others button:hover { background: #1f2025; border-color: #34363d; }
+    #arrival-failure-others button { width: 100%; box-sizing: border-box; padding: 10px 12px; font: inherit; font-size: 15px; text-align: left; border-radius: 8px; border: 1px solid var(--e-divider); background: var(--e-well); color: var(--e-button-ink); cursor: pointer; overflow-wrap: anywhere; }
+    #arrival-failure-others .failure-note { display: block; font-size: 13px; color: var(--e-faint); }
+    #arrival-failure-others button:hover { background: var(--e-well-hover); border-color: var(--e-edge); }
     #arrival-failure-details[hidden] { display: none; }
     [data-failure] #arrival-failure-details { margin-top: 24px; }
     #arrival-failure-elsewhere:not([hidden]) + #arrival-failure-details { border-top: 0; padding-top: 0; }
@@ -486,34 +527,34 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        below. The countdown is hidden from screen readers; the status line
        beside it says each change once. */
     #arrival-reconnect { display: none; }
-    [data-reconnect] #arrival-reconnect { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 170px)) 24px 32px; overflow-y: auto; text-align: center; background: #121214; }
+    [data-reconnect] #arrival-reconnect { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 170px)) 24px 32px; overflow-y: auto; text-align: center; background: var(--e-ground); }
     [data-reconnect] :is(#arrival, #arrival-note, #arrival-retry, #arrival-own, #status) { display: none; }
     .reconnect-main { display: flex; flex-direction: column; align-items: center; width: min(400px, 100%); }
     .reconnect-main > svg { display: block; margin-bottom: 24px; animation: tilo-breathe 5s ease-in-out infinite; }
-    #arrival-reconnect h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #ececf0; text-wrap: balance; }
-    #arrival-reconnect-body { margin: 0; font-size: 15px; line-height: 1.5; color: #a8a8b2; text-wrap: balance; }
-    #arrival-reconnect-next { min-height: 1.5em; margin: 8px 0 24px; font-size: 13px; line-height: 1.5; color: #7f7f89; font-variant-numeric: tabular-nums; }
+    #arrival-reconnect h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: var(--e-heading); text-wrap: balance; }
+    #arrival-reconnect-body { margin: 0; font-size: 15px; line-height: 1.5; color: var(--e-body); text-wrap: balance; }
+    #arrival-reconnect-next { min-height: 1.5em; margin: 8px 0 24px; font-size: 13px; line-height: 1.5; color: var(--e-note); font-variant-numeric: tabular-nums; }
     .reconnect-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    #arrival-reconnect-now { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; min-width: 136px; height: 40px; padding: 0 18px; font: inherit; font-size: 15px; font-weight: 500; border-radius: 8px; border: 0; background: #f2f2f4; color: #121214; cursor: pointer; }
-    #arrival-reconnect-now:hover { background: #ffffff; }
-    #arrival-reconnect-now:disabled { cursor: default; background: #c9c9cf; }
-    #arrival-reconnect-now:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
-    .reconnect-spinner { display: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgb(18 18 20 / 25%); border-top-color: #121214; animation: tilo-spin 800ms linear infinite; }
+    #arrival-reconnect-now { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; min-width: 136px; height: 40px; padding: 0 18px; font: inherit; font-size: 15px; font-weight: 500; border-radius: 8px; border: 0; background: var(--e-strong); color: var(--e-ground); cursor: pointer; }
+    #arrival-reconnect-now:hover { background: var(--e-strongest); }
+    #arrival-reconnect-now:disabled { cursor: default; background: var(--e-disabled); }
+    #arrival-reconnect-now:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 2px; }
+    .reconnect-spinner { display: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--e-spin-track); border-top-color: var(--e-ground); animation: tilo-spin 800ms linear infinite; }
     #arrival-reconnect-now[aria-busy=true] .reconnect-spinner { display: block; }
     @keyframes tilo-spin { to { transform: rotate(360deg); } }
     #arrival-reconnect-host { display: block; margin-top: 16px; font-size: 14px; }
     #arrival-reconnect-host[hidden] { display: none; }
-    :is(#arrival-reconnect-details, #arrival-failure-details) { width: 100%; margin-top: 32px; padding-top: 16px; border-top: 1px solid #23252a; }
-    :is(#arrival-reconnect-details, #arrival-failure-details) summary { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 2px; font-size: 13px; color: #8f8f99; cursor: pointer; list-style: none; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) { width: 100%; margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--e-divider); }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 2px; font-size: 13px; color: var(--e-faint); cursor: pointer; list-style: none; }
     :is(#arrival-reconnect-details, #arrival-failure-details) summary::-webkit-details-marker { display: none; }
     :is(#arrival-reconnect-details, #arrival-failure-details) summary::before { content: ''; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 120ms ease-out; }
     :is(#arrival-reconnect-details, #arrival-failure-details)[open] summary::before { transform: rotate(45deg); }
-    :is(#arrival-reconnect-details, #arrival-failure-details) summary:hover { color: #c4c4cc; }
-    :is(#arrival-reconnect-details, #arrival-failure-details) summary:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
-    :is(#arrival-reconnect-text, #arrival-failure-text) { margin: 12px 0 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid #23252a; background: #17181c; color: #b4b4bd; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-    .reconnect-copy { font: inherit; font-size: 13px; padding: 0; border: 0; background: none; color: #c9d3ff; cursor: pointer; text-decoration: underline; text-decoration-color: rgb(201 211 255 / 35%); text-underline-offset: 3px; }
-    .reconnect-copy:hover { color: #e4e9ff; text-decoration-color: currentColor; }
-    .reconnect-copy:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 3px; border-radius: 2px; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary:hover { color: var(--e-soft); }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 2px; }
+    :is(#arrival-reconnect-text, #arrival-failure-text) { margin: 12px 0 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--e-divider); background: var(--e-well); color: var(--e-mono); font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+    .reconnect-copy { font: inherit; font-size: 13px; padding: 0; border: 0; background: none; color: var(--e-link); cursor: pointer; text-decoration: underline; text-decoration-color: var(--e-link-line); text-underline-offset: 3px; }
+    .reconnect-copy:hover { color: var(--e-link-hover); text-decoration-color: currentColor; }
+    .reconnect-copy:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 3px; border-radius: 2px; }
     @media (max-width: 480px) {
       [data-reconnect] #arrival-reconnect { padding-top: max(32px, calc(42vh - 170px)); }
       #arrival-reconnect h1 { font-size: 20px; }
