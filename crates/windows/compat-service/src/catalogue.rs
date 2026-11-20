@@ -68,7 +68,7 @@ pub fn load_shipped_catalogue(
 
     require_regular(&paths.umu_csv, &fs::symlink_metadata(&paths.umu_csv)?)?;
     let profile = SecurityProfileRef::new("windows-app")?;
-    let proton = Runner::new("umu-proton", "UMU-Proton-10.0-4")?;
+    let proton = Runner::proton_default();
     let wine = Runner::new("wine", "system")?;
     let mut umu = proton_records_from_umu_csv(
         &fs::read_to_string(&paths.umu_csv)?,

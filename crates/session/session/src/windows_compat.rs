@@ -795,6 +795,7 @@ pub(crate) fn serve(serving: Serving, layout: Arc<LayoutAuthority>) -> Result<Se
         capsules,
         entries: entries.clone(),
         reopenings,
+        administrator: Arc::new(compat_service::account_administers_computer),
     };
     let service = Arc::new(Mutex::new(None));
     let started = Arc::clone(&service);

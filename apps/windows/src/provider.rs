@@ -428,11 +428,23 @@ enum WorkerCommand {
     Refresh,
     Launch(String),
     LaunchVmFallback(String),
-    LaunchVmWithFile { entry_id: String, source: File },
+    LaunchVmWithFile {
+        entry_id: String,
+        source: File,
+    },
     Stop(String),
-    Install { source: File, source_name: String },
-    InstallInCapsule { source: File, source_name: String },
-    InstallInVm { source: File, source_name: String },
+    Install {
+        source: File,
+        source_name: String,
+    },
+    InstallInCapsule {
+        source: File,
+        source_name: String,
+    },
+    InstallInVm {
+        source: File,
+        source_name: String,
+    },
     PublishVmCandidate(String),
     RetryInstall(String),
     EscalateInstallToVm(String),
@@ -440,6 +452,10 @@ enum WorkerCommand {
     VendorUninstall(String),
     VendorUninstallVm(String),
     DeleteData(String),
+    SetOpensWith {
+        entry_id: String,
+        route: Option<RouteKind>,
+    },
 }
 
 /// A list the service answered.
@@ -482,6 +498,8 @@ pub struct LiveProvider {
     launched: Option<String>,
     /// The last notice described a state that ended: the window drops the banner.
     notice_cleared: bool,
+    /// How each program was last asked to open: the same choice is carried to the service once.
+    opens_with_asked: std::collections::HashMap<String, Option<Route>>,
 }
 
 impl LiveProvider {
@@ -538,6 +556,7 @@ impl LiveProvider {
             pending_vm_install_confirmation: None,
             launched: None,
             notice_cleared: false,
+            opens_with_asked: std::collections::HashMap::new(),
         })
     }
 
@@ -859,12 +878,47 @@ impl CompatibilityProvider for LiveProvider {
         self.operation_result.take()
     }
 
-    fn set_route_override(&mut self, _app_id: &str, _route: Route) -> Result<(), String> {
-        Err("Only an administrator can change how this app opens.".into())
+    fn set_route_override(&mut self, app_id: &str, route: Route) -> Result<(), String> {
+        self.ask_opens_with(app_id, Some(route))
     }
 
-    fn reset_route_override(&mut self, _app_id: &str) -> Result<(), String> {
-        Err("Only an administrator can change how this app opens.".into())
+    fn reset_route_override(&mut self, app_id: &str) -> Result<(), String> {
+        self.ask_opens_with(app_id, None)
+    }
+}
+
+impl LiveProvider {
+    /// Ask the service to open `app_id` with `route` from now on, or as it recommends (`None`).
+    /// The service decides whether this person may; a choice already asked for is not asked
+    /// again while the service has yet to list it.
+    fn ask_opens_with(&mut self, app_id: &str, route: Option<Route>) -> Result<(), String> {
+        let application = self.managed_app(app_id)?;
+        if !application.route_override_available {
+            return Err(application
+                .route_override_unavailable_reason
+                .clone()
+                .unwrap_or_else(|| "This app opens only one way.".into()));
+        }
+        if self.opens_with_asked.get(app_id) == Some(&route) {
+            return Ok(());
+        }
+        let kind = match route {
+            None => None,
+            Some(Route::Wine) => Some(RouteKind::Wine),
+            Some(Route::Proton) => Some(RouteKind::Proton),
+            Some(Route::Vm) => {
+                return Err(
+                    "This app opens with Wine or Proton; add it in Windows to open it there."
+                        .into(),
+                );
+            }
+        };
+        self.send(WorkerCommand::SetOpensWith {
+            entry_id: app_id.to_owned(),
+            route: kind,
+        })?;
+        self.opens_with_asked.insert(app_id.to_owned(), route);
+        Ok(())
     }
 }
 
@@ -1056,6 +1110,14 @@ fn worker(mut client: SessionClient, commands: &Receiver<WorkerCommand>, events:
                 })),
                 true,
             ),
+            WorkerCommand::SetOpensWith { entry_id, route } => (
+                operation(client.request(&ProtocolRequest::SetOpensWith {
+                    version: PROTOCOL_VERSION,
+                    entry_id,
+                    route,
+                })),
+                true,
+            ),
         };
         if let WorkerEvent::Listed(now) = &event {
             last_listed = Some(now.as_ref().clone());
@@ -1183,6 +1245,12 @@ fn operation(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
         Ok(ProtocolResponse::DataDeleted { .. }) => {
             Ok("Application and all of its private capsule data were deleted.".into())
         }
+        Ok(ProtocolResponse::OpensWithSet { route, .. }) => Ok(match route {
+            Some(RouteKind::Proton) => "It opens with Proton from now on.",
+            Some(RouteKind::Wine) => "It opens with Wine from now on.",
+            Some(RouteKind::Vm) | None => "It opens the recommended way from now on.",
+        }
+        .into()),
         Ok(ProtocolResponse::Error { error }) => Err(error.message),
         Ok(_) => Err(UNEXPECTED_RESPONSE.into()),
         Err(error) => Err(error.to_string()),
@@ -1311,11 +1379,8 @@ fn app_from_managed(
     vm_uninstallation: Option<&VmUninstallation>,
 ) -> WindowsApp {
     let explanation = application.explanation;
-    let route = match explanation.route {
-        RouteKind::Wine => Route::Wine,
-        RouteKind::Proton => Route::Proton,
-        RouteKind::Vm => Route::Vm,
-    };
+    let route = route_from_kind(explanation.route);
+    let recommended_route = route_from_kind(application.recommended_route);
     let vm_uninstallation = vm_uninstallation.filter(|status| status.entry_id == application.id);
     let active_vm_uninstall = vm_uninstallation.filter(|status| {
         matches!(
@@ -1378,7 +1443,7 @@ fn app_from_managed(
         name: application.display_name,
         publisher: application.publisher,
         route,
-        recommended_route: route,
+        recommended_route,
         runner: explanation.runner,
         capsule: if route == Route::Vm {
             "Shared Windows appliance".into()
@@ -1431,10 +1496,8 @@ fn app_from_managed(
         launch_unavailable_reason,
         portal_file_open_available,
         portal_file_open_unavailable_reason,
-        route_override_available: false,
-        route_override_unavailable_reason: Some(
-            "Only an administrator can change how this app opens.".into(),
-        ),
+        route_override_available: application.opens_with_choice_available,
+        route_override_unavailable_reason: application.opens_with_unavailable_reason,
         can_retry_install: installation.is_some_and(|item| item.can_retry),
         can_escalate_install_to_vm: installation.is_some_and(can_escalate_install_to_vm),
         can_remove_launcher: application.remove_launcher_available,
@@ -1718,6 +1781,9 @@ mod tests {
             remove_launcher_available: false,
             vendor_uninstall_available: false,
             running: false,
+            recommended_route: RouteKind::Vm,
+            opens_with_choice_available: false,
+            opens_with_unavailable_reason: None,
         }
     }
 
@@ -1847,6 +1913,7 @@ mod tests {
                 pending_vm_install_confirmation: None,
                 launched: None,
                 notice_cleared: false,
+                opens_with_asked: std::collections::HashMap::new(),
             };
             event_tx
                 .send(WorkerEvent::Unavailable("invalid response".into()))
@@ -1880,6 +1947,7 @@ mod tests {
             }),
             launched: None,
             notice_cleared: false,
+            opens_with_asked: std::collections::HashMap::new(),
         };
         event_tx
             .send(WorkerEvent::Listed(Box::new(Listed {
@@ -1963,5 +2031,83 @@ mod tests {
             ended_notice(&said(None)).as_deref(),
             Some("Probe stopped: wine: could not load ntdll.so")
         );
+    }
+
+    /// A program in a private capsule shows how it opens now and how it is recommended to, and
+    /// whether this person may choose; the choice goes to the service once, as the typed
+    /// request, and the appliance is no choice for it.
+    #[test]
+    fn a_capsule_program_opens_with_what_an_administrator_chose() {
+        let mut application = managed_vm();
+        application.capsule_id = Some("private-capsule".into());
+        application.explanation.route = RouteKind::Proton;
+        application.recommended_route = RouteKind::Wine;
+        application.opens_with_choice_available = true;
+        let app = app_from_managed(application.clone(), None, None);
+        assert_eq!(
+            (app.route, app.recommended_route),
+            (Route::Proton, Route::Wine)
+        );
+        assert!(app.uses_override() && app.route_override_available);
+        assert_eq!(app.route_choices(), Route::CAPSULE);
+
+        application.opens_with_choice_available = false;
+        application.opens_with_unavailable_reason = Some("Only an administrator.".into());
+        let app = app_from_managed(application, None, None);
+        assert!(!app.route_override_available);
+        assert_eq!(
+            app.route_override_unavailable_reason.as_deref(),
+            Some("Only an administrator.")
+        );
+
+        let (command_tx, command_rx) = mpsc::channel();
+        let (_event_tx, event_rx) = mpsc::channel();
+        let mut provider = LiveProvider {
+            cached: SampleProvider::new().catalogue(),
+            commands: command_tx,
+            events: event_rx,
+            notice: None,
+            notice_error: false,
+            stopping: None,
+            operation_result: None,
+            pending_vm_install: None,
+            pending_vm_install_confirmation: None,
+            launched: None,
+            notice_cleared: false,
+            opens_with_asked: std::collections::HashMap::new(),
+        };
+        provider
+            .set_route_override("adobe-reader", Route::Proton)
+            .unwrap();
+        provider
+            .set_route_override("adobe-reader", Route::Proton)
+            .unwrap();
+        provider.reset_route_override("adobe-reader").unwrap();
+        let asked: Vec<_> = command_rx
+            .try_iter()
+            .map(|command| match command {
+                WorkerCommand::SetOpensWith { entry_id, route } => (entry_id, route),
+                _ => panic!("only the choice is asked"),
+            })
+            .collect();
+        assert_eq!(
+            asked,
+            [
+                ("adobe-reader".to_owned(), Some(RouteKind::Proton)),
+                ("adobe-reader".to_owned(), None),
+            ],
+            "the same choice is asked once"
+        );
+        assert!(
+            provider
+                .set_route_override("adobe-reader", Route::Vm)
+                .is_err()
+        );
+        assert_eq!(
+            provider.set_route_override("visual-studio", Route::Wine),
+            Err("Only an administrator can change how this app opens.".to_owned()),
+            "the service's reason is the answer"
+        );
+        assert!(command_rx.try_recv().is_err());
     }
 }

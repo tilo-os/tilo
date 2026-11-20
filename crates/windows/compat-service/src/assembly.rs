@@ -63,6 +63,9 @@ pub struct SessionSide {
     pub entries: EntryDirectory,
     /// What the session asks as itself: a saved tab's program, opened again.
     pub reopenings: Reopenings,
+    /// Whether the desktop's person administers the computer
+    /// ([`crate::account_administers_computer`]): only they choose how a program opens.
+    pub administrator: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 /// How a session's service is put together: [`Assembly::system`] on a Tilo
@@ -145,7 +148,8 @@ where
         vm,
         side.displays,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| error.to_string())?
+    .with_administrator_check(side.administrator);
     let authenticator = LauncherAuthenticator::new(side.launcher, side.parent_pid, side.launches);
     spawn_session_service(
         side.socket,

@@ -1298,6 +1298,7 @@ mod tests {
             query: ApplicationQuery::executable("app.exe"),
             kind: crate::ProgramKind::Application,
             arguments: Vec::new(),
+            opens_with: None,
         };
         let state = store.register_program(&state.id, program.clone()).unwrap();
         (directory, store, state, program)

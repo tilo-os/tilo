@@ -67,7 +67,8 @@ pub use service::{
 };
 pub use session::{
     CapabilityAuthority, CompatSessionHandle, LauncherAuthenticator, ManagedCompatibility,
-    SessionClient, SessionError, SessionHandoff, TrustedLauncherRegistry, spawn_session_service,
+    SessionClient, SessionError, SessionHandoff, TrustedLauncherRegistry,
+    account_administers_computer, spawn_session_service,
 };
 pub use store::{
     CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,

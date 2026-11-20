@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::caps::CapOverride;
 use compat_catalogue::{
-    ApplicationQuery, Catalogue, CatalogueError, LaunchPlan, Layer, MatchKind, Runtime, VmFallback,
+    ApplicationQuery, Architecture, Catalogue, CatalogueError, LaunchPlan, Layer, MatchKind,
+    Runtime, VmFallback,
 };
 use launcher::capabilities::CapabilityPlan;
 use serde::{Deserialize, Serialize};
@@ -650,6 +651,60 @@ where
         Ok(explanation(&route, vm_fallback, &resolved, false))
     }
 
+    /// How `program` of the capsule `capsule_id` opens as `app_id`, the way a person chose it to
+    /// when they did, and the way it opens unless someone chooses otherwise.
+    pub fn explain_program(
+        &self,
+        query: &ApplicationQuery,
+        app_id: &str,
+        capsule_id: &str,
+        program: &CapsuleProgram,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+    ) -> Result<(ExplainStatus, RouteKind), ServiceError> {
+        validate_launch_id("app id", app_id)?;
+        let route = self.resolve_route(query, VmFallback::Disabled, app_id, Some(capsule_id))?;
+        let recommended = RouteKind::from(route.runtime.layer);
+        let route = match program.opens_with {
+            Some(layer) => route.opened_with(layer)?,
+            None => route,
+        };
+        let resolved = CapabilityPlan::for_app(app_id, capabilities, now_unix);
+        Ok((
+            explanation(&route, VmFallback::Disabled, &resolved, false),
+            recommended,
+        ))
+    }
+
+    /// Open `program_id` of `capsule_id` with `route` from now on, or as its capsule opens
+    /// (`None`). The program keeps its files: Wine and Proton open the capsule's one prefix.
+    pub fn set_opens_with(
+        &self,
+        capsule_id: &str,
+        program_id: &str,
+        route: Option<RouteKind>,
+    ) -> Result<(), ServiceError> {
+        let layer = match route {
+            None => None,
+            Some(RouteKind::Wine) => Some(Layer::Wine),
+            Some(RouteKind::Proton) => Some(Layer::Proton),
+            Some(RouteKind::Vm) => return Err(CatalogueError::InvalidOpensWith.into()),
+        };
+        let _guard = self
+            .capsule_lock
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?;
+        let state = self
+            .store
+            .load(capsule_id)?
+            .ok_or_else(|| ServiceError::ProgramNotRegistered(program_id.to_owned()))?;
+        if layer == Some(Layer::Proton) && state.settings.architecture == Architecture::Win32 {
+            return Err(ServiceError::ProtonNeeds64Bit);
+        }
+        self.store.set_opens_with(capsule_id, program_id, layer)?;
+        Ok(())
+    }
+
     /// Read-only VM readiness for the manager.  This asks the installed
     /// delegate only for its state; it never starts a guest or relaxes the
     /// explicit-fallback requirement used by [`Self::launch`].
@@ -756,6 +811,7 @@ where
                 .ok_or_else(|| ServiceError::ProgramNotRegistered(input.program_id.clone()))?;
             (capsule, program)
         };
+        let (route, capsule) = opened_as_chosen(&route, &capsule, &program)?;
         let lease = self.resources.materialize(ResourceRequest {
             app_id: &input.app_id,
             workspace_id: &input.workspace_id,
@@ -1332,6 +1388,7 @@ where
             query,
             kind: ProgramKind::InstallerControl,
             arguments: Vec::new(),
+            opens_with: None,
         };
         self.start_setup(
             state,
@@ -1546,7 +1603,15 @@ where
                 query: installer_query(&inspection),
                 kind: ProgramKind::Application,
                 arguments: Vec::new(),
+                opens_with: None,
             });
+        }
+        // A program found again keeps how a person chose to open it.
+        for program in &mut programs {
+            program.opens_with = state
+                .programs
+                .get(&program.id)
+                .and_then(|before| before.opens_with);
         }
         state
             .programs
@@ -1663,6 +1728,30 @@ fn imported_app_id(sha256: &str) -> String {
     )
 }
 
+/// The route and capsule `program` opens with: its capsule's, or the layer a person chose for
+/// it over the same prefix. A Wine prefix opens under Proton as it is: Proton takes a prefix
+/// without its version stamp as one to bring up to date, and the 64-bit prefix Wine made is
+/// one it opens. A 32-bit prefix is not, so that choice is refused.
+fn opened_as_chosen(
+    route: &LaunchPlan,
+    capsule: &CapsuleState,
+    program: &CapsuleProgram,
+) -> Result<(LaunchPlan, CapsuleState), ServiceError> {
+    let Some(layer) = program.opens_with.filter(|layer| *layer != capsule.layer) else {
+        return Ok((route.clone(), capsule.clone()));
+    };
+    if layer == Layer::Proton && capsule.settings.architecture == Architecture::Win32 {
+        return Err(ServiceError::ProtonNeeds64Bit);
+    }
+    let route = route.opened_with(layer)?;
+    let capsule = CapsuleState {
+        layer,
+        runner: route.runner.clone(),
+        ..capsule.clone()
+    };
+    Ok((route, capsule))
+}
+
 fn launch_plan_from_state(state: &CapsuleState, query: &ApplicationQuery) -> LaunchPlan {
     LaunchPlan {
         record_id: None,
@@ -1715,6 +1804,7 @@ fn installer_control(
         query: installer_query(inspection),
         kind: ProgramKind::InstallerControl,
         arguments,
+        opens_with: None,
     })
 }
 
@@ -1890,6 +1980,8 @@ pub enum ServiceError {
     VmEscalationUnavailable,
     #[error("this application's setup is still open; finish or close it first")]
     SetupOpen,
+    #[error("Proton opens only programs set up for 64-bit Windows; this one opens with Wine")]
+    ProtonNeeds64Bit,
     #[error("capsule service state lock is poisoned")]
     StateLock,
 }
@@ -2234,6 +2326,7 @@ mod tests {
                     query: query.clone(),
                     kind: crate::ProgramKind::Application,
                     arguments: Vec::new(),
+                    opens_with: None,
                 },
             )
             .unwrap();
@@ -2314,6 +2407,7 @@ mod tests {
                         query: ApplicationQuery::executable(format!("{id}.exe")),
                         kind: crate::ProgramKind::Application,
                         arguments: Vec::new(),
+                        opens_with: None,
                     },
                 )
                 .unwrap();
@@ -2352,5 +2446,199 @@ mod tests {
             2,
             "no launch made a capsule of its own"
         );
+    }
+
+    /// A program added from a file opens with Proton once a person chose it: over the prefix its
+    /// setup filled, through UMU with the recipe for any program, while the program beside it in
+    /// that capsule keeps opening with Wine. The choice is saved with the program, and back to
+    /// the recommendation opens it with Wine again. The appliance and a 32-bit prefix are no
+    /// choice for it.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one program's choice is followed through every launch it changes"
+    )]
+    fn a_program_opens_with_proton_once_a_person_chose_it() {
+        struct Seen(Arc<Mutex<Vec<String>>>);
+
+        impl SandboxExecutor for Seen {
+            fn command(&self, plan: &CapsuleCommandPlan) -> Result<SandboxCommand, ExecutionError> {
+                plan.bwrap_argv.clone_into(&mut self.0.lock().unwrap());
+                Ok(SandboxCommand::new("true", [""; 0]))
+            }
+        }
+
+        let directory = TempDir::new().unwrap();
+        let argv = Arc::new(Mutex::new(Vec::new()));
+        let service = CompatibilityService::new(
+            catalogue(),
+            CapsuleStore::new(directory.path()).unwrap(),
+            SystemRuntimeRegistry::assuming_provider(),
+            Resources,
+            Seen(Arc::clone(&argv)),
+            Vm::default(),
+            Arc::new(LaunchDisplay {
+                uid: 1000,
+                runtime_dir: PathBuf::from("/xdg/1000"),
+                wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
+                render_node: Some(PathBuf::from("/dev/dri/renderD128")),
+            }),
+        )
+        .unwrap();
+        let mut setup = service
+            .resolve_route(
+                &ApplicationQuery::executable("setup.exe"),
+                VmFallback::Disabled,
+                &imported_app_id("setup"),
+                None,
+            )
+            .unwrap();
+        setup.runtime.id = "wine-setup".to_string();
+        let capsule = service.store.ensure_for_plan(&setup).unwrap();
+        assert_eq!(capsule.layer, Layer::Wine);
+        for id in ["tool", "helper"] {
+            service
+                .store
+                .register_program(
+                    &capsule.id,
+                    CapsuleProgram {
+                        id: id.to_string(),
+                        display_name: id.to_string(),
+                        prefix_relative_executable: PathBuf::from(format!("drive_c/{id}.exe")),
+                        query: ApplicationQuery::executable(format!("{id}.exe")),
+                        kind: crate::ProgramKind::Application,
+                        arguments: Vec::new(),
+                        opens_with: None,
+                    },
+                )
+                .unwrap();
+        }
+        let entry = |id: &str| {
+            service
+                .store
+                .registered_programs()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.program.id == id)
+                .unwrap()
+        };
+        let launch = |id: &str| {
+            let entry = entry(id);
+            let launched = service
+                .launch(&LaunchInput {
+                    app_id: entry.app_id.clone(),
+                    workspace_id: "workspace".to_string(),
+                    program_id: entry.program.id.clone(),
+                    capsule_id: Some(entry.capsule_id.clone()),
+                    query: entry.query.clone(),
+                    vm_fallback: VmFallback::Disabled,
+                    capabilities: Vec::new(),
+                    now_unix: Some(1),
+                })
+                .unwrap_or_else(|error| panic!("{id} launches: {error}"));
+            assert!(launched.program.wait().unwrap().success);
+            (launched.release)();
+            let argv = argv.lock().unwrap().clone();
+            let explained = service
+                .explain_program(
+                    &entry.query,
+                    &entry.app_id,
+                    &entry.capsule_id,
+                    &entry.program,
+                    &[],
+                    Some(1),
+                )
+                .unwrap();
+            (argv, explained)
+        };
+        // UMU starts a Proton program: its launch names the Proton UMU starts.
+        let umu = |argv: &[String]| {
+            argv.windows(2)
+                .any(|words| words == ["--setenv", "PROTONPATH"])
+        };
+        let set = |environment: &str| -> Option<String> {
+            let argv = argv.lock().unwrap();
+            argv.windows(3)
+                .find(|words| words[0] == "--setenv" && words[1] == environment)
+                .map(|words| words[2].clone())
+        };
+
+        service
+            .set_opens_with(&capsule.id, "tool", Some(RouteKind::Proton))
+            .unwrap();
+        let (tool, (status, recommended)) = launch("tool");
+        assert_eq!(status.route, RouteKind::Proton, "it opens with Proton now");
+        assert_eq!(
+            recommended,
+            RouteKind::Wine,
+            "Wine stays the recommendation"
+        );
+        assert_eq!(status.runner, "umu-proton UMU-Proton-10.0-4");
+        assert!(umu(&tool), "UMU starts it: {tool:?}");
+        assert_eq!(
+            set("GAMEID").as_deref(),
+            Some(compat_catalogue::PROTON_RECIPE_FOR_ANY_PROGRAM)
+        );
+        let prefix = (set("WINEPREFIX"), set("STEAM_COMPAT_DATA_PATH"));
+        let bound = |argv: &[String]| -> Vec<String> {
+            argv.windows(3)
+                .filter(|words| words[0] == "--bind-fd")
+                .map(|words| words[2].clone())
+                .collect()
+        };
+        let tool_files = bound(&tool);
+        assert!(
+            tool.last()
+                .is_some_and(|word| word.ends_with("drive_c/tool.exe")),
+            "{tool:?}"
+        );
+
+        let (helper, (status, _)) = launch("helper");
+        assert_eq!(status.route, RouteKind::Wine, "its neighbour keeps Wine");
+        assert_eq!(
+            (set("WINEPREFIX"), set("STEAM_COMPAT_DATA_PATH")),
+            prefix,
+            "Proton opens the prefix Wine does"
+        );
+        assert_eq!(bound(&helper), tool_files, "over the capsule's own files");
+        assert!(!umu(&helper));
+        assert_eq!(set("GAMEID"), None);
+
+        let reloaded = CapsuleStore::new(directory.path())
+            .unwrap()
+            .load(&capsule.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reloaded.program("tool").unwrap().opens_with,
+            Some(Layer::Proton),
+            "the choice is saved with the program"
+        );
+        assert_eq!(reloaded.layer, Layer::Wine, "the capsule is unchanged");
+
+        service.set_opens_with(&capsule.id, "tool", None).unwrap();
+        let (tool, (status, _)) = launch("tool");
+        assert_eq!(status.route, RouteKind::Wine);
+        assert!(!umu(&tool));
+        service
+            .set_opens_with(&capsule.id, "tool", Some(RouteKind::Wine))
+            .unwrap();
+        assert_eq!(
+            entry("tool").program.opens_with,
+            None,
+            "choosing what it is recommended to open with is no choice to keep"
+        );
+
+        assert!(matches!(
+            service.set_opens_with(&capsule.id, "tool", Some(RouteKind::Vm)),
+            Err(ServiceError::Catalogue(CatalogueError::InvalidOpensWith))
+        ));
+        let mut state = service.store.load(&capsule.id).unwrap().unwrap();
+        state.settings.architecture = Architecture::Win32;
+        service.store.save(&state).unwrap();
+        assert!(matches!(
+            service.set_opens_with(&capsule.id, "tool", Some(RouteKind::Proton)),
+            Err(ServiceError::ProtonNeeds64Bit)
+        ));
     }
 }

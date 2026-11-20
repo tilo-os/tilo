@@ -12,6 +12,9 @@ pub enum Route {
 }
 impl Route {
     pub const ALL: [Self; 3] = [Self::Wine, Self::Proton, Self::Vm];
+    /// What a program in a private capsule opens with: its files are a Wine prefix, which Wine
+    /// and Proton both open, while the Windows appliance has programs of its own.
+    pub const CAPSULE: [Self; 2] = [Self::Wine, Self::Proton];
     pub const fn short(self) -> &'static str {
         match self {
             Self::Wine => "WINE",
@@ -127,6 +130,14 @@ pub struct WindowsApp {
 impl WindowsApp {
     pub fn uses_override(&self) -> bool {
         self.route != self.recommended_route
+    }
+    /// The routes a person may choose between for it.
+    pub fn route_choices(&self) -> &'static [Route] {
+        if self.route == Route::Vm || self.recommended_route == Route::Vm {
+            &Route::ALL
+        } else {
+            &Route::CAPSULE
+        }
     }
     /// Its program is open in a private capsule, which the manager can end.
     pub fn stop_available(&self) -> bool {

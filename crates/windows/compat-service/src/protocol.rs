@@ -6,9 +6,9 @@ use crate::{
     VmInstallConfirmation, VmInstallation, VmPresentation, VmUninstallation,
 };
 
-// Version 8 answers a launch once the program started and reports its end
-// apart (`ProgramEnd` in a list, `running` on an application), and adds `Stop`.
-pub const PROTOCOL_VERSION: u16 = 9;
+// Version 10 adds `SetOpensWith`, and an application tells how it opens unless
+// someone chooses otherwise and whether this manager may choose.
+pub const PROTOCOL_VERSION: u16 = 10;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
@@ -95,6 +95,14 @@ pub enum ProtocolRequest {
         version: u16,
         capsule_id: String,
     },
+    /// Open a program of a private capsule with Wine or Proton from now on, or
+    /// as its capsule opens (`None`). Only an administrator of the computer
+    /// may; the server checks, never the client.
+    SetOpensWith {
+        version: u16,
+        entry_id: String,
+        route: Option<RouteKind>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -133,6 +141,12 @@ pub struct ManagedApplication {
     pub vendor_uninstall_available: bool,
     /// A program of this entry started in the manager's workspace is still open.
     pub running: bool,
+    /// How it opens unless someone chooses otherwise; `explanation.route` is
+    /// how it opens now.
+    pub recommended_route: RouteKind,
+    /// Whether this manager may choose how it opens, and why not when not.
+    pub opens_with_choice_available: bool,
+    pub opens_with_unavailable_reason: Option<String>,
 }
 
 /// A program of the manager's workspace that ended, reported once to each
@@ -164,7 +178,7 @@ mod tests {
         assert!(!encoded.contains("writable"));
         assert!(
             serde_json::from_str::<ProtocolRequest>(
-                r#"{"method":"launch_vm_with_portal_file","version":9,"entry_id":"windows-entry","writable":true}"#,
+                r#"{"method":"launch_vm_with_portal_file","version":10,"entry_id":"windows-entry","writable":true}"#,
             )
             .is_err()
         );
@@ -243,6 +257,10 @@ pub enum ProtocolResponse {
     },
     DataDeleted {
         capsule_id: String,
+    },
+    OpensWithSet {
+        entry_id: String,
+        route: Option<RouteKind>,
     },
     Error {
         error: ProtocolError,

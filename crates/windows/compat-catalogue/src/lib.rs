@@ -97,6 +97,16 @@ impl Runner {
         }
     }
 
+    /// The Proton the computer ships: the runner of every Proton route, a catalogue game's
+    /// and a program a person chose to open with Proton alike.
+    #[must_use]
+    pub fn proton_default() -> Self {
+        Self {
+            family: String::from("umu-proton"),
+            version: String::from("UMU-Proton-10.0-4"),
+        }
+    }
+
     fn validate(&self) -> Result<(), CatalogueError> {
         validate_token("runner family", &self.family)?;
         validate_token("runner version", &self.version)
@@ -457,6 +467,45 @@ pub struct LaunchPlan {
     pub security_profile: SecurityProfileRef,
     pub proton_recipe: Option<String>,
     pub compatibility_grade: Option<CompatibilityGrade>,
+}
+
+/// The UMU game id of a program no catalogue entry names: UMU applies no game's fixes to it.
+pub const PROTON_RECIPE_FOR_ANY_PROGRAM: &str = "umu-default";
+
+impl LaunchPlan {
+    /// This plan with its program opened by `layer`, as a person chose: the same runtime (the
+    /// program keeps its files), settings and security profile, started by the computer's runner of
+    /// that layer. Proton never comes from a guess about a program, only from the catalogue or
+    /// this choice, so a program a person opens with Proton carries UMU's recipe for any
+    /// program. The VM is no layer a capsule's program opens with.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogueError::InvalidOpensWith`] for the VM, or a plan that is no capsule's.
+    pub fn opened_with(&self, layer: Layer) -> Result<Self, CatalogueError> {
+        if layer == Layer::Vm || self.runtime.layer == Layer::Vm {
+            return Err(CatalogueError::InvalidOpensWith);
+        }
+        if layer == self.runtime.layer {
+            return Ok(self.clone());
+        }
+        let (runner, proton_recipe) = match layer {
+            Layer::Proton => (
+                Runner::proton_default(),
+                Some(String::from(PROTON_RECIPE_FOR_ANY_PROGRAM)),
+            ),
+            Layer::Wine | Layer::Vm => (Runner::wine_default(), None),
+        };
+        Ok(Self {
+            runtime: Runtime {
+                id: self.runtime.id.clone(),
+                layer,
+            },
+            runner,
+            proton_recipe,
+            ..self.clone()
+        })
+    }
 }
 
 /// Why a catalogue record won.
@@ -1435,6 +1484,8 @@ pub enum CatalogueError {
     ProtonRecipeRequired(String),
     #[error("non-Proton record {0:?} contains a Proton recipe")]
     UnexpectedProtonRecipe(String),
+    #[error("a program in a private capsule opens with Wine or Proton")]
+    InvalidOpensWith,
     #[error("Proton record {id:?} uses unsupported runner family {family:?}")]
     InvalidProtonRunner { id: String, family: String },
     #[error("VM record {id:?} must use the windows-vm runner, not {family:?}")]
@@ -1835,5 +1886,42 @@ mod tests {
             let vm_runner = Runner::new("windows-vm", "managed").expect("valid runner");
             assert!(wine_records_from_bottles_recipe(recipe, &vm_runner, &profile).is_err());
         }
+    }
+
+    /// A person's choice opens a program of a private capsule with Proton under the shipped
+    /// runner and UMU's recipe for any program, keeping its runtime, settings and profile; back
+    /// to Wine drops the recipe; the VM is refused either way.
+    #[test]
+    fn a_program_opens_with_the_layer_a_person_chose() {
+        let wine = default_wine_plan();
+        let proton = wine.opened_with(Layer::Proton).expect("Proton is a choice");
+        assert_eq!(proton.runtime.id, wine.runtime.id);
+        assert_eq!(proton.runtime.layer, Layer::Proton);
+        assert_eq!(proton.runner, Runner::proton_default());
+        assert_eq!(
+            proton.proton_recipe.as_deref(),
+            Some(PROTON_RECIPE_FOR_ANY_PROGRAM)
+        );
+        assert_eq!(proton.settings, wine.settings);
+        assert_eq!(proton.security_profile, wine.security_profile);
+        let recipe = Recipe {
+            layer: proton.runtime.layer,
+            runner: proton.runner.clone(),
+            settings: proton.settings.clone(),
+            security_profile: proton.security_profile.clone(),
+            proton_recipe: proton.proton_recipe.clone(),
+        };
+        recipe
+            .validate("chosen")
+            .expect("the chosen plan is a valid Proton recipe");
+
+        let back = proton.opened_with(Layer::Wine).expect("Wine is a choice");
+        assert_eq!(back.runner, wine.runner);
+        assert_eq!(back.proton_recipe, None);
+        assert_eq!(wine.opened_with(Layer::Wine).unwrap(), wine);
+        assert!(matches!(
+            wine.opened_with(Layer::Vm),
+            Err(CatalogueError::InvalidOpensWith)
+        ));
     }
 }

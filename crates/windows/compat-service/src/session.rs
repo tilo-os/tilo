@@ -88,6 +88,8 @@ pub struct ManagedCompatibility<R, B, E, V> {
     store: CapsuleStore,
     /// The programs started through the service that are still open, and how the others ended.
     programs: Arc<Programs>,
+    /// Whether the desktop's person administers the computer.
+    administrator: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl<R, B, E, V> ManagedCompatibility<R, B, E, V>
@@ -122,7 +124,16 @@ where
             service,
             store,
             programs: Arc::default(),
+            administrator: Arc::new(account_administers_computer),
         })
+    }
+
+    /// Answer whether the person administers the computer with `check` instead of the
+    /// account's groups: what the session says of its person, or a test's stand-in for one.
+    #[must_use]
+    pub fn with_administrator_check(mut self, check: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.administrator = check;
+        self
     }
 
     /// The entries a manager connecting now may address: the programs set up
@@ -181,17 +192,18 @@ where
             .map_err(Into::into)
     }
 
+    /// How `entry` opens now, and how it opens unless someone chooses otherwise.
     fn explain_entry(
         &self,
         entry: &RegisteredProgram,
         capabilities: &[CapOverride],
-    ) -> Result<crate::ExplainStatus, SessionError> {
+    ) -> Result<(crate::ExplainStatus, crate::RouteKind), SessionError> {
         self.service
-            .explain(
+            .explain_program(
                 &entry.query,
-                VmFallback::Disabled,
                 &entry.app_id,
-                Some(&entry.capsule_id),
+                &entry.capsule_id,
+                &entry.program,
                 capabilities,
                 try_unix_now(),
             )
@@ -634,6 +646,62 @@ impl LauncherAuthenticator {
     }
 }
 
+/// Why someone who does not administer the computer cannot choose how a program opens.
+const NOT_ADMINISTRATOR: &str =
+    "Only an administrator of this computer can change how this app opens.";
+
+/// The group whose members administer the computer: the one its own administrator rules (polkit's,
+/// `sudo`'s) name.
+const ADMINISTRATORS_GROUP: &str = "wheel";
+
+/// Whether the desktop's own account administers the computer: it is in the
+/// administrators' group. A manager is let in only when its process is this account's (its peer
+/// credentials say so), so the desktop's own groups answer for the person; the client's word
+/// counts for nothing. Like every check by group, a group given to an account takes effect at
+/// its next sign-in.
+#[must_use]
+pub fn account_administers_computer() -> bool {
+    let Some(administrators) = group_id(ADMINISTRATORS_GROUP) else {
+        return false;
+    };
+    rustix::process::getegid().as_raw() == administrators
+        || rustix::process::getgroups()
+            .is_ok_and(|groups| groups.iter().any(|group| group.as_raw() == administrators))
+}
+
+/// The id of the group `name`, as the computer's group database (files, `systemd-userdb`, an
+/// image's `/usr/lib/group`) answers it.
+fn group_id(name: &str) -> Option<u32> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut length = 16 * 1024;
+    while length <= 1024 * 1024 {
+        let mut group = std::mem::MaybeUninit::<libc::group>::uninit();
+        let mut buffer = vec![0 as libc::c_char; length];
+        let mut found = std::ptr::null_mut();
+        // SAFETY: every pointer names live storage of the stated length; `getgrnam_r` writes the
+        // entry into `group` and its strings into `buffer`, and sets `found` to `group` or null.
+        let status = unsafe {
+            libc::getgrnam_r(
+                name.as_ptr(),
+                group.as_mut_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &raw mut found,
+            )
+        };
+        if status == libc::ERANGE {
+            length = length.saturating_mul(4);
+            continue;
+        }
+        if status != 0 || found.is_null() {
+            return None;
+        }
+        // SAFETY: `found` is non-null, so `getgrnam_r` filled `group` in.
+        return Some(unsafe { group.assume_init() }.gr_gid);
+    }
+    None
+}
+
 #[derive(Clone, Copy)]
 struct PeerCredentials {
     pid: i32,
@@ -987,7 +1055,8 @@ where
         | ProtocolRequest::RemoveLauncher { version, .. }
         | ProtocolRequest::VendorUninstall { version, .. }
         | ProtocolRequest::VendorUninstallVm { version, .. }
-        | ProtocolRequest::DeleteData { version, .. } => *version,
+        | ProtocolRequest::DeleteData { version, .. }
+        | ProtocolRequest::SetOpensWith { version, .. } => *version,
         ProtocolRequest::Resolve(request) => request.version,
     };
     if version != PROTOCOL_VERSION {
@@ -1268,6 +1337,27 @@ where
             }
             Ok(ProtocolResponse::DataDeleted { capsule_id })
         }
+        ProtocolRequest::SetOpensWith {
+            entry_id, route, ..
+        } => {
+            if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) {
+                return Err(SessionError::UnknownEntry);
+            }
+            if !(managed.administrator)() {
+                return Err(SessionError::NotAdministrator);
+            }
+            let entry = managed
+                .entries()?
+                .into_iter()
+                .find(|entry| {
+                    entry.entry_id == entry_id && entry.program.kind == ProgramKind::Application
+                })
+                .ok_or(SessionError::UnknownEntry)?;
+            managed
+                .service
+                .set_opens_with(&entry.capsule_id, &entry.program.id, route)?;
+            Ok(ProtocolResponse::OpensWithSet { entry_id, route })
+        }
     })();
     result.unwrap_or_else(|error| ProtocolResponse::Error {
         error: ProtocolError::new(error.code(), error.to_string()),
@@ -1306,6 +1396,7 @@ where
         .collect();
     allowed_entry_ids.extend(widened);
     let mut applications = Vec::new();
+    let administrator = (managed.administrator)();
     // Read before the ends, so a program that ends in between is reported
     // ended rather than both running and ended.
     let running = managed.programs.running_in(&handoff.workspace_id);
@@ -1326,7 +1417,7 @@ where
         let capabilities = authority
             .capabilities_for(&handoff.workspace_id, &entry.app_id)
             .map_err(SessionError::Authority)?;
-        let explanation = managed.explain_entry(&entry, &capabilities)?;
+        let (explanation, recommended_route) = managed.explain_entry(&entry, &capabilities)?;
         let installation_status = managed
             .installation_states()?
             .into_iter()
@@ -1368,6 +1459,9 @@ where
             remove_launcher_available: true,
             vendor_uninstall_available: false,
             running: is_running,
+            recommended_route,
+            opens_with_choice_available: administrator,
+            opens_with_unavailable_reason: (!administrator).then(|| NOT_ADMINISTRATOR.to_owned()),
         });
     }
     for application in vm_inventory
@@ -1402,6 +1496,10 @@ where
             remove_launcher_available: true,
             vendor_uninstall_available: application.uninstall_available,
             running: is_running,
+            recommended_route: crate::RouteKind::Vm,
+            // An application of the Windows appliance opens there and nowhere else.
+            opens_with_choice_available: false,
+            opens_with_unavailable_reason: None,
         });
     }
     let authorized_capsules = authorized_capsules(managed, allowed_entry_ids)?;
@@ -1791,6 +1889,8 @@ pub enum SessionError {
     UnknownEntry,
     #[error("no program of this application is open that can be ended here")]
     NotRunning,
+    #[error("{NOT_ADMINISTRATOR}")]
+    NotAdministrator,
     #[error("the Windows installer confirmation expired; inspect the portal file again")]
     VmInstallConfirmationExpired,
     #[error("the request did not carry one portal file descriptor")]
@@ -1823,6 +1923,7 @@ impl SessionError {
             Self::VmInstallConfirmationExpired => "confirmation_expired",
             Self::UnknownEntry => "unknown_entry",
             Self::NotRunning => "not_running",
+            Self::NotAdministrator => "not_administrator",
             Self::Authority(_) => "authority_unavailable",
             Self::Io(_) | Self::Capsule(_) | Self::Service(_) => "service_error",
         }

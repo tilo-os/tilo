@@ -110,8 +110,29 @@ cannot submit a runner, prefix, guest path, command or operation ID.
 For a capsule, the service copies the installer into descriptor-anchored state
 while hashing again, and only that copy runs. EXE setup is a typed direct
 invocation; MSI setup is `msiexec.exe /i C:\tilo-installers\<digest>.msi`.
-Unknown desktop software is offered a fresh Wine capsule; Proton stays a
-catalogue-selected route.
+Unknown desktop software is offered a fresh Wine capsule; Proton is never
+guessed for it.
+
+### Opening a program with Proton
+
+An administrator of the computer (a member of `wheel`) can open any program of
+a private capsule with Proton instead of Wine, or back, in the program's "Open
+with" choice in Windows Apps. The choice is per program: it is the shared
+`routes` field of the Windows Apps resource, which the manager carries to the
+service as the `SetOpensWith` request. The service checks the desktop's own
+account, never the client's word, refuses everyone else with the
+reason, and saves the choice with the program in its capsule's state. The
+program's next start starts the pinned UMU-Proton with UMU's recipe for any
+program (`umu-default`), so no game's fixes apply to it.
+
+The program keeps its files: Proton opens the same prefix its Wine setup
+filled. A capsule's prefix already sits where Proton looks for one
+(`STEAM_COMPAT_DATA_PATH` is the capsule, `WINEPREFIX` its prefix), and Proton
+takes a prefix without its version stamp as one to bring up to date rather than
+replace. Proton opens only 64-bit prefixes, so the choice is refused for a
+32-bit one and the program keeps opening with Wine. Back to Wine, Wine brings
+the prefix up to date for itself the same way. Other programs of the same
+capsule keep opening as they did.
 
 For the appliance, the service streams the same digest-pinned descriptor over
 the certificate-pinned, HMAC-authenticated host-only bridge. Guest staging is

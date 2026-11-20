@@ -117,6 +117,10 @@ pub struct CapsuleProgram {
     /// MSI setup uses the allow-listed `/i C:\\...` shape.
     #[serde(default)]
     pub arguments: Vec<String>,
+    /// How a person chose to open this program, when not as its capsule opens: Wine or Proton,
+    /// over the same files. Only an administrator of the computer chooses it.
+    #[serde(default)]
+    pub opens_with: Option<Layer>,
 }
 
 impl CapsuleProgram {
@@ -134,6 +138,11 @@ impl CapsuleProgram {
             })
         {
             return Err(CapsuleError::InvalidArguments);
+        }
+        if self.opens_with == Some(Layer::Vm)
+            || (self.opens_with.is_some() && self.kind != ProgramKind::Application)
+        {
+            return Err(CapsuleError::InvalidOpensWith);
         }
         Ok(())
     }
@@ -347,6 +356,27 @@ impl CapsuleStore {
         Ok(state)
     }
 
+    /// Open `program_id` of `capsule_id` with `layer` from now on, or as its capsule opens
+    /// (`None`). Its files stay where they are: Wine and Proton both open the capsule's prefix.
+    pub fn set_opens_with(
+        &self,
+        capsule_id: &str,
+        program_id: &str,
+        layer: Option<Layer>,
+    ) -> Result<CapsuleState, CapsuleError> {
+        let mut state = self
+            .load(capsule_id)?
+            .ok_or_else(|| CapsuleError::NotFound(capsule_id.to_string()))?;
+        let program = state
+            .programs
+            .get_mut(program_id)
+            .ok_or_else(|| CapsuleError::NotFound(program_id.to_string()))?;
+        program.opens_with = layer.filter(|layer| *layer != state.layer);
+        program.validate()?;
+        self.save(&state)?;
+        Ok(state)
+    }
+
     /// Copy a validated installer into the capsule through descriptor-anchored
     /// directories. `expected_sha256` binds the later setup process to the
     /// exact bytes that were inspected even if the selected portal document
@@ -543,6 +573,7 @@ impl CapsuleStore {
                     query: program_query,
                     kind: ProgramKind::Application,
                     arguments: Vec::new(),
+                    opens_with: None,
                 });
             }
         }
@@ -1110,6 +1141,8 @@ pub enum CapsuleError {
     InvalidExecutable,
     #[error("program arguments are empty, oversized, or contain controls")]
     InvalidArguments,
+    #[error("a program opens with Wine or Proton, and a setup only as its capsule does")]
+    InvalidOpensWith,
     #[error("installation journal is invalid")]
     InvalidInstallation,
     #[error("installer exceeds the bounded import limit")]
@@ -1249,6 +1282,7 @@ mod tests {
                 query: ApplicationQuery::default(),
                 kind: ProgramKind::Application,
                 arguments: Vec::new(),
+                opens_with: None,
             };
             assert!(matches!(
                 program.validate(),

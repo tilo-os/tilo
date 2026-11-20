@@ -687,6 +687,7 @@ fn set_up_probe_on(data: &Path, runtime: &str) -> (Catalogue, String, String) {
                 query,
                 kind: ProgramKind::Application,
                 arguments: Vec::new(),
+                opens_with: None,
             },
         )
         .expect("the program set up");
@@ -894,6 +895,15 @@ fn manager_steps() {
                     &installer,
                 )
             }
+            // Open the program with Proton from now on, or as it is recommended to open.
+            "proton" | "recommended" => ask(
+                &mut client,
+                &ProtocolRequest::SetOpensWith {
+                    version: PROTOCOL_VERSION,
+                    entry_id: entry_id.clone(),
+                    route: (step == "proton").then_some(compat_service::RouteKind::Proton),
+                },
+            ),
             "stop" => ask(
                 &mut client,
                 &ProtocolRequest::Stop {
@@ -960,6 +970,8 @@ struct KeptRig {
     appliance: bool,
     /// A setup in a capsule installs the program "Example" ([`install_example`]).
     setup: bool,
+    /// The desktop's person administers the computer.
+    administrator: bool,
 }
 
 /// One desktop, until it ends.
@@ -1045,6 +1057,7 @@ impl KeptRig {
             sound: None,
             appliance: false,
             setup: false,
+            administrator: false,
         }
     }
 
@@ -1164,10 +1177,12 @@ impl KeptRig {
         let network_leases = NetResources {
             root: self.network_leases.clone(),
         };
+        let administrator = self.administrator;
         let assembly = Assembly::with(move |mut side| {
             // The manager is this test binary, not the stand-in launcher the programs start
             // through.
             side.launcher = std::env::current_exe().expect("this test binary");
+            side.administrator = Arc::new(move || administrator);
             let displays = Arc::clone(&side.displays);
             let vm = LazyVmDelegate::new(move || match &appliance {
                 Some((rail, launcher)) => Ok(Arc::new(Appliance {
@@ -1847,6 +1862,76 @@ fn a_proton_program_shows_through_its_keepers_x11_display_and_stays_open() {
         "{answers:?}"
     );
     assert_eq!(answers[2]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    second.end(tilo_app_launch::Teardown::Logout);
+}
+
+/// A program its setup put in a Wine capsule opens with Proton once an administrator of the
+/// computer chose so: the manager lists the choice as theirs, the program then shows through its
+/// keeper's X11 display as Proton's Wine does, and stays open, the same program, through an
+/// in-place restart, still listed as opening with Proton. Someone who does not administer the
+/// computer is told so, and the program keeps opening with Wine.
+#[test]
+fn an_administrator_opens_a_wine_program_with_proton_and_it_stays_open() {
+    tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X server");
+    let mut rig = KeptRig::new();
+    let mut someone = rig.start(false);
+    let answers = someone.manage(&rig, "someone", &["list", "proton", "list"]);
+    let program = &answers[0]["applications"][0];
+    assert_eq!(program["opens_with_choice_available"], false, "{answers:?}");
+    assert!(
+        program["opens_with_unavailable_reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("administrator")),
+        "{answers:?}"
+    );
+    assert_eq!(
+        answers[1]["error"]["code"], "not_administrator",
+        "{answers:?}"
+    );
+    assert_eq!(
+        answers[2]["applications"][0]["explanation"]["route"], "wine",
+        "{answers:?}"
+    );
+    someone.end(tilo_app_launch::Teardown::Logout);
+
+    rig.administrator = true;
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "administrator", &["list", "proton", "list", "launch"]);
+    assert_eq!(
+        answers[0]["applications"][0]["opens_with_choice_available"], true,
+        "{answers:?}"
+    );
+    assert_eq!(answers[1]["result"], "opens_with_set", "{answers:?}");
+    let program = &answers[2]["applications"][0];
+    assert_eq!(program["explanation"]["route"], "proton", "{answers:?}");
+    assert_eq!(program["recommended_route"], "wine", "{answers:?}");
+    assert_eq!(answers[3]["result"], "launched", "{answers:?}");
+    let handed =
+        tilo_app_launch::kept::testing::launcher_handed(&rig.home.home().join("tilo-launcher"));
+    assert!(
+        handed.contains(&"--x11".to_owned()),
+        "a program opened with Proton asks its keeper for an X11 display: {handed:?}"
+    );
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+    let mut second = rig.start(true);
+    second.shown();
+    assert_eq!(rig.starts(), [pid], "the same program, not a new one");
+    assert!(alive(pid), "still open");
+    let answers = second.manage(&rig, "second", &["list", "recommended", "stop", "ended"]);
+    let program = &answers[0]["applications"][0];
+    assert_eq!(program["running"], true, "{answers:?}");
+    assert_eq!(program["explanation"]["route"], "proton", "{answers:?}");
+    assert_eq!(answers[1]["result"], "opens_with_set", "{answers:?}");
+    assert_eq!(answers[3]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    assert_eq!(
+        answers[3]["applications"][0]["explanation"]["route"], "wine",
+        "back to the recommendation: {answers:?}"
+    );
     second.end(tilo_app_launch::Teardown::Logout);
 }
 

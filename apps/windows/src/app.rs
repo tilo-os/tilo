@@ -1264,6 +1264,7 @@ impl WindowsApp {
             Intent::Route(route)
                 if app.route_override_available
                     && route != app.route
+                    && app.route_choices().contains(&route)
                     && (route != Route::Vm || app.launch_available) =>
             {
                 let routes = crate::resource::Windows::paths().routes;
@@ -1694,21 +1695,22 @@ impl WindowsApp {
 
         let mut open_with: Vec<Element> = Vec::new();
         if app.route_override_available {
-            let selected = Route::ALL
+            let choices = app.route_choices();
+            let selected = choices
                 .iter()
                 .position(|route| *route == app.route)
                 .unwrap_or(0);
             let routes = {
                 let intents = intents.clone();
                 ToggleGroup::new(
-                    Route::ALL
+                    choices
                         .iter()
                         .map(|route| Segment::new(strings::t(route.button_key())))
                         .collect(),
                     selected,
                 )
                 .on_view("windows-route", move |index| {
-                    if let Some(route) = Route::ALL.get(index) {
+                    if let Some(route) = choices.get(index) {
                         intents.push(Intent::Route(*route));
                     }
                 })
@@ -2680,10 +2682,16 @@ mod tests {
                 .id
                 .clone();
             app.harness()
-                .perform_named("windows-route:segment:2", &AccessibilityAction::Activate)
+                .perform_named("windows-route:segment:1", &AccessibilityAction::Activate)
                 .expect("the shown app's route choice");
             app.settle();
-            assert_eq!(app.state().route(&first), Some(Route::Vm));
+            assert_eq!(app.state().route(&first), Some(Route::Proton));
+            assert!(
+                app.harness()
+                    .perform_named("windows-route:segment:2", &AccessibilityAction::Activate)
+                    .is_err(),
+                "a program in a private capsule chooses between Wine and Proton"
+            );
         }
         {
             assert!(WindowsApp::new().catalogue.apps.is_empty());
