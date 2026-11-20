@@ -38,6 +38,11 @@ use crate::workspace_actions::ViewReadPolicy;
 /// (the app catalogue, the fonts) is shared by every slot, so a worker costs
 /// its process once and each record only what the record holds.
 pub(super) fn serve() -> i32 {
+    // The views read here render dates and clocks in the person's formats, as the session's
+    // windows do; the supervisor hands them with the locale, and their zone as `TZ`.
+    ui::format::region::install(super::process::formats_from_env(
+        std::env::var(super::process::FORMATS_ENV).ok().as_deref(),
+    ));
     // SAFETY: descriptor 0 is the socket the supervisor handed this process
     // as stdin; it is taken over here and nothing else in the worker reads
     // stdin.
