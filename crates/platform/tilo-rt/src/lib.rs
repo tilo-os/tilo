@@ -23,6 +23,7 @@ mod daemon;
 pub mod io;
 pub mod panic_boundary;
 mod pool;
+pub mod stall;
 mod timer;
 pub use tilo_wake as wake;
 
