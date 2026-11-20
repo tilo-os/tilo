@@ -1832,7 +1832,7 @@ impl Core {
                 }
             }
             effect @ PasswordsEffect::SaveLogin { .. } => self.save_login(effect)?,
-            PasswordsEffect::ListLogins => {}
+            PasswordsEffect::ListLogins => self.listable()?,
             PasswordsEffect::Cancel => self.cancel_edit(),
             PasswordsEffect::Generate => {
                 if !self.is_editing() {
@@ -1921,6 +1921,13 @@ impl Core {
             return Err(refused);
         }
         Ok(())
+    }
+
+    /// Whether the logins listed are the vault's: refused while it is still opening.
+    fn listable(&self) -> Result<(), String> {
+        self.model
+            .as_ref()
+            .map_or(Ok(()), crate::PasswordsModel::readable)
     }
 
     /// The vault's logins, by opaque id and name only: what [`PasswordsEffect::ListLogins`]

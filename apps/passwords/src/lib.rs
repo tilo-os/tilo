@@ -145,6 +145,15 @@ impl PasswordsModel {
             _ => Ok(()),
         }
     }
+    /// Whether what this window lists is the vault's: refused with why while it is still opening
+    /// or its server can't be read, so an empty list is never taken for an empty vault.
+    ///
+    /// # Errors
+    ///
+    /// Why the vault can't be listed yet.
+    pub fn readable(&self) -> Result<(), String> {
+        self.opened()
+    }
     /// Read this device's vault.
     fn read<T>(&self, read: impl FnOnce(&SecretStore) -> T) -> Result<T, String> {
         self.opened()?;
