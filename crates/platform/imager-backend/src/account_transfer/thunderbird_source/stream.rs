@@ -15,9 +15,8 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use uuid::Uuid;
 
 use crate::account_sources::thunderbird::{
-    FolderFormat, MAX_MESSAGE_BYTES, MboxMessages, ReviewedAccount, ReviewedFolder,
-    ReviewedThunderbird, ThunderbirdAccount, entries, maildir_read_flags, mbox, read_file,
-    read_reviewed, walk,
+    FolderFormat, MboxMessages, ReviewedAccount, ReviewedFolder, ReviewedThunderbird,
+    ThunderbirdAccount, entries, maildir_read_flags, mbox, read_file, read_reviewed, walk,
 };
 use crate::migration_directory::same_snapshot;
 use crate::nofollow::metadata_nofollow;
@@ -58,18 +57,6 @@ fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
     }
 }
 
-/// The folder is named by its Thunderbird path, which the person already sees in the review.
-fn folder_too_large(folder: &ReviewedFolder) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!(
-            "A message in the {} folder is larger than the {} MiB bound for one message, so nothing was imported.",
-            folder.inventory.hierarchy.join("/"),
-            MAX_MESSAGE_BYTES / (1024 * 1024)
-        ),
-    )
-}
-
 fn kept_too_large() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -106,7 +93,7 @@ pub fn import_reviewed(
     setup_binding: &[u8],
     cancel: &AtomicBool,
 ) -> io::Result<ThunderbirdImportReceipt> {
-    let (receipt, report) = import_with(
+    let (receipt, _report) = import_with(
         target_home,
         reviewed,
         selection,
@@ -114,9 +101,6 @@ pub fn import_reviewed(
         cancel,
         &mut |_: u64| {},
     )?;
-    if report.peak_message_bytes > MAX_MESSAGE_BYTES {
-        return Err(invalid("A mail message was held beyond its bound"));
-    }
     Ok(receipt)
 }
 
@@ -478,7 +462,9 @@ impl Import<'_> {
                     cancel: self.cancel,
                 },
             );
-            let mut splitter = MboxMessages::new(reader, MAX_MESSAGE_BYTES);
+            // A message of any size comes over whole: memory follows it, as the review's count
+            // and `tilo migrate`'s read already assume.
+            let mut splitter = MboxMessages::new(reader, usize::MAX);
             loop {
                 check_cancel(self.cancel)?;
                 match splitter.next_message() {
@@ -500,9 +486,6 @@ impl Import<'_> {
                         }
                     }
                     Ok(None) => break,
-                    Err(error) if mbox::is_too_large(&error) => {
-                        return Err(folder_too_large(folder));
-                    }
                     Err(error) => return Err(error),
                 }
             }
@@ -558,18 +541,8 @@ impl Import<'_> {
                     continue;
                 }
                 check_cancel(self.cancel)?;
-                let raw = read_file(
-                    &current,
-                    &name,
-                    u64::try_from(MAX_MESSAGE_BYTES).unwrap_or(u64::MAX),
-                )
-                .map_err(|error| {
-                    if mbox::is_too_large(&error) {
-                        folder_too_large(folder)
-                    } else {
-                        invalid("A selected mail message could not be read")
-                    }
-                })?;
+                let raw = read_file(&current, &name, u64::MAX)
+                    .map_err(|_| invalid("A selected mail message could not be read"))?;
                 self.budget.count()?;
                 streamed = streamed.saturating_add(1);
                 self.report.messages = self.report.messages.saturating_add(1);

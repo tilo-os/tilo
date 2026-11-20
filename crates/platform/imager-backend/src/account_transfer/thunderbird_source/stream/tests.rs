@@ -363,33 +363,57 @@ fn a_redirected_folder_file_is_refused_rather_than_followed() {
 }
 
 #[test]
-fn an_oversized_message_is_reported_by_folder_and_nothing_is_published() {
-    let (_home, reviewed) = fixture(1, 17 * 1024 * 1024);
-    let imap_reviewed = reviewed
+fn a_message_larger_than_a_review_reads_comes_over_whole() {
+    const BODY: usize = 17 * 1024 * 1024;
+    let (_home, reviewed) = fixture(1, BODY);
+    let account = reviewed
         .accounts
         .iter()
         .find(|account| account.inventory.needs_reconnect)
         .unwrap();
-    let inbox = imap_reviewed
+    let inbox = account
         .folders
         .iter()
         .find(|folder| folder.inventory.hierarchy == ["Inbox"])
         .unwrap();
     assert!(
-        !inbox.inventory.counted,
-        "inspection reports the folder as not fully counted"
+        inbox.inventory.counted,
+        "the review counts a folder whose one message it could not read whole"
     );
-    assert!(inbox.inventory.messages.is_none());
+    assert_eq!(inbox.inventory.messages, Some(1));
     let selection = ThunderbirdSelection::all(&reviewed);
     let target = tempfile::tempdir().unwrap();
-    let error = import(target.path(), &reviewed, &selection).unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    assert!(error.to_string().contains("Inbox"), "{error}");
-    assert!(
-        error.to_string().contains("bound for one message"),
-        "{error}"
+    let receipt = import(target.path(), &reviewed, &selection).unwrap();
+    let imported = imap(&receipt);
+    assert_eq!(
+        imported
+            .folders
+            .iter()
+            .find(|folder| folder.source_id == inbox.inventory.source_id)
+            .unwrap()
+            .messages,
+        1,
+        "the folder came over"
     );
-    assert!(!target.path().join(".config/tilo/accounts").exists());
+    let kept = kept(target.path(), imported);
+    let carried = kept
+        .messages
+        .iter()
+        .find(|message| message.body.len() >= BODY)
+        .unwrap_or_else(|| {
+            panic!(
+                "no message came over whole: the kept bodies are {:?} bytes",
+                kept.messages
+                    .iter()
+                    .map(|message| message.body.len())
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        carried.body.len() + 1024 >= BODY,
+        "the body came over whole: {} bytes of {BODY}",
+        carried.body.len()
+    );
 }
 
 tilo_test_env::scenario! {

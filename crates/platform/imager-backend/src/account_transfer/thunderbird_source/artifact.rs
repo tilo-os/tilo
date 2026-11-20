@@ -23,9 +23,9 @@ use sha2::{Digest as _, Sha256};
 use tilo_seal::{Context, FrameError, Label, SymmetricKey, content, envelope};
 
 use crate::account_sources::thunderbird::{
-    FolderFormat, MAX_MESSAGE_BYTES, MAX_SIDECAR_BYTES, MboxMessages, ReviewedFolder,
-    ReviewedThunderbird, ThunderbirdAccount, ThunderbirdFolder, entries, maildir_read_flags, mbox,
-    read_file, read_reviewed, walk,
+    FolderFormat, MAX_SIDECAR_BYTES, MboxMessages, ReviewedFolder, ReviewedThunderbird,
+    ThunderbirdAccount, ThunderbirdFolder, entries, maildir_read_flags, mbox, read_file,
+    read_reviewed, walk,
 };
 use crate::migration_directory::same_snapshot;
 use crate::nofollow::metadata_nofollow;
@@ -694,9 +694,11 @@ impl Reader {
             return Err(broken("the mail file is redirected"));
         }
         Ok(Self::Mbox {
+            // A message of any size comes over whole: memory follows it, as the review's count
+            // already assumes.
             splitter: Box::new(MboxMessages::new(
                 BufReader::with_capacity(mbox::CHUNK, file),
-                MAX_MESSAGE_BYTES,
+                usize::MAX,
             )),
             directory,
             name: name.to_owned(),
@@ -754,9 +756,6 @@ impl Reader {
                     directory.validate().map_err(|_| broken("mail folder"))?;
                     Ok(None)
                 }
-                Err(error) if mbox::is_too_large(&error) => {
-                    Err(broken("a message is larger than the bound for one message"))
-                }
                 Err(error) => Err(error),
             },
             Self::Maildir { parts, part, next } => loop {
@@ -769,12 +768,8 @@ impl Reader {
                     continue;
                 };
                 *next += 1;
-                let raw = read_file(
-                    directory,
-                    name,
-                    u64::try_from(MAX_MESSAGE_BYTES).unwrap_or(u64::MAX),
-                )
-                .map_err(|_| broken("a message could not be read"))?;
+                let raw = read_file(directory, name, u64::MAX)
+                    .map_err(|_| broken("a message could not be read"))?;
                 return Ok(Some((format!("{part_name}/{name}"), raw)));
             },
         }

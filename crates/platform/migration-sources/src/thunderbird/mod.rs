@@ -39,8 +39,8 @@ pub use mbox::{MboxMessages, MessageTooLarge};
 
 const MAX_PROFILE_INDEX: u64 = 64 * 1024;
 const MAX_PREFERENCE_BYTES: u64 = 2 * 1024 * 1024;
-/// The largest message a review reads to count its flags and attachments, and the installer's
-/// stream carries; a larger one is counted, never buffered without limit or silently skipped.
+/// The largest message a review reads to count its flags and attachments; a larger one is counted
+/// without being read, and the import carries it whole, as the app's kept-mail bound allows.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MESSAGES: u64 = 100_000;
 /// The largest address book or calendar sidecar one profile read keeps.
