@@ -615,11 +615,13 @@ mod tests {
                 })
                 .unwrap();
             store.try_flush().unwrap();
-            assert!(
+            assert_eq!(
                 store
-                    .read(&primary.id, |doc| ui::resource::workspace_scope(doc)
-                        .is_none())
+                    .read(&primary.id, ui::resource::workspace_scope)
                     .unwrap()
+                    .as_deref(),
+                Some(submission.destination.workspace.as_str()),
+                "an app's primary is bound to the store's workspace, not to a stamp of its own"
             );
             assert!(
                 receipt_from_resource(&store, &primary.id, &submission.id, &submission.destination)
