@@ -1718,8 +1718,9 @@ by = "os/tests/no_openssl_runtime.sh"
 suite = "os/tests/tls_registry_fixture.py"
 by = "os/tests/test_tls_registry_fixture.py"
 
-# Cannot be a required check. "fails on main" entries are hermetic enough to
-# check but do not pass today; fix the suite, then move it into a group.
+# Cannot be a required check: each needs something the hermetic runner lacks
+# (a license, a live browser, a whole stack). A suite that only fails is fixed
+# or deleted, never listed here.
 
 [[unrequired]]
 suite = "scripts/test-cloud-rystic.py"
