@@ -638,7 +638,7 @@ while read -r n t; do
   backing=$n
   break
 done <<EOF
-$(lsblk -sno NAME,TYPE "$src")
+$(lsblk -snro NAME,TYPE "$src")
 EOF
 [ -n "$backing" ] || { echo "no partition under $src"; lsblk -s "$src"; exit 1; }
 [ "$(blkid -p -o value -s TYPE "/dev/$backing")" = crypto_LUKS ] \
@@ -890,7 +890,7 @@ refuse 'this machine seals the volume it booted, with no secret' '
 set -eu
 mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
-dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
+dev=/dev/$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 gen=$(cat /usr/lib/tilo/generation)
 tilo-rollback enroll --device "$dev" --generation "$gen" \
   --predictions /boot/tilo-target/predictions --recovery-key-file /mnt/update/recovery.key --automatic
@@ -938,7 +938,7 @@ refuse 'this machine has a keyslot for the older generation' "
 set -eu
 mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
-dev=/dev/\$(lsblk -sno NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
+dev=/dev/\$(lsblk -snro NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
 tilo-rollback enroll --device \"\$dev\" --generation 0 \
   --predictions /mnt/update/older-predictions --recovery-key-file /mnt/update/recovery.key --automatic
 tilo-rollback status --device \"\$dev\"
@@ -949,7 +949,7 @@ tilo-rollback status --device \"\$dev\"
 request=$(as_root '
 set -eu
 src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
-dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
+dev=/dev/$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 tilo-rollback floor-request --device "$dev" | base64 -w0
 ') || die 'the machine could not write a floor request'
 printf '%s' "$request" | base64 -d > "$work/floor-request.json" \
@@ -974,7 +974,7 @@ refuse 'the floor moves to this generation, with the approvals' "
 set -eu
 mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
-dev=/dev/\$(lsblk -sno NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
+dev=/dev/\$(lsblk -snro NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
 gen=\$(cat /usr/lib/tilo/generation)
 tilo-rollback --retain \$((gen + 1)) --predictions /boot/tilo-target/predictions \
   confirm --device \"\$dev\" --generation \"\$gen\" --floor-at-least \"\$gen\" \
@@ -1018,7 +1018,7 @@ console 'true' >/dev/null || die 'the restored image never answered at its conso
 refuse 'the floor still permits the running generation and refuses the older one' '
 set -eu
 src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
-dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
+dev=/dev/$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 tilo-rollback status --device "$dev"
 tilo-rollback status --device "$dev" --json | grep -q "\"floor_generation\":$(cat /usr/lib/tilo/generation)" \
   || { echo "the floor is not at the running generation"; exit 1; }
