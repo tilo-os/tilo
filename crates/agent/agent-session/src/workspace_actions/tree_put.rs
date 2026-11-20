@@ -527,8 +527,13 @@ impl Worker {
         else {
             return Ok(None);
         };
-        let doc = AutoCommit::load(&index)
+        let mut doc = AutoCommit::load(&index)
             .map_err(|error| refused(format!("the workspace's tree does not read: {error}")))?;
+        if doc.get_heads().is_empty() {
+            // A document a writer founded and holds no change of yet: the tree nobody wrote,
+            // which the write founds with the identity every founder derives.
+            return Ok(None);
+        }
         let mut records = vec![(0, index)];
         let mut held = BTreeMap::from([(0, heads)]);
         for chunk in tree::listed_chunks(&doc) {

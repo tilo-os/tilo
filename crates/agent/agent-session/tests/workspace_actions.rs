@@ -125,6 +125,9 @@ mod encrypted_resource;
 #[path = "workspace_actions/feedback_journey.rs"]
 mod feedback_journey;
 #[cfg(test)]
+#[path = "workspace_actions/files_founded_page.rs"]
+mod files_founded_page;
+#[cfg(test)]
 #[path = "workspace_actions/files_put_by_key.rs"]
 mod files_put_by_key;
 #[cfg(test)]

@@ -57,7 +57,8 @@ impl Namespace {
                 chunks.push((chunk, doc));
             }
         }
-        let mut docs = Chunks::new(index.unwrap_or_default());
+        let mount: super::MountAuthor = author.into();
+        let mut docs = Chunks::new(index.unwrap_or_default(), mount.workspace.clone());
         for (chunk, doc) in chunks {
             docs.adopt_chunk(chunk, doc)?;
         }
@@ -66,7 +67,6 @@ impl Namespace {
             .each_mut()
             .map(|(chunk, doc)| (chunk, doc.get_heads()))
             .collect();
-        let mount: super::MountAuthor = author.into();
         // Resume the id counter past ids we authored before, so a restart can't reuse a node id.
         let prefix = format!("{}/", mount.author);
         let max_local = docs
@@ -536,9 +536,7 @@ impl Namespace {
     /// cannot show ("record identity does not match its binding"). Whether the document names
     /// itself afterwards, already or by this stamp.
     fn name_record(&mut self, chunk: TreeChunk, workspace: &str) -> bool {
-        let Some(id) =
-            collab_types::document::DocumentId::parse(&fs_protocol::tree::chunk_document_id(chunk))
-        else {
+        let Some(id) = tree_document(chunk) else {
             return false;
         };
         let Some(doc) = self.doc.doc_mut(chunk) else {
@@ -548,11 +546,31 @@ impl Namespace {
         collab_types::document::identity::init_scoped(
             doc,
             &id,
-            &collab_types::document::ResourceType::new(fs_protocol::tree::TREE_KIND),
+            &tree_kind(),
             workspace,
             Some(workspace),
         )
     }
+}
+
+/// Document `chunk` of a workspace's tree, as the resource that holds it is named.
+fn tree_document(chunk: TreeChunk) -> Option<collab_types::document::DocumentId> {
+    collab_types::document::DocumentId::parse(&fs_protocol::tree::chunk_document_id(chunk))
+}
+
+/// The kind every document of a workspace's tree is: Files' tree.
+fn tree_kind() -> collab_types::document::ResourceType {
+    collab_types::document::ResourceType::new(fs_protocol::tree::TREE_KIND)
+}
+
+/// The document that founds `chunk` of `workspace`'s tree: the identity every founder of it
+/// derives alike, so a page's Files that started the tree and a mount that starts it as it writes
+/// the first file make one document. A founder with a genesis of its own writes the identity a
+/// second time, and the merged document holds none at all. `None` where the document cannot be
+/// named.
+pub(super) fn founding_document(workspace: &str, chunk: TreeChunk) -> Option<AutoCommit> {
+    let id = tree_document(chunk)?;
+    collab_types::document::identity::founding(&id, &tree_kind(), workspace, workspace)
 }
 
 /// The nodes of the map `nodes` that `patches` touched: those put or deleted in it, and those

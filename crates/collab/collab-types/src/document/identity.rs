@@ -143,6 +143,57 @@ pub fn commit_genesis(doc: &mut AutoCommit) {
     );
 }
 
+/// The actor every founder of the resource `id` of `kind` in `home` makes its genesis under:
+/// one derivation, so a page's Files and the device keeping the workspace make the same change.
+#[must_use]
+pub fn genesis_actor(id: &DocumentId, kind: &ResourceType, home: &str) -> automerge::ActorId {
+    tilo_resource::genesis::actor(id.as_str(), kind.as_str(), home)
+}
+
+/// Stamp `doc` with what founds `id` of `kind` in `workspace`: its identity, its workspace scope
+/// and its app's surface. The caller commits it as the document's genesis ([`founding`]), or as
+/// part of the one change a resource's creation is. Whether it is a resource that may be founded.
+pub fn stamp_founding(
+    doc: &mut AutoCommit,
+    id: &DocumentId,
+    kind: &ResourceType,
+    home: &str,
+    workspace: &str,
+) -> bool {
+    DocumentId::parse(id.as_str()).is_some()
+        && kind.is_valid()
+        && stamp_scoped(doc, id, kind, home, Some(workspace))
+}
+
+/// The document that founds `id` of `kind` in `workspace`: its identity and its app's surface
+/// in one change, made under [`genesis_actor`] at time zero with nothing before it. Every
+/// founder of a resource derives the same change, so a page's window and the device that starts
+/// it as it writes the first content make one document; a founder with a genesis of its own
+/// wrote the identity a second time, and the merged document then holds two of them, which reads
+/// as none at all. What a founder puts there follows as its own change.
+#[must_use]
+pub fn founding(
+    id: &DocumentId,
+    kind: &ResourceType,
+    home: &str,
+    workspace: &str,
+) -> Option<AutoCommit> {
+    if DocumentId::parse(id.as_str()).is_none() || !kind.is_valid() {
+        return None;
+    }
+    let mut doc = AutoCommit::new().with_actor(genesis_actor(id, kind, home));
+    if !stamp_founding(&mut doc, id, kind, home, workspace) {
+        return None;
+    }
+    let _ = stamp_surface(&mut doc);
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
+            .with_time(0),
+    );
+    Some(doc)
+}
+
 /// The key of the resource identity naming the surface its changes are
 /// decided against: the content hash of its app's surface in the form it is
 /// kept by.

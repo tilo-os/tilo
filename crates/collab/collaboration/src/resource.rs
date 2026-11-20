@@ -394,8 +394,9 @@ pub fn genesis_actor_of(
     workspace: &str,
 ) -> automerge::ActorId {
     // One derivation of a genesis actor for every writer of it: the store
-    // here and the model modules a device executes.
-    tilo_resource::genesis::actor(id.as_str(), kind.as_str(), workspace)
+    // here, the model modules a device executes, and a device that founds a
+    // document it keeps for the workspace.
+    collab_types::document::identity::genesis_actor(id, kind, workspace)
 }
 
 /// The actor `author`'s mount edits a resource as, when the resource's writer is `resource_writer` and
@@ -470,15 +471,13 @@ pub fn genesis(
             Some(workspace),
         ) && scope_primary(&mut made, workspace)
     } else {
-        DocumentId::parse(checkout.id.as_str()).is_some()
-            && checkout.kind.is_valid()
-            && stamp_scoped(
-                &mut made,
-                &checkout.id,
-                &checkout.kind,
-                workspace,
-                Some(workspace),
-            )
+        collab_types::document::identity::stamp_founding(
+            &mut made,
+            &checkout.id,
+            &checkout.kind,
+            workspace,
+            workspace,
+        )
     };
     if !stamped {
         return Err(ResourceOpenError::IdentityMismatch);
@@ -503,4 +502,64 @@ pub fn genesis(
         .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
     *doc = created;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
+    const KIND: &str = "files.tree";
+
+    fn tree() -> (DocumentId, ResourceType) {
+        (
+            DocumentId::parse(&collab_types::person_document_id(KIND)).expect("a document id"),
+            ResourceType::new(KIND),
+        )
+    }
+
+    #[test]
+    fn a_resources_founding_is_the_genesis_its_first_content_is_made_with() {
+        let (id, kind) = tree();
+        let mut made = AutoCommit::new();
+        genesis(
+            &mut made,
+            &DocumentCheckout::new(id.clone(), kind.clone()),
+            WORKSPACE,
+            |_| Ok(()),
+        )
+        .expect("the resource is founded");
+        let mut founding =
+            collab_types::document::identity::founding(&id, &kind, WORKSPACE, WORKSPACE)
+                .expect("a document is founded");
+        assert_eq!(
+            made.get_heads(),
+            founding.get_heads(),
+            "a founder and an app making the resource of its first content make one change"
+        );
+    }
+
+    #[test]
+    fn every_founder_of_a_resource_derives_the_same_founding() {
+        let (id, kind) = tree();
+        let mut one = collab_types::document::identity::founding(&id, &kind, WORKSPACE, WORKSPACE)
+            .expect("a document is founded");
+        let mut other =
+            collab_types::document::identity::founding(&id, &kind, WORKSPACE, WORKSPACE)
+                .expect("a document is founded");
+        assert_eq!(one.get_heads(), other.get_heads());
+        assert_eq!(one.save(), other.save());
+        let mut elsewhere = collab_types::document::identity::founding(
+            &id,
+            &kind,
+            "0b8f7b53-5a6e-4f7b-9d7a-1c2f3b4e5d60",
+            "0b8f7b53-5a6e-4f7b-9d7a-1c2f3b4e5d60",
+        )
+        .expect("a document is founded");
+        assert_ne!(
+            one.get_heads(),
+            elsewhere.get_heads(),
+            "another workspace's resource of the same kind is another identity"
+        );
+    }
 }

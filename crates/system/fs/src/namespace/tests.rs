@@ -929,6 +929,62 @@ fn trees_founded_apart_merge_with_every_file_of_each() {
 }
 
 #[test]
+fn mounts_of_one_workspace_that_found_its_tree_apart_hold_one_identity_and_every_file() {
+    use collab_types::document::DocumentId;
+
+    let workspace = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
+    let mount = |device: &str| MountAuthor::device(device).in_workspace(workspace);
+    let names = |ns: &mut Namespace| -> Vec<String> {
+        let mut names: Vec<String> = ns
+            .live_node_ids()
+            .iter()
+            .filter_map(|id| ns.entry_for_node(id))
+            .map(|entry| String::from_utf8_lossy(entry.name.as_bytes()).into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    // Two devices write into the workspace's folder before either reached it: each founds the
+    // tree's documents, with the one identity every founder derives.
+    let mut laptop = Namespace::new(mount("laptop")).unwrap();
+    laptop
+        .create_file(ROOT_INO, "contract.txt", Some(&h(1)), 6, 1)
+        .unwrap();
+    let mut desktop = Namespace::new(mount("desktop")).unwrap();
+    desktop
+        .create_file(ROOT_INO, "handbook.md", Some(&h(2)), 6, 1)
+        .unwrap();
+    let from_laptop = laptop.document_writes(&BTreeMap::new());
+    let from_desktop = desktop.document_writes(&BTreeMap::new());
+    for (into, from) in [(&mut laptop, from_desktop), (&mut desktop, from_laptop)] {
+        into.take_documents(from.into_iter().map(|w| (w.chunk, w.changes)).collect())
+            .unwrap();
+    }
+
+    let tree = DocumentId::parse(&fs_protocol::tree::document_id()).unwrap();
+    for ns in [&mut laptop, &mut desktop] {
+        let index = ns.save_document(0).unwrap();
+        let doc = AutoCommit::load(&index).unwrap();
+        assert_eq!(
+            collab_types::document::identity::identity(&doc).map(|found| found.id),
+            Some(tree.clone()),
+            "the tree is one document with one identity, not two founders' metadata"
+        );
+        assert_eq!(names(ns), ["contract.txt", "handbook.md"]);
+    }
+    // And its chunk holds the one identity too: a page opens it as Files' document like the tree's.
+    let chunk = fs_protocol::tree::chunk_document_id(1);
+    let held = laptop
+        .save_document(1)
+        .expect("the laptops hold the chunk they wrote");
+    let doc = AutoCommit::load(&held).unwrap();
+    assert_eq!(
+        collab_types::document::identity::identity(&doc).map(|found| found.id),
+        DocumentId::parse(&chunk),
+    );
+}
+
+#[test]
 fn the_folder_reads_as_changed_with_its_newest_entry() {
     let mut ns = Namespace::new("laptop").unwrap();
     let opened = ns.getattr(ROOT_INO).unwrap().mtime;

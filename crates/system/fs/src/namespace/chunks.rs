@@ -57,6 +57,9 @@ pub(super) struct Chunk {
 pub(crate) struct Chunks {
     index: ChangeTrackedDoc,
     held: BTreeMap<TreeChunk, Chunk>,
+    /// The workspace whose tree this is, when it is one: each of its documents starts from the
+    /// identity every founder derives.
+    workspace: Option<String>,
     /// The chunk each node lives in, as the chunks hold them.
     located: HashMap<String, TreeChunk>,
 }
@@ -68,10 +71,11 @@ fn chunk_maps(doc: &mut AutoCommit) -> Result<ObjId, AutomergeError> {
 }
 
 impl Chunks {
-    pub(super) fn new(index: AutoCommit) -> Self {
+    pub(super) fn new(index: AutoCommit, workspace: Option<String>) -> Self {
         Self {
             index: ChangeTrackedDoc::new(index),
             held: BTreeMap::new(),
+            workspace,
             located: HashMap::new(),
         }
     }
@@ -127,7 +131,12 @@ impl Chunks {
             ));
         }
         if !self.held.contains_key(&chunk) {
-            let mut doc = AutoCommit::new().with_actor(self.index.get_actor().clone());
+            let founding = self
+                .workspace
+                .as_deref()
+                .and_then(|workspace| super::founding_document(workspace, chunk));
+            let mut doc = super::started_from(founding);
+            doc.set_actor(self.index.get_actor().clone());
             let nodes = chunk_maps(&mut doc)?;
             self.held.insert(
                 chunk,

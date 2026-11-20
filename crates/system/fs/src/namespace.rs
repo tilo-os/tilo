@@ -13,7 +13,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use fs_protocol::{
     FILE_BINDING_VERSION, FileActor, FileBindingV1, FileDocumentId, FileNameV1, FileNodeKind,
-    MAX_FILE_NAME_BYTES,
+    MAX_FILE_NAME_BYTES, TreeChunk,
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
@@ -39,7 +39,7 @@ mod changesets;
 mod chunks;
 mod records;
 pub use records::ResourceWrite;
-use records::bundle;
+use records::{bundle, founding_document};
 mod document_index;
 #[cfg(test)]
 mod index_walk_tests;
@@ -377,6 +377,13 @@ impl MountAuthor {
         self.workspace = Some(workspace.into());
         self
     }
+
+    /// The document that founds `chunk` of this mount's tree, when it holds a workspace's: the
+    /// identity every founder derives, so this mount's founding and a page's Files that started
+    /// the same tree merge as one document.
+    pub(super) fn founding(&self, chunk: TreeChunk) -> Option<AutoCommit> {
+        founding_document(self.workspace.as_deref()?, chunk)
+    }
 }
 
 impl From<String> for MountAuthor {
@@ -551,6 +558,19 @@ fn read_u64(doc: &Chunks, obj: &Obj, key: &str) -> u64 {
     }
 }
 
+/// `founding`, with an actor of the mount's own for what follows it: the identity change is
+/// nobody's edit, and the root id and the nodes the mount writes after it are its own. An empty
+/// document where the record is not one a founder derives.
+fn started_from(founding: Option<AutoCommit>) -> AutoCommit {
+    match founding {
+        Some(mut doc) => {
+            doc.set_actor(automerge::ActorId::random());
+            doc
+        }
+        None => AutoCommit::new(),
+    }
+}
+
 impl Namespace {
     /// A namespace over `doc`, its documents already in place, with only the root bound and
     /// every derived index empty.
@@ -598,7 +618,9 @@ impl Namespace {
     }
 
     pub fn new(author: impl Into<MountAuthor>) -> Result<Self, automerge::AutomergeError> {
-        let mut ns = Self::over(Chunks::new(AutoCommit::new()), author.into(), 0);
+        let mount: MountAuthor = author.into();
+        let index = started_from(mount.founding(0));
+        let mut ns = Self::over(Chunks::new(index, mount.workspace.clone()), mount, 0);
         let root_document_id = FileDocumentId::new();
         ns.doc.put(
             &Obj::index(),
