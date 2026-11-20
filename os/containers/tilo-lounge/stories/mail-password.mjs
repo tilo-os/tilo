@@ -170,6 +170,9 @@ try {
     // A person presses the field and types the address, and nothing else.
     if (!await pressWidget(ada.tab, 'settings.web.accounts.address')) fail('the address field is not where a person can press it');
     await story.web.type(ada, mail.address);
+    // What the field took, before the page is asked to look it up.
+    const typed = (await nodesOf(ada.tab)).find(node => node.id === 'settings.web.accounts.address')?.value ?? '';
+    if (typed !== mail.address) fail(`the address field holds ${JSON.stringify(typed)}, not ${JSON.stringify(mail.address)}`);
     if (!await pressWidget(ada.tab, 'settings.web.accounts.find')) fail('the accounts page offers no Set up');
   });
 
