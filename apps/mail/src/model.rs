@@ -572,7 +572,9 @@ impl Mailbox {
                 f => m.folder == f,
             })
             .collect();
-        v.compact_sort_by_key(|m| Reverse(m.timestamp_min));
+        // Messages of the same minute stand in the same order on every load:
+        // their ids, which never change, settle the tie.
+        v.compact_sort_by_key(|m| (Reverse(m.timestamp_min), m.id));
         v
     }
 
@@ -665,7 +667,7 @@ impl Mailbox {
                 .filter_map(|id| self.messages.get(id).map(|m| m.timestamp_min))
                 .max()
                 .unwrap_or(0);
-            bn.cmp(&an)
+            bn.cmp(&an).then_with(|| a.id.cmp(&b.id))
         });
         threads
     }
@@ -937,6 +939,23 @@ mod tests {
                 assert_eq!(body_page.inspected, 3, "body inspection obeys its cap");
                 assert_eq!(body_page.messages.len(), 3);
                 assert!(body_page.truncated);
+            }
+        }
+
+        phase messages_of_one_minute_list_in_one_order_on_every_load;
+        {
+            let lunch = msg("Lunch on Friday?", 300, Folder::Inbox);
+            let recording = msg("Site walkthrough recording", 300, Folder::Inbox);
+            let listed = |first: &Message, second: &Message| {
+                let mut mailbox = Mailbox::default();
+                mailbox.insert(first.clone());
+                mailbox.insert(second.clone());
+                let threads: Vec<_> = mailbox.threads_in(Folder::Inbox).iter().map(|thread| thread.subject.clone()).collect();
+                let messages: Vec<_> = mailbox.messages_in(Folder::Inbox).iter().map(|message| message.id).collect();
+                (threads, messages)
+            };
+            for _ in 0..8 {
+                assert_eq!(listed(&lunch, &recording), listed(&recording, &lunch));
             }
         }
     }
