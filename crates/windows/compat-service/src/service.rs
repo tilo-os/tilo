@@ -676,6 +676,19 @@ where
         ))
     }
 
+    /// What `program_id` of `capsule_id` opens with at its next start: the layer a person chose
+    /// for it, or its capsule's.
+    pub fn opens_with(&self, capsule_id: &str, program_id: &str) -> Result<Layer, ServiceError> {
+        let state = self
+            .store
+            .load(capsule_id)?
+            .ok_or_else(|| ServiceError::ProgramNotRegistered(program_id.to_owned()))?;
+        let program = state
+            .program(program_id)
+            .ok_or_else(|| ServiceError::ProgramNotRegistered(program_id.to_owned()))?;
+        Ok(program.opens_with.unwrap_or(state.layer))
+    }
+
     /// Open `program_id` of `capsule_id` with `route` from now on, or as its capsule opens
     /// (`None`). The program keeps its files: Wine and Proton open the capsule's one prefix.
     pub fn set_opens_with(

@@ -129,6 +129,15 @@ impl Programs {
         drop(inner);
     }
 
+    /// The entries with a program that is open, in any workspace.
+    pub(crate) fn running(&self) -> BTreeSet<String> {
+        self.inner()
+            .running
+            .values()
+            .map(|running| running.entry_id.clone())
+            .collect()
+    }
+
     /// The entries with a program in `workspace_id` that is open.
     pub(crate) fn running_in(&self, workspace_id: &str) -> BTreeSet<String> {
         self.inner()

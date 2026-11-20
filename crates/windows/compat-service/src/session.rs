@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use collab_types::caps::CapOverride;
-use compat_catalogue::{ApplicationQuery, Catalogue, VmFallback};
+use compat_catalogue::{ApplicationQuery, Catalogue, Layer, VmFallback};
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
     SendAncillaryMessage, SendFlags,
@@ -90,6 +90,12 @@ pub struct ManagedCompatibility<R, B, E, V> {
     programs: Arc<Programs>,
     /// Whether the desktop's person administers the computer.
     administrator: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// What each entry's open programs opened with: Wine and Proton never have one prefix open
+    /// at once.
+    opened_with: Mutex<std::collections::BTreeMap<String, Layer>>,
+    /// Held from a launch's check of what is open until its program is watched, so two launches
+    /// never both pass the check.
+    launching: Mutex<()>,
 }
 
 impl<R, B, E, V> ManagedCompatibility<R, B, E, V>
@@ -125,6 +131,8 @@ where
             store,
             programs: Arc::default(),
             administrator: Arc::new(account_administers_computer),
+            opened_with: Mutex::default(),
+            launching: Mutex::new(()),
         })
     }
 
@@ -229,6 +237,14 @@ where
         workspace_id: &str,
         capabilities: Vec<CapOverride>,
     ) -> Result<crate::LaunchReceipt, SessionError> {
+        let _launching = self
+            .launching
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let layer = self
+            .service
+            .opens_with(&entry.capsule_id, &entry.program.id)?;
+        self.refuse_beside_other_runner(entry, layer)?;
         // Query, program, target app identity, and disabled VM fallback all
         // come from server state. The client contributes only `entry.id`.
         let crate::Launched {
@@ -254,7 +270,48 @@ where
             true,
             release,
         )?;
+        self.opened(&entry.entry_id, layer);
         Ok(receipt)
+    }
+
+    /// Refuse to open `entry` with `layer` while a program of its capsule is open with the other
+    /// one: Wine and Proton would both keep the one prefix's registry and files in their own
+    /// server, and each would overwrite what the other wrote.
+    fn refuse_beside_other_runner(
+        &self,
+        entry: &RegisteredProgram,
+        layer: Layer,
+    ) -> Result<(), SessionError> {
+        let running = self.programs.running();
+        let mut opened_with = self
+            .opened_with
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        opened_with.retain(|entry_id, _| running.contains(entry_id));
+        for open in self.entries()? {
+            if open.capsule_id != entry.capsule_id {
+                continue;
+            }
+            if let Some(&other) = opened_with.get(&open.entry_id)
+                && other != layer
+            {
+                return Err(SessionError::OpenWithOtherRunner {
+                    open: open.program.display_name,
+                    open_with: runner_name(other),
+                    opening: entry.program.display_name.clone(),
+                    with: runner_name(layer),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// A program of `entry_id` is open with `layer` from now on.
+    fn opened(&self, entry_id: &str, layer: Layer) {
+        self.opened_with
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(entry_id.to_owned(), layer);
     }
 
     fn install(
@@ -345,7 +402,19 @@ where
     /// and reported as one this service started. A setup none of them is ended with the desktop
     /// before.
     fn take_back(self: &Arc<Self>) {
+        let entries = self.entries().unwrap_or_default();
         for taken in self.service.taken_back() {
+            // A kept program opened with what its entry opens with now: nothing changes that while
+            // it is open but a choice made since, which its next start takes.
+            if let Some(entry) = entries
+                .iter()
+                .find(|entry| entry.entry_id == taken.entry_id)
+                && let Ok(layer) = self
+                    .service
+                    .opens_with(&entry.capsule_id, &entry.program.id)
+            {
+                self.opened(&taken.entry_id, layer);
+            }
             let release = self.service.release_taken_back();
             // A setup kept through the restart closes its transaction when it ends, as it would
             // have before.
@@ -643,6 +712,15 @@ impl LauncherAuthenticator {
         } else {
             Err(SessionError::UnauthenticatedPeer)
         }
+    }
+}
+
+/// The name a person knows `layer` by.
+const fn runner_name(layer: Layer) -> &'static str {
+    match layer {
+        Layer::Wine => "Wine",
+        Layer::Proton => "Proton",
+        Layer::Vm => "Windows",
     }
 }
 
@@ -1891,6 +1969,16 @@ pub enum SessionError {
     NotRunning,
     #[error("{NOT_ADMINISTRATOR}")]
     NotAdministrator,
+    #[error(
+        "{open} is open with {open_with}, and it shares its files with {opening}: close {open} \
+         before opening {opening} with {with}."
+    )]
+    OpenWithOtherRunner {
+        open: String,
+        open_with: &'static str,
+        opening: String,
+        with: &'static str,
+    },
     #[error("the Windows installer confirmation expired; inspect the portal file again")]
     VmInstallConfirmationExpired,
     #[error("the request did not carry one portal file descriptor")]
@@ -1924,6 +2012,7 @@ impl SessionError {
             Self::UnknownEntry => "unknown_entry",
             Self::NotRunning => "not_running",
             Self::NotAdministrator => "not_administrator",
+            Self::OpenWithOtherRunner { .. } => "open_with_other_runner",
             Self::Authority(_) => "authority_unavailable",
             Self::Io(_) | Self::Capsule(_) | Self::Service(_) => "service_error",
         }
@@ -2376,11 +2465,108 @@ mod tests {
         assert!(*given_back, "the ended program's lease is given back");
     }
 
+    /// Two programs of one setup share its prefix: while one is open with Wine, the other is not
+    /// opened with Proton (nor the other way), and the refusal names both and what to do. Once
+    /// nothing of the capsule is open, either opens with what was chosen.
+    #[test]
+    fn a_prefix_is_never_open_with_wine_and_proton_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CapsuleStore::new(dir.path()).unwrap();
+        let catalogue = Catalogue::from_json(r#"{"schema_version":1,"records":[]}"#).unwrap();
+        let route = catalogue.resolver().unwrap().resolve(
+            &ApplicationQuery::executable("putty.exe"),
+            VmFallback::Disabled,
+        );
+        let capsule = store.ensure_for_plan(&route).unwrap();
+        for (id, name) in [("putty", "PuTTY"), ("puttygen", "PuTTYgen")] {
+            store
+                .register_program(
+                    &capsule.id,
+                    crate::CapsuleProgram {
+                        id: id.to_owned(),
+                        display_name: name.to_owned(),
+                        prefix_relative_executable: PathBuf::from(format!("drive_c/{id}.exe")),
+                        query: ApplicationQuery::executable(format!("{id}.exe")),
+                        kind: ProgramKind::Application,
+                        arguments: Vec::new(),
+                        opens_with: None,
+                    },
+                )
+                .unwrap();
+        }
+        let managed = ManagedCompatibility::new(
+            catalogue,
+            store,
+            crate::plan::SystemRuntimeRegistry::assuming_provider(),
+            IdleResources,
+            IdleExecutor,
+            IdleVm,
+            Arc::new(LaunchDisplay {
+                uid: 1000,
+                runtime_dir: PathBuf::from("/xdg/1000"),
+                wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
+                render_node: None,
+            }),
+        )
+        .unwrap();
+        let entry = |id: &str| {
+            managed
+                .entries()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.program.id == id)
+                .unwrap()
+        };
+        let (putty, puttygen) = (entry("putty"), entry("puttygen"));
+
+        // PuTTYgen is open with Wine.
+        let open = managed
+            .programs
+            .started(&puttygen.entry_id, "workspace", None);
+        managed.opened(&puttygen.entry_id, Layer::Wine);
+        assert!(
+            managed
+                .refuse_beside_other_runner(&putty, Layer::Wine)
+                .is_ok(),
+            "Wine beside Wine is one server's prefix"
+        );
+        let refused = managed
+            .refuse_beside_other_runner(&putty, Layer::Proton)
+            .unwrap_err();
+        assert_eq!(refused.code(), "open_with_other_runner");
+        assert_eq!(
+            refused.to_string(),
+            "PuTTYgen is open with Wine, and it shares its files with PuTTY: close PuTTYgen \
+             before opening PuTTY with Proton."
+        );
+        // PuTTYgen chosen for Proton while its Wine program is open: that program still holds
+        // the prefix, so it is not opened again with Proton beside it.
+        assert_eq!(
+            managed
+                .refuse_beside_other_runner(&puttygen, Layer::Proton)
+                .unwrap_err()
+                .code(),
+            "open_with_other_runner"
+        );
+
+        managed.programs.ended(
+            open,
+            "PuTTYgen",
+            Ok(crate::ExecutionOutcome::exited(Some(0))),
+        );
+        assert!(
+            managed
+                .refuse_beside_other_runner(&putty, Layer::Proton)
+                .is_ok(),
+            "once nothing of the capsule is open, Proton may open it"
+        );
+    }
+
     #[test]
     fn idle_accept_thread_sleeps_without_clients() {
         let dir = tempfile::tempdir().unwrap();
         let store = CapsuleStore::new(dir.path()).unwrap();
-        let catalogue = Catalogue::from_json(r#"{"schema_version":1,"records":[]}"#).unwrap();
+        let catalogue = Catalogue::from_json(r#"{"schema_version":1}"#).unwrap();
         let managed = Arc::new(
             ManagedCompatibility::new(
                 catalogue,

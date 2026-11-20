@@ -1868,7 +1868,8 @@ fn a_proton_program_shows_through_its_keepers_x11_display_and_stays_open() {
 /// A program its setup put in a Wine capsule opens with Proton once an administrator of the
 /// computer chose so: the manager lists the choice as theirs, the program then shows through its
 /// keeper's X11 display as Proton's Wine does, and stays open, the same program, through an
-/// in-place restart, still listed as opening with Proton. Someone who does not administer the
+/// in-place restart, still listed as opening with Proton. While it is open, Wine does not open
+/// its files beside it. Someone who does not administer the
 /// computer is told so, and the program keeps opening with Wine.
 #[test]
 fn an_administrator_opens_a_wine_program_with_proton_and_it_stays_open() {
@@ -1922,14 +1923,30 @@ fn an_administrator_opens_a_wine_program_with_proton_and_it_stays_open() {
     second.shown();
     assert_eq!(rig.starts(), [pid], "the same program, not a new one");
     assert!(alive(pid), "still open");
-    let answers = second.manage(&rig, "second", &["list", "recommended", "stop", "ended"]);
+    let answers = second.manage(
+        &rig,
+        "second",
+        &["list", "recommended", "launch", "stop", "ended"],
+    );
     let program = &answers[0]["applications"][0];
     assert_eq!(program["running"], true, "{answers:?}");
     assert_eq!(program["explanation"]["route"], "proton", "{answers:?}");
     assert_eq!(answers[1]["result"], "opens_with_set", "{answers:?}");
-    assert_eq!(answers[3]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    // Its prefix is open with Proton (kept through the restart): Wine does not open it beside.
     assert_eq!(
-        answers[3]["applications"][0]["explanation"]["route"], "wine",
+        answers[2]["error"]["code"], "open_with_other_runner",
+        "{answers:?}"
+    );
+    assert!(
+        answers[2]["error"]["message"]
+            .as_str()
+            .is_some_and(|said| said.contains("is open with Proton")),
+        "{answers:?}"
+    );
+    assert_eq!(rig.starts(), [pid], "nothing else started");
+    assert_eq!(answers[4]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    assert_eq!(
+        answers[4]["applications"][0]["explanation"]["route"], "wine",
         "back to the recommendation: {answers:?}"
     );
     second.end(tilo_app_launch::Teardown::Logout);
