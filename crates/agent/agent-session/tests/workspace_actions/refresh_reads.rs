@@ -314,3 +314,54 @@ async fn a_tracker_lists_and_opens_at_any_size_and_its_writer_reads_nothing_back
         TRACKERS[0]
     );
 }
+
+/// An issue as `tilo migrate` brings one from a tracker: a body of a few paragraphs, so a
+/// part of the tracker fills within a couple of lists.
+fn imported(index: usize) -> Value {
+    let said = "The page should load in a second whatever the tracker holds, and a click should \
+        answer within a frame. This paragraph stands in for what a real issue says: context, \
+        steps to reproduce, what was expected and what happened instead. ";
+    json!({
+        "title": format!("ENG-{index} Speed up the list"),
+        "body": format!("## ENG-{index}\n\n{}", said.repeat(2 + index % 7)),
+        "status": "todo",
+    })
+}
+
+/// The lists of an import read no more after each part it starts than after its first: the
+/// parts are the service's own writes, made for the agent that sends the lists, and none is read
+/// back as it lands. Each part landed as another's write instead (it is signed by the agent's
+/// session, and its keys reached the service only after it), was read out whole and taken up
+/// again by the agent's replica, which had made it: the list after every part an import started
+/// waited most of a second on a hosted workspace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_imports_lists_read_nothing_back_of_the_parts_it_starts() {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let agent = Agent {
+        api: &api,
+        token: approved_key(&on_server, &ada, &browser, "Importer").await,
+    };
+    let (base, _) = workspace(&agent, "Import").await;
+    agent.act(&base, "tasks", "open", &json!({})).await;
+    let mut reads = Vec::new();
+    for list in 0..8 {
+        let issues: Vec<Value> = (list * ISSUE_LIST..(list + 1) * ISSUE_LIST)
+            .map(imported)
+            .collect();
+        let list = json!({ "issues": issues });
+        let (_, read) = counted(agent.act(&base, "tasks/Issues", "create-many", &list)).await;
+        reads.push(read);
+    }
+    eprintln!("each list of the import read {reads:?}");
+    // A part holds two of these lists: every other list starts one, the first list the
+    // tracker's first, and those between come right after a part was started.
+    let after_first = reads[1];
+    let after_later: Vec<u64> = reads.iter().skip(3).step_by(2).copied().collect();
+    assert!(
+        after_later.iter().all(|read| *read <= after_first),
+        "the lists of an import read {reads:?}: those after a part was started read it back"
+    );
+}

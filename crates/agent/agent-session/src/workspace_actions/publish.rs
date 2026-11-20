@@ -545,6 +545,14 @@ impl Worker {
             // its change is a delta on one it did not make.
             link.send(Cmd::OpenRoute(route.clone()))?;
             link.write(route.clone(), mutation)?;
+            // It lands as the agent's: this service made it, and its landing is its own.
+            if let Some(agent) = self
+                .writing_as
+                .as_ref()
+                .and_then(tilo_actions::remote::Caller::device_public_key)
+            {
+                workspace.handed(route, *agent);
+            }
         } else {
             let writes = self
                 .shared
@@ -567,8 +575,13 @@ impl Worker {
                 .runtime
                 .block_on(write)
                 .map_err(|refusal| refusal.to_string())?;
-            let handed = workspace.unlanded.entry(route.clone()).or_default();
-            *handed = handed.saturating_add(1);
+            let own = workspace
+                .peer
+                .engine()
+                .identity()
+                .device_cert
+                .device_public_key;
+            workspace.handed(route, own);
         }
         tracing::debug!(
             app = %written.app,

@@ -972,11 +972,14 @@ struct Workspace {
     /// keys, surface or deciding governance have not arrived.
     undecided: BTreeSet<DocumentRoute>,
     /// How many writes this service handed the session to each document whose landing it has
-    /// not seen yet ([`Worker::commit`]): its own writes, which the replicas it holds took up as
-    /// they were made, and which it read to make, so their landing is neither merged again nor
-    /// leaves anything undecided. A document stays until the refresh after its last write
-    /// landed, as the segments of a write too large for one frame land one by one.
-    unlanded: HashMap<DocumentRoute, usize>,
+    /// not seen yet ([`Worker::commit`]), by the device they land as: its own writes, which the
+    /// replicas it holds took up as they were made, and which it read to make, so their landing
+    /// is neither merged again nor leaves anything undecided. Those it made for an agent land as
+    /// the agent's device, signed by the agent's session, and are as much its own: taken for
+    /// another's, each part an import started was read out whole as it landed, most of a second
+    /// before the import's next list could start. A document stays until the refresh after its
+    /// last write landed, as the segments of a write too large for one frame land one by one.
+    unlanded: HashMap<(DocumentRoute, [u8; 32]), usize>,
     /// The documents a write landed in since the last refresh took them that this service did
     /// not make: what a refresh has replicas merge.
     landed_from_others: HashSet<DocumentRoute>,
@@ -1081,6 +1084,13 @@ impl Workspace {
                 apps: Arc::default(),
             },
         }
+    }
+
+    /// Count a write this service handed over to `route`, landing as `author`
+    /// ([`Self::unlanded`]).
+    fn handed(&mut self, route: &DocumentRoute, author: [u8; 32]) {
+        let handed = self.unlanded.entry((route.clone(), author)).or_default();
+        *handed = handed.saturating_add(1);
     }
 
     /// The documents a write landed in since the last refresh took them, by
