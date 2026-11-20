@@ -9,8 +9,8 @@ helpers = [
   "public-trust", "rpms", "env-runtime", "public-trust-tools", "runtime-resolver-link",
   "kernel-rpms", "external-assets", "windows-provider", "virtio-win-media",
   "windows-compat-artifacts", "windows-compat-sysext", "doubletake-builder",
-  "joycond-builder", "bootc-builder", "xwayland-satellite-builder", "uki-tools",
-  "image-tool-stages", "builder-base", "apps-payload",
+  "joycond-builder", "xwayland-satellite-builder", "uki-tools", "builder-base",
+  "bootc-builder", "image-tool-stages", "apps-payload",
   "native-builder-payload", "os-fonts", "plymouth-assets", "os-wallpapers",
   "runtime-image-payload", "engine-runtime-package", "dnf-build-clock",
   "virtio-gallivm-cpu", "component-files", "desktop-binaries", "remote-capture-files",
@@ -31,9 +31,11 @@ targets = ["builder-base"]
 
 [[image]]
 # The side builds (AirPlay sender, joycond, bootc, xwayland-satellite) and the UKI
-# tools: they change with their pins, not with Tilo's code.
+# tools: they change with their pins, not with Tilo's code. bootc builds in the OS builder,
+# against the base's own libraries.
 name = "tools"
 targets = ["image-tool-stages", "uki-tools"]
+given = ["builder:builder-base"]
 
 [[image]]
 # The apps and their runtimes, packed from the compiled tree's apps (`compiled-apps`, which

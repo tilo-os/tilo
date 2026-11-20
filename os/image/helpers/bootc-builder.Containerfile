@@ -7,13 +7,14 @@
 # And an upgrade needs room only for the layers it does not have yet (0003):
 # upstream's composefs space check counted the whole image, so a laptop with
 # most of the new image's layers already stored refused to upgrade.
-# It builds in the pinned builder image as os/Containerfile.bootc-helper does,
-# with the headers it links against from the frozen RPM snapshot, so every
-# input is pinned (the crates by bootc's Cargo.lock) and the build is served
-# from t's cache while they are as they were. Nothing of it ships but the
-# binary: the rootfs checks it runs against the base's own libraries and
-# reports the base's bootc version.
-FROM ${BOOTC_BUILD_IMAGE} AS bootc-builder
+# It builds in the OS builder (the base's own libraries, Fedora's Rust), with
+# the ostree headers it links against from the frozen RPM snapshot: the CI
+# builder image is an older Fedora, whose installed libraries the snapshot's
+# headers cannot be installed beside. So every input is pinned (the crates by
+# bootc's Cargo.lock) and the build is served from t's cache while they are as
+# they were. Nothing of it ships but the binary: the rootfs checks it runs
+# against the base's own libraries and reports the base's bootc version.
+FROM builder-base AS bootc-builder
 # v1.16.13, the base's bootc release.
 ARG BOOTC_VERSION=1.16.13
 ARG BOOTC_SOURCE=bootc-fa0d3f9.tar.gz

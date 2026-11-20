@@ -5292,13 +5292,14 @@ default = false
 
 [[check]]
 name = "os-tools-x86_64"
-# Pinned: the images it builds on are named by digest (the base, the CI builder image, Go's),
+# Pinned: the images it builds on are named by digest (the base, the CI builder image, Go's) or
+# given (the OS builder),
 # their build headers come from the RPM snapshot it is given, the side builds' sources from the
 # assets os-assets checked against their hashes, and their crates by their Cargo.lock. Docker Hub
 # and crates.io send those on to CDN hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash os/image/build-layer.sh image tools x86_64 /target/os/x86_64/tools"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64"]
+needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-builder-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5578,13 +5579,14 @@ default = false
 
 [[check]]
 name = "os-tools-aarch64"
-# Pinned: the images it builds on are named by digest (the base, the CI builder image, Go's),
+# Pinned: the images it builds on are named by digest (the base, the CI builder image, Go's) or
+# given (the OS builder),
 # their build headers come from the RPM snapshot it is given, the side builds' sources from the
 # assets os-assets checked against their hashes, and their crates by their Cargo.lock. Docker Hub
 # and crates.io send those on to CDN hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash os/image/build-layer.sh image tools aarch64 /target/os/aarch64/tools"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64"]
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
