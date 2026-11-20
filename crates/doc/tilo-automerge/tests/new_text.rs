@@ -256,3 +256,24 @@ fn objects_made_side_by_side_leave_nothing_behind_when_rolled_back() {
         assert!(doc.save() == before, "under {held:?}");
     }
 }
+
+/// The runs the columns of the change writing a new text of `letters`
+/// letters take in.
+fn change_runs_to_commit(letters: usize) -> u64 {
+    let mut doc = AutoCommit::new().with_actor(ActorId::from(&[1u8][..]));
+    let text: String = "Plain words in a paragraph. "
+        .chars()
+        .cycle()
+        .take(letters)
+        .collect();
+    let spliced = doc.put_object(ROOT, "spliced", ObjType::Text).unwrap();
+    doc.splice_text(&spliced, 0, 0, &text).unwrap();
+    let before = automerge::work().change_runs;
+    doc.commit_with(CommitOptions::default().with_time(0));
+    automerge::work().change_runs - before
+}
+
+#[test]
+fn a_long_new_text_costs_its_change_no_more_runs_than_a_short_one() {
+    assert_eq!(change_runs_to_commit(10_000), change_runs_to_commit(100));
+}

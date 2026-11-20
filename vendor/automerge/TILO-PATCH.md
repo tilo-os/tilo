@@ -677,3 +677,15 @@ transaction reading an older document puts each key's op in as before. The
 document is the one making each object in key order gives, byte for byte.
 The marked spot is `TILO(batch-siblings)`; `Work::op_set_splices` counts the
 splices. Pinned by `crates/doc/tilo-automerge/tests/new_text.rs`.
+
+# Tilo patch: a change takes its ops' values a run at a time
+
+Committing a transaction encodes its ops into the change's columns, and
+each column took the ops' values one at a time: committing a list of 200
+issues encoded 300,000 letters value by value into a dozen columns, a
+tenth of the time the list took. `write_change_ops` now hands each column
+runs of equal values (a text's letters share their object, action, key
+and value kind), so a column pays a comparison per op and one append per
+run. The change is byte for byte the one made before. The marked spot is
+`TILO(change-runs)`; `Work::change_runs` counts the runs. Pinned by
+`crates/doc/tilo-automerge/tests/new_text.rs`.
