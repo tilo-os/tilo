@@ -333,8 +333,11 @@ build_target() {
   file=$scratch/$name.Containerfile
   python3 -I tools/ci/os/pieces.py containerfile "$name" --given "$given" > "$file"
   pin_source_times "$name" "$given"
+  # Its lines stamped with the seconds since the build began: a layer's build is one podman
+  # build of many stages, and its own output names no times.
   TILO_IMAGE=$image TILO_LAYER_TARGET=$target TILO_CONTAINERFILE=$file \
-    TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh
+    TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh 2>&1 \
+    | { local line; while IFS= read -r line; do printf '[+%ss] %s\n' "$((SECONDS - phase_started))" "$line"; done; }
 }
 
 cmd_base() {
