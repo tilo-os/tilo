@@ -17,6 +17,7 @@ pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
 pub(crate) mod bots;
 mod host_address;
+mod iroh_holder;
 pub(crate) mod large_document;
 #[cfg(feature = "agents")]
 mod lookup;
