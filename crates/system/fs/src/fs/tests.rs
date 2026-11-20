@@ -2429,3 +2429,46 @@ mod read_lock_tests {
         endpoint.close().await;
     }
 }
+
+mod listing_stream_tests {
+    use super::*;
+
+    use crate::namespace::ROOT_INO;
+    use crate::store::ContentStore;
+    use iroh::endpoint::{Endpoint, presets};
+
+    /// A listing is one pass over its folder: its later pages continue what its first page
+    /// listed even while the folder is being filled, and the next listing asks again.
+    #[tokio::test]
+    async fn a_listing_s_pages_are_one_pass_and_the_next_listing_is_fresh() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("listing-replica").unwrap()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let flat = {
+            let mut ns = namespace.lock_recover();
+            let flat = ns.create_dir(ROOT_INO, "flat", 1).unwrap();
+            for i in 0..3_u64 {
+                ns.create_file(flat, format!("f{i}"), None, 0, i).unwrap();
+            }
+            flat
+        };
+        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+        let first = fs.listing_page(flat, 0).unwrap();
+        assert_eq!(first.len(), 5, "`.` and `..` and the three files");
+        {
+            let mut ns = namespace.lock_recover();
+            ns.create_file(flat, "late", None, 0, 9).unwrap();
+        }
+        let next = fs
+            .listing_page(flat, u64::try_from(first.len()).unwrap())
+            .unwrap();
+        assert_eq!(
+            next, first,
+            "a listing's pages are one pass over its folder"
+        );
+        let fresh = fs.listing_page(flat, 0).unwrap();
+        assert_eq!(fresh.len(), 6, "the next listing sees the new name");
+    }
+}

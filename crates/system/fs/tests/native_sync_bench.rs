@@ -853,6 +853,25 @@ fn report(scenario: &str, metric: &str, value: f64, unit: &str) {
     println!("BENCH {scenario} {metric} {value:.3} {unit}");
 }
 
+/// What one stretch of work cost a daemon, by request kind, when it traces them
+/// (`TILO_FS_FUSE_REQUESTS=1`).
+fn report_requests(scenario: &str, work: &str, counts: &[(String, u64)]) {
+    let total: u64 = counts.iter().map(|(_, count)| *count).sum();
+    report(scenario, &format!("{work}_requests"), total as f64, "requests");
+    for (kind, count) in counts {
+        report(
+            scenario,
+            &format!("{work}_requests_{kind}"),
+            *count as f64,
+            "requests",
+        );
+    }
+}
+
+fn tracing_requests() -> bool {
+    std::env::var_os("TILO_FS_FUSE_REQUESTS").is_some()
+}
+
 fn small_path(root: &Path, i: u64) -> PathBuf {
     root.join(format!("small/d{:03}/f{i:06}", i / 100))
 }
@@ -1234,6 +1253,59 @@ fn list_directory(path: &Path) -> usize {
     std::fs::read_dir(path).map_or(0, |entries| entries.count())
 }
 
+/// How many sets of bytes a device staged for a workspace but has not committed: what a stop
+/// leaves behind for the next start to replay.
+fn staged_entries(cache: &Path) -> usize {
+    let Ok(workspaces) = std::fs::read_dir(cache.join("unsaved-writes")) else {
+        return 0;
+    };
+    workspaces
+        .flatten()
+        .filter_map(|workspace| std::fs::read_dir(workspace.path()).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .count()
+}
+
+/// The half-saved copies a restart left in the workspace, and how many of them sit beside a
+/// file that already holds exactly those bytes: a copy recovery should have dropped instead of
+/// keeping. Reads only the copies and the file each one names.
+fn preserved_copies(root: &Path) -> (usize, usize) {
+    let mut copies = 0_usize;
+    let mut wrong = 0_usize;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            let name = entry.file_name();
+            let Some((base, _)) = name.to_str().and_then(|name| name.split_once(".unsaved-")) else {
+                continue;
+            };
+            copies = copies.saturating_add(1);
+            if let (Ok(copy), Ok(file)) = (std::fs::read(entry.path()), std::fs::read(dir.join(base)))
+                && copy == file
+            {
+                wrong = wrong.saturating_add(1);
+            }
+        }
+    }
+    (copies, wrong)
+}
+
 /// A listing as a file manager makes it: every name, then every entry's
 /// attributes on the same path (`ls -l`'s shape). Answers the names and their
 /// total length.
@@ -1414,6 +1486,19 @@ fn copying_a_folder_in_and_restarting() {
         pair.stop_host()
     };
     let restarted = pair.restart_host();
+    let (copies, copies_wrong) = preserved_copies(&pair.host.mount);
+    report(
+        &rung_name(scenario, files),
+        "copies_after_restart",
+        copies as f64,
+        "files",
+    );
+    report(
+        &rung_name(scenario, files),
+        "copies_wrong_after_restart",
+        copies_wrong as f64,
+        "files",
+    );
     let (missing_after, wrong_after, first_after) = check(&pair.host.mount);
     report(
         &rung_name(scenario, files),
@@ -1767,9 +1852,11 @@ fn a_workspace_of_files_on_a_size_ladder() {
     host_disk_after_fill = disk_bytes(&pair.dir.join("host-cache"));
 
     // What the writing device itself sees: a person browsing the folder they just filled.
+    let listing_before = pair.host.log_len();
     let started = Instant::now();
     let host_flat = list_directory(&m1.join("flat"));
     let host_list = started.elapsed();
+    let host_list_requests = pair.host.request_counts(listing_before);
     let host_root = list_directory(&m1);
     let host_small = read_range(&m1.join("flat").join("f0000000"), 0, 4096);
     if host_flat < flat_entries as usize || host_root < 3 {
@@ -1817,6 +1904,9 @@ fn a_workspace_of_files_on_a_size_ladder() {
         f64::from(u8::from(host_small.is_ok())),
         "1",
     );
+    if tracing_requests() {
+        report_requests(&rung, "host_list", &host_list_requests);
+    }
 
     // The second device joins over a filled workspace and is given its tree.
     let (serving, tree) = pair.join_peer();
@@ -1831,9 +1921,15 @@ fn a_workspace_of_files_on_a_size_ladder() {
 
     // Listing a big folder and the root, on the device holding no content.
     let flat = m2.join("flat");
+    let listing_before = pair.peer.as_ref().expect("the peer is serving").log_len();
     let started = Instant::now();
     let cold_entries = list_directory(&flat);
     let cold_list = started.elapsed();
+    let peer_list_requests = pair
+        .peer
+        .as_ref()
+        .expect("the peer is serving")
+        .request_counts(listing_before);
     let started = Instant::now();
     for _ in 0..8 {
         assert_eq!(list_directory(&flat), cold_entries);
@@ -1911,6 +2007,9 @@ fn a_workspace_of_files_on_a_size_ladder() {
         cold_list.as_secs_f64() * 1e6 / cold_entries.max(1) as f64,
         "us",
     );
+    if tracing_requests() {
+        report_requests(&rung, "peer_list", &peer_list_requests);
+    }
 
     // Opening one small file the device has never fetched, and one huge file:
     // the manifest and the first range, not the content.
@@ -2045,7 +2144,29 @@ fn a_workspace_of_files_on_a_size_ladder() {
 
     // Restarting both ends over the state they left.
     let stopped = pair.stop_host();
+    // What the stop left staged for the next start to replay, and what that replay kept as a
+    // copy beside a file that already held the same bytes.
+    let staged_after_stop = staged_entries(&pair.dir.join("host-cache"));
     let restarted = pair.restart_host();
+    let (host_copies, host_copies_wrong) = preserved_copies(&pair.host.mount);
+    report(
+        rung.as_str(),
+        "host_staged_after_stop",
+        staged_after_stop as f64,
+        "entries",
+    );
+    report(
+        rung.as_str(),
+        "host_copies_after_restart",
+        host_copies as f64,
+        "files",
+    );
+    report(
+        rung.as_str(),
+        "host_copies_wrong_after_restart",
+        host_copies_wrong as f64,
+        "files",
+    );
     let started = Instant::now();
     let after_restart = list_directory(&pair.host.mount.join("flat"));
     let host_first_list = started.elapsed();
@@ -2064,6 +2185,13 @@ fn a_workspace_of_files_on_a_size_ladder() {
         "s",
     );
     let stopped = pair.stop_peer();
+    let peer_staged_after_stop = staged_entries(&pair.dir.join("peer-cache"));
+    report(
+        rung.as_str(),
+        "peer_staged_after_stop",
+        peer_staged_after_stop as f64,
+        "entries",
+    );
     let restarted = pair.restart_peer();
     let started = Instant::now();
     let _ = read_range(&pair.peer_mount().join("flat").join("f0000000"), 0, 4096).unwrap();

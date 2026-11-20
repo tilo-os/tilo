@@ -2035,7 +2035,7 @@ impl SessionError {
             Self::NotRunning => "not_running",
             Self::StillOpen(_) => "still_open",
             Self::NotAdministrator => "not_administrator",
-            Self::OpenWithOtherRunner { .. } => "open_with_other_runner",
+            Self::OpenWithOtherRunner { .. } => crate::protocol::OPEN_WITH_OTHER_RUNNER,
             Self::Authority(_) => "authority_unavailable",
             Self::Io(_) | Self::Capsule(_) | Self::Service(_) => "service_error",
         }

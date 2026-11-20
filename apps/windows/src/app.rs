@@ -564,13 +564,6 @@ impl WindowsApp {
     pub(crate) fn selected_app(&self) -> Option<&crate::model::WindowsApp> {
         self.catalogue.apps.get(self.selected)
     }
-    /// Submit a route edit through the resource's dispatcher; the route projection then
-    /// carries it to the service on every device.
-    fn dispatch(&self, edit: ui::tilo_resource::Edit<crate::resource::Windows>) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.submit(edit);
-        }
-    }
 
     fn finish_resource_operation(&mut self, result: Result<(), String>) {
         if let Some(reply) = self.resource_reply.take() {
@@ -1288,13 +1281,11 @@ impl WindowsApp {
                     && app.route_choices().contains(&route)
                     && (route != Route::Vm || app.launch_available) =>
             {
-                let routes = crate::resource::Windows::paths().routes;
-                self.dispatch(routes.key(app.id).set(route));
+                // The choice itself went through the dispatcher from the control, as the
+                // person's own field edit; this only says it was taken.
                 self.notice = Some(Notice::info(strings::t("windows-route-set")));
             }
             Intent::ResetRoute if app.route_override_available && app.uses_override() => {
-                let routes = crate::resource::Windows::paths().routes;
-                self.dispatch(routes.remove(app.id));
                 self.notice = Some(Notice::info(strings::t("windows-route-reset")));
             }
             Intent::Launch if app.launch_available => {
@@ -1721,8 +1712,14 @@ impl WindowsApp {
                 .iter()
                 .position(|route| *route == app.route)
                 .unwrap_or(0);
+            // A choice is the app's own field edit, submitted by the control in the interaction
+            // that made it: the same input and surface, the same history entry as any field.
             let routes = {
                 let intents = intents.clone();
+                let dispatcher = self.dispatcher.clone();
+                let routes = crate::resource::Windows::paths().routes;
+                let (app_id, current, launch_available) =
+                    (app.id.clone(), app.route, app.launch_available);
                 ToggleGroup::new(
                     choices
                         .iter()
@@ -1731,19 +1728,24 @@ impl WindowsApp {
                     selected,
                 )
                 .on_view("windows-route", move |index| {
-                    if let Some(route) = choices.get(index) {
-                        intents.push(Intent::Route(*route));
+                    let Some(route) = choices.get(index).copied() else {
+                        return;
+                    };
+                    if route != current
+                        && (route != Route::Vm || launch_available)
+                        && let Some(dispatcher) = &dispatcher
+                    {
+                        dispatcher.submit(routes.key(app_id.as_str()).set(route));
                     }
+                    intents.push(Intent::Route(route));
                 })
             };
             let mut choice: Vec<Element> = vec![Box::new(routes)];
             if app.uses_override() {
-                choice.push(Box::new(action_button(
-                    "windows-use-recommendation",
-                    "windows-use-recommendation",
-                    ButtonRole::Plain,
-                    intents,
-                    Intent::ResetRoute,
+                choice.push(Box::new(crate::support::use_recommendation(
+                    self.dispatcher.clone(),
+                    intents.clone(),
+                    app.id.clone(),
                 )));
             }
             open_with.push(Box::new(row(choice)));

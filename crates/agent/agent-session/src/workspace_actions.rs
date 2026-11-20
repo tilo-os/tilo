@@ -2545,6 +2545,11 @@ impl Worker {
         if self.hold_for_chains() {
             return Err(api_outcome(&part_wait::not_ready()));
         }
+        // A part this request was the first to open is held beside the
+        // document its app keeps now, although `holder` was read before it was
+        // opened: the action is answered from that document, which holds the
+        // part.
+        let holder = self.holder_of(&route);
         let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         timing_done("action.mount", mounting);
         if share_link {

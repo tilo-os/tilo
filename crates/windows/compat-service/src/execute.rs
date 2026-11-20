@@ -20,8 +20,8 @@ pub(crate) const PASSWORD_CHILD_FD: i32 = 38;
 pub struct ExecutionOutcome {
     pub success: bool,
     pub exit_code: Option<i32>,
-    /// The last of what a program that failed wrote on its error stream, when it wrote anything:
-    /// what the person is told beside its status ([`last_words`]).
+    /// The last of what a program that failed by itself wrote on its error stream, when it wrote
+    /// anything of its own: what the person is told beside its status ([`last_words`]).
     pub said: Option<String>,
 }
 
@@ -36,6 +36,26 @@ impl ExecutionOutcome {
             said: None,
         }
     }
+
+    /// A program that ended with `exit_code` after writing `stderr` and `stdout`, `failed` when it
+    /// stopped by itself in failure. What a program said is its reason only then: a program the
+    /// person quit says nothing, and neither does one whose only words were its graphics
+    /// implementation's.
+    #[must_use]
+    pub fn ended(
+        exit_code: Option<i32>,
+        failed: bool,
+        stderr: &[String],
+        stdout: &[String],
+    ) -> Self {
+        Self {
+            success: !failed,
+            exit_code,
+            said: failed
+                .then(|| last_words(stderr).or_else(|| last_words(stdout)))
+                .flatten(),
+        }
+    }
 }
 
 /// How many of a failed program's last lines its end carries.
@@ -46,14 +66,20 @@ const SAID_CHARS: usize = 200;
 
 /// The last lines of `lines` that say anything, joined and bounded for a sentence a person reads;
 /// none when nothing was said. What was cut is the oldest part, since a program says why it
-/// stopped last. Wine's own diagnostics are not the program's words: a real program's last line
-/// is often a Wine `fixme` that says nothing about why it stopped.
+/// stopped last. Diagnostics of what it ran on are not the program's words: a real program's last
+/// line is often a Wine `fixme` or a warning from its graphics implementation that says nothing
+/// about why it stopped.
 #[must_use]
 pub fn last_words(lines: &[String]) -> Option<String> {
     let said: Vec<&str> = lines
         .iter()
         .map(|line| line.trim())
-        .filter(|line| !line.is_empty() && !is_wine_diagnostic(line))
+        .filter(|line| {
+            !line.is_empty()
+                && !is_wine_diagnostic(line)
+                && !is_graphics_diagnostic(line)
+                && !is_wine_startup(line)
+        })
         .collect();
     let said = said
         .get(said.len().saturating_sub(SAID_LINES)..)
@@ -83,6 +109,46 @@ fn is_wine_diagnostic(line: &str) -> bool {
     !thread.is_empty()
         && thread.chars().all(|c| c.is_ascii_hexdigit())
         && matches!(class, "fixme" | "err" | "warn" | "trace")
+}
+
+/// Whether `line` is the graphics implementation's own warning rather than anything the program
+/// said: Mesa's loader and drivers, the Vulkan loader and the software rasteriser, the D3D12
+/// driver Wine reaches, and Wine's own loader messages about them. They carry no thread id, so
+/// the Wine filter above does not see them, and a program that prints nothing of its own would
+/// otherwise be explained by them.
+fn is_graphics_diagnostic(line: &str) -> bool {
+    const PREFIXES: [&str; 11] = [
+        "MESA:",
+        "MESA-",
+        "X Error",
+        "Xlib:",
+        "d3d12:",
+        "dzn:",
+        "err:d3d",
+        "err:vulkan",
+        "fixme:vulkan",
+        "vulkan",
+        "Vulkan",
+    ];
+    const GRAPHICS_LOADERS: [&str; 3] = ["libEGL", "libGL", "libvulkan"];
+    PREFIXES.iter().any(|prefix| line.starts_with(prefix))
+        || GRAPHICS_LOADERS
+            .iter()
+            .any(|loader| line.starts_with(loader))
+        || (line.starts_with("WARNING:") && line.contains("lavapipe"))
+}
+
+/// Whether `line` is Wine setting its own prefix up rather than the program saying anything: the
+/// configuration directory it made or updated, or the timeout it read for its debug output. It is
+/// not a
+/// reason the program stopped, though Wine prints it to the same stream.
+fn is_wine_startup(line: &str) -> bool {
+    const PREFIXES: [&str; 3] = [
+        "wine: created the configuration directory",
+        "wine: configuration in",
+        "wine: Read enabled Timeout",
+    ];
+    PREFIXES.iter().any(|prefix| line.starts_with(prefix))
 }
 
 /// A program an executor started, which goes on after its launch request is answered: its end
@@ -393,6 +459,37 @@ mod tests {
         assert_eq!(last_words(&lines[1..]), None);
         let said = ["error: fixme: the file is missing".to_owned()];
         assert_eq!(last_words(&said).as_deref(), Some(said[0].as_str()));
+    }
+
+    /// What the graphics stack under Wine prints is no reason a program stopped: a program that
+    /// quit and said nothing of its own says nothing, and one that failed says its own last line
+    /// with the warnings around it.
+    #[test]
+    fn a_graphics_warning_is_no_reason_a_program_stopped() {
+        let warnings = [
+            "MESA-LOADER: failed to open swrast: /usr/lib64/dri/swrast_dri.so: cannot open shared object file",
+            "MESA: error: ZINK: failed to choose pdev",
+            "dzn: D3D12CreateDevice failed with 0x80070005",
+            "err:vulkan:wine_vk_init Failed to load Wine graphics driver.",
+            "WARNING: lavapipe is not a conformant Vulkan implementation, testing use only.",
+            "wine: created the configuration directory '/var/home/tilo/.wine'",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(last_words(&warnings), None, "no reason, only diagnostics");
+
+        let quit = ExecutionOutcome::ended(Some(0), false, &warnings, &[]);
+        assert!(quit.success && quit.said.is_none(), "{quit:?}");
+
+        let mut failed = warnings;
+        failed.push("Unable to open key file: no such file".into());
+        let end = ExecutionOutcome::ended(Some(3), true, &failed, &[]);
+        assert!(!end.success);
+        assert_eq!(
+            end.said.as_deref(),
+            Some("Unable to open key file: no such file"),
+            "the program's own last line, not the warnings"
+        );
     }
 
     #[test]

@@ -410,28 +410,24 @@ pub(crate) fn asked_entry(asked: &str) -> Option<(&str, bool)> {
         .or_else(|| asked.strip_prefix(ASKED_PREFIX).map(|entry| (entry, false)))
 }
 
-/// How the service reads an app's end: a program that failed carries the last of what it, or its
-/// sandbox, wrote on its error stream, which reached the keeper's log rather than the service.
+/// How the service reads an app's end: a program that stopped by itself in failure carries the
+/// last of what it, or its sandbox, wrote on its error stream, which reached the keeper's log
+/// rather than the service. A program the person ended did not fail, whatever the machine's
+/// graphics stack warned about while it ran.
 fn outcome_of(event: &tilo_app_launch::Event) -> ExecutionOutcome {
     let end = &event.end;
-    ExecutionOutcome {
-        success: !end.crashed(),
-        exit_code: match end {
-            tilo_app_launch::End::Exited { code, .. } => Some(*code),
-            tilo_app_launch::End::Signalled { .. }
-            | tilo_app_launch::End::Failed(_)
-            | tilo_app_launch::End::KeeperStopped => None,
-        },
-        // Its error stream when it said anything there; a console program that prints its usage
-        // and stops says why on its normal output.
-        said: end
-            .crashed()
-            .then(|| {
-                compat_service::last_words(&event.said.stderr)
-                    .or_else(|| compat_service::last_words(&event.said.stdout))
-            })
-            .flatten(),
-    }
+    let exit_code = match end {
+        tilo_app_launch::End::Exited { code, .. } => Some(*code),
+        tilo_app_launch::End::Signalled { .. }
+        | tilo_app_launch::End::Failed(_)
+        | tilo_app_launch::End::KeeperStopped => None,
+    };
+    ExecutionOutcome::ended(
+        exit_code,
+        end.crashed() && !event.asked_to_end,
+        &event.said.stderr,
+        &event.said.stdout,
+    )
 }
 
 impl LaunchDisplays for Display {
