@@ -94,6 +94,25 @@
       ]
     },
     {
+      "id": "second-device",
+      "title": "Pair a phone and keep working on both",
+      "intent": "Ada works in Tilo on her laptop's browser and pairs her phone's browser to herself with Pair a new device. Both then show the same workspace: a Chat message or Tasks issue written on either shows on the other within about two seconds, and the phone still shows them after it opens Tilo again.",
+      "driver": "second-device.mjs",
+      "steps": [
+        "Ada opens Tilo on her laptop",
+        "Ada asks her laptop for a link to pair a new device",
+        "Ada opens the link on her phone and approves it on her laptop",
+        "Ada opens Chat on both",
+        "A message from the laptop shows on the phone",
+        "A message from the phone shows on the laptop",
+        "Ada opens Tasks on both",
+        "An issue from the laptop shows on the phone",
+        "An issue from the phone shows on the laptop",
+        "The phone opens Tilo again and still shows both issues and messages",
+        "A message from the laptop shows on the reopened phone"
+      ]
+    },
+    {
       "id": "mail-password",
       "title": "Connect a mail account with an email and password",
       "intent": "A person connects their mail account with only their address and password, then reads, searches and sends mail.",

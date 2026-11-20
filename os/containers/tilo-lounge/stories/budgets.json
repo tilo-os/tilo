@@ -120,6 +120,19 @@
       "Ada searches for an older one": 20000,
       "Ada sends a reply, and it arrives": 90000,
       "Mail finds the server by itself and connects": 60000
+    },
+    "second-device": {
+      "Ada opens Tilo on her laptop": 15000,
+      "Ada asks her laptop for a link to pair a new device": 10000,
+      "Ada opens the link on her phone and approves it on her laptop": 20000,
+      "Ada opens Chat on both": 15000,
+      "A message from the laptop shows on the phone": 10000,
+      "A message from the phone shows on the laptop": 10000,
+      "Ada opens Tasks on both": 15000,
+      "An issue from the laptop shows on the phone": 10000,
+      "An issue from the phone shows on the laptop": 10000,
+      "The phone opens Tilo again and still shows both issues and messages": 25000,
+      "A message from the laptop shows on the reopened phone": 15000
     }
   },
   "measures": {
@@ -156,6 +169,12 @@
         "target": 1,
         "atLeast": true,
         "what": "Whether Mail worked the servers out from the address alone, as a provider's published settings document lets it: the stack serves one at https://autoconfig.<domain>/, which a check that binds no port below 1024 cannot."
+      }
+    },
+    "second-device": {
+      "change-on-other-device-ms": {
+        "target": 2000,
+        "what": "A Chat message or Tasks issue written on one of a person's devices, until their other device shows it."
       }
     }
   }
