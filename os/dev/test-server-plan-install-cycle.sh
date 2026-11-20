@@ -147,9 +147,20 @@ wait_owner_ssh() {
   local attempts="${1:-180}" i
   for i in $(seq 1 "$attempts"); do
     owner ssh true >/dev/null 2>&1 && return 0
+    owner status 2>/dev/null | grep -q '^running' || return 1
     sleep 2
   done
   return 1
+}
+
+# What a guest said on its serial line, where a boot that never answered
+# explains itself.
+serial_tail() {
+  local label=$1 vm_dir=$2
+  [ ! -f "$vm_dir/serial.log" ] || {
+    printf -- '--- %s serial (last 60 lines):\n' "$label" >&2
+    tr -d '\000' < "$vm_dir/serial.log" | tail -n 60 >&2 || true
+  }
 }
 
 phase=setup
@@ -232,13 +243,19 @@ phase=owner
 qemu-img create -f qcow2 -F qcow2 -b "$(cd "$(dirname "$owner_disk")" && pwd)/$(basename "$owner_disk")" \
   "$owner_dir/disk.qcow2" >/dev/null
 owner boot --disk "$owner_dir/disk.qcow2" --2d --no-tpm || die 'the owner device did not start'
-wait_owner_ssh 240 || die 'the owner device did not accept SSH'
+wait_owner_ssh 240 || {
+  owner status >&2 2>&1 || true
+  serial_tail owner "$owner_dir"
+  die 'the owner device did not accept SSH'
+}
 owner ssh 'mkdir -p /var/tmp' >/dev/null
 owner ssh "mkdir -p $owner_root" >/dev/null
 owner ssh "cat > $owner_driver" < "$dev_dir/server-plan-owner.sh" \
   || die 'the owner driver did not reach the guest'
+note 'the owner device is up'
 owner_profile start || die 'the owner profile did not start'
 owner_profile wait || die 'the owner session did not answer'
+note 'the owner session answers'
 mark_step 02-owner ok
 
 # The person plans the machine: the plan goes into their Servers workspace,
@@ -260,6 +277,7 @@ jq '.plan' "$evidence/03-plan-entry.json" > "$storage/plan.json"
 owner ssh "cat $owner_root/machine.token" > "$storage/machine.token" \
   || die 'the token could not be taken from the owner device'
 chmod 0600 "$storage/machine.token" "$storage/plan.json"
+note "the machine is planned: $plan_id"
 mark_step 03-plan ok
 
 # --- the machine: retained Fedora with an empty second disk ------------------
@@ -327,7 +345,11 @@ server_vm stop >/dev/null 2>&1 || true
 server_vm boot \
   --disk "$retained" --serial tilo-retained-disk --attach "$target_disk" --2d --no-tpm \
   || die 'the retained Fedora did not start'
-wait_server_ssh 240 || die 'the retained Fedora did not accept SSH'
+wait_server_ssh 240 || {
+  server_vm status >&2 2>&1 || true
+  serial_tail server "$server_dir"
+  die 'the retained Fedora did not accept SSH'
+}
 server 'test -e /var/lib/tilo-cycle-root-grown' || die 'cloud-init did not grow the retained root'
 server 'command -v podman >/dev/null' \
   || server 'sudo dnf install -y --setopt=install_weak_deps=False podman util-linux >/dev/null' \
@@ -349,6 +371,7 @@ PY
 printf 'label: gpt\n' | server "sudo sfdisk /dev/vdb" \
   > "$evidence/04-target-labelled.txt" 2>&1 \
   || die 'the target disk could not take a GPT'
+note 'the retained Fedora is up and its target disk is empty'
 mark_step 04-retained ok
 
 # --- copy the imager, bundle, plan and token into the machine ----------------
@@ -367,6 +390,7 @@ server_cp "$storage/machine.token" "$guest_dir/machine.token"
 server "chmod 0600 $guest_dir/machine.token"
 missing_libs="$(server "ldd $guest_dir/imager | grep 'not found' || true")"
 [ -z "$missing_libs" ] || die "the imager cannot start on the retained Fedora: $missing_libs"
+note 'the installer, its bundle, the plan and its token are on the machine'
 mark_step 05-copy-in ok
 
 # --- stage onto the second disk from a privileged container ------------------
@@ -407,6 +431,7 @@ grep -q 'BootNext: [0-9A-Fa-f]\{4\}' "$evidence/06-efibootmgr.txt" || die 'the s
 server "sudo sfdisk --json /dev/vdb" > "$evidence/06-target-disks.json"
 jq -e '.partitiontable.partitions | length == 2' "$evidence/06-target-disks.json" >/dev/null \
   || die 'the target disk does not carry exactly the two staging partitions'
+note 'the machine is staged to boot its installer'
 mark_step 06-staged ok
 
 # --- reboot through BootNext; the installer installs with nobody there -------
@@ -472,6 +497,7 @@ await_server_status() {
   return 1
 }
 await_server_status '' 09-status || die 'the installed machine never came up unlocked'
+note 'the installed machine is up and opened by its owner'
 mark_step 09-first-boot ok
 
 # --- Tilo becomes the default start, and a restart opens unattended ----------
@@ -490,6 +516,7 @@ second_question="$(await_owner_question network.device-unlock restart)"
 note "the owner releases the restarted boot's half: $second_question"
 answer_owner allow "$second_question"
 await_server_status "$first_opened" 11-status || die 'the machine did not come up unlocked after the restart'
+note 'the restarted machine is up and opened by its owner again'
 mark_step 11-restart ok
 
 # --- the recovery key is on the person's devices -----------------------------
@@ -506,6 +533,7 @@ jq -e '.label == $name' --arg name "$server_name" "$storage/recovery-key.json" >
   || die 'the saved recovery key names another machine'
 jq '{machine, label, key_chars: (.key | length)}' "$storage/recovery-key.json" \
   > "$evidence/12-recovery-key.json"
+note 'the owner device holds the recovery key'
 mark_step 12-recovery-key ok
 
 phase=done

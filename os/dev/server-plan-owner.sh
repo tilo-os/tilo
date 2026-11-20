@@ -95,8 +95,9 @@ start_bus() {
 mint_identity() {
   [ -f "$TILO_IDENTITY_DIR/device-private/keypair.bin" ] && return 0
   # A session is not up yet, and `tilo login` needs none to make a person of
-  # this profile.
-  "$tilo_bin" login --new-identity --name "plan cycle owner" \
+  # this profile. It is bounded: a login that waits on something answers the
+  # cycle's question nowhere.
+  timeout 180 "$tilo_bin" login --new-identity --name "plan cycle owner" \
     > "$root/logs/identity.log" 2>&1 || {
     tail -n 40 "$root/logs/identity.log" >&2 || true
     return 1
