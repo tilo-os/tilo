@@ -1592,8 +1592,10 @@ builder_build() {
   # A drop-in that mirrors a directory back takes the stage's name alone; one that copies the files
   # a glob matches (a routing drop-in hands the call to a remote builder, whose exec copies files)
   # needs the stage's files named, since a stage is a directory of files below it.
-  local fetch=$builder_stage
-  remote_capable || fetch=$builder_stage/'**'
+  local fetch=$builder_stage help
+  if ! remote_capable || { help=$($cargo exec --help 2>/dev/null) && [[ $help == *'a glob'* ]]; }; then
+    fetch=$builder_stage/'**'
+  fi
   (cd "$repo" && $cargo --fetch "$fetch" exec bash os/containers/tilo-sh/build-on-builder.sh "${args[@]}" >&2) \
     || die "the build on the build server failed (above)"
   [[ $(cat "$repo/target/$builder_stage/run" 2>/dev/null) == "$run" ]] \
