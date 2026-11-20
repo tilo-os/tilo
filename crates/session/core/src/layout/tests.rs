@@ -329,7 +329,6 @@ fn the_layout_actions_keep_their_audience_history_words_and_read_kind() {
             "{id} is no row of a person's palette"
         );
     }
-    assert_eq!(action("pin").action_type().did.as_deref(), Some("pinned"));
     assert_eq!(action("place").action_type().did.as_deref(), Some("showed"));
 
     let place = tilo_resource::LiveRow::typed::<super::published::Place>(
@@ -337,6 +336,14 @@ fn the_layout_actions_keep_their_audience_history_words_and_read_kind() {
         "Notes",
     )
     .into_resource();
+    // A place's own verbs name what they did as the layout publishes each place.
+    let published_place = super::published::place_kind_resource(&words);
+    let pin = published_place
+        .actions
+        .iter()
+        .find(|spec| spec.id == "pin")
+        .expect("the place offers its pin");
+    assert_eq!(pin.action_type().did.as_deref(), Some("pinned"));
     let drawn = place
         .actions
         .iter()

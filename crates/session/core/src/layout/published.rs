@@ -56,10 +56,17 @@ pub struct Query;
 
 /// What puts a resource on the canvas and steps the layout's history.
 pub(super) fn layout_resource(words: &Words) -> ResourceSpec {
-    carried(offer::<LayoutEffect>(typed_resource::<Layout>(
+    let mut resource = offer::<LayoutEffect>(typed_resource::<Layout>(
         RESOURCE,
         words("session-resource-layout", &[], "Tree"),
-    )))
+    ));
+    // A place's, a strip's and a query's own actions are offered bound on each of them; an
+    // unbound copy here would be a second `move`, `size` or `close` that a caller looking an
+    // action up by its name finds first, taking a place instead of acting on one.
+    resource
+        .actions
+        .retain(|action| action.contract.item.is_none());
+    carried(resource)
 }
 
 /// The record itself, whose actions step its history by the record's address: a person is offered
