@@ -805,13 +805,47 @@ fn valid_resource_kind(kind: &str) -> bool {
         })
 }
 
-pub const MAX_OFFERS: usize = 64;
+/// The most actions one app may offer while it is closed. Its offers are the app's own
+/// catalogue, which for a big app (Settings' is 237) reaches hundreds, so the bound stands
+/// far above any catalogue: it only keeps one app from being mostly offers, which a
+/// manifest's own 1 MiB bound would otherwise allow.
+pub const MAX_OFFERS: usize = 1024;
 
 /// Resource prefixes an app cannot offer under: `app.` names the host's own
-/// application resources (opening and closing an app), and a
-/// `tilo-ui-bound:` id belongs to one window of one run, so it means nothing
-/// before the app runs.
-const RESERVED_OFFER_RESOURCES: [&str; 2] = ["app.", "tilo-ui-bound:"];
+/// application resources (opening and closing an app), a `tilo-ui-bound:` id belongs to
+/// one window of one app process, and a `uuid:` or `file:` address is minted or named on
+/// one device, so none of them means anything before the app is open elsewhere.
+const RESERVED_OFFER_RESOURCES: [&str; 4] = ["app.", "tilo-ui-bound:", "uuid:", "file:"];
+
+/// The tab id of the workspace's default resource (`DocumentId::workspace_default`), the
+/// base of every address a device derives before an app is open.
+const WORKSPACE_DEFAULT_TAB: &str = "0000000000000000";
+
+/// Whether `resource` is an address an app offers under steadily: one it names itself
+/// (`calendar.calendar`), one of its items (`chat.messages:<item>`), or one derived from
+/// the workspace's default resource
+/// (`chain:derived:pages@derived:default@tab:<default>`), which every device derives the
+/// same way and which the app shows when a launch names no resource, as a palette
+/// invoking an offer launches it. A window's own, a minted one and a file's are another
+/// device's.
+fn stable_offer_resource(resource: &str) -> bool {
+    let allowed = |byte: u8| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'/' | b'@')
+    };
+    resource.len() <= 128
+        && resource.starts_with(|c: char| c.is_ascii_alphabetic())
+        && resource.bytes().all(allowed)
+        && !RESERVED_OFFER_RESOURCES
+            .iter()
+            .any(|reserved| resource.starts_with(reserved))
+        && resource.match_indices("tab:").all(|(at, _)| {
+            resource
+                .get(at..)
+                .and_then(|tail| tail.strip_prefix("tab:"))
+                .and_then(|tail| tail.split(|c: char| !c.is_ascii_hexdigit()).next())
+                == Some(WORKSPACE_DEFAULT_TAB)
+        })
+}
 
 fn validate_offers(offers: &[crate::manifest::OfferedAction]) -> Result<(), ManifestError> {
     if offers.len() > MAX_OFFERS {
@@ -822,17 +856,7 @@ fn validate_offers(offers: &[crate::manifest::OfferedAction]) -> Result<(), Mani
     let mut seen = std::collections::HashSet::new();
     for offer in offers {
         let address = format!("{}#{}", offer.resource, offer.action);
-        let resource_ok = offer.resource.len() <= 128
-            && offer
-                .resource
-                .starts_with(|c: char| c.is_ascii_alphabetic())
-            && offer.resource.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'/')
-            })
-            && !RESERVED_OFFER_RESOURCES
-                .iter()
-                .any(|reserved| offer.resource.starts_with(reserved));
-        if !resource_ok {
+        if !stable_offer_resource(&offer.resource) {
             return Err(ManifestError::BadOffer(format!(
                 "{address}: resource must be a stable address the app publishes"
             )));
@@ -1564,9 +1588,22 @@ mode = "off"
                 icon: None,
             };
             let mut m = minimal_runtime_manifest();
+            // A resource derived from the workspace's default one: every device derives
+            // the same address, and a launch naming no resource shows it. Its kind is its
+            // own.
+            let mut derived = offer(
+                "chain:derived:pages@derived:default@tab:0000000000000000",
+                "new-note",
+            );
+            derived.resource_kind = Some("notes.pages".into());
+            // An item's stable address, whose kind is the resource type holding it.
+            let mut item = offer("chat.messages:general", "open");
+            item.resource_kind = Some("chat.messages".into());
             m.offers = vec![
                 offer("calendar.calendar", "show-tasks"),
                 offer("calendar.calendar", "show-week"),
+                derived,
+                item,
             ];
             assert_eq!(validate_manifest(&m), Ok(()));
             let refused = |offers: Vec<crate::manifest::OfferedAction>| {
@@ -1577,6 +1614,11 @@ mode = "off"
             assert!(refused(vec![offer("calendar.calendar", "show-tasks"); 2]));
             assert!(refused(vec![offer("app.so.tilo.notes", "open")]));
             assert!(refused(vec![offer("tilo-ui-bound:v1:a:b:c", "invoke")]));
+            assert!(refused(vec![
+                offer("chain:derived:pages@derived:default@tab:0000000000000001", "new-note")
+            ]));
+            assert!(refused(vec![offer("uuid:01234567-89ab-cdef-0123-456789abcdef", "open")]));
+            assert!(refused(vec![offer("file:/tmp/plan.md", "open")]));
             assert!(refused(vec![offer("", "show-tasks")]));
             assert!(refused(vec![offer("calendar calendar", "show-tasks")]));
             assert!(refused(vec![offer("calendar.calendar", "show tasks")]));
