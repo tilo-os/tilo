@@ -104,15 +104,11 @@ pub(super) struct Written {
     changes: Vec<String>,
     /// The agent whose own session was handed it ([`Worker::writer`]): `None`
     /// for the service's own session.
-    by: Option<[u8; 32]>,
+    by: Option<Link>,
 }
 
 impl Written {
-    pub(super) fn of(
-        route: &DocumentRoute,
-        mutation: &DocumentMutation,
-        by: Option<[u8; 32]>,
-    ) -> Self {
+    pub(super) fn of(route: &DocumentRoute, mutation: &DocumentMutation, by: Option<Link>) -> Self {
         Self {
             app: route.app_id.clone(),
             workspace: route.cluster_id.clone(),
@@ -448,15 +444,21 @@ impl Worker {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
-        let by = self.writer();
-        self.hand_over(workspace_id, route, mutation, by.as_ref())?;
+        let is_roster = self
+            .writing_as
+            .as_ref()
+            .is_some_and(|caller| caller.roster_created_at().is_some());
+        let by = self.writer(workspace_id, route)?;
+        self.hand_over(workspace_id, route, mutation, by.as_ref(), is_roster)?;
         self.handed
             .entry(workspace_id)
             .or_default()
-            .push(Written::of(route, mutation, by.map(|(device, _)| device)));
+            .push(Written::of(route, mutation, by));
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
-        self.index_document(workspace_id, route);
+        if !is_roster {
+            self.index_document(workspace_id, route);
+        }
         Ok(())
     }
 
@@ -464,10 +466,32 @@ impl Worker {
     /// agent asked for is signed by the agent's own session, inside its
     /// delegation and never with the authority of the device the service signs
     /// as; anyone else's goes through the service's own session.
-    fn writer(&self) -> Option<([u8; 32], Link)> {
-        let device = self.writing_as?;
-        let link = self.shared.agent_sessions.get()?.link(&device)?;
-        Some((device, link))
+    fn writer(
+        &self,
+        workspace: WorkspaceId,
+        route: &DocumentRoute,
+    ) -> Result<Option<Link>, String> {
+        let Some(caller) = &self.writing_as else {
+            return Ok(None);
+        };
+        let sessions = self.shared.agent_sessions.get();
+        if caller.roster_created_at().is_none() {
+            return Ok(caller
+                .device_public_key()
+                .and_then(|device| sessions?.link(device)));
+        }
+        let refused = || "the roster signing session is no longer authorized".to_owned();
+        self.shared
+            .link
+            .get()
+            .and_then(|link| {
+                link.roster_policy(workspace, caller, Some((&route.app_id, &route.document)))
+            })
+            .ok_or_else(refused)?;
+        let (link, _) = sessions
+            .and_then(|sessions| sessions.live_roster(workspace, caller))
+            .ok_or_else(refused)?;
+        Ok(Some(link))
     }
 
     /// Write `mutation` into the workspace: through this device's service, which
@@ -478,7 +502,8 @@ impl Worker {
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
         mutation: &DocumentMutation,
-        by: Option<&([u8; 32], Link)>,
+        by: Option<&Link>,
+        is_roster: bool,
     ) -> Result<(), String> {
         if !self.workspaces.contains_key(&workspace_id) {
             return Err("the workspace was not joined".into());
@@ -486,6 +511,7 @@ impl Worker {
         let founding = matches!(mutation, DocumentMutation::Snapshot(_));
         let link = self.shared.link.get().cloned();
         let sealed = match &link {
+            _ if is_roster => None,
             // A record the service starts has a channel of its own: opened here
             // and sealed under from its first change.
             Some(link) => match link.host_keys(route, founding) {
@@ -499,7 +525,7 @@ impl Worker {
             .workspaces
             .get_mut(&workspace_id)
             .ok_or("the workspace was not joined")?;
-        if let Some((_, link)) = by {
+        if let Some(link) = by {
             // A record this service starts — a chain's first part, a report — has a
             // channel of its own. Its keys are opened here and handed to the agent's
             // session, so the first change goes out sealed instead of waiting for
@@ -538,7 +564,7 @@ impl Worker {
             let handed = workspace.unlanded.entry(route.clone()).or_default();
             *handed = handed.saturating_add(1);
         }
-        let written = Written::of(route, mutation, by.map(|(device, _)| *device));
+        let written = Written::of(route, mutation, None);
         tracing::debug!(
             app = %written.app,
             workspace = %written.workspace,
@@ -739,31 +765,26 @@ impl Worker {
         )>,
         String,
     > {
-        let mut groups: Vec<(Option<[u8; 32]>, Vec<Written>)> = Vec::new();
+        let mut groups: Vec<(Option<Link>, Vec<Written>)> = Vec::new();
         for write in written {
-            match groups.iter_mut().find(|(by, _)| *by == write.by) {
+            let link = write.by.as_ref();
+            match groups.iter_mut().find(|(by, _)| match (by.as_ref(), link) {
+                (None, None) => true,
+                (Some(by), Some(link)) => Arc::ptr_eq(by.outbox(), link.outbox()),
+                _ => false,
+            }) {
                 Some((_, group)) => group.push(write.clone()),
-                None => groups.push((write.by, vec![write.clone()])),
+                None => groups.push((link.cloned(), vec![write.clone()])),
             }
         }
         let mut barred = Vec::with_capacity(groups.len());
-        for (by, group) in groups {
+        for (link, group) in groups {
             // Asked of the documents the request wrote and of no other: a
             // session carries every caller's writes, a write that waits beside
             // these, in another workspace or for another document of this one,
             // says nothing about them, and another caller's refused write is
             // not this one's.
             let documents: Vec<DocumentRoute> = group.iter().map(Written::route).collect();
-            let link = match by {
-                Some(device) => Some(
-                    self.shared
-                        .agent_sessions
-                        .get()
-                        .and_then(|sessions| sessions.link(&device))
-                        .ok_or_else(|| "the agent's session ended".to_owned())?,
-                ),
-                None => None,
-            };
             let peer = match &link {
                 Some(peer) => peer,
                 None => {

@@ -63,6 +63,7 @@ pub struct Caller {
     // receiving device checks it against that message and presence can show
     // what the agent would click.
     pub(super) turn: Option<tilo_action_policy::turn::Turn>,
+    roster_created_at: Option<i64>,
     // The name an agent goes by, from the key its person certified for it
     // (`Self::named`): presentation only, what History names it by.
     pub(super) agent_name: Option<String>,
@@ -87,6 +88,7 @@ impl Caller {
             session_delegated: false,
             within: within::Within::NONE,
             turn: None,
+            roster_created_at: None,
             agent_name: None,
             asked: None,
             bound: Vec::new(),
@@ -386,6 +388,23 @@ impl Caller {
             self.bound = bound;
         }
         self
+    }
+
+    /// Bind a certified agent caller to the hosted roster entry and turn that
+    /// its provider admitted. The workspace service must verify this binding.
+    #[must_use]
+    pub fn on_roster_turn(mut self, turn: tilo_action_policy::turn::Turn, created_at: i64) -> Self {
+        if !self.session_delegated && self.acting.is_agent() && self.device_public_key.is_some() {
+            self.turn = Some(turn);
+            self.roster_created_at = Some(created_at);
+        }
+        self
+    }
+
+    /// The creation time of the roster entry the provider bound this turn to.
+    #[must_use]
+    pub const fn roster_created_at(&self) -> Option<i64> {
+        self.roster_created_at
     }
 
     /// The person whose own device handed this connection to its agent

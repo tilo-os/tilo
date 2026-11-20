@@ -143,6 +143,7 @@ const KEEP_WORK: &str = "record-work";
 #[derive(Clone)]
 pub struct WorkspaceActionProvider {
     actions: WorkspaceActions,
+    roster_caller: Option<Caller>,
     workspace: WorkspaceId,
     /// The events this device runs for its people, where it runs any: what an agent sets up,
     /// pauses, changes and removes for the person its turn is for.
@@ -219,6 +220,7 @@ impl WorkspaceActionProvider {
     pub fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
         Self {
             actions,
+            roster_caller: None,
             workspace,
             events: None,
             own: Vec::new(),
@@ -274,9 +276,26 @@ impl WorkspaceActionProvider {
         self
     }
 
+    fn workspace_caller<'a>(&'a self, person_work: &'a Caller) -> &'a Caller {
+        self.roster_caller.as_ref().unwrap_or(person_work)
+    }
+
     fn serve(&self, caller: &Caller, message: RemoteActionMessage) -> Pending<RemoteActionMessage> {
         // What a tool call asks of the workspace's action service is counted for its step.
         let asking = steps::asking(&message);
+        let caller = match &message {
+            RemoteActionMessage::Invoke(request)
+                if !tilo_actions::remote::is_ask(&request.target) =>
+            {
+                self.workspace_caller(caller)
+            }
+            RemoteActionMessage::Cancel { invocation }
+                if self.actions.observe(caller, invocation).is_none() =>
+            {
+                self.workspace_caller(caller)
+            }
+            _ => caller,
+        };
         let answer = self
             .actions
             .serve(self.workspace, caller, message)
@@ -426,7 +445,12 @@ impl ActionProvider for WorkspaceActionProvider {
         self.ended
             .as_ref()
             .and_then(|ended| ended.of(id))
-            .or_else(|| self.actions.observe(caller, id))
+            .or_else(|| self.actions.observe(self.workspace_caller(caller), id))
+            .or_else(|| {
+                self.roster_caller
+                    .as_ref()
+                    .and_then(|_| self.actions.observe(caller, id))
+            })
             .or_else(|| self.answered.of(caller, id))
     }
 
@@ -662,6 +686,10 @@ pub struct LookRead {
 pub struct HostAgents {
     workspaces: Workspaces,
     actions: WorkspaceActions,
+    roster: Option<(
+        crate::agents::ServerAgentLink,
+        tilo_agent_session::AgentSessions,
+    )>,
     /// The host's model; `None` when it runs none, which every ask is told.
     model: Option<Model>,
     /// The turns going now: one for each agent in each conversation, with what reaches it
@@ -691,6 +719,7 @@ impl HostAgents {
         let agents = Self {
             workspaces,
             actions,
+            roster: None,
             model,
             going: Arc::default(),
             coding: None,
@@ -704,6 +733,38 @@ impl HostAgents {
         agents.carries(connections::WORD, connections::answers(&agents.workspaces));
         agents.carry_sends();
         agents
+    }
+
+    /// The existing peer sessions the server approved to sign for roster turns.
+    #[must_use]
+    pub fn with_roster_sessions(
+        mut self,
+        server: &crate::Server,
+        sessions: Option<tilo_agent_session::AgentSessions>,
+    ) -> Self {
+        self.roster = sessions.map(|sessions| (server.agent_link(), sessions));
+        self
+    }
+
+    async fn roster_device(
+        &self,
+        workspace: WorkspaceId,
+        agent: &Agent,
+        keeper: [u8; 32],
+    ) -> Result<Option<[u8; 32]>, String> {
+        let Some((server, sessions)) = &self.roster else {
+            return Ok(None);
+        };
+        let denied =
+            || "the hosted agent has no approved signing session for this workspace".to_owned();
+        let device = server
+            .roster_session_device(sessions, workspace, &agent.id.0, &keeper)
+            .await
+            .filter(|device| {
+                sessions.matches_roster(device, workspace, &agent.id.0, &keeper, agent.created_at)
+            })
+            .ok_or_else(denied)?;
+        Ok(Some(device))
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:
@@ -1302,6 +1363,14 @@ impl HostAgents {
             )
             .await
             .ok_or("the person who asked is admitted here on no device")?;
+        let keeper = tilo_action_policy::PersonId::parse(&turn.agent.keeper)
+            .ok()
+            .and_then(|keeper| keeper.root())
+            .ok_or("the hosted agent has no keeper")?;
+        let roster = self
+            .roster_device(workspace_id, &turn.agent, keeper)
+            .await?
+            .map(|device| (keeper, device, turn.agent.created_at));
         let mut scope = TurnScope {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
@@ -1309,6 +1378,7 @@ impl HostAgents {
                 .keeping_to(self.own_of(workspace, turn).await)
                 .serving_ask(&turn.request),
             person: Caller::authenticated(person, device).in_workspace(workspace),
+            roster,
             workspace: workspace.to_owned(),
             workspace_id,
         };
@@ -1841,6 +1911,7 @@ struct TurnScope {
     provider: WorkspaceActionProvider,
     /// The person, as their own device is admitted here.
     person: Caller,
+    roster: Option<([u8; 32], [u8; 32], i64)>,
     workspace: String,
     workspace_id: WorkspaceId,
 }
@@ -1863,17 +1934,24 @@ impl TurnScope {
             .get(..24)
             .unwrap_or_default()
         );
-        let caller = self
-            .person
-            .clone()
-            .delegated_to(turn.agent.id.0.clone())
-            .named(&turn.agent.name)
-            .in_agent_session(session)
-            .asked(&turn.asked)
-            .on_turn(
-                tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
-                turn.agent.turn_rules(&self.workspace),
-            );
+        let cause =
+            tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone());
+        let in_session = |caller: Caller| {
+            caller
+                .named(&turn.agent.name)
+                .in_agent_session(&session)
+                .asked(&turn.asked)
+        };
+        let caller = in_session(self.person.clone().delegated_to(turn.agent.id.0.clone()))
+            .on_turn(cause.clone(), turn.agent.turn_rules(&self.workspace));
+        let mut provider = self.provider.clone();
+        provider.roster_caller = self.roster.map(|(keeper, device, created_at)| {
+            in_session(
+                Caller::delegated_agent(turn.agent.id.0.clone(), keeper, device)
+                    .in_workspace(&self.workspace),
+            )
+            .on_roster_turn(cause, created_at)
+        });
         // A sub-agent's turn grows the messages its answer goes on in, and whoever keeps it
         // to its own writes reads which those are.
         let followed = self
@@ -1883,7 +1961,7 @@ impl TurnScope {
             .and_then(|own| own.followed_by(written::reply_of(turn).as_deref()))
             .unwrap_or_default();
         Reply {
-            provider: self.provider.clone(),
+            provider,
             caller,
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
@@ -2390,7 +2468,7 @@ async fn work(
             0,
         );
     };
-    let server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone())
+    let server = match McpServer::for_turn(reply.provider.clone(), reply.caller.clone())
         .map(|server| server.with_observation(steps::observed()))
     {
         Ok(server) => server,
@@ -2622,7 +2700,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         **turn = newest.clone();
         **reply = self.scope.reply(turn);
         reply.taken().await;
-        let server = McpServer::for_turn(self.scope.provider.clone(), reply.caller.clone())
+        let server = McpServer::for_turn(reply.provider.clone(), reply.caller.clone())
             .map(|server| server.with_observation(steps::observed()))
             .map_err(|error| error.to_string());
         drop(at);

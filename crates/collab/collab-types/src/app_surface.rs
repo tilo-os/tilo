@@ -229,6 +229,20 @@ pub fn primary_kind(app_id: &str) -> Option<String> {
         .map(|surface| surface.kind.clone())
 }
 
+/// Whether this app declares an undoable verb on this resource kind. A
+/// window may route a chain's document verb through an effect handler, while
+/// the committed surface describes what it changes.
+#[must_use]
+pub fn document_verb(app_id: &str, kind: &str, action: &str) -> bool {
+    surface_of(app_id).is_some_and(|file| {
+        file.resource(Some(kind)).is_some_and(|surface| {
+            surface.verbs.iter().any(|verb| {
+                verb.id == action && verb.kind == tilo_action_policy::ActionKind::Undoable
+            })
+        })
+    })
+}
+
 /// Whether `action` of `app_id` shows something in a window of the app, on
 /// whatever resource it is invoked, as its surface declares
 /// ([`tilo_actions::surface::Surface::shows`]). False when this process holds

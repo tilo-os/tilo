@@ -114,6 +114,16 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<ViewReadPolicy> {
         None
     }
+    /// Current governed policy for a hosted turn bound to a certified roster peer.
+    /// An exact route also requires the signed delegation to reach that app.
+    fn roster_policy(
+        &self,
+        _workspace: WorkspaceId,
+        _caller: &Caller,
+        _inside: Option<(&str, &str)>,
+    ) -> Option<ViewReadPolicy> {
+        None
+    }
     /// Whether `workspace` keeps `caller`'s key as one its person revoked: nothing it asks is
     /// answered until they approve another, and every refusal says so.
     fn key_revoked(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {

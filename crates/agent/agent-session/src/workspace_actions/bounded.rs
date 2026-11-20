@@ -99,6 +99,7 @@ pub(super) struct BoundedReplica {
     granted: Vec<policy::Grant>,
     sandbox: Vec<collab_types::caps::CapOverride>,
     unix_time: u64,
+    device: Option<tilo_actions::InvokerDevice>,
 }
 
 /// Callers' replicas whose last write is still on its way to be saved, by
@@ -424,13 +425,30 @@ pub(super) fn bounded_access(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<policy::MemberAccess, ActionCallError> {
-    let granted = who.caller.granted(&policy.agent_bound);
+    let mut acting = who.caller.acting().clone();
+    if who.caller.roster_created_at().is_some() {
+        // Keep the authenticated turn's session while preserving the device cap.
+        acting.foreign_device = policy.access.acting.foreign_device;
+    }
+    let granted = agent_grants(policy, who);
     policy
         .access
         .clone()
-        .as_acting(who.caller.acting().clone())
+        .as_acting(acting)
         .map(|access| access.granted(granted))
         .ok_or(ActionCallError::NotPermitted)
+}
+
+fn agent_grants(policy: &super::ViewReadPolicy, who: &Bounded) -> Vec<policy::Grant> {
+    if let Some(agent) = who
+        .agent
+        .as_ref()
+        .filter(|_| who.caller.roster_created_at().is_some())
+    {
+        policy::roles::agent_bound(agent, who.person.as_str(), &policy.agent_bound)
+    } else {
+        who.caller.granted(&policy.agent_bound)
+    }
 }
 
 /// `who`'s permissions under `policy` ([`bounded_access`]).
@@ -453,10 +471,16 @@ pub(super) fn member_actor(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
     own_device: &super::HostDevice,
+    certified: Option<tilo_actions::InvokerDevice>,
 ) -> Result<crate::ReplicaActor, ActionCallError> {
     let own = own_device.key.verifying_key().to_bytes();
-    let device = (who.caller.device_public_key() == Some(&own)).then(|| {
-        tilo_actions::InvokerDevice::certified(own, &own_device.endpoint.server_cert.device_label)
+    let device = certified.or_else(|| {
+        (who.caller.device_public_key() == Some(&own)).then(|| {
+            tilo_actions::InvokerDevice::certified(
+                own,
+                &own_device.endpoint.server_cert.device_label,
+            )
+        })
     });
     Ok(crate::ReplicaActor::Member {
         access: bounded_access(policy, who)?,
@@ -527,6 +551,14 @@ pub(super) fn policy_for(
     cluster: &str,
     inside: Option<(&str, &str)>,
 ) -> Result<super::ViewReadPolicy, ActionCallError> {
+    if who.caller.roster_created_at().is_some() {
+        return shared
+            .link
+            .get()
+            .and_then(|link| link.roster_policy(workspace_id, &who.caller, inside))
+            .filter(|policy| policy.workspace == cluster)
+            .ok_or(ActionCallError::NotPermitted);
+    }
     let decided = shared.link.get().and_then(|link| match inside {
         Some((app, named)) => link.view_read_policy(workspace_id, &who.person_caller, app, named),
         None => link.workspace_policy(workspace_id, &who.person_caller),
@@ -689,6 +721,12 @@ impl Worker {
 
     /// Whether `who` may see the workspace's records at all.
     pub(super) fn admits_bounded(&self, workspace_id: WorkspaceId, who: &Bounded) -> bool {
+        if who.caller.roster_created_at().is_some() {
+            return self.shared.link.get().is_some_and(|link| {
+                link.roster_policy(workspace_id, &who.caller, None)
+                    .is_some()
+            });
+        }
         (who.person == self.member && !self.governed(workspace_id))
             || self
                 .shared
@@ -774,13 +812,27 @@ impl Worker {
         }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let granted = who.caller.granted(&policy.agent_bound);
-        // The same caller under the same grants: one replica, whatever the workspace's policy
-        // says of them now.
+        let granted = agent_grants(&policy, who);
+        let device = if who.caller.roster_created_at().is_some() {
+            let (peer, _) = self
+                .shared
+                .agent_sessions
+                .get()
+                .and_then(|sessions| sessions.live_roster(workspace_id, &who.caller))
+                .ok_or(ActionCallError::NotPermitted)?;
+            let cert = &peer.engine().identity().device_cert;
+            Some(tilo_actions::InvokerDevice::certified(
+                cert.device_public_key,
+                &cert.device_label,
+            ))
+        } else {
+            None
+        };
+        // Renew the same caller's replica in place as the workspace policy changes.
         let same = self
             .bounded
             .get(&key)
-            .is_some_and(|held| held.granted == granted);
+            .is_some_and(|held| held.granted == granted && held.device == device);
         let mut current = same
             && self.bounded.get(&key).is_some_and(|held| {
                 held.access == policy.access
@@ -798,7 +850,12 @@ impl Worker {
             && held
                 .held
                 .app
-                .renew(&member_actor(&policy, who, &self.own_device)?)
+                .renew(&member_actor(
+                    &policy,
+                    who,
+                    &self.own_device,
+                    device.clone(),
+                )?)
                 .is_ok()
         {
             held.access.clone_from(&policy.access);
@@ -811,7 +868,7 @@ impl Worker {
             self.evict_bounded();
             let (bytes, heads) = state.document(&holder).map_err(unavailable)?;
             let member = ui::permissions::MemberId::Person(who.person.clone());
-            let actor = member_actor(&policy, who, &self.own_device)?;
+            let actor = member_actor(&policy, who, &self.own_device, device.clone())?;
             let seed = Seed::Existing {
                 record: reads::document_id(&holder.document).map_err(unavailable)?,
                 changes: vec![bytes],
@@ -853,6 +910,7 @@ impl Worker {
                     granted,
                     sandbox: policy.sandbox,
                     unix_time: policy.unix_time,
+                    device,
                 },
             );
         }
@@ -1137,6 +1195,24 @@ impl Worker {
                 },
             ));
         };
+        if caller.roster_created_at().is_some()
+            && descriptor.kind != tilo_actions::OperationKind::Document
+            && !(descriptor.kind == tilo_actions::OperationKind::Effect
+                && descriptor.contract.kind == ActionKind::Undoable
+                && collab_types::app_surface::document_verb(
+                    &route.app_id,
+                    target
+                        .address
+                        .resource
+                        .split_once('/')
+                        .map_or(descriptor.resource_kind.as_str(), |(kind, _)| kind),
+                    &target.address.action,
+                ))
+        {
+            return Err(Outcome::Rejected(ActionCallError::Refused {
+                reason: "this roster permission covers actions on a workspace document".into(),
+            }));
+        }
         if descriptor.contract.kind == super::ActionKind::Read {
             self.note_reads(request);
         }
@@ -1255,8 +1331,19 @@ impl Worker {
             .map_err(Outcome::Rejected)?;
         super::timing_done("bounded.policy", reading_policy);
         let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
+        let is_roster = who.caller.roster_created_at().is_some();
         let checking = super::timing_start();
         for (changed, mutation) in &taken {
+            if is_roster {
+                if matches!(mutation, DocumentMutation::Snapshot(_)) {
+                    return Err(Outcome::Rejected(ActionCallError::Refused {
+                        reason: "this roster permission covers changes to an existing document"
+                            .into(),
+                    }));
+                }
+                self.policy_at(workspace_id, who, changed)
+                    .map_err(Outcome::Rejected)?;
+            }
             // What it wrote, read from the change's operations by the replica
             // that admitted it: neither the record nor its history is read for
             // what one change touched. Only a record the replica does not hold

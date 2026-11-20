@@ -303,8 +303,8 @@ fn agents_document() -> String {
 
 /// The agent tools of the turn `reply` answers, as its harness reaches them: the turn's own
 /// action service and the reply's own caller.
-fn tools_of(scope: &TurnScope, reply: &Reply) -> Result<Tools, String> {
-    McpServer::for_turn(scope.provider.clone(), reply.caller.clone())
+fn tools_of(reply: &Reply) -> Result<Tools, String> {
+    McpServer::for_turn(reply.provider.clone(), reply.caller.clone())
         .map(|server| server.with_observation(super::steps::observed()))
         .map(Arc::new)
         .map_err(|error| error.to_string())
@@ -506,7 +506,7 @@ impl super::HostAgents {
             limit_micros: payer.spend_limit_micros,
         };
         let serves = self.serves(scope, agent, &heard);
-        let tools = serves.and_then(|serves| Ok((serves, tools_of(scope, reply)?)));
+        let tools = serves.and_then(|serves| Ok((serves, tools_of(reply)?)));
         let (serves, tools) = match tools {
             Ok(both) => both,
             Err(why) => {
@@ -705,7 +705,7 @@ impl super::HostAgents {
                 *turn = next;
                 *reply = scope.reply(turn);
                 reply.taken().await;
-                match tools_of(scope, reply) {
+                match tools_of(reply) {
                     Ok(tools) => *work.heard.tools.lock_recover() = Some(tools),
                     Err(why) => return Outcome::Failed(why),
                 }

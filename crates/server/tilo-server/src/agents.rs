@@ -744,6 +744,7 @@ struct ServerRecordsLink {
     content_links: Arc<crate::content_links::ContentLinks>,
     /// Where a person is asked about an action run for them.
     certification: CertificationProtocol,
+    sessions: Option<tilo_agent_session::AgentSessions>,
 }
 
 impl ServerRecordsLink {
@@ -967,6 +968,22 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 .as_ref()?
                 .workspace_policy(workspace, caller),
         )
+    }
+
+    fn roster_policy(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        inside: Option<(&str, &str)>,
+    ) -> Option<tilo_agent_session::workspace_actions::ViewReadPolicy> {
+        let (peer, delegation) = self.sessions.as_ref()?.live_roster(workspace, caller)?;
+        self.runtime
+            .block_on(self.workspaces.as_ref()?.roster_action_policy(
+                workspace,
+                caller,
+                (&peer.engine().identity().device_cert, &delegation),
+                inside,
+            ))
     }
 
     fn key_revoked(&self, workspace: WorkspaceId, caller: &tilo_actions::remote::Caller) -> bool {
@@ -1262,6 +1279,7 @@ pub async fn start_serving_documents_and_events(
 
 /// The services the roster turns use, on the same action server as the supervisor.
 pub struct RosterServices {
+    pub sessions: Option<tilo_agent_session::AgentSessions>,
     pub actions: WorkspaceActions,
     pub events: Option<crate::workspace_bots::events::PersonEvents>,
     pub initiative: Option<crate::workspace_bots::initiative::Initiative>,
@@ -1293,6 +1311,7 @@ impl WorkspaceActionsServer {
             let _ = self.initiative.set(initiative.clone());
         }
         RosterServices {
+            sessions: self.roster.as_ref().map(RosterProvisioning::sessions),
             actions: self.actions.clone(),
             events,
             initiative,
@@ -1309,8 +1328,8 @@ fn attach_resources(
     (feedback_reviewer, shell, browsers): Lent,
     sessions: Option<tilo_agent_session::AgentSessions>,
 ) -> Result<(), ServerError> {
-    if let Some(sessions) = sessions {
-        actions.attach_agent_sessions(sessions);
+    if let Some(sessions) = &sessions {
+        actions.attach_agent_sessions(sessions.clone());
     }
     if let Some(shell) = &shell {
         shell.serve_from(server);
@@ -1357,6 +1376,7 @@ fn attach_resources(
             stores: server.content(),
             content_links: server.content_links(),
             certification: server.web_context().certification.clone(),
+            sessions,
             runtime: tokio::runtime::Handle::current(),
             host_device: HostDevice {
                 endpoint: HostEndpoint::iroh(server.node_addr(), server_cert.clone()),

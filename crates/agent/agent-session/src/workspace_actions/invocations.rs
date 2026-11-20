@@ -49,7 +49,11 @@ use tilo_server_protocol::WorkspaceId;
 use ui::history_source::words::HistoryWords;
 
 use super::invocation_log::Entry;
-use super::{Job, Needs, Worker, WorkspaceActions, resource_of};
+use super::outcome::log_outcome;
+use super::{
+    InteractionPhase, Job, Needs, Outcome, Worker, WorkspaceActions, resource_of, session_voice,
+    timing_done, timing_start,
+};
 
 /// One record of a workspace: its app and its id there.
 type DocumentKey = (String, String);
@@ -735,6 +739,82 @@ impl WorkspaceActions {
 }
 
 impl Worker {
+    pub(super) fn invoke(
+        &mut self,
+        workspace_id: WorkspaceId,
+        invocation: InvocationId,
+    ) -> InvocationReceipt {
+        let (caller, request) = match self.claim(invocation) {
+            Ok(claimed) => claimed,
+            Err(receipt) => return receipt,
+        };
+        if caller.roster_created_at().is_some()
+            && !resource_of(&request.target.provider, "").is_some_and(|route| {
+                self.shared.link.get().is_some_and(|link| {
+                    link.roster_policy(
+                        workspace_id,
+                        &caller,
+                        Some((&route.app_id, &route.document)),
+                    )
+                    .is_some()
+                })
+            })
+        {
+            return self.settle(
+                invocation,
+                Err(Outcome::Rejected(ActionCallError::NotPermitted)),
+                None,
+            );
+        }
+        // A question to the person changes nothing, so it applies nothing where
+        // the agent is seen working: it waits on the person's devices.
+        if let Some(receipt) = self.ask_in_words(workspace_id, &caller, &request) {
+            return receipt;
+        }
+        self.voice(
+            workspace_id,
+            &caller,
+            &request,
+            (&InteractionPhase::Applying, None),
+        );
+        if caller.roster_created_at().is_none()
+            && let Some(receipt) = self.terminal(workspace_id, &caller, &request)
+        {
+            return receipt;
+        }
+        let everything = timing_start();
+        self.wrote.clear();
+        self.writing_as = Some(caller.clone());
+        let ran = self.invoke_or_ask(workspace_id, &caller, &request);
+        self.writing_as = None;
+        let (outcome, unsaved) = match ran {
+            Ok(ran) => ran,
+            Err(receipt) => {
+                self.log().running.remove(&invocation);
+                return receipt;
+            }
+        };
+        timing_done("action.total", everything);
+        log_outcome(&request.target, &outcome);
+        if outcome.is_ok() {
+            let link = self.changed_link(workspace_id, &caller, &request);
+            if let Some(entry) = self.log().entries.get_mut(&invocation) {
+                entry.link = link;
+            }
+        }
+        let left = outcome
+            .as_ref()
+            .ok()
+            .and_then(|(_, left_at)| left_at.as_ref());
+        self.voice(
+            workspace_id,
+            &caller,
+            &request,
+            (&session_voice::ended_phase(&outcome), left),
+        );
+        self.settle(invocation, outcome, unsaved)
+    }
+
     /// Note that `request`'s call only reads: a read is no invocation of the
     /// workspace, so a listing leaves it out ([`Self::invocations`]).
     pub(super) fn note_reads(&self, request: &InvokeRequest) {
