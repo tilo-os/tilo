@@ -270,6 +270,22 @@ pub(crate) struct Answer {
     last_order: Option<u64>,
 }
 
+impl Answer {
+    /// Its writes kept, its writes refused and the order of the last one kept.
+    pub(crate) const fn parts(self) -> (u64, u64, Option<u64>) {
+        (self.durable, self.refused, self.last_order)
+    }
+
+    /// The answer [`Self::parts`] names.
+    pub(crate) const fn from_parts(durable: u64, refused: u64, last_order: Option<u64>) -> Self {
+        Self {
+            durable,
+            refused,
+            last_order,
+        }
+    }
+}
+
 /// The server's answers, by app and document.
 pub(crate) type Answered = crate::ordered::Ordered<(String, String), Answer>;
 

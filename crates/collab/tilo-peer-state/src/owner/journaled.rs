@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tilo_desktop_model::WorkspaceId;
 
 use super::journal;
-use super::stored::{StoredPendingEnrollment, StoredWorkspace};
+use super::stored::{StoredPendingEnrollment, StoredWorkspace, WORKSPACE_VERSION};
 use super::{Change, NativeAuthorityStorage};
 
 /// The index's place among the parts.
@@ -114,7 +114,24 @@ impl Journaled {
             };
             let log = journal_name(*workspace, *snapshot_revision);
             let mut whole = true;
-            if let Some(entries) = parts.read_part(&log)? {
+            // A snapshot of an earlier version takes the journal its build appended under that
+            // build's rules, and the next publication writes a snapshot rather than append to it.
+            if stored.version < WORKSPACE_VERSION {
+                if let Some(entries) = parts.read_part(&log)? {
+                    written.insert(log.clone());
+                    let (bytes, last) =
+                        journal::earlier::fold(stored.version, snapshot.clone(), &entries)
+                            .map_err(|error| {
+                                format!("{workspace}'s journal does not read: {error}")
+                            })?;
+                    stored = serde_json::from_slice(&bytes).map_err(|error| {
+                        format!("{workspace}'s snapshot does not read: {error}")
+                    })?;
+                    revision = revision.max(last.unwrap_or(0));
+                }
+                stored.version = WORKSPACE_VERSION;
+                whole = false;
+            } else if let Some(entries) = parts.read_part(&log)? {
                 written.insert(log);
                 whole = journal::read_whole(&entries);
                 let (replayed, last) = journal::replay(stored, &entries)

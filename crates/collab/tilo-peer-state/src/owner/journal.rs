@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub(super) mod earlier;
+
 /// One run of the new bytes: a range of the old ones, or bytes of its own.
 #[derive(Debug, Serialize, Deserialize)]
 enum Op {
@@ -38,7 +40,7 @@ struct Entry {
     /// The workspace's fields, without its answers and its replica.
     fields: Vec<Op>,
     /// Each document whose answers changed, with what it holds now.
-    answered: Vec<((String, String), Option<Answer>)>,
+    answered: Vec<((String, String), Option<JournalAnswer>)>,
     /// Each write whose server's answer changed: `true` once it waits for one, `false` once taken.
     unanswered: Vec<(AnswerSignature, bool)>,
     /// Ownership's governance, head and tail, each as stretches of the writes the three held before.
@@ -50,6 +52,33 @@ struct Entry {
     documents: Vec<(Route, Option<DocumentOps>)>,
     /// The replica's stretches after its documents.
     tail: Vec<Op>,
+}
+
+/// A document's answers as an entry keeps them, every field written: postcard reads a field
+/// whether or not it was written, and [`Answer`] leaves out an order it has none of, which only its
+/// JSON can do without.
+#[derive(Debug, Serialize, Deserialize)]
+struct JournalAnswer {
+    durable: u64,
+    refused: u64,
+    last_order: Option<u64>,
+}
+
+impl From<Answer> for JournalAnswer {
+    fn from(answer: Answer) -> Self {
+        let (durable, refused, last_order) = answer.parts();
+        Self {
+            durable,
+            refused,
+            last_order,
+        }
+    }
+}
+
+impl From<JournalAnswer> for Answer {
+    fn from(answer: JournalAnswer) -> Self {
+        Self::from_parts(answer.durable, answer.refused, answer.last_order)
+    }
 }
 
 /// One stretch of a list of ownership's writes: writes the lists held before, counted over the
@@ -177,7 +206,12 @@ pub(super) fn next(
             a == b
         })
         .into_iter()
-        .map(|change| (change.key.clone(), change.after.copied()))
+        .map(|change| {
+            (
+                change.key.clone(),
+                change.after.copied().map(JournalAnswer::from),
+            )
+        })
         .collect(),
         unanswered: Ordered::changes(
             &written.journaled.unanswered,
@@ -220,6 +254,15 @@ pub(super) fn replay(
     stored: StoredWorkspace,
     log: &[u8],
 ) -> Result<(StoredWorkspace, Option<u64>), String> {
+    let mut rest = log;
+    replay_entries(stored, std::iter::from_fn(|| take(&mut rest).transpose()))
+}
+
+/// `stored`, a snapshot as read, as `entries` leave it, and the revision of the last one.
+fn replay_entries(
+    stored: StoredWorkspace,
+    entries: impl Iterator<Item = Result<Entry, String>>,
+) -> Result<(StoredWorkspace, Option<u64>), String> {
     let rope = |parts: &[Arc<[u8]>]| Rope::of(&parts.concat().into());
     let (fields, mut journaled) = split(&stored)?;
     let mut fields = Rope::of(&fields);
@@ -237,12 +280,12 @@ pub(super) fn replay(
         })
         .collect();
     let mut revision = None;
-    let mut rest = log;
-    while let Some(entry) = take(&mut rest) {
+    for entry in entries {
+        let entry = entry?;
         fields = fields.apply(entry.fields)?;
         for (key, answer) in entry.answered {
             match answer {
-                Some(answer) => journaled.answered.insert(key, answer),
+                Some(answer) => journaled.answered.insert(key, answer.into()),
                 None => journaled.answered.remove(&key),
             };
         }
@@ -468,22 +511,41 @@ impl Rope {
 /// early, and an entry appended after that would never be read.
 pub(super) fn read_whole(log: &[u8]) -> bool {
     let mut rest = log;
-    while take(&mut rest).is_some() {}
+    while let Some(payload) = whole_payload(&rest) {
+        rest = rest
+            .get(FRAME_HEAD.saturating_add(payload.len())..)
+            .unwrap_or_default();
+    }
     rest.is_empty()
 }
 
-/// The next whole entry of `rest`, advancing past it.
-fn take(rest: &mut &[u8]) -> Option<Entry> {
+/// The next whole entry of `rest`, advancing past it, or `None` at one a crash cut short.
+///
+/// # Errors
+/// An entry that is whole and does not read as this build's layout: a build that appended another
+/// layout wrote it, and reading on past it would drop every publication after it without a word.
+fn take(rest: &mut &[u8]) -> Result<Option<Entry>, String> {
+    let Some(payload) = whole_payload(rest) else {
+        return Ok(None);
+    };
+    let Ok((entry, [])) = postcard::take_from_bytes::<Entry>(payload) else {
+        return Err(
+            "the workspace's journal holds an entry of a layout this build does not append".into(),
+        );
+    };
+    *rest = rest
+        .get(FRAME_HEAD.saturating_add(payload.len())..)
+        .unwrap_or_default();
+    Ok(Some(entry))
+}
+
+/// The payload of the next entry of `rest` when it is whole and matches its digest.
+fn whole_payload<'a>(rest: &&'a [u8]) -> Option<&'a [u8]> {
     let len = usize::try_from(u32::from_le_bytes(rest.get(..4)?.try_into().ok()?)).ok()?;
     let digest = rest.get(4..FRAME_HEAD)?;
     let end = FRAME_HEAD.checked_add(len)?;
     let payload = rest.get(FRAME_HEAD..end)?;
-    if blake3::hash(payload).as_bytes() != digest {
-        return None;
-    }
-    let entry = postcard::from_bytes(payload).ok()?;
-    *rest = rest.get(end..)?;
-    Some(entry)
+    (blake3::hash(payload).as_bytes() == digest).then_some(payload)
 }
 
 /// `new` as runs of `old`: a part that is an allocation of `old` is copied
@@ -908,14 +970,57 @@ mod tests {
             let whole = log.len();
             log.extend_from_slice(&entry(3)[..10]);
             let mut rest = &log[..];
-            let revisions: Vec<u64> = std::iter::from_fn(|| take(&mut rest))
+            let revisions: Vec<u64> = std::iter::from_fn(|| take(&mut rest).unwrap())
                 .map(|entry| entry.revision)
                 .collect();
             assert_eq!(revisions, [1, 2]);
             assert_eq!(rest.len(), log.len() - whole);
             let mut corrupt = entry(4);
             *corrupt.last_mut().unwrap() ^= 1;
-            assert!(take(&mut &corrupt[..]).is_none());
+            assert!(take(&mut &corrupt[..]).unwrap().is_none());
+        }
+
+        phase an_answer_without_an_order_reads_back_whole;
+        // A document whose writes were only refused has no order to keep: the entry still writes
+        // every field, so it and every entry after it read back.
+        {
+            let entry = |revision: u64| Entry {
+                revision,
+                fields: Vec::new(),
+                answered: vec![
+                    (("so.tilo.chat".into(), "a".into()), Some(Answer::from_parts(0, 1, None).into())),
+                    (("so.tilo.chat".into(), "b".into()), Some(Answer::from_parts(2, 0, Some(9)).into())),
+                ],
+                unanswered: Vec::new(),
+                writes: Default::default(),
+                head: Vec::new(),
+                documents: Vec::new(),
+                tail: Vec::new(),
+            };
+            let log = [frame(&entry(1)).unwrap(), frame(&entry(2)).unwrap()].concat();
+            let mut rest = &log[..];
+            let read: Vec<Entry> = std::iter::from_fn(|| take(&mut rest).unwrap()).collect();
+            assert_eq!(read.len(), 2);
+            let answers: Vec<Option<Answer>> = read[1]
+                .answered
+                .iter()
+                .map(|(_, answer)| answer.as_ref().map(|answer| Answer::from_parts(answer.durable, answer.refused, answer.last_order)))
+                .collect();
+            assert_eq!(
+                answers,
+                [Some(Answer::from_parts(0, 1, None)), Some(Answer::from_parts(2, 0, Some(9)))]
+            );
+        }
+
+        phase a_whole_entry_of_another_layout_is_refused_not_skipped;
+        // An entry that is whole and reads as no entry of this build's was appended by a build of
+        // another layout: reading on past it would drop what came after without a word.
+        {
+            let payload = postcard::to_allocvec(&(1_u64, "not an entry")).unwrap();
+            let mut framed = u32::try_from(payload.len()).unwrap().to_le_bytes().to_vec();
+            framed.extend_from_slice(blake3::hash(&payload).as_bytes());
+            framed.extend_from_slice(&payload);
+            assert!(take(&mut &framed[..]).is_err());
         }
     }
 }

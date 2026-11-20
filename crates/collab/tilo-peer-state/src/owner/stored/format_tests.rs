@@ -11,9 +11,11 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_files::native::migration::{assert_golden_bytes, assert_step_reads_previous};
 
 /// An entry as this build writes it.
-const CURRENT: &str = include_str!("../../../golden/owner-workspace-document/v7.hex");
-/// An entry as the build before this one wrote it, with the device's join log.
-const PREVIOUS: &str = include_str!("../../../golden/owner-workspace-document/v6.hex");
+const CURRENT: &str = include_str!("../../../golden/owner-workspace-document/v8.hex");
+/// An entry as the build before this one wrote it.
+const PREVIOUS: &str = include_str!("../../../golden/owner-workspace-document/v7.hex");
+/// An entry as the oldest build this one brings up wrote it, with the device's join log.
+const OLDEST: &str = include_str!("../../../golden/owner-workspace-document/v6.hex");
 const FOUNDERS: &str = "40267648-f762-4c8d-89ad-c5ab27aa13b8";
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -62,6 +64,14 @@ tilo_test_env::scenario! {
             let stored = serde_json::from_slice::<StoredWorkspace>(migrated).unwrap();
             assert_eq!(stored.workspace, founders());
         });
+    }
+
+    phase the_oldest_entry_comes_up_through_every_step;
+    {
+        let migrated = FORMAT.migrate(bytes(OLDEST), 6).unwrap();
+        assert_eq!(stored_version(&migrated).unwrap(), WORKSPACE_VERSION);
+        let stored = serde_json::from_slice::<StoredWorkspace>(&migrated).unwrap();
+        assert_eq!(stored.workspace, founders());
     }
 
     phase a_newer_entry_is_refused;

@@ -24,7 +24,7 @@
 use crate::owner::journal;
 use crate::owner::{
     Change, NativeAuthorityStorage, NativeWorkspaceOwner, Store,
-    stored::{StoredPendingEnrollment, StoredWorkspace, format},
+    stored::{StoredPendingEnrollment, StoredWorkspace, WORKSPACE_VERSION, format},
 };
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -252,19 +252,35 @@ fn read_index(
         let bytes = read_whole(&part)?
             .ok_or_else(|| format!("the record names {workspace}'s file and it is missing"))?;
         let snapshot = bytes.len();
-        let log = read_whole(&log_of(&parts, workspace, revision))?;
+        let mut log = read_whole(&log_of(&parts, workspace, revision))?;
         // The layout the file names: one this build writes reads as it is,
-        // and another is refused rather than replayed over its journal.
+        // and an earlier one is brought up, with the journal its build
+        // appended folded in first under that build's rules. The next
+        // publication then writes a snapshot of this build's version: a
+        // journal is a delta of the snapshot beside it, as that version's
+        // bytes.
         let version = format::stored_version(&bytes)?;
+        let earlier = version < WORKSPACE_VERSION;
+        let mut whole = !earlier;
+        let bytes = match log.take() {
+            Some(entries) if earlier => {
+                let (bytes, last) = journal::earlier::fold(version, bytes, &entries)?;
+                latest = latest.max(last.unwrap_or(0));
+                bytes
+            }
+            kept => {
+                log = kept;
+                bytes
+            }
+        };
         let bytes = format::FORMAT
             .bring_up(&part, bytes, version)
             .map_err(|error| error.to_string())?;
         let mut stored: StoredWorkspace =
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        let mut whole = true;
         let mut appended = 0;
         if let Some(log) = log {
-            whole = journal::read_whole(&log);
+            whole = whole && journal::read_whole(&log);
             appended = log.len();
             let (replayed, last) = journal::replay(stored, &log)?;
             stored = replayed;

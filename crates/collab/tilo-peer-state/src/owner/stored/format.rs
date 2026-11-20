@@ -11,7 +11,7 @@ pub(crate) const FORMAT: Format = Format {
     name: "owner workspace document",
     version: WORKSPACE_VERSION,
     oldest: 6,
-    steps: &[without_join_log],
+    steps: &[without_join_log, journal_apart],
 };
 
 /// Version 6 to 7: the entry no longer keeps the device's join log, which the workspace's own
@@ -26,6 +26,21 @@ fn without_join_log(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
         serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     entry.remove("join_ledger");
     entry.insert("version".into(), 7.into());
+    serde_json::to_vec(&entry).map_err(|error| error.to_string())
+}
+
+/// Version 7 to 8: the journal beside the entry carries ownership's lists of writes apart from the
+/// workspace's fields. The entry itself reads as it was; the journal an earlier build appended
+/// beside it is folded in under that build's rules before this step
+/// ([`crate::owner::journal::earlier`]).
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a step takes the bytes it brings up, as every step of a format does"
+)]
+fn journal_apart(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut entry: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    entry.insert("version".into(), 8.into());
     serde_json::to_vec(&entry).map_err(|error| error.to_string())
 }
 

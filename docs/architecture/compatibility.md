@@ -282,6 +282,19 @@ version it holds, and nothing guesses at its bytes.
   stored type fails a test instead of being noticed when a machine's file stops
   opening. A layout change is a new version with its own bytes.
   `tools/policy/check_format_migrations.py` runs these checks.
+- **What is written beside a format is part of its version.** A journal
+  appended beside a snapshot, or a frame kept as a file, is a Rust type
+  serialized to disk that the golden bytes of the snapshot never see. Each such
+  type is listed in `tools/policy/stored_layouts.toml` under the format whose
+  version covers it, with a digest of its definition, and a change to it is a
+  new version of that format. A snapshot that is brought up takes the journal
+  its build appended under that build's rules first, and is written again in
+  this build's version before anything is appended to it: a journal is a delta
+  of the bytes beside it. A whole journal entry that does not read is refused,
+  never skipped. Skipping it once dropped every change a device made since its
+  last snapshot, the workspace's governance with them. A break named in
+  `tools/policy/wire_enum_breaks.toml` is no waiver for a type listed as
+  stored.
 - **A resource carries its layout version in its document.** A resource that
   changes its layout adds a `#[resource(version, migrate)]` step
   ([resources.md](resources.md) §6). The step is one change on top of the

@@ -9,7 +9,7 @@ pub(crate) mod format;
 
 /// The layout of a workspace's entry this build writes ([`StoredWorkspace`]):
 /// the workspace named once, by its id.
-pub(crate) const WORKSPACE_VERSION: u32 = 7;
+pub(crate) const WORKSPACE_VERSION: u32 = 8;
 
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
