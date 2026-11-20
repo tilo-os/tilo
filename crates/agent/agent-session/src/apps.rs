@@ -1588,10 +1588,10 @@ impl Replica {
         self.view.take_changes().map_err(AppError::Merge)
     }
 
-    /// A member's access read again at a later time, the access and
-    /// sandbox unchanged: what was granted until a time is held to the new
-    /// one, and nothing of the record is opened again for it, which costs
-    /// more the more it holds.
+    /// A member's access read again: at a later time, what was granted until
+    /// a time is held to the new one; after the workspace's policy or sandbox
+    /// moved, the replica acts under what they say now. Nothing of the record
+    /// is opened again for it, which costs more the more it holds.
     ///
     /// # Errors
     ///

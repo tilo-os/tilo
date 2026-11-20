@@ -775,17 +775,23 @@ impl Worker {
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
         let granted = who.caller.granted(&policy.agent_bound);
-        let same = self.bounded.get(&key).is_some_and(|held| {
-            held.access == policy.access
-                && held.sandbox == policy.sandbox
-                && held.granted == granted
-        });
+        // The same caller under the same grants: one replica, whatever the workspace's policy
+        // says of them now.
+        let same = self
+            .bounded
+            .get(&key)
+            .is_some_and(|held| held.granted == granted);
         let mut current = same
             && self.bounded.get(&key).is_some_and(|held| {
-                policy.unix_time.saturating_sub(held.unix_time) < ACCESS_FRESHNESS_SECS
+                held.access == policy.access
+                    && held.sandbox == policy.sandbox
+                    && policy.unix_time.saturating_sub(held.unix_time) < ACCESS_FRESHNESS_SECS
             });
-        // The same access read again later: the replica takes the new time
-        // in place rather than being opened again over the whole record.
+        // Access read again later, or moved: the replica takes the new access in place rather
+        // than being opened again over the whole record. A caller's access holds the
+        // workspace's whole policy, so a person admitted anywhere in the workspace moved it, and
+        // reopening then took every part of a tracker's chains in again before the caller's next
+        // listing answered: half a minute at a few thousand issues.
         if same
             && !current
             && let Some(held) = self.bounded.get_mut(&key)
@@ -795,6 +801,8 @@ impl Worker {
                 .renew(&member_actor(&policy, who, &self.own_device)?)
                 .is_ok()
         {
+            held.access.clone_from(&policy.access);
+            held.sandbox.clone_from(&policy.sandbox);
             held.unix_time = policy.unix_time;
             current = true;
         }

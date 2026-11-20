@@ -103,7 +103,7 @@ pub(crate) enum Request {
         asks_workspace: bool,
     },
     /// The held record's member reads their member access as of a later time:
-    /// JSON `ReplicaActor`, a member of the same access and sandbox.
+    /// JSON `ReplicaActor`, a member whose access is read again.
     Renew { actor: String },
     /// Every operation the held record publishes now.
     Survey,

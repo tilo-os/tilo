@@ -69,13 +69,21 @@ impl V1<'_> {
     }
 
     async fn act(&self, base: &str, resource: &str, action: &str, args: &Value) -> Value {
-        let (status, reply) = self
+        let (mut status, mut reply) = self
             .send(
                 hyper::Method::POST,
                 &format!("{base}/resources/{resource}/actions/{action}"),
                 args.to_string().as_bytes(),
             )
             .await;
+        // A call that outlasts the request's wait answers its invocation, which is followed
+        // until it settles, as a caller does on a loaded machine.
+        while status == 202 && reply["status"] == "pending" {
+            let invocation = reply["invocation"].as_str().unwrap().to_owned();
+            (status, reply) = self
+                .get(&format!("{base}/invocations/{invocation}?wait=60"))
+                .await;
+        }
         assert_eq!(status, 200, "{resource}#{action}: {reply}");
         assert_eq!(reply["status"], "ok", "{resource}#{action}: {reply}");
         reply["result"].clone()
@@ -318,4 +326,75 @@ async fn a_tracker_is_listed_whole_after_its_server_restarts() {
             "every issue is listed once after the restart, {limit} a page"
         );
     }
+}
+
+/// A person admitted into a workspace moves its governance, and with it the
+/// policy every caller's access is read under: an agent listing the tracker
+/// right after must be answered from the replica it already acts through,
+/// at about what a listing costs any other time, not after every part of
+/// the tracker was taken in again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listing_right_after_a_person_is_admitted_costs_what_any_listing_does() {
+    const SIZE: usize = 600;
+    let on_server = api_on_server(super::api::ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let agent = V1 {
+        api: &on_server.api,
+        token: approved_key(&on_server, &ada, &browser, "Mover").await,
+    };
+    let (status, workspace) = agent
+        .send(
+            hyper::Method::POST,
+            "/v1/workspaces",
+            json!({"name": "Company"}).to_string().as_bytes(),
+        )
+        .await;
+    assert_eq!(status, 201, "{workspace}");
+    let id = workspace["id"].as_str().unwrap().to_owned();
+    let base = format!("/v1/workspaces/{id}");
+    agent.act(&base, "tasks", "open", &json!({})).await;
+    fill(&agent, &base, SIZE).await;
+    let listing = format!("{base}/resources?path=tasks/Issues&limit=40");
+    let list = || async {
+        let began = Instant::now();
+        let (status, page) = agent.get(&listing).await;
+        assert_eq!(status, 200, "{page}");
+        assert!(
+            page["rows"].as_array().is_some_and(|rows| !rows.is_empty()),
+            "{page}"
+        );
+        began.elapsed()
+    };
+    list().await;
+    let mut usual = Vec::new();
+    for _ in 0..5 {
+        usual.push(list().await);
+    }
+    let usual = quantile(&usual, 0.5);
+
+    let (status, invited) = agent
+        .send(
+            hyper::Method::POST,
+            &format!("{base}/members/invitations"),
+            json!({"role": "editor"}).to_string().as_bytes(),
+        )
+        .await;
+    assert_eq!(status, 201, "{invited}");
+    let link = invited["link"].as_str().expect("an invitation's link");
+    let (rosa, _) = tilo_user_identity::UserIdentity::generate("Rosa", 1);
+    let (_rosa_page, joined) =
+        super::api_on_server::accept_invitation(&on_server, link, &rosa, "Rosa").await;
+    assert_eq!(joined["workspace"], id.as_str(), "{joined}");
+
+    let after = list().await;
+    let next = list().await;
+    eprintln!(
+        "{SIZE} issues: a listing takes {usual:?}; right after an admission {after:?}, then \
+         {next:?}"
+    );
+    assert!(
+        after <= usual * 4 + Duration::from_millis(250),
+        "the listing right after an admission took {after:?}, any other {usual:?}"
+    );
 }
