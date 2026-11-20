@@ -516,6 +516,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "The routed-owners test fixture's store field (`RoutedOwners::records`), which the committed-copy tests read a resource's document from."
+words = ["record"]
+identifiers = ["records"]
+paths = ["crates/sdk/ui-core/src/app/committed_document_tests.rs"]
+
+[[allow]]
 reason = "A control plane: the management side of a system outside Tilo."
 words = ["plane"]
 paths = [

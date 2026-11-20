@@ -215,6 +215,8 @@ mod rotation;
 mod rust_views;
 #[path = "search.rs"]
 mod search;
+#[path = "second_device.rs"]
+mod second_device;
 #[path = "service_sessions.rs"]
 mod service_sessions;
 #[path = "services.rs"]

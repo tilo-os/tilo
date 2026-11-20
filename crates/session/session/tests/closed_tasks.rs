@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use tilo_server_protocol::workspaces::Role;
 
 /// The app whose record the step changes.
-const APP: &str = "so.tilo.tasks";
+pub(crate) const APP: &str = "so.tilo.tasks";
 /// The issue the agent's step makes.
 const TITLE: &str = "Book the ferry";
 
@@ -55,7 +55,7 @@ fn first_part() -> String {
 /// The first part of the tracker's issues as `device` reads it now, or once it differs from
 /// `after`: its value, and the revision an answer names so the next read can wait on the next
 /// write.
-fn tracker(device: &Device, after: Option<&str>) -> (Value, String) {
+pub(crate) fn tracker(device: &Device, after: Option<&str>) -> (Value, String) {
     let deadline = tilo_test_env::hang_deadline();
     let wait = deadline.saturating_duration_since(Instant::now());
     let answer = device.ask(&json!({
@@ -82,8 +82,8 @@ fn tracker(device: &Device, after: Option<&str>) -> (Value, String) {
 }
 
 /// The titles of the issues a part of the tracker holds.
-fn titles(record: &Value) -> Vec<String> {
-    record["issues"]
+pub(crate) fn titles(list: &Value) -> Vec<String> {
+    list["issues"]
         .as_object()
         .map(|issues| {
             issues

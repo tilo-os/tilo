@@ -661,6 +661,7 @@ pub const SETTINGS: &[Setting] = &[
     s("region.first_day", "region_formats", "region.first_day"),
     s("region.measurement", "region_formats", "region.measurement"),
     s("region.numbers", "region_formats", "region.number_style"),
+    s("region.zone", "region_formats", "region.zone"),
     s("time.automatic", "time_date", "time.auto"),
     s("time.zone", "time_date", "time.timezone"),
     s("storage.cache", "storage", "storage.cache-size"),
