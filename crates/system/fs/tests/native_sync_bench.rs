@@ -427,8 +427,21 @@ impl Daemon {
 
     fn wait_serving(&mut self) {
         if backend() == Backend::Fuse {
-            // The portable backend's daemon has served its workspace once FUSE answers.
+            // The line is printed as the mount is asked for; the kernel has the filesystem only
+            // once the mount point answers.
             self.wait_line("Mounting QuickFS at ");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while std::fs::read_dir(&self.mount).is_err() {
+                self.alive();
+                assert!(
+                    Instant::now() < deadline,
+                    "{}: its mount at {} never answered; logs:\n{}",
+                    self.name,
+                    self.mount.display(),
+                    self.dump()
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
             return;
         }
         let line = self.wait_line("Serving workspace natively from ");
