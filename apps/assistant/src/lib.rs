@@ -130,13 +130,24 @@ pub(crate) struct Hands {
     pub(crate) wanted: conversation::Wanted,
 }
 
+/// The name the window's own person goes by at its foot: theirs once the workspace or this
+/// device names them, else "You", as Chat and History name them, never their key or the
+/// placeholder others see for someone unnamed.
+fn own_name(cx: &ViewCx<Window>, me: &ui::tilo_resource::MemberId) -> String {
+    let name = cx.people().name(me);
+    if name.trim().is_empty() || name == me.id() || name == ui::presence::unnamed_person_label() {
+        return tr("assistant-person-you");
+    }
+    name
+}
+
 impl Hands {
     fn of(cx: &ViewCx<Window>, nav: &Nav) -> Self {
         Self {
             dispatcher: cx.dispatcher(),
             reads: Reads::of(cx),
             nav: nav.clone(),
-            person: cx.me().map(|me| (cx.people().name(me), me.id().to_owned())),
+            person: cx.me().map(|me| (own_name(cx, me), me.id().to_owned())),
             wanted: Rc::default(),
         }
     }

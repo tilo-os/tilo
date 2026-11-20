@@ -78,3 +78,5 @@ assistant-effects-view-sub-agent = Unteragenten zeigen
 assistant-effects-view-supervision = Aufsicht zeigen
 assistant-effects-start-sub-agent = Unteragenten starten
 assistant-effects-open-model-settings = Einstellungen für Modelle öffnen
+# The window's own person at its foot, before anyone names them.
+assistant-person-you = Du

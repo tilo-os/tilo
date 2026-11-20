@@ -350,3 +350,19 @@ fn a_window_opened_before_the_workspace_answered_offers_the_first_assistant_once
     );
     assert!(shows(&mut app, "assistant-open-in-chat"));
 }
+
+#[test]
+fn a_person_without_a_name_reads_as_you_at_the_foot_never_as_their_key() {
+    english();
+    let mut app = TestApp::<App>::in_workspace(WORKSPACE).expect("the window");
+    app.frame();
+    assert!(shows(&mut app, "assistant-person"));
+    assert!(
+        says(&mut app, "You"),
+        "the window's own person reads as You"
+    );
+    assert!(
+        !says(&mut app, "test-author"),
+        "a person nobody named never reads as their key"
+    );
+}
