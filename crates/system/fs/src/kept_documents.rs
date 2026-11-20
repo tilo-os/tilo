@@ -42,6 +42,9 @@ pub type Documents = Vec<(TreeChunk, Vec<u8>)>;
 pub struct KeptDocuments {
     dir: PathBuf,
     heads: Mutex<Heads>,
+    /// Held for a whole save: two saves that ran at once would each set a journal aside, and the
+    /// older one landing last would drop the newer one's changes with the journal it removed.
+    keep: Mutex<()>,
 }
 
 /// Where each document stands on disk.
@@ -87,6 +90,7 @@ impl KeptDocuments {
             Self {
                 dir: dir.to_path_buf(),
                 heads: Mutex::default(),
+                keep: Mutex::default(),
             },
             documents,
         ))
@@ -193,6 +197,7 @@ impl KeptDocuments {
         reason = "a journal is set aside and its document saved under one lock of the namespace"
     )]
     pub fn keep(&self, namespace: &Mutex<Namespace>) -> io::Result<()> {
+        let _keeping = self.keep.lock_recover();
         let mut saved = Vec::new();
         {
             let mut namespace = namespace.lock_recover();
