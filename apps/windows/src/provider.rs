@@ -479,6 +479,51 @@ enum WorkerEvent {
     Unavailable(String),
     Notice(String),
     Operation(Result<String, String>),
+    /// A setup started in a capsule: the line it came with stays until a list says the capsule is
+    /// no longer installing.
+    SetupStarted {
+        capsule_id: String,
+        detail: String,
+    },
+}
+
+/// What a list says about the setup a manager started: whether the line that says it is running
+/// still describes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SetupNews {
+    /// The capsule is still installing.
+    Running,
+    /// The list does not carry the capsule at all: the person's grants may not reach a capsule
+    /// whose only program so far is its setup, so this says nothing about the install.
+    Absent,
+    /// The setup ended, and the person has to be told what it came to: the list's own detail.
+    Saying(String),
+    /// It ended plainly: the line goes, and the list already shows what was installed.
+    Done,
+}
+
+/// The news a list carries about the setup of `capsule`, from the installations it lists.
+fn setup_news(capsule: &str, installations: &[ManagedInstallation]) -> SetupNews {
+    let Some(installation) = installations
+        .iter()
+        .find(|installation| installation.capsule_id == capsule)
+    else {
+        return SetupNews::Absent;
+    };
+    match installation.status {
+        InstallationStatus::Installing | InstallationStatus::Uninstalling => SetupNews::Running,
+        InstallationStatus::NeedsAttention | InstallationStatus::Failed => {
+            SetupNews::Saying(installation.detail.clone())
+        }
+        InstallationStatus::Installed | InstallationStatus::Uninstalled => SetupNews::Done,
+    }
+}
+
+/// The setup a manager started, and whether a list has carried its capsule yet: a list before
+/// that cannot say whether it ended.
+struct Setup {
+    capsule: String,
+    listed: bool,
 }
 
 pub struct LiveProvider {
@@ -496,6 +541,9 @@ pub struct LiveProvider {
     /// The entry whose launch this manager announced: what the "started" line was about, and gone
     /// once that program is no longer open.
     launched: Option<String>,
+    /// The capsule whose setup this manager started: the install line goes once that capsule is
+    /// no longer installing, whether or not the setup itself is still running its own process.
+    setup: Option<Setup>,
     /// The last notice described a state that ended: the window drops the banner.
     notice_cleared: bool,
     /// How each program was last asked to open: the same choice is carried to the service once.
@@ -555,6 +603,7 @@ impl LiveProvider {
             pending_vm_install: None,
             pending_vm_install_confirmation: None,
             launched: None,
+            setup: None,
             notice_cleared: false,
             opens_with_asked: std::collections::HashMap::new(),
         })
@@ -571,55 +620,7 @@ impl LiveProvider {
                 }
             };
             match event {
-                WorkerEvent::Listed(listed) => {
-                    let Listed {
-                        applications,
-                        installations,
-                        vm_availability,
-                        vm_installation,
-                        vm_uninstallation,
-                        ended,
-                    } = *listed;
-                    // The person's own Quit is shown by the app no longer being open, not by a
-                    // sentence about what they just did.
-                    let asked = self
-                        .stopping
-                        .as_deref()
-                        .and_then(|stopping| ended.iter().find(|end| end.entry_id == stopping));
-                    if asked.is_some() {
-                        self.stopping = None;
-                    }
-                    // The program this manager announced ended: what "started" said is over,
-                    // whichever way it ended.
-                    if self
-                        .launched
-                        .as_deref()
-                        .is_some_and(|entry| ended.iter().any(|end| end.entry_id == entry))
-                    {
-                        self.launched = None;
-                        self.notice = None;
-                        self.notice_error = false;
-                        self.notice_cleared = true;
-                    }
-                    if let Some(end) = ended
-                        .iter()
-                        .rev()
-                        .find(|end| self.stopping.as_deref() != Some(end.entry_id.as_str()))
-                        && let Some(notice) = ended_notice(end)
-                    {
-                        self.notice = Some(notice);
-                        self.notice_error = true;
-                    }
-                    self.cached = catalogue_from_managed(
-                        applications,
-                        &installations,
-                        vm_availability,
-                        vm_installation,
-                        vm_uninstallation.as_ref(),
-                    );
-                    self.cached.vm_install_confirmation =
-                        self.pending_vm_install_confirmation.clone();
-                }
+                WorkerEvent::Listed(listed) => self.listed(*listed),
                 WorkerEvent::Unavailable(detail) => {
                     // A malformed, mismatched, or disconnected response never leaves stale
                     // installed applications painted as live.
@@ -628,6 +629,14 @@ impl LiveProvider {
                     self.notice_error = false;
                 }
                 WorkerEvent::Notice(detail) => {
+                    self.notice = Some(detail);
+                    self.notice_error = false;
+                }
+                WorkerEvent::SetupStarted { capsule_id, detail } => {
+                    self.setup = Some(Setup {
+                        capsule: capsule_id,
+                        listed: false,
+                    });
                     self.notice = Some(detail);
                     self.notice_error = false;
                 }
@@ -670,6 +679,79 @@ impl LiveProvider {
                 }
             }
         }
+    }
+
+    /// Take in what a list says: what the person's programs did, and what became of a setup this
+    /// manager started.
+    fn listed(&mut self, listed: Listed) {
+        let Listed {
+            applications,
+            installations,
+            vm_availability,
+            vm_installation,
+            vm_uninstallation,
+            ended,
+        } = listed;
+        // The person's own Quit is shown by the app no longer being open, not by a sentence about
+        // what they just did.
+        let asked = self
+            .stopping
+            .as_deref()
+            .and_then(|stopping| ended.iter().find(|end| end.entry_id == stopping));
+        if asked.is_some() {
+            self.stopping = None;
+        }
+        // The program this manager announced ended: what "started" said is over, whichever way it
+        // ended.
+        if self
+            .launched
+            .as_deref()
+            .is_some_and(|entry| ended.iter().any(|end| end.entry_id == entry))
+        {
+            self.launched = None;
+            self.notice = None;
+            self.notice_error = false;
+            self.notice_cleared = true;
+        }
+        if let Some(end) = ended
+            .iter()
+            .rev()
+            .find(|end| self.stopping.as_deref() != Some(end.entry_id.as_str()))
+            && let Some(notice) = ended_notice(end)
+        {
+            self.notice = Some(notice);
+            self.notice_error = true;
+        }
+        // The setup this manager started is no longer installing: the line that said it was
+        // running goes. Its own process can outlive the install it ran (a setup that leaves a
+        // helper behind), so the capsule's state is what says it ended, not the program's.
+        if let Some(setup) = self.setup.as_mut() {
+            match setup_news(&setup.capsule, &installations) {
+                SetupNews::Running => setup.listed = true,
+                // No list has carried the capsule yet: it is not known to be done.
+                SetupNews::Absent if !setup.listed => {}
+                SetupNews::Absent | SetupNews::Done => {
+                    self.setup = None;
+                    self.notice = None;
+                    self.notice_error = false;
+                    self.notice_cleared = true;
+                }
+                SetupNews::Saying(detail) => {
+                    self.setup = None;
+                    self.notice = Some(detail);
+                    self.notice_error = true;
+                    self.notice_cleared = false;
+                }
+            }
+        }
+        self.cached = catalogue_from_managed(
+            applications,
+            &installations,
+            vm_availability,
+            vm_installation,
+            vm_uninstallation.as_ref(),
+        );
+        self.cached.vm_install_confirmation = self.pending_vm_install_confirmation.clone();
     }
 
     fn send(&self, command: WorkerCommand) -> Result<(), String> {
@@ -1039,7 +1121,7 @@ fn worker(mut client: SessionClient, commands: &Receiver<WorkerCommand>, events:
                 source,
                 source_name,
             } => (
-                operation(client.request_with_file(
+                started_setup(client.request_with_file(
                     &ProtocolRequest::InstallInCapsule {
                         version: PROTOCOL_VERSION,
                         source_name,
@@ -1069,7 +1151,7 @@ fn worker(mut client: SessionClient, commands: &Receiver<WorkerCommand>, events:
                 true,
             ),
             WorkerCommand::RetryInstall(capsule_id) => (
-                operation(client.request(&ProtocolRequest::RetryInstall {
+                started_setup(client.request(&ProtocolRequest::RetryInstall {
                     version: PROTOCOL_VERSION,
                     capsule_id,
                 })),
@@ -1186,6 +1268,22 @@ fn list(client: &mut SessionClient) -> WorkerEvent {
 fn launched(response: Result<ProtocolResponse, SessionError>, started: &str) -> WorkerEvent {
     match response {
         Ok(ProtocolResponse::Launched { .. }) => WorkerEvent::Operation(Ok(started.into())),
+        response => operation(response),
+    }
+}
+
+/// Reports a setup that started: the line it answers stays until a list shows its capsule no
+/// longer installing, whatever its own process does meanwhile.
+fn started_setup(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
+    match response {
+        Ok(ProtocolResponse::Installed { receipt } | ProtocolResponse::Retried { receipt })
+            if receipt.status == InstallationStatus::Installing =>
+        {
+            WorkerEvent::SetupStarted {
+                capsule_id: receipt.capsule_id,
+                detail: receipt.detail,
+            }
+        }
         response => operation(response),
     }
 }
@@ -1630,7 +1728,7 @@ fn app_status(status: InstallationStatus) -> AppStatus {
 
 #[cfg(test)]
 mod tests {
-    use compat_service::{AccessSummary, ExplainStatus};
+    use compat_service::{AccessSummary, ExplainStatus, InstallReceipt};
 
     use super::*;
 
@@ -1912,6 +2010,7 @@ mod tests {
                 pending_vm_install: None,
                 pending_vm_install_confirmation: None,
                 launched: None,
+                setup: None,
                 notice_cleared: false,
                 opens_with_asked: std::collections::HashMap::new(),
             };
@@ -1946,6 +2045,7 @@ mod tests {
                 recommended_route: Route::Vm,
             }),
             launched: None,
+            setup: None,
             notice_cleared: false,
             opens_with_asked: std::collections::HashMap::new(),
         };
@@ -2033,6 +2133,196 @@ mod tests {
         );
     }
 
+    /// A manager connected to no one, and the worker's side of its events, so a test can drive
+    /// the lists by hand.
+    fn connected_to_nothing() -> (LiveProvider, Sender<WorkerEvent>) {
+        let (command_tx, _command_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        let provider = LiveProvider {
+            cached: unavailable_catalogue("Connecting"),
+            commands: command_tx,
+            events: event_rx,
+            notice: None,
+            notice_error: false,
+            stopping: None,
+            operation_result: None,
+            pending_vm_install: None,
+            pending_vm_install_confirmation: None,
+            launched: None,
+            setup: None,
+            notice_cleared: false,
+            opens_with_asked: std::collections::HashMap::new(),
+        };
+        (provider, event_tx)
+    }
+
+    /// The installation a capsule reports in a list.
+    fn installation(
+        capsule: &str,
+        status: InstallationStatus,
+        detail: &str,
+    ) -> ManagedInstallation {
+        ManagedInstallation {
+            capsule_id: capsule.into(),
+            display_name: "Example setup".into(),
+            route: RouteKind::Wine,
+            runner: "Wine".into(),
+            status,
+            program_count: 1,
+            can_retry: false,
+            can_vendor_uninstall: false,
+            can_delete_data: true,
+            detail: detail.into(),
+        }
+    }
+
+    /// A list carrying these installations and nothing else.
+    fn listed(installations: Vec<ManagedInstallation>) -> WorkerEvent {
+        WorkerEvent::Listed(Box::new(Listed {
+            applications: Vec::new(),
+            installations,
+            vm_availability: VmAvailability::ready("Ready"),
+            vm_installation: None,
+            vm_uninstallation: None,
+            ended: Vec::new(),
+        }))
+    }
+
+    /// The line a setup that started put up.
+    fn setup_started(capsule: &str) -> WorkerEvent {
+        WorkerEvent::SetupStarted {
+            capsule_id: capsule.into(),
+            detail: "Installation is running.".into(),
+        }
+    }
+
+    /// A setup's "Installation is running." line describes the capsule, so the list takes it down
+    /// once the capsule is no longer installing, whatever the setup's own process does.
+    #[test]
+    fn a_setups_running_line_goes_when_its_capsule_stopped_installing() {
+        let (mut provider, events) = connected_to_nothing();
+        events.send(setup_started("private-capsule")).unwrap();
+        provider.catalogue();
+        assert_eq!(provider.notice.as_deref(), Some("Installation is running."));
+
+        events
+            .send(listed(vec![installation(
+                "private-capsule",
+                InstallationStatus::Installing,
+                "Setup is running.",
+            )]))
+            .unwrap();
+        provider.catalogue();
+        assert_eq!(
+            provider.notice.as_deref(),
+            Some("Installation is running."),
+            "while the capsule is installing, the line is true"
+        );
+        assert!(!provider.take_notice_cleared());
+
+        events
+            .send(listed(vec![installation(
+                "private-capsule",
+                InstallationStatus::Installed,
+                "1 application launcher(s) in this private capsule.",
+            )]))
+            .unwrap();
+        provider.catalogue();
+        assert_eq!(provider.notice, None, "the install ended: its line goes");
+        assert!(provider.setup.is_none(), "nothing is left to wait for");
+        assert!(
+            provider.take_notice_cleared(),
+            "the window drops the banner rather than keeping a state that ended"
+        );
+    }
+
+    /// A setup that came to needing attention is said, in the list's words, as an error.
+    #[test]
+    fn a_setup_that_ended_needing_attention_is_said_as_one() {
+        let (mut provider, events) = connected_to_nothing();
+        events.send(setup_started("retry-capsule")).unwrap();
+        events
+            .send(listed(vec![installation(
+                "retry-capsule",
+                InstallationStatus::NeedsAttention,
+                "Setup completed but no launcher was found; retry setup or delete its private data.",
+            )]))
+            .unwrap();
+        provider.catalogue();
+        assert_eq!(
+            provider.notice.as_deref(),
+            Some(
+                "Setup completed but no launcher was found; retry setup or delete its private data."
+            )
+        );
+        assert!(provider.notice_is_error());
+        assert!(!provider.take_notice_cleared());
+    }
+
+    /// A list before the capsule's first appearance says nothing about it: the grants may not
+    /// reach a capsule whose only program is still its setup. Once a list has carried it, one
+    /// without it says the capsule is gone, and the line goes with it.
+    #[test]
+    fn a_list_before_the_capsule_appeared_leaves_the_line_up() {
+        let (mut provider, events) = connected_to_nothing();
+        events.send(setup_started("fresh-capsule")).unwrap();
+        events.send(listed(Vec::new())).unwrap();
+        provider.catalogue();
+        assert_eq!(
+            provider.notice.as_deref(),
+            Some("Installation is running."),
+            "a list that never carried the capsule says nothing about it"
+        );
+        assert!(!provider.take_notice_cleared());
+
+        events
+            .send(listed(vec![installation(
+                "fresh-capsule",
+                InstallationStatus::Installing,
+                "Setup is running.",
+            )]))
+            .unwrap();
+        provider.catalogue();
+        assert_eq!(provider.notice.as_deref(), Some("Installation is running."));
+
+        events.send(listed(Vec::new())).unwrap();
+        provider.catalogue();
+        assert_eq!(provider.notice, None);
+        assert!(provider.take_notice_cleared());
+    }
+
+    /// An install answered with the setup still running is followed to the list that ends it; one
+    /// that is already done is answered as its receipt says.
+    #[test]
+    fn a_started_setup_is_answered_by_its_receipt() {
+        let receipt = |status| InstallReceipt {
+            capsule_id: "wine-1".into(),
+            display_name: "Example setup".into(),
+            route: RouteKind::Wine,
+            status,
+            discovered_programs: 0,
+            exit_code: None,
+            detail: "Installation is running.".into(),
+        };
+        match started_setup(Ok(ProtocolResponse::Installed {
+            receipt: receipt(InstallationStatus::Installing),
+        })) {
+            WorkerEvent::SetupStarted { capsule_id, detail } => {
+                assert_eq!(capsule_id, "wine-1");
+                assert_eq!(detail, "Installation is running.");
+            }
+            _ => panic!("an install with a setup still going is followed to the list that ends it"),
+        }
+        match started_setup(Ok(ProtocolResponse::Retried {
+            receipt: receipt(InstallationStatus::Failed),
+        })) {
+            WorkerEvent::Operation(result) => {
+                assert_eq!(result.as_deref(), Ok("Installation is running."));
+            }
+            _ => panic!("a setup that already ended is answered as its receipt says"),
+        }
+    }
+
     /// A program in a private capsule shows how it opens now and how it is recommended to, and
     /// whether this person may choose; the choice goes to the service once, as the typed
     /// request, and the appliance is no choice for it.
@@ -2073,6 +2363,7 @@ mod tests {
             pending_vm_install: None,
             pending_vm_install_confirmation: None,
             launched: None,
+            setup: None,
             notice_cleared: false,
             opens_with_asked: std::collections::HashMap::new(),
         };
