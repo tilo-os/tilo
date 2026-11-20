@@ -31,6 +31,11 @@ const INVOCATION_WAIT: u64 = 60;
 /// How often a step the workspace said to ask again is asked again before the run gives up: each
 /// ask waits for the workspace itself ([`ACTION_WAIT`]), or for the wait it said.
 const ACTION_TRIES: u32 = 7;
+/// The first pause before a step the workspace said to ask again is asked again, when it named
+/// none: it doubles with each ask, up to [`ASK_AGAIN_MOST`].
+const ASK_AGAIN_FIRST: Duration = Duration::from_secs(1);
+/// The longest pause between two asks of one step.
+const ASK_AGAIN_MOST: Duration = Duration::from_secs(30);
 /// The largest piece of an upload one call carries (the session's own bound).
 const PUT_CHUNK: usize = 512 * 1024;
 /// The code of a save the workspace's host did not confirm in time: it may or may not be kept, so
@@ -428,6 +433,28 @@ impl Refused {
     pub(super) fn asks_again(&self) -> bool {
         matches!(self.code.as_str(), "not_ready" | "unanswered")
     }
+
+    /// Say that `action` is asked again, and wait first: as long as the workspace said, or a pause
+    /// that doubles with each of its `tries` so far. Asked again at once and in silence, an import
+    /// into a workspace still catching up after its server restarted queued ask after ask behind
+    /// the work it waited for, and showed nothing while it did.
+    fn wait_to_ask_again(&self, action: &str, tries: u32) {
+        let wait = self.retry_after_ms.map_or_else(
+            || {
+                ASK_AGAIN_FIRST
+                    .saturating_mul(2_u32.saturating_pow(tries))
+                    .min(ASK_AGAIN_MOST)
+            },
+            Duration::from_millis,
+        );
+        eprintln!(
+            "{action}: {} Asking again in {} s ({} of {ACTION_TRIES}).",
+            self.message.trim(),
+            wait.as_secs().max(1),
+            tries.saturating_add(1)
+        );
+        std::thread::sleep(wait);
+    }
 }
 
 impl Workspace for Held {
@@ -467,9 +494,7 @@ impl Workspace for Held {
                     // under its same id, it runs once.
                     let again = error.asks_again() || error.code == SAVE_UNCONFIRMED;
                     if again && tries < ACTION_TRIES {
-                        if let Some(wait) = error.retry_after_ms {
-                            std::thread::sleep(Duration::from_millis(wait));
-                        }
+                        error.wait_to_ask_again(action, tries);
                         tries = tries.saturating_add(1);
                         continue;
                     }
@@ -688,9 +713,7 @@ impl Workspace for Hosted {
                     let again = Refused::of(&error).is_some_and(|refusal| {
                         let asks_again = refusal.asks_again() || refusal.code == SAVE_UNCONFIRMED;
                         if asks_again && tries < ACTION_TRIES {
-                            if let Some(wait) = refusal.retry_after_ms {
-                                std::thread::sleep(Duration::from_millis(wait));
-                            }
+                            refusal.wait_to_ask_again(action, tries);
                             true
                         } else {
                             false
