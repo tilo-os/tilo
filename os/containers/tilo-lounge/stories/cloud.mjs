@@ -193,12 +193,22 @@ export const newPageTarget = async (launched, before, timeout = stepLimit(6)) =>
 };
 
 /** The text a plain web page shows: what a person reads on a page that is not
- * Tilo's canvas, such as the Nextcloud sign-in the browser opens. */
-export const plainText = tab => tab.evaluate('(document.body?.innerText || "").replace(/\\s+/g, " ").trim()').catch(() => '');
+ * Tilo's canvas, such as the Nextcloud sign-in the browser opens. A button
+ * written as an input shows its value, which the page's text leaves out. */
+export const plainText = tab => tab.evaluate(`(() => {
+  const buttons = [...document.querySelectorAll('input[type=submit], input[type=button]')]
+    .filter(input => input.offsetParent !== null).map(input => input.value);
+  return [document.body?.innerText || '', ...buttons].join(' ').replace(/\\s+/g, ' ').trim();
+})()`).catch(() => '');
 
 /** Wait until `tab`'s plain page shows `text`. */
-export const plainShows = (tab, text, what, timeout = stepLimit(8)) =>
-  waitUntil(tab, `(document.body?.innerText || '').includes(${JSON.stringify(text)})`, what, timeout);
+export const plainShows = async (tab, text, what, timeout = stepLimit(8)) => {
+  const deadline = Date.now() + timeout;
+  while (!(await plainText(tab)).includes(text)) {
+    if (Date.now() >= deadline) throw new Error(`${what} did not happen within ${(timeout / 1000).toFixed(1)} s`);
+    await sleep(250);
+  }
+};
 
 /** Type `text` into the plain page's `selector`, as a person does: the field
  * takes the keyboard, and every key goes to it. */
