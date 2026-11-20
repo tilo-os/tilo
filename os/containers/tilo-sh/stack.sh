@@ -371,11 +371,13 @@ case $remote in
   auto)
     # A stack handed what a check built (its programs, its site, its bundle) and
     # the checks' own browsers and VM host are of this machine: those run here.
+    # TILO_SH_VM_HOST=0 only leaves the VM host out, which a stack on the build
+    # server does anyway, so it keeps the stack where it would otherwise go.
     if [[ $build == t || -n ${TILO_SH_PROGRAMS:-} || -n ${TILO_SH_LOUNGE:-} \
       || -n ${TILO_SH_SITE:-} || -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_CLI_DIR:-} \
-      || -n ${TILO_SH_VM_HOST:-} ]]; then
+      || ${TILO_SH_VM_HOST:-0} != 0 ]]; then
       remote=0
-      remote_why='its programs and its site were given here (TILO_SH_PROGRAMS, TILO_SH_SITE, TILO_SH_BUILD=t or the like)'
+      remote_why='its programs and its site were given here (TILO_SH_PROGRAMS, TILO_SH_SITE, TILO_SH_BUILD=t, TILO_SH_VM_HOST=1 or the like)'
     elif remote_capable; then
       remote=1
     else
