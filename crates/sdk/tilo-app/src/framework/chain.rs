@@ -1566,19 +1566,18 @@ impl ChainCore {
     /// entry's id, its action's JSON and who invoked it.
     fn unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
         let mut queued = self.legacy_unsent();
-        if let Some(settings) = &self.workspace.device_queue {
-            if let Some(entries) = settings
+        if let Some(settings) = &self.workspace.device_queue
+            && let Some(entries) = settings
                 .get()
                 .workspaces
                 .get_mut(&self.workspace_key)
                 .and_then(|chains| chains.remove(self.chain.as_str()))
-            {
-                queued.extend(
-                    entries
-                        .into_iter()
-                        .map(|entry| (entry.id, entry.action, entry.invoker)),
-                );
-            }
+        {
+            queued.extend(
+                entries
+                    .into_iter()
+                    .map(|entry| (entry.id, entry.action, entry.invoker)),
+            );
         }
         queued
     }
