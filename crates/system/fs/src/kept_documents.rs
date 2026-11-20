@@ -242,7 +242,7 @@ impl KeptDocuments {
                 .map(|(mut reopened, _)| reopened.document_heads())
             {
                 Ok(disk) if disk == live => {
-                    eprintln!("kept tree matches: {} documents", live.len())
+                    eprintln!("kept tree matches: {} documents", live.len());
                 }
                 Ok(disk) => {
                     let differs: Vec<_> = live
