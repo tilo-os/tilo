@@ -7,8 +7,9 @@ pub(super) fn add_server_params() -> Vec<ActionParam> {
         ActionParam::required(
             "origin",
             ParamType::Text,
-            "The other server's site, like https://tilo.sh. You must be let in there, and it may \
-             refuse by its own rules.",
+            "The other server's site, like https://tilo.sh, or, for a server that serves no site, \
+             its Iroh address, iroh:<device key>@<endpoint id> as `tilo-enroll device-key` prints \
+             it. You must be let in there, and it may refuse by its own rules.",
         ),
         ActionParam::optional(
             "role",
@@ -44,8 +45,8 @@ pub(super) fn remove_server_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
         "server",
         ParamType::Text,
-        "The server's site, like https://tilo.sh, or its device key (64 hex characters) as the \
-         server list names it.",
+        "The server's site, like https://tilo.sh, its Iroh address (iroh:<device key>@<endpoint \
+         id>), or its device key (64 hex characters) as the server list names it.",
     )]
 }
 
@@ -60,8 +61,9 @@ pub(super) fn move_server_params() -> Vec<ActionParam> {
         ActionParam::required(
             "origin",
             ParamType::Text,
-            "The site of the server it moves to, like https://tilo.sh. You must be let in there, \
-             and it may refuse by its own rules; the workspace then stays where it was.",
+            "The site of the server it moves to, like https://tilo.sh, or its Iroh address \
+             (iroh:<device key>@<endpoint id>). You must be let in there, and it may refuse by its \
+             own rules; the workspace then stays where it was.",
         ),
     ]
 }
