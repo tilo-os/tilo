@@ -20,10 +20,13 @@ impl ActionProvider for Documents {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         self.0.query(caller, query).map(|page| {
             page.map(|mut page| {
+                // A row of each action, or a resource's actions as one row, each described once.
                 for row in &mut page.rows {
-                    if let Some(action) = row
+                    let described = row.offered.as_mut().map(|offered| &mut offered.described);
+                    for action in row
                         .action
-                        .as_mut()
+                        .iter_mut()
+                        .chain(described.into_iter().flatten())
                         .filter(|action| action.address.action == "read")
                     {
                         action

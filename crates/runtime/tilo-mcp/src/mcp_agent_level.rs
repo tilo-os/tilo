@@ -99,8 +99,8 @@ impl Level {
                 return Some((rest.cursor.clone(), rest.revision.clone()));
             }
             let mark = self.pages.marks.last()?;
-            let offset =
-                row_offset(&mark.cursor).saturating_add(rows.len().saturating_sub(mark.row));
+            let offset = row_offset(&mark.cursor)
+                .saturating_add(spanned(rows.get(mark.row..).unwrap_or_default()));
             return Some((
                 u64::try_from(offset)
                     .unwrap_or(u64::MAX)
@@ -110,15 +110,19 @@ impl Level {
             ));
         };
         // The marks a level leaves are pages of it, each with the provider's
-        // row cursor it started at: the rows since move that on by one each. A row of the
-        // first page, which leaves no mark, is that many rows from the directory's start, at
-        // the revision the level was read at, where the provider's cursors are row offsets.
+        // row cursor it started at: the rows since move that on by as many as each stands
+        // for. A row of the first page, which leaves no mark, is that many rows from the
+        // directory's start, at the revision the level was read at, where the provider's
+        // cursors are row offsets.
         let (offset, revision) = match self.pages.marks.iter().rev().find(|mark| mark.row <= at) {
             Some(mark) => (
-                row_offset(&mark.cursor).saturating_add(at.saturating_sub(mark.row)),
+                row_offset(&mark.cursor)
+                    .saturating_add(spanned(rows.get(mark.row..at).unwrap_or_default())),
                 &mark.revision,
             ),
-            None if !self.revision.is_empty() && self.pages_by_offset() => (at, &self.revision),
+            None if !self.revision.is_empty() && self.pages_by_offset() => {
+                (spanned(rows.get(..at).unwrap_or_default()), &self.revision)
+            }
             None => return None,
         };
         Some((
@@ -148,7 +152,7 @@ fn page_rows(rows: &[CatalogueRow], parent: &str, reach: usize) -> u32 {
     let each = if read == 0 {
         ROWS_EACH
     } else {
-        rows.len().div_ceil(read).max(1)
+        spanned(rows).div_ceil(read).max(1)
     };
     let wanted = reach
         .saturating_sub(read)
@@ -476,7 +480,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if cannot_be_read_now(&asked) {
                 return Ok(Err(Unread::CannotNow));
             }
-            rows.extend(tilo_actions::remote::expand(asked.rows));
+            rows.extend(asked.rows);
             read_at.clone_from(&asked.revision);
             if asked.exhausted || asked.next_cursor.is_empty() {
                 break;
@@ -612,6 +616,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
 /// How many resources of the level under `parent` `rows` name: each once,
 /// and never `parent` itself, whose own actions are the level's own.
+/// How many of the provider's rows `rows` stand for: a resource's actions sent as one row
+/// ([`CatalogueQuery::by_resource`]) are a row each where the provider counts its cursor.
+fn spanned(rows: &[CatalogueRow]) -> usize {
+    rows.iter()
+        .map(|row| {
+            row.offered
+                .as_ref()
+                .map_or(1, |offered| offered.actions.len().max(1))
+        })
+        .sum()
+}
+
 fn distinct_children(rows: &[CatalogueRow], parent: &str) -> usize {
     let mut seen = HashSet::new();
     for row in rows {
