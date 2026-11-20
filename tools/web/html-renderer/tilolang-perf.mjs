@@ -96,6 +96,11 @@ const SCROLLER = `(() => {
   }
   return JSON.stringify(best);
 })()`;
+// What the sidebar shows picked: the words of its selected row.
+const PICKED = `(() => {
+  const row = document.querySelector('#app [data-widget=NavList] [aria-selected=true], #app [data-widget=NavList] [aria-current]');
+  return (row?.getAttribute('aria-label') ?? row?.textContent ?? '').trim();
+})()`;
 // The sidebar's edge: its grip stands just past the column its rows fill.
 const EDGE = `(() => {
   const list = document.querySelector('#app [data-widget=NavList]');
@@ -161,6 +166,9 @@ async function measure() {
       return {firstFrameMs: Math.round(m.presented[0]), firstContentfulPaintMs: Math.round(paint ?? -1),
         settledFrames: (m.domFrames ?? []).length, elements: window.__tiloDom?.stats?.elements,
         transferredKiB: Math.round(bytes / 1024), longTasks: window.__perf.long.slice(),
+        // The runtime's own startup timeline (its \`tilo:\` marks), so a slow phase names itself.
+        marks: Object.fromEntries(performance.getEntriesByType('mark').filter(m => m.name.startsWith('tilo:'))
+          .map(m => [m.name.slice(5), Math.round(m.startTime)])),
         largest: resources.sort((a, b) => b.encodedBodySize - a.encodedBodySize).slice(0, 6)
           .map(r => [r.name.split('/').slice(-2).join('/'), Math.round(r.encodedBodySize / 1024), Math.round(r.responseEnd)])};
     })())`));
@@ -221,6 +229,8 @@ async function measure() {
       const point = await at(place);
       if (!point) { result.interactions[`open ${place}`] = {missing: true}; continue; }
       await step(`open ${place}`, () => click(point));
+      // The page a click picked is the one shown once its frames settled, not the one before.
+      result.interactions[`open ${place}`].picked = await tab.evaluate(PICKED);
       if (place === 'Basics') {
         // Rows of the page hovered, top to bottom, and its menu opened and closed.
         await step('hover Basics', () => sweep({x: 700, y: 120}, {x: 700, y: 760}, 40));
@@ -310,6 +320,7 @@ function overFrame(result) {
   for (const [name, step] of Object.entries(result.interactions)) {
     if (step.missing) continue;
     if (step.max > INPUT_BUDGET_MS * cpu) said.push(`${name}: an input took ${step.max} ms`);
+    if (step.picked !== undefined && step.picked !== name.replace(/^open /, '')) said.push(`${name}: the sidebar shows ${JSON.stringify(step.picked)} picked`);
     const longest = Math.max(0, ...step.longTasks.map(([, duration]) => duration));
     if (longest > LONG_TASK_MS * cpu) said.push(`${name}: a ${longest} ms task`);
   }
@@ -362,6 +373,7 @@ if (out) {
 console.log(`startup: first frame ${result.startup.firstFrameMs} ms, first paint ${result.startup.firstContentfulPaintMs} ms, `
   + `${result.startup.transferredKiB} KiB, ${result.startup.elements} elements; largest (KiB, loaded at ms): `
   + result.startup.largest.map(([name, kib, at]) => `${name} ${kib} @${at}`).join(', '));
+console.log(`startup marks (ms): ${Object.entries(result.startup.marks ?? {}).map(([name, at]) => `${name} ${at}`).join(', ')}`);
 const columns = ['inputs', 'p50', 'max', 'frames', 'layoutMs', 'encodeMs', 'presentMs', 'writes', 'created', 'styleRecalcs', 'layouts', 'scriptMs', 'elements', 'kib'];
 console.log(['interaction'.padEnd(24), ...columns.map(c => c.padStart(9)), '  long tasks'].join(''));
 for (const [name, step] of Object.entries(result.interactions)) {
