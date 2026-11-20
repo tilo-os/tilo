@@ -219,14 +219,18 @@ def steps(story: Story) -> None:
             (name for name in ("Follow Ada", "Follow") if grace.target(name)), None), 15, 0.2)
         story.note("controls-grace-card", grace.targets())
         grace.press(follow)
-        until("Grace's shell saying she follows Ada",
-              lambda: grace.shows("Following Ada"), 10, 0.2)
         own, _ = peers(ada, workspace)
+        # Grace's shell follows Ada's device: its own row says so, which is what draws the
+        # "Following Ada" banner over her desktop.
+        until("Grace's shell following Ada", lambda: (peers(grace, workspace)[0].get("following")
+                                                      == own.get("publisher")), 10, 0.2)
 
         def ada_told():
             _, rows = peers(ada, workspace)
             return any(row.get("following") == own.get("publisher") for row in rows)
 
+        # Ada is told without looking: her people list says Grace follows her, which is what puts
+        # the eye on Grace's face in her top bar.
         until("Ada's people list saying Grace follows her", ada_told, 10, 0.2)
         story.note("controls-ada-followed", ada.targets())
         story.note("before", before)
