@@ -362,8 +362,10 @@ pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
             has_secret: vault
                 .get_for(account)
                 .is_some_and(|secret| !secret.is_empty()),
-            identities: accounts::email::AccountConfig::from_value(account.config.clone())
-                .map_or_else(
+            // Only a mail account sends as other addresses; another
+            // provider's settings are not mail settings.
+            identities: if account.type_id == email {
+                accounts::email::AccountConfig::from_value(account.config.clone()).map_or_else(
                     |error| {
                         tracing::warn!(
                             account = %account.id,
@@ -374,7 +376,10 @@ pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
                         Vec::new()
                     },
                     |config| config.identities,
-                ),
+                )
+            } else {
+                Vec::new()
+            },
             provider,
             services: services_of(account, provider),
             server: server_of(account),
