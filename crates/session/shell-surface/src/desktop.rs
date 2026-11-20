@@ -164,8 +164,8 @@ impl GestureReader {
 /// The desktop both halves share.
 struct Desktop {
     policy: DesktopPolicy,
-    host: WidgetSurface,
-    /// What the gestures the desktop took asked, for its host to carry out.
+    surface: WidgetSurface,
+    /// What the gestures the desktop took asked, for its surface to carry out.
     gestures: Vec<ShellGesture>,
     /// How the desktop reads touchpad gestures; `None` leaves every one to
     /// the clients.
@@ -189,11 +189,11 @@ impl Desktop {
         let placement = Placement {
             origin: (bounds.loc.x, bounds.loc.y),
             size: (width.max(1), height.max(1)),
-            scale: self.host.placement().scale,
+            scale: self.surface.placement().scale,
         };
-        if placement != self.host.placement() {
+        if placement != self.surface.placement() {
             self.policy.set_viewport_width(f64::from(placement.size.0));
-            self.host.set_placement(placement);
+            self.surface.set_placement(placement);
         }
         // Each display holds its own windows. A monitor is known by where
         // it sits, as the policy is told it, and the primary one is the
@@ -225,7 +225,7 @@ impl Desktop {
             })
             .collect();
         if self.policy.set_displays(&displays) {
-            self.host.relayout();
+            self.surface.relayout();
         }
     }
 
@@ -233,7 +233,7 @@ impl Desktop {
     /// display the person works on, in the logical layout. `None` while it
     /// is hidden with its parent.
     fn floating(&self, window: u64, size: (i32, i32)) -> Option<LayoutPoint> {
-        let (ox, oy) = self.host.placement().origin;
+        let (ox, oy) = self.surface.placement().origin;
         // A card stands exactly where the floating layer put it, and nowhere
         // while it is suspended.
         if self.policy.draws_card(window) {
@@ -258,7 +258,7 @@ impl Desktop {
 
     /// Where `window`'s content is in the logical layout, as last laid out.
     fn shown(&self, window: u64) -> Option<LayoutRect> {
-        let origin = self.host.placement().origin;
+        let origin = self.surface.placement().origin;
         self.policy
             .placement()
             .shown
@@ -363,7 +363,7 @@ pub trait PointerSamples {
 
 /// A desktop of one workspace with one empty strip (`salt` seeds its ids),
 /// drawn at `scale`: the surface under the windows and the policy placing
-/// them. The compositor hosts the one and runs with the other.
+/// them. The compositor draws the one and runs with the other.
 #[must_use]
 pub fn desktop(salt: u16, scale: f64) -> (ShellDesktop, StripPolicy) {
     desktop_with(salt, scale, |surface, _| Box::new(surface))
@@ -371,7 +371,7 @@ pub fn desktop(salt: u16, scale: f64) -> (ShellDesktop, StripPolicy) {
 
 /// As [`desktop`], with the surface drawn inside the tree `root` makes of
 /// it (the desktop's backdrop and launchpad around the strips), given the
-/// policy's host side of the surface.
+/// policy's side of the surface.
 #[must_use]
 pub fn desktop_with(
     salt: u16,
@@ -393,7 +393,7 @@ pub fn desktop_with(
     let keyboard = Rc::new(move || handle.wants_keyboard());
     let desktop = Rc::new(RefCell::new(Desktop {
         policy,
-        host: WidgetSurface::new(root, placement, true)
+        surface: WidgetSurface::new(root, placement, true)
             .named(crate::i18n::t("desktop"))
             .with_keyboard(keyboard),
         gestures: Vec::new(),
@@ -405,7 +405,7 @@ pub fn desktop_with(
     // agent's — is queued on its handle and taken up by the desktop's next pass:
     // the handle asks for it, so a desktop that draws nothing of its own still
     // keeps its windows where the person put them.
-    let asked = desktop.borrow().host.asking();
+    let asked = desktop.borrow().surface.asking();
     waking_handle.set_wake(std::sync::Arc::new(move || {
         asked.store(true, std::sync::atomic::Ordering::Release);
     }));
@@ -505,7 +505,7 @@ impl ShellDesktop {
         )))
     }
 
-    /// Answer the platform search API (`tilo.host:search`'s `open`) with the
+    /// Answer the platform search API's `open` with the
     /// desktop's own search: a window's search control, its toolbar's magnifier,
     /// Ctrl+K and an agent all ask the platform to search, and the platform's
     /// search is the one that knows the person's apps, their files, what apps
@@ -549,7 +549,7 @@ impl ShellDesktop {
 
     /// Draw the desktop with `theme`: the person's palette, tokens and fonts.
     pub fn set_theme(&self, theme: ui::Theme) {
-        self.desktop.borrow_mut().host.set_theme(theme);
+        self.desktop.borrow_mut().surface.set_theme(theme);
     }
 
     /// What the touchpad gestures the desktop took asked since the last
@@ -582,7 +582,7 @@ impl ShellDesktop {
     /// The desktop's widget tree as hosted: what it publishes, its
     /// accessibility tree, the actions it accepts.
     pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetSurface) -> R) -> R {
-        read(&mut self.desktop.borrow_mut().host)
+        read(&mut self.desktop.borrow_mut().surface)
     }
 }
 
@@ -592,7 +592,7 @@ impl crate::well_policy::WindowModel for ShellDesktop {
     }
 
     fn relayout(&self) {
-        self.desktop.borrow_mut().host.relayout();
+        self.desktop.borrow_mut().surface.relayout();
     }
 
     fn cover(&self, outputs: &[LayoutRect]) {
@@ -610,17 +610,17 @@ impl crate::well_policy::WindowModel for ShellDesktop {
 
 impl crate::Published for ShellDesktop {
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
-        crate::Published::resources(&mut self.desktop.borrow_mut().host)
+        crate::Published::resources(&mut self.desktop.borrow_mut().surface)
     }
 
     fn revision(&self) -> Option<u64> {
         // What the desktop publishes is its tree's as drawn — the windows, its fields and its
-        // controls — and its search, which the host above the windows moves as the person types
+        // controls — and its search, which the bar above the windows moves as the person types
         // there and the rows come in. A frame it drew may have moved any of them, and the API
         // tells a frame that moved nothing it publishes from one that did.
         let desktop = self.desktop.borrow();
         let handle = desktop.policy.handle();
-        crate::Published::revision(&desktop.host).map(|drawn| {
+        crate::Published::revision(&desktop.surface).map(|drawn| {
             drawn
                 .wrapping_add(handle.navigation_revision())
                 .wrapping_add(handle.search_revision())
@@ -640,7 +640,7 @@ impl crate::Published for ShellDesktop {
             return Ok(answered);
         }
         crate::Published::invoke(
-            &mut self.desktop.borrow_mut().host,
+            &mut self.desktop.borrow_mut().surface,
             address,
             arguments,
             look,
@@ -661,7 +661,7 @@ impl crate::Published for ShellDesktop {
             return Ok(answered);
         }
         crate::Published::invoke_as(
-            &mut self.desktop.borrow_mut().host,
+            &mut self.desktop.borrow_mut().surface,
             actor,
             address,
             arguments,
@@ -670,7 +670,7 @@ impl crate::Published for ShellDesktop {
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        crate::Published::accessible_labels(&mut self.desktop.borrow_mut().host)
+        crate::Published::accessible_labels(&mut self.desktop.borrow_mut().surface)
     }
 
     /// The desktop's own controls — its strips, its windows' bars — and, behind
@@ -678,7 +678,7 @@ impl crate::Published for ShellDesktop {
     /// own content ([`ui::window_targets`]): a window's app keeps its widget
     /// tree to itself, so this is the one place they are named.
     fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
-        let mut shown = crate::Published::controls(&mut self.desktop.borrow_mut().host);
+        let mut shown = crate::Published::controls(&mut self.desktop.borrow_mut().surface);
         // Every window's own controls stand where they stand, beside the desktop's: two windows go
         // by the same names — each window's sidebar toggle, each window's "More actions" — and
         // each is named where it is drawn. A window's control is never the desktop's because they
@@ -686,7 +686,7 @@ impl crate::Published for ShellDesktop {
         // The windows' controls stand where the desktop draws them, in its coordinates: moved, as
         // its own are, to where the desktop is placed in the logical layout.
         let desktop = self.desktop.borrow();
-        let (ox, oy) = desktop.host.placement().origin;
+        let (ox, oy) = desktop.surface.placement().origin;
         for mut control in desktop.policy.handle().window_controls() {
             control.rect.0 += f64::from(ox);
             control.rect.1 += f64::from(oy);
@@ -730,7 +730,7 @@ impl crate::Published for ShellDesktop {
         {
             return Ok(());
         }
-        crate::Published::press_identity(&mut desktop.host, identity, action)
+        crate::Published::press_identity(&mut desktop.surface, identity, action)
     }
 
     fn press_action(
@@ -754,7 +754,7 @@ impl crate::Published for ShellDesktop {
                     .any(|control| control.name == name),
             )
         };
-        let chrome = crate::Published::controls(&mut desktop.host);
+        let chrome = crate::Published::controls(&mut desktop.surface);
         // A control the desktop draws in the front window's own chrome — its bar's buttons — is that
         // window's: it answers for it as its app's content does.
         let in_fronts_chrome = front_window.is_some_and(|window| {
@@ -769,7 +769,7 @@ impl crate::Published for ShellDesktop {
             })
         });
         if in_fronts_chrome {
-            return crate::Published::press_action(&mut desktop.host, name, action);
+            return crate::Published::press_action(&mut desktop.surface, name, action);
         }
         // The window in front answers for its own content: a person pointing at a control there
         // presses that window's, never one behind it that goes by the same name — another
@@ -781,7 +781,7 @@ impl crate::Published for ShellDesktop {
                 .press_window_control_in(front, name, action);
         }
         if chrome.iter().any(|control| control.name == name) {
-            return crate::Published::press_action(&mut desktop.host, name, action);
+            return crate::Published::press_action(&mut desktop.surface, name, action);
         }
         // The control is one a window's app draws: the press reaches it as its
         // own assistive technology's activation does.
@@ -792,15 +792,15 @@ impl crate::Published for ShellDesktop {
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
-        crate::Published::a11y_tree(&mut self.desktop.borrow_mut().host)
+        crate::Published::a11y_tree(&mut self.desktop.borrow_mut().surface)
     }
 
     fn a11y_name(&self) -> Option<String> {
-        crate::Published::a11y_name(&self.desktop.borrow().host)
+        crate::Published::a11y_name(&self.desktop.borrow().surface)
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
-        crate::Published::a11y_action(&mut self.desktop.borrow_mut().host, target, action)
+        crate::Published::a11y_action(&mut self.desktop.borrow_mut().surface, target, action)
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -810,11 +810,11 @@ impl crate::Published for ShellDesktop {
 
 impl ShellSurface for ShellDesktop {
     fn layers(&self) -> Vec<SurfaceLayer> {
-        self.desktop.borrow().host.layers()
+        self.desktop.borrow().surface.layers()
     }
 
     fn withholds_captures(&self) -> bool {
-        self.desktop.borrow().host.withholds_captures()
+        self.desktop.borrow().surface.withholds_captures()
     }
 
     fn below_windows(&self) -> bool {
@@ -825,8 +825,8 @@ impl ShellSurface for ShellDesktop {
         // The desktop draws a floating window's card itself, under the windows, so the windows it
         // covers are drawn around it, and under the shadows it casts.
         let desktop = self.desktop.borrow();
-        let origin = desktop.host.placement().origin;
-        let theme = desktop.host.host().theme();
+        let origin = desktop.surface.placement().origin;
+        let theme = desktop.surface.host().theme();
         desktop
             .policy
             .float_covers()
@@ -849,7 +849,7 @@ impl ShellSurface for ShellDesktop {
         // A window covering its display shows its own bar over itself while the person reaches for
         // the bar over the display; the desktop draws that bar, under the windows.
         let desktop = self.desktop.borrow();
-        let origin = desktop.host.placement().origin;
+        let origin = desktop.surface.placement().origin;
         desktop
             .policy
             .covering_bar()
@@ -857,20 +857,20 @@ impl ShellSurface for ShellDesktop {
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        self.desktop.borrow().host.accepts_pointer(x, y)
+        self.desktop.borrow().surface.accepts_pointer(x, y)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
-        self.desktop.borrow_mut().host.pointer_motion(x, y);
+        self.desktop.borrow_mut().surface.pointer_motion(x, y);
     }
 
     fn pointer_leave(&mut self) {
-        self.desktop.borrow_mut().host.pointer_leave();
+        self.desktop.borrow_mut().surface.pointer_leave();
     }
 
     fn carries_window_at(&mut self, x: f64, y: f64) -> bool {
         let desktop = self.desktop.borrow();
-        let (ox, oy) = desktop.host.placement().origin;
+        let (ox, oy) = desktop.surface.placement().origin;
         let point = ui::kurbo::Point::new(x - f64::from(ox), y - f64::from(oy));
         desktop.policy.handle().carry_next_press_at(point)
     }
@@ -878,32 +878,32 @@ impl ShellSurface for ShellDesktop {
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.desktop
             .borrow_mut()
-            .host
+            .surface
             .pointer_button(button, pressed);
     }
 
     fn pointer_axis(&mut self, scroll: Scroll) {
-        self.desktop.borrow_mut().host.pointer_axis(scroll);
+        self.desktop.borrow_mut().surface.pointer_axis(scroll);
     }
 
     fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {
-        self.desktop.borrow_mut().host.pointer_modifiers(held);
+        self.desktop.borrow_mut().surface.pointer_modifiers(held);
     }
 
     fn wants_keyboard(&self) -> bool {
-        ShellSurface::wants_keyboard(&self.desktop.borrow().host)
+        ShellSurface::wants_keyboard(&self.desktop.borrow().surface)
     }
 
     fn key(&mut self, key: &SurfaceKey) {
-        self.desktop.borrow_mut().host.key(key);
+        self.desktop.borrow_mut().surface.key(key);
     }
 
     fn text_input(&self) -> Option<SurfaceTextInput> {
-        self.desktop.borrow().host.text_input()
+        self.desktop.borrow().surface.text_input()
     }
 
     fn ime(&mut self, event: SurfaceIme) {
-        self.desktop.borrow_mut().host.ime(event);
+        self.desktop.borrow_mut().surface.ime(event);
     }
 
     fn prepare_frame(&mut self) -> bool {
@@ -916,26 +916,29 @@ impl ShellSurface for ShellDesktop {
             // ([`crate::shell::Aside`]), rather than whenever the next frame
             // comes for another reason. A desktop nobody asked draws nothing.
             if desktop
-                .host
+                .surface
                 .asking()
                 .load(std::sync::atomic::Ordering::Acquire)
             {
-                desktop.host.relayout();
+                desktop.surface.relayout();
             }
         }
-        self.desktop.borrow_mut().host.prepare_frame()
+        self.desktop.borrow_mut().surface.prepare_frame()
     }
 
     fn advance(&mut self) -> bool {
-        self.desktop.borrow_mut().host.advance()
+        self.desktop.borrow_mut().surface.advance()
     }
 
     fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.desktop.borrow().host.next_deadline()
+        self.desktop.borrow().surface.next_deadline()
     }
 
     fn set_frame_interval(&mut self, interval: std::time::Duration) {
-        self.desktop.borrow_mut().host.set_frame_interval(interval);
+        self.desktop
+            .borrow_mut()
+            .surface
+            .set_frame_interval(interval);
     }
 
     fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
@@ -947,22 +950,24 @@ impl ShellSurface for ShellDesktop {
         // first's, as its layout is the bounding box of all of them.
         let scale = outputs.first().map_or(1.0, |output| output.scale);
         let mut desktop = self.desktop.borrow_mut();
-        let placement = desktop.host.placement();
+        let placement = desktop.surface.placement();
         if (placement.scale - scale).abs() > f64::EPSILON {
-            desktop.host.set_placement(Placement { scale, ..placement });
+            desktop
+                .surface
+                .set_placement(Placement { scale, ..placement });
         }
     }
 
     fn window_pictures(&self) -> Vec<tilo_session_core::surface::WindowPicture> {
-        self.desktop.borrow().host.window_pictures()
+        self.desktop.borrow().surface.window_pictures()
     }
 
     fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
-        self.desktop.borrow().host.backdrops()
+        self.desktop.borrow().surface.backdrops()
     }
 
     fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
-        self.desktop.borrow_mut().host.set_backdrops(images);
+        self.desktop.borrow_mut().surface.set_backdrops(images);
     }
 }
 
@@ -1067,7 +1072,7 @@ impl StripPolicy {
                 return;
             }
             self.mapped.push(window.id);
-            desktop.host.relayout();
+            desktop.surface.relayout();
             // A window launched into a workspace not in front goes there once its tab is made.
             desktop.policy.carry_launched();
         }
@@ -1083,7 +1088,7 @@ impl WindowPolicy for StripPolicy {
             samples.borrow_mut().moved(x, y);
         }
         let mut desktop = self.desktop.borrow_mut();
-        let (ox, oy) = desktop.host.placement().origin;
+        let (ox, oy) = desktop.surface.placement().origin;
         let (x, y) = (x - f64::from(ox), y - f64::from(oy));
         let handle = desktop.policy.handle().clone();
         let under = handle.read(|tree| {
@@ -1100,7 +1105,7 @@ impl WindowPolicy for StripPolicy {
             && handle.focused_display() != Some(display)
             && handle.focus_display(display)
         {
-            desktop.host.relayout();
+            desktop.surface.relayout();
         }
     }
 
@@ -1195,7 +1200,7 @@ impl WindowPolicy for StripPolicy {
                 }
             }
             if !gone.is_empty() {
-                desktop.host.relayout();
+                desktop.surface.relayout();
             }
         }
         self.mapped.retain(|id| !gone.contains(id));
@@ -1212,11 +1217,11 @@ impl WindowPolicy for StripPolicy {
                 .iter()
                 .map(|(window, _)| (window.id, window.min_size)),
         ) {
-            self.desktop.borrow_mut().host.relayout();
+            self.desktop.borrow_mut().surface.relayout();
         }
         let desktop = self.desktop.borrow();
         let placement = desktop.policy.placement();
-        let origin = desktop.host.placement().origin;
+        let origin = desktop.surface.placement().origin;
         let of = |rects: &[(u64, ui::kurbo::Rect)], window: u64| {
             rects
                 .iter()
@@ -1260,7 +1265,7 @@ impl WindowPolicy for StripPolicy {
         self.followers.gone(window.id);
         let mut desktop = self.desktop.borrow_mut();
         desktop.policy.unmap(window.id);
-        desktop.host.relayout();
+        desktop.surface.relayout();
     }
 
     fn focus_on_click(&mut self, window: &WindowInfo) -> bool {
@@ -1268,7 +1273,7 @@ impl WindowPolicy for StripPolicy {
         // Focus moves on the surface's next pass: run it, so the window's
         // place and focus are known when the compositor asks.
         if desktop.policy.focus(window.id) {
-            desktop.host.relayout();
+            desktop.surface.relayout();
         }
         true
     }
@@ -1282,10 +1287,10 @@ impl WindowPolicy for StripPolicy {
         if fresh {
             // What the person just did opened it: bring it forward.
             if desktop.policy.focus(window.id) {
-                desktop.host.relayout();
+                desktop.surface.relayout();
             }
         } else if desktop.policy.ask_attention(window.id) {
-            desktop.host.relayout();
+            desktop.surface.relayout();
         }
         fresh
     }
@@ -1317,7 +1322,7 @@ impl WindowPolicy for StripPolicy {
             }
         };
         if answered {
-            desktop.host.relayout();
+            desktop.surface.relayout();
         }
         false
     }
