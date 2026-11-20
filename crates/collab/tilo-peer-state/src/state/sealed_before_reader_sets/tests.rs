@@ -81,6 +81,7 @@ fn reseal(peer: &mut StatePeer, converter: &SigningKey) {
         .draft_sealed_compaction(
             (APP, DOC),
             None,
+            None,
             &mut |op| open(&keys, op),
             &mut |frame| {
                 keys.seal_content(artifact, ContentRetention::of_frame(frame), frame)
@@ -94,7 +95,7 @@ fn reseal(peer: &mut StatePeer, converter: &SigningKey) {
         collab_types::sign_op(op, converter).unwrap();
     }
     peer.publication_mut()
-        .admit_sealed_compaction(APP, DOC, ops, now())
+        .admit_sealed_compaction(APP, DOC, None, ops, now())
         .unwrap();
 }
 

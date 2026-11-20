@@ -1304,9 +1304,13 @@ view saved_notes(notes: Notes) {
     ui.Text(notes.title)
 }
 "#;
-        let package = tilolang_tilo::tilolang::compile_package(source, &Default::default(), &[])
-            .expect("an earlier private package")
-            .meta;
+        let package = tilolang_tilo::tilolang::compile_package(
+            source,
+            &tilolang_tilo::tilolang::IdsLock::default(),
+            &[],
+        )
+        .expect("an earlier private package")
+        .meta;
         assert!(package.own_resources);
         let person = "ad".repeat(32);
         let workspace = uuid::Uuid::from_u128(18);

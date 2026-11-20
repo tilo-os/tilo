@@ -48,27 +48,19 @@ pub(super) struct DocumentKeys {
 }
 
 impl DocumentKeys {
-    /// `keys`, of the group of `readers` in `workspace`, for document `doc`
-    /// ([`collab_types::content_artifact_id`]).
-    pub(super) fn of(keys: ContentKeys, workspace: &str, readers: &str, doc: &str) -> Self {
+    /// The workspace's keys for a document every member can read.
+    pub(super) fn app_document(
+        keys: ContentKeys,
+        workspace: &str,
+        (app, document): (&str, &str),
+    ) -> Self {
         Self {
             keys,
             workspace_keys: None,
             prior_reader_keys: None,
             readers: None,
-            artifact: collab_types::content_artifact_id(workspace, readers, doc),
+            artifact: collab_types::document_artifact_id(app, workspace, document),
         }
-    }
-
-    /// `keys`, the workspace's own, for a document of `app` every member
-    /// reads.
-    fn app_document(keys: ContentKeys, workspace: &str, (app, document): (&str, &str)) -> Self {
-        Self::of(
-            keys,
-            workspace,
-            collab_types::EVERY_MEMBER,
-            &collab_types::app_document_id(app, document),
-        )
     }
 
     pub(super) fn same_write_key(&self, keys: &ContentKeys) -> bool {

@@ -62,14 +62,14 @@ impl Workspaces {
             Sealing::Sealed(keys) => Some(keys),
         };
         let mut opened = keys
-            .as_ref()
+            .as_deref()
             .map(super::sealed_documents::DocumentKeys::open);
         // What this device opened of the resource before is read on, so a read opens only the
         // writes sealed since rather than the whole history again; a second read of it waits
         // for the first and reads on from what that one opened.
         let used = (
             reader,
-            keys.as_ref()
+            keys.as_deref()
                 .map(super::sealed_documents::DocumentKeys::epoch),
         );
         let opening = self.inner.own_opened.of(workspace, app, resource);
@@ -509,7 +509,7 @@ enum Sealing {
     /// It is held in the clear.
     Clear,
     /// It is sealed, and opens with these keys.
-    Sealed(super::sealed_documents::DocumentKeys),
+    Sealed(Box<super::sealed_documents::DocumentKeys>),
     /// It is sealed for a group this device takes part in, under keys it does not hold yet: the
     /// welcome or commit that brings them is on its way, and it reads once that arrived.
     Due,
@@ -531,12 +531,13 @@ async fn content_keys(
     let Some(device) = device else {
         return Err(PeerDocumentReadError::Encrypted);
     };
-    if peer.publication().has_document_keys(app, resource) {
+    let scoped = peer.publication().has_document_keys(app, resource);
+    if scoped || neighbour_wire::KeyScope::has_named_readers(resource) {
         let keys = super::sealed_documents::read_document_keys(
             device,
             workspace,
             (app, resource),
-            true,
+            scoped,
             false,
         )
         .await;
@@ -546,7 +547,7 @@ async fn content_keys(
                     .publication()
                     .sealed_keys_available(app, resource, |metadata| keys.covers(metadata)) =>
             {
-                Ok(Sealing::Sealed(keys))
+                Ok(Sealing::Sealed(Box::new(keys)))
             }
             Ok(_) => Ok(Sealing::Due),
             Err(error) => {
@@ -573,11 +574,8 @@ async fn content_keys(
                 "a sealed resource waits for the keys of an epoch it was written under");
             Ok(Sealing::Due)
         }
-        Some(Ok(keys)) => Ok(Sealing::Sealed(super::sealed_documents::DocumentKeys::of(
-            keys,
-            workspace,
-            collab_types::EVERY_MEMBER,
-            &collab_types::app_document_id(app, resource),
+        Some(Ok(keys)) => Ok(Sealing::Sealed(Box::new(
+            super::sealed_documents::DocumentKeys::app_document(keys, workspace, (app, resource)),
         ))),
     }
 }
@@ -600,7 +598,7 @@ async fn capture_resource(
         Sealing::Sealed(keys) => Some(keys),
     };
     let mut opened = keys
-        .as_ref()
+        .as_deref()
         .map(super::sealed_documents::DocumentKeys::open);
     match peer.capture_document(
         reader,
@@ -642,7 +640,7 @@ async fn resource_revision(
         Sealing::Sealed(keys) => Some(keys),
     };
     let mut opened = keys
-        .as_ref()
+        .as_deref()
         .map(super::sealed_documents::DocumentKeys::open);
     let mut kept = tilo_peer_state::KeptDocument::default();
     let document = peer.open_document(

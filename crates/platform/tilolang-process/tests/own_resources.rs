@@ -1,4 +1,4 @@
-//! Desktop TiloLang Mail uses one mailbox per workspace and applies workspace roles.
+//! Desktop `TiloLang` Mail uses one mailbox per workspace and applies workspace roles.
 
 #![allow(
     clippy::unwrap_used,
@@ -357,12 +357,7 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
     assert_eq!(bo.host.take_ended(), [1]);
 }
 
-#[test]
-fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
-    use tilolang_tilo::runtime::{ResourceRef, Value};
-
-    let bundle = Arc::new(mail());
-    let workspace = uuid::Uuid::new_v4();
+fn previous_mail(workspace: uuid::Uuid) -> automerge::AutoCommit {
     let launch = "    let launch = a.threads.insert(";
     let prior_source = MAIL_SOURCE.replacen(
         launch,
@@ -383,6 +378,57 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
         .unwrap()
         .stage("a busy inbox");
     earlier.settle();
+    mark_previous_conversation(&mut earlier);
+    earlier
+        .host
+        .instances_mut()
+        .next()
+        .unwrap()
+        .stage("a reply being written");
+    earlier.settle();
+    let schedule = earlier
+        .hosted()
+        .published()
+        .iter()
+        .find(|action| action.address.action == "send_later")
+        .expect("the draft can be scheduled")
+        .address
+        .clone();
+    let at = serde_json::json!({ "at": "2099-12-31T12:00:00Z" });
+    earlier
+        .inbox
+        .borrow_mut()
+        .push_back(CollabEvent::Invocation {
+            id: 9,
+            invocation: tilo_actions::InvocationId::new(),
+            resource: schedule.resource,
+            action: schedule.action,
+            argument: Some(format!("{}{at}", tilo_actions::ARGUMENTS_JSON_PREFIX)),
+            actor: tilo_actions::MemberId::person(ADA).into(),
+            context: None,
+        });
+    earlier.settle();
+    assert!(
+        earlier.answer(9).contains("Succeeded"),
+        "{}",
+        earlier.answer(9)
+    );
+    assert_eq!(
+        earlier
+            .hosted()
+            .instance()
+            .host()
+            .unwrap()
+            .runtime()
+            .pending_outbox()
+            .len(),
+        1,
+        "the earlier copy has an unsent job"
+    );
+    earlier.hosted().record().doc()
+}
+
+fn mark_previous_conversation(earlier: &mut Member) {
     for (id, action, arguments) in [
         (
             6,
@@ -431,53 +477,90 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
             earlier.answer(id)
         );
     }
-    earlier
-        .host
-        .instances_mut()
-        .next()
-        .unwrap()
-        .stage("a reply being written");
-    earlier.settle();
-    let schedule = earlier
-        .hosted()
-        .published()
-        .iter()
-        .find(|action| action.address.action == "send_later")
-        .expect("the draft can be scheduled")
-        .address
-        .clone();
-    let at = serde_json::json!({ "at": "2099-12-31T12:00:00Z" });
-    earlier
-        .inbox
-        .borrow_mut()
-        .push_back(CollabEvent::Invocation {
-            id: 9,
-            invocation: tilo_actions::InvocationId::new(),
-            resource: schedule.resource,
-            action: schedule.action,
-            argument: Some(format!("{}{at}", tilo_actions::ARGUMENTS_JSON_PREFIX)),
-            actor: tilo_actions::MemberId::person(ADA).into(),
-            context: None,
-        });
-    earlier.settle();
+}
+
+fn draft_subjects(member: &Member) -> Vec<String> {
+    use tilolang_tilo::runtime::Value;
+
+    let host = member.hosted().instance().host().unwrap();
+    let root = host.root_of(MAIL).unwrap();
+    let Value::List(drafts) = host.runtime().read(&root, "drafts").unwrap() else {
+        panic!("the mailbox holds drafts");
+    };
+    drafts
+        .into_iter()
+        .map(|item| {
+            let Value::Ref(draft) = item else {
+                panic!("a draft item")
+            };
+            let text = host.runtime().read(&draft.target, "subject").unwrap();
+            assert!(matches!(
+                host.runtime().read(&draft.target, "sent"),
+                Ok(Value::Bool(false))
+            ));
+            text.as_text().unwrap().to_owned()
+        })
+        .collect::<Vec<_>>()
+}
+
+fn assert_recovered_mail(member: &Member) {
+    use tilolang_tilo::runtime::{ResourceRef, Value};
+
+    let host = member.hosted().instance().host().unwrap();
+    let root = host.root_of(MAIL).unwrap();
+    let read = |item: &ResourceRef, field: &str| host.runtime().read(item, field).unwrap();
+    let Value::List(threads) = read(&root, "recovered_mail") else {
+        panic!("the workspace holds recovered conversations");
+    };
+    assert_eq!(threads.len(), 8);
+    let conversation = threads
+        .into_iter()
+        .find_map(|item| {
+            let Value::Ref(thread) = item else {
+                panic!("a recovered conversation");
+            };
+            (read(&thread.target, "subject").as_text()
+                == Some("Launch plan for the autumn release"))
+            .then_some(thread.target)
+        })
+        .expect("the archive contains the launch conversation");
+    assert!(matches!(read(&conversation, "muted"), Value::Bool(true)));
+    assert_eq!(
+        read(&conversation, "snoozed_until").as_text(),
+        Some("2099-12-31T12:00:00Z")
+    );
+    assert!(matches!(read(&conversation, "labels"), Value::List(values)
+        if values.iter().any(|name| name.as_text() == Some("Release planning"))));
+    let Value::List(messages) = read(&conversation, "messages") else {
+        panic!("the recovered conversation holds messages");
+    };
+    assert_eq!(messages.len(), 3);
+    let Value::Ref(message) = &messages[0] else {
+        panic!("a recovered message");
+    };
     assert!(
-        earlier.answer(9).contains("Succeeded"),
-        "{}",
-        earlier.answer(9)
+        read(&message.target, "body")
+            .as_text()
+            .unwrap()
+            .contains("The beta goes out on the fifth")
     );
     assert_eq!(
-        earlier
-            .hosted()
-            .instance()
-            .host()
-            .unwrap()
-            .runtime()
-            .pending_outbox()
-            .len(),
-        1,
-        "the earlier copy has an unsent job"
+        read(&message.target, "received").as_text(),
+        Some("2026-06-30T08:20:00Z")
     );
-    let old_draft = earlier.hosted().record().doc();
+    assert_eq!(read(&message.target, "key").as_text(), Some(""));
+    assert!(matches!(read(&root, "accounts"), Value::List(values) if values.is_empty()));
+    assert!(member.window.shows().contains("Launch plan"));
+    assert!(member.found().contains("Launch plan"));
+}
+
+#[test]
+fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
+    use tilolang_tilo::runtime::Value;
+
+    let bundle = Arc::new(mail());
+    let workspace = uuid::Uuid::new_v4();
+    let old_draft = previous_mail(workspace);
 
     let bus = Rc::new(Bus::default());
     let mut ada = member_with_archive(&bus, workspace, ADA, &bundle, Some(old_draft));
@@ -501,80 +584,11 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
         actor: tilo_actions::MemberId::person(actor).into(),
         context: None,
     };
-    let drafts = |member: &Member| {
-        let host = member.hosted().instance().host().unwrap();
-        let root = host.root_of(MAIL).unwrap();
-        let Value::List(drafts) = host.runtime().read(&root, "drafts").unwrap() else {
-            panic!("the mailbox holds drafts");
-        };
-        drafts
-            .into_iter()
-            .map(|item| {
-                let Value::Ref(draft) = item else {
-                    panic!("a draft item")
-                };
-                let text = host.runtime().read(&draft.target, "subject").unwrap();
-                assert!(matches!(
-                    host.runtime().read(&draft.target, "sent"),
-                    Ok(Value::Bool(false))
-                ));
-                text.as_text().unwrap().to_owned()
-            })
-            .collect::<Vec<_>>()
-    };
-    let check_mail = |member: &Member| {
-        let host = member.hosted().instance().host().unwrap();
-        let root = host.root_of(MAIL).unwrap();
-        let read = |item: &ResourceRef, field: &str| host.runtime().read(item, field).unwrap();
-        let Value::List(threads) = read(&root, "recovered_mail") else {
-            panic!("the workspace holds recovered conversations");
-        };
-        assert_eq!(threads.len(), 8);
-        let conversation = threads
-            .into_iter()
-            .find_map(|item| {
-                let Value::Ref(thread) = item else {
-                    panic!("a recovered conversation");
-                };
-                (read(&thread.target, "subject").as_text()
-                    == Some("Launch plan for the autumn release"))
-                .then_some(thread.target)
-            })
-            .expect("the archive contains the launch conversation");
-        assert!(matches!(read(&conversation, "muted"), Value::Bool(true)));
-        assert_eq!(
-            read(&conversation, "snoozed_until").as_text(),
-            Some("2099-12-31T12:00:00Z")
-        );
-        assert!(matches!(read(&conversation, "labels"), Value::List(values)
-            if values.iter().any(|name| name.as_text() == Some("Release planning"))));
-        let Value::List(messages) = read(&conversation, "messages") else {
-            panic!("the recovered conversation holds messages");
-        };
-        assert_eq!(messages.len(), 3);
-        let Value::Ref(message) = &messages[0] else {
-            panic!("a recovered message");
-        };
-        assert!(
-            read(&message.target, "body")
-                .as_text()
-                .unwrap()
-                .contains("The beta goes out on the fifth")
-        );
-        assert_eq!(
-            read(&message.target, "received").as_text(),
-            Some("2026-06-30T08:20:00Z")
-        );
-        assert_eq!(read(&message.target, "key").as_text(), Some(""));
-        assert!(matches!(read(&root, "accounts"), Value::List(values) if values.is_empty()));
-        assert!(member.window.shows().contains("Launch plan"));
-        assert!(member.found().contains("Launch plan"));
-    };
 
     ada.inbox.borrow_mut().push_back(invoke(10, BO));
     ada.settle();
     assert!(ada.answer(10).contains("permission_denied"));
-    assert!(drafts(&ada).is_empty());
+    assert!(draft_subjects(&ada).is_empty());
     assert!(!ada.found().contains("Launch plan"));
     for id in [11, 12] {
         ada.inbox.borrow_mut().push_back(invoke(id, ADA));
@@ -582,10 +596,10 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
         bo.settle();
         assert!(ada.answer(id).contains("Succeeded"), "{}", ada.answer(id));
         let expected = ["Re: Launch plan for the autumn release"];
-        assert_eq!(drafts(&ada), expected);
-        assert_eq!(drafts(&bo), expected);
-        check_mail(&ada);
-        check_mail(&bo);
+        assert_eq!(draft_subjects(&ada), expected);
+        assert_eq!(draft_subjects(&bo), expected);
+        assert_recovered_mail(&ada);
+        assert_recovered_mail(&bo);
         assert!(
             ada.hosted()
                 .instance()
