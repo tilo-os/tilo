@@ -322,12 +322,6 @@ esac
 # The cargo drop-in that builds: the one TILO_SH_CARGO names, else $CARGO's,
 # else this machine's cargo.
 cargo=${TILO_SH_CARGO:-${CARGO:-cargo}}
-# A drop-in that wraps rcargo hands `exec` to another builder by default
-# (rcargo routes to t), whose container knows nothing of this stack: every
-# call below is this stack's, in this checkout's build container, so that
-# routing is off here (RCARGO_T is rcargo's own switch, and no one else's
-# call is affected).
-export RCARGO_T=0
 # Whether the cargo drop-in runs a program on the build server and serves this
 # machine's ports from there (`$cargo exec --forward`), which is what a remote
 # stack needs. Asked once.
@@ -1476,7 +1470,12 @@ builder_build() {
   local args=("$run" "$builder_stage" "${what[@]}")
   [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]] || args+=(--names)
   say "building the ${what[*]} on the build server ($cargo exec build-on-builder.sh; only what changed compiles)"
-  (cd "$repo" && $cargo --fetch "$builder_stage" exec bash os/containers/tilo-sh/build-on-builder.sh "${args[@]}" >&2) \
+  # A drop-in that mirrors a directory back (rcargo) takes the stage's name alone; one that copies
+  # the files a glob matches (t, which rcargo hands the call to when it routes to t) needs the
+  # stage's files named, since a stage is a directory of files below it.
+  local fetch=$builder_stage
+  remote_capable || fetch=$builder_stage/'**'
+  (cd "$repo" && $cargo --fetch "$fetch" exec bash os/containers/tilo-sh/build-on-builder.sh "${args[@]}" >&2) \
     || die "the build on the build server failed (above)"
   [[ $(cat "$repo/target/$builder_stage/run" 2>/dev/null) == "$run" ]] \
     || die "$repo/target/$builder_stage is not what this build made on the build server: did the fetch bring it back?"
@@ -2602,10 +2601,14 @@ remote_env() {
 # the owner, the invites, the log and the mail are read and made in one place.
 # The script is named from the repository (`self`), since the build server keeps a copy of it at
 # a root of its own.
+#
+# A remote stack lives in the container rcargo builds in, and these commands have to act there: a
+# drop-in that routes other work elsewhere (rcargo hands exec to t by default) is not routed for
+# them, since that other place holds neither the stack nor its state.
 remote_cmd() {
   local envs=()
   mapfile -t envs < <(remote_env)
-  ( cd "$repo" && "$cargo" exec -- env "${envs[@]}" bash "$self" "$@" )
+  ( cd "$repo" && RCARGO_T=0 "$cargo" exec -- env "${envs[@]}" bash "$self" "$@" )
 }
 
 # remote_shell COMMAND: a command on the build server, for what stack.sh has
@@ -2613,7 +2616,7 @@ remote_cmd() {
 remote_shell() {
   local envs=()
   mapfile -t envs < <(remote_env)
-  ( cd "$repo" && "$cargo" exec -- env "${envs[@]}" bash -c "$1" )
+  ( cd "$repo" && RCARGO_T=0 "$cargo" exec -- env "${envs[@]}" bash -c "$1" )
 }
 
 # start_supervisor ARGS…: the stack on the build server as one long-running
@@ -2626,7 +2629,7 @@ start_supervisor() {
   local envs=() inner
   mapfile -t envs < <(remote_env)
   inner=$(printf 'bash %q ' "$self"; printf '%q ' "$@")
-  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" "$cargo" exec \
+  ( cd "$repo" && setsid env "TILO_SH_STATE=$remote_state" RCARGO_T=0 "$cargo" exec \
       --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
       -- env "${envs[@]}" bash -c "$inner && exec sleep infinity" ) \
     >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
