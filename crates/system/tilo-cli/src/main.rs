@@ -366,6 +366,11 @@ enum Cmd {
         /// keys here, with no browser.
         #[arg(long, conflicts_with_all = ["code", "agent"])]
         new_identity: bool,
+        /// Instead: become again the person whose 24-word recovery key is typed in (read from
+        /// standard input, never from the command line), on a computer that holds no identity
+        /// or holds theirs, then log in as `tilo login` does on a computer holding it.
+        #[arg(long, conflicts_with_all = ["code", "new_identity", "name"])]
+        recovery_key: bool,
         /// The new identity's name, as workspaces show it (with `--new-identity`, or with an
         /// invitation link on a computer that holds no identity yet).
         #[arg(long)]
@@ -1202,18 +1207,52 @@ fn workspace_or_entered(cli: &Cli) -> Result<Option<String>> {
     }))
 }
 
+/// The recovery words `tilo login --recovery-key` is given on standard input: asked for on a
+/// terminal, read to the end from a pipe. Never an argument, which other accounts and the shell's
+/// history would see.
+fn recovery_words() -> Result<zeroize::Zeroizing<String>> {
+    use std::io::{IsTerminal as _, Read as _};
+    let stdin = std::io::stdin();
+    let words = if stdin.is_terminal() {
+        let mut tty = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+            .context("opening the terminal to read the recovery words")?;
+        migrate::read_hidden(&mut tty, "Type your 24 recovery words, then press Enter: ")?
+    } else {
+        let mut words = zeroize::Zeroizing::new(String::new());
+        stdin
+            .lock()
+            .take(64 * 1024)
+            .read_to_string(&mut words)
+            .context("reading the recovery words from standard input")?;
+        words
+    };
+    if words.trim().is_empty() {
+        bail!("`tilo login --recovery-key` reads your 24 recovery words from standard input, and got none.");
+    }
+    Ok(words)
+}
+
 /// `tilo login` where no tab approves this computer: one that holds the person's identity, or one
 /// following an invitation link. `None` for every other command.
 fn login_without_a_tab(cli: &Cli) -> Option<Result<ExitCode>> {
     if let Cmd::Login {
         code: None,
         new_identity: false,
+        recovery_key,
         agent,
         site,
         ..
     } = &cli.cmd
     {
-        let Some(person) = (match identity::held() {
+        let held = if *recovery_key {
+            recovery_words().and_then(|words| identity::restore(&words)).map(Some)
+        } else {
+            identity::held()
+        };
+        let Some(person) = (match held {
             Ok(person) => person,
             Err(error) => return Some(Err(error)),
         }) else {

@@ -1260,7 +1260,8 @@ fn secret(prompt: &str, file: Option<&Path>) -> Result<zeroize::Zeroizing<String
     read_hidden(tty, prompt)
 }
 
-fn read_hidden(tty: &mut std::fs::File, prompt: &str) -> Result<zeroize::Zeroizing<String>> {
+/// One line the person types on the terminal `tty` after `prompt`, not shown as it is typed.
+pub(crate) fn read_hidden(tty: &mut std::fs::File, prompt: &str) -> Result<zeroize::Zeroizing<String>> {
     use rustix::termios;
     use std::io::{BufRead as _, Write as _};
     write!(tty, "{prompt}")?;

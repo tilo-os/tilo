@@ -157,6 +157,37 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     Ok((person, made))
 }
 
+/// Become again the person whose 24-word recovery key `words` is: their root
+/// kept here as `tilo login --new-identity` keeps a new one, and this computer
+/// certified by it as a device of its own. A computer that holds them already
+/// keeps them; one that holds someone else refuses.
+///
+/// # Errors
+/// The words are not a recovery key, they are someone else's than the person
+/// kept here, or the identity could not be written or certified.
+pub fn restore(words: &str) -> Result<Person> {
+    let dir = dir()?;
+    tilo_identity::provisioning::restore_person(
+        &dir,
+        &paths(),
+        words,
+        &login::label("tilo", &login::hostname()),
+        IdentityStorage::for_session(),
+    )
+    .map_err(|error| match tilo_identity::store::recovery_words_error(&error) {
+        Some(tilo_identity::store::RecoveryWordsError::DifferentIdentity { expected, .. }) => {
+            anyhow!(
+                "This computer holds another Tilo identity ({}), not the one these words are: \
+                 log in as that person, or use a computer account of its own for this one.",
+                hex::encode(expected)
+            )
+        }
+        Some(problem) => anyhow!("{problem}"),
+        None => anyhow!(error).context(format!("restore the identity in {}", dir.display())),
+    })?;
+    held()?.context("the identity just restored is not there")
+}
+
 /// Name the person kept here `name`, when they go by none yet: how a person who joins a
 /// workspace from a computer that holds their identity already names themselves there.
 ///
@@ -477,6 +508,58 @@ mod tests {
         assert!(!made, "the person is kept");
         assert_eq!(again.public_key(), person.public_key());
         assert_eq!(again.name, "Ada");
+    }
+
+    #[test]
+    fn a_person_restored_from_their_recovery_words_is_who_they_were() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let at = |env: &mut tilo_test_env::ScopedEnv, home: &std::path::Path| {
+            env.set("HOME", home)
+                .set("XDG_CONFIG_HOME", home.join("config"))
+                .set("TILO_IDENTITY_ROOT", home.join("system"))
+                .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
+        };
+        let first = tempfile::tempdir().unwrap();
+        at(&mut env, first.path());
+        let (ada, _) = ensure(Some("Ada")).unwrap();
+        let active = tilo_identity_client::resolve_active_identity(&dir().unwrap()).unwrap();
+        let words = tilo_identity::store::recovery_words(&active).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        at(&mut env, other.path());
+        ensure(Some("Bea")).unwrap();
+        let active = tilo_identity_client::resolve_active_identity(&dir().unwrap()).unwrap();
+        let bea_words = tilo_identity::store::recovery_words(&active).unwrap();
+
+        // A computer account with nothing of Tilo on it: the words make it Ada's again, with a
+        // device of its own that her root certified.
+        let fresh = tempfile::tempdir().unwrap();
+        at(&mut env, fresh.path());
+        assert!(!holds_root());
+        let restored = restore(&format!("  {}\n", words.as_str())).unwrap();
+        assert_eq!(restored.public_key(), ada.public_key(), "the same person");
+        assert_eq!(restored.cert.user_public_key, ada.public_key());
+        tilo_user_identity::verify_device_cert(&restored.cert).unwrap();
+        assert_ne!(
+            restored.cert.device_public_key, ada.cert.device_public_key,
+            "this computer is a device of its own"
+        );
+        let profile = tilo_identity::registry::identity_for_workspace("any")
+            .unwrap()
+            .expect("the session's registry names her");
+        assert_eq!(profile.user_public_key, ada.public_key());
+
+        // Her words again keep her, on the same device; someone else's are refused.
+        let again = restore(&words).unwrap();
+        assert_eq!(again.public_key(), ada.public_key());
+        assert_eq!(again.cert.device_public_key, restored.cert.device_public_key);
+        let refused = restore(&bea_words).err().expect("another person's words");
+        assert!(
+            refused.to_string().contains("another Tilo identity"),
+            "{refused:#}"
+        );
+        assert_eq!(held().unwrap().unwrap().public_key(), ada.public_key());
+        let wrong = restore("abandon ability able").err().expect("three words");
+        assert!(wrong.to_string().contains("24 words"), "{wrong:#}");
     }
 
     #[test]

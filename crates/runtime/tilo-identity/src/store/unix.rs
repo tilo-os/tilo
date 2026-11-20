@@ -28,6 +28,7 @@ pub use backup::{
     export_portable_backup, import_portable_backup, import_portable_backup_matching,
     import_portable_backup_with_provider, verify_portable_backup,
 };
+pub(crate) use recovery_words::recovery_words_root;
 pub use recovery_words::{
     DEFAULT_AVATAR_COLOR, RECOVERY_WORD_COUNT, RecoveryWordsError, RecoveryWordsProgress,
     check_recovery_words, closest_recovery_word, import_recovery_words,
