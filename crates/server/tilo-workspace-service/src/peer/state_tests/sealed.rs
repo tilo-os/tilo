@@ -49,7 +49,7 @@ fn write(fixture: &Fixture, seq: u64, sealed: bool) -> Envelope {
         author_device_public_key: fixture.source.peer.device_public_key,
         authored_at_ns: seq,
         delta: crate::coedit::CoeditPayload::RetainedDelta {
-            channel: neighbour_wire::app_document_channel(app, record),
+            channel: neighbour_wire::app_document_group(app, record),
             body,
         }
         .encode()
@@ -83,7 +83,7 @@ async fn a_host_keeps_no_cleartext_write_after_its_records_seal() {
     // Read afresh from what the store retains.
     fixture
         .store
-        .forget_channel_listing(&neighbour_wire::app_document_channel(
+        .forget_channel_listing(&neighbour_wire::app_document_group(
             "so.tilo.notes",
             "welcome",
         ));

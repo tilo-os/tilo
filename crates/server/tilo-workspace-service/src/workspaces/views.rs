@@ -207,7 +207,7 @@ impl Workspaces {
             .records
             .view_channel(
                 runtime.workspace_id(),
-                neighbour_wire::app_document_channel(&source.app_id, &source.document),
+                neighbour_wire::app_document_group(&source.app_id, &source.document),
                 MAX_VIEW_DOCUMENT_BYTES,
             )
             .await?;

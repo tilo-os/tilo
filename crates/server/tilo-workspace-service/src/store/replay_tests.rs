@@ -505,7 +505,7 @@ fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
     let other = raw_generation(&store, 0, 0x00);
     store.learn_document([0x00; 32], "notes", "note-1");
     store.learn_document(
-        neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_DOCUMENT),
+        neighbour_wire::app_document_group(DESKTOP_APP, DESKTOP_DOCUMENT),
         DESKTOP_APP,
         DESKTOP_DOCUMENT,
     );
@@ -521,7 +521,7 @@ fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
         fs::write(lineage.join("CURRENT"), name).unwrap();
         lineage.join(name)
     };
-    let desktop = hex::encode(neighbour_wire::app_document_channel(
+    let desktop = hex::encode(neighbour_wire::app_document_group(
         DESKTOP_APP,
         DESKTOP_DOCUMENT,
     ));
@@ -1165,7 +1165,7 @@ fn member_frame(author: [u8; 32], channel: [u8; 32], size: usize, timestamp: u64
 #[test]
 fn a_join_costs_what_it_sends() {
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
-    let desktop = neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_DOCUMENT);
+    let desktop = neighbour_wire::app_document_group(DESKTOP_APP, DESKTOP_DOCUMENT);
     let mut rows = Vec::new();
     for members in [0_u32, 40, 400] {
         let tmp = tempfile::tempdir().unwrap();

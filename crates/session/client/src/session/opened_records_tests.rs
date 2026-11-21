@@ -70,7 +70,7 @@ fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
         "each is opened again after a reconnect"
     );
 
-    let channel = neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_DOCUMENT);
+    let channel = neighbour_wire::app_document_group(DESKTOP_APP, DESKTOP_DOCUMENT);
     for workspace in [first, second] {
         task.resource_opened(workspace, channel, DocumentAnswer::Sent { frames: 0 });
     }

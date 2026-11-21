@@ -17,7 +17,7 @@ impl Task {
         route: DocumentRoute,
         client: Option<&ServerClient>,
     ) -> bool {
-        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
+        let channel = neighbour_wire::app_document_group(&route.app_id, &route.document);
         // A chain's head names a part and holds nothing of its own: the
         // part's keys are asked for as it arrives, like a replayed head's.
         if !matches!(
@@ -48,7 +48,7 @@ impl Task {
         route: &DocumentRoute,
         client: Option<&ServerClient>,
     ) -> bool {
-        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document);
+        let channel = neighbour_wire::app_document_group(&route.app_id, &route.document);
         if self.opened_records.contains_key(&(workspace_id, channel))
             || (route.app_id == tilo_desktop_model::ownership::DESKTOP_APP
                 && route.document == tilo_desktop_model::ownership::DESKTOP_DOCUMENT)
@@ -84,8 +84,8 @@ impl Task {
     pub(super) fn own_channel(
         &self,
         route: &DocumentRoute,
-    ) -> Option<tilo_server_protocol::OwnedChannel> {
-        tilo_server_protocol::OwnedChannel::recognise(
+    ) -> Option<tilo_server_protocol::OwnedGroup> {
+        tilo_server_protocol::OwnedGroup::recognise(
             &route.app_id,
             &route.document,
             self.config.cert.user_public_key,

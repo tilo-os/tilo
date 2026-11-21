@@ -58,7 +58,7 @@ fn a_document_this_device_is_behind_in_is_asked_for_again_until_its_compaction_i
             .collect::<Vec<_>>()
     };
     // What its workspace names the document by when it answers.
-    let named = neighbour_wire::app_document_channel(&conversation.app_id, &conversation.document);
+    let named = neighbour_wire::app_document_group(&conversation.app_id, &conversation.document);
 
     // Refused at second one: said at once, asked for again a quarter of a minute later and
     // not before.

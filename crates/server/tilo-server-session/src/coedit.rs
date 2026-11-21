@@ -69,7 +69,7 @@ pub struct ServerCoeditSession {
     /// A member's own record among them is opened as one, with its kind and
     /// person.
     opened: std::sync::Mutex<
-        std::collections::BTreeMap<[u8; 32], Option<tilo_server_protocol::OwnedChannel>>,
+        std::collections::BTreeMap<[u8; 32], Option<tilo_server_protocol::OwnedGroup>>,
     >,
     /// Whether the host said this workspace sends a device only its
     /// governance, its shared desktop and the heads of its chains, and every
@@ -107,7 +107,7 @@ impl ServerCoeditSession {
     }
 
     /// Open a record of this workspace by its retained channel
-    /// (`neighbour_wire::app_document_channel`): an on-demand one
+    /// (`neighbour_wire::app_document_group`): an on-demand one
     /// (`neighbour_wire::document_sync`), which a subscription does not
     /// replay, or any record of a workspace that sends them all only when
     /// they are opened ([`Self::documents_when_opened`]). The host sends what
@@ -136,16 +136,16 @@ impl ServerCoeditSession {
     /// Returns [`CoeditError::Disconnected`] if the connection is gone.
     pub fn open_own_record(
         &self,
-        own: tilo_server_protocol::OwnedChannel,
+        own: tilo_server_protocol::OwnedGroup,
     ) -> Result<(), CoeditError> {
-        let channel = neighbour_wire::app_document_channel(&own.app_id, &own.record.document_id());
+        let channel = neighbour_wire::app_document_group(&own.app_id, &own.record.document_id());
         self.open(channel, Some(own))
     }
 
     fn open(
         &self,
         channel: [u8; 32],
-        own: Option<tilo_server_protocol::OwnedChannel>,
+        own: Option<tilo_server_protocol::OwnedGroup>,
     ) -> Result<(), CoeditError> {
         {
             let mut opened = self

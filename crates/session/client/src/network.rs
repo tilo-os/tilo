@@ -446,7 +446,7 @@ pub enum Cmd {
     OpenDocument {
         ws: Topic,
         channel: [u8; 32],
-        own: Option<tilo_server_protocol::OwnedChannel>,
+        own: Option<tilo_server_protocol::OwnedGroup>,
     },
     /// Send this device's owner's outgoing ownership of the workspace on `ws` to its peers.
     PublishOwnership(Topic),

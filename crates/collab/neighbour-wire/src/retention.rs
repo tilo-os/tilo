@@ -98,7 +98,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             envelope,
             ..
         } => {
-            let channel = app_document_channel(app_id, document_id);
+            let channel = app_document_group(app_id, document_id);
             // Content-key ciphertext carries its storage class in the signed
             // encryption metadata, so a host retains encrypted history
             // without reading it. A single-use MLS application message is
@@ -186,7 +186,7 @@ fn reader_group_route(
 /// The retained channel of an app record. Isolation between workspaces is
 /// supplied by the enclosing authenticated workspace, not by this digest.
 #[must_use]
-pub fn app_document_channel(app: &str, record: &str) -> [u8; 32] {
+pub fn app_document_group(app: &str, record: &str) -> [u8; 32] {
     *blake3::hash(format!("app\0{app}\0{record}").as_bytes()).as_bytes()
 }
 
@@ -499,7 +499,7 @@ mod tests {
         )
         .expect("documents are retained");
         assert_eq!(channel, *blake3::hash(b"app\0app\0doc").as_bytes());
-        assert_eq!(channel, app_document_channel("app", "doc"));
+        assert_eq!(channel, app_document_group("app", "doc"));
     }
 
     /// Delivery handoffs serialize the class beside each governance item;

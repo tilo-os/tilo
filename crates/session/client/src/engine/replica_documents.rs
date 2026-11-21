@@ -12,7 +12,7 @@ use super::{Admission, Engine, MAX_DOCUMENT_BYTES, ResourceReading};
 impl Engine {
     /// What the workspace `workspace` holds of the app `app`'s `record`: the document
     /// as the workspace last admitted it, also what it held before this device joined.
-    /// A sealed record opens with this device's channel keys, which reach back past the
+    /// A sealed record opens with this device's group keys, which reach back past the
     /// membership it joined in; a device that holds none yet asks for them
     /// ([`Self::seal_keys`]) and reads the record once they are here. A record the
     /// hosts send only once asked is asked for on its first read.
@@ -205,7 +205,7 @@ impl Engine {
     }
 
     /// Ask `workspace`'s hosts for `app`'s `record`
-    /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
+    /// (`neighbour_wire::app_document_group`, the app's document group): what they hold of it, and their changes to it from
     /// then on. Asked once per record while the peer network runs; `false` when there is no peer network to ask
     /// on, so nothing was asked.
     pub fn open_resource(&self, workspace: &str, app: &str, record: &str) -> bool {
@@ -215,14 +215,14 @@ impl Engine {
         let Some(link) = self.link.lock_recover().clone() else {
             return false;
         };
-        let own = tilo_server_protocol::OwnedChannel::recognise(
+        let own = tilo_server_protocol::OwnedGroup::recognise(
             app,
             record,
             self.identity.device_cert.user_public_key,
         );
         link.open_resource(
             workspace,
-            neighbour_wire::app_document_channel(app, record),
+            neighbour_wire::app_document_group(app, record),
             own,
         )
     }
@@ -238,11 +238,11 @@ impl Engine {
         record: &str,
     ) -> Option<tilo_server_protocol::DocumentAnswer> {
         let workspace = WorkspaceId::parse(workspace)?;
-        let channel = neighbour_wire::app_document_channel(app, record);
+        let group = neighbour_wire::app_document_group(app, record);
         self.link
             .lock_recover()
             .as_ref()?
-            .resource_answer(workspace, &channel)
+            .resource_answer(workspace, &group)
     }
 
     /// A live local document read check for consumers of cached copies.

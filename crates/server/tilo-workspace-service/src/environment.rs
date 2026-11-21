@@ -64,13 +64,13 @@ use tilo_lock::RwLockRecover as _;
 use crate::workspace_access::WorkspaceOperation;
 use tilo_server_protocol::WorkspaceId;
 
-/// The record's channel on the state protocol: [`neighbour_wire::app_document_channel`]
+/// The record's channel on the state protocol: [`neighbour_wire::app_document_group`]
 /// for the record's app and id. The state protocol names a record by this alone;
 /// the workspace a record belongs to is the scope's
 /// [`workspace`](Self::workspace).
 #[must_use]
 pub fn document_channel(app: &str, record: &str) -> [u8; 32] {
-    neighbour_wire::app_document_channel(app, record)
+    neighbour_wire::app_document_group(app, record)
 }
 
 /// What one environment's device reaches: its one workspace, and the channel
@@ -614,7 +614,7 @@ mod tests {
     fn a_record_has_one_channel_on_the_state_protocol() {
         assert_eq!(
             scope().channel,
-            neighbour_wire::app_document_channel("so.tilo.browser", "record-1")
+            neighbour_wire::app_document_group("so.tilo.browser", "record-1")
         );
         assert_ne!(
             scope().channel,

@@ -548,7 +548,7 @@ mod tests {
                 )
                 .unwrap();
             let delta = crate::coedit::CoeditPayload::RetainedDelta {
-                channel: neighbour_wire::app_document_channel(&route.app_id, &route.document_id),
+                channel: neighbour_wire::app_document_group(&route.app_id, &route.document_id),
                 body,
             }
             .encode()

@@ -30,7 +30,7 @@ fn frame_channel(envelope: &crate::Envelope) -> Option<[u8; 32]> {
 }
 
 fn part_channel(app: &str, index: u64) -> [u8; 32] {
-    neighbour_wire::app_document_channel(app, &neighbour_wire::document_part(CHAIN, index))
+    neighbour_wire::app_document_group(app, &neighbour_wire::document_part(CHAIN, index))
 }
 
 /// The member starts part `index` of the chain through its own session, as
@@ -182,7 +182,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
     }
 
     // Opening the chain's head: the newest part, and only it.
-    let head = neighbour_wire::app_document_channel(app, &neighbour_wire::chain_head(CHAIN));
+    let head = neighbour_wire::app_document_group(app, &neighbour_wire::chain_head(CHAIN));
     let (sent, frames) = open_head(&guest, workspace_id, head).await;
     assert!(frames > 0, "the host sent the newest part's frames");
     assert_eq!(
@@ -218,7 +218,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_chain_with_no_part_answers_its_head_with_nothing() {
     let (lounge, guest) = lounge_with_client().await;
-    let head = neighbour_wire::app_document_channel(
+    let head = neighbour_wire::app_document_group(
         super::tests::APP,
         &neighbour_wire::chain_head("nothing yet"),
     );

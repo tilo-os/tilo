@@ -1267,7 +1267,7 @@ async fn a_record_whose_base_its_history_lost_is_founded_again() {
 
     // The damage: this author's founding checkpoint and one change are gone
     // from the store, as eu1's history lost them.
-    let channel = neighbour_wire::app_document_channel(APP, RESOURCE);
+    let channel = neighbour_wire::app_document_group(APP, RESOURCE);
     let root = state_root(&lounge.workspaces, &lounge.workspace, lounge.workspace_id).await;
     let damaged = lose_the_documents_base(&root, &channel, &lounge.governor);
 
@@ -1418,7 +1418,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
     // The damage, and the repair, while that device is away. The damage is
     // done to the store's files, so it waits for the store to hold the
     // member's writes the node already follows.
-    let channel = neighbour_wire::app_document_channel(APP, RESOURCE);
+    let channel = neighbour_wire::app_document_group(APP, RESOURCE);
     let root = state_root(&workspaces, &workspace, workspace_id).await;
     server
         .workspace_documents()
@@ -2485,7 +2485,7 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
         workspace_id,
     ))
     .await;
-    let channel = neighbour_wire::app_document_channel(APP, &older);
+    let channel = neighbour_wire::app_document_group(APP, &older);
     page.send(crate::Envelope::OpenDocument {
         workspace_id,
         channel,
@@ -2518,7 +2518,7 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
 /// What the server sends `page` when it opens `record`: how many frames, before
 /// it says the record was sent whole.
 async fn opened_frames(page: &crate::ServerClient, workspace_id: WorkspaceId, record: &str) -> u32 {
-    let channel = neighbour_wire::app_document_channel(APP, record);
+    let channel = neighbour_wire::app_document_group(APP, record);
     page.send(crate::Envelope::OpenDocument {
         workspace_id,
         channel,

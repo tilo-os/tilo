@@ -11,7 +11,7 @@ use web_time::UNIX_EPOCH;
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub struct Lineage {
-    /// [`neighbour_wire::app_document_channel`] of the op's app and record.
+    /// [`neighbour_wire::app_document_group`] of the op's app and record.
     pub record: [u8; 32],
     /// Device key of the op's author.
     pub author: [u8; 32],
@@ -22,7 +22,7 @@ impl Lineage {
     #[must_use]
     pub fn of(app: &str, record: &str, author: [u8; 32]) -> Self {
         Self {
-            record: neighbour_wire::app_document_channel(app, record),
+            record: neighbour_wire::app_document_group(app, record),
             author,
         }
     }

@@ -879,7 +879,7 @@ impl Task {
             self.note_delivered(&route, &snapshot);
             let statement = tilo_server_protocol::compaction::CoverageStatement {
                 workspace_id,
-                channel: neighbour_wire::app_document_channel(&route.app_id, &route.document),
+                channel: neighbour_wire::app_document_group(&route.app_id, &route.document),
                 request,
                 snapshot,
                 covered,

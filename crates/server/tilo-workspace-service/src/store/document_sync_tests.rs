@@ -23,7 +23,7 @@ fn route(record: &str) -> Route {
 }
 
 fn channel(record: &str) -> [u8; 32] {
-    neighbour_wire::app_document_channel(APP, record)
+    neighbour_wire::app_document_group(APP, record)
 }
 
 fn head() -> [u8; 32] {

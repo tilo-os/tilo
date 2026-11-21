@@ -225,7 +225,7 @@ impl Lounge {
     /// Every write of the record the member made that the workspace's store
     /// keeps, as the store settled it.
     async fn kept(&self) -> Vec<NeighbourMsg> {
-        let channel = neighbour_wire::app_document_channel(APP, RECORD);
+        let channel = neighbour_wire::app_document_group(APP, RECORD);
         self.server
             .workspace_documents()
             .retained_settled(self.workspace_id)

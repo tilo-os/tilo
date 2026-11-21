@@ -166,7 +166,7 @@ type AskedRecords = std::collections::HashMap<(Topic, [u8; 32]), AskedRecord>;
 #[derive(Default)]
 struct AskedRecord {
     /// The record as this device's person's own, which every ask for it names.
-    own: Option<tilo_server_protocol::OwnedChannel>,
+    own: Option<tilo_server_protocol::OwnedGroup>,
     /// What the hosts answered: `None` while the answer is owed, the frames they sent once it came.
     answer: Option<tilo_server_protocol::DocumentAnswer>,
 }
@@ -393,14 +393,14 @@ impl KeyLink {
     }
 
     /// Ask `workspace`'s hosts for the record on `channel`
-    /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
+    /// (`neighbour_wire::app_document_group`): what they hold of it, and their changes to it from
     /// then on. Asked once per record and session; a host session that comes up later asks again
     /// ([`Self::host_ready`]). `false` when the peer network is not running, so nothing was asked.
     pub fn open_resource(
         &self,
         workspace: ModelWorkspaceId,
         channel: [u8; 32],
-        own: Option<tilo_server_protocol::OwnedChannel>,
+        own: Option<tilo_server_protocol::OwnedGroup>,
     ) -> bool {
         let ws = topic_of(workspace);
         {
@@ -424,7 +424,7 @@ impl KeyLink {
     fn ask_for(
         &self,
         ws: Topic,
-        channels: impl IntoIterator<Item = ([u8; 32], Option<tilo_server_protocol::OwnedChannel>)>,
+        channels: impl IntoIterator<Item = ([u8; 32], Option<tilo_server_protocol::OwnedGroup>)>,
     ) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
         channels.into_iter().all(|(channel, own)| {

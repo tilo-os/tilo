@@ -1144,7 +1144,7 @@ impl Workspaces {
                 continue;
             };
             for (app, record, own) in routes {
-                let channel = neighbour_wire::app_document_channel(&app, &record);
+                let channel = neighbour_wire::app_document_group(&app, &record);
                 let route = crate::compaction::Route {
                     app_id: app,
                     cluster_id: name.clone(),
@@ -1214,7 +1214,7 @@ impl Workspaces {
                 continue;
             };
             for (app, record, own) in holed {
-                let channel = neighbour_wire::app_document_channel(&app, &record);
+                let channel = neighbour_wire::app_document_group(&app, &record);
                 let route = crate::compaction::Route {
                     app_id: app,
                     cluster_id: name.clone(),

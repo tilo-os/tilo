@@ -2533,7 +2533,7 @@ impl Workspaces {
             .get(&workspace_id)
             .cloned()
             .ok_or_else(|| CollaborationError::new("the workspace is not hosted here"))?;
-        let channel = neighbour_wire::app_document_channel(app, record);
+        let channel = neighbour_wire::app_document_group(app, record);
         let state = self.workspace(workspace).await?;
         let now = tilo_clock::wall();
         let host = &self.inner.host;

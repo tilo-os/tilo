@@ -188,14 +188,14 @@ pub enum NetCmd {
         ws: WorkspaceId,
     },
     /// Ask the holders of `ws` for the record on `channel` (a retained route's
-    /// channel, `neighbour_wire::app_document_channel`): what they hold of it,
+    /// channel, `neighbour_wire::app_document_group`): what they hold of it,
     /// and their changes to it from then on. A workspace that sends records
     /// when they are opened sends nothing of a record before this. `own` names it this device's
     /// person's own record, which the hosts answer as theirs even before anything of it is written.
     OpenDocument {
         ws: WorkspaceId,
         channel: [u8; 32],
-        own: Option<tilo_server_protocol::OwnedChannel>,
+        own: Option<tilo_server_protocol::OwnedGroup>,
     },
     /// Hold an enrolled workspace's relay session over the iroh endpoint its
     /// hint names.

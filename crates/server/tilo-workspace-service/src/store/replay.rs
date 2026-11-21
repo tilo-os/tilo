@@ -680,7 +680,7 @@ fn desktop_channel() -> &'static str {
     static CHANNEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     CHANNEL.get_or_init(|| {
         use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
-        hex::encode(neighbour_wire::retention::app_document_channel(
+        hex::encode(neighbour_wire::retention::app_document_group(
             DESKTOP_APP,
             DESKTOP_DOCUMENT,
         ))

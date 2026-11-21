@@ -29,7 +29,7 @@ pub mod retention;
 pub use key_scope::KeyScope;
 pub mod unit_chain;
 
-pub use retention::{Retention, app_document_channel, audience, retention, standalone};
+pub use retention::{Retention, app_document_group, audience, retention, standalone};
 pub use tilo_actions::document_sync::{
     DocumentSync, chain_head, document_chunk, document_part, document_sync, on_demand_document,
 };

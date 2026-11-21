@@ -753,12 +753,12 @@ pub enum Envelope {
         /// Workspace id, subscribed.
         workspace_id: WorkspaceId,
         /// The record's retained channel
-        /// (`neighbour_wire::app_document_channel`).
+        /// (`neighbour_wire::app_document_group`).
         channel: [u8; 32],
         /// The member's own record the channel carries, when the device knows
         /// it is one: the server answers another person's
         /// [`DocumentAnswer::NotYours`] even before anything of it was written.
-        own: Option<OwnedChannel>,
+        own: Option<OwnedGroup>,
     },
 
     /// The server's answer to an opened record: everything it retains of it
@@ -938,12 +938,12 @@ pub enum Envelope {
 /// whose record it is and its kind and person. The server takes it only when
 /// it names the channel opened.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OwnedChannel {
+pub struct OwnedGroup {
     pub app_id: String,
     pub record: collab_types::OwnResource,
 }
 
-impl OwnedChannel {
+impl OwnedGroup {
     /// `app`'s `record` as the person `owner`'s own, of a kind its manifest
     /// declares each member's own ([`collab_types::OwnResource::recognise`]);
     /// `None` for any other record.
@@ -958,7 +958,7 @@ impl OwnedChannel {
     /// Whether this is the record `channel` carries.
     #[must_use]
     pub fn names(&self, channel: &[u8; 32]) -> bool {
-        neighbour_wire::app_document_channel(&self.app_id, &self.record.document_id()) == *channel
+        neighbour_wire::app_document_group(&self.app_id, &self.record.document_id()) == *channel
     }
 }
 

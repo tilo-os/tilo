@@ -110,7 +110,7 @@ impl Classes {
         // arrived first.
         if let Some(own) = &route.own
             && own.names(record)
-            && neighbour_wire::app_document_channel(app, record) == channel
+            && neighbour_wire::app_document_group(app, record) == channel
         {
             self.owners.insert(channel, own.owner);
         }
@@ -119,7 +119,7 @@ impl Classes {
         // was placed for.
         if let Some(named) = collab_types::store_document_readers(record)
             && named != collab_types::EVERY_MEMBER
-            && neighbour_wire::app_document_channel(app, record) == channel
+            && neighbour_wire::app_document_group(app, record) == channel
         {
             let people = route
                 .readers
@@ -142,7 +142,7 @@ impl Classes {
             DocumentSync::Part { base, index } => {
                 let chain = (app.to_owned(), base.to_owned());
                 self.chains.insert(
-                    neighbour_wire::app_document_channel(app, &neighbour_wire::chain_head(base)),
+                    neighbour_wire::app_document_group(app, &neighbour_wire::chain_head(base)),
                     chain.clone(),
                 );
                 let head = self.heads.entry(chain).or_insert((index, channel));
@@ -198,7 +198,7 @@ impl Classes {
                 } else if self.when_opened {
                     Reach::ChainHead {
                         head: *channel,
-                        chain: neighbour_wire::app_document_channel(
+                        chain: neighbour_wire::app_document_group(
                             app,
                             &neighbour_wire::chain_head(base),
                         ),
@@ -258,7 +258,7 @@ pub(crate) struct DocumentClasses(Mutex<Classes>);
 /// workspace loads its records.
 fn desktop_channel() -> [u8; 32] {
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
-    neighbour_wire::retention::app_document_channel(DESKTOP_APP, DESKTOP_DOCUMENT)
+    neighbour_wire::retention::app_document_group(DESKTOP_APP, DESKTOP_DOCUMENT)
 }
 
 /// The channel a retained lineage directory `<author>-<channel>` holds.
@@ -396,7 +396,7 @@ impl WorkspaceStore {
             return Some(channel);
         }
         let (route, _) = self.payloads.open_document(delta)?;
-        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document_id);
+        let channel = neighbour_wire::app_document_group(&route.app_id, &route.document_id);
         if !self.classes().owners.contains_key(&channel) {
             self.classes().learn(channel, &route);
         }
@@ -465,7 +465,7 @@ impl WorkspaceStore {
     pub(crate) fn learn_own(&self, app: &str, own: &collab_types::OwnResource) {
         let record = own.document_id();
         self.classes().learn(
-            neighbour_wire::app_document_channel(app, &record),
+            neighbour_wire::app_document_group(app, &record),
             &Route {
                 app_id: app.to_owned(),
                 cluster_id: String::new(),
@@ -644,7 +644,7 @@ mod tests {
             ..Classes::default()
         };
         let (note, desktop, first, second) = ([1; 32], desktop_channel(), [3; 32], [4; 32]);
-        let chain = neighbour_wire::app_document_channel("chat", &neighbour_wire::chain_head("m"));
+        let chain = neighbour_wire::app_document_group("chat", &neighbour_wire::chain_head("m"));
         classes.learn_plain(note, "notes", "note-1");
         classes.learn_plain(
             desktop,
@@ -665,7 +665,7 @@ mod tests {
         assert_eq!(classes.head_of(&chain), Some(second));
         assert_eq!(classes.reach(&first), Some(Reach::Opened(first)));
         // Another app's chain of the same name is a chain of its own.
-        let other = neighbour_wire::app_document_channel("notes", &neighbour_wire::chain_head("m"));
+        let other = neighbour_wire::app_document_group("notes", &neighbour_wire::chain_head("m"));
         assert_eq!(classes.head_of(&other), None);
         classes.when_opened = false;
         assert_eq!(classes.reach(&note), Some(Reach::Everyone));

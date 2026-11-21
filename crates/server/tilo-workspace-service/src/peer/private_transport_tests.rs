@@ -1279,7 +1279,7 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
     let workspace = workspace_id.to_string();
     let app = "so.tilo.notes";
     let document = "review";
-    let digest = neighbour_wire::app_document_channel(app, document);
+    let digest = neighbour_wire::app_document_group(app, document);
     let mut policy = WorkspacePolicy::new(&workspace, &owner);
     policy.members.insert(member.clone(), Role::Viewer);
     policy.grants.push(Grant::new(
