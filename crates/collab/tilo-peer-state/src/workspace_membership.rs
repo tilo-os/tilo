@@ -482,7 +482,8 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
         | Change::Unrestrict { person }
         | Change::SetRole { person, .. }
         | Change::SetMemberRoles { person, .. }
-        | Change::SetMemberCustomRole { person, .. } => person,
+        | Change::SetMemberCustomRole { person, .. }
+        | Change::TransferOwnership { person } => person,
         Change::Grant(grant) if grant.id.as_str().trim().is_empty() => {
             return Err("a grant needs an id".into());
         }

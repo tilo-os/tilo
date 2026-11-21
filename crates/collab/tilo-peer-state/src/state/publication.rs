@@ -223,7 +223,7 @@ impl PeerPublicationMut<'_> {
     ) -> Result<Vec<NeighbourMsg>, String> {
         self.peer.admissions_since(before).map_err(err)?;
         if self.peer.core.workspace != before.core.workspace
-            || self.peer.core.owner != before.core.owner
+            || !self.peer.keeps_owner_of(before)
         {
             return Err("publication cannot replace the session namespace".into());
         }

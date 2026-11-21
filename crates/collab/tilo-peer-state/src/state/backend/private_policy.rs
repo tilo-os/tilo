@@ -23,7 +23,7 @@ impl StatePeer {
             .workspace_doc
             .as_deref()
             .ok_or("admitted workspace missing")?;
-        private_policy::legacy_owner(&LegacyRead(doc), &self.core.workspace, &self.core.owner)
+        private_policy::legacy_owner(&LegacyRead(doc), &self.core.workspace)
             .map_err(private_policy::Error::legacy)
     }
     pub(crate) fn legacy_governance_revision(&self) -> Result<String, String> {

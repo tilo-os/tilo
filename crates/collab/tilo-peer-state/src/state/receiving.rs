@@ -207,6 +207,19 @@ impl StatePeer {
             })
     }
 
+    /// Whether this state, staged from `before`, has `before`'s owner, or
+    /// the one its governance names after a transfer it replays: the one way
+    /// a workspace's owner changes.
+    pub(super) fn keeps_owner_of(&self, before: &Self) -> bool {
+        self.core.owner == before.core.owner
+            || self
+                .core
+                .workspace_doc
+                .as_ref()
+                .and_then(|doc| governed_owner(doc, &self.core.workspace))
+                == Some(self.core.owner)
+    }
+
     /// Exact new candidate admissions for local multi-record owner commits.
     /// Also refuses replacement that discards prior exact evidence.
     pub fn admissions_since(
@@ -214,7 +227,7 @@ impl StatePeer {
         before: &StatePeer,
     ) -> Result<Vec<DocumentAdmission>, AdmissionError> {
         if self.core.workspace != before.core.workspace
-            || self.core.owner != before.core.owner
+            || !self.keeps_owner_of(before)
             || (before.core.exact_selected && !self.core.exact_selected)
         {
             return Err(
@@ -617,7 +630,20 @@ impl StatePeer {
             Some(held) => held.followed_by(candidate),
             None => candidate.into(),
         };
-        let metadata_changed = self.import_governed_rows(&candidate, now)?;
+        // The owner is whom the governance names now: a transfer the batch
+        // carried makes its person the owner here as on every device that
+        // replays it, and the certificates are taken in under that owner.
+        let held_owner = self.core.owner;
+        if let Some(owner) = governed_owner(&candidate, &self.core.workspace) {
+            self.core.owner = owner;
+        }
+        let metadata_changed = match self.import_governed_rows(&candidate, now) {
+            Ok(changed) => changed || self.core.owner != held_owner,
+            Err(error) => {
+                self.core.owner = held_owner;
+                return Err(error.into());
+            }
+        };
         self.core.receipts = receipts;
         self.core.workspace_doc = Some(candidate);
         // The governance may name a record this replica holds nothing of and
@@ -652,6 +678,15 @@ impl StatePeer {
         self.retry_held(&mut outcome, now, strict_report)?;
         Ok(outcome)
     }
+}
+
+/// The owner `document`'s governance names now, as their root key: the
+/// founding owner, or whom the last transfer it replays handed it to.
+pub(super) fn governed_owner(document: &super::CachedDocument, workspace: &str) -> Option<[u8; 32]> {
+    let owner = document.workspace_policy(workspace).owner()?;
+    let mut key = [0; 32];
+    hex::decode_to_slice(owner, &mut key).ok()?;
+    Some(key)
 }
 
 /// The owner `document`'s governance names, as their root key.

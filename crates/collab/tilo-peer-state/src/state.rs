@@ -600,6 +600,9 @@ pub(crate) mod bot_members_tests;
 #[path = "state/administrators_tests.rs"]
 mod administrators_tests;
 #[cfg(test)]
+#[path = "state/ownership_tests.rs"]
+mod ownership_tests;
+#[cfg(test)]
 #[path = "state/admitting_tests.rs"]
 mod admitting_tests;
 #[cfg(test)]

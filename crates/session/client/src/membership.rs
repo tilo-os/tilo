@@ -216,9 +216,9 @@ impl<'a> Membership<'a> {
     }
 }
 
-/// Write the people `policy` — the workspace's governance — names into `workspace` : the part each
-/// of them takes there, when each was admitted, the owner aside, whom the layout's policy names on
-/// its own, and the grants it makes, which are the ones the broker decides a person's and an app's
+/// Write the people `policy` — the workspace's governance — names into `workspace` : its owner,
+/// who may be someone it was handed to since it was founded, the part each other person takes
+/// there, when each was admitted, and the grants it makes, which are the ones the broker decides a person's and an app's
 /// actions against here: a grant governs from the device it was written on, and one taken back is
 /// gone here as it is everywhere. The windows its devices share with it are among them
 /// ([`tilo_desktop_model::window_share`]): a share is the workspace's, so the shell of every device
@@ -234,7 +234,8 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let joined = policy.joined.clone();
     let grants = settled(&policy.grants);
     let held = settled(&workspace.policy.grants);
-    if workspace.policy.members == members
+    if workspace.policy.owner == policy.owner
+        && workspace.policy.members == members
         && workspace.policy.joined == joined
         && workspace.policy.custom_roles == policy.custom_roles
         && workspace.policy.assigned_roles == policy.assigned_roles
@@ -242,6 +243,7 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     {
         return false;
     }
+    workspace.policy.owner.clone_from(&policy.owner);
     workspace.policy.members = members;
     workspace.policy.joined = joined;
     workspace

@@ -98,6 +98,9 @@ impl StatePeer {
             Change::RemoveMember { person: who } => {
                 self.governance_mut().remove_member(person(who)?, key, now)
             }
+            Change::TransferOwnership { person: who } => self
+                .governance_mut()
+                .transfer_ownership(person(who)?, key, now),
             Change::Ban { person: who } => {
                 self.governance_mut()
                     .ban_member(person(who)?, &by, key, now)

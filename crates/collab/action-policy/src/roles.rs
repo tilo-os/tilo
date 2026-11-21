@@ -147,6 +147,10 @@ pub mod governance {
     /// the owner's holds it: the owner, and members the workspace grants it, run
     /// calls, and any member joins an active one.
     pub const CALL: &str = "call";
+    /// Hand the workspace to another person, who becomes its owner. The owner
+    /// alone does it ([`crate::Refusal::OwnershipByOwner`]); it is no action a
+    /// grant gives, so it is not among [`ALL`].
+    pub const TRANSFER_OWNERSHIP: &str = "transfer-ownership";
 
     pub const ALL: [&str; 22] = [
         INVITE,

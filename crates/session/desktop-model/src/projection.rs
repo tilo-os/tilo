@@ -564,7 +564,12 @@ pub fn apply_admitted_workspace(
         .ok_or("workspace missing")?;
     let renamed = workspace.name != name;
     workspace.name = name;
-    workspace.policy.owner = owner;
+    // The row names whom the workspace was founded for; whom it belongs to
+    // now is its governance's to say once that is read
+    // (`tilo_session_client::membership::project`), and a transfer moves it.
+    if workspace.policy.owner.is_none() {
+        workspace.policy.owner = owner;
+    }
     let shortcuts = workspace_shortcuts_of(doc);
     let reshortcut = workspace.shortcuts != shortcuts;
     workspace.shortcuts = shortcuts;

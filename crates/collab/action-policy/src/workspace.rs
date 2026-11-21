@@ -130,6 +130,13 @@ pub enum Change {
         role: String,
         assigned: bool,
     },
+    /// Make `person` the workspace's owner, in the place its owner holds now.
+    /// The owner alone makes it. Whoever owned the workspace stays in it as an
+    /// Editor and one of its administrators, which the new owner may undo
+    /// like any administrator's grant.
+    TransferOwnership {
+        person: String,
+    },
 }
 
 impl Change {
@@ -153,6 +160,7 @@ impl Change {
             Self::Restrict { .. } => governance::RESTRICT,
             Self::Unrestrict { .. } => governance::UNRESTRICT,
             Self::SetRole { .. } => governance::SET_ROLE,
+            Self::TransferOwnership { .. } => governance::TRANSFER_OWNERSHIP,
             Self::Grant(_)
             | Self::DefineRole { .. }
             | Self::SetMemberRoles { .. }
@@ -177,7 +185,8 @@ impl Change {
             | Self::Unrestrict { person }
             | Self::SetRole { person, .. }
             | Self::SetMemberRoles { person, .. }
-            | Self::SetMemberCustomRole { person, .. } => Some(person),
+            | Self::SetMemberCustomRole { person, .. }
+            | Self::TransferOwnership { person } => Some(person),
             Self::Grant(_)
             | Self::Revoke(_)
             | Self::DefineRole { .. }
@@ -201,9 +210,11 @@ pub enum Refusal {
     NeedsApproval(String),
     /// The owner cannot be removed, demoted or made a member.
     Owner,
-    /// Ownership is structural: it is set when the workspace is made, and
-    /// membership neither hands it out nor takes it away.
+    /// Ownership is structural: no role hands it out or takes it away; its
+    /// owner hands it over ([`Change::TransferOwnership`]).
     OwnerRole,
+    /// Handing the workspace over is its owner's alone.
+    OwnershipByOwner,
     /// An invite or membership above the actor's own role.
     AboveActorRole {
         actor: Option<Role>,
@@ -267,8 +278,11 @@ impl std::fmt::Display for Refusal {
             Self::UnknownRole(id) => write!(f, "unknown custom role: {id}"),
             Self::NotPermitted(why) | Self::NeedsApproval(why) => f.write_str(why),
             Self::Owner => f.write_str("the workspace's owner cannot be removed or demoted"),
-            Self::OwnerRole => {
-                f.write_str("ownership is set when the workspace is made, not granted as a role")
+            Self::OwnerRole => f.write_str(
+                "ownership is handed over by the workspace's owner, not granted as a role",
+            ),
+            Self::OwnershipByOwner => {
+                f.write_str("only the workspace's owner hands the workspace to someone else")
             }
             Self::AboveActorRole { actor, wanted } => match actor {
                 Some(actor) => write!(f, "a {actor} cannot hand out the {wanted} role"),
@@ -923,6 +937,7 @@ impl WorkspacePolicy {
         }
         self.spend(&spent);
         match change {
+            Change::TransferOwnership { person } => self.hand_over(&person, cx),
             Change::AddMember { person, role } => {
                 self.joined.entry(person.clone()).or_insert(cx.now_unix_ms);
                 self.members.insert(person, role);
@@ -1002,6 +1017,36 @@ impl WorkspacePolicy {
             }
         }
         Ok(())
+    }
+
+    /// Make `person` the owner. They leave the members, as an owner is none,
+    /// and hold no administrator grant, as the owner governs by being the
+    /// owner. Whoever owned the workspace stays as an Editor and an
+    /// administrator, granted by themselves as its owner when they handed it
+    /// over.
+    fn hand_over(&mut self, person: &str, cx: &Context<'_>) {
+        let previous = self.owner.replace(person.to_owned());
+        self.members.remove(person);
+        self.joined.remove(person);
+        self.assigned_roles.remove(person);
+        let theirs = [
+            roles::administrator_grant_id(person),
+            roles::administrator_moderation_grant_id(person),
+        ];
+        self.grants.retain(|grant| !theirs.contains(&grant.id));
+        let Some(previous) = previous else {
+            return;
+        };
+        self.members.insert(previous.clone(), Role::Editor);
+        self.joined.entry(previous.clone()).or_insert(cx.now_unix_ms);
+        let by = Grantee::person(previous.clone());
+        for grant in [
+            roles::administrator_grant(&self.workspace, &previous, by.clone()),
+            roles::administrator_moderation_grant(&self.workspace, &previous, by),
+        ] {
+            self.grants.retain(|held| held.id != grant.id);
+            self.grants.push(grant);
+        }
     }
 
     /// The member and every grant naming them leave the workspace.
@@ -1091,6 +1136,18 @@ impl WorkspacePolicy {
     ) -> Result<(), Refusal> {
         self.check_administration_change(actor_person, actor, change, cx)?;
         match change {
+            Change::TransferOwnership { person } => {
+                if !self.is_owner(actor_person) {
+                    return Err(Refusal::OwnershipByOwner);
+                }
+                if self.is_owner(person) {
+                    return Err(Refusal::Owner);
+                }
+                if self.is_banned(person) {
+                    return Err(Refusal::Banned(person.clone()));
+                }
+                Ok(())
+            }
             Change::AddMember { person, role } => {
                 if self.is_member(person) {
                     return Err(Refusal::AlreadyAMember(person.clone()));

@@ -1,0 +1,174 @@
+//! A workspace's owner hands it to another person: from the transfer on,
+//! every device that replays it holds the new owner, whenever the transfer
+//! reached it, and the owner it replaced stays as an administrator.
+use super::*;
+use crate::admission_tests::{add_editor, seeded};
+use tilo_action_policy::roles;
+
+/// A replica of `governor`'s workspace joined through `through`, a device of
+/// the governor's, built from what the governor publishes now.
+fn replica(
+    governor: &mut StatePeer,
+    key: &SigningKey,
+    through: &DeviceCert,
+    now: SystemTime,
+) -> StatePeer {
+    let mut replica = StatePeer::from_join(
+        governor.workspace_id(),
+        through.clone(),
+        governor.certificates(),
+        &governor.revocations(),
+        now,
+    )
+    .unwrap();
+    take_in(&mut replica, governor, key, through, now);
+    replica
+}
+
+/// `replica` takes in the governance `governor` publishes now, from `through`.
+fn take_in(
+    replica: &mut StatePeer,
+    governor: &mut StatePeer,
+    key: &SigningKey,
+    through: &DeviceCert,
+    now: SystemTime,
+) {
+    for message in governor
+        .publication_mut()
+        .bootstrap_messages(key, now)
+        .unwrap()
+    {
+        if matches!(message, NeighbourMsg::AppDocument { .. }) {
+            continue;
+        }
+        replica
+            .receive_from(
+                crate::TransportOrigin::RetainedServerDelta(through.device_public_key),
+                message,
+                now,
+            )
+            .unwrap();
+    }
+}
+
+tilo_test_env::scenario! {
+    fn an_owner_hands_the_workspace_to_another_person;
+
+    phase every_replica_holds_the_new_owner_whenever_the_transfer_reached_it;
+    {
+        let (mut governor, owner_key, _, _, now) = seeded();
+        let owner_cert = governor
+            .owner_certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == owner_key.verifying_key().to_bytes())
+            .unwrap();
+        let first_owner = governor.owner();
+        let (editor, person) = add_editor(&mut governor, &owner_key, now);
+        let editor_key = SigningKey::from_bytes(&[6; 32]);
+        // A replica made before the transfer, and one made after it.
+        let mut early = replica(&mut governor, &owner_key, &owner_cert, now);
+        assert_eq!(early.owner(), first_owner);
+
+        // A member hands over nothing that is not theirs.
+        assert!(
+            governor
+                .clone()
+                .governance_mut()
+                .transfer_ownership(person, &editor_key, now)
+                .is_err()
+        );
+        assert!(
+            governor
+                .governance_mut()
+                .transfer_ownership(person, &owner_key, now)
+                .unwrap()
+        );
+        assert!(
+            !governor
+                .governance_mut()
+                .transfer_ownership(person, &owner_key, now)
+                .unwrap(),
+            "handing it to its owner changes nothing"
+        );
+        assert_eq!(governor.owner(), person);
+        let policy = governor.governance().governed_policy().unwrap();
+        let (new, old) = (hex::encode(person), hex::encode(first_owner));
+        assert!(policy.is_owner(&new));
+        assert!(!policy.members.contains_key(&new), "an owner is no member");
+        assert!(!policy.is_administrator(&new));
+        assert_eq!(policy.members.get(&old), Some(&Role::Editor));
+        assert!(policy.is_administrator(&old), "the owner it replaced administers it");
+        let grant = policy
+            .grants
+            .iter()
+            .find(|grant| grant.id == roles::administrator_grant_id(&old))
+            .unwrap();
+        assert_eq!(grant.granted_by, tilo_action_policy::Grantee::person(old.clone()));
+
+        let late = replica(&mut governor, &owner_key, &owner_cert, now);
+        take_in(&mut early, &mut governor, &owner_key, &owner_cert, now);
+        for (who, peer) in [("early", &early), ("late", &late)] {
+            assert_eq!(peer.owner(), person, "the {who} replica's owner");
+            assert_eq!(
+                peer.governance().governed_policy().unwrap(),
+                policy,
+                "the {who} replica's governance"
+            );
+            assert_eq!(
+                peer.governance().key_holders(now).unwrap(),
+                governor.governance().key_holders(now).unwrap(),
+                "the {who} replica's key holders"
+            );
+            assert_eq!(
+                peer.owner_certificates()
+                    .iter()
+                    .map(|cert| cert.device_public_key)
+                    .collect::<Vec<_>>(),
+                [editor.device_public_key],
+                "the {who} replica's owner devices"
+            );
+        }
+        assert!(
+            governor
+                .governance()
+                .key_holders(now)
+                .unwrap()
+                .contains(&owner_cert.device_public_key),
+            "the owner it replaced keeps the keys as a member"
+        );
+
+        // Kept and read back, the workspace is still the new owner's.
+        let restored = StatePeer::restore(
+            &governor.durable().unwrap(),
+            governor.workspace_id(),
+            owner_cert.clone(),
+            governor.certificates(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(restored.owner(), person);
+
+        // The owner it replaced hands it on no more; the new owner does.
+        assert!(
+            governor
+                .clone()
+                .governance_mut()
+                .transfer_ownership(first_owner, &owner_key, now)
+                .is_err()
+        );
+        let mut back = governor.clone();
+        assert!(
+            back.governance_mut()
+                .transfer_ownership(first_owner, &editor_key, now)
+                .unwrap()
+        );
+        assert_eq!(back.owner(), first_owner);
+        assert!(
+            back.governance()
+                .governed_policy()
+                .unwrap()
+                .is_administrator(&new)
+        );
+    }
+}

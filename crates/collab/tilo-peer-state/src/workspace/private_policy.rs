@@ -15,7 +15,6 @@ pub(crate) enum Rule {
     Nonpersistent,
     OwnerAmbiguous,
     OwnerInvalid,
-    OwnerRoot,
     MediaUnreadable,
     Read,
 }
@@ -28,7 +27,6 @@ impl Error {
                 Rule::Nonpersistent => "nonpersistent governed private policy grant",
                 Rule::OwnerAmbiguous => "ambiguous canonical workspace/owner",
                 Rule::OwnerInvalid => "invalid canonical owner",
-                Rule::OwnerRoot => "owner differs from the workspace's owner root",
                 Rule::MediaUnreadable => "unreadable governed media policy",
                 Rule::Read => "private policy read failed",
             }
@@ -114,19 +112,16 @@ fn grants(
     expiries.dedup();
     Ok(expiries)
 }
-fn canonical_owner<R: PrivateRead>(
-    read: &R,
-    workspace: &str,
-    owner: &[u8; 32],
-) -> Result<String, Error> {
-    let expected = hex::encode(owner);
-    let mut is_string = false;
-    let mut owner_is_root = false;
+/// The owner the workspace was founded for, as its one `owner` row names
+/// them. Whom it belongs to now is its governance's to say (a transfer hands
+/// it on), so the row is not checked against `meta.owner`.
+fn canonical_owner<R: PrivateRead>(read: &R, workspace: &str) -> Result<String, Error> {
+    let mut owner = None;
     let owners = read.all(&read.root(), "owner", |value| {
-        if let WorkspaceValue::Str(value) = value {
-            is_string = true;
-            owner_is_root = value.as_bytes() == expected.as_bytes();
-        }
+        let WorkspaceValue::Str(value) = value else {
+            return Err(rule(Rule::OwnerInvalid));
+        };
+        owner = Some(value.to_owned());
         Ok(())
     })?;
     let mut matches_workspace = false;
@@ -137,20 +132,6 @@ fn canonical_owner<R: PrivateRead>(
     if owners != 1 || workspace_count != 1 || !matches_workspace {
         return Err(rule(Rule::OwnerAmbiguous));
     }
-    if !is_string {
-        return Err(rule(Rule::OwnerInvalid));
-    }
-    if !owner_is_root {
-        return Err(rule(Rule::OwnerRoot));
-    }
-    let mut owner = None;
-    read.all(&read.root(), "owner", |value| {
-        let WorkspaceValue::Str(value) = value else {
-            return Err(rule(Rule::OwnerInvalid));
-        };
-        owner = Some(value.to_owned());
-        Ok(())
-    })?;
     owner.ok_or_else(|| rule(Rule::OwnerInvalid))
 }
 struct CertificateRows<I>(I);
@@ -177,7 +158,7 @@ where
     I: ExactSizeIterator<Item = &'a DeviceCert> + Clone,
     J: Iterator<Item = &'a RevocationEntry>,
 {
-    let owner = canonical_owner(read, meta.workspace, meta.owner)?;
+    let owner = canonical_owner(read, meta.workspace)?;
     let mut peers = BTreeMap::new();
     let mut identities = BTreeMap::new();
     read::visit_governance_entries(read, |entry| {
@@ -239,9 +220,8 @@ where
 pub(crate) fn legacy_owner(
     read: &LegacyRead<'_, AutoCommit>,
     workspace: &str,
-    owner: &[u8; 32],
 ) -> Result<String, Error> {
-    canonical_owner(read, workspace, owner)
+    canonical_owner(read, workspace)
 }
 pub(crate) fn legacy_revision<'a, I, J>(
     read: &LegacyRead<'_, AutoCommit>,

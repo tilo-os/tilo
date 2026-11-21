@@ -1251,6 +1251,42 @@ impl PeerGovernanceMut<'_> {
             now,
         )
     }
+    /// Hand the workspace to the person `user_public_key`, as its owner's
+    /// device `key`: they become its owner from this change on, on every
+    /// device that replays it, and the owner this replaces stays as one of
+    /// its administrators ([`tilo_action_policy::Change::TransferOwnership`]).
+    /// Whether the workspace changed: handing it to its owner changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key`'s device is not the owner's, the person is
+    /// banned, or governance cannot be updated.
+    pub fn transfer_ownership(
+        self,
+        user_public_key: [u8; 32],
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if user_public_key == self.peer.core.owner {
+            return Ok(false);
+        }
+        self.peer.owner_device(&key.device_public_key(), now)?;
+        let doc = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
+        self.peer.write_changes(
+            doc,
+            vec![Change::TransferOwnership {
+                person: hex::encode(user_public_key),
+            }],
+            key,
+            now,
+        )
+    }
+
     /// Name the person `user_public_key` as whom the workspace is kept for
     /// ([`tilo_action_policy::roles::keeper_grant`]): a host keeping the
     /// workspace for the person who made it there, or whose account it
