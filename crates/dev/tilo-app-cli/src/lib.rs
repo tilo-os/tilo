@@ -41,7 +41,6 @@ pub mod sources;
 pub mod standalone;
 pub mod surface;
 pub mod targets;
-pub mod web;
 
 use scaffold_files::{app_catalog, app_surface, headless_actions};
 
@@ -561,19 +560,16 @@ pub enum PackagePlatform {
     Linux,
     Windows,
     Macos,
-    /// A WebAssembly side module of the browser's toolkit core.
-    Web,
     Android,
 }
 
 impl PackagePlatform {
     /// Every platform, in the order `check --platform all` visits them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 5] = [
         Self::Tilo,
         Self::Linux,
         Self::Windows,
         Self::Macos,
-        Self::Web,
         Self::Android,
     ];
 
@@ -584,7 +580,6 @@ impl PackagePlatform {
             Self::Linux => "linux",
             Self::Windows => "windows",
             Self::Macos => "macos",
-            Self::Web => "web",
             Self::Android => "android",
         }
     }
@@ -593,7 +588,6 @@ impl PackagePlatform {
     /// architecture.
     pub fn ensure_runs_here(self, arch: Option<PackageArch>) -> Result<()> {
         let os = match self {
-            Self::Web => return Ok(()),
             Self::Android => bail!(
                 "an android build runs on a device or an emulator, not here; \
                  `tilo-app run --platform android` installs it on one"
@@ -624,7 +618,6 @@ impl PackagePlatform {
         Ok(())
     }
 
-    /// The browser has no registry family, since its runtime compiles its app.
     #[must_use]
     pub const fn registry_name(self) -> &'static str {
         match self {
@@ -632,7 +625,6 @@ impl PackagePlatform {
             Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
-            Self::Web => "web",
             Self::Android => registry_types::ANDROID_PLATFORM,
         }
     }
@@ -644,7 +636,6 @@ impl PackagePlatform {
             Self::Tilo | Self::Linux => format!("{arch}-unknown-linux-gnu"),
             Self::Windows => format!("{arch}-pc-windows-msvc"),
             Self::Macos => format!("{arch}-apple-darwin"),
-            Self::Web => "wasm32-unknown-unknown".to_owned(),
             Self::Android => format!("{arch}-linux-android"),
         }
     }
@@ -652,7 +643,7 @@ impl PackagePlatform {
     const fn executable_suffix(self) -> &'static str {
         match self {
             Self::Windows => ".exe",
-            Self::Tilo | Self::Linux | Self::Macos | Self::Web | Self::Android => "",
+            Self::Tilo | Self::Linux | Self::Macos | Self::Android => "",
         }
     }
 }
@@ -4455,8 +4446,7 @@ fn char_literal_length(bytes: &[u8], index: usize) -> Option<usize> {
 }
 
 /// The package manifest of the app in `app_dir`: its `tilo-app.toml`, or the `tilo-runtime.toml`
-/// of a runtime whose binary runs the apps that name it (the tilolang runtime), which a web
-/// bundle carries as an app carries its own.
+/// of a runtime whose binary runs the apps that name it (the tilolang runtime).
 pub(crate) fn package_manifest_path(app_dir: &Path) -> PathBuf {
     let app = app_dir.join("tilo-app.toml");
     let runtime = app_dir.join("tilo-runtime.toml");
@@ -4514,9 +4504,6 @@ pub fn plan_platform_clippy(
     platform: PackagePlatform,
     arch: Option<PackageArch>,
 ) -> Result<Option<CargoPlan>> {
-    if platform == PackagePlatform::Web {
-        bail!("the web platform is checked by building it");
-    }
     if platform == PackagePlatform::Android {
         bail!("the android platform is checked by `android::clippy`");
     }
@@ -5021,9 +5008,6 @@ struct AppPackageSpec {
 pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
     #[cfg(target_os = "linux")]
     native_sdk::validate_request(request)?;
-    if request.platform == PackagePlatform::Web {
-        return web::package_web(start, request);
-    }
     if request.platform == PackagePlatform::Android {
         if request.arch.is_none() {
             bail!("an Android package is one architecture here; pass --arch aarch64 or x86_64");
@@ -5240,14 +5224,11 @@ impl NativeBuild {
 ///
 /// # Errors
 ///
-/// Returns an error for the web platform (see [`web::build_web`]), when
-/// preflight fails, or when Cargo does.
+/// Returns an error for the Android platform, when preflight fails, or when
+/// Cargo does.
 pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuild> {
     #[cfg(target_os = "linux")]
     native_sdk::validate_request(request)?;
-    if request.platform == PackagePlatform::Web {
-        bail!("a web build is `tilo-app build --platform web`, not a native build");
-    }
     if request.platform == PackagePlatform::Android {
         bail!("an Android build is `android::build`: an APK, not executables");
     }
@@ -9627,8 +9608,8 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
                 |crates| crates.join("runtime/runtime-dylib"),
             );
             // CI rejects a workspace member that cargo-hakari has not been told about. The hack's
-            // feature set is native, so it stays off the web build (`build --platform web`); the SDK's
-            // default features select nothing there.
+            // feature set is native, so it stays off a wasm32 build (an app's packaged model); the
+            // SDK's default features select nothing there.
             let _ = write!(
                 manifest,
                 "runtime-dylib = {{ path = {runtime:?}, optional = true }}\n\
@@ -9716,7 +9697,7 @@ fn app_main(spec: &AppSpec) -> String {
         ""
     };
     format!(
-        "//! The app's entry point on every target: the live window and the standard\n//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS,\n//! registration with the page runtime on the web.\n\n{thin}ui::main!({crate_name}::App);\n",
+        "//! The app's entry point on every target: the live window and the standard\n//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS.\n\n{thin}ui::main!({crate_name}::App);\n",
         crate_name = spec.crate_name,
     )
 }
@@ -9882,10 +9863,9 @@ fn app_readme(spec: &AppSpec) -> String {
             ],
         ),
         (
-            "Ship: build, sign and verify a package for each platform (`--platform tilo|linux|windows|macos|web`, `--arch x86_64|aarch64`; `build`, `run`, `dev` and `check` take the same flags)",
+            "Ship: build, sign and verify a package for each platform (`--platform tilo|linux|windows|macos`, `--arch x86_64|aarch64`; `build`, `run`, `dev` and `check` take the same flags)",
             &[
                 "tilo-app package",
-                "tilo-app package --platform web",
                 "tilo-app check --platform all",
             ],
         ),
@@ -9912,16 +9892,14 @@ fn app_readme(spec: &AppSpec) -> String {
     );
     let _ = writeln!(
         out,
-        "\nThe same source runs on Linux, macOS and the web; `--target` picks the platform (each builds on its own host OS, the web on any):\n"
+        "\nThe same source runs on Linux and macOS; `--target` picks the platform (each builds on its own host OS):\n"
     );
     let _ = writeln!(out, "```bash");
     let _ = writeln!(out, "tilo-app run --target linux");
     let _ = writeln!(out, "tilo-app run --target macos");
-    let _ = writeln!(out, "tilo-app run --target web");
     let _ = writeln!(out, "tilo-app build --target macos");
     let _ = writeln!(out, "tilo-app package --target linux");
     let _ = writeln!(out, "tilo-app package --target macos");
-    let _ = writeln!(out, "tilo-app package --target web");
     let _ = writeln!(out, "```");
     let _ = writeln!(
         out,

@@ -3513,7 +3513,7 @@ tilo_test_env::scenario! {
             assert!(app_readme(&spec).contains("tilo-app ui apply"));
             assert!(app_readme(&spec).contains("--mount main"));
             assert!(app_readme(&spec).contains("available to every generated screen automatically"));
-            for target in ["linux", "macos", "web"] {
+            for target in ["linux", "macos"] {
                 assert!(app_readme(&spec).contains(&format!("tilo-app run --target {target}")));
                 assert!(app_readme(&spec).contains(&format!("tilo-app package --target {target}")));
             }
@@ -3672,7 +3672,7 @@ tilo_test_env::scenario! {
                             .get("dependencies")
                             .and_then(|dependencies| dependencies.get("workspace-hack"))
                             .is_none(),
-                        "the hack's native feature set must stay off the web build"
+                        "the hack's native feature set must stay off a wasm32 build"
                     );
                     assert!(
                         manifest
@@ -3904,7 +3904,6 @@ fn app_task_plans_are_scoped_to_the_app_and_guarded_by_doctor() {
             "{}-pc-windows-msvc",
             host.as_str()
         ))));
-        assert!(plan_platform_clippy(&destination, PackagePlatform::Web, None).is_err());
     }
 
     {

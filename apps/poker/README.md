@@ -5,14 +5,6 @@ pots and a showdown. Opening the table seats nobody: you watch until you
 take a seat. Every move is an action on the table, so a person, an agent and
 a script play by the same rules.
 
-Play with other people, each in their own browser window:
-
-```bash
-tilo-app dev --platform web --share
-```
-
-Open the join page it prints once per player.
-
 The commands below are the `tilo-app` CLI. It needs rustup and no system packages:
 
 ```bash
@@ -61,11 +53,10 @@ tilo-app add locale de-DE
 tilo-app locale sync
 ```
 
-Ship: build, sign and verify a package for each platform (`--platform tilo|linux|windows|macos|web`, `--arch x86_64|aarch64`; `build`, `run`, `dev` and `check` take the same flags):
+Ship: build, sign and verify a package for each platform (`--platform tilo|linux|windows|macos`, `--arch x86_64|aarch64`; `build`, `run`, `dev` and `check` take the same flags):
 
 ```bash
 tilo-app package
-tilo-app package --platform web
 tilo-app check --platform all
 ```
 
@@ -80,16 +71,14 @@ tilo-app add ci --forge github
 
 Every command accepts `--json` and then writes one JSON document to stdout, for scripts and agents.
 
-The same source runs on Linux, macOS and the web; `--target` picks the platform (each builds on its own host OS, the web on any):
+The same source runs on Linux and macOS; `--target` picks the platform (each builds on its own host OS):
 
 ```bash
 tilo-app run --target linux
 tilo-app run --target macos
-tilo-app run --target web
 tilo-app build --target macos
 tilo-app package --target linux
 tilo-app package --target macos
-tilo-app package --target web
 ```
 
 Cargo remains available directly with `cargo test` and `cargo run`.

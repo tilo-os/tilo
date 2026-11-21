@@ -78,10 +78,6 @@ fn a_generated_app_goes_from_new_to_a_release_awaiting_review() {
     );
     let built = app.join("target/tilo-app").join(host).join("hello");
     assert!(built.is_dir(), "no artifact under {}", built.display());
-    run(
-        tilo_app(&app).args(["check", "--target", "web"]).arg(&app),
-        "tilo-app check --target web (wasm32)",
-    );
 
     let package = package(&app);
     let public_key = verify_package(&app, &package);

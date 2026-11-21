@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 
-# Example apps (tools/ci/build-web-examples.sh builds the web-capable ones).
+# Example apps.
 EXAMPLE_APPS = "examples/apps/"
 # Patched vendored crates with test suites of their own. The workspace builds
 # them only as path dependencies, so its tests never run theirs;

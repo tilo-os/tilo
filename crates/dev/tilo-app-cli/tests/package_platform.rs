@@ -275,18 +275,6 @@ fn build_run_and_dev_take_the_package_platforms() {
         ("dev", other_os, None, "does not run on"),
         ("run", "linux", Some(other_arch), "cannot run"),
         ("dev", "tilo", Some(other_arch), "cannot run"),
-        (
-            "run",
-            "tilo",
-            Some("wasm32"),
-            "--arch wasm32 is for --platform web",
-        ),
-        (
-            "build",
-            "web",
-            Some("x86_64"),
-            "--platform web builds for wasm32",
-        ),
     ] {
         let mut args = vec![command, "--platform", platform];
         if let Some(arch) = arch {

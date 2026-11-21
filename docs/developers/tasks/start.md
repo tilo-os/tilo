@@ -19,8 +19,7 @@ app starts empty.
 
 Normal native dev builds reload in place and keep the open document; a failed
 rebuild keeps the working app. Other Cargo profiles may restart it. `--timings`
-reports where a reload spent time. `tilo-app dev --target web` reloads the
-browser build into the same document.
+reports where a reload spent time.
 
 On a foreign desktop, launching an app's default view again asks its running
 window to come forward through the runtime's `activate-window` action. The

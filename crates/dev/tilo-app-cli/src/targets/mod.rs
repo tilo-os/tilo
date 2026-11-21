@@ -1,18 +1,15 @@
-//! `--target linux|macos|web`: one app source, three artifacts.
+//! `--target linux|macos`: one app source, two artifacts.
 //!
 //! [`build`] produces the runnable artifact under
 //! `<target-dir>/tilo-app/<target>/<package>/`: a native binary on Linux, an
-//! ad-hoc-signed `.app` on macOS, a served bundle on the web. [`package`]
-//! turns it into the distributable: a signed `.tapp`, a signed (and, when
-//! configured, notarized) `.app` zip, or an immutable content-addressed web
-//! version. Before anything compiles, [`check_target`] refuses a target the
+//! ad-hoc-signed `.app` on macOS. [`package`] turns it into the
+//! distributable: a signed `.tapp`, or a signed (and, when configured,
+//! notarized) `.app` zip. Before anything compiles, [`check_target`] refuses a target the
 //! manifest does not declare, a required capability the target cannot
 //! provide, and a capability the code uses that the manifest does not
 //! declare, with the fix.
 
 mod macos;
-mod serve;
-mod web;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -25,33 +22,13 @@ use anyhow::{Context as _, Result, bail};
 pub use tilo_caps::Target;
 use tilo_caps::{Capability, Finding};
 
-pub use serve::ServeOptions;
-pub mod workspace;
-
 #[derive(Clone, Debug)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent CLI-exposed build knob (release, assertions, names, \
-              allow_planned, no_default_features), not combinatorial state: every combination is \
-              a build someone can ask for"
-)]
 pub struct TargetRequest {
     pub target: Target,
-    /// Optimized build (`release` natively, the web release profile on the web).
+    /// Optimized build.
     pub release: bool,
-    /// Web only: a release-optimised bundle that keeps `debug_assertions` and
-    /// overflow checks (Cargo's `wasm-assert` profile), so a measured bundle
-    /// is never one that gained speed by dropping the qualification checks.
-    /// Requires `release`.
-    pub assertions: bool,
-    /// Web only: keep the module's function names (its wasm name section), so
-    /// a CPU profile of the page names what it spends its time in. Otherwise
-    /// the same optimised build. Requires `release`.
-    pub names: bool,
     /// Accept required capabilities whose backend is only planned.
     pub allow_planned: bool,
-    /// Web only: which bundle to build.
-    pub bundle: WebBundle,
     pub features: Vec<String>,
     pub no_default_features: bool,
 }
@@ -62,28 +39,9 @@ impl TargetRequest {
         Self {
             target,
             release: false,
-            assertions: false,
-            names: false,
             allow_planned: false,
-            bundle: WebBundle::App,
             features: Vec::new(),
             no_default_features: false,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum WebBundle {
-    /// The page runtime with only this app.
-    App,
-}
-
-impl WebBundle {
-    /// The name `build.sh --bundle` and `build.json` carry.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::App => "app",
         }
     }
 }
@@ -91,10 +49,9 @@ impl WebBundle {
 #[derive(Clone, Debug)]
 pub struct BuildOutcome {
     pub target: Target,
-    /// The binary, the `.app`, or the web bundle directory.
+    /// The binary or the `.app`.
     pub artifact: PathBuf,
-    /// What to open: the binary (also inside a `.app`) or the page path
-    /// (`app/#/me/<id>`) relative to the bundle.
+    /// What to open: the binary (also inside a `.app`).
     pub entry: String,
 }
 
@@ -361,7 +318,7 @@ fn display_relative(base: &Path, path: &Path) -> String {
 
 /// `tilo-app check --target …`: the platform and capability checks for each
 /// target, then `cargo check` wherever this host can compile the target
-/// (the web everywhere, Linux and macOS on their own hosts).
+/// (Linux and macOS on their own hosts).
 ///
 /// # Errors
 ///
@@ -372,25 +329,16 @@ pub fn check_targets(start: &Path, targets: &[Target], allow_planned: bool) -> R
         for note in check_target(&project, target, allow_planned)? {
             eprintln!("{note}");
         }
-        let triple = match target {
-            Target::Web => Some("wasm32-unknown-unknown"),
-            _ if check_host(target).is_ok() => None,
-            _ => {
-                println!(
-                    "[check] {target}: manifest and capabilities OK; compiling needs a {target} host"
-                );
-                continue;
-            }
-        };
+        if check_host(target).is_err() {
+            println!("[check] {target}: manifest and capabilities OK; compiling needs a {target} host");
+            continue;
+        }
         let mut command = ProcessCommand::new(cargo_program());
         command
             .arg("check")
             .arg("--manifest-path")
             .arg(&project.cargo_manifest)
             .current_dir(&project.app_dir);
-        if let Some(triple) = triple {
-            command.args(["--lib", "--target", triple]);
-        }
         let status = command.status().context("running cargo check")?;
         if !status.success() {
             bail!("cargo check for {target} failed with {status}");
@@ -529,22 +477,12 @@ fn build_project(project: &Project, request: &TargetRequest) -> Result<BuildOutc
                 artifact: app,
             })
         }
-        Target::Web => web::build(project, request),
     }
 }
 
-/// Build and start the app: the binary natively, a local server with
-/// rebuild-on-change and page reload on the web.
-pub fn run(
-    start: &Path,
-    request: &TargetRequest,
-    forwarded: &[OsString],
-    serve: &ServeOptions,
-) -> Result<()> {
+/// Build and start the app's binary.
+pub fn run(start: &Path, request: &TargetRequest, forwarded: &[OsString]) -> Result<()> {
     let project = Project::load(start)?;
-    if request.target == Target::Web {
-        return serve::run(&project, request, serve);
-    }
     let outcome = build_project(&project, request)?;
     eprintln!("[tilo-app] running {}", outcome.entry);
     let status = ProcessCommand::new(&outcome.entry)
@@ -600,10 +538,6 @@ pub fn package(start: &Path, request: &TargetPackageRequest) -> Result<PathBuf> 
         Target::Macos => {
             let outcome = build_project(&project, &build_request)?;
             macos::package(&project, &outcome.artifact, request)
-        }
-        Target::Web => {
-            let outcome = build_project(&project, &build_request)?;
-            web::package(&project, &outcome.artifact, request)
         }
     }
 }
@@ -880,7 +814,7 @@ fn replace_capabilities_block(source: &str, block: &str) -> String {
 /// target, as `tilo-app add capability --list` prints it.
 #[must_use]
 pub fn capability_table() -> String {
-    let mut table = String::from("capability        linux      macos      web        \n");
+    let mut table = String::from("capability        linux      macos      \n");
     for capability in Capability::ALL {
         let _ = write!(table, "{:<18}", capability.name());
         for target in Target::ALL {
@@ -946,19 +880,16 @@ mod tests {
         {
             let message = render_finding(
                 &Finding::RequiredUnsupported {
-                    capability: Capability::Processes,
-                    target: Target::Web,
-                    reason: "A browser page cannot start programs.",
+                    capability: Capability::IoUring,
+                    target: Target::Macos,
+                    reason: "io_uring is an interface of the Linux kernel.",
                 },
                 "tilo-app.toml",
             );
             assert!(message.starts_with(
-                "error[capability]: `processes` is required but not available on target `web`"
+                "error[capability]: `io-uring` is required but not available on target `macos`"
             ));
-            assert!(
-                message.contains("platforms = [\"linux\", \"macos\"]"),
-                "{message}"
-            );
+            assert!(message.contains("platforms = [\"linux\"]"), "{message}");
             assert!(message.contains("move it to `optional`"));
         }
     }

@@ -319,8 +319,7 @@ build; `wasm-assert` is the same optimisation (`opt-level=3`, fat LTO) with
 `debug-assertions` and `overflow-checks` on, and `wasm-dev` is the quick
 loop. Build a measured or
 qualified bundle with `crates/browser/tilo-browser-runtime/scripts/build.sh
---profile assert`, or `tilo-app build --platform web --release --assertions`,
-and record the profile `build.json` names. A plain `release` bundle has the
+--profile assert`, and record the profile `build.json` names. A plain `release` bundle has the
 qualification surface compiled out; it is not a faster build of the same
 workload, and comparing it to a `dev` sample does not show what optimisation
 did. `build.json` and the module hash identify the bundle actually served.

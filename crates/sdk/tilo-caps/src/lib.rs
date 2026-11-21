@@ -22,11 +22,10 @@ use std::fmt;
 pub enum Target {
     Linux,
     Macos,
-    Web,
 }
 
 impl Target {
-    pub const ALL: [Self; 3] = [Self::Linux, Self::Macos, Self::Web];
+    pub const ALL: [Self; 2] = [Self::Linux, Self::Macos];
 
     /// The manifest spelling (`package.platforms`).
     #[must_use]
@@ -34,7 +33,6 @@ impl Target {
         match self {
             Self::Linux => "linux",
             Self::Macos => "macos",
-            Self::Web => "web",
         }
     }
 
@@ -45,7 +43,6 @@ impl Target {
         match name {
             "linux" | "tilo-os" => Some(Self::Linux),
             "macos" => Some(Self::Macos),
-            "web" => Some(Self::Web),
             _ => None,
         }
     }
@@ -54,7 +51,6 @@ impl Target {
         match self {
             Self::Linux => 0,
             Self::Macos => 1,
-            Self::Web => 2,
         }
     }
 }
@@ -69,7 +65,7 @@ impl fmt::Display for Target {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Availability {
     Available,
-    /// Usable after a user prompt (browser permission, macOS TCC).
+    /// Usable after a user prompt (macOS TCC).
     Prompt,
     /// Possible on this platform, but no backend is written yet.
     Planned,
@@ -161,10 +157,6 @@ pub enum Source {
     Table,
 }
 
-const WEB_SOCKETS: &str = "Browsers cannot open raw TCP or UDP sockets.";
-const WEB_PROCESSES: &str = "A browser page cannot start programs.";
-const WEB_WEBVIEW: &str = "A browser page cannot embed another browser.";
-const WEB_WAKE: &str = "A closed browser page cannot be woken reliably.";
 const LINUX_ONLY_IO_URING: &str = "io_uring is an interface of the Linux kernel.";
 const TILO_OS_SETTINGS: &str = "Only Tilo OS keeps a device's settings for its settings app.";
 
@@ -206,7 +198,7 @@ impl Capability {
     #[must_use]
     pub fn availability(self, target: Target) -> Availability {
         use Availability::{Available, Planned, Prompt, Unsupported};
-        let row: [Availability; 3] = match self {
+        let row: [Availability; 2] = match self {
             Self::FilesPaths => platform_row(tilo_files::Feature::NativePaths),
             Self::Trash => platform_row(tilo_files::Feature::Trash),
             Self::AppFiles => both(
@@ -214,13 +206,10 @@ impl Capability {
                 platform_row(tilo_files::Feature::Files),
             ),
             Self::Threads => platform_row(tilo_rt::Feature::Threads),
-            Self::Processes => {
-                let process = platform_row(tilo_process::Feature::ProcessId);
-                [process[0], process[1], Unsupported(WEB_PROCESSES)]
-            }
+            Self::Processes => platform_row(tilo_process::Feature::ProcessId),
             // Gpu, on Linux: the device node in the sandbox; without it the
-            // room's render service draws the app. macOS and the web give
-            // every app its Metal or WebGPU device.
+            // room's render service draws the app. macOS gives every app its
+            // Metal device.
             Self::Clipboard
             | Self::Gpu
             | Self::FilesOpen
@@ -231,27 +220,24 @@ impl Capability {
             | Self::NetworkStatus
             | Self::Background
             | Self::Spellcheck
-            | Self::Secrets => [Available, Available, Available],
-            Self::FilesSave => [Available, Planned, Available],
-            Self::Notifications => [Available, Prompt, Prompt],
-            Self::Print => [Planned, Planned, Available],
-            Self::NetworkSockets => [Available, Available, Unsupported(WEB_SOCKETS)],
-            Self::ScheduledWake => [Planned, Planned, Unsupported(WEB_WAKE)],
+            | Self::Secrets => [Available, Available],
+            Self::FilesSave => [Available, Planned],
+            Self::Notifications => [Available, Prompt],
+            Self::Print => [Planned, Planned],
+            Self::NetworkSockets => [Available, Available],
+            Self::ScheduledWake => [Planned, Planned],
             // System information: on Linux the session's system information
             // service, which a sandboxed app reaches through its launcher
             // (`tilo-system-stats`); on macOS the platform's own interfaces.
-            Self::MediaDecode | Self::MediaSession | Self::SystemInfo => {
-                [Available, Available, Planned]
-            }
-            Self::Speech => [Available, Planned, Planned],
-            Self::Location => [Prompt, Prompt, Prompt],
-            Self::Camera | Self::Microphone | Self::ScreenCapture => [Prompt, Planned, Planned],
-            Self::WebView => [Available, Available, Unsupported(WEB_WEBVIEW)],
+            Self::MediaDecode | Self::MediaSession | Self::SystemInfo => [Available, Available],
+            Self::Speech => [Available, Planned],
+            Self::Location => [Prompt, Prompt],
+            Self::Camera | Self::Microphone | Self::ScreenCapture => [Prompt, Planned],
+            Self::WebView => [Available, Available],
             // The session's settings service grants it, on Tilo OS, to the
             // settings app the image ships and to no other.
             Self::SettingsSystem => [
                 Available,
-                Unsupported(TILO_OS_SETTINGS),
                 Unsupported(TILO_OS_SETTINGS),
             ],
             // The app sandbox refuses io_uring unless the person grants it
@@ -259,7 +245,6 @@ impl Capability {
             // fall back to epoll without it, so declare it optional.
             Self::IoUring => [
                 Prompt,
-                Unsupported(LINUX_ONLY_IO_URING),
                 Unsupported(LINUX_ONLY_IO_URING),
             ],
         };
@@ -314,8 +299,9 @@ impl fmt::Display for Capability {
     }
 }
 
-fn platform_row(feature: impl tilo_platform_caps::Feature) -> [Availability; 3] {
-    feature.targets().map(|availability| match availability {
+fn platform_row(feature: impl tilo_platform_caps::Feature) -> [Availability; 2] {
+    let [linux, macos, _] = feature.targets();
+    [linux, macos].map(|availability| match availability {
         tilo_platform_caps::Availability::Available => Availability::Available,
         tilo_platform_caps::Availability::Prompt => Availability::Prompt,
         tilo_platform_caps::Availability::Unsupported(reason) => unsupported_or_planned(reason),
@@ -335,7 +321,7 @@ fn unsupported_or_planned(reason: &'static str) -> Availability {
 }
 
 /// A capability backed by two crates is as available as the weaker one.
-fn both(left: [Availability; 3], right: [Availability; 3]) -> [Availability; 3] {
+fn both(left: [Availability; 2], right: [Availability; 2]) -> [Availability; 2] {
     let mut row = left;
     for (slot, other) in row.iter_mut().zip(right) {
         *slot = weaker(*slot, other);
@@ -465,36 +451,27 @@ mod tests {
     #[test]
     fn platform_crate_rows_are_read_from_the_crates() {
         assert_eq!(
-            Capability::FilesPaths.availability(Target::Web),
-            platform_row(tilo_files::Feature::NativePaths)[2]
+            Capability::FilesPaths.availability(Target::Macos),
+            platform_row(tilo_files::Feature::NativePaths)[1]
         );
-        assert!(matches!(
-            Capability::Threads.availability(Target::Web),
-            Availability::Unsupported(_)
-        ));
         assert_eq!(
             Capability::Trash.availability(Target::Linux),
             Availability::Planned
         );
-        assert_eq!(
-            Capability::AppFiles.availability(Target::Web),
-            Availability::Available
-        );
     }
 
     #[test]
-    fn a_required_capability_the_web_cannot_provide_is_an_error() {
-        let findings = check(&["processes".into()], &[], Target::Web);
+    fn a_required_capability_the_target_cannot_provide_is_an_error() {
+        let findings = check(&["io-uring".into()], &[], Target::Macos);
         assert!(matches!(
             findings.as_slice(),
             [Finding::RequiredUnsupported {
-                capability: Capability::Processes,
-                target: Target::Web,
+                capability: Capability::IoUring,
+                target: Target::Macos,
                 ..
             }]
         ));
-        assert!(check(&["processes".into()], &[], Target::Linux).is_empty());
-        assert!(check(&[], &["processes".into()], Target::Web).is_empty());
+        assert!(check(&[], &["io-uring".into()], Target::Macos).is_empty());
     }
 
     #[test]

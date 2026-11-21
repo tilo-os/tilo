@@ -112,14 +112,6 @@ const GITHUB_BUILDS: &[Build] = &[
         runner: "macos-15-intel",
         builder: false,
     },
-    // The web side module builds on Linux in the builder, which carries the
-    // web toolchain (wasm-bindgen, wasm-opt, wasm-ld, Node.js, brotli).
-    Build {
-        platform: "web",
-        arch: "wasm32",
-        runner: "ubuntu-latest",
-        builder: true,
-    },
     // Cross-compiled on Linux x86_64 in the builder, which carries the NDK
     // (the NDK ships x86_64 host tools only). The Android SDK and a JDK are
     // not in the image: the job installs them with `tilo-app setup android`
@@ -712,7 +704,6 @@ mod tests {
                     "windows-aarch64",
                     "macos-aarch64",
                     "macos-x86_64",
-                    "web-wasm32",
                     "android-aarch64"
                 ]
             );
@@ -760,7 +751,6 @@ mod tests {
                 builds,
                 [
                     ("tilo", "codeberg-small"),
-                    ("web", "codeberg-small"),
                     ("android", "codeberg-small")
                 ],
                 "the Linux x86_64 builds are on"

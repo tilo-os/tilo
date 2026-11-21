@@ -198,10 +198,9 @@ resource does not publish, and on a public surface that differs from
 ## Other platforms
 
 `run`, `dev`, `build`, `check` and `package` take `--platform` (`linux`,
-`macos`, `windows`, `android`, `web`) and `--arch` (`x86_64`, `aarch64`):
+`macos`, `windows`, `android`) and `--arch` (`x86_64`, `aarch64`):
 
 ```sh
-tilo-app run --platform web          # build once and serve the page
 tilo-app check --platform all        # lint every other target too
 tilo-app package --platform macos --arch aarch64
 ```

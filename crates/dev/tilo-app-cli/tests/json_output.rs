@@ -300,7 +300,6 @@ tilo_test_env::scenario! {
         let examples = report["result"]["examples"].as_array().unwrap();
         assert_eq!(examples[0]["name"], "counter");
         assert_eq!(examples[0]["path"], "examples/apps/counter");
-        assert!(examples.iter().all(|example| example["web"].is_boolean()));
 
         let refused = tilo_app(
             dir.path(),

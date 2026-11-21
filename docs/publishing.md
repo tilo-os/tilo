@@ -131,7 +131,6 @@ tilo-app package --arch aarch64                    # Tilo OS on ARM
 tilo-app package --platform linux --arch x86_64    # other Linux desktops
 tilo-app package --platform macos --arch aarch64   # macOS
 tilo-app package --platform windows --arch x86_64  # Windows
-tilo-app package --platform web                    # the browser
 tilo-app package --platform android                # Android phones and tablets
 tilo-app publish
 ```

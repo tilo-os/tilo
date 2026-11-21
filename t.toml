@@ -913,17 +913,6 @@ timeout_secs = 5400
 default = false
 
 [[check]]
-name = "web-examples"
-# Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/build-web-examples.sh $(for d in examples/apps/*/; do printf ' example-%s' \"$(basename \"$d\")\"; done)"
-# Runs `cargo install` of a crate the state's Cargo.lock doesn't name, so it needs cargo's
-# network; t turns it off where it hands a job the state's crates.
-env = { CARGO_NET_OFFLINE = "false" }
-on = ["dispatch", "idle"]
-heavy = true
-
-[[check]]
 name = "pins"
 # Verifies digest-pinned kernel images' signatures: the registry, and Sigstore's log and trust root.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }

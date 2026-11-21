@@ -19,13 +19,11 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
-tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 anyhow.workspace = true
 clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
 hex.workspace = true
-# The shared web workspace's owner root.
 getrandom.workspace = true
 libc.workspace = true
 image = { workspace = true, features = ["png"] }
@@ -57,17 +55,10 @@ tempfile.workspace = true
 toml.workspace = true
 tilo-ui-graph = { path = "../ui-graph" }
 tilo-headless-schema = { path = "../headless-schema" }
-# The registry's web artifact is a zip of the immutable version.
 zip.workspace = true
-# Reuse the validator generation/features already locked in workspace-hack.
-wasmparser = { version = "=0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 # `tilo-app push`: the workspace's governance actions reached through its
 # action API, as a key of the developer's, as `tilo` reaches it.
 tilo-api = { path = "../../server/tilo-api" }
-# The shared workspace's entry: a person is admitted through the directory's
-# entry, as any public workspace admits them.
-tilo-workspace-directory = { path = "../../session/workspace-directory" }
-tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-automation = { path = "../../collab/automation" }
 tokio = { workspace = true, features = ["rt"] }
 

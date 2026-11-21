@@ -1177,30 +1177,6 @@ def browser_crates(packages: dict[str, dict]) -> set[str]:
     }
 
 
-# Example apps; t's `wasm` check builds the web-capable ones with
-# `tilo-app build --platform web` (tools/ci/build-web-examples.sh).
-EXAMPLE_APPS = "examples/apps/"
-# What the web build of an example runs besides the example: a change to any of
-# these rebuilds every web-capable example.
-WEB_BUILD_INPUTS = (
-    "crates/browser/tilo-browser-runtime/scripts/",
-    "crates/dev/tilo-app-cli/src/web.rs",
-    "crates/dev/tilo-app-cli/src/targets/",
-    "crates/dev/tilo-app-cli/src/sources.rs",
-    "tools/ci/build-web-examples.sh",
-)
-
-
-def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
-    """Packages under examples/apps/."""
-    base = root.resolve()
-    return {
-        name for name, package in packages.items()
-        if Path(package["manifest_path"]).resolve().parent.relative_to(base).as_posix()
-        .startswith(EXAMPLE_APPS)
-    }
-
-
 def vendored_test_crates(changes: list[str], run_all: bool = False) -> list[str]:
     """The VENDORED_TEST_CRATES whose tests `changes` reach, or all of them."""
     if run_all or VENDORED_TEST_RUNNER in changes:
@@ -1488,10 +1464,6 @@ def make_plan(
         vendored = [crate for crate in vendored if crate in set(only.get("vendored", ()))]
     android =sorted(android_apps(packages) & selected)
     wasm = sorted(browser_crates(packages) & selected)
-    examples = example_apps(packages, root)
-    web_examples = sorted(
-        examples if any(path.startswith(WEB_BUILD_INPUTS) for path in changes)
-        else examples & selected)
     return {
         "full": full,
         "rust_required": bool(selected),
@@ -1509,11 +1481,8 @@ def make_plan(
         "android": android,
         # Selected browser crates; t's `wasm` check type-checks them for
         # wasm32-unknown-unknown, a target no other job builds.
-        # Selected examples, or all of them when their web build changed; the
-        # `wasm` check builds the web-capable ones for the web.
-        "wasm_required": bool(wasm) or bool(web_examples),
+        "wasm_required": bool(wasm),
         "wasm": wasm,
-        "web_examples": web_examples,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -1573,7 +1542,6 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"android_packages={' '.join(f'-p {name}' for name in plan['android'])}\n")
         handle.write(f"wasm_required={'true' if plan['wasm_required'] else 'false'}\n")
         handle.write(f"wasm_packages={' '.join(f'-p {name}' for name in plan['wasm'])}\n")
-        handle.write(f"web_examples={' '.join(plan['web_examples'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")

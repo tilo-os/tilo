@@ -156,8 +156,7 @@ RUN rustup target add --toolchain "${RUST_CHANNEL}" wasm32-unknown-unknown
 # musl for this architecture: t's release builds link its compiler cache's
 # wrapper statically against it, so the wrapper runs in any job image.
 RUN rustup target add --toolchain "${RUST_CHANNEL}" "$(uname -m)-unknown-linux-musl"
-# The web build's toolchain (`tilo-app build --platform web`, the web core's
-# scripts): binaryen's wasm-opt, lld's wasm-ld, Node.js, brotli, binutils' ar,
+# The web build's toolchain (the web core's scripts): binaryen's wasm-opt, lld's wasm-ld, Node.js, brotli, binutils' ar,
 # and wasm-bindgen's CLI at exactly the version the browser runtime's crate pins
 # (crates/browser/tilo-browser-runtime/Cargo.toml, which `ci-builder.sh inputs`
 # dates this image by), from its checksum-pinned upstream release. A stack's
