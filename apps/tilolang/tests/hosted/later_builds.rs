@@ -80,6 +80,8 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
         source
             .replace("ui.Chip(t)", "ui.Chip(\"{t}\")")
             .replace("tags.add(\"planning\")", "tags.add(0)")
+            // The carrying of a native notebook names its tags by their words.
+            .replace("made.tags.add(name)", "made.tags.add(0)")
     }));
     session.settle();
 
