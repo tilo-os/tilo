@@ -1040,7 +1040,7 @@ start_registry
 refuse 'a registry update is verified and staged, and an unsigned image refused' "
 set -eu
 mkdir -p /mnt/update
-mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 bash /mnt/update/registry_update_check.sh 10.0.2.2:5050/tilo/tilo-host /mnt/update/registry-update.pub unsigned '$staged_digest'
 "
 }
@@ -1055,7 +1055,7 @@ say 'the disk is sealed to this machine and opens by itself'
 # the seal tilo-disk-encrypt enrol makes on a machine the installer runs on.
 refuse 'this machine seals the volume it booted, with no secret' '
 set -eu
-mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 gen=$(cat /usr/lib/tilo/generation)
@@ -1105,7 +1105,7 @@ say 'an image below the floor is refused'
 # to unseal it, and the recovery key must still open the disk.
 refuse 'this machine has a keyslot for the older generation' "
 set -eu
-mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/\$(lsblk -snro NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
 tilo-rollback enroll --device \"\$dev\" --generation 0 \
@@ -1138,7 +1138,7 @@ printf '%s' '$(base64 -w0 < "$approval")' | base64 -d > /var/lib/tilo/rollback/a
 done
 refuse 'the floor moves to this generation, with the approvals' "
 set -eu
-mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/\$(lsblk -snro NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
 gen=\$(cat /usr/lib/tilo/generation)
@@ -1153,7 +1153,7 @@ grep -q "\"floor_generation\":$n" "$out/the floor moves to this generation, with
 # Put the older signed image on the ESP in place of this one, and start it.
 refuse 'the older signed image is on the ESP' '
 set -eu
-mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 uki=$(ls /boot/EFI/Linux/bootc/*.efi); [ "$(printf "%s\n" $uki | wc -l)" = 1 ]
 unshare -m sh -euc "mount -o remount,bind,rw /boot; cp /mnt/update/older.efi \$uki; sync"
 '
@@ -1172,7 +1172,7 @@ grep -q 'rollback floor refuses generation 0' "$out/floor-serial.log" \
 # generation, so it opens by itself again. The floor is what differed.
 refuse 'the signed image this machine runs is on the ESP again' '
 set -eu
-mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 uki=$(ls /boot/EFI/Linux/bootc/*.efi); [ "$(printf "%s\n" $uki | wc -l)" = 1 ]
 unshare -m sh -euc "mount -o remount,bind,rw /boot; cp /mnt/update/original.efi \$uki; sync"
 '
