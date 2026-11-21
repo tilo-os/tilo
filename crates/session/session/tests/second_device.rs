@@ -338,6 +338,12 @@ impl Studio {
                 wait_for_issues(device, &["Book the ferry", "Pack the tent"]),
             );
         }
+        // The phone reads back what it wrote: an app's write reaches the workspace's copy its
+        // own reads answer from.
+        promptly(
+            "the phone's issue on the phone that wrote it",
+            wait_for_tasks_showing(&self.bob_phone, "Pack the tent"),
+        );
         self.ada_laptop.chat().send(&bob_key, "seen it");
         promptly(
             "Ada's message on the restarted phone",
