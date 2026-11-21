@@ -1123,7 +1123,7 @@ run = "# Mounting FUSE needs a user namespace where the check is root: the job s
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 requires = ["/dev/fuse", "/dev/fuse"]
 isolation = "nested"
-on = ["dispatch", "idle"]
+on = ["main", "dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -2640,6 +2640,7 @@ requires = ["arch={arch}"]
 isolation = "vm"
 outputs = ["/target/publish/release-tools/{arch}/image.oci.tar", "/target/publish/release-tools/{arch}/digest"]
 default = false
+on = ["main"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
@@ -4482,6 +4483,7 @@ git = true
 outputs = ["/target/publish/fex-buildroot/image.oci.tar", "/target/publish/fex-buildroot/digest"]
 timeout_secs = 5400
 default = false
+on = ["main"]
 
 [[check]]
 name = "publish-fex-buildroot"
@@ -8020,7 +8022,7 @@ python3 os/tests/trust_input_copy_equivalence.py --tools-image "$tools"
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 timeout_secs = 3600
-on = ["dispatch"]
+on = ["main", "dispatch"]
 
 # The internal bundle export on real loop devices, vfat and Btrfs: the installer's export path is
 # only honest when a fresh mount reads back what it wrote, so it runs as root in a micro-VM.
@@ -8035,7 +8037,7 @@ bash os/tests/internal_bundle_export.sh
 requires = ["arch=x86_64", "disk-100g", "/dev/loop-control"]
 isolation = "vm"
 timeout_secs = 3600
-on = ["dispatch"]
+on = ["main", "dispatch"]
 
 # The signing spool with the real signer: real EFI and PCR signatures from the built tilo-crypto,
 # root-owned where the spool's own trust check requires it, with every key in a private tree.
@@ -8050,7 +8052,7 @@ python3 os/tests/test_signing_spool.py
 '''
 isolation = "vm"
 timeout_secs = 3600
-on = ["dispatch"]
+on = ["main", "dispatch"]
 
 # The installed session's first login as an ordinary user, then the host identity minted, verified
 # and re-provisioned through the production provisioning entrypoint.
