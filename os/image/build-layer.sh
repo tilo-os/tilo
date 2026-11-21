@@ -317,24 +317,21 @@ PY
   export SOURCE_DATE_EPOCH=$epoch
 }
 
-# The build context of NAME's Containerfile (given GIVEN), in DIR: the files it reads from the
-# tree (pieces.py inputs), at their paths, and nothing else (os/dev/build-context.py). t keys a
-# step by every file it reads, and podman given the whole checkout as its context reads more of
-# it than the pieces copy, so a change anywhere in the tree built every layer again, to the same
-# bytes.
-build_context() {
-  local globs
-  mapfile -t globs < <(python3 -I tools/ci/os/pieces.py inputs "$1" --given "$2")
-  python3 -I os/dev/build-context.py --glob "${globs[@]}" --epoch "$SOURCE_DATE_EPOCH" --dest "$3"
-}
-
 # Build TARGET of NAME's Containerfile through build-image.sh, given GIVEN (stage names) as
 # images; tagged $image.
 build_target() {
   local name=$1 target=$2 given=$3 file
   file=$scratch/$name.Containerfile
   python3 -I tools/ci/os/pieces.py containerfile "$name" --given "$given" > "$file"
-  build_context "$name" "$given" "$scratch/$name-context"
+  # The build context of that Containerfile: the files it reads from the tree, at their paths,
+  # and nothing else (os/dev/build-context.py). t keys a step by every file it reads, and podman
+  # given the whole checkout as its context reads more of it than the pieces copy, so a change
+  # anywhere in the tree built every layer again, to the same bytes. A step whose Containerfile
+  # copies nothing from the tree (the kernel, built from an image it is given) gets an empty
+  # context.
+  python3 -I os/dev/build-context.py "$file" --epoch "$SOURCE_DATE_EPOCH" \
+    --dest "$scratch/$name-context" \
+    || die "could not stage the build context of $name"
   # Its lines stamped with the seconds since the build began: a layer's build is one podman
   # build of many stages, and its own output names no times.
   TILO_IMAGE=$image TILO_LAYER_TARGET=$target TILO_CONTAINERFILE=$file \

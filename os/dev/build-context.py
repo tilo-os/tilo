@@ -17,7 +17,9 @@ is older than the clock, and a checkout gives a file the time it was written, so
 would make a layer differ between two builds of the same tree.
 
 The directory is DIR when given, else a new one under $TILO_CONTEXT_SCRATCH (/var/tmp), printed
-on stdout: never inside the checkout, where the files would be inputs of the build as well.
+on stdout: never inside the checkout, where the files would be inputs of the build as well. A
+Containerfile that copies nothing from its context (the kernel layer, built from an image it is
+given) stages an empty one: that is all it reads.
 """
 
 from __future__ import annotations
@@ -124,10 +126,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--repo", type=Path, default=REPO)
     parser.add_argument("--dest", type=Path, help="where to stage it (default: a new directory)")
     args = parser.parse_args(argv)
-    if bool(args.containerfile) == bool(args.glob):
+    if args.containerfile and args.glob:
         parser.error("name one Containerfile or some --glob patterns")
     repo = args.repo.resolve()
-    found = args.glob or patterns(copies(Path(args.containerfile).read_text()))
+    # A Containerfile that copies nothing from its context (the kernel layer, built from an
+    # image it is given) stages an empty one: that is what it reads.
+    found = args.glob or (patterns(copies(Path(args.containerfile).read_text()))
+                          if args.containerfile else [])
     if args.dest:
         dest = args.dest.resolve()
         shutil.rmtree(dest, ignore_errors=True)
@@ -141,7 +146,7 @@ def main(argv: list[str]) -> int:
         for entry in dirs + files:
             os.utime(Path(root) / entry, (args.epoch, args.epoch), follow_symlinks=False)
     os.utime(dest, (args.epoch, args.epoch))
-    if written == 0:
+    if found and written == 0:
         raise SystemExit(f"the Containerfile copies {', '.join(found)}, which match nothing")
     print(dest)
     return 0

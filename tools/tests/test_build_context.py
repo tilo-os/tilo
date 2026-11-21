@@ -69,6 +69,13 @@ RUN --mount=type=bind,source=os/dev/two.py,target=/two cat /two
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("os/missing.sh", result.stderr)
 
+    def test_a_containerfile_that_copies_nothing_stages_an_empty_context(self):
+        result, staged, _ = self.stage(
+            "Containerfile", "os/dev/nobody-copies-this.sh",
+            script="FROM scratch\nCOPY --from=build /out /out\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(staged, [])
+
     def test_its_default_place_is_outside_the_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory) / "repo"
