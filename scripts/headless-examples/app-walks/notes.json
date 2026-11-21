@@ -198,10 +198,16 @@
         "tl": [
           {
             "press_any": [
-              {
-                "prefix": "More actions"
-              }
+              "Trip to Lisbon"
             ]
+          },
+          {
+            "wait_for": {
+              "title": "Trip to Lisbon"
+            }
+          },
+          {
+            "right_click": "Trip to Lisbon"
           },
           {
             "wait_for": "Tag…"
