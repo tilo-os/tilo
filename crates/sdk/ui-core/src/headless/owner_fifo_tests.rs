@@ -1210,7 +1210,13 @@ fn a_save_status_change_is_no_structure_change() {
     let _ = owner.take_structure_change();
     host.records.try_flush().unwrap();
     let woken = wakes.lock().unwrap().len();
+    let syncs = seen.syncs.get();
     owner.sync(&AutoCommit::new(), &ROOT);
+    assert_eq!(
+        seen.syncs.get(),
+        syncs + 1,
+        "the sync that takes up the new status is the only one: a status delivered before it costs no second sync"
+    );
     assert_eq!(
         wakes.lock().unwrap().len(),
         woken,

@@ -364,10 +364,16 @@ mod component_adapter {
                     })
                     .unwrap_or(());
             };
+            // The record's durability and what the workspace refused are
+            // delivered before the root syncs: the one sync takes up what the
+            // owner now shows. Delivered after it, a save that landed between
+            // two passes would run the whole tree through a second sync in the
+            // same frame for nothing.
+            self.component.project_resource_save_status();
             sync_root(&mut self.component);
-            // The record's durability, sampled once the root has synced. A
-            // change is shown by syncing the root again with it, so the frame
-            // needs no rebuilt tree (which repaints the whole window).
+            // A status the sync itself moved (an app's own save, the retry it
+            // made) is shown by syncing the root once more with it: the frame
+            // needs no rebuilt tree, which repaints the whole window.
             if self.component.project_resource_save_status() {
                 sync_root(&mut self.component);
             }
