@@ -210,10 +210,19 @@ fn a_runs_secrets_reach_its_programs_in_the_vm_and_nothing_else() {
     assert_eq!(text(&shell_sees), "[]\n", "the shell itself never holds it");
 
     let next = shells
-        .run("ws-1", "s1", "sh -c 'echo \"[$CLAUDE_CODE_OAUTH_TOKEN]\"'", true)
+        .run(
+            "ws-1",
+            "s1",
+            "sh -c 'echo \"[$CLAUDE_CODE_OAUTH_TOKEN]\"'",
+            true,
+        )
         .unwrap();
     assert_eq!(next.exit, 0, "{}", text(&next));
-    assert_eq!(text(&next), "[]\n", "a run without it starts its programs without it");
+    assert_eq!(
+        text(&next),
+        "[]\n",
+        "a run without it starts its programs without it"
+    );
 
     // The first command names the value only to compare it; what each run printed never holds it.
     for ran in [&given, &shell_sees, &next] {

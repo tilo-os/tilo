@@ -187,8 +187,18 @@ async fn a_slow_write_leaves_its_thread_answering() {
     // machine running many other checks shifts both the same way, where the slowest of a few
     // against the middle of another few marked an uneven moment as the write holding the thread.
     for (what, service, person, notes) in [
-        ("another workspace", &other_service, &other_person, &other_notes),
-        ("the same workspace", &busy_service, &busy_person, &busy_notes),
+        (
+            "another workspace",
+            &other_service,
+            &other_person,
+            &other_notes,
+        ),
+        (
+            "the same workspace",
+            &busy_service,
+            &busy_person,
+            &busy_notes,
+        ),
     ] {
         let mut normal = Vec::new();
         let mut beside = Vec::new();

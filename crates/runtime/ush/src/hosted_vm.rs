@@ -131,7 +131,9 @@ impl HostedPrograms {
         let Some(slot) = &self.secrets else {
             return env.to_vec();
         };
-        let secrets = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let secrets = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut started: Vec<(String, String)> = env
             .iter()
             .filter(|(name, _)| !secrets.iter().any(|secret| secret.variable == *name))
