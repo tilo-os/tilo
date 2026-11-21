@@ -164,7 +164,7 @@ impl Standalone {
         let workspace_id = workspace.workspace();
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &workspace_id));
-        let channels = Arc::new(Mutex::new(channels(root)));
+        let brokers = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         // What apps may found records with here: the kinds their installed
         // manifests declare, or, in dev mode, the kinds a build names.
@@ -184,7 +184,7 @@ impl Standalone {
             OpenWorkspaces {
                 workspace: &workspace,
                 storage,
-                broker: (Arc::clone(&channels), Arc::clone(&fanout)),
+                broker: (Arc::clone(&brokers), Arc::clone(&fanout)),
                 listen: take_work.as_ref().map(|_| take_work::PORT),
             },
         )?;
@@ -195,7 +195,7 @@ impl Standalone {
         // service that holds its governance answers: what every launch here
         // hands the app it starts.
         apps.keep_launch_grants(Arc::clone(&workspaces) as Arc<dyn apps::LaunchGrantsSource>);
-        workspaces.follow_admitted_writes(Arc::clone(&channels), Arc::clone(&fanout));
+        workspaces.follow_admitted_writes(Arc::clone(&brokers), Arc::clone(&fanout));
         // The member copies' files, once the broker that carries their records
         // runs: where a member taking a workspace's work runs it.
         let replica_slot = files::ReplicaSlot::default();
@@ -207,7 +207,7 @@ impl Standalone {
             identity: &identity,
             workspace_id: &workspace_id,
             workspaces: &workspaces,
-            channels: Arc::clone(&channels),
+            channels: Arc::clone(&brokers),
             fanout: Arc::clone(&fanout),
             take_work,
             host: Some(workspaces.service().as_ref()),
@@ -242,7 +242,7 @@ impl Standalone {
                 personal: personal.sync.clone(),
             },
             authority,
-            channels,
+            brokers,
             fanout,
         )?;
         // An action an agent makes for the person, which asks for

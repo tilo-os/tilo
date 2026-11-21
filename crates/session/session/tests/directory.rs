@@ -1516,7 +1516,7 @@ fn a_session_started_with_an_invitation_names_the_workspace_it_joins_in_its_noti
         .expect("the workspace is on the session");
     assert_eq!(
         joined.1, "Lounge",
-        "the slot goes by the name the workspace's governance gives it"
+        "the entry goes by the name the workspace's governance gives it"
     );
     wait_until(&mut session, "the join is said", |session| {
         said(session)

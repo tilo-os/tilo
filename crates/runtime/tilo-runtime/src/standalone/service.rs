@@ -328,11 +328,11 @@ impl ServiceWorkspaces {
     }
 
     /// Hand every write of another device the workspaces held here take in
-    /// to the apps following the workspace's records, on `channels` and
+    /// to the apps following the workspace's records, on the brokers and
     /// `fanout`.
     pub(super) fn follow_admitted_writes(
         &self,
-        channels: Arc<Mutex<tilo_workspace_service::apps::collab_core::BrokerChannels>>,
+        brokers: Arc<Mutex<tilo_workspace_service::apps::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
     ) {
         tilo_rt::app().spawn(
@@ -340,7 +340,7 @@ impl ServiceWorkspaces {
                 self.copies(),
                 move |document| {
                     tilo_workspace_service::apps::collab_inbound::deliver(
-                        &channels, &fanout, document,
+                        &brokers, &fanout, document,
                     );
                 },
                 || {},

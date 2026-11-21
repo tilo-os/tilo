@@ -39,7 +39,7 @@ fn answer(grants: &[Grant], node: &TreePath, kind: ActionKind) -> Answer {
     decide(grants, &[alice()], node, kind, &cx()).answer
 }
 
-/// The workspace's mail and vault records, at the nodes every reader decides them on.
+/// The workspace's mail and vault resources, at the nodes every reader decides them on.
 fn workspace_mail_and_vault() -> Vec<TreePath> {
     let mail = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
     vec![

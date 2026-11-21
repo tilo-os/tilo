@@ -692,7 +692,7 @@ async fn index_retained_checkpoint(
     let NeighbourMsg::AppDocument { envelope, .. } = &message else {
         panic!("a store document checkpoint");
     };
-    let (channel, retention) = neighbour_wire::retention(&message, false).unwrap();
+    let (group, retention) = neighbour_wire::retention(&message, false).unwrap();
     assert_eq!(retention, neighbour_wire::Retention::Checkpoint);
     {
         let state = workspaces.workspace(workspace).await.unwrap();
@@ -737,7 +737,7 @@ async fn index_retained_checkpoint(
             author,
             crate::workspace_documents::HostCommit {
                 body,
-                channel,
+                channel: group,
                 checkpoint: true,
             },
         )

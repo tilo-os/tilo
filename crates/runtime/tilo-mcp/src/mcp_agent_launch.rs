@@ -44,7 +44,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Box::pin(self.launch(parsed, app_id, action, arguments, invocation, wait_ms)).await?;
         // `open` puts the app's window in front of the person, on the document it opened; `start`
         // starts it without one. Starting the app is the workspace's open; the window is the
-        // layout's, asked for here as for an app that runs already ([`Self::running`]): where the
+        // layout's, asked for here as for an app that is up already ([`Self::running`]): where the
         // serving device holds no layout, that ask is what the person's page places. A window that
         // cannot be put there is said beside what the open did.
         let not_shown = if action == tilo_actions::remote::APPLICATION_OPEN_ACTION && !reply.failed

@@ -162,7 +162,7 @@ type Sources = BTreeMap<(String, String), AutoCommit>;
 type Local = BTreeMap<(String, String), Vec<PathBuf>>;
 
 /// What ticks when a read or a seal waiting for what is not here yet may answer otherwise: a write
-/// this device's workspace service took in from another device, a channel's keys changing.
+/// this device's workspace service took in from another device, a group's keys changing.
 fn events(engine: &Engine) -> Vec<tokio::sync::watch::Receiver<u64>> {
     let mut events = vec![engine.arrivals().watching()];
     events.extend(engine.keys().get().and_then(|keys| keys.changes()));
