@@ -12,7 +12,7 @@ usage='usage: server-installer-medium.sh SEALED MEDIUM BUNDLE'
 sealed=${1:?$usage}
 medium=${2:?$usage}
 bundle=${3:?$usage}
-cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname -- "${BASH_SOURCE[0]}")/../../.."
 digest=$(cat "$sealed/digest")
 [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "$sealed/digest names no image" >&2; exit 1; }
 export TILO_INSTALLER_TARGET_OCI=$sealed/image.oci.tar
