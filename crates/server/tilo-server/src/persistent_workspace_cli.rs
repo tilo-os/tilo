@@ -1127,14 +1127,21 @@ async fn refound_records(
 /// settlement document, so a restart neither grants it again nor takes back a
 /// person's later choice: after that, the switch in the workspace's settings
 /// is the only way to change it. A workspace the operator does not list, or
-/// that this host does not govern (`Workspaces::governs_workspace`), is left
-/// alone.
+/// whose applications another of its holders sets up
+/// (`Workspaces::governs_applications`), is left alone: the grant is part of
+/// that setup, and a copy just handed over may not read what that holder
+/// settled yet, nor be named a holder that writes it.
 pub(crate) async fn settle_moderation(
     workspaces: &Workspaces,
     workspace: &str,
     persistent: &PersistentArgs,
 ) -> anyhow::Result<()> {
-    if persistent.listing_description.is_none() || !workspaces.governs_workspace(workspace).await {
+    if persistent.listing_description.is_none()
+        || !workspaces
+            .governs_applications(workspace)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?
+    {
         return Ok(());
     }
     let grant = tilo_action_policy::bot::MODERATION_GRANT;
@@ -2831,6 +2838,69 @@ mod tests {
             workspaces.is_owner(&workspace, owner).await,
             "the workspace stays its owner's"
         );
+        server.shutdown().await;
+    }
+
+    /// A server a workspace was handed to holds it and its own person
+    /// administers it, while the device the workspace was made on stays the
+    /// one its governance names to make its base: the grant is part of that
+    /// holder's setup, so the copy enables no moderation bot and notes no
+    /// grant as settled, and its start is not refused for a write it may not
+    /// make.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_holder_that_sets_up_no_applications_leaves_the_moderation_grant_alone() {
+        let made_on = tempfile::tempdir().unwrap();
+        let handed_to = tempfile::tempdir().unwrap();
+        let (server, workspaces, _server_cert, workspace) = plaza(made_on.path()).await;
+        let (copy, copied, copy_cert) = host(handed_to.path()).await;
+        workspaces
+            .attach_server(
+                &workspace,
+                copy_cert.device_public_key,
+                copy.node_addr(),
+                tilo_peer_state::CopyRole::KeyHolder,
+            )
+            .await
+            .unwrap();
+        tilo_test_env::within("the handed copy holds the workspace", async {
+            while !copied.governs_workspace(&workspace).await {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            copied.governs_workspace(&workspace).await,
+            "the copy's person administers the workspace they were handed"
+        );
+        assert!(
+            workspaces.governs_applications(&workspace).await.unwrap(),
+            "the device the workspace was made on sets up its applications"
+        );
+        assert!(
+            !copied.governs_applications(&workspace).await.unwrap(),
+            "the copy's person administers it, but another holder sets up its applications"
+        );
+        let listed = PersistentArgs {
+            listing_description: Some("A plaza".into()),
+            ..PersistentArgs::default()
+        };
+        settle_moderation(&copied, &workspace, &listed)
+            .await
+            .expect("the copy leaves the grant to the holder that sets the applications up");
+        assert!(
+            !tilo_server::workspace_bots::enabled(&copied, &workspace)
+                .await
+                .unwrap(),
+            "the copy enables no moderation bot of its own"
+        );
+        assert!(
+            !settled_in(&copied, &workspace, "moderation")
+                .await
+                .unwrap()
+                .contains(tilo_action_policy::bot::MODERATION_GRANT),
+            "and notes no grant as settled"
+        );
+        copy.shutdown().await;
         server.shutdown().await;
     }
 
