@@ -619,3 +619,133 @@ async fn a_restarted_trackers_listing_holds_no_other_request() {
         "the first page lists its issues: {first}"
     );
 }
+
+/// An issue's description long enough that a part of the tracker's chain holds about twenty
+/// issues: a part fills to its bytes ([`tilo_app::framework::PART_BYTES`]) as a moved-in tracker's
+/// do, and a tracker of eighty parts is made in a test's time.
+fn long_description(at: usize) -> String {
+    format!(
+        "What issue {at} is about, as it was written there. {}",
+        "The service keeps its work beside its peers, and reads it back. ".repeat(380)
+    )
+}
+
+/// The issues one call makes when each is long: a call stays under what one action carries.
+const LONG_LIST: usize = 20;
+
+/// A tracker of `parts` parts made, its server restarted, and the first listing of its issues
+/// after the restart timed, with a listing of another app asked while it runs and the same
+/// listing asked on its own: `(first, beside, alone)`.
+async fn first_listing_after_a_restart(parts: usize) -> (Duration, Duration, Duration) {
+    let size = parts * LONG_LIST;
+    let on_server = api_on_server(super::api::ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let token = approved_key(&on_server, &ada, &browser, "Mover").await;
+    let base = {
+        let agent = V1 {
+            api: &on_server.api,
+            token: token.clone(),
+        };
+        let (status, workspace) = agent
+            .send(
+                hyper::Method::POST,
+                "/v1/workspaces",
+                json!({"name": "Company"}).to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(status, 201, "{workspace}");
+        let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+        agent.act(&base, "tasks", "open", &json!({})).await;
+        agent.act(&base, "notes", "open", &json!({})).await;
+        for start in (0..size).step_by(LONG_LIST) {
+            let list: Vec<Value> = (start..(start + LONG_LIST).min(size))
+                .map(|at| {
+                    json!({
+                        "key": format!("k{at}"),
+                        "title": format!("Issue {at}"),
+                        "body": long_description(at),
+                        "status": "todo",
+                    })
+                })
+                .collect();
+            agent
+                .act(
+                    &base,
+                    "tasks/tasks.issues",
+                    "create-many",
+                    &json!({"issues": list}),
+                )
+                .await;
+        }
+        base
+    };
+    let on_server = on_server.restart(false).await;
+    let agent = V1 {
+        api: &on_server.api,
+        token,
+    };
+    let notes = format!("{base}/resources?path=notes&limit=40");
+    let list_notes = || async {
+        let began = Instant::now();
+        let (status, page) = agent.get(&notes).await;
+        assert_eq!(status, 200, "{page}");
+        began.elapsed()
+    };
+    // The first call after the restart joins the workspace, whatever it lists.
+    list_notes().await;
+    let mut alone = Vec::new();
+    for _ in 0..5 {
+        alone.push(list_notes().await);
+    }
+    let alone = quantile(&alone, 0.5);
+    let issues = format!("{base}/resources?path=tasks/Issues&limit=40");
+    let tracker = async {
+        let began = Instant::now();
+        let (status, page) = agent.get(&issues).await;
+        assert_eq!(status, 200, "{page}");
+        assert_eq!(
+            page["rows"].as_array().map(Vec::len),
+            Some(40),
+            "a full first page: {page}"
+        );
+        began.elapsed()
+    };
+    let beside = async {
+        // The tracker's listing starts taking in its parts first.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut slowest = Duration::ZERO;
+        for _ in 0..3 {
+            slowest = slowest.max(list_notes().await);
+        }
+        slowest
+    };
+    let (first, beside) = tokio::join!(tracker, beside);
+    eprintln!(
+        "{parts} parts ({size} issues): the first listing after a restart took {first:?}; \
+         another app listed beside it in {beside:?}, alone in {alone:?}"
+    );
+    (first, beside, alone)
+}
+
+/// The first listing of a tracker after its server restarts costs about the same at eighty parts
+/// as at five, and another app of the workspace answers while it runs. The restarted server
+/// opened each part's sealed history again for every reader of it (the tracker's own copy, the
+/// caller's, the search index), because what it kept opened held fewer resources than a large
+/// tracker has parts; a tracker of thousands of issues took minutes to list after a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trackers_first_listing_after_a_restart_does_not_grow_with_its_parts() {
+    let (small, small_beside, small_alone) = Box::pin(first_listing_after_a_restart(5)).await;
+    let (large, large_beside, large_alone) = Box::pin(first_listing_after_a_restart(80)).await;
+    for (beside, alone) in [(small_beside, small_alone), (large_beside, large_alone)] {
+        assert!(
+            beside <= alone * 8 + Duration::from_secs(2),
+            "another app listed in {beside:?} beside the tracker's first listing, alone in \
+             {alone:?}"
+        );
+    }
+    assert!(
+        large <= small * 3 + Duration::from_secs(3),
+        "the first listing after a restart took {large:?} at 80 parts, {small:?} at 5"
+    );
+}
