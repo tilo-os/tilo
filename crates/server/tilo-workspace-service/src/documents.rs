@@ -343,6 +343,15 @@ fn answer(
 ) -> Result<Answer, String> {
     let heads: Vec<[u8; 32]> = document.get_heads().iter().map(|head| head.0).collect();
     let revision = tilo_peer_state::committed_document_revision(&document.get_heads());
+    // A reader already at the document's heads has nothing to take: answered from the heads
+    // alone, since looking each of them up in the history builds the history's change index,
+    // which for a large record costs a tenth of a second or more on every read that follows a
+    // landing that changed nothing it reads, as a member's admission is for every record.
+    if !since.is_empty()
+        && revision == tilo_peer_state::committed_document_revision(&since_hashes(since))
+    {
+        return Ok(Answer::Read(DocumentRead::Unchanged(revision)));
+    }
     // A reader's heads this device does not hold are answered with the whole document: the
     // changes it would send are not the complete ones after them.
     let holds_since = since.iter().all(|head| {
@@ -353,10 +362,7 @@ fn answer(
     if since.is_empty() || !holds_since {
         return Ok(Answer::Whole { revision, heads });
     }
-    let since: Vec<automerge::ChangeHash> = since
-        .iter()
-        .map(|head| automerge::ChangeHash(*head))
-        .collect();
+    let since = since_hashes(since);
     let bytes = tilo_peer_state::changes_since(document, &since, maximum)
         .map_err(|error| error.to_string())?;
     if bytes.is_empty() && heads == since.iter().map(|head| head.0).collect::<Vec<_>>() {
@@ -367,6 +373,14 @@ fn answer(
         heads,
         bytes,
     }))
+}
+
+/// `since` as the history's change hashes.
+fn since_hashes(since: &[[u8; 32]]) -> Vec<automerge::ChangeHash> {
+    since
+        .iter()
+        .map(|head| automerge::ChangeHash(*head))
+        .collect()
 }
 
 /// `app`'s `resource` saved whole for `reader`, at most `maximum` bytes: what its last capture
