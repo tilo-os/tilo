@@ -25,6 +25,20 @@ d-erijxfd3 = Quelle
 d-uquoltho = Herkunft
     .doc = Der Name, den diese Datei hatte, samt Pfad in ihrem Archiv: ein Import, der die Verschachtelung eines Pakets behält, findet darüber die Notiz, unter der eine Seite steht.
 
+d-ngwafrjq = Von
+    .doc = Wer die Seite dort geschrieben hat, wo sie herkam, als ein anderer Dienst sie vor diesem Notizbuch hielt: mit der Notiz aufbewahrt, damit eine herübergeholte Seite noch sagt, wessen Worte sie sind.
+
+d-buuvovaf = Dienst
+    .doc = Der Dienst, aus dem die Seite kam, wenn sie aus einem kam (`Outline`).
+
+d-jznzkj47 = Seite
+    .doc = Wo die Seite dort zu lesen ist, wenn sie aus einem Dienst kam: dieselbe Seite noch einmal zu importieren öffnet diese Notiz, statt eine zweite anzulegen.
+
+d-hchfoqqm = Erstellt
+    .doc = Wann die Seite dort geschrieben und zuletzt geändert wurde, wie der Dienst es sagte.
+
+d-5wdceapz = Bearbeitet
+
 d-gfk6rqxp = Angeheftet
 
 d-xcpasjg7 = Schlagwörter
@@ -97,8 +111,26 @@ d-cdjz7d5y = Notizbuch exportieren
     .doc = Das Notizbuch als Zip, eine Markdown-Datei für jede Notiz: die einer Notiz unter dem Ordner der Notiz, in der sie steht, und die Bilder, die sie zeigt, in ihrem eigenen Ordner `images` daneben.
 
 d-t4nxxtng = Markdown importieren
-    .doc = Importiert eine Markdown-Datei als Notiz oben im Baum oder öffnet die Notiz, die diese Datei schon angelegt hat: eine Notiz behält die Adresse der Datei, aus der sie kam, dieselbe Datei zweimal zu importieren ergibt also eine Notiz.
+    .doc = Importiert eine Markdown-Datei als Notiz oder öffnet die Notiz, die diese Datei schon angelegt hat: eine Notiz behält die Adresse der Datei, aus der sie kam, dieselbe Datei zweimal zu importieren ergibt also eine Notiz. Die Notiz steht unter der Notiz des Ordners, den der Pfad ihrer Datei nennt (`Q3 plan/Ideas.md` unter `Q3 plan.md`).
     .did = importierte eine Notiz
+
+d-t4nxxtng-file = Datei
+
+d-n75ltziu = Eine Seite aus einem Dienst importieren
+    .doc = Importiert eine Seite, die ein anderer Dienst hielt, als Notiz und behält, wessen Worte sie sind und wo sie dort stand: was `tilo migrate` für jede herübergeholte Seite aufruft, und was der eigene Import einer Datei ohne die Worte eines Dienstes tut.
+    .did = importierte eine Notiz
+
+d-n75ltziu-file = Datei
+
+d-n75ltziu-by = Von
+
+d-n75ltziu-service = Dienst
+
+d-n75ltziu-page = Seite
+
+d-n75ltziu-created = Erstellt
+
+d-n75ltziu-updated = Bearbeitet
 
 d-h3zczsen = Archiv importieren
     .doc = Importiert ein Zip aus Markdown (ein Notizbuch, das diese App exportiert hat, oder einen Notion-Export) als Notizen unter dem Notizbuch, eine Seite unter der Seite, die sie hielt, in einer Änderung: Rückgängig nimmt den ganzen Import zurück.
@@ -149,6 +181,8 @@ d-xqxkoqbj = Notizzeile
 d-6wqou47w = Notizeditor
 
 d-nki6assy = Notizangaben
+    .w-from = Von { $service }
+    .w-from-by = Von { $service }, von { $by }
     .w-created = Erstellt
     .w-edited = Bearbeitet
     .w-1-word = 1 Wort
@@ -200,7 +234,5 @@ d-7ow26bju-t = T
 d-3u3bevec-t = T
 
 d-4s5iqnfo-image = Bild
-
-d-t4nxxtng-file = Datei
 
 d-h3zczsen-file = Datei

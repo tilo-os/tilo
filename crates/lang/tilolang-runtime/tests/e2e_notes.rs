@@ -12,10 +12,82 @@ mod cases {
     const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
+    /// The device the notebook's files are read from: its content store, of what a test kept
+    /// there. A file's hash is its bytes, as a content store addresses them.
+    #[derive(Clone, Default)]
+    struct Device(std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, Vec<u8>>>>);
+
+    impl Device {
+        /// The file `name` of `text`, kept in this device's store.
+        fn keeping(
+            &self,
+            name: &str,
+            media: &str,
+            text: &str,
+        ) -> tilolang_runtime::blob::FileValue {
+            let hash = digest_of(text.as_bytes());
+            self.0
+                .borrow_mut()
+                .insert(hash.clone(), text.as_bytes().to_vec());
+            tilolang_runtime::blob::FileValue::new(
+                name,
+                media,
+                i64::try_from(text.len()).unwrap_or(i64::MAX),
+                hash,
+            )
+        }
+    }
+
+    impl tilolang_runtime::blob::BlobHost for Device {
+        fn read(&self, hash: &str) -> Option<Vec<u8>> {
+            self.0.borrow().get(hash).cloned()
+        }
+
+        fn choose(
+            &self,
+            _request: &tilolang_runtime::blob::FileRequest,
+        ) -> Result<Option<tilolang_runtime::blob::FileValue>, String> {
+            Ok(None)
+        }
+
+        fn save(
+            &self,
+            _request: &tilolang_runtime::blob::SaveRequest,
+            _content: &[u8],
+        ) -> Result<(), String> {
+            Err("this test writes no files out".to_owned())
+        }
+
+        fn keep(
+            &self,
+            name: &str,
+            media: &str,
+            bytes: &[u8],
+        ) -> Result<tilolang_runtime::blob::FileValue, String> {
+            let text = String::from_utf8_lossy(bytes).into_owned();
+            Ok(self.keeping(name, media, &text))
+        }
+    }
+
+    /// The address a content store names `bytes` by: the same bytes are one file, whatever
+    /// name they came in as.
+    fn digest_of(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in bytes {
+            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let mut hex = String::with_capacity(17);
+        let _ = write!(hex, "h{digest:016x}");
+        hex
+    }
+
     struct Notes {
         rt: Runtime,
         app: App,
         nb: ResourceRef,
+        /// The device whose files the notebook reads, as a person's own store holds them.
+        device: Device,
         /// What the workspace's clock says: when a note is made, and when it is written since.
         clock: std::rc::Rc<std::cell::RefCell<String>>,
     }
@@ -28,6 +100,8 @@ mod cases {
         /// A notebook whose clock says `now`.
         fn at(now: &str) -> Self {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let device = Device::default();
+            rt.set_blobs(device.clone());
             let clock = std::rc::Rc::new(std::cell::RefCell::new(now.to_owned()));
             let reading = std::rc::Rc::clone(&clock);
             rt.set_clock(move || reading.borrow().clone());
@@ -36,7 +110,52 @@ mod cases {
             let app = App::compile(SOURCE, &[discussion.meta().clone()]);
             app.load(&rt);
             let nb = rt.create("Notebook").unwrap();
-            Self { rt, app, nb, clock }
+            Self {
+                rt,
+                app,
+                nb,
+                device,
+                clock,
+            }
+        }
+
+        /// A page of a service imported as the file `name`, saying who wrote it and where it is
+        /// read: the note it made, or the one it made already.
+        fn import_page(
+            &self,
+            name: &str,
+            text: &str,
+            by: &str,
+            service: &str,
+            page: &str,
+        ) -> ResourceRef {
+            let file = Value::file(self.device.keeping(name, "text/markdown", text));
+            returned_ref(self.call(
+                "import_page",
+                vec![
+                    Value::resource(&self.nb),
+                    file,
+                    Value::text(by),
+                    Value::text(service),
+                    Value::text(page),
+                    Value::text("2025-08-01T10:00:00Z"),
+                    Value::text("2025-09-01T10:00:00Z"),
+                ],
+            ))
+        }
+
+        /// The Markdown file `name` imported by the person's own File menu: no service's words.
+        fn import_file(&self, name: &str, text: &str) -> ResourceRef {
+            let file = Value::file(self.device.keeping(name, "text/markdown", text));
+            returned_ref(self.call("import_markdown", vec![Value::resource(&self.nb), file]))
+        }
+
+        /// What `field` of `note` says, as text.
+        fn said_of(&self, note: &ResourceRef, field: &str) -> String {
+            match self.rt.read(note, field).unwrap() {
+                Value::Text(said) => said,
+                other => panic!("{field} reads {other:?}"),
+            }
         }
 
         /// The clock reads `now` from here on: a change made now is later than those before it.
@@ -776,5 +895,75 @@ mod cases {
             2,
             "a refused write makes no note"
         );
+    }
+
+    /// A service's pages come over as the tree they were: a page whose file's path stands in
+    /// another's folder lands under the note of that page, each page keeps whose words it is and
+    /// where it is read there, and importing a page again — its words changed on the service
+    /// since — opens the note it made rather than making a second one.
+    #[test]
+    fn a_services_pages_come_over_as_the_tree_they_were() {
+        let n = Notes::new();
+        let plan = n.import_page(
+            "Q3 plan.md",
+            "# Q3 plan\n\nShip the offline editor.",
+            "Ada",
+            "Outline",
+            "https://outline.example/doc/q3-plan",
+        );
+        assert_eq!(n.said_of(&plan, "title"), "Q3 plan");
+        assert_eq!(n.said_of(&plan, "by"), "Ada");
+        assert_eq!(n.said_of(&plan, "service"), "Outline");
+        assert_eq!(n.said_of(&plan, "page"), "https://outline.example/doc/q3-plan");
+        assert_eq!(n.said_of(&plan, "created"), "2025-08-01T10:00:00Z");
+        assert_eq!(n.said_of(&plan, "updated"), "2025-09-01T10:00:00Z");
+        assert_eq!(n.said_of(&plan, "origin"), "Q3 plan.md");
+        assert_eq!(n.parent_of(&plan), None, "a top page stands at the top");
+
+        let ideas = n.import_page(
+            "Q3 plan/Ideas.md",
+            "# Ideas\n\n- a table editor",
+            "Grace",
+            "Outline",
+            "https://outline.example/doc/ideas",
+        );
+        assert_eq!(
+            n.parent_of(&ideas).as_ref(),
+            Some(&plan),
+            "a page of that page's folder stands under it"
+        );
+        assert_eq!(
+            n.said_of(&ideas, "by"),
+            "Grace",
+            "each page keeps its own author"
+        );
+
+        let again = n.import_page(
+            "Q3 plan.md",
+            "# Q3 plan\n\nShip the offline editor, then sharing.",
+            "Ada",
+            "Outline",
+            "https://outline.example/doc/q3-plan",
+        );
+        assert_eq!(again, plan, "a page imported again is the note it made");
+        assert_eq!(
+            n.rt.project(&n.rt.read(&n.nb, "notes").unwrap())["count"]
+                .as_i64()
+                .unwrap(),
+            2,
+            "and the notebook holds no second note of it"
+        );
+
+        // A file the person imports themselves stands under its folder's note too, and says
+        // nothing of a service it did not come from.
+        let reading = n.import_file("Reading list.md", "# Reading list\n\n- one book a month");
+        let books = n.import_file("Reading list/Books.md", "# Books\n\n- the one about tides");
+        assert_eq!(
+            n.parent_of(&books).as_ref(),
+            Some(&reading),
+            "a file of that folder's own stands under it"
+        );
+        assert_eq!(n.said_of(&books, "service"), "", "no service wrote it");
+        assert_eq!(n.said_of(&books, "origin"), "Reading list/Books.md");
     }
 }

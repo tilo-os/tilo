@@ -30,6 +30,20 @@ d-erijxfd3 = Source
 d-uquoltho = Origin
     .doc = The name that file had, path inside its archive included: an import that keeps a package's nesting finds the note a page stands under by it.
 
+d-ngwafrjq = By
+    .doc = Who wrote the page where it came from, when another service held it before this notebook: kept with the note so a page brought over still says whose words it is.
+
+d-buuvovaf = Service
+    .doc = The service that page came from, when it came from one (`Outline`).
+
+d-jznzkj47 = Page
+    .doc = Where that page is read there, when it came from one: importing the same page again opens this note rather than making a second one.
+
+d-hchfoqqm = Created
+    .doc = When the page was written there, and last changed there, as that service said it.
+
+d-5wdceapz = Updated
+
 d-mavvhka7-filter-pinned = Pinned
 
 d-mavvhka7-filter-tags = Tags
@@ -156,10 +170,26 @@ d-cdjz7d5y = Export notebook
     .doc = The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it.
 
 d-t4nxxtng = Import markdown
-    .doc = Imports a Markdown file as a note at the top of the tree, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note.
+    .doc = Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note.
     .did = imported a note
 
 d-t4nxxtng-file = File
+
+d-n75ltziu = Import a page from a service
+    .doc = Imports a page another service held as a note, keeping whose words it is and where it stood there: what `tilo migrate` calls for each page it brings over, and what a person's own import of a file does without a service's words.
+    .did = imported a note
+
+d-n75ltziu-file = File
+
+d-n75ltziu-by = By
+
+d-n75ltziu-service = Service
+
+d-n75ltziu-page = Page
+
+d-n75ltziu-created = Created
+
+d-n75ltziu-updated = Updated
 
 d-h3zczsen = Import archive
     .doc = Imports a zip of pages as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
@@ -206,6 +236,8 @@ d-osyh3odz = Note page
     .w-write-something = Write something
 
 d-nki6assy = Note details
+    .w-from = From { $service }
+    .w-from-by = From { $service } by { $by }
     .w-created = Created
     .w-edited = Edited
     .w-1-word = 1 word

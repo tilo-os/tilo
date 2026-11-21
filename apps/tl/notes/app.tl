@@ -19,6 +19,17 @@ type Note (untitled: "Untitled") {
     /// The name that file had, path inside its archive included: an import that keeps a
     /// package's nesting finds the note a page stands under by it.
     origin: Text = ""
+    /// Who wrote the page where it came from, when another service held it before this
+    /// notebook: kept with the note so a page brought over still says whose words it is.
+    by: Text = ""
+    /// The service that page came from, when it came from one (`Outline`).
+    service: Text = ""
+    /// Where that page is read there, when it came from one: importing the same page again
+    /// opens this note rather than making a second one.
+    page: Text = ""
+    /// When the page was written there, and last changed there, as that service said it.
+    created: Text = ""
+    updated: Text = ""
 
     search {
         filter pinned (icon: .pin)
@@ -303,38 +314,80 @@ fn page_path(n: Note, pages: Map<Text>) -> Text {
     pages.get(n.id) ?? "{file_name(n)}.md"
 }
 
-/// Imports a Markdown file as a note at the top of the tree, or opens the note that file already
-/// made: a note keeps the address of the file it came from, so importing the same file twice
-/// makes one note. Its title is the document's first heading, or the file's name; the heading it
-/// says the title with is not said again in its body.
+/// Imports a Markdown file as a note, or opens the note that file already made: a note keeps the
+/// address of the file it came from, so importing the same file twice makes one note. The note
+/// stands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under
+/// `Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the
+/// document's first heading, or the file's name; the heading it says the title with is not said
+/// again in its body.
 action import_markdown(nb: Notebook, file: File) -> Note (
     icon: .file_plus,
     did: "imported a note",
 ) {
-    if let imported = nb.notes.find(n -> n.source == file.url) {
+    import_page(nb, file, "", "", "", "", "")
+}
+
+/// Imports a page another service held as a note, keeping whose words it is and where it stood
+/// there: what `tilo migrate` calls for each page it brings over, and what a person's own import
+/// of a file does without a service's words. A page imported by its address there again opens the
+/// note it made, whatever the page says now; the note stands under the note of the folder its
+/// file's path names.
+action import_page(
+    nb: Notebook,
+    file: File,
+    by: Text,
+    service: Text,
+    page: Text,
+    created: Text = "",
+    updated: Text = "",
+) -> Note (
+    icon: .file_plus,
+    label: "Import a page from a service",
+    did: "imported a note",
+) {
+    if let imported = nb.notes.find(n -> n.source == file.url or (page != "" and n.page == page)) {
         return imported
     }
     let named = page_name(file.name)
-    match file.text() {
+    let fresh = match file.text() {
         .ok(text) => {
             let title = first_heading(text) ?? named
-            nb.notes.insert(
-                Note(
-                    title: title,
-                    body: RichText.from_markdown(without_heading(text, title)),
-                    source: file.url,
-                    origin: file.name,
-                ),
+            Note(
+                title: title,
+                body: RichText.from_markdown(without_heading(text, title)),
+                source: file.url,
+                origin: file.name,
+                by: by,
+                service: service,
+                page: page,
+                created: created,
+                updated: updated,
             )
         }
         // A file that is not text still makes a note, saying what became of it: the person sees
         // the file they chose, and why it is not a note's words.
         .err(why) => {
-            nb.notes.insert(
-                Note(title: named, body: RichText(why), source: file.url, origin: file.name),
+            Note(
+                title: named,
+                body: RichText(why),
+                source: file.url,
+                origin: file.name,
+                by: by,
+                service: service,
+                page: page,
+                created: created,
+                updated: updated,
             )
         }
     }
+    let made = nb.notes.insert(fresh)
+    if let parent = nb.notes.find(n -> n.origin == "{folder_of(file.name)}.md") {
+        made.parent = parent
+        if let last = nb.notes.filter(x -> x.parent == parent and x != made).last() {
+            nb.notes.move(made, after: last)
+        } else { nb.notes.move(made, after: parent) }
+    }
+    made
 }
 
 /// Imports a zip of pages as notes under the notebook, a page under the page that held it, in one
@@ -638,6 +691,15 @@ view note_details(n: Note) {
         // leave and elides its middle where that is not enough, never the other way round.
         // The gap separates one fact from the next; no glyph stands between them.
         row(gap: .related, align: .center, fill: 0.0) {
+            // A page brought over from another service says where it came from and whose words
+            // it is, once, before the facts of this notebook: it was not made here.
+            if n.service != "" {
+                if n.by == "" {
+                    text("From {n.service}", role: .caption, secondary: true)
+                } else {
+                    text("From {n.service} by {n.by}", role: .caption, secondary: true)
+                }
+            }
             // When it was made, and when it was written since: one moment says both.
             if let at = made {
                 row(gap: .tight) {
@@ -1048,6 +1110,22 @@ scenario "a week of notes" {
             body: RichText("Onion, carrot, red lentils, cumin, lemon at the end."),
             parent: home,
             pinned: true,
+        ),
+    )
+}
+
+/// A page brought over from another service, open: the line under its title says where it came
+/// from and whose words it is, before the facts of this notebook.
+scenario "a page from another service" -> Note {
+    notebook.notes.insert(
+        Note(
+            title: "Q3 plan",
+            body: RichText("Ship the offline editor, then sharing."),
+            by: "Ada",
+            service: "Outline",
+            page: "https://outline.example/doc/q3-plan",
+            created: "2025-08-01T10:00:00Z",
+            updated: "2025-09-01T10:00:00Z",
         ),
     )
 }
