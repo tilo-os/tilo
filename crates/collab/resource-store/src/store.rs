@@ -191,7 +191,7 @@ impl Store {
         }
     }
 
-    /// Run a command against a private copy of the store. The command can follow the placement,
+    /// Send a command against a private copy of the store. The command can follow the placement,
     /// index and undo history of its earlier steps without publishing any of them.
     pub(crate) fn stage<T>(
         &mut self,

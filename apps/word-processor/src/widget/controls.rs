@@ -485,7 +485,7 @@ impl Editor {
             title,
             clear_label,
             anchor,
-            host: self.rect,
+            parent: self.rect,
             theme: &self.theme,
         });
         self.lifecycle.dirty = true;

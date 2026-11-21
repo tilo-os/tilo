@@ -16,7 +16,7 @@ use tilo_workspace_service::workspaces::fixtures::TestGroupKeys;
 use crate::engine::{Engine, Founder, ServiceAnswer};
 
 /// This device's own workspace service as a test opens it: the real service over the engine's
-/// state, the keys of the workspaces' channels the test makes, and the reads and writes the
+/// state, the keys of the workspaces' groups the test makes, and the reads and writes the
 /// session's roles make through it.
 pub(crate) struct TestService {
     reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
@@ -40,7 +40,7 @@ impl TestService {
     /// what this device's key service hands it once the workspace's group admits it.
     #[expect(
         clippy::expect_used,
-        reason = "the fixture makes every channel's keys it is asked for"
+        reason = "the fixture makes every group's keys it is asked for"
     )]
     pub(crate) fn keys_of(&self, workspace: WorkspaceId) -> key_group::ContentKeys {
         use tilo_workspace_service::workspaces::GroupKeys as _;
@@ -49,12 +49,12 @@ impl TestService {
             self.keys
                 .group_keys(&workspace, collab_types::EVERY_MEMBER, true),
         )
-        .expect("the fixture answers for every channel")
+        .expect("the fixture answers for every group")
         .expect("the workspace's keys")
     }
 
     /// Hand the service and `engine` `keys` as `workspace`'s, as the key service hands a member
-    /// the keys of a channel that admitted it.
+    /// the keys of a group that admitted it.
     pub(crate) fn hand_keys(
         &self,
         engine: &Engine,
@@ -66,7 +66,7 @@ impl TestService {
     }
 
     /// Found `workspace` as `name` on the service, held here as its member, and hand `engine` the
-    /// keys of its channel.
+    /// keys of its group.
     #[expect(
         clippy::expect_used,
         reason = "a test whose workspace is not founded cannot go on"
@@ -79,11 +79,11 @@ impl TestService {
 
 /// Open this device's own workspace service for `engine`'s state, and found what it makes there.
 pub(crate) fn serve(engine: &Arc<Engine>) -> TestService {
-    let slot = tilo_workspace_service::service::ServiceSlot::default();
+    let service = tilo_workspace_service::service::ServiceSlot::default();
     let keys = Arc::new(TestGroupKeys::default());
     crate::sync::serve_alone(
         engine,
-        slot.clone(),
+        service.clone(),
         Some(DeviceKeyGroups {
             keys: Arc::clone(&keys) as Arc<dyn tilo_workspace_service::workspaces::GroupKeys>,
             sink: None,
@@ -92,9 +92,9 @@ pub(crate) fn serve(engine: &Arc<Engine>) -> TestService {
     );
     TestService {
         reads: Arc::new(
-            tilo_workspace_service::apps::service_reads::ServiceDocuments::on(slot.clone()),
+            tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
         ),
-        writes: Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(slot)),
+        writes: Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(service)),
         keys,
     }
 }

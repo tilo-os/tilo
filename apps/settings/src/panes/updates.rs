@@ -62,7 +62,7 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const LONG_UPDATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_HELPER_OUTPUT: usize = 1024 * 1024;
 
-fn run_bounded(
+fn command_output(
     program: &str,
     args: &[&str],
     timeout: Duration,
@@ -74,7 +74,7 @@ fn run_bounded(
 /// Start a system unit, and whether it ended well; its own error is said
 /// when it gives one.
 fn start_unit(args: &[&str], timeout: Duration, failed: &str) -> Result<(), String> {
-    let output = run_bounded("systemctl", args, timeout)?;
+    let output = command_output("systemctl", args, timeout)?;
     if output.status.success() {
         return Ok(());
     }
@@ -177,12 +177,12 @@ pub struct UpdateDetails {
 impl UpdateDetails {
     fn from_system(rollback_target: Option<&str>) -> Self {
         crate::device_read::off_ui_thread();
-        let bootc_json = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)
+        let bootc_json = command_output("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).to_string());
         let release_notes = bootc_json.as_deref().and_then(parse_bootc_release_notes);
-        let history = run_bounded(
+        let history = command_output(
             "journalctl",
             &[
                 "-u",
@@ -198,7 +198,7 @@ impl UpdateDetails {
         .filter(|output| output.status.success())
         .map(|output| parse_update_history(&String::from_utf8_lossy(&output.stdout)))
         .unwrap_or_default();
-        let protection_enabled = run_bounded(
+        let protection_enabled = command_output(
             "systemctl",
             &["is-enabled", "tilo-rollback-confirm.timer"],
             STATUS_TIMEOUT,
@@ -308,7 +308,7 @@ fn live_state_for(staged: Option<&str>, state: Option<(String, LiveUpdate)>) -> 
 }
 
 fn read_bootc_status() -> Result<String, String> {
-    let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)?;
+    let out = command_output("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)?;
     if !out.status.success() {
         let diagnostic = out.stderr_diagnostic();
         return Err(if diagnostic.is_empty() {
@@ -457,7 +457,7 @@ fn start_update_policy(action: &str) -> Result<(), String> {
         return Err("invalid update policy action".into());
     }
     let unit = format!("tilo-update-policy@{action}.service");
-    let output = run_bounded("systemctl", &["start", "--wait", &unit], CONTROL_TIMEOUT)?;
+    let output = command_output("systemctl", &["start", "--wait", &unit], CONTROL_TIMEOUT)?;
     if output.status.success() {
         Ok(())
     } else {
@@ -505,7 +505,7 @@ pub struct RealUpdateControl;
 impl UpdateControl for RealUpdateControl {
     fn timer_enabled(&self) -> Option<bool> {
         crate::device_read::off_ui_thread();
-        let out = run_bounded("systemctl", &["is-enabled", UPDATE_TIMER], STATUS_TIMEOUT).ok()?;
+        let out = command_output("systemctl", &["is-enabled", UPDATE_TIMER], STATUS_TIMEOUT).ok()?;
         // `is-enabled` exits non-zero for "disabled", so the exit status is not
         // the answer — the word on stdout is. An unparseable word is `None`,
         // not `false`: "masked", "static" and "not-found" all mean something
@@ -524,7 +524,7 @@ impl UpdateControl for RealUpdateControl {
         // without it, switching updates off leaves the timer armed until the
         // next reboot, which is most of the problem being fixed.
         let verb = if on { "enable" } else { "disable" };
-        let out = run_bounded("systemctl", &[verb, "--now", UPDATE_TIMER], CONTROL_TIMEOUT)?;
+        let out = command_output("systemctl", &[verb, "--now", UPDATE_TIMER], CONTROL_TIMEOUT)?;
         if out.status.success() {
             return Ok(());
         }
@@ -543,7 +543,7 @@ impl UpdateControl for RealUpdateControl {
 
     fn roll_back(&self) -> Result<(), String> {
         crate::device_read::off_ui_thread();
-        let out = run_bounded(
+        let out = command_output(
             "systemctl",
             &["start", "--wait", ROLLBACK_UNIT],
             Duration::from_secs(5 * 60),
@@ -683,7 +683,7 @@ pub struct RealRebooter;
 impl Rebooter for RealRebooter {
     fn reboot(&self) -> Result<(), String> {
         crate::device_read::off_ui_thread();
-        let out = run_bounded("systemctl", &["reboot"], CONTROL_TIMEOUT)?;
+        let out = command_output("systemctl", &["reboot"], CONTROL_TIMEOUT)?;
         if out.status.success() {
             Ok(())
         } else {

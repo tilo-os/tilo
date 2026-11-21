@@ -2348,7 +2348,7 @@ impl Widget for ChatApp {
         // the title bar draws beside the names is its value, as the shell's
         // call card reads it. A stage opened whole has no title bar to hang
         // it on, and a call that could not join still says so: read it over
-        // the host tile then.
+        // the call's tile then.
         if self.call.active {
             let bounds = self
                 .hits

@@ -103,7 +103,7 @@ pub fn outline(view: &dyn Widget) -> Outline {
     crate::a11y_tree::walk::walk::<true, _>(&mut walk, view, None, &mut tree);
     let mut text = String::new();
     // The tree carries what the text shows and no more: a long document's lines past what
-    // the text has room for are counted, not sent as a tree nobody reads.
+    // the text holds are counted, not sent as a tree nobody reads.
     let cut = write_lines(&mut tree, 0, &mut text);
     let omitted = walk.omitted.saturating_add(cut);
     if omitted > 0 {
@@ -375,7 +375,7 @@ fn words(text: Option<&str>) -> Option<String> {
 }
 
 /// Write `nodes` at `depth` as lines, each with its children's lines under it, while the
-/// text has room, and keep in `nodes` only the lines written: how many nodes were cut.
+/// text holds, and keep in `nodes` only the lines written: how many nodes were cut.
 fn write_lines(nodes: &mut Vec<OutlineNode>, depth: usize, out: &mut String) -> usize {
     use std::fmt::Write as _;
     let mut cut = 0_usize;
@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(outline.nodes, shown, "the count is the tree's");
         assert!(
             outline.nodes > 10 && outline.nodes < 500,
-            "the tree holds what the text has room for: {} nodes",
+            "the tree holds what the text fits: {} nodes",
             outline.nodes
         );
         assert_eq!(

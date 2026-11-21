@@ -43,7 +43,7 @@ pub(super) struct PaletteRequest<'a> {
     pub(super) title: String,
     pub(super) clear_label: String,
     pub(super) anchor: Point,
-    pub(super) host: Rect,
+    pub(super) parent: Rect,
     pub(super) theme: &'a Theme,
 }
 
@@ -58,7 +58,7 @@ pub(super) struct CompactSwatchPalette {
     clear_focused: bool,
     clear_hovered: bool,
     anchor: Point,
-    host: Rect,
+    parent: Rect,
 }
 
 impl Default for CompactSwatchPalette {
@@ -74,7 +74,7 @@ impl Default for CompactSwatchPalette {
             clear_focused: false,
             clear_hovered: false,
             anchor: Point::ZERO,
-            host: Rect::ZERO,
+            parent: Rect::ZERO,
         }
     }
 }
@@ -104,9 +104,9 @@ impl CompactSwatchPalette {
         }
         self.pointer = request.anchor;
         self.anchor = request.anchor;
-        self.host = request.host;
+        self.parent = request.parent;
         let mut text = TextRenderer::new();
-        self.layout(request.anchor, request.host, request.theme, &mut text);
+        self.layout(request.anchor, request.parent, request.theme, &mut text);
     }
 
     pub(super) fn close(&mut self) {
@@ -186,7 +186,7 @@ impl CompactSwatchPalette {
         false
     }
 
-    fn layout(&mut self, anchor: Point, host: Rect, theme: &Theme, text: &mut TextRenderer) {
+    fn layout(&mut self, anchor: Point, parent: Rect, theme: &Theme, text: &mut TextRenderer) {
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
@@ -224,10 +224,10 @@ impl CompactSwatchPalette {
         let height = pad + title_h + gap + grid_h + gap + clear_h + pad;
         let x = anchor
             .x
-            .clamp(host.x0 + gap, (host.x1 - width - gap).max(host.x0 + gap));
+            .clamp(parent.x0 + gap, (parent.x1 - width - gap).max(parent.x0 + gap));
         let y = anchor
             .y
-            .clamp(host.y0 + gap, (host.y1 - height - gap).max(host.y0 + gap));
+            .clamp(parent.y0 + gap, (parent.y1 - height - gap).max(parent.y0 + gap));
         self.rect = Rect::new(x, y, x + width, y + height);
         picker.apply_layout(&taffy, node, Point::new(x + pad, y + pad + title_h + gap));
         let clear_y = self.rect.y1 - pad - clear_h;
@@ -242,7 +242,7 @@ impl CompactSwatchPalette {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.layout(self.anchor, self.host, theme, text);
+        self.layout(self.anchor, self.parent, theme, text);
         let Some(picker) = self.picker.as_mut() else {
             return;
         };

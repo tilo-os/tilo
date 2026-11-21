@@ -21,11 +21,12 @@
 //!   session's shell, and the [`CommandRan`] says it was
 //!   ([`cancelled`](CommandRan::cancelled)).
 //!
-//! - A run may carry secrets beside its command line ([`VmSecret`]): items of
-//!   the workspace's vault its VM may use, resolved by the host for this run.
+//! - A command may carry secrets beside its command line ([`VmSecret`]): items of
+//!   the workspace's vault its VM may use, resolved by the device holding the workspace
+//!   for this command.
 //!   Each reaches the environment of every program the command starts in the
 //!   VM, and nothing else: not the shell's own variables, not the command
-//!   line, not the run's answer.
+//!   line, not the command's answer.
 //!
 //! Only the workspace's host may ask, as a device of the operator the
 //! member's own identity belongs to: a run is paid for by the account the

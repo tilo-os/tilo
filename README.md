@@ -37,7 +37,7 @@ copy of important data.
   acts, every view of that resource shows it.
 - **Views compose.** Any resource can be shown again in another view, and a
   new view can be written quickly in tilolang, also by an agent in a chat.
-- **The shell is a view.** Launcher, top bar and settings run on the same
+- **The shell is a view.** Launcher, top bar and settings are built on the same
   toolkit and model as every other app, and you can customize it deeply. Windows sit in horizontally
   scrolling strips; tabs can group different apps.
 
