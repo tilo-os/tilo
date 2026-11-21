@@ -227,9 +227,9 @@ The landing-page manifest records the public release root and package-channel
 state separately from signed download availability. Homebrew is marked available only after its native
 install matrix passes. A newly opened WinGet submission is marked `submitted`,
 so the site recommends the signed setup EXE instead of showing a command that
-cannot resolve yet. The scheduled acceptance monitor (`release-imager-winget.yml`)
-checks Microsoft's exact version manifest every six
-hours with a site token from the credential broker.
+cannot resolve yet. The scheduled acceptance monitor (t's `imager-winget-acceptance`
+check) checks Microsoft's exact version manifest every six
+hours with a site token from the server config.
 Once accepted, it runs the same idempotent site verification/build and changes
 WinGet to `available`; transient GitHub failures remain fail-safe as
 `submitted`.

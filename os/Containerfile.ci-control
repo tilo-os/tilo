@@ -1,7 +1,9 @@
 # Lightweight control jobs keep the qualified lint environment and add only
 # the Docker client/buildx. The runner owns a separate per-job Docker daemon.
-# Built by .forgejo/workflows/build-ci-fast-images.yml, which passes the
-# ci-fast image it has just built; the default is the currently pinned ci-fast.
+# Built on top of ci-fast: pass the image t's `image-ci-fast` check built as the
+# CI_FAST_IMAGE build argument, or leave the default, the currently pinned
+# ci-fast. tools/ci/images.toml pins the last published control image, which the
+# workflows that need a Docker client pull.
 ARG CI_FAST_IMAGE=registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
 FROM docker.io/library/docker@sha256:f56779b4e86550493153cc8642c9c8e40b5d934e43cb5b4ea463aea5245c5c01 AS docker-cli
 FROM ${CI_FAST_IMAGE}

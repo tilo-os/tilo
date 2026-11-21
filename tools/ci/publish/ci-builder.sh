@@ -8,7 +8,7 @@
 #   ci-builder.sh inputs           the files it is built from, which date it (source-date.sh)
 #   ci-builder.sh tag              the registry tag of the image these inputs build
 # Its canaries are tools/ci/publish/ci-builder-canary.sh, kept apart so that changing them
-# doesn't rebuild the image. .forgejo/workflows/build-ci-builder.yml publishes it under its tag,
+# doesn't rebuild the image. t's `publish-ci-builder` publishes it under its tag,
 # and tools/ci/resolve_builder.py runs every CI job in the image its commit's inputs build, so
 # no job runs in an image older than what its commit asks for.
 set -euo pipefail

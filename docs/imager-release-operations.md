@@ -608,12 +608,14 @@ by `microsoft/winget-pkgs`. Configure:
   user token described above; the workflow accepts no repository token fallback;
 - repository variable `WINGET_GITHUB_USER`: that bot account's login.
 
-`release-imager-winget.yml` runs every six hours and on dispatch. It reads the release already published by
+t's `imager-winget-acceptance` check runs every six hours and on dispatch
+(`t dispatch imager-winget-acceptance`). It reads the release already published by
 the landing page, refuses to select another version, keeps that release's download
 root and signing fingerprint, and advances `submitted` to `available` only after
 Microsoft's public index serves the exact identifier and version. It pushes the
-site with a token of the website bot that may push the site repository, from the
-credential broker's `site` exchange; without the broker the workflow does not run.
+site with a token of the website bot that may push the site repository: the
+server config gives the check it as `TILO_SITE_TOKEN`, and the check fails when
+it is missing.
 
 After first publication users install with:
 

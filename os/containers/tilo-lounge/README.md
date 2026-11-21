@@ -129,11 +129,12 @@ deployment that still names one (eu1 does) starts unchanged.
 
 `tools/ci/publish/lounge-binaries.sh` builds the programs,
 `tools/ci/publish/lounge-fonts.sh` the product font catalog and
-`tools/ci/publish/lounge-context.sh` lays out the build context; the
-`publish-site` workflow (dispatch-only, main) builds this image and the web
-entry from one commit, tests both and publishes `dev-<commit>`. Those steps
-are also t's checks — `lounge-binaries`, `lounge-fonts`,
-`image-lounge-context`, `image-lounge` — so a change is built by naming them.
+`tools/ci/publish/lounge-context.sh` lays out the build context. t's
+`lounge-binaries`, `lounge-fonts`, `image-lounge-context` and `image-lounge`
+checks build and test this image; `image-web-entry-context`, `image-web-entry`
+and `publish-web-entry` do the same for the web entry; `publish-lounge` and
+`publish-web-entry` publish both from one commit, so a change is built by
+naming the checks.
 The checks that run the programs without an image around them (`e2e`,
 `page-tour`) ask `lounge-binaries.sh` for the profile Cargo.toml's
 `lounge-check` names: the same code and optimisation level without the

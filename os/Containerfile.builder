@@ -1,7 +1,7 @@
 # CI build environment: everything `cargo check`/`test`/`nextest` needs for the
 # workspace, so jobs do not `dnf install` ~30 packages on every run.
 #
-# Published by .forgejo/workflows/build-ci-builder.yml whenever what it is built
+# Published by t's `publish-ci-builder` check whenever what it is built
 # from changes. Fedora rather than the runner's default Ubuntu image: the OS is
 # Fedora-based, so the build deps and their versions match what the image build
 # uses.

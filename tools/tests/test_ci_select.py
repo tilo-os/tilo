@@ -1203,7 +1203,7 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             excluded = [
-                ".forgejo/workflows/build-ci-builder.yml",
+                "tools/ci/publish/ci-builder-canary.sh",
                 "os/tests/security-boundaries.sh",
                 "tools/run-security-boundary-invariants.sh",
                 "Cargo.toml",
@@ -1274,7 +1274,7 @@ class SelectorTests(unittest.TestCase):
             self.setUp()
             self.install_builder_recipe()
             for extra in ("leaf/src/lib.rs", "Cargo.lock", ".cargo/config.toml",
-                          "rust-toolchain.toml", ".forgejo/workflows/build-ci-builder.yml"):
+                          "rust-toolchain.toml"):
                 with self.subTest(extra=extra):
                     plan = ci_select.make_plan(
                         self.metadata, self.root, ["os/Containerfile.builder", extra], 2)
@@ -1328,7 +1328,6 @@ class SelectorTests(unittest.TestCase):
                 self.metadata,
                 self.root,
                 [
-                    ".forgejo/workflows/build-ci-builder.yml",
                     "os/tests/imager_ephemeral_runner.sh",
                     "scripts/check-install-contract.py",
                     "tools/ci/runners/imager-ephemeral-linux.sh",
@@ -1357,7 +1356,7 @@ class SelectorTests(unittest.TestCase):
             self.setUp()
             self.install_quality_helpers()
             for source in ci_select.QUALITY_ONLY_HELPERS:
-                for extra in ("tools/unknown.py", ".forgejo/workflows/build-ci-builder.yml",
+                for extra in ("tools/unknown.py",
                               "os/tests/security-boundaries.sh",
                               "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
                     with self.subTest(source=source, extra=extra):
@@ -1394,7 +1393,6 @@ class SelectorTests(unittest.TestCase):
             # PR #86's first two checks selected all 140 Rust packages even
             # though every change was CI orchestration or its test.
             changes = [
-                ".forgejo/workflows/build-ci-builder.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/affected_packages.py",
@@ -1432,7 +1430,6 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             for path in (
-                ".forgejo/workflows/build-ci-builder.yml",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/native-mold-linker.sh",
                 "tools/ci/verify-native-mold.sh",
@@ -1445,7 +1442,6 @@ class SelectorTests(unittest.TestCase):
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_text("FROM scratch\n")
             changes = [
-                ".forgejo/workflows/build-ci-builder.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/native-mold-linker.sh",
@@ -1456,15 +1452,13 @@ class SelectorTests(unittest.TestCase):
             self.assertFalse(plan["rust_required"])
             self.assertEqual(plan["selected"], [])
             self.assertEqual(plan["matrix"], {"include": []})
-        with self.subTest(phase='builder observers do not compile unrelated rust'):
+        with self.subTest(phase='builder canary and its test do not compile unrelated rust'):
             self.setUp()
             self.install_quality_helpers()
             self.install_control_inputs()
             changes = [
-                ".forgejo/workflows/build-ci-builder.yml",
+                "tools/ci/publish/ci-builder-canary.sh",
                 "os/tests/test_builder_candidate_workflow.py",
-                "os/tests/workflow_dependency_invariants.sh",
-                "tools/tests/test_ci_native_mold.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
             self.assertFalse(plan["rust_required"])
@@ -1473,7 +1467,7 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='ci control plane mapping stays exact and conservative'):
             self.setUp()
             self.install_control_inputs()
-            source = ".forgejo/workflows/build-ci-builder.yml"
+            source = "tools/ci/publish/ci-builder-canary.sh"
             for extra in (".forgejo/workflows/unknown.yml", "leaf/src/lib.rs",
                           "Cargo.lock", ".cargo/config.toml"):
                 with self.subTest(extra=extra):
@@ -1553,7 +1547,6 @@ class SelectorTests(unittest.TestCase):
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_text("FROM scratch\n")
             changes = [
-                ".forgejo/workflows/build-ci-builder.yml",
                 "os/Containerfile.builder",
                 "os/external-assets/github-assets.tsv",
                 "os/tests/test_builder_candidate_workflow.py",

@@ -76,12 +76,10 @@ for the apps it confines after the person allows each one. Tilo is not App Sandb
 unsigned executable memory, and it loads no third-party dylibs. The file
 explains each key it leaves out.
 
-`.forgejo/workflows/release-runtime-macos.yml` builds the universal bundle
-with `build-app.sh`, verifies its DMG with `verify-app.sh` and uploads the
-DMG, zip and cask as artifacts; with `sign`, on a `runtime-vX.Y.Z` tag, it
-signs and notarizes them first. It is disabled until a Mac runner serves its
-`imager-macos-aarch64` label. Until then builds are made by hand, signed ones with
-`TILO_MAC_SIGNING_IDENTITY` and a notary keychain profile, as above.
+The `runtime-macos-app` check builds the universal bundle with `build-app.sh`
+and verifies its DMG with `verify-app.sh` (`t dispatch runtime-macos-app`).
+Signing and notarizing are made by hand with `TILO_MAC_SIGNING_IDENTITY` and a
+notary keychain profile, as above.
 
 ## Updates
 

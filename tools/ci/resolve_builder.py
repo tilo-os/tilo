@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Resolve the builder this commit's inputs build to its immutable index digest.
 
-The tag names the inputs (tools/ci/publish/ci-builder.sh tag), and
-.forgejo/workflows/build-ci-builder.yml publishes it when they change: a job never
+The tag names the inputs (tools/ci/publish/ci-builder.sh tag), and t's
+`publish-ci-builder` publishes it when they change: a job never
 runs in an image older than its commit asks for, and fails where that image is not
 published yet instead of running in a stale one.
 """

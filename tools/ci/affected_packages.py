@@ -208,10 +208,10 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     "os/dev/resolve-rpm-snapshot.sh": (
         "os/tests/test_rpm_snapshot_fingerprint.py",
     ),
-    ".forgejo/workflows/build-ci-builder.yml": (
+    # The builder candidate's canary: the policy test reads its arms and runs
+    # them against stubs, the same recipe t's canary checks build.
+    "tools/ci/publish/ci-builder-canary.sh": (
         "os/tests/test_builder_candidate_workflow.py",
-        "os/tests/workflow_dependency_invariants.sh",
-        "tools/tests/test_ci_native_mold.py",
     ),
     ".forgejo/workflows/resolve-builder.yml": (
         "tools/tests/test_resolve_ci_builder.py",
@@ -1329,8 +1329,9 @@ def make_plan(
         for path in (source, *observers)
     )
     # Ordinary checks use the already-published builder, so compiling Rust
-    # cannot validate an edited recipe. Its dedicated workflow builds and
-    # qualifies the candidate. Deletion and mixed build inputs remain full.
+    # cannot validate an edited recipe. t's `image-ci-builder-{arch}` and
+    # `publish-ci-builder` checks build and qualify the candidate. Deletion
+    # and mixed build inputs remain full.
     recipe_present = (
         "os/Containerfile.builder" in changes
         and (root / "os/Containerfile.builder").is_file()

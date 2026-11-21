@@ -116,8 +116,9 @@ run them on a Forgejo instance with stock runners. They need:
   matrices come from `runner_labels.py`.
 - **Images.** `images.toml` pins the CI images by digest. They are public, so a
   fork can pull them as they are. To build its own, publish
-  `os/Containerfile.ci-fast` and `os/Containerfile.builder` (`build-ci-fast-images.yml`
-  and `tools/ci/publish/ci-builder.sh`), change the pins, and set
+  `os/Containerfile.ci-fast` and `os/Containerfile.builder` (t's `image-ci-fast`
+  and `publish-ci-fast`, then `image-ci-builder` and `publish-ci-builder`,
+  through `tools/ci/publish/ci-builder.sh`), change the pins, and set
   `TILO_CI_REGISTRY`, `TILO_CI_BUILDER_REPOSITORY` and
   `TILO_CI_REGISTRY_TOKEN_REALM` for the builder lookup.
 - **Artifact actions.** The `actions/upload-artifact` and
