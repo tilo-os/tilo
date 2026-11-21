@@ -1116,13 +1116,21 @@ impl Workspaces {
         } else if let Some(joined) = moving.filter(|_| name.is_none())
             && let Some(role) = self.role_of(joined, person, now).await
         {
-            // Another's, which the person was invited into: another device
-            // of theirs (their key) enters it as them, at the role they hold.
+            // Another's, which the person was invited into or was handed:
+            // another device of theirs (their key) enters it as them, at the
+            // role they hold. No invitation gives the owner's place: theirs
+            // is the Editor's invitation a workspace of their own invites
+            // them with, which admits their device and gives them no role.
             drop(making);
             let summary = self
                 .summary(joined)
                 .await
                 .map_err(|error| refused(&error))?;
+            let role = if role == Role::Owner {
+                Role::Editor
+            } else {
+                role
+            };
             return self
                 .invite_own_person(summary, person, role, request_id, expiry(now, seconds))
                 .await;
@@ -1275,7 +1283,9 @@ impl Workspaces {
         // workspaces for.
         let owner = super::super::owner(request)?;
         if owner == host.cert.user_public_key {
-            return Err("this host keeps a workspace another host governs only for its owner".into());
+            return Err(
+                "this host keeps a workspace another host governs only for its owner".into(),
+            );
         }
         self.keeps_for_owner(&owner, now).await?;
         Ok(Some(owner))

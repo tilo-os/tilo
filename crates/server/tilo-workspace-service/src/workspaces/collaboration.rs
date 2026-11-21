@@ -824,7 +824,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// Refuses non-administrators, a workspace this server's person does not
-    /// own, and grants for another workspace.
+    /// govern ([`Workspaces::governs`]), and grants for another workspace.
     pub async fn put_workspace_grants(
         &self,
         workspace: &str,
@@ -843,7 +843,7 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         if !self.governs(&workspace) {
             return Err(CollaborationError::new(
-                "this server's person does not own the workspace",
+                "this server's person does not govern the workspace",
             ));
         }
         let key = self.inner.host.key.clone();
@@ -866,7 +866,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// Why the grants were not taken back; a workspace this server's person
-    /// does not own is refused.
+    /// does not govern ([`Workspaces::governs`]) is refused.
     pub async fn remove_workspace_grants(
         &self,
         workspace: &str,
@@ -885,7 +885,7 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         if !self.governs(&workspace) {
             return Err(CollaborationError::new(
-                "this server's person does not own the workspace",
+                "this server's person does not govern the workspace",
             ));
         }
         let key = self.inner.host.key.clone();

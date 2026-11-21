@@ -78,8 +78,8 @@ is built as its commit, one with changes as t finds it when the run starts.
 
 A fresh Lounge takes people by invitation, as production's does. The stack
 makes a person of its own and starts the server with them as the Lounge's owner,
-and `up` prints an owner link they made: whoever opens it, in any browser, is in
-as an owner too (`stack.sh owner` prints it again).
+and `up` prints an administrator link they made: whoever opens it, in any
+browser, is in as an administrator (`stack.sh owner` prints it again).
 
 `stack.sh up --images` runs the release images instead: `image-lounge`,
 `image-api` and `image-web-entry`, built by `t` for this commit, under rootless
@@ -198,9 +198,9 @@ eval "$(os/containers/tilo-sh/stack.sh env)"
 This sets `TILO_API_URL` and `TILO_SITE`, and everything points at the local
 stack:
 
-- **You, the owner:** open the owner link `up` printed (`stack.sh owner` prints
-  it again) in your browser. It makes your identity on the spot and you are in
-  the Lounge as its owner and an administrator. The stack's own person, the
+- **You, an administrator:** open the administrator link `up` printed
+  (`stack.sh owner` prints it again) in your browser. It makes your identity on
+  the spot and you are in the Lounge as an administrator. The stack's own person, the
   owner it started the Lounge with, needs no browser:
   `eval "$(stack.sh owner --here)"` gives you a key for them, and
   `stack.sh tilo workspace people … -w Lounge` runs `tilo` as them.

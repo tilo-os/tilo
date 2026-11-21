@@ -1127,13 +1127,14 @@ async fn refound_records(
 /// settlement document, so a restart neither grants it again nor takes back a
 /// person's later choice: after that, the switch in the workspace's settings
 /// is the only way to change it. A workspace the operator does not list, or
-/// that a person owns, is left alone.
+/// that this host does not govern (`Workspaces::governs_workspace`), is left
+/// alone.
 pub(crate) async fn settle_moderation(
     workspaces: &Workspaces,
     workspace: &str,
     persistent: &PersistentArgs,
 ) -> anyhow::Result<()> {
-    if persistent.listing_description.is_none() || workspaces.has_owner(workspace).await {
+    if persistent.listing_description.is_none() || !workspaces.governs_workspace(workspace).await {
         return Ok(());
     }
     let grant = tilo_action_policy::bot::MODERATION_GRANT;
@@ -2754,6 +2755,82 @@ mod tests {
             .unwrap();
         let asked = invite(&workspaces, &workspace, &member.1).await;
         assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
+        server.shutdown().await;
+    }
+
+    /// A workspace the deployment handed to its owner is still its host's to
+    /// settle: after a restart the host, the administrator it stays, writes
+    /// the guests' Deny, members inviting (taken back and given again) and
+    /// the moderation bot's grant as every start does, while the workspace
+    /// stays its owner's, whom a deployment naming someone else does not
+    /// replace.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_handed_workspace_takes_its_hosts_settings_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, workspaces, server_cert, workspace) = plaza(dir.path()).await;
+        let listed = PersistentArgs {
+            listing_description: Some("A plaza".into()),
+            ..PersistentArgs::default()
+        };
+        ensure_guest_policy(&workspaces, &workspace, &server_cert)
+            .await
+            .unwrap();
+        settle_moderation(&workspaces, &workspace, &listed)
+            .await
+            .unwrap();
+        settle_member_invites(&workspaces, &workspace, &server_cert, false)
+            .await
+            .unwrap();
+        let owner = guest(41).1.user_public_key;
+        let owners = [hex::encode(owner)];
+        settle_owners(&workspaces, &workspace, &owners)
+            .await
+            .unwrap();
+        assert!(workspaces.is_owner(&workspace, owner).await);
+        server.shutdown().await;
+
+        let (server, workspaces, server_cert) = host(dir.path()).await;
+        assert!(
+            workspaces.governs_workspace(&workspace).await,
+            "the host administers the workspace it handed over"
+        );
+        for step in 0..2 {
+            ensure_guest_policy(&workspaces, &workspace, &server_cert)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+            settle_moderation(&workspaces, &workspace, &listed)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+            settle_member_invites(&workspaces, &workspace, &server_cert, false)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+            settle_member_invites(&workspaces, &workspace, &server_cert, true)
+                .await
+                .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+            settle_owners(
+                &workspaces,
+                &workspace,
+                &[hex::encode(guest(42).1.user_public_key)],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
+        }
+        let grants = workspaces.workspace_grants(&workspace).await.unwrap();
+        for id in ["public-workspace-guests-no-outside", MEMBERS_INVITE] {
+            assert!(
+                grants.iter().any(|grant| grant.id.as_str() == id),
+                "{id} is held: {grants:#?}"
+            );
+        }
+        assert!(
+            tilo_server::workspace_bots::enabled(&workspaces, &workspace)
+                .await
+                .unwrap()
+        );
+        assert!(
+            workspaces.is_owner(&workspace, owner).await,
+            "the workspace stays its owner's"
+        );
         server.shutdown().await;
     }
 

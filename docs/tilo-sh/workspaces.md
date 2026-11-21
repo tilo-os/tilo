@@ -208,18 +208,19 @@ tilo workspace people unlist ENTRY -w Lounge                                  # 
 ```
 
 `tilo workspace people add` takes a person's user public key (`tilo login --new-identity --json` names it), so it
-lets someone in before any device of theirs joins. `--role owner` makes another owner, and `--role
-administrator` another administrator. `tilo workspace people invite` answers a link instead: `--email` names the
-address it is for, and `--waiting` invites an address already on the wait list.
+lets someone in before any device of theirs joins. `--role administrator` makes another administrator.
+A workspace has one owner, and `--role owner` hands it on, which only that owner does, from a device of
+their own. `tilo workspace people invite` answers a link instead: `--email` names the address it is
+for, and `--waiting` invites an address already on the wait list.
 
 The same actions reach an agent over MCP (`tilo_do {"path": "workspace/members#add", "args": {"person":
 KEY, "role": "editor"}}`, and `#invite`, `#wait-list`, `#unlist`) and over REST (`POST
 /v1/workspaces/{workspace}/members`, `POST /v1/workspaces/{workspace}/members/invitations`, `GET
 /v1/workspaces/{workspace}/members/wait-list`, `DELETE /v1/workspaces/{workspace}/members/wait-list/{entry}`).
 
-A deployment names its first owners when it starts the host: `TILO_WORKSPACES_OWNERS` takes their user
-public keys, comma-separated, and each is an owner of the workspace from the start. Everyone after them
-comes in through the actions above.
+A deployment names its owner when it starts the host: `TILO_WORKSPACES_OWNERS` takes their user public
+key, and the host hands the workspace to them at its first start, staying in it as an administrator
+that keeps the deployment's settings. Everyone after them comes in through the actions above.
 
 ## Where next
 

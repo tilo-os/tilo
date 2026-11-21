@@ -1641,12 +1641,40 @@ impl Workspaces {
         &self.inner.host.cert
     }
 
-    /// Whether this server's own person owns `governed`, as its governance
-    /// says: a workspace this host made for someone else, or that was handed
-    /// to them since, is theirs.
+    /// Whether this server's own person governs `governed`: they own it, or
+    /// its governance keeps them as an administrator of a workspace that is
+    /// no person's own here. A workspace a deployment handed to its owner is
+    /// still served and settled by its host, which writes the settings the
+    /// deployment asks for as the administrator it stays. A person's own
+    /// workspace is theirs to govern, and one whose owner took the host's
+    /// grant back is governed here no more. Whatever the host writes, the
+    /// workspace's governance decides again on every replica, so what only
+    /// its owner may change stays theirs.
     #[must_use]
     fn governs(&self, governed: &GovernedWorkspace) -> bool {
-        governed.peer().owner() == self.inner.host.cert.user_public_key
+        let host = self.inner.host.cert.user_public_key;
+        let peer = governed.peer();
+        if peer.owner() == host {
+            return true;
+        }
+        let persons_own = self
+            .own()
+            .is_some_and(|own| own.owner_of(governed.workspace()).is_some());
+        !persons_own
+            && peer
+                .governance()
+                .governed_policy()
+                .is_ok_and(|policy| policy.is_administrator(&hex::encode(host)))
+    }
+
+    /// Whether this server's own person governs `workspace` here
+    /// ([`Self::governs`]); `false` for a workspace not held here.
+    pub async fn governs_workspace(&self, workspace: &str) -> bool {
+        let Ok(governed) = self.workspace(workspace).await else {
+            return false;
+        };
+        let governed = governed.lock().await;
+        self.governs(&governed)
     }
 
     /// The governor answering the workspace-join exchange for these workspaces.

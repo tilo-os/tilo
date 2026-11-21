@@ -272,8 +272,8 @@ CUSTOMERS=300 SAMPLE_PIDS=server:$(cat ~/.local/state/tilo-sh-local/run/server.p
 
 The key is the stack's own person's, and that person is the Lounge's owner from the start, so no
 browser is needed (`stack.sh owner --here` approves the key on the spot; `stack.sh env` exports it from
-then on). To act as a person of your own instead, open the owner link `stack.sh up` printed (`stack.sh
-owner` prints it again), which makes you an owner too, and approve a key of yours there.
+then on). To act as a person of your own instead, open the administrator link `stack.sh up` printed
+(`stack.sh owner` prints it again), which makes you an administrator, and approve a key of yours there.
 (`TILO_SH_STATE` moves the stack's state from `~/.local/state/tilo-sh-local`.)
 
 ## What the agent's key reaches

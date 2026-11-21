@@ -1121,6 +1121,44 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     server.shutdown().await;
 }
 
+/// A workspace this host handed to a person, as a deployment hands its
+/// Lounge to its owner, is entered by a key of theirs at once: the invitation
+/// the host answers it with admits the key on its person's certificate, as no
+/// invitation gives the owner's place, and the workspace stays theirs.
+#[tokio::test]
+async fn a_key_of_the_person_a_workspace_was_handed_to_enters_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let host = ServiceWorkspaceActions::new();
+    host.attach(workspaces.clone());
+
+    let ada = SigningKey::from_bytes(&rand::random());
+    let person = ada.verifying_key().to_bytes();
+    workspaces
+        .declare_owner(&home, person, Some("Ada"))
+        .await
+        .unwrap();
+    let backend = certified(
+        &ada,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::server_key_grant(),
+    );
+    let entering = own_as_key(&host, &backend, json!({"workspace": home})).await;
+    assert_eq!(entering.workspace.workspace, home);
+    join(workspaces, &entering, &backend).await;
+    assert_eq!(
+        access(workspaces, &home, person)
+            .await
+            .map(|(role, _)| role),
+        Some(Role::Owner),
+        "the key's person owns the workspace it entered"
+    );
+    server.shutdown().await;
+}
+
 /// An owner's server key lets a person in by their key, at once, as an
 /// administrator: that person's own key then enters and brings others in, as
 /// far as they may. Handing the workspace on is the owner's own to sign, so
@@ -1163,7 +1201,11 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_pe
             if reason.contains("only the workspace's owner makes this change, and from a device of their own")),
         "{handed:?}"
     );
-    assert!(!workspaces.is_owner(&workspace.workspace, grace_person).await);
+    assert!(
+        !workspaces
+            .is_owner(&workspace.workspace, grace_person)
+            .await
+    );
 
     // Ada's key makes Grace an administrator by her key.
     let listed = add_member(&host, workspace, &ada_key, &grace, "administrator")
@@ -2012,7 +2054,11 @@ async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said()
     // A workspace of theirs this host records, kept closed here as it is when its runtime
     // was let go; a device of theirs kept a list naming its own address for it.
     let workspace = uuid::Uuid::new_v4().to_string();
-    workspaces.own().unwrap().record(&person, &workspace).unwrap();
+    workspaces
+        .own()
+        .unwrap()
+        .record(&person, &workspace)
+        .unwrap();
     let named = PersonalList {
         workspaces: vec![PersonalWorkspace {
             workspace: workspace.clone(),

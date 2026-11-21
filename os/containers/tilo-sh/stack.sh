@@ -100,13 +100,14 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          page asks it (their vault, their mail accounts):
                          stack.sh person do workspace/vault#entries -w <workspace>
   stack.sh owner [KEY] [--name NAME]
-                         an owner link: opening it in any browser (one with
-                         no Tilo identity yet too) makes that person an owner
-                         of the Lounge, an administrator it is kept for, and
-                         lets them in to invite the others; up prints one.
+                         an administrator link: opening it in any browser
+                         (one with no Tilo identity yet too) makes that person
+                         an administrator of the Lounge, beside its one owner,
+                         and lets them in to invite the others; up prints one.
                          With KEY, the person with that user public key is an
-                         owner at once (NAME is how the Lounge names them):
-                         the stack's owner runs tilo workspace people add KEY --role owner
+                         administrator at once (NAME is how the Lounge names
+                         them): the stack's owner runs
+                         tilo workspace people add KEY --role administrator
   stack.sh invite [WORKSPACE] [-- --role ROLE] [--email ADDRESS]
                          an invite link to WORKSPACE (its id; the Lounge when
                          none), made by the stack's owner with tilo workspace people
@@ -1124,13 +1125,14 @@ lounge_id() {
   cat "$id_file"
 }
 
-# owner [KEY] [--name NAME]: without KEY, an owner link: opening it in any
-# browser, one with no Tilo identity yet included, makes that person an owner
-# of the Lounge (an administrator it is kept for) and lets them in. With KEY,
-# the person whose user public key (hex) is KEY is an owner at once: the
-# stack's own person adds them (`tilo workspace people add KEY --role owner`), and a key
-# of theirs reaches the Lounge before any device of theirs joins. NAME is how
-# the Lounge names them then.
+# owner [KEY] [--name NAME]: without KEY, an administrator link: opening it
+# in any browser, one with no Tilo identity yet included, makes that person an
+# administrator of the Lounge and lets them in. The Lounge has one owner, the
+# stack's own person, and only they hand it on, from a device of their own.
+# With KEY, the person whose user public key (hex) is KEY is an administrator
+# at once: the stack's own person adds them (`tilo workspace people add KEY
+# --role administrator`), and a key of theirs reaches the Lounge before any
+# device of theirs joins. NAME is how the Lounge names them then.
 declare_owner() {
   local key=''
   local name=''
@@ -1153,16 +1155,16 @@ declare_owner() {
     return
   fi
   if [[ -z $key ]]; then
-    [[ -z $name ]] || die 'owner --name names a KEY; whoever opens the owner link names themself'
+    [[ -z $name ]] || die 'owner --name names a KEY; whoever opens the administrator link names themself'
     owner_link
     return
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (tilo login --json names it as user_public_key)'
   local -a named=()
   [[ -z $name ]] || named=(--name "$name")
-  owner_tilo workspace people add "$key" --role owner "${named[@]}" -w "$(lounge_id)" >/dev/null \
-    || die "the Lounge did not make $key an owner"
-  say "$key is an owner of the Lounge: let in at once${name:+ as $name}"
+  owner_tilo workspace people add "$key" --role administrator "${named[@]}" -w "$(lounge_id)" >/dev/null \
+    || die "the Lounge did not make $key an administrator"
+  say "$key is an administrator of the Lounge: let in at once${name:+ as $name}"
 }
 
 # The stack's own person: tilo run with a home of its own under the stack's
@@ -1262,13 +1264,14 @@ owner_here() {
   printf 'export TILO_API_KEY=%s\n' "$api_key"
 }
 
-# An owner link: whoever opens it is an owner from then on, as the stack's
-# own person invites them (`tilo workspace people invite --role owner`).
+# An administrator link: whoever opens it is an administrator from then on,
+# as the stack's own person invites them (`tilo workspace people invite --role
+# administrator`).
 owner_link() {
   local link
-  link=$(owner_tilo workspace people invite --role owner -w "$(lounge_id)" | head -1) \
-    || die 'the Lounge made no owner link'
-  say 'opening this link in any browser makes that person an owner of the Lounge:'
+  link=$(owner_tilo workspace people invite --role administrator -w "$(lounge_id)" | head -1) \
+    || die 'the Lounge made no administrator link'
+  say 'opening this link in any browser makes that person an administrator of the Lounge:'
   printf '%s\n' "$link"
 }
 
@@ -2417,19 +2420,19 @@ up() {
   say "up in $((SECONDS - began))s ($mode)"
   if [[ $remote == 1 ]]; then status_remote; else status; fi
   # The Lounge's owner is the stack's own person (stack.sh tilo acts as
-  # them); a link from them makes whoever opens it, in any browser, an owner
-  # too, who invites the others.
+  # them); a link from them makes whoever opens it, in any browser, an
+  # administrator, who invites the others.
   local link=''
   if [[ $remote == 1 ]]; then
     link=$(remote_cmd owner | head -1) || true
   else
-    link=$(owner_tilo workspace people invite --role owner -w "$(lounge_id)" | head -1) || true
+    link=$(owner_tilo workspace people invite --role administrator -w "$(lounge_id)" | head -1) || true
   fi
   if [[ -n $link ]]; then
-    say 'opening this link in any browser makes that person an owner of the Lounge'
+    say 'opening this link in any browser makes that person an administrator of the Lounge'
     printf '%s\n' "$link"
   else
-    say 'the Lounge made no owner link: stack.sh owner asks again'
+    say 'the Lounge made no administrator link: stack.sh owner asks again'
   fi
 }
 
