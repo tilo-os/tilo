@@ -336,6 +336,24 @@ list is drawing, which the host knows without reading the items before it. A dro
 place says both what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`.
 How moves, edits and removals made at the same time merge is convergence.md, "Storage and sync".
 
+A tree's items stand under one another by a field of theirs, and `items.place(x, .parent, …)`
+moves an item *and everything under it* to one place of that tree, by the neighbour a view shows:
+`before: y` and `after: y` (after `y` and all it holds) put it beside a row, `inside: p` at the
+end of `p`'s own (`none` for the end of the top level), `under: over` under the row above it —
+the row the view draws over the item, or, for a caller with no view, the row just before it in
+the collection — `up: over` before that row, and `down: below` after the row below and all it
+holds. Each is one change and one undo, whatever the depth, and a tree's own chords (`Tab`,
+`Shift-Tab`, `Alt-Up`, `Alt-Down`) and drags reach the same places. The verbs an app offers a
+person and an agent are its actions over it:
+
+```
+action indent(n: Note, above: Option<Note> (above)) (label: "Indent", icon: .arrow_right) {
+    notebook.notes.place(n, .parent, under: above)
+}
+```
+
+An item a place would put inside itself is refused, and one put where it already is stays put.
+
 **Counts of what is not all read.** A window answers rows from the index it opens over, which
 may still be reading the workspace: `items.len()` and `items.count(pred)` are then the part read
 so far. `items.counted()` is that count once the store has read all of the workspace, and
