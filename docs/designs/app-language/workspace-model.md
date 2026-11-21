@@ -129,7 +129,7 @@ default view note_editor for Note
   should share is a field of the resource. Scroll, focus, cursor and selection are kept by the
   platform without being declared.
 - An app whose data is each person's own (mail) says so in its header:
-  `app so.tilo.lang.mail "Mail" (resources: .own)`. Each member then keeps the app's resources in
+  `app so.tilo.mail "Mail" (resources: .own)`. Each member then keeps the app's resources in
   their own document of the workspace (of the package kind `tl.<app>`, `collab_types::OwnResource`),
   which only their devices hold the key to and every action API decides as theirs alone, the
   workspace's owner included. Another member opening the app in the same workspace starts from

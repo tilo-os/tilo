@@ -33,7 +33,7 @@ pub struct CompiledView {
     pub meta: PackageMeta,
     pub view: String,
     pub name: String,
-    /// What it takes, each type as metadata writes it (`so.tilo.lang.mail.Thread`).
+    /// What it takes, each type as metadata writes it (`so.tilo.mail.Thread`).
     pub params: Vec<ParamMeta>,
 }
 

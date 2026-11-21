@@ -114,9 +114,9 @@ fn the_text_places_the_row_that_opens_the_resource_not_one_that_acts_on_it() {
     // "my mails" ranks Mail's actions far above Mail's root, as the search does: the root's own
     // row stands last of the rows about it.
     let hits = vec![
-        acting("tl:so.tilo.lang.mail:root", "rename_label"),
-        acting("tl:so.tilo.lang.mail:root/account", "set_signature"),
-        opening("tl:so.tilo.lang.mail:root", "Mail", ResourceKind::Record),
+        acting("tl:so.tilo.mail:root", "rename_label"),
+        acting("tl:so.tilo.mail:root/account", "set_signature"),
+        opening("tl:so.tilo.mail:root", "Mail", ResourceKind::Record),
     ];
     let at = placed(&hits, "my mails", |_| true);
     assert_eq!(
@@ -127,7 +127,7 @@ fn the_text_places_the_row_that_opens_the_resource_not_one_that_acts_on_it() {
     );
     assert_eq!(
         found_resource(&hits, "my mails", |_| true).as_deref(),
-        Some("tl:so.tilo.lang.mail:root"),
+        Some("tl:so.tilo.mail:root"),
         "and the canvas stands its resource"
     );
 }
@@ -136,10 +136,10 @@ fn the_text_places_the_row_that_opens_the_resource_not_one_that_acts_on_it() {
 /// a place of it shows on its own.
 fn mail_root() -> Placed {
     Placed {
-        app: "so.tilo.lang.mail".into(),
+        app: "so.tilo.mail".into(),
         views: vec!["mail".into(), "all_inboxes".into(), "unified".into()],
         title: "Mail".into(),
-        kind: "tl.so.tilo.lang.mail.Mail".into(),
+        kind: "tl.so.tilo.mail.Mail".into(),
         place_view: Some("all_inboxes".into()),
         place_title: "All inboxes".into(),
         app_title: "Mail".into(),
@@ -215,18 +215,18 @@ fn the_words_name_the_thing_unless_they_name_the_app_alone() {
 #[test]
 fn what_text_places_is_the_resource_and_its_view() {
     let hits = vec![opening(
-        "tl:so.tilo.lang.mail:root",
+        "tl:so.tilo.mail:root",
         "Mail",
         ResourceKind::Record,
     )];
-    let target = |resource: &str| (resource == "tl:so.tilo.lang.mail:root").then(mail_root);
+    let target = |resource: &str| (resource == "tl:so.tilo.mail:root").then(mail_root);
     assert_eq!(
         found_place(&hits, "my mails", target),
-        Some(("tl:so.tilo.lang.mail:root".into(), "all_inboxes".into()))
+        Some(("tl:so.tilo.mail:root".into(), "all_inboxes".into()))
     );
     assert_eq!(
         found_place(&hits, "open Mail", target),
-        Some(("tl:so.tilo.lang.mail:root".into(), String::new()))
+        Some(("tl:so.tilo.mail:root".into(), String::new()))
     );
     assert_eq!(found_place(&hits, "my mails", |_| None), None);
 }

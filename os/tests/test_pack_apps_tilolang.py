@@ -157,12 +157,12 @@ class TilolangPackageTests(unittest.TestCase):
             # A package in the tree that the image's collection does not name.
             extra = packer.repo / 'apps/tl/mail'
             extra.mkdir()
-            (extra / 'app.tl').write_text('app so.tilo.lang.mail "Mail"\n')
+            (extra / 'app.tl').write_text('app so.tilo.mail "Mail"\n')
             (extra / 'app.ids').write_text('')
             result = packer.pack()
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn('mail', packer.log.read_text())
-            self.assertNotIn('so.tilo.lang.mail', (packer.store / 'registry.toml').read_text())
+            self.assertNotIn('so.tilo.mail', (packer.store / 'registry.toml').read_text())
 
     def test_a_cohort_that_names_one_tilolang_package_installs_only_it(self):
         with tempfile.TemporaryDirectory() as directory:

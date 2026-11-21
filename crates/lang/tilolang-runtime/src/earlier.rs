@@ -323,6 +323,17 @@ fn read_field_at(
     match value {
         AmValue::Scalar(s) => {
             if let Some(said) = scalar_words(s) {
+                // A record a native app kept as JSON in one field (an outbox entry's message)
+                // reads as that record's fields too, each under the field's name and its own
+                // (`value.draft.to`).
+                if said.starts_with('{')
+                    && let Ok(serde_json::Value::Object(record)) =
+                        serde_json::from_str::<serde_json::Value>(&said)
+                {
+                    for (key, held) in &record {
+                        read_json(item, &format!("{name}.{key}"), held);
+                    }
+                }
                 item.texts.insert(name.to_owned(), said);
             }
         }
@@ -348,14 +359,76 @@ fn read_field_at(
             }
         }
         AmValue::Object(ObjType::List) => {
-            let held = (0..doc.length(obj))
-                .filter_map(|at| match doc.get(obj, at).ok()?? {
-                    (AmValue::Scalar(s), _) => scalar_words(&s),
-                    (AmValue::Object(ObjType::Text), text) => doc.text(&text).ok(),
-                    (AmValue::Object(_), _) => None,
-                })
-                .collect();
+            let mut held = Vec::new();
+            for at in 0..doc.length(obj) {
+                match doc.get(obj, at).ok().flatten() {
+                    Some((AmValue::Scalar(s), _)) => held.extend(scalar_words(&s)),
+                    Some((AmValue::Object(ObjType::Text), text)) => {
+                        held.extend(doc.text(&text).ok());
+                    }
+                    // A list of records reads as a list of each of their fields
+                    // (`attachments.filename`), an entry for each record that has it.
+                    Some((AmValue::Object(ObjType::Map), record)) => {
+                        for key in doc.keys(&record) {
+                            if let Some(said) = words(doc, &record, &key) {
+                                item.lists
+                                    .entry(format!("{name}.{key}"))
+                                    .or_default()
+                                    .push(said);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             item.lists.insert(name.to_owned(), held);
+        }
+    }
+}
+
+/// The field `name` of `item` as the JSON `held` a native app kept it in says it, read as
+/// [`read_field`] reads the same shapes: words as text, a record as its fields under the field's
+/// name, a list as its entries and a list of records as a list of each of their fields.
+fn read_json(item: &mut EarlierItem, name: &str, held: &serde_json::Value) {
+    use serde_json::Value as Json;
+    match held {
+        Json::Null => {}
+        Json::String(said) => {
+            item.texts.insert(name.to_owned(), said.clone());
+        }
+        Json::Bool(_) | Json::Number(_) => {
+            item.texts.insert(name.to_owned(), held.to_string());
+        }
+        Json::Object(record) => {
+            for (key, inner) in record {
+                read_json(item, &format!("{name}.{key}"), inner);
+            }
+            item.lists
+                .insert(name.to_owned(), record.keys().cloned().collect());
+        }
+        Json::Array(entries) => {
+            let mut said = Vec::new();
+            for entry in entries {
+                match entry {
+                    Json::String(text) => said.push(text.clone()),
+                    Json::Bool(_) | Json::Number(_) => said.push(entry.to_string()),
+                    Json::Object(record) => {
+                        for (key, inner) in record {
+                            let words = match inner {
+                                Json::String(text) => text.clone(),
+                                Json::Bool(_) | Json::Number(_) => inner.to_string(),
+                                Json::Null | Json::Array(_) | Json::Object(_) => continue,
+                            };
+                            item.lists
+                                .entry(format!("{name}.{key}"))
+                                .or_default()
+                                .push(words);
+                        }
+                    }
+                    Json::Null | Json::Array(_) => {}
+                }
+            }
+            item.lists.insert(name.to_owned(), said);
         }
     }
 }

@@ -95,9 +95,10 @@ pub fn protected_resource_kind(app: &str, document: &str) -> Option<&'static str
         (tilo_app_id::apps::TUBE | "dev.tilo.tube", WORKSPACE_TUBE_HISTORY_DOCUMENT) => {
             Some("tube.watch-history")
         }
-        ("so.tilo.lang.mail", "") => Some("tl.so.tilo.lang.mail"),
+        // The tilolang Mail keeps its record where the native Mail kept its mailbox; the native
+        // app's other documents keep their kinds, so its carrying migration still reads them.
         (tilo_app_id::apps::MAIL | "dev.tilo.mail", document) => match document {
-            "" => Some("mail.mailbox"),
+            "" => Some("tl.so.tilo.mail"),
             WORKSPACE_MAIL_COPIES_DOCUMENT => Some("mail.copies"),
             WORKSPACE_MAIL_TRUST_DOCUMENT => Some("mail.trusted-senders"),
             WORKSPACE_MAIL_MESSAGES_DOCUMENT => Some("mail.messages"),

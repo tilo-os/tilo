@@ -741,10 +741,10 @@ mod tests {
             };
             let planned = Planned::planned_package(
                 Package {
-                    id: "so.tilo.lang.mail",
+                    id: "so.tilo.mail",
                     title: "Mail",
-                    manifest: Path::new("/home/you/.local/share/tilo/apps/so.tilo.lang.mail/m.toml"),
-                    payload_root: Path::new("/home/you/.local/share/tilo/apps/so.tilo.lang.mail/p"),
+                    manifest: Path::new("/home/you/.local/share/tilo/apps/so.tilo.mail/m.toml"),
+                    payload_root: Path::new("/home/you/.local/share/tilo/apps/so.tilo.mail/p"),
                 },
                 PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
                 // Nothing a connector names to open is handed on either.
@@ -758,13 +758,13 @@ mod tests {
                 [
                     "run",
                     "--manifest",
-                    "/home/you/.local/share/tilo/apps/so.tilo.lang.mail/m.toml",
+                    "/home/you/.local/share/tilo/apps/so.tilo.mail/m.toml",
                     "--payload-root",
-                    "/home/you/.local/share/tilo/apps/so.tilo.lang.mail/p",
+                    "/home/you/.local/share/tilo/apps/so.tilo.mail/p",
                     "--workspace-id",
                     "workspace-9",
                     "--app-id",
-                    "so.tilo.lang.mail",
+                    "so.tilo.mail",
                     "--tilolang-connector",
                     "imap",
                     "--no-services",

@@ -54,7 +54,7 @@ fn view_action(id: &'static str) -> tilo_actions::ActionSpec {
 }
 
 fn mailbox() -> ResourceSpec {
-    ResourceSpec::new("tl:so.tilo.lang.mail:inbox", "mail.mailbox", "Inbox")
+    ResourceSpec::new("tl:so.tilo.mail:inbox", "mail.mailbox", "Inbox")
         .with_action(view_action("open-inbox"))
         .with_action(view_action("open-reader"))
         .with_view(ResourceViewSpec::new("inbox", "Inbox", "open-inbox").with_primary(true))
@@ -185,7 +185,7 @@ fn front_row(session: &Session) -> u64 {
 
 /// An app with a mailbox is published on the session's app wire.
 fn with_mailbox(session: &mut Session) -> (String, Rc<std::cell::RefCell<Vec<String>>>) {
-    let app = "so.tilo.lang.mail".to_owned();
+    let app = "so.tilo.mail".to_owned();
     let asked = Rc::new(std::cell::RefCell::new(Vec::new()));
     session.publish(Rc::new(std::cell::RefCell::new(Mailbox {
         app: app.clone(),
@@ -226,7 +226,7 @@ fn a_resource_a_view_and_a_point_make_an_layout_entry() {
                 "row": row,
                 "strip": strip,
                 "place": place,
-                "resource": "tl:so.tilo.lang.mail:inbox",
+                "resource": "tl:so.tilo.mail:inbox",
                 "view": "reader",
                 "x": 240,
                 "y": 160,
@@ -239,7 +239,7 @@ fn a_resource_a_view_and_a_point_make_an_layout_entry() {
         .expect("the layout action runs");
     let entry = placed(&mut session, place);
     assert_eq!(
-        entry.resource, "tl:so.tilo.lang.mail:inbox",
+        entry.resource, "tl:so.tilo.mail:inbox",
         "it names the resource"
     );
     assert_eq!(entry.shown_as, "reader", "it names the view");
@@ -286,7 +286,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
                 "row": row,
                 "strip": strip,
                 "place": place,
-                "resource": "tl:so.tilo.lang.mail:inbox",
+                "resource": "tl:so.tilo.mail:inbox",
             })
             .as_object()
             .expect("arguments"),
@@ -348,8 +348,8 @@ fn index_mailbox(
     workspace: &str,
 ) {
     let entry = tilo_resource::search_index::IndexEntry {
-        key: "tl:so.tilo.lang.mail:inbox".to_owned(),
-        resource: "tl:so.tilo.lang.mail:inbox".to_owned(),
+        key: "tl:so.tilo.mail:inbox".to_owned(),
+        resource: "tl:so.tilo.mail:inbox".to_owned(),
         // An entry with no action of its own opens its anchor, the resource itself: what a note, a
         // message or a mailbox is.
         action: None,
@@ -419,12 +419,12 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
         layout(session)
             .places
             .iter()
-            .any(|place| place.resource == "tl:so.tilo.lang.mail:inbox")
+            .any(|place| place.resource == "tl:so.tilo.mail:inbox")
     });
     let placed = layout(&session)
         .places
         .into_iter()
-        .find(|place| place.resource == "tl:so.tilo.lang.mail:inbox")
+        .find(|place| place.resource == "tl:so.tilo.mail:inbox")
         .expect("the found resource is on the canvas");
     assert_eq!(placed.shown_as, "inbox", "its primary published view");
     assert_eq!(placed.shows, app, "shows follows from the resource's app");
@@ -512,7 +512,7 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
             "shell:layout",
             "place",
             serde_json::json!({
-                "resource": "tl:so.tilo.lang.mail:inbox",
+                "resource": "tl:so.tilo.mail:inbox",
                 "x": 240,
                 "y": 160,
                 "width": 720,
@@ -527,12 +527,12 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
         layout(session)
             .places
             .iter()
-            .any(|place| place.resource == "tl:so.tilo.lang.mail:inbox")
+            .any(|place| place.resource == "tl:so.tilo.mail:inbox")
     });
     let entry = layout(&session)
         .places
         .into_iter()
-        .find(|place| place.resource == "tl:so.tilo.lang.mail:inbox")
+        .find(|place| place.resource == "tl:so.tilo.mail:inbox")
         .expect("the found resource stands");
     assert_eq!(entry.shows, app, "shows follows from the resource's app");
     // The workspace holds the row the place stands in: the one made for it.
@@ -583,7 +583,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
                 "row": row,
                 "strip": strip,
                 "place": place,
-                "resource": "tl:so.tilo.lang.mail:inbox",
+                "resource": "tl:so.tilo.mail:inbox",
                 "view": "reader",
                 "float": "top-left",
                 "dx": 48,
@@ -643,7 +643,7 @@ fn the_system_open_brings_what_is_placed_forward() {
                 "row": row,
                 "strip": strip,
                 "place": place,
-                "resource": "tl:so.tilo.lang.mail:inbox",
+                "resource": "tl:so.tilo.mail:inbox",
                 "x": 300,
                 "y": 200,
             })
@@ -652,13 +652,13 @@ fn the_system_open_brings_what_is_placed_forward() {
         )
         .expect("the anchor is placed");
     let anchored = placed(&mut session, place);
-    assert_eq!(anchored.resource, "tl:so.tilo.lang.mail:inbox");
+    assert_eq!(anchored.resource, "tl:so.tilo.mail:inbox");
 
     session
         .invoke(
             "shell:layout",
             "open",
-            serde_json::json!({ "resource": "tl:so.tilo.lang.mail:inbox" })
+            serde_json::json!({ "resource": "tl:so.tilo.mail:inbox" })
                 .as_object()
                 .expect("arguments"),
         )
@@ -667,7 +667,7 @@ fn the_system_open_brings_what_is_placed_forward() {
     let held: Vec<_> = layout(&session)
         .places
         .into_iter()
-        .filter(|held| held.resource == "tl:so.tilo.lang.mail:inbox")
+        .filter(|held| held.resource == "tl:so.tilo.mail:inbox")
         .collect();
     assert_eq!(held.len(), 1, "one place of the resource: {held:?}");
     assert_eq!(held[0].key, place.to_string(), "the place it already had");
@@ -693,7 +693,7 @@ fn the_system_open_stands_a_new_place() {
         .invoke(
             "shell:layout",
             "open",
-            serde_json::json!({ "resource": "tl:so.tilo.lang.mail:inbox" })
+            serde_json::json!({ "resource": "tl:so.tilo.mail:inbox" })
                 .as_object()
                 .expect("arguments"),
         )
@@ -708,7 +708,7 @@ fn the_system_open_stands_a_new_place() {
             layout(session)
                 .places
                 .into_iter()
-                .find(|held| held.resource == "tl:so.tilo.lang.mail:inbox")
+                .find(|held| held.resource == "tl:so.tilo.mail:inbox")
         },
     );
     assert_eq!(entry.shows, app, "it shows the app the resource is of");
@@ -858,29 +858,29 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second
     impl Published for Mail {
         fn resources(&mut self) -> Vec<ResourceSpec> {
             let mut root =
-                ResourceSpec::new("tl:so.tilo.lang.mail:root-a1b2c3", "mail.mail", "Mail")
+                ResourceSpec::new("tl:so.tilo.mail:root-a1b2c3", "mail.mail", "Mail")
                     .with_action(view_action("open-mailbox"))
                     .with_view(
                         ResourceViewSpec::new("mailbox", "Mailbox", "open-mailbox")
                             .with_primary(true),
                     );
-            root.app_id = Some("so.tilo.lang.mail".to_owned());
+            root.app_id = Some("so.tilo.mail".to_owned());
             let mut thread = ResourceSpec::new(
-                "tl:so.tilo.lang.mail:root-a1b2c3/ie99c2c19-72",
+                "tl:so.tilo.mail:root-a1b2c3/ie99c2c19-72",
                 "mail.thread",
                 "sam@rivera.example",
             )
             .with_action(view_action("open-thread"))
             .with_view(ResourceViewSpec::new("thread", "Thread", "open-thread").with_primary(true));
-            thread.app_id = Some("so.tilo.lang.mail".to_owned());
+            thread.app_id = Some("so.tilo.mail".to_owned());
             let mut other = ResourceSpec::new(
-                "tl:so.tilo.lang.mail:root-z9y8x7/ie77ac1f-01",
+                "tl:so.tilo.mail:root-z9y8x7/ie77ac1f-01",
                 "mail.thread",
                 "news@example",
             )
             .with_action(view_action("open-news"))
             .with_view(ResourceViewSpec::new("thread", "Thread", "open-news").with_primary(true));
-            other.app_id = Some("so.tilo.lang.mail".to_owned());
+            other.app_id = Some("so.tilo.mail".to_owned());
             vec![root.with_child(thread), other]
         }
 
@@ -926,30 +926,30 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second
     };
 
     // The mailbox opens once, and a thread in it brings that place forward rather than a second.
-    open(&mut session, "tl:so.tilo.lang.mail:root-a1b2c3");
+    open(&mut session, "tl:so.tilo.mail:root-a1b2c3");
     settle(&mut session, |session| {
-        places_of(session, "tl:so.tilo.lang.mail:root-a1b2c3") == 1
+        places_of(session, "tl:so.tilo.mail:root-a1b2c3") == 1
     });
     open(
         &mut session,
-        "tl:so.tilo.lang.mail:root-a1b2c3/ie99c2c19-72",
+        "tl:so.tilo.mail:root-a1b2c3/ie99c2c19-72",
     );
     step(&mut session);
     step(&mut session);
     assert_eq!(
-        places_of(&session, "tl:so.tilo.lang.mail:root-a1b2c3"),
+        places_of(&session, "tl:so.tilo.mail:root-a1b2c3"),
         1,
         "one mailbox is open: {:?}",
         layout(&session).places
     );
 
     // A thread of another root of the same app is the other mailbox, and opens in its own place.
-    open(&mut session, "tl:so.tilo.lang.mail:root-z9y8x7/ie77ac1f-01");
+    open(&mut session, "tl:so.tilo.mail:root-z9y8x7/ie77ac1f-01");
     settle(&mut session, |session| {
-        places_of(session, "tl:so.tilo.lang.mail:root-z9y8x7") == 1
+        places_of(session, "tl:so.tilo.mail:root-z9y8x7") == 1
     });
     assert_eq!(
-        places_of(&session, "tl:so.tilo.lang.mail:root-a1b2c3"),
+        places_of(&session, "tl:so.tilo.mail:root-a1b2c3"),
         1,
         "the other root's thread stands beside the first mailbox, not over it"
     );

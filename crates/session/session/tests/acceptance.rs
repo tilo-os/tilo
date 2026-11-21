@@ -207,7 +207,7 @@ fn step_4_my_mails_places_the_inbox_with_its_threads() {
             .iter()
             .map(|(kind, _)| kind.as_str())
             .collect::<Vec<_>>(),
-        ["tl.so.tilo.lang.mail.Mail"],
+        ["tl.so.tilo.mail.Mail"],
         "\"my mails\" places Mail's root: {placed:?}"
     );
 

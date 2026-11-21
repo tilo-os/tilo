@@ -177,7 +177,7 @@ fn an_ask_goes_out_in_the_pass_that_took_it() {
 }
 
 /// The agent the steps below are attributed to, as an agent's turn names it.
-/// The published root of the seeded app `app` (`so.tilo.lang.mail`): what the agent's steps
+/// The published root of the seeded app `app` (`so.tilo.mail`): what the agent's steps
 /// show, and what they stand beside.
 fn root_of(session: &Session, app: &str) -> String {
     let prefix = format!("tl:{app}:root-");
@@ -232,7 +232,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     let root = private_home();
     let mut session = session(root.path());
     let (inbox_root, notes_root) = (
-        root_of(&session, "so.tilo.lang.mail"),
+        root_of(&session, "so.tilo.mail"),
         root_of(&session, "so.tilo.notes"),
     );
     let (inbox_id, notes_id) = (inbox_root.as_str(), notes_root.as_str());
@@ -307,7 +307,7 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     let root = private_home();
     let mut session = session(root.path());
     let (inbox_root, notes_root) = (
-        root_of(&session, "so.tilo.lang.mail"),
+        root_of(&session, "so.tilo.mail"),
         root_of(&session, "so.tilo.notes"),
     );
     let (inbox_id, notes_id) = (inbox_root.as_str(), notes_root.as_str());

@@ -185,7 +185,7 @@ view unread_mail(m: mail.Mail) {\n\
             .check_written_view(UNREAD, task)
             .unwrap_or_else(|d| panic!("{d:#?}"));
         assert_eq!(info.name, "unread_mail");
-        assert_eq!(info.shows.as_deref(), Some("so.tilo.lang.mail.Mail"));
+        assert_eq!(info.shows.as_deref(), Some("so.tilo.mail.Mail"));
         returned_ref(ada.call_as(
             task,
             &apps.views,
@@ -228,7 +228,7 @@ view unread_mail(m: mail.Mail) {\n\
         );
         let defaults = ada.items(&ada.views(), "defaults");
         assert_eq!(defaults.len(), 1);
-        assert_eq!(ada.text(&defaults[0], "shows"), "so.tilo.lang.mail.Mail");
+        assert_eq!(ada.text(&defaults[0], "shows"), "so.tilo.mail.Mail");
         // A view that does not compile says why, located in what was written.
         let wrong = ada
             .rt

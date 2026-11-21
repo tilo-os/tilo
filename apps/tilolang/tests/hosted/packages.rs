@@ -65,7 +65,7 @@ pub(super) fn package_of(app: &str) -> &'static str {
         TODAY => "../tl/today",
         "so.tilo.lang.counter" => "../tl/counter",
         "so.tilo.lang.board" => "../tl/board",
-        "so.tilo.lang.mail" => "../tl/mail",
+        "so.tilo.mail" => "../tl/mail",
         "so.tilo.lang.views" => "../tl/views",
         "so.tilo.lang.interaction" => "tests/interaction",
         "so.tilo.lang.mentions" => "tests/mentions",

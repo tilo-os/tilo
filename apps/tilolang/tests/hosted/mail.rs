@@ -19,7 +19,7 @@ use tilolang_tilo::runtime::{ResourceRef, UiNode, Value as RtValue};
 use super::{Session, Window, WorkspaceEnd};
 use crate::change_marks::action_id;
 
-const APP: &str = "so.tilo.lang.mail";
+const APP: &str = "so.tilo.mail";
 const ME: &str = "sam@rivera.example";
 const HOST: &str = "tl:host";
 

@@ -534,8 +534,8 @@ fn inside(resource: &str, other: &str) -> bool {
 }
 
 /// The root a resource of an app belongs to, when it is one the app publishes a root for:
-/// `root-<type>` after the app's own id, so `tl:so.tilo.lang.mail:root-su4h67i5/ie99c2c19-72`
-/// has the root `tl:so.tilo.lang.mail:root-su4h67i5`. `None` for a resource with no app id or no
+/// `root-<type>` after the app's own id, so `tl:so.tilo.mail:root-su4h67i5/ie99c2c19-72`
+/// has the root `tl:so.tilo.mail:root-su4h67i5`. `None` for a resource with no app id or no
 /// `root-` segment, and for a root itself.
 fn root_of(resource: &str) -> Option<&str> {
     let rest = resource.strip_prefix("tl:")?;

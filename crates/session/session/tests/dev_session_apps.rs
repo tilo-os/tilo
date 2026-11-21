@@ -170,7 +170,7 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests(session: &DevS
     let workspace = apps.workspace_named("workspace-1");
     for (app, origin) in [
         ("so.tilo.tube", "youtube"),
-        ("so.tilo.lang.mail", "imap"),
+        ("so.tilo.mail", "imap"),
     ] {
         let planned = apps
             .plan_connector(app, origin, &workspace)
@@ -226,7 +226,7 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests(session: &DevS
     let unlaunched = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
     assert_eq!(
         unlaunched
-            .plan_connector("so.tilo.lang.mail", "imap", &workspace)
+            .plan_connector("so.tilo.mail", "imap", &workspace)
             .map(|planned| planned.args)
             .err()
             .as_deref(),

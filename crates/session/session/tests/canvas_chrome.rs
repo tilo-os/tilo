@@ -122,7 +122,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
     // room in view right of the click, so all of it stays in view.
     enter_text(&mut session, "my mails");
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
-        place_showing(session, "so.tilo.lang.mail")
+        place_showing(session, "so.tilo.mail")
     });
     let (_, _, canvas_width, _) = on_screen(&session, CANVAS).expect("the canvas");
     assert!(
@@ -159,7 +159,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
 
     // Nothing placed moved or shrank: the inbox and the conversation keep their size and their
     // point, and no place crowds another.
-    let after = place_showing(&session, "so.tilo.lang.mail").expect("the inbox still stands");
+    let after = place_showing(&session, "so.tilo.mail").expect("the inbox still stands");
     assert_eq!(
         (after.1, after.2, after.3, after.4),
         (inbox.1, inbox.2, inbox.3, inbox.4),
@@ -210,7 +210,7 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     // The inbox, lain on the canvas: the frame its title names it by, as wide as the place.
     enter_text(&mut session, "my mails");
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
-        place_showing(session, "so.tilo.lang.mail")
+        place_showing(session, "so.tilo.mail")
     });
     // A place drawn as content goes by its own title, not joined to its app's name.
     let inbox_name = layout(&session)
@@ -304,7 +304,7 @@ fn switching_to_the_frameless_style_keeps_every_place() {
     let mut session = session(root.path());
     enter_text(&mut session, "my mails");
     wait_for(&mut session, "the inbox on the canvas", |session| {
-        place_showing(session, "so.tilo.lang.mail")
+        place_showing(session, "so.tilo.mail")
     });
     let before = boxes(&session);
     show_preset(&mut session, "so.tilo.shell:frameless");

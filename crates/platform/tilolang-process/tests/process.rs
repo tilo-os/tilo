@@ -2383,7 +2383,7 @@ fn clocked() -> Bundle {
     Bundle::new(&compiled, [])
 }
 
-const MAIL: &str = "so.tilo.lang.mail";
+const MAIL: &str = "so.tilo.mail";
 
 /// The shipped Mail package, built with the packages it uses.
 fn mail() -> Bundle {
@@ -2401,7 +2401,7 @@ fn published_index(index: &tilo_desktop_search::content_index::AppContentIndex, 
     for request in sent.borrow().iter() {
         if let CollabRequest::PublishSearchIndex { delta_json } = request {
             index
-                .publish("workspace", "so.tilo.lang.mail", "", delta_json)
+                .publish("workspace", "so.tilo.mail", "", delta_json)
                 .expect("the session takes every delta");
         }
     }

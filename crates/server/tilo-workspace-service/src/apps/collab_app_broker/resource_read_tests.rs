@@ -21,9 +21,9 @@ use crate::apps::test_support::{
 };
 
 const NOTES: &str = "so.tilo.notes";
-const MAIL: &str = "so.tilo.lang.mail";
+const MAIL: &str = "so.tilo.mail";
 /// The kind of the record Mail keeps each member's own.
-const OWN_KIND: &str = "tl.so.tilo.lang.mail";
+const OWN_KIND: &str = "tl.so.tilo.mail";
 /// Another member of the workspace, by a byte of their user root key.
 const ANOTHER_MEMBER: &str = "b2";
 

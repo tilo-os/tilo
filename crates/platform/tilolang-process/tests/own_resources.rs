@@ -25,7 +25,7 @@ use tilolang_process::testing::{Broker, Bus, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::document::InstanceDocument;
 
-const MAIL: &str = "so.tilo.lang.mail";
+const MAIL: &str = "so.tilo.mail";
 const MAIL_SOURCE: &str = include_str!("../../../../apps/tl/mail/app.tl");
 const MAIL_IDS: &str = include_str!("../../../../apps/tl/mail/app.ids");
 

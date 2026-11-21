@@ -1,6 +1,6 @@
 # Mail auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
 
-d-so-tilo-lang-mail = Mail
+d-so-tilo-mail = Mail
 
 d-weesm3yb = Konto
     .doc = Was der Server eines Mailkontos des Arbeitsbereichs hält.

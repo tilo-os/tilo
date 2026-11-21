@@ -289,7 +289,7 @@ fn the_rectangle_is_filled(text: &str, needle: &str) {
 /// A rectangle dragged on free ground and "my mails" said in it: the inbox fills the rectangle.
 #[test]
 fn a_dragged_rectangle_is_filled_by_what_is_found() {
-    the_rectangle_is_filled("my mails", "so.tilo.lang.mail");
+    the_rectangle_is_filled("my mails", "so.tilo.mail");
 }
 
 /// The notes found in a rectangle fill it, as the inbox does: the place is the rectangle's
@@ -342,7 +342,7 @@ fn a_rectangle_under_a_hugging_place_is_filled_where_it_was_dragged() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.mail"))
     });
     let (ix, iy, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -393,7 +393,7 @@ fn what_is_found_at_a_click_stands_at_the_point() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.mail"))
     });
     let (px, py, _, _) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -431,7 +431,7 @@ fn what_is_found_left_of_a_place_stands_at_the_click_narrowed() {
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
     point_and_say(&mut session, (x + w * 0.45, y + h * 0.1), "my mails");
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
-        canvas_box(session, "so.tilo.lang.mail")
+        canvas_box(session, "so.tilo.mail")
     });
     let at = (x + w * 0.05, y + h * 0.3);
     point_and_say(&mut session, at, "my notes");
@@ -483,7 +483,7 @@ fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.mail"))
     });
     assert_eq!(inbox.title, "All inboxes", "named for its view: {inbox:?}");
     point_and_say(&mut session, (x + w * 0.65, y + h * 0.1), "my notes");
@@ -596,7 +596,7 @@ fn a_question_stands_its_turn_at_the_caret() {
     let found_at = (x + w * 0.05, y + h * 0.1);
     point_and_say(&mut session, found_at, "my mails");
     let (fx, fy, _, _) = wait_for(&mut session, "the inbox placed", |session| {
-        canvas_box(session, "so.tilo.lang.mail")
+        canvas_box(session, "so.tilo.mail")
     });
     let at = (x + w * 0.65, y + h * 0.85);
 
@@ -768,7 +768,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
             .unwrap_or_else(|| panic!("{app}'s root is published"))
     };
     let notes = root_of(&session, "so.tilo.notes");
-    let mails = root_of(&session, "so.tilo.lang.mail");
+    let mails = root_of(&session, "so.tilo.mail");
 
     // A `place` into the turn's own strip, as a tab of it.
     session
@@ -805,7 +805,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
         )
         .unwrap_or_else(|error| panic!("the agent's show runs: {error}"));
     let (mx, _, _, _) = wait_for(&mut session, "the inbox placed", |session| {
-        canvas_box(session, "so.tilo.lang.mail")
+        canvas_box(session, "so.tilo.mail")
     });
     assert!(
         mx >= tx + tw,
@@ -824,7 +824,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
     // whole window with its sidebar of accounts (canvas.md §7, "The thing, never the app").
     let inbox = places(&session)
         .into_iter()
-        .find(|place| place.resource.contains("so.tilo.lang.mail"))
+        .find(|place| place.resource.contains("so.tilo.mail"))
         .expect("the inbox's place");
     assert_eq!(
         inbox.title, "All inboxes",
@@ -903,7 +903,7 @@ fn a_place_has_no_frame_and_its_handle_shows_on_hover() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.mail"))
     });
     let (px, py, pw, ph) = wait_for(&mut session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -980,7 +980,7 @@ fn inbox_in(
     let inbox = wait_for(session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.mail"))
     });
     let at = wait_for(session, "the inbox on screen", |session| {
         place_on_screen(session, &inbox)
@@ -1250,7 +1250,7 @@ fn the_empty_canvas_says_once_what_it_is_for() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.mail"))
     });
     assert!(
         canvas_says(&session).is_none(),
@@ -1416,7 +1416,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     let shown = place_on_screen(&session, &turn).expect("the turn");
     assert!(inside(shown), "and the turn still is: {shown:?}");
     // A place the agent puts far off-screen: the canvas does not chase it.
-    let mails = root_of(&session, "so.tilo.lang.mail");
+    let mails = root_of(&session, "so.tilo.mail");
     session
         .invoke_with_actor(
             &crate::common::agent("assistant"),
@@ -1426,7 +1426,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
         )
         .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
     wait_for(&mut session, "the inbox placed", |session| {
-        canvas_box(session, "so.tilo.lang.mail")
+        canvas_box(session, "so.tilo.mail")
     });
     for _ in 0..60 {
         session.step(Duration::from_millis(16)).unwrap();
@@ -1565,7 +1565,7 @@ fn placing_mails_root_without_a_view_stands_the_message_list() {
     let mail = session
         .resources()
         .into_iter()
-        .find(|spec| spec.id.as_str().starts_with("tl:so.tilo.lang.mail:root-"))
+        .find(|spec| spec.id.as_str().starts_with("tl:so.tilo.mail:root-"))
         .map(|spec| spec.id.as_str().to_owned())
         .expect("Mail's root is published");
     session
@@ -1743,7 +1743,7 @@ fn two_asks_in_quick_succession_each_fill_their_own_rectangle() {
         turn_box(session, "q6")
     });
     let notes = root_of(&session, "so.tilo.notes");
-    let mails = root_of(&session, "so.tilo.lang.mail");
+    let mails = root_of(&session, "so.tilo.mail");
 
     // The first turn's agent answers only now, after the second was asked; then the second's.
     for (message, resource) in [("q5", &notes), ("q6", &mails)] {
@@ -1761,7 +1761,7 @@ fn two_asks_in_quick_succession_each_fill_their_own_rectangle() {
         canvas_box(session, "so.tilo.notes")
     });
     let mails_at = wait_for(&mut session, "the inbox placed", |session| {
-        canvas_box(session, "so.tilo.lang.mail")
+        canvas_box(session, "so.tilo.mail")
     });
     assert!(
         in_room(notes_at, one),
@@ -1800,7 +1800,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
         .borrow()
         .know_posted(std::rc::Rc::new(|_| Some("q7".to_owned())));
     let notes = root_of(&session, "so.tilo.notes");
-    let mails = root_of(&session, "so.tilo.lang.mail");
+    let mails = root_of(&session, "so.tilo.mail");
     session
         .invoke_in_turn(
             &crate::common::agent("assistant"),
@@ -1837,7 +1837,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
         )
         .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
     let mails_at = wait_for(&mut session, "the inbox placed", |session| {
-        canvas_box(session, "so.tilo.lang.mail")
+        canvas_box(session, "so.tilo.mail")
     });
     assert!(
         mails_at.0 >= turn.0 + turn.2,
@@ -2049,7 +2049,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
     let (bx, by, bw, bh) = wait_for(&mut session, "the second turn placed", |session| {
         turn_box(session, "q10")
     });
-    let mails = root_of(&session, "so.tilo.lang.mail");
+    let mails = root_of(&session, "so.tilo.mail");
     session
         .invoke_in_turn(
             &crate::common::agent("assistant"),
@@ -2060,7 +2060,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
         )
         .unwrap_or_else(|error| panic!("the second turn's place runs: {error}"));
     let (mx, my, mw, mh) = wait_for(&mut session, "the inbox placed", |session| {
-        canvas_box(session, "so.tilo.lang.mail")
+        canvas_box(session, "so.tilo.mail")
     });
     // Adjacent to the turn on any side, a spot in view first (canvas.md §3): beside it is level
     // with some of it, raised or lowered as far as staying in view asks.
@@ -2126,7 +2126,7 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
     wait_for(&mut session, "the second turn placed", |session| {
         turn_box(session, "q21")
     });
-    let mails = root_of(&session, "so.tilo.lang.mail");
+    let mails = root_of(&session, "so.tilo.mail");
     session
         .invoke_in_turn(
             &crate::common::agent("assistant"),
@@ -2139,7 +2139,7 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.resource.contains("so.tilo.lang.mail"))
+            .find(|place| place.resource.contains("so.tilo.mail"))
     });
     steps(&mut session);
     wait_for(&mut session, "the inbox on screen", |session| {

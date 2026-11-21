@@ -40,7 +40,7 @@ pub const APPS: [&str; 5] = [
     "so.tilo.notes",
     "so.tilo.lang.tasks",
     "so.tilo.lang.chat",
-    "so.tilo.lang.mail",
+    "so.tilo.mail",
     "so.tilo.tube",
 ];
 

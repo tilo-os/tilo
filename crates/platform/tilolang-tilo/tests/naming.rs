@@ -256,7 +256,7 @@ const MAIL: (&str, &str) = (
     include_str!("../../../../apps/tl/mail/app.tl"),
     include_str!("../../../../apps/tl/mail/app.ids"),
 );
-const MAIL_APP: &str = "so.tilo.lang.mail";
+const MAIL_APP: &str = "so.tilo.mail";
 
 /// A mail workspace staged from the scenario `name`, and the resource it made.
 fn mail_staged(name: &str) -> (Replica, Option<ResourceRef>) {

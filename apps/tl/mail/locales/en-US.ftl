@@ -1,7 +1,7 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-lang-mail = Mail
+d-so-tilo-mail = Mail
 
 d-weesm3yb = Account
     .doc = What the server of one of the workspace's mail accounts holds.
@@ -200,6 +200,9 @@ d-h2nvr2op = Recalled
 d-em6rrmae = Invitation
     .doc = The calendar invitation it carries (iCalendar), which goes beside what it says so the guest's calendar can answer it: empty for none.
 
+d-ozukvva2 = Set aside
+    .doc = What the native Mail kept on this draft that this one has no place for (Bcc, attachments, private notes), said in words: never sent with it.
+
 d-lidkonvr-filter-drafts = Drafts
 
 d-lidkonvr-filter-sent = Sent
@@ -248,6 +251,9 @@ d-arnkrvgw = Check now
 
 d-eon6gbrn = New message
     .doc = Starts a message from the account.
+
+d-v7wxxiaj = Carry native mail
+    .doc = The mailbox the native Mail kept before this app took its id over, carried into this one once: every draft it was writing and every message still waiting in its outbox is a draft here, from the same account, to the same people, with the same subject, body and invitation.
 
 d-y6hvqjbf = Recover previous mail
     .doc = Copies data from the earlier private mailbox into this workspace.

@@ -44,7 +44,7 @@ pub(crate) type CachedView = Result<Rc<WrittenView>, Rc<Vec<Diagnostic>>>;
 pub struct WrittenViewInfo {
     pub name: String,
     pub params: Vec<ParamMeta>,
-    /// The type of the one resource it takes (`so.tilo.lang.mail.Thread`), which it can be the
+    /// The type of the one resource it takes (`so.tilo.mail.Thread`), which it can be the
     /// default view of; `None` for a view that stands alone.
     pub shows: Option<String>,
 }

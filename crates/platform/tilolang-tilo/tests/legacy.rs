@@ -732,7 +732,7 @@ fn mail_leaves_the_documents_letters_wrote_where_they_are() {
     let mail = replica
         .host
         .store()
-        .index_contents("so.tilo.lang.mail")
+        .index_contents("so.tilo.mail")
         .expect("Mail's index");
     for (_, id) in &before {
         assert!(!mail.docs.contains_key(id), "{id} is not Mail's");

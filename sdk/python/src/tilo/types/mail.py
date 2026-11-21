@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Mailbox` is the app's `mail.mailbox` at `mail/<resource>`, read with
+`Account` is the app's `tl.so.tilo.mail.Account` at `mail/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,1076 +20,580 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "DraftAttachment",
-    "DraftCopy",
-    "DraftData",
-    "DraftSender",
-    "DraftState",
-    "Folder",
-    "LocalFolder",
-    "PreviousDraft",
-    "PreviousFolder",
-    "RetiredCopy",
-    "ServerUpdate",
-    "DeliveredAttachment",
-    "DeliveredPart",
-    "Delivery",
-    "HeldAttachment",
-    "HeldMessage",
-    "HeldPart",
-    "IngestBaseline",
-    "MessageState",
-    "ServerCopy",
-    "PersonAccount",
-    "Endpoint",
-    "Person",
-    "Projected",
-    "KeptCopy",
-    "NewCopy",
+    "Account",
     "Mailbox",
-    "Messages",
-    "Accounts",
-    "Identities",
-    "TrustedSenders",
-    "Copies",
-    "MarkReadArgs",
+    "Thread",
+    "Label",
+    "Message",
+    "Draft",
+    "Mail",
+    "TiloMail",
+    "SetSignatureArgs",
+    "MarkAllReadArgs",
     "ArchiveArgs",
-    "TrashArgs",
-    "MoveMessagesArgs",
-    "PurgeArgs",
-    "IngestArgs",
-    "ServerAppliedArgs",
-    "ImportPreviousMessageArgs",
-    "PublishBrowserIdentityArgs",
-    "SaveAccountArgs",
-    "RemoveAccountArgs",
-    "SetActiveAccountArgs",
-    "ProjectContactArgs",
-    "RemoveContactArgs",
-    "ConfirmEndpointArgs",
-    "ConfirmAccountArgs",
-    "ReplaceEndpointArgs",
-    "ReplaceAccountArgs",
-    "ProjectPhonesArgs",
-    "ProjectEmailsArgs",
-    "ProjectContactsArgs",
-    "ForgetEndpointArgs",
-    "TrustArgs",
-    "DistrustArgs",
-    "ImportLegacyArgs",
-    "KeepCopiesArgs",
-    "ImportCopiesArgs",
-    "ForgetCopiesArgs",
+    "ToInboxArgs",
+    "MoveToArgs",
+    "DeleteArgs",
+    "FlagArgs",
+    "SnoozeArgs",
+    "SnoozeAnHourArgs",
+    "SnoozeUntilTomorrowArgs",
+    "UnsnoozeArgs",
+    "LabelArgs",
+    "MuteArgs",
+    "MarkReadArgs",
+    "SendFromArgs",
+    "SetHoldArgs",
+    "RenameLabelArgs",
+    "DeleteLabelArgs",
+    "DiscardArgs",
 ]
 
-class DraftAttachment(TypedDict):
-    content_id: str
-    filename: str
-    mime: str
-    size: int
-
-class DraftCopy(TypedDict):
-    account: str
-    locator: str
-    written: str
-
-class DraftData(TypedDict):
-    sender: DraftSender | None
-    to: str
-    cc: str
-    bcc: str
-    subject: str
-    body: str
-    html_body: str | None
-    calendar_ics: str | None
-    attachments: list[DraftAttachment]
-
-class DraftSender(TypedDict):
-    account: str
-    email: str
-
-class DraftState(TypedDict):
-    sender: Any | None
-    to: str
-    cc: str
-    bcc: str
-    subject: str
-    body: str
-    html_body: str | None
-    calendar_ics: str | None
-    attachments: list[Any]
-    rich_body: str | None
-    shown_as: str | None
-    drafted: str | None
-    in_reply_to: str | None
-    notes: str
-    server: DraftCopy | None
-
-Folder = Literal["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"]
-
-class LocalFolder(TypedDict):
-    name: str
-
-class PreviousDraft(TypedDict):
-    id: str
-    message: DraftData
-    in_reply_to: str | None
-    notes: str
-
-class PreviousFolder(TypedDict):
-    id: str
-    name: str
-
-class RetiredCopy(TypedDict):
-    account: str
-    locator: str
-    removed: bool
-
-ServerUpdate = dict[str, Any]
-"""One of Flags, Move, Remove, SaveDraft: an object whose case the app tags it with."""
-
-class DeliveredAttachment(TypedDict):
-    filename: str
-    media_type: str | None
-    size: int
-
-class DeliveredPart(TypedDict):
-    at: int
-    size: int
-    pieces: list[Any]
-
-Delivery = TypedDict("Delivery", {
-    "from": "str",
-    "to": "str | None",
-    "cc": "str | None",
-    "subject": "str",
-    "body": "str",
-    "date": "str | None",
-    "folder": "Folder | None",
-    "read": "bool | None",
-    "reply_to": "str | None",
-    "conversation": "str | None",
-    "message_id": "str | None",
-    "original": "Any | None",
-    "parts": "list[DeliveredPart]",
-    "attachments": "list[DeliveredAttachment]",
-    "answers": "str | None",
+SetSignatureArgs = TypedDict("SetSignatureArgs", {
+    "signature": "str",
 })
+"""The arguments of `set_signature`."""
 
-class HeldAttachment(TypedDict):
-    filename: str
-    media_type: str
-    size: int
-
-HeldMessage = TypedDict("HeldMessage", {
-    "message_id": "str",
-    "from": "str",
-    "to": "str",
-    "cc": "str",
-    "subject": "str",
-    "body": "str",
-    "minutes": "int",
-    "in_reply_to": "str | None",
-    "conversation": "str",
-    "original": "Any | None",
-    "parts": "list[HeldPart]",
-    "attachments": "list[HeldAttachment]",
+MarkAllReadArgs = TypedDict("MarkAllReadArgs", {
 })
-
-class HeldPart(TypedDict):
-    at: int
-    size: int
-    pieces: list[Any]
-
-class IngestBaseline(TypedDict):
-    id: str
-    read: bool | None
-    starred: bool | None
-    folder: str | None
-    account: str | None
-    locator: str | None
-    label: str | None
-
-class MessageState(TypedDict):
-    read: bool
-    starred: bool
-    folder: Folder
-    labels: list[str]
-    server: ServerCopy | None
-    purged: bool
-    label: str
-
-class ServerCopy(TypedDict):
-    account: str
-    locator: str
-    read: bool
-    starred: bool
-    folder: Folder
-    removed: bool
-
-class PersonAccount(TypedDict):
-    type_id: str
-    display_name: str
-    config: Any
-    enabled: bool
-    tint: int
-
-class Endpoint(TypedDict):
-    service: str
-    recipient: str
-    scope: str
-    revision: str
-    removed: bool
-
-class Person(TypedDict):
-    label: str
-    removed: bool
-    phones: list[str]
-    emails: list[str]
-    photo: str
-    endpoints: list[Entry[Endpoint]]
-
-class Projected(TypedDict):
-    person: str
-    label: str
-    phones: list[str]
-    emails: list[str]
-    photo: str
-
-class KeptCopy(TypedDict):
-    account: str
-    content: str
-    minutes: int
-    folder: Folder
-    uid: int
-    uid_validity: int
-
-class NewCopy(TypedDict):
-    id: str
-    account: str
-    content: str
-    minutes: int
-    folder: Folder
-    uid: int
-    uid_validity: int
-
-MarkReadArgs = TypedDict("MarkReadArgs", {
-    "messages": "list[str]",
-    "read": "bool",
-})
-"""The arguments of `mark-read`."""
+"""The arguments of `mark_all_read`."""
 
 ArchiveArgs = TypedDict("ArchiveArgs", {
-    "messages": "list[str]",
 })
 """The arguments of `archive`."""
 
-TrashArgs = TypedDict("TrashArgs", {
-    "messages": "list[str]",
+ToInboxArgs = TypedDict("ToInboxArgs", {
 })
-"""The arguments of `trash`."""
+"""The arguments of `to_inbox`."""
 
-MoveMessagesArgs = TypedDict("MoveMessagesArgs", {
-    "messages": "list[str]",
-    "to": "Folder",
+MoveToArgs = TypedDict("MoveToArgs", {
+    "to": "Mailbox",
 })
-"""The arguments of `move-messages`."""
+"""The arguments of `move_to`."""
 
-PurgeArgs = TypedDict("PurgeArgs", {
-    "messages": "list[str]",
+DeleteArgs = TypedDict("DeleteArgs", {
 })
-"""The arguments of `purge`."""
+"""The arguments of `delete`."""
 
-IngestArgs = TypedDict("IngestArgs", {
-    "messages": "list[IngestBaseline]",
+FlagArgs = TypedDict("FlagArgs", {
+    "flagged": NotRequired["bool | None"],
 })
-"""The arguments of `ingest`."""
+"""The arguments of `flag`."""
 
-ServerAppliedArgs = TypedDict("ServerAppliedArgs", {
-    "updates": "list[ServerUpdate]",
+SnoozeArgs = TypedDict("SnoozeArgs", {
+    "until": "str",
 })
-"""The arguments of `server-applied`."""
+"""The arguments of `snooze`."""
 
-ImportPreviousMessageArgs = TypedDict("ImportPreviousMessageArgs", {
-    "id": "str",
-    "state": "Any",
-    "body": NotRequired["Any | None"],
+SnoozeAnHourArgs = TypedDict("SnoozeAnHourArgs", {
 })
-"""The arguments of `import-previous-message`."""
+"""The arguments of `snooze_an_hour`."""
 
-PublishBrowserIdentityArgs = TypedDict("PublishBrowserIdentityArgs", {
-    "root": "str",
-    "origin": "str",
-    "display_name": "str",
+SnoozeUntilTomorrowArgs = TypedDict("SnoozeUntilTomorrowArgs", {
 })
-"""The arguments of `publish-browser-identity`."""
+"""The arguments of `snooze_until_tomorrow`."""
 
-SaveAccountArgs = TypedDict("SaveAccountArgs", {
-    "id": "str",
-    "type_id": "str",
-    "display_name": "str",
-    "config": "Any",
-    "enabled": "bool",
-    "tint": "int",
+UnsnoozeArgs = TypedDict("UnsnoozeArgs", {
 })
-"""The arguments of `save-account`."""
+"""The arguments of `unsnooze`."""
 
-RemoveAccountArgs = TypedDict("RemoveAccountArgs", {
-    "account": "str",
+LabelArgs = TypedDict("LabelArgs", {
+    "name": "str",
+    "on": NotRequired["bool | None"],
 })
-"""The arguments of `remove-account`."""
+"""The arguments of `label`."""
 
-SetActiveAccountArgs = TypedDict("SetActiveAccountArgs", {
-    "account": "str",
+MuteArgs = TypedDict("MuteArgs", {
+    "muted": NotRequired["bool | None"],
 })
-"""The arguments of `set-active-account`."""
+"""The arguments of `mute`."""
 
-ProjectContactArgs = TypedDict("ProjectContactArgs", {
-    "person": "str",
-    "label": "str",
+MarkReadArgs = TypedDict("MarkReadArgs", {
+    "unread": NotRequired["bool | None"],
 })
-"""The arguments of `project-contact`."""
+"""The arguments of `mark_read`."""
 
-RemoveContactArgs = TypedDict("RemoveContactArgs", {
-    "person": "str",
+SendFromArgs = TypedDict("SendFromArgs", {
+    "a": "Account",
 })
-"""The arguments of `remove-contact`."""
+"""The arguments of `send_from`."""
 
-ConfirmEndpointArgs = TypedDict("ConfirmEndpointArgs", {
-    "person": "str",
-    "endpoint": "str",
-    "service": "str",
-    "recipient": "str",
+SetHoldArgs = TypedDict("SetHoldArgs", {
+    "seconds": "int",
 })
-"""The arguments of `confirm-endpoint`."""
+"""The arguments of `set_hold`."""
 
-ConfirmAccountArgs = TypedDict("ConfirmAccountArgs", {
-    "person": "str",
-    "endpoint": "str",
-    "service": "str",
-    "scope": "str",
-    "recipient": "str",
-    "revision": "str",
+RenameLabelArgs = TypedDict("RenameLabelArgs", {
+    "l": "Label",
+    "name": "str",
 })
-"""The arguments of `confirm-account`."""
+"""The arguments of `rename_label`."""
 
-ReplaceEndpointArgs = TypedDict("ReplaceEndpointArgs", {
-    "person": "str",
-    "previous": "str",
-    "endpoint": "str",
-    "service": "str",
-    "recipient": "str",
+DeleteLabelArgs = TypedDict("DeleteLabelArgs", {
+    "l": "Label",
 })
-"""The arguments of `replace-endpoint`."""
+"""The arguments of `delete_label`."""
 
-ReplaceAccountArgs = TypedDict("ReplaceAccountArgs", {
-    "person": "str",
-    "previous": "str",
-    "endpoint": "str",
-    "service": "str",
-    "scope": "str",
-    "recipient": "str",
-    "revision": "str",
+DiscardArgs = TypedDict("DiscardArgs", {
+    "d": "Draft",
 })
-"""The arguments of `replace-account`."""
+"""The arguments of `discard`."""
 
-ProjectPhonesArgs = TypedDict("ProjectPhonesArgs", {
-    "person": "str",
-    "phones": "list[str]",
-})
-"""The arguments of `project-phones`."""
-
-ProjectEmailsArgs = TypedDict("ProjectEmailsArgs", {
-    "person": "str",
-    "emails": "list[str]",
-})
-"""The arguments of `project-emails`."""
-
-ProjectContactsArgs = TypedDict("ProjectContactsArgs", {
-    "people": "list[Projected]",
-    "removed": "list[str]",
-})
-"""The arguments of `project-contacts`."""
-
-ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
-    "person": "str",
-    "endpoint": "str",
-})
-"""The arguments of `forget-endpoint`."""
-
-TrustArgs = TypedDict("TrustArgs", {
-    "sender": "str",
-})
-"""The arguments of `trust`."""
-
-DistrustArgs = TypedDict("DistrustArgs", {
-    "sender": "str",
-})
-"""The arguments of `distrust`."""
-
-ImportLegacyArgs = TypedDict("ImportLegacyArgs", {
-    "senders": "list[str]",
-})
-"""The arguments of `import-legacy`."""
-
-KeepCopiesArgs = TypedDict("KeepCopiesArgs", {
-    "copies": "list[NewCopy]",
-})
-"""The arguments of `keep-copies`."""
-
-ImportCopiesArgs = TypedDict("ImportCopiesArgs", {
-    "copies": "list[NewCopy]",
-})
-"""The arguments of `import-copies`."""
-
-ForgetCopiesArgs = TypedDict("ForgetCopiesArgs", {
-    "messages": "list[str]",
-    "account": NotRequired["str | None"],
-})
-"""The arguments of `forget-copies`."""
-
-class Mailbox(Resource):
-    """Mail — `mail.mailbox`."""
-    __surface__ = "so.tilo.mail@4e7f5468866339f4"
-    folders: list[Entry[LocalFolder]]
-    draft: DraftState
-    drafts: list[Entry[DraftState]]
+class Account(Resource):
+    """Account — `tl.so.tilo.mail.Account`."""
+    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    yujnud5c: str  # key
     @property
-    def retired(self) -> list[Entry[RetiredCopy]]:
-        """Read only."""
-        return self.fields["retired"]
+    def _4lo3ei5n(self) -> str:
+        """address (`4lo3ei5n` on the wire)."""
+        return self.fields["4lo3ei5n"]
+
+    @_4lo3ei5n.setter
+    def _4lo3ei5n(self, value: str) -> None:
+        self.edit("4lo3ei5n", value=value)
+    j6nqqrit: str  # name
+    b5k7mvka: str  # trouble
     @property
-    def imported(self) -> list[str]:
-        """Read only."""
-        return self.fields["imported"]
-    @property
-    def taken_in(self) -> list[str]:
-        """Read only."""
-        return self.fields["taken_in"]
+    def _33f3rqw2(self) -> bool:
+        """online (`33f3rqw2` on the wire)."""
+        return self.fields["33f3rqw2"]
 
-    def import_mailbox_entries(self,
-        *,
-        folders: list[PreviousFolder],
-        drafts: list[PreviousDraft],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("import-mailbox-entries", folders=folders, drafts=drafts)
+    @_33f3rqw2.setter
+    def _33f3rqw2(self, value: bool) -> None:
+        self.edit("33f3rqw2", value=value)
+    hzbwof46: str  # fetched
+    jxc5rufs: str  # signature
+    ehmoyzk2: list[Entry[Mailbox]]  # mailboxes
+    qybqg4dl: list[Entry[Thread]]  # threads
 
-    def server_applied(self, *, update: ServerUpdate) -> None:
-        """Runs the app's action."""
-        return self.action("server-applied", update=update)
+    def set_signature(self, *, signature: str) -> None:
+        """Sets or clears the workspace account's signature."""
+        return self.action("set_signature", signature=signature)
 
-    def start_draft_body(self,
-        *,
-        text: str,
-        html: str | None = None,
-        draft: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["text"] = text
-        if html is not None:
-            args["html"] = html
-        if draft is not None:
-            args["draft"] = draft
-        return self.action("start-draft-body", **args)
+    def set_signature_many(self, items: list[SetSignatureArgs]) -> list[dict[str, Any]]:
+        """Runs `set_signature` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_signature", items)
 
-    def save_draft(self,
-        *,
-        message: DraftData,
-        draft: str | None = None,
-        in_reply_to: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["message"] = message
-        if draft is not None:
-            args["draft"] = draft
-        if in_reply_to is not None:
-            args["in_reply_to"] = in_reply_to
-        return self.action("save-draft", **args)
+    def check_now(self) -> None:
+        """Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved. The account says how it stands once it answers."""
+        return self.action("check_now")
 
-    def create_draft(self,
-        *,
-        id: str,
-        message: DraftData,
-        in_reply_to: str | None = None,
-        notes: str | None = None,
-    ) -> Any:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["id"] = id
-        args["message"] = message
-        if in_reply_to is not None:
-            args["in_reply_to"] = in_reply_to
-        if notes is not None:
-            args["notes"] = notes
-        return self.action("create-draft", **args)
+    def new_message(self) -> Draft:
+        """Starts a message from the account."""
+        return self.action("new_message")
 
-    def show_draft(self,
-        *,
-        message: str,
-        draft: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["message"] = message
-        if draft is not None:
-            args["draft"] = draft
-        return self.action("show-draft", **args)
+    def mark_all_read(self) -> None:
+        """Marks every conversation of the account read."""
+        return self.action("mark_all_read")
 
-    def attach(self,
-        *,
-        content: str,
-        name: str,
-        size: int | None = None,
-        mime: str | None = None,
-        draft: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["content"] = content
-        args["name"] = name
-        if size is not None:
-            args["size"] = size
-        if mime is not None:
-            args["mime"] = mime
-        if draft is not None:
-            args["draft"] = draft
-        return self.action("attach", **args)
-
-    def discard_draft(self,
-        *,
-        draft: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        if draft is not None:
-            args["draft"] = draft
-        return self.action("discard-draft", **args)
-
-    def send_message(self,
-        *,
-        account: str,
-        message: DraftData,
-        in_reply_to: str | None = None,
-        draft: str | None = None,
-    ) -> Any:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["account"] = account
-        args["message"] = message
-        if in_reply_to is not None:
-            args["in_reply_to"] = in_reply_to
-        if draft is not None:
-            args["draft"] = draft
-        return self.action("send-message", **args)
-
-    def check_mail(self,
-        *,
-        account: str,
-        folder: Folder,
-    ) -> Any:
-        """Runs the app's action."""
-        return self.action("check-mail", account=account, folder=folder)
-
-    def draft_message(self,
-        *,
-        to: str,
-        subject: str,
-        body: str,
-        cc: str | None = None,
-        notes: str | None = None,
-    ) -> Any:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["to"] = to
-        args["subject"] = subject
-        args["body"] = body
-        if cc is not None:
-            args["cc"] = cc
-        if notes is not None:
-            args["notes"] = notes
-        return self.action("draft-message", **args)
-
-    def cancel_send(self, *, id: str) -> Any:
-        """Runs the app's action."""
-        return self.action("cancel-send", id=id)
-
-    def search_messages(self,
-        *,
-        query: str | None = None,
-        folder: Folder | None = None,
-        from_: str | None = None,
-        subject: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        has_attachment: bool | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        if query is not None:
-            args["query"] = query
-        if folder is not None:
-            args["folder"] = folder
-        if from_ is not None:
-            args["from"] = from_
-        if subject is not None:
-            args["subject"] = subject
-        if since is not None:
-            args["since"] = since
-        if until is not None:
-            args["until"] = until
-        if has_attachment is not None:
-            args["has_attachment"] = has_attachment
-        return self.action("search-messages", **args)
-
-    def export_content(self,
-        *,
-        format: str | None = None,
-        message: str | None = None,
-        folder: Folder | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        if format is not None:
-            args["format"] = format
-        if message is not None:
-            args["message"] = message
-        if folder is not None:
-            args["folder"] = folder
-        return self.action("export-content", **args)
+    def mark_all_read_many(self, items: list[MarkAllReadArgs]) -> list[dict[str, Any]]:
+        """Runs `mark_all_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("mark_all_read", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"import_mailbox_entries", "server_applied", "start_draft_body", "save_draft", "create_draft", "show_draft", "attach", "discard_draft", "send_message", "check_mail", "draft_message", "cancel_send", "search_messages", "export_content"})
+    __actions__ = frozenset({"set_signature", "set_signature_many", "check_now", "new_message", "mark_all_read", "mark_all_read_many"})
 
 
-class Messages(Resource):
-    """Messages — `mail.messages`."""
-    __surface__ = "so.tilo.mail@4e7f5468866339f4"
-    messages: list[Entry[MessageState]]
+class Mailbox(Resource):
+    """Mailbox — `tl.so.tilo.mail.Mailbox`."""
+    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    mh47w3p6: str  # key
+    tlasysm5: str  # name
+    xhiqdk3p: str  # role
+    dtd4czyv: int  # unread
+    rxoe5vzb: int  # total
+
+
+class Thread(Resource):
+    """Thread — `tl.so.tilo.mail.Thread`."""
+    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    ecmpoary: str  # key
+    zu23m2dm: str  # account
+    u732lnuk: str  # subject
+    o3knjgos: str  # latest
+    sxcvmlon: str  # snippet
+    vyc7aj7v: str  # senders
+    izafodav: int  # count
     @property
-    def held(self) -> list[Entry[HeldMessage]]:
-        """Read only."""
-        return self.fields["held"]
+    def _56lwowdg(self) -> bool:
+        """unread (`56lwowdg` on the wire)."""
+        return self.fields["56lwowdg"]
 
-    def mark_read(self,
-        *,
-        messages: list[str],
-        read: bool,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("mark-read", messages=messages, read=read)
+    @_56lwowdg.setter
+    def _56lwowdg(self, value: bool) -> None:
+        self.edit("56lwowdg", value=value)
+    abe6c5jl: bool  # flagged
+    @property
+    def _3vusnp7i(self) -> list[str]:
+        """boxes (`3vusnp7i` on the wire)."""
+        return self.fields["3vusnp7i"]
 
-    def mark_read_many(self, items: list[MarkReadArgs]) -> list[dict[str, Any]]:
-        """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("mark-read", items)
+    @_3vusnp7i.setter
+    def _3vusnp7i(self, value: list[str]) -> None:
+        self.edit("3vusnp7i", value=value)
+    ueyfpzep: list[Entry[Message]]  # messages
+    gy7z7du3: list[str]  # labels
+    bdoh33hs: str  # snoozed_until
+    z7qxz544: bool  # muted
 
-    def archive(self, *, messages: list[str]) -> None:
-        """Runs the app's action."""
-        return self.action("archive", messages=messages)
+    def reply(self) -> Draft:
+        """Answers the conversation's newest message, to whoever wrote it, quoting it under what is written."""
+        return self.action("reply")
+
+    def reply_all(self) -> Draft:
+        """Answers the conversation's newest message, to everyone it went to, quoting it."""
+        return self.action("reply_all")
+
+    def forward(self) -> Draft:
+        """Sends the conversation's newest message on, with its sender and what it says."""
+        return self.action("forward")
+
+    def archive(self) -> None:
+        """Archives the conversation: its messages leave the inbox."""
+        return self.action("archive")
 
     def archive_many(self, items: list[ArchiveArgs]) -> list[dict[str, Any]]:
         """Runs `archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("archive", items)
 
-    def trash(self, *, messages: list[str]) -> None:
-        """Runs the app's action."""
-        return self.action("trash", messages=messages)
+    def to_inbox(self) -> None:
+        """Moves the conversation back to the inbox, and unmutes it: what a person brings back is what they want to see again."""
+        return self.action("to_inbox")
 
-    def trash_many(self, items: list[TrashArgs]) -> list[dict[str, Any]]:
-        """Runs `trash` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("trash", items)
+    def to_inbox_many(self, items: list[ToInboxArgs]) -> list[dict[str, Any]]:
+        """Runs `to_inbox` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("to_inbox", items)
 
-    def move_messages(self,
+    def move_to(self, *, to: Mailbox) -> None:
+        """Moves the conversation to another mailbox of its account."""
+        return self.action("move_to", to=to)
+
+    def move_to_many(self, items: list[MoveToArgs]) -> list[dict[str, Any]]:
+        """Runs `move_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_to", items)
+
+    def delete(self) -> None:
+        """Deletes the conversation: its messages go to the trash."""
+        return self.action("delete")
+
+    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete", items)
+
+    def flag(self,
         *,
-        messages: list[str],
-        to: Folder,
+        flagged: bool | None = None,
     ) -> None:
-        """Runs the app's action."""
-        return self.action("move-messages", messages=messages, to=to)
-
-    def move_messages_many(self, items: list[MoveMessagesArgs]) -> list[dict[str, Any]]:
-        """Runs `move-messages` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move-messages", items)
-
-    def purge(self, *, messages: list[str]) -> None:
-        """Runs the app's action."""
-        return self.action("purge", messages=messages)
-
-    def purge_many(self, items: list[PurgeArgs]) -> list[dict[str, Any]]:
-        """Runs `purge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("purge", items)
-
-    def ingest(self, *, messages: list[IngestBaseline]) -> None:
-        """Runs the app's action."""
-        return self.action("ingest", messages=messages)
-
-    def ingest_many(self, items: list[IngestArgs]) -> list[dict[str, Any]]:
-        """Runs `ingest` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("ingest", items)
-
-    def server_applied(self, *, updates: list[ServerUpdate]) -> None:
-        """Runs the app's action."""
-        return self.action("server-applied", updates=updates)
-
-    def server_applied_many(self, items: list[ServerAppliedArgs]) -> list[dict[str, Any]]:
-        """Runs `server-applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("server-applied", items)
-
-    def import_previous_message(self,
-        *,
-        id: str,
-        state: Any,
-        body: Any | None = None,
-    ) -> None:
-        """Runs the app's action."""
+        """Flags or unflags the conversation."""
         args: dict[str, Any] = {}
-        args["id"] = id
-        args["state"] = state
-        if body is not None:
-            args["body"] = body
-        return self.action("import-previous-message", **args)
+        if flagged is not None:
+            args["flagged"] = flagged
+        return self.action("flag", **args)
 
-    def import_previous_message_many(self, items: list[ImportPreviousMessageArgs]) -> list[dict[str, Any]]:
-        """Runs `import-previous-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import-previous-message", items)
+    def flag_many(self, items: list[FlagArgs]) -> list[dict[str, Any]]:
+        """Runs `flag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("flag", items)
 
-    def deliver_message(self,
+    def snooze(self, *, until: str) -> None:
+        """Puts the conversation away until a moment: it leaves the inbox, and comes back once that moment has come, with no window open. The moment is a field, so it survives closing and reopening, and an agent snoozes the same way."""
+        return self.action("snooze", until=until)
+
+    def snooze_many(self, items: list[SnoozeArgs]) -> list[dict[str, Any]]:
+        """Runs `snooze` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("snooze", items)
+
+    def snooze_an_hour(self) -> None:
+        """Puts the conversation away for an hour, the snooze people reach for most."""
+        return self.action("snooze_an_hour")
+
+    def snooze_an_hour_many(self, items: list[SnoozeAnHourArgs]) -> list[dict[str, Any]]:
+        """Runs `snooze_an_hour` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("snooze_an_hour", items)
+
+    def snooze_until_tomorrow(self) -> None:
+        """Puts the conversation away until tomorrow morning, at nine, in the person's own zone."""
+        return self.action("snooze_until_tomorrow")
+
+    def snooze_until_tomorrow_many(self, items: list[SnoozeUntilTomorrowArgs]) -> list[dict[str, Any]]:
+        """Runs `snooze_until_tomorrow` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("snooze_until_tomorrow", items)
+
+    def unsnooze(self) -> None:
+        """Brings a snoozed conversation back now, whatever its moment was: it is in the inbox again."""
+        return self.action("unsnooze")
+
+    def unsnooze_many(self, items: list[UnsnoozeArgs]) -> list[dict[str, Any]]:
+        """Runs `unsnooze` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("unsnooze", items)
+
+    def label(self,
         *,
-        from_: str,
+        name: str,
+        on: bool | None = None,
+    ) -> None:
+        """Gives the conversation a label, or takes one away: `on` says which. The label joins the workspace's labels the first time it is given, so it has a filter of its own from then on."""
+        args: dict[str, Any] = {}
+        args["name"] = name
+        if on is not None:
+            args["on"] = on
+        return self.action("label", **args)
+
+    def label_many(self, items: list[LabelArgs]) -> list[dict[str, Any]]:
+        """Runs `label` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("label", items)
+
+    def mute(self,
+        *,
+        muted: bool | None = None,
+    ) -> None:
+        """Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is brought back, whatever its new messages do."""
+        args: dict[str, Any] = {}
+        if muted is not None:
+            args["muted"] = muted
+        return self.action("mute", **args)
+
+    def mute_many(self, items: list[MuteArgs]) -> list[dict[str, Any]]:
+        """Runs `mute` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("mute", items)
+
+    def mark_read(self,
+        *,
+        unread: bool | None = None,
+    ) -> None:
+        """Marks the conversation read, or unread again."""
+        args: dict[str, Any] = {}
+        if unread is not None:
+            args["unread"] = unread
+        return self.action("mark_read", **args)
+
+    def mark_read_many(self, items: list[MarkReadArgs]) -> list[dict[str, Any]]:
+        """Runs `mark_read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("mark_read", items)
+
+    def answer(self, *, body: str) -> Draft:
+        """Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted."""
+        return self.action("answer", body=body)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"reply", "reply_all", "forward", "archive", "archive_many", "to_inbox", "to_inbox_many", "move_to", "move_to_many", "delete", "delete_many", "flag", "flag_many", "snooze", "snooze_many", "snooze_an_hour", "snooze_an_hour_many", "snooze_until_tomorrow", "snooze_until_tomorrow_many", "unsnooze", "unsnooze_many", "label", "label_many", "mute", "mute_many", "mark_read", "mark_read_many", "answer"})
+
+
+class Label(Resource):
+    """Label — `tl.so.tilo.mail.Label`."""
+    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    ammoua3h: str  # name
+
+
+class Message(Resource):
+    """Message — `tl.so.tilo.mail.Message`."""
+    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    kzjq6hvc: str  # key
+    kdxoo3c6: str  # account
+    ntqgnz4f: str  # subject
+    l3nc65iv: str  # from
+    mo6l36a3: str  # from_name
+    @property
+    def _46k23iwq(self) -> str:
+        """to (`46k23iwq` on the wire)."""
+        return self.fields["46k23iwq"]
+
+    @_46k23iwq.setter
+    def _46k23iwq(self, value: str) -> None:
+        self.edit("46k23iwq", value=value)
+    bgzxugi5: str  # cc
+    tfxwkfn2: str  # received
+    sbrol5fc: str  # snippet
+    @property
+    def _4bchz3ch(self) -> str:
+        """body (`4bchz3ch` on the wire)."""
+        return self.fields["4bchz3ch"]
+
+    @_4bchz3ch.setter
+    def _4bchz3ch(self, value: str) -> None:
+        self.edit("4bchz3ch", value=value)
+    anuds3qt: str  # message_id
+    asu6ymha: str  # references
+    @property
+    def _4zhzrkne(self) -> str:
+        """attachments (`4zhzrkne` on the wire)."""
+        return self.fields["4zhzrkne"]
+
+    @_4zhzrkne.setter
+    def _4zhzrkne(self, value: str) -> None:
+        self.edit("4zhzrkne", value=value)
+    ubfcf6ep: bool  # unread
+    vxxb4sqr: bool  # flagged
+    xlejsz5j: str  # mailbox
+
+    def reply_to(self) -> Draft:
+        """Answers one message of the conversation, to whoever wrote it, quoting it."""
+        return self.action("reply_to")
+
+    def reply_all_to(self) -> Draft:
+        """Answers one message of the conversation, to everyone it went to but the person answering."""
+        return self.action("reply_all_to")
+
+    def forward_message(self) -> Draft:
+        """Sends one message of the conversation on, with its sender, when and what it says."""
+        return self.action("forward_message")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"reply_to", "reply_all_to", "forward_message"})
+
+
+class Draft(Resource):
+    """Draft — `tl.so.tilo.mail.Draft`."""
+    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    m2g6zrle: str  # from
+    hd3o4gkq: str  # to
+    cwukhrvn: str  # cc
+    tyxmravh: str  # subject
+    d5u2c7jm: str  # body
+    w6twdkob: str  # in_reply_to
+    w26tzvt4: str  # references
+    yfyt2cfh: bool  # sent
+    lgrwf5yf: str  # send_at
+    h2nvr2op: bool  # recalled
+    em6rrmae: str  # invitation
+    ozukvva2: str  # set_aside
+
+    def cancel_later(self) -> None:
+        """Brings a message back to the outbox: it was sent to go at a moment still to come, and it is a draft again, whatever the moment."""
+        return self.action("cancel_later")
+
+    def send_later(self, *, at: str) -> None:
+        """Sends the message at a moment instead of now: it waits in the outbox until then, as the person's hold makes a message wait, and goes with no window open. Until it goes it can be taken back, and bringing it back leaves it a draft."""
+        return self.action("send_later", at=at)
+
+    def send_in_the_morning(self) -> None:
+        """Sends the message at nine tomorrow, the moment people reach for most when they write in the evening and do not want it to arrive then."""
+        return self.action("send_in_the_morning")
+
+    def send_from(self, *, a: Account) -> None:
+        """Sends the message from another workspace account."""
+        return self.action("send_from", a=a)
+
+    def send_from_many(self, items: list[SendFromArgs]) -> list[dict[str, Any]]:
+        """Runs `send_from` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("send_from", items)
+
+    def send(self) -> None:
+        """Sends the message from its account. It leaves the system, so it goes once, and waits in the outbox until the server took it; it is held back for the person's hold first, so they can take it back. The effect is an argument the action records, so the wait survives a window closing and an agent takes it back the same way."""
+        return self.action("send")
+
+    def undo_send(self) -> None:
+        """Takes back a message that was sent and has not gone yet: it never leaves, and the message is a draft again, as it was. Once it went it cannot be taken back."""
+        return self.action("undo_send")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"cancel_later", "send_later", "send_in_the_morning", "send_from", "send_from_many", "send", "undo_send"})
+
+
+class Mail(Resource):
+    """Mail — `tl.so.tilo.mail.Mail`."""
+    __surface__ = "so.tilo.mail@41f24949edf6452e"
+    blig7xcq: list[Entry[Account]]  # accounts
+    gkuo27e6: list[Entry[Draft]]  # drafts
+    z3zcztpz: list[Entry[Label]]  # labels
+    bag7bf25: list[Entry[Thread]]  # recovered_mail
+    fezdozrd: list[str]  # recovered_conversations
+    swilesl6: list[str]  # recovered_signatures
+    @property
+    def _5upxgb6g(self) -> list[str]:
+        """recovered_drafts (`5upxgb6g` on the wire)."""
+        return self.fields["5upxgb6g"]
+
+    @_5upxgb6g.setter
+    def _5upxgb6g(self, value: list[str]) -> None:
+        self.edit("5upxgb6g", value=value)
+    @property
+    def _4ow5ydy5(self) -> int:
+        """hold (`4ow5ydy5` on the wire)."""
+        return self.fields["4ow5ydy5"]
+
+    @_4ow5ydy5.setter
+    def _4ow5ydy5(self, value: int) -> None:
+        self.edit("4ow5ydy5", value=value)
+
+    def set_hold(self, *, seconds: int) -> None:
+        """Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait at all at zero."""
+        return self.action("set_hold", seconds=seconds)
+
+    def set_hold_many(self, items: list[SetHoldArgs]) -> list[dict[str, Any]]:
+        """Runs `set_hold` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_hold", items)
+
+    def recover_previous(self,
+        *,
+        drafts: list[list[str]] | None = None,
+        labels: list[str] | None = None,
+        conversations: list[list[list[str]]] | None = None,
+        signatures: list[list[str]] | None = None,
+    ) -> int:
+        """Copies data from the earlier private mailbox into this workspace."""
+        args: dict[str, Any] = {}
+        if drafts is not None:
+            args["drafts"] = drafts
+        if labels is not None:
+            args["labels"] = labels
+        if conversations is not None:
+            args["conversations"] = conversations
+        if signatures is not None:
+            args["signatures"] = signatures
+        return self.action("recover_previous", **args)
+
+    def new_draft(self) -> Draft:
+        """Starts a message from the first account."""
+        return self.action("new_draft")
+
+    def prepare_calendar_invitation(self,
+        *,
+        to: str,
         subject: str,
         body: str,
-        to: str | None = None,
-        cc: str | None = None,
-        date: str | None = None,
-        folder: Folder | None = None,
-        read: bool | None = None,
-        reply_to: str | None = None,
-        conversation: str | None = None,
-        message_id: str | None = None,
-        original: Any | None = None,
-        parts: list[DeliveredPart] | None = None,
-        attachments: list[DeliveredAttachment] | None = None,
-        answers: str | None = None,
-    ) -> Any:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["from"] = from_
-        if to is not None:
-            args["to"] = to
-        if cc is not None:
-            args["cc"] = cc
-        args["subject"] = subject
-        args["body"] = body
-        if date is not None:
-            args["date"] = date
-        if folder is not None:
-            args["folder"] = folder
-        if read is not None:
-            args["read"] = read
-        if reply_to is not None:
-            args["reply_to"] = reply_to
-        if conversation is not None:
-            args["conversation"] = conversation
-        if message_id is not None:
-            args["message_id"] = message_id
-        if original is not None:
-            args["original"] = original
-        if parts is not None:
-            args["parts"] = parts
-        if attachments is not None:
-            args["attachments"] = attachments
-        if answers is not None:
-            args["answers"] = answers
-        return self.action("deliver-message", **args)
+        calendar_ics: str,
+    ) -> Draft:
+        """Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried beside what it says: what Calendar hands Mail for each guest it invites. Nothing is sent; the person reads it, and sends it."""
+        return self.action("prepare_calendar_invitation", to=to, subject=subject, body=body, calendar_ics=calendar_ics)
+
+    def rename_label(self,
+        *,
+        l: Label,
+        name: str,
+    ) -> None:
+        """Renames one of the workspace's labels, all the conversations that carry it with it."""
+        return self.action("rename_label", l=l, name=name)
+
+    def rename_label_many(self, items: list[RenameLabelArgs]) -> list[dict[str, Any]]:
+        """Runs `rename_label` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename_label", items)
+
+    def delete_label(self, *, l: Label) -> None:
+        """Deletes one of the workspace's labels, and takes it off every conversation that carries it."""
+        return self.action("delete_label", l=l)
+
+    def delete_label_many(self, items: list[DeleteLabelArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_label` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_label", items)
+
+    def discard(self, *, d: Draft) -> None:
+        """Throws a message being written away."""
+        return self.action("discard", d=d)
+
+    def discard_many(self, items: list[DiscardArgs]) -> list[dict[str, Any]]:
+        """Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("discard", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"mark_read", "mark_read_many", "archive", "archive_many", "trash", "trash_many", "move_messages", "move_messages_many", "purge", "purge_many", "ingest", "ingest_many", "server_applied", "server_applied_many", "import_previous_message", "import_previous_message_many", "deliver_message"})
+    __actions__ = frozenset({"set_hold", "set_hold_many", "recover_previous", "new_draft", "prepare_calendar_invitation", "rename_label", "rename_label_many", "delete_label", "delete_label_many", "discard", "discard_many"})
 
 
-class Accounts(Resource):
-    """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.mail@4e7f5468866339f4"
-    accounts: list[Entry[PersonAccount]]
-    active: dict[str, str]
-
-    def publish_browser_identity(self,
-        *,
-        root: str,
-        origin: str,
-        display_name: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("publish-browser-identity", root=root, origin=origin, display_name=display_name)
-
-    def publish_browser_identity_many(self, items: list[PublishBrowserIdentityArgs]) -> list[dict[str, Any]]:
-        """Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("publish-browser-identity", items)
-
-    def save_account(self,
-        *,
-        id: str,
-        type_id: str,
-        display_name: str,
-        config: Any,
-        enabled: bool,
-        tint: int,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("save-account", id=id, type_id=type_id, display_name=display_name, config=config, enabled=enabled, tint=tint)
-
-    def save_account_many(self, items: list[SaveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("save-account", items)
-
-    def remove_account(self, *, account: str) -> None:
-        """Runs the app's action."""
-        return self.action("remove-account", account=account)
-
-    def remove_account_many(self, items: list[RemoveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remove-account", items)
-
-    def set_active_account(self, *, account: str) -> None:
-        """Runs the app's action."""
-        return self.action("set-active-account", account=account)
-
-    def set_active_account_many(self, items: list[SetActiveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-active-account", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many", "set_active_account", "set_active_account_many"})
-
-
-class Identities(Resource):
-    """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.mail@4e7f5468866339f4"
-    people: list[Entry[Person]]
-
-    def project_contact(self,
-        *,
-        person: str,
-        label: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("project-contact", person=person, label=label)
-
-    def project_contact_many(self, items: list[ProjectContactArgs]) -> list[dict[str, Any]]:
-        """Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("project-contact", items)
-
-    def remove_contact(self, *, person: str) -> None:
-        """Runs the app's action."""
-        return self.action("remove-contact", person=person)
-
-    def remove_contact_many(self, items: list[RemoveContactArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remove-contact", items)
-
-    def confirm_endpoint(self,
-        *,
-        person: str,
-        endpoint: str,
-        service: str,
-        recipient: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("confirm-endpoint", person=person, endpoint=endpoint, service=service, recipient=recipient)
-
-    def confirm_endpoint_many(self, items: list[ConfirmEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("confirm-endpoint", items)
-
-    def confirm_account(self,
-        *,
-        person: str,
-        endpoint: str,
-        service: str,
-        scope: str,
-        recipient: str,
-        revision: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("confirm-account", person=person, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
-
-    def confirm_account_many(self, items: list[ConfirmAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("confirm-account", items)
-
-    def replace_endpoint(self,
-        *,
-        person: str,
-        previous: str,
-        endpoint: str,
-        service: str,
-        recipient: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("replace-endpoint", person=person, previous=previous, endpoint=endpoint, service=service, recipient=recipient)
-
-    def replace_endpoint_many(self, items: list[ReplaceEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("replace-endpoint", items)
-
-    def replace_account(self,
-        *,
-        person: str,
-        previous: str,
-        endpoint: str,
-        service: str,
-        scope: str,
-        recipient: str,
-        revision: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("replace-account", person=person, previous=previous, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
-
-    def replace_account_many(self, items: list[ReplaceAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("replace-account", items)
-
-    def project_phones(self,
-        *,
-        person: str,
-        phones: list[str],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("project-phones", person=person, phones=phones)
-
-    def project_phones_many(self, items: list[ProjectPhonesArgs]) -> list[dict[str, Any]]:
-        """Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("project-phones", items)
-
-    def project_emails(self,
-        *,
-        person: str,
-        emails: list[str],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("project-emails", person=person, emails=emails)
-
-    def project_emails_many(self, items: list[ProjectEmailsArgs]) -> list[dict[str, Any]]:
-        """Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("project-emails", items)
-
-    def project_contacts(self,
-        *,
-        people: list[Projected],
-        removed: list[str],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("project-contacts", people=people, removed=removed)
-
-    def project_contacts_many(self, items: list[ProjectContactsArgs]) -> list[dict[str, Any]]:
-        """Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("project-contacts", items)
-
-    def forget_endpoint(self,
-        *,
-        person: str,
-        endpoint: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("forget-endpoint", person=person, endpoint=endpoint)
-
-    def forget_endpoint_many(self, items: list[ForgetEndpointArgs]) -> list[dict[str, Any]]:
-        """Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("forget-endpoint", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"project_contact", "project_contact_many", "remove_contact", "remove_contact_many", "confirm_endpoint", "confirm_endpoint_many", "confirm_account", "confirm_account_many", "replace_endpoint", "replace_endpoint_many", "replace_account", "replace_account_many", "project_phones", "project_phones_many", "project_emails", "project_emails_many", "project_contacts", "project_contacts_many", "forget_endpoint", "forget_endpoint_many"})
-
-
-class TrustedSenders(Resource):
-    """Trusted senders — `mail.trusted-senders`."""
-    __surface__ = "so.tilo.mail@4e7f5468866339f4"
-    senders: list[str]
-    @property
-    def distrusted(self) -> list[str]:
-        """Read only."""
-        return self.fields["distrusted"]
-
-    def trust(self, *, sender: str) -> None:
-        """Runs the app's action."""
-        return self.action("trust", sender=sender)
-
-    def trust_many(self, items: list[TrustArgs]) -> list[dict[str, Any]]:
-        """Runs `trust` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("trust", items)
-
-    def distrust(self, *, sender: str) -> None:
-        """Runs the app's action."""
-        return self.action("distrust", sender=sender)
-
-    def distrust_many(self, items: list[DistrustArgs]) -> list[dict[str, Any]]:
-        """Runs `distrust` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("distrust", items)
-
-    def import_legacy(self, *, senders: list[str]) -> None:
-        """Runs the app's action."""
-        return self.action("import-legacy", senders=senders)
-
-    def import_legacy_many(self, items: list[ImportLegacyArgs]) -> list[dict[str, Any]]:
-        """Runs `import-legacy` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import-legacy", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"trust", "trust_many", "distrust", "distrust_many", "import_legacy", "import_legacy_many"})
-
-
-class Copies(Resource):
-    """Workspace mail — `mail.copies`."""
-    __surface__ = "so.tilo.mail@4e7f5468866339f4"
-    @property
-    def copies(self) -> list[Entry[KeptCopy]]:
-        """Read only."""
-        return self.fields["copies"]
-    @property
-    def removed(self) -> list[str]:
-        """Read only."""
-        return self.fields["removed"]
-
-    def keep_copies(self, *, copies: list[NewCopy]) -> None:
-        """Runs the app's action."""
-        return self.action("keep-copies", copies=copies)
-
-    def keep_copies_many(self, items: list[KeepCopiesArgs]) -> list[dict[str, Any]]:
-        """Runs `keep-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("keep-copies", items)
-
-    def import_copies(self, *, copies: list[NewCopy]) -> None:
-        """Runs the app's action."""
-        return self.action("import-copies", copies=copies)
-
-    def import_copies_many(self, items: list[ImportCopiesArgs]) -> list[dict[str, Any]]:
-        """Runs `import-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import-copies", items)
-
-    def forget_copies(self,
-        *,
-        messages: list[str],
-        account: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["messages"] = messages
-        if account is not None:
-            args["account"] = account
-        return self.action("forget-copies", **args)
-
-    def forget_copies_many(self, items: list[ForgetCopiesArgs]) -> list[dict[str, Any]]:
-        """Runs `forget-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("forget-copies", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"keep_copies", "keep_copies_many", "import_copies", "import_copies_many", "forget_copies", "forget_copies_many"})
-
+class TiloMail(Resource):
+    """Mail — `tl.so.tilo.mail`."""
+    __surface__ = "so.tilo.mail@41f24949edf6452e"
 

@@ -296,7 +296,7 @@ fn own_session() -> Session {
     let resources = session.resources();
     let note = find(&resources, "tl.so.tilo.notes.Note", "Groceries").expect("a seeded note");
     let inbox =
-        find(&resources, "tl.so.tilo.lang.mail.Mailbox", "Inbox").expect("the seeded inbox");
+        find(&resources, "tl.so.tilo.mail.Mailbox", "Inbox").expect("the seeded inbox");
     place(&mut session, &note, 80, 60, 480, 360);
     place(&mut session, &inbox, 700, 60, 480, 360);
     // Notes and Mail are made with Discussion, whose record they keep their comments in, so the

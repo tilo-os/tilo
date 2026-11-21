@@ -608,7 +608,7 @@ const MAIL: (&str, &str) = (
     include_str!("../../../../apps/tl/mail/app.tl"),
     include_str!("../../../../apps/tl/mail/app.ids"),
 );
-const MAIL_APP: &str = "so.tilo.lang.mail";
+const MAIL_APP: &str = "so.tilo.mail";
 
 /// Ada's workspace with Mail's inbox a week in, as the session keeps it: a `ResourceService`
 /// over the document, and its first conversation's published id.

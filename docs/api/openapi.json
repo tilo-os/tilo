@@ -33886,13 +33886,13 @@
         ],
         "description": "Note what a drop target took, in the window's last answer."
       },
-      "tl.so.tilo.lang.mail.Account.$create.Arguments": {
+      "tl.so.tilo.mail.Account.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.mail.Account.edit-text.Arguments": {
+      "tl.so.tilo.mail.Account.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -33915,7 +33915,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Account.edit-flag.Arguments": {
+      "tl.so.tilo.mail.Account.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -33935,7 +33935,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Account.set_signature.Arguments": {
+      "tl.so.tilo.mail.Account.set_signature.Arguments": {
         "type": "object",
         "properties": {
           "signature": {
@@ -33947,31 +33947,31 @@
         ],
         "description": "Sets or clears the workspace account's signature."
       },
-      "tl.so.tilo.lang.mail.Account.check_now.Arguments": {
+      "tl.so.tilo.mail.Account.check_now.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Asks the account's server for its mail now: what a person presses when the window says the\nserver could not be reached, or that what it fetched could not be saved. The account says\nhow it stands once it answers."
       },
-      "tl.so.tilo.lang.mail.Account.new_message.Arguments": {
+      "tl.so.tilo.mail.Account.new_message.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Starts a message from the account."
       },
-      "tl.so.tilo.lang.mail.Account.mark_all_read.Arguments": {
+      "tl.so.tilo.mail.Account.mark_all_read.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Marks every conversation of the account read."
       },
-      "tl.so.tilo.lang.mail.Mailbox.$create.Arguments": {
+      "tl.so.tilo.mail.Mailbox.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.mail.Mailbox.edit-text.Arguments": {
+      "tl.so.tilo.mail.Mailbox.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -33992,7 +33992,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Mailbox.edit-flag.Arguments": {
+      "tl.so.tilo.mail.Mailbox.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34010,13 +34010,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Thread.$create.Arguments": {
+      "tl.so.tilo.mail.Thread.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.mail.Thread.edit-text.Arguments": {
+      "tl.so.tilo.mail.Thread.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34039,7 +34039,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Thread.edit-flag.Arguments": {
+      "tl.so.tilo.mail.Thread.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34061,37 +34061,37 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Thread.reply.Arguments": {
+      "tl.so.tilo.mail.Thread.reply.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Answers the conversation's newest message, to whoever wrote it, quoting it under what is\nwritten."
       },
-      "tl.so.tilo.lang.mail.Thread.reply_all.Arguments": {
+      "tl.so.tilo.mail.Thread.reply_all.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Answers the conversation's newest message, to everyone it went to, quoting it."
       },
-      "tl.so.tilo.lang.mail.Thread.forward.Arguments": {
+      "tl.so.tilo.mail.Thread.forward.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Sends the conversation's newest message on, with its sender and what it says."
       },
-      "tl.so.tilo.lang.mail.Thread.archive.Arguments": {
+      "tl.so.tilo.mail.Thread.archive.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Archives the conversation: its messages leave the inbox."
       },
-      "tl.so.tilo.lang.mail.Thread.to_inbox.Arguments": {
+      "tl.so.tilo.mail.Thread.to_inbox.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Moves the conversation back to the inbox, and unmutes it: what a person brings back is what\nthey want to see again."
       },
-      "tl.so.tilo.lang.mail.Thread.move_to.Arguments": {
+      "tl.so.tilo.mail.Thread.move_to.Arguments": {
         "type": "object",
         "properties": {
           "to": {
@@ -34123,7 +34123,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.mail.Mailbox",
+            "resource_kind": "tl.so.tilo.mail.Mailbox",
             "type": "object"
           }
         },
@@ -34132,13 +34132,13 @@
         ],
         "description": "Moves the conversation to another mailbox of its account."
       },
-      "tl.so.tilo.lang.mail.Thread.delete.Arguments": {
+      "tl.so.tilo.mail.Thread.delete.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Deletes the conversation: its messages go to the trash."
       },
-      "tl.so.tilo.lang.mail.Thread.flag.Arguments": {
+      "tl.so.tilo.mail.Thread.flag.Arguments": {
         "type": "object",
         "properties": {
           "flagged": {
@@ -34148,7 +34148,7 @@
         "required": [],
         "description": "Flags or unflags the conversation."
       },
-      "tl.so.tilo.lang.mail.Thread.snooze.Arguments": {
+      "tl.so.tilo.mail.Thread.snooze.Arguments": {
         "type": "object",
         "properties": {
           "until": {
@@ -34161,25 +34161,25 @@
         ],
         "description": "Puts the conversation away until a moment: it leaves the inbox, and comes back once that\nmoment has come, with no window open. The moment is a field, so it survives closing and\nreopening, and an agent snoozes the same way."
       },
-      "tl.so.tilo.lang.mail.Thread.snooze_an_hour.Arguments": {
+      "tl.so.tilo.mail.Thread.snooze_an_hour.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Puts the conversation away for an hour, the snooze people reach for most."
       },
-      "tl.so.tilo.lang.mail.Thread.snooze_until_tomorrow.Arguments": {
+      "tl.so.tilo.mail.Thread.snooze_until_tomorrow.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Puts the conversation away until tomorrow morning, at nine, in the person's own zone."
       },
-      "tl.so.tilo.lang.mail.Thread.unsnooze.Arguments": {
+      "tl.so.tilo.mail.Thread.unsnooze.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Brings a snoozed conversation back now, whatever its moment was: it is in the inbox again."
       },
-      "tl.so.tilo.lang.mail.Thread.label.Arguments": {
+      "tl.so.tilo.mail.Thread.label.Arguments": {
         "type": "object",
         "properties": {
           "name": {
@@ -34194,7 +34194,7 @@
         ],
         "description": "Gives the conversation a label, or takes one away: `on` says which. The label joins the\nworkspace's labels the first time it is given, so it has a filter of its own from then on."
       },
-      "tl.so.tilo.lang.mail.Thread.mute.Arguments": {
+      "tl.so.tilo.mail.Thread.mute.Arguments": {
         "type": "object",
         "properties": {
           "muted": {
@@ -34204,7 +34204,7 @@
         "required": [],
         "description": "Mutes the conversation, or unmutes it: a muted one stays out of the inbox until it is\nbrought back, whatever its new messages do."
       },
-      "tl.so.tilo.lang.mail.Thread.mark_read.Arguments": {
+      "tl.so.tilo.mail.Thread.mark_read.Arguments": {
         "type": "object",
         "properties": {
           "unread": {
@@ -34214,7 +34214,7 @@
         "required": [],
         "description": "Marks the conversation read, or unread again."
       },
-      "tl.so.tilo.lang.mail.Thread.answer.Arguments": {
+      "tl.so.tilo.mail.Thread.answer.Arguments": {
         "type": "object",
         "properties": {
           "body": {
@@ -34226,13 +34226,13 @@
         ],
         "description": "Answers the conversation with what was typed: the message goes to whoever wrote its newest,\nas a reply to it, quoted."
       },
-      "tl.so.tilo.lang.mail.Label.$create.Arguments": {
+      "tl.so.tilo.mail.Label.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.mail.Label.edit-text.Arguments": {
+      "tl.so.tilo.mail.Label.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34251,7 +34251,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Label.edit-flag.Arguments": {
+      "tl.so.tilo.mail.Label.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34269,13 +34269,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Message.$create.Arguments": {
+      "tl.so.tilo.mail.Message.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.mail.Message.edit-text.Arguments": {
+      "tl.so.tilo.mail.Message.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34306,7 +34306,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Message.edit-flag.Arguments": {
+      "tl.so.tilo.mail.Message.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34327,31 +34327,31 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Message.reply_to.Arguments": {
+      "tl.so.tilo.mail.Message.reply_to.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Answers one message of the conversation, to whoever wrote it, quoting it."
       },
-      "tl.so.tilo.lang.mail.Message.reply_all_to.Arguments": {
+      "tl.so.tilo.mail.Message.reply_all_to.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Answers one message of the conversation, to everyone it went to but the person answering."
       },
-      "tl.so.tilo.lang.mail.Message.forward_message.Arguments": {
+      "tl.so.tilo.mail.Message.forward_message.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Sends one message of the conversation on, with its sender, when and what it says."
       },
-      "tl.so.tilo.lang.mail.Draft.$create.Arguments": {
+      "tl.so.tilo.mail.Draft.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.mail.Draft.edit-text.Arguments": {
+      "tl.so.tilo.mail.Draft.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34376,7 +34376,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Draft.edit-flag.Arguments": {
+      "tl.so.tilo.mail.Draft.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34397,13 +34397,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Draft.cancel_later.Arguments": {
+      "tl.so.tilo.mail.Draft.cancel_later.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Brings a message back to the outbox: it was sent to go at a moment still to come, and it is\na draft again, whatever the moment."
       },
-      "tl.so.tilo.lang.mail.Draft.send_later.Arguments": {
+      "tl.so.tilo.mail.Draft.send_later.Arguments": {
         "type": "object",
         "properties": {
           "at": {
@@ -34416,13 +34416,13 @@
         ],
         "description": "Sends the message at a moment instead of now: it waits in the outbox until then, as the\nperson's hold makes a message wait, and goes with no window open. Until it goes it can be\ntaken back, and bringing it back leaves it a draft."
       },
-      "tl.so.tilo.lang.mail.Draft.send_in_the_morning.Arguments": {
+      "tl.so.tilo.mail.Draft.send_in_the_morning.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Sends the message at nine tomorrow, the moment people reach for most when they write in the\nevening and do not want it to arrive then."
       },
-      "tl.so.tilo.lang.mail.Draft.send_from.Arguments": {
+      "tl.so.tilo.mail.Draft.send_from.Arguments": {
         "type": "object",
         "properties": {
           "a": {
@@ -34454,7 +34454,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.mail.Account",
+            "resource_kind": "tl.so.tilo.mail.Account",
             "type": "object"
           }
         },
@@ -34463,25 +34463,25 @@
         ],
         "description": "Sends the message from another workspace account."
       },
-      "tl.so.tilo.lang.mail.Draft.send.Arguments": {
+      "tl.so.tilo.mail.Draft.send.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Sends the message from its account. It leaves the system, so it goes once, and waits in the\noutbox until the server took it; it is held back for the person's hold first, so they can\ntake it back. The effect is an argument the action records, so the wait survives a window\nclosing and an agent takes it back the same way."
       },
-      "tl.so.tilo.lang.mail.Draft.undo_send.Arguments": {
+      "tl.so.tilo.mail.Draft.undo_send.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Takes back a message that was sent and has not gone yet: it never leaves, and the message is\na draft again, as it was. Once it went it cannot be taken back."
       },
-      "tl.so.tilo.lang.mail.Mail.$create.Arguments": {
+      "tl.so.tilo.mail.Mail.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.mail.Mail.edit-text.Arguments": {
+      "tl.so.tilo.mail.Mail.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34498,7 +34498,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Mail.edit-flag.Arguments": {
+      "tl.so.tilo.mail.Mail.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -34516,7 +34516,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.mail.Mail.set_hold.Arguments": {
+      "tl.so.tilo.mail.Mail.set_hold.Arguments": {
         "type": "object",
         "properties": {
           "seconds": {
@@ -34528,7 +34528,7 @@
         ],
         "description": "Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait\nat all at zero."
       },
-      "tl.so.tilo.lang.mail.Mail.recover_previous.Arguments": {
+      "tl.so.tilo.mail.Mail.recover_previous.Arguments": {
         "type": "object",
         "properties": {
           "drafts": {
@@ -34571,13 +34571,13 @@
         "required": [],
         "description": "Copies data from the earlier private mailbox into this workspace."
       },
-      "tl.so.tilo.lang.mail.Mail.new_draft.Arguments": {
+      "tl.so.tilo.mail.Mail.new_draft.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Starts a message from the first account."
       },
-      "tl.so.tilo.lang.mail.Mail.rename_label.Arguments": {
+      "tl.so.tilo.mail.Mail.rename_label.Arguments": {
         "type": "object",
         "properties": {
           "l": {
@@ -34609,7 +34609,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.mail.Label",
+            "resource_kind": "tl.so.tilo.mail.Label",
             "type": "object"
           },
           "name": {
@@ -34622,7 +34622,7 @@
         ],
         "description": "Renames one of the workspace's labels, all the conversations that carry it with it."
       },
-      "tl.so.tilo.lang.mail.Mail.delete_label.Arguments": {
+      "tl.so.tilo.mail.Mail.delete_label.Arguments": {
         "type": "object",
         "properties": {
           "l": {
@@ -34654,7 +34654,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.mail.Label",
+            "resource_kind": "tl.so.tilo.mail.Label",
             "type": "object"
           }
         },
@@ -34663,7 +34663,7 @@
         ],
         "description": "Deletes one of the workspace's labels, and takes it off every conversation that carries it."
       },
-      "tl.so.tilo.lang.mail.Mail.discard.Arguments": {
+      "tl.so.tilo.mail.Mail.discard.Arguments": {
         "type": "object",
         "properties": {
           "d": {
@@ -34695,7 +34695,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.mail.Draft",
+            "resource_kind": "tl.so.tilo.mail.Draft",
             "type": "object"
           }
         },
@@ -45462,370 +45462,370 @@
       "arguments": "#/components/schemas/tl.so.tilo.lang.gallery.dropped.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
+      "app": "so.tilo.mail",
       "resource": "tl.host",
       "action": "commit",
       "arguments": "#/components/schemas/tl.host.commit.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
+      "app": "so.tilo.mail",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
+      "app": "so.tilo.mail",
       "resource": "tilolang.personal",
       "action": "seen",
       "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
+      "app": "so.tilo.mail",
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
+      "app": "so.tilo.mail",
       "resource": "tilolang.personal",
       "action": "reminded",
       "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Account",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Account.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Account",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Account.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Account",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Account.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Account",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "set_signature",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Account.set_signature.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.set_signature.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Account",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "check_now",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Account.check_now.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.check_now.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Account",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "new_message",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Account.new_message.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.new_message.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Account",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Account",
       "action": "mark_all_read",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Account.mark_all_read.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Account.mark_all_read.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mailbox",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mailbox",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mailbox.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mailbox.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mailbox",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mailbox",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mailbox.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mailbox.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mailbox",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mailbox",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mailbox.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mailbox.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "reply",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.reply.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.reply.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "reply_all",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.reply_all.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.reply_all.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "forward",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.forward.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.forward.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "archive",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.archive.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.archive.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "to_inbox",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.to_inbox.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.to_inbox.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "move_to",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.move_to.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.move_to.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "delete",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.delete.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.delete.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "snooze",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.snooze.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.snooze.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "snooze_an_hour",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.snooze_an_hour.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.snooze_an_hour.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "snooze_until_tomorrow",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.snooze_until_tomorrow.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.snooze_until_tomorrow.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "unsnooze",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.unsnooze.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.unsnooze.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "label",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.label.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.label.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "mute",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.mute.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.mute.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "mark_read",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.mark_read.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.mark_read.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Thread",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Thread",
       "action": "answer",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Thread.answer.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Thread.answer.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Label",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Label",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Label.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Label.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Label",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Label",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Label.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Label.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Label",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Label",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Label.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Label.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Message",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Message.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Message",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Message.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Message",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Message.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Message",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
       "action": "reply_to",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Message.reply_to.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.reply_to.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Message",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
       "action": "reply_all_to",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Message.reply_all_to.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.reply_all_to.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Message",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Message",
       "action": "forward_message",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Message.forward_message.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Message.forward_message.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "cancel_later",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.cancel_later.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.cancel_later.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "send_later",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.send_later.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.send_later.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "send_in_the_morning",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.send_in_the_morning.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.send_in_the_morning.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "send_from",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.send_from.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.send_from.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "send",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.send.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.send.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Draft",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Draft",
       "action": "undo_send",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Draft.undo_send.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Draft.undo_send.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "set_hold",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.set_hold.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.set_hold.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "recover_previous",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.recover_previous.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.recover_previous.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "new_draft",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.new_draft.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.new_draft.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "rename_label",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.rename_label.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.rename_label.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "delete_label",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.delete_label.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.delete_label.Arguments"
     },
     {
-      "app": "so.tilo.lang.mail",
-      "resource": "tl.so.tilo.lang.mail.Mail",
+      "app": "so.tilo.mail",
+      "resource": "tl.so.tilo.mail.Mail",
       "action": "discard",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.discard.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.mail.Mail.discard.Arguments"
     },
     {
       "app": "so.tilo.notes",

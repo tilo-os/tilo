@@ -210,7 +210,7 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     // The press brings mail's window, which the dock stands for by its app, to the front there.
     crate::common::press(&mut session, "Mail");
     crate::common::wait_for(&mut session, "the dock's press", |session| {
-        (focused_app(session).as_deref() == Some("so.tilo.lang.mail")).then_some(())
+        (focused_app(session).as_deref() == Some("so.tilo.mail")).then_some(())
     });
     assert_eq!(
         crate::common::places(&session).len(),

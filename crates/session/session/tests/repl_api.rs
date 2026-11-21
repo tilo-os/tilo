@@ -564,7 +564,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
                 )
                 .map(|(resource, _)| (resource.kind.clone(), resource.label.clone()))
             })
-            .find(|(kind, _)| kind == "tl.so.tilo.lang.mail.Mailbox")
+            .find(|(kind, _)| kind == "tl.so.tilo.mail.Mailbox")
     };
     until(&mut session, "the inbox placed", |session| {
         mailbox(session).is_some()
@@ -625,7 +625,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
             .iter()
             .map(|(kind, _)| kind.as_str())
             .collect::<Vec<_>>(),
-        ["tl.so.tilo.lang.mail.Mail"],
+        ["tl.so.tilo.mail.Mail"],
         "\"my mails\" places Mail's root, through the inbox's list: {found:?}"
     );
 }

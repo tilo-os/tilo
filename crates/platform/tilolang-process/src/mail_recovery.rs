@@ -13,7 +13,7 @@ use tilolang_tilo::{
     runtime::{Actor, ResourceRef, Value, ids::MemberId},
 };
 
-pub(crate) const APP: &str = "so.tilo.lang.mail";
+pub(crate) const APP: &str = "so.tilo.mail";
 pub(crate) const ACTION: &str = "recover_previous";
 const DRAFT_FIELDS: [&str; 7] = [
     "from",

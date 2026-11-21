@@ -159,12 +159,15 @@ impl OwnResource {
 pub fn own_kinds(app: &str) -> Vec<String> {
     let mut kinds: Vec<String> = app_fleet::own_kinds(app).map(str::to_owned).collect();
     let legacy: &[&str] = match app {
-        "so.tilo.lang.mail" => &["tl.so.tilo.lang.mail"],
         "so.tilo.lang.views" => &["tl.so.tilo.lang.views"],
         "so.tilo.shell" => &["tl.so.tilo.shell"],
-        tilo_app_id::apps::MAIL | "dev.tilo.mail" => {
-            &["mail.mailbox", "mail.trusted-senders", "mail.copies"]
-        }
+        // The tilolang Mail's record, and the native Mail's, which its migration carries.
+        tilo_app_id::apps::MAIL | "dev.tilo.mail" => &[
+            "tl.so.tilo.mail",
+            "mail.mailbox",
+            "mail.trusted-senders",
+            "mail.copies",
+        ],
         tilo_app_id::apps::CHAT | "dev.tilo.chat" => &["chat.drafts", "chat.learned"],
         tilo_app_id::apps::CLOCKS | "dev.tilo.clocks" => &["clocks.on-devices"],
         tilo_app_id::apps::DISK_USAGE | "dev.tilo.disk-usage" => &["disk-usage.recent-folders"],

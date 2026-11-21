@@ -1,4 +1,4 @@
-app so.tilo.lang.mail "Mail" (
+app so.tilo.mail "Mail" (
     icon: .mail,
     category: .office,
     tagline: "Email over IMAP and SMTP",
@@ -121,6 +121,9 @@ type Draft (title: subject, untitled: "New message") {
     /// The calendar invitation it carries (iCalendar), which goes beside what it says so the
     /// guest's calendar can answer it: empty for none.
     invitation: Text = ""
+    /// What the native Mail kept on this draft that this one has no place for (Bcc, attachments,
+    /// private notes), said in words: never sent with it.
+    set_aside: Text
 
     search {
         filter "Drafts" = not sent and not recalled (icon: .pencil)
@@ -209,6 +212,78 @@ action check_now(a: Account) (icon: .refresh, label: "Check now") {
 primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New message") {
     let m = root Mail
     m.drafts.insert(Draft(from: a.key, body: signature_of(m, a.key)))
+}
+
+/// The mailbox the native Mail kept before this app took its id over, carried into this one
+/// once: every draft it was writing and every message still waiting in its outbox is a draft
+/// here, from the same account, to the same people, with the same subject, body and invitation.
+/// A message that was waiting to go is a draft again, to be sent from here. What a draft held
+/// that this app has no place for is kept on it in `set_aside`, never sent. The native app's own
+/// documents are left as they are.
+migration action carry_native_mail(m: Mail) {
+    let earlier = earlier(m)
+    // An outbox entry is waiting while it has not settled; one that went or failed for good is
+    // the server's to show, not a draft.
+    let waiting = earlier.filter(
+        e -> e.of == "outbox" and e.texts.get("settled") == .none and e.lists.get("settled") == .none,
+    )
+    let carried = [
+        earlier.filter(e -> e.of == "draft").flat_map(e -> native_draft(e, "", "", "")),
+        earlier.filter(e -> e.of == "drafts").flat_map(e -> native_draft(e, "", "", "")),
+        waiting.flat_map(
+            e -> native_draft(
+                e,
+                "value.draft.",
+                e.texts.get("value.account") ?? "",
+                e.texts.get("value.in_reply_to") ?? "",
+            ),
+        ),
+    ].flat_map(x -> x)
+    for draft in carried {
+        m.drafts.insert(draft)
+    }
+}
+
+/// The words the native record `e` kept in its field `name`; nothing when it kept none.
+fn native_said(e: host.Earlier, name: Text) -> Text {
+    e.texts.get(name) ?? ""
+}
+
+/// The draft the native record `e` kept under the fields named `at…`, sent from `account` and
+/// answering `answers` when the draft itself names neither: none for a draft with nothing
+/// written in it, which the native Mail left out too.
+fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List<Draft> {
+    let to = native_said(e, "{at}to")
+    let cc = native_said(e, "{at}cc")
+    let bcc = native_said(e, "{at}bcc")
+    let subject = native_said(e, "{at}subject")
+    let plain = native_said(e, "{at}body")
+    let body = if plain == "" { (e.rich.get("{at}rich_body") ?? RichText("")).markdown } else { plain }
+    let files = e.lists.get("{at}attachments.filename") ?? []
+    let notes = native_said(e, "{at}notes")
+    let sender = native_said(e, "{at}sender.account")
+    let reply = native_said(e, "{at}in_reply_to")
+    if files.len() == 0 and not [to, cc, bcc, subject, body].any(t -> t.trim() != "") {
+        []
+    } else {
+        let aside = [
+            if bcc == "" { "" } else { "Bcc: {bcc}" },
+            if files.len() == 0 { "" } else { "Attachments not carried over: {files.join(", ")}" },
+            if notes == "" { "" } else { "Notes: {notes}" },
+        ].filter(t -> t != "")
+        [
+            Draft(
+                from: if sender == "" { account } else { sender },
+                to: to,
+                cc: cc,
+                subject: subject,
+                body: body,
+                in_reply_to: if reply == "" { answers } else { reply },
+                invitation: native_said(e, "{at}calendar_ics"),
+                set_aside: aside.join("\n"),
+            ),
+        ]
+    }
 }
 
 /// Copies data from the earlier private mailbox into this workspace.
