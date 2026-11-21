@@ -9,7 +9,8 @@
 //! workspace's checkpoints and relays what its members write.
 //!
 //! A workspace an earlier build kept for a person while this host owned it
-//! is handed to that person when the host next starts
+//! is handed to that person when the host next starts, or when another
+//! holder hands it to this host
 //! ([`Workspaces::hand_kept_workspace_over`]).
 
 use tilo_action_policy::GrantId;

@@ -248,3 +248,204 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
     within("the holder stops", holder.stop()).await;
     within("the server it was made on stops", made_on.stop()).await;
 }
+
+/// What `host` answers `action` of `workspace`'s governance with `argument`,
+/// asked by `client`.
+async fn govern(
+    client: &tilo_server::ServerClient,
+    host: &crate::common::TestDevice,
+    workspace: &tilo_server_session::workspaces::WorkspaceSummary,
+    action: &str,
+    argument: serde_json::Value,
+) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::{
+        InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+        RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
+    };
+    let serde_json::Value::Object(argument) = argument else {
+        panic!("arguments are an object");
+    };
+    let message = RemoteActionMessage::Invoke(InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(
+                workspace_governance_resource(&workspace.workspace),
+                action,
+            ),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    });
+    client
+        .send(Envelope::RemoteAction {
+            workspace_id: workspace.workspace_id,
+            version: tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            to_device_public_key: host.device_pubkey(),
+            from_device_public_key: [0; 32],
+            from_user_public_key: [0; 32],
+            frame: RemoteActionFrame::new(message).encode().unwrap(),
+        })
+        .unwrap();
+    let answer = tilo_test_env::within("the holder answers", async {
+        loop {
+            match client.recv().await.expect("the session stays open") {
+                Envelope::RemoteAction { frame, .. } => {
+                    break RemoteActionFrame::decode(&frame).unwrap().message;
+                }
+                Envelope::RemoteActionUndeliverable { refusal, .. } => {
+                    panic!("the action was not delivered: {refusal}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    let RemoteActionMessage::Receipt(receipt) = answer else {
+        panic!("an invocation is answered with a receipt");
+    };
+    match receipt.status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Rejected { error } => Err(error),
+        other => panic!("the holder's governance answers at once: {other:?}"),
+    }
+}
+
+/// A workspace never stays stuck on a server that is gone. Two servers of an
+/// operator keep a workspace for Alice: the first made it as an earlier build
+/// did, owning it itself under a grant that names her the person it keeps it
+/// for, and handed it to the second, which hands it to her as its owner. The
+/// first then stops for good. Alice, through a key of hers that reached the
+/// workspace on the second server, lists its servers there and takes the
+/// stopped one out; the second then keeps the workspace alone and makes its
+/// base.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
+    use tilo_action_policy::{Answer, Grant, GrantId, Grantee, KindSet, Lifetime, roles};
+    use tilo_test_env::within;
+    let operator = TestUser::fresh("Operator");
+    let old = operator.enrol("old", DeviceCapabilities::member());
+    let main = operator.enrol("main", DeviceCapabilities::member());
+    let alice = TestUser::fresh("Alice");
+    let key = alice.enrol("key", DeviceCapabilities::server_key_grant());
+    let made_on = serve_on(&operator, &old, WorkSetting::own_person()).await;
+    let remains = serve_on(&operator, &main, WorkSetting::own_person()).await;
+    let workspace = made_on.host.workspaces().create("Notes").await.unwrap();
+    // The grant an earlier build wrote to name the person it kept a
+    // workspace for while its host owned it, as it wrote it.
+    let kept_for = Grant {
+        id: GrantId(format!("workspace-keeper-v1:{}", hex::encode(alice.user_pk))),
+        grantee: Grantee::person(hex::encode(alice.user_pk)),
+        node: roles::administrators_node(&workspace.workspace),
+        kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+        answer: Answer::Allow,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by: Grantee::person(hex::encode(operator.user_pk)),
+    };
+    made_on
+        .host
+        .workspaces()
+        .put_workspace_grants(&workspace.workspace, &old.cert, [5; 32], vec![kept_for])
+        .await
+        .unwrap();
+    within(
+        "the server it was made on hands it over",
+        made_on.host.workspaces().attach_server(
+            &workspace.workspace,
+            main.device_pubkey(),
+            remains.host.node_addr(),
+            CopyRole::KeyHolder,
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        remains
+            .host
+            .workspaces()
+            .is_owner(&workspace.workspace, alice.user_pk)
+            .await,
+        "the server it was handed to hands it to the person it is kept for"
+    );
+    let workspaces = remains.host.workspaces();
+    // The key joins as an API server's key of the person does, while both
+    // servers keep the workspace: the server it reaches invites it and it
+    // redeems the invitation there.
+    let invited = crate::common::invitation(
+        workspaces,
+        &main,
+        &workspace.workspace,
+        tilo_peer_state::join::Role::Editor,
+        &key,
+    )
+    .await;
+    within(
+        "the owner's key joins on the remaining server",
+        crate::common::redeem(&key, &invited),
+    )
+    .await
+    .unwrap();
+    let client = tilo_server::ServerClient::connect_to_pinned_host(
+        crate::common::device_endpoint(&key).await,
+        remains.host.node_addr(),
+        key.cert.clone(),
+        key.sk.clone(),
+        tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client
+        .send(Envelope::Subscribe {
+            workspace_id: workspace.workspace_id,
+        })
+        .unwrap();
+    within("the remaining server admits the owner's key", async {
+        loop {
+            match client.recv().await.expect("the session stays open") {
+                Envelope::Ready { .. } => break,
+                Envelope::NotAuthorised { .. } => panic!("the owner's key was not admitted"),
+                _ => {}
+            }
+        }
+    })
+    .await;
+    copies_once(
+        &remains,
+        &workspace.workspace,
+        "the remaining server reads both servers among the holders",
+        |status| status.base_maker == Some(old.device_pubkey()),
+    )
+    .await;
+    within("the server it was made on stops", made_on.stop()).await;
+
+    let (old_key, main_key) = (hex::encode(old.device_pubkey()), hex::encode(main.device_pubkey()));
+    let listed = govern(&client, &main, &workspace, "server.list", serde_json::json!({}))
+        .await
+        .expect("the owner's key lists the workspace's servers");
+    assert!(listed.to_string().contains(&old_key), "{listed}");
+    let removed = govern(
+        &client,
+        &main,
+        &workspace,
+        "server.remove",
+        serde_json::json!({ "server": old_key }),
+    )
+    .await
+    .expect("the owner's key takes the stopped server out");
+    let servers = removed["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 1, "{removed}");
+    assert_eq!(servers[0]["device"], main_key, "{removed}");
+    let status = workspaces.copies(&workspace.workspace).await.unwrap();
+    assert_eq!(
+        status.base_maker,
+        Some(main.device_pubkey()),
+        "the remaining server makes the base: {status:?}"
+    );
+    drop(client);
+    remains.stop().await;
+}

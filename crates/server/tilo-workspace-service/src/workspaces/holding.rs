@@ -397,6 +397,13 @@ impl Workspaces {
         };
         let mut governed = state.lock().await;
         self.settle(&mut governed).await?;
+        // A workspace an earlier build kept for a person while its holders
+        // owned it is handed to that person by whichever holder of the
+        // owner's takes it next, whether or not the one that kept it is still
+        // there.
+        if let Err(error) = self.hand_kept_workspace_over(&mut governed).await {
+            tracing::error!(%workspace, %error, "a workspace this host keeps for a person was not handed to them");
+        }
         tracing::info!(%workspace, workspace_id = %request.workspace_id, role = ?request.role, "holding a workspace another host handed over");
         self.transport_hint_as(&governed, request.role)
             .map_err(|error| error.to_string())
