@@ -1910,6 +1910,7 @@ impl QuickFS {
     /// Note who process `pid` writes for, for the rest of this request on this thread: the
     /// file actions it makes are done by them.
     fn note_writer(&self, pid: u32) -> WriterNote {
+        let _timing = OpTimer::new("writer-note");
         self.writing(pid).noted()
     }
 
@@ -1920,6 +1921,7 @@ impl QuickFS {
     /// `EROFS` when the workspace refuses it: what no holder of the workspace would take is
     /// read-only here.
     fn admit_writer(&self, pid: u32, ino: Option<u64>, verb: &str) -> Result<WriterNote, i32> {
+        let _timing = OpTimer::new("admit");
         let writing = self.writing(pid);
         self.admit_as(writing.invoker.as_ref(), ino, verb)?;
         Ok(writing.noted())
