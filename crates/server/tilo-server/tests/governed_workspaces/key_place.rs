@@ -357,12 +357,7 @@ fn read_front(device: &Device) -> Option<String> {
     let read = device
         .session()
         .documents()
-        .read(
-            &WORKSPACE.to_string(),
-            DESKTOP_APP,
-            DESKTOP_DOCUMENT,
-            None,
-        )
+        .read(&WORKSPACE.to_string(), DESKTOP_APP, DESKTOP_DOCUMENT, None)
         .ok()?;
     let DocumentRead::Whole { bytes, .. } = read else {
         return None;
@@ -591,7 +586,11 @@ async fn a_devices_session_started_again_over_its_kept_store_keeps_its_place_in_
         reads_the_layout(&second, "the session started again reads the layout").await,
         "Main"
     );
-    let again = settled_epoch(&server, "after the session started again over its kept store").await;
+    let again = settled_epoch(
+        &server,
+        "after the session started again over its kept store",
+    )
+    .await;
     assert_eq!(
         again,
         admitted,

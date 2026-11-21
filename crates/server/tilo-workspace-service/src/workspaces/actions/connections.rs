@@ -241,10 +241,7 @@ impl Workspaces {
             }
             _ => {
                 let named: Named = argument(request, by_id)?;
-                said(
-                    connections::refresh((&root, vault), &reach, &named.connection, calling)
-                        .await,
-                )
+                said(connections::refresh((&root, vault), &reach, &named.connection, calling).await)
             }
         }
     }

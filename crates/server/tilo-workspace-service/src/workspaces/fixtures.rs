@@ -297,7 +297,8 @@ impl TestGroupKeys {
     pub fn hand_what_is_held_by(&self, other: &Self) {
         let held = other.held.lock().expect("the other fixture's keys").clone();
         self.held.lock().expect("the fixture's keys").extend(held);
-        self.handed.send_modify(|handed| *handed = handed.wrapping_add(1));
+        self.handed
+            .send_modify(|handed| *handed = handed.wrapping_add(1));
     }
 
     /// Hand the fixture `keys` as every member's keys of `workspace`: keys that reach a device
@@ -317,7 +318,8 @@ impl TestGroupKeys {
             .lock()
             .expect("the fixture's keys")
             .insert(group, keys);
-        self.handed.send_modify(|handed| *handed = handed.wrapping_add(1));
+        self.handed
+            .send_modify(|handed| *handed = handed.wrapping_add(1));
     }
 }
 

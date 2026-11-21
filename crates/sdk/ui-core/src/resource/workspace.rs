@@ -259,9 +259,8 @@ mod tests {
             let store = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::queued()))
                 .open(APP, &workspace.to_string())
                 .expect("the window's store");
-            let records = WorkspaceResources::new(MemberId::person("alice"), move |_| {
-                Ok(store.clone())
-            });
+            let records =
+                WorkspaceResources::new(MemberId::person("alice"), move |_| Ok(store.clone()));
             let first = records.open_resource_at(APP, RECORD, "terminal.history", &|_| Ok(()));
             let again = records.open_resource_at(APP, RECORD, "terminal.history", &|_| Ok(()));
             drop(construction);

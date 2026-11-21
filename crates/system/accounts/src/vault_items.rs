@@ -41,9 +41,9 @@ const MAX_PLACE_BYTES: usize = 2_048;
 /// The shortest seed a code generator is given: 80 bits in base32.
 const MIN_SEED_CHARS: usize = 16;
 
-mod key_in;
 #[cfg(not(target_arch = "wasm32"))]
 mod kept_before;
+mod key_in;
 #[cfg(not(target_arch = "wasm32"))]
 pub use kept_before::KeptBefore;
 
@@ -566,7 +566,11 @@ impl Sealed {
             title,
             username: self.username.clone(),
             password: self.secret.clone(),
-            origins: self.places.iter().map(|place| place.as_str().to_owned()).collect(),
+            origins: self
+                .places
+                .iter()
+                .map(|place| place.as_str().to_owned())
+                .collect(),
             notes: String::new(),
             fields,
             tags: BTreeSet::new(),
@@ -724,11 +728,15 @@ impl VaultItems {
             entry.notes.clone_from(&kept.notes);
             entry.tags.clone_from(&kept.tags);
             for (name, value) in &kept.fields {
-                entry.fields.entry(name.clone()).or_insert_with(|| value.clone());
+                entry
+                    .fields
+                    .entry(name.clone())
+                    .or_insert_with(|| value.clone());
             }
         }
         self.changes.push(VaultChange::Keep(entry.clone()));
-        self.entries.insert(id.clone(), (entry, sealed.uses.clone()));
+        self.entries
+            .insert(id.clone(), (entry, sealed.uses.clone()));
     }
 
     /// Write down `sealed`'s uses, leaving its entry as it is.
@@ -1251,7 +1259,10 @@ mod tests {
             );
         }
         assert!(items.facts().is_empty(), "a refused item is not kept");
-        assert!(items.take_changes().is_empty(), "a refused item writes nothing");
+        assert!(
+            items.take_changes().is_empty(),
+            "a refused item writes nothing"
+        );
     }
 
     /// A use that needs one kind at several places is refused unless the

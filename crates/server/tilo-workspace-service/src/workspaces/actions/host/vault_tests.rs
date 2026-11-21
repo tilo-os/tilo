@@ -28,8 +28,8 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
-use crate::workspaces::fixtures::test_server_keeping_keys_apart;
 use crate::workspaces::fixtures::test_host_taking_part as test_host;
+use crate::workspaces::fixtures::test_server_keeping_keys_apart;
 use crate::workspaces::tests::{governor, guest_device};
 use crate::workspaces::{AsksPeople, PersonAnswer};
 
@@ -352,7 +352,9 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     assert_eq!(items.len(), 2, "{listed}");
     assert!(items.contains(&kept), "{listed}");
     assert!(
-        items.iter().any(|item| item["reference"] == json!(entry_item)),
+        items
+            .iter()
+            .any(|item| item["reference"] == json!(entry_item)),
         "{listed}"
     );
     let entries = ask(
@@ -1187,14 +1189,12 @@ async fn providers_keyed(
         json!({}),
     )
     .await?;
-    Ok(models["providers"]
-        .as_array()
-        .map_or(0, |providers| {
-            providers
-                .iter()
-                .filter(|provider| provider["configured"] == json!(true))
-                .count()
-        }))
+    Ok(models["providers"].as_array().map_or(0, |providers| {
+        providers
+            .iter()
+            .filter(|provider| provider["configured"] == json!(true))
+            .count()
+    }))
 }
 
 /// Copy the folder `from` to `to`, with every folder and file under it, as a backup does: a
@@ -1233,7 +1233,9 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_sealed_s
 
     keeps_a_providers_key(&actions, workspace_id, theirs, "https://models.example").await;
     assert_eq!(
-        providers_keyed(&actions, workspace_id, theirs).await.unwrap(),
+        providers_keyed(&actions, workspace_id, theirs)
+            .await
+            .unwrap(),
         1,
         "the key reads back"
     );
@@ -1255,9 +1257,11 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_sealed_s
     let vault_in = |state: &std::path::Path| {
         stores(state).join(hex::encode(workspace_id.to_string().as_bytes()))
     };
-    let (reference, authorization) =
-        accounts::provider_api_key(&provider_of(&actions, workspace_id, theirs).await, "https://models.example/v1")
-            .unwrap();
+    let (reference, authorization) = accounts::provider_api_key(
+        &provider_of(&actions, workspace_id, theirs).await,
+        "https://models.example/v1",
+    )
+    .unwrap();
     let opened =
         accounts::ServiceCredentials::open_in(&vault_in(&copy)).resolve(&reference, &authorization);
     assert!(
@@ -1577,9 +1581,15 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
     .await
     .unwrap();
     assert_eq!(uses["uses"].as_array().map(Vec::len), Some(1), "{uses}");
-    let entries = ask(&service, workspace_id, hers, person_vault::ENTRIES, json!({}))
-        .await
-        .unwrap();
+    let entries = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::ENTRIES,
+        json!({}),
+    )
+    .await
+    .unwrap();
     assert!(
         entries.to_string().contains(&entry.id.0),
         "the Passwords entry is in the vault: {entries}"

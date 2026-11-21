@@ -630,9 +630,14 @@ pub(crate) async fn call(
     };
     paced(root)?;
     if let Calling::Allowed { digest, by, .. } = calling
-        && let Err((ended, why)) =
-            defined_as((root, vault), reach, (&kept, &address), (&call.command, digest), by)
-                .await
+        && let Err((ended, why)) = defined_as(
+            (root, vault),
+            reach,
+            (&kept, &address),
+            (&call.command, digest),
+            by,
+        )
+        .await
     {
         kept::end_use(root, id, nth, ended, Some(why)).map_err(|error| unavailable(&error))?;
         return Err(why.to_owned());
@@ -642,7 +647,14 @@ pub(crate) async fn call(
         .as_ref()
         .is_some_and(|signs| signs.tokens.is_some());
     let asking = Asking::Call(call.command, call.arguments);
-    let answered = ask((root, vault), reach, (&kept, &address), calling.by(), &asking).await;
+    let answered = ask(
+        (root, vault),
+        reach,
+        (&kept, &address),
+        calling.by(),
+        &asking,
+    )
+    .await;
     let ended = match &answered {
         Ok(Answer::Called(answered)) if answered.is_error => (Ended::Failed, Some(SAID_IT_FAILED)),
         Ok(_) => (Ended::Ok, None),
@@ -751,9 +763,15 @@ pub(crate) async fn finish_sign_in(
     let signs = kept.signs_in.ok_or(sign_in::BEGIN_AGAIN)?;
     let client = signs.client.as_ref().ok_or(sign_in::BEGIN_AGAIN)?;
     paced(root)?;
-    let tokens =
-        sign_in::finish((root, id), vault, reach, &address, (&signs.way, client), returned)
-            .await?;
+    let tokens = sign_in::finish(
+        (root, id),
+        vault,
+        reach,
+        &address,
+        (&signs.way, client),
+        returned,
+    )
+    .await?;
     // What it signed in with before is over.
     if let Some(before) = &signs.tokens {
         sign_in::forget(vault, before).await;

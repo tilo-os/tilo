@@ -894,7 +894,12 @@ fn note_called(r: &mut Replica, notebook: &ResourceRef, title: &str) -> Resource
 }
 
 /// A note inside `under`, titled `title`.
-fn note_under(r: &mut Replica, notebook: &ResourceRef, under: &ResourceRef, title: &str) -> ResourceRef {
+fn note_under(
+    r: &mut Replica,
+    notebook: &ResourceRef,
+    under: &ResourceRef,
+    title: &str,
+) -> ResourceRef {
     let note = target(&call(
         r,
         "ada",
@@ -983,5 +988,8 @@ fn a_note_moved_by_a_tree_verb_comes_back_in_one_undo() {
         ["Q3 plan", "Monday", "Groceries", "Interviews", "Milk"],
         "one undo puts the note and its own back"
     );
-    assert_eq!(note_parent(&ada, &milk), Some(id(&groceries)) as Option<String>);
+    assert_eq!(
+        note_parent(&ada, &milk),
+        Some(id(&groceries)) as Option<String>
+    );
 }

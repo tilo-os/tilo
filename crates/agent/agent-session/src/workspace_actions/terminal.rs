@@ -675,7 +675,9 @@ impl Worker {
                 Some((&route.app_id, &route.document)),
             )
             .map_err(|error| {
-                turned_away(&format!("the workspace's policy does not admit them: {error}"));
+                turned_away(&format!(
+                    "the workspace's policy does not admit them: {error}"
+                ));
                 refused(error)
             })?;
         let permissions = super::bounded::bounded_permissions(&policy, &who)

@@ -162,7 +162,6 @@ mod tests {
     /// A made-up key: no service ever issued it.
     const KEY: &str = "made-up-key-0123456789-for-tests";
 
-
     fn item(kind: ItemKind, place: &str, secret: &str) -> NewItem {
         NewItem::new(
             kind,

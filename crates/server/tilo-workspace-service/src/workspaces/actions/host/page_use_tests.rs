@@ -22,10 +22,10 @@ use tilo_user_identity::DeviceCert;
 use super::super::ServiceWorkspaceActions as Service;
 use super::super::tests::{admit, caller, governed};
 use super::vault_tests::{ask, files_holding};
+use crate::workspaces::fixtures::test_host_taking_part as serving;
 use crate::workspaces::hosted_use::{
     HostedTurn, OpenAsk, PageField, PageText, TurnRelease, UseAnswer,
 };
-use crate::workspaces::fixtures::test_host_taking_part as serving;
 use crate::workspaces::tests::governor;
 use crate::workspaces::{WorkspaceId, Workspaces};
 

@@ -298,7 +298,9 @@ pub(super) async fn send(
     let opened = workspaces.open_vault(workspace).await?;
     let mut items = opened.items();
     let ready = ready(reach, &mut items, call, by, purpose)?;
-    workspaces.write_vault(&opened, items.take_changes()).await?;
+    workspaces
+        .write_vault(&opened, items.take_changes())
+        .await?;
     deliver(reach, system_lookup(), ready).await
 }
 
@@ -845,8 +847,7 @@ mod tests {
         .await;
         assert_eq!(cut, Err(UNREACHED.to_owned()));
         assert!(reached.join().unwrap(), "the call went out");
-        let uses = items.uses(&item)
-            .unwrap();
+        let uses = items.uses(&item).unwrap();
         assert_eq!(uses.len(), 1);
         assert_eq!(uses[0].using, "tilo.vault/web-call");
         assert_eq!(uses[0].what, "POST /v1/charges");

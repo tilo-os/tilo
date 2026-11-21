@@ -239,9 +239,10 @@ impl Workspaces {
                 Ok(Some(bytes))
             }
             tilo_peer_state::workspace_documents::DocumentRead::Absent => Ok(None),
-            tilo_peer_state::workspace_documents::DocumentRead::Pending => {
-                Err("The workspace's vault is still arriving on this device; try again in a moment".to_owned())
-            }
+            tilo_peer_state::workspace_documents::DocumentRead::Pending => Err(
+                "The workspace's vault is still arriving on this device; try again in a moment"
+                    .to_owned(),
+            ),
             tilo_peer_state::workspace_documents::DocumentRead::Unchanged(_) => {
                 Err("the vault's document did not read".to_owned())
             }
@@ -372,7 +373,9 @@ impl VaultAt<'_> {
             }
             #[cfg(test)]
             Self::Held(items) => {
-                let mut items = items.lock().map_err(|_| "the vault is poisoned".to_owned())?;
+                let mut items = items
+                    .lock()
+                    .map_err(|_| "the vault is poisoned".to_owned())?;
                 change(&mut items).map_err(|error| error.to_string())
             }
         }
@@ -444,9 +447,7 @@ fn vault_changes(
 
 /// `replica` writing as Passwords does: each change claims Passwords' verb, which every member
 /// decides against Passwords' surface.
-fn in_passwords(
-    replica: Replica<WorkspaceVaultEntries>,
-) -> Replica<WorkspaceVaultEntries> {
+fn in_passwords(replica: Replica<WorkspaceVaultEntries>) -> Replica<WorkspaceVaultEntries> {
     replica.in_app(APP, "Passwords")
 }
 
@@ -464,9 +465,8 @@ fn apply_changes(
             }
             VaultChange::Forget(SecretId(id)) => WorkspaceVaultEntries::REMOVE_SEALED.with(id),
             VaultChange::Uses(SecretId(id), uses) => {
-                let payload = Zeroizing::new(
-                    serde_json::to_vec(&uses).map_err(|error| error.to_string())?,
-                );
+                let payload =
+                    Zeroizing::new(serde_json::to_vec(&uses).map_err(|error| error.to_string())?);
                 let sealed = keys
                     .seal_private_field(&uses_field(&id), &payload)
                     .map_err(|error| error.to_string())?;
@@ -585,7 +585,14 @@ mod tests {
             .write_vault(&again, vec![VaultChange::Forget(entry.id.clone())])
             .await
             .unwrap();
-        assert!(workspaces.open_vault(&workspace).await.unwrap().entries().is_empty());
+        assert!(
+            workspaces
+                .open_vault(&workspace)
+                .await
+                .unwrap()
+                .entries()
+                .is_empty()
+        );
         server.shutdown().await;
     }
 }

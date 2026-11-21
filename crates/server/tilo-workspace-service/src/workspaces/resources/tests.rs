@@ -1104,7 +1104,10 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
     while let Ok(write) = shown.try_recv() {
         if matches!(write.message.as_ref(), NeighbourMsg::AppDocument { app_id, .. } if app_id == APP)
         {
-            assert!(write.history, "a write from before the device joined is history");
+            assert!(
+                write.history,
+                "a write from before the device joined is history"
+            );
             handed += 1;
         }
     }

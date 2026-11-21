@@ -404,8 +404,8 @@ impl Workspaces {
                         &named.connection,
                         by,
                     )
-                        .await
-                        .map_err(refused)?,
+                    .await
+                    .map_err(refused)?,
                 )
             }
             person_connections::CALL => {
@@ -464,10 +464,14 @@ impl Workspaces {
                 leave: Leave::Always,
                 digest: &found.digest,
             };
-            let called =
-                connections::call((root, self.vault_at(&using.workspace)), reach, allowed, call)
-                    .await
-                .map_err(refused)?;
+            let called = connections::call(
+                (root, self.vault_at(&using.workspace)),
+                reach,
+                allowed,
+                call,
+            )
+            .await
+            .map_err(refused)?;
             // What let it through is counted where its person reads it.
             if let Some(permission) = self.stands(&using.person, &always) {
                 self.permission_used(&using.person, &permission);

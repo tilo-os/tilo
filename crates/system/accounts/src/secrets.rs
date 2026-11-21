@@ -61,7 +61,8 @@ pub fn is_entry_id(text: &str) -> bool {
         32 => hex(text),
         36 => {
             let parts: Vec<&str> = text.split('-').collect();
-            parts.iter().map(|part| part.len()).eq([8, 4, 4, 4, 12]) && parts.iter().all(|part| hex(part))
+            parts.iter().map(|part| part.len()).eq([8, 4, 4, 4, 12])
+                && parts.iter().all(|part| hex(part))
         }
         _ => false,
     }

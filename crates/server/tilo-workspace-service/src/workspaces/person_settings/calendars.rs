@@ -804,7 +804,10 @@ impl Workspaces {
             .release_item(
                 workspace,
                 &adding.password,
-                (accounts::vault_items::ItemKind::Login, std::slice::from_ref(&place)),
+                (
+                    accounts::vault_items::ItemKind::Login,
+                    std::slice::from_ref(&place),
+                ),
                 by,
                 accounts::vault_items::UsedFor::default(),
             )

@@ -233,7 +233,12 @@ mod tests {
         .expect("a file was chosen");
         assert_eq!(chosen.name, "Lisbon.md");
         assert_eq!(chosen.media, "text/markdown");
-        let asked = chooser.2.lock().unwrap().take().expect("the chooser was asked");
+        let asked = chooser
+            .2
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the chooser was asked");
         assert_eq!(
             (asked.title(), asked.accept_label(), asked.filter_names()),
             ("Import Markdown", "", vec!["Text files"]),

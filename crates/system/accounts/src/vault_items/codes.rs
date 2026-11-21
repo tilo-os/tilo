@@ -132,7 +132,6 @@ mod tests {
     /// the setup key a site would show for it.
     const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 
-
     /// The codes are the standard's own: RFC 6238's table for SHA-1, by its
     /// last six digits, each good for its whole half minute.
     #[test]
