@@ -6266,6 +6266,14 @@ run = "cargo build --locked -p collab-probe --bin tilo-collab-probe"
 outputs = ["/target/debug/tilo-collab-probe"]
 default = false
 
+# The `tilolang` tool, which builds an app's package into the signed Tilo app a session installs:
+# an app walk uses it, and the nested-session build makes one of its own for a developer.
+[[check]]
+name = "tilolang-cli-binary"
+run = "cargo build --locked -p tilolang-cli --bin tilolang"
+outputs = ["/target/debug/tilolang"]
+default = false
+
 # The session's end-to-end proofs (scripts/headless-examples/README.md), on the session the
 # nested-session check built: run when named (`t test e2e/two-people`) and on main's newest head
 # when t has room. Their verdicts, screenshots and logs: `t outputs e2e/<proof> --to DIR`.
@@ -6282,6 +6290,26 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 [check.matrix]
 proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "session-lock"]
+
+# An app's first hour, walked twice: once in its Rust version (apps/) and once in its tilolang
+# version (apps/tl/), on the session the nested-session check built, one headless session each,
+# every step snapshotted in the light theme and the marked ones again in the dark
+# (scripts/headless-examples/app-walk.py; the steps are app-walks/APP.json). It is how a Rust app
+# is shown to be replaceable before it is deleted, and it judges nothing: the page the walk writes
+# (`t outputs app-walk/<app> --to DIR`, DIR/walk.md) sets the two runs' snapshots side by side for
+# a person to read.
+[[check]]
+name = "app-walk/{app}"
+run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"
+needs = ["nested-session", "tilolang-cli-binary"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/target/debug/tilolang", TILO_TEST_NTFS_FIXTURES = "0" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/app-walk/{app}/**"]
+timeout_secs = 2400
+on = ["dispatch"]
+[check.matrix]
+app = ["notes"]
 
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks

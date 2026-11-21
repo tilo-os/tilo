@@ -1,0 +1,304 @@
+{
+  "app": "notes",
+  "said": "Notes",
+  "native": "notes",
+  "rust": {
+    "id": "so.tilo.notes"
+  },
+  "tl": {
+    "id": "so.tilo.lang.notes",
+    "package": "notes"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Notes on an empty notebook",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "new-note-at-launch",
+      "said": "Close Notes, open it again and press New note the moment it is on screen",
+      "ops": [
+        {
+          "early_press": {
+            "controls": [
+              {
+                "rust": "New note",
+                "tl": "New note"
+              },
+              {
+                "rust": "new-note",
+                "tl": "tl:so.tilo.lang.notes:root-v7cub7aw\u001fnew_note"
+              }
+            ],
+            "deadline": 60
+          }
+        },
+        {
+          "wait_for": "actions"
+        }
+      ]
+    },
+    {
+      "id": "write",
+      "said": "Give the note a title, then a body with a heading, a bullet list and a checklist",
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              "New note",
+              "new-note"
+            ]
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Note title"
+              },
+              {
+                "prefix": "Page title"
+              }
+            ]
+          },
+          {
+            "type": "Trip to Lisbon"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "## Packing"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "- passport"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "[ ] charger"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "adapters"
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "New note"
+            ]
+          },
+          {
+            "click_any": [
+              {
+                "doing": "dpj7scfe"
+              },
+              {
+                "prefix": "Title"
+              }
+            ]
+          },
+          {
+            "type": "Trip to Lisbon"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "## Packing"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "- passport"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "[ ] charger"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "adapters"
+          }
+        ]
+      }
+    },
+    {
+      "id": "sub-note",
+      "said": "Make a sub-note under it",
+      "ops": {
+        "rust": [
+          {
+            "chord": [
+              "Control",
+              "Shift",
+              "n"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              "New sub-note",
+              "tl:so.tilo.lang.notes:root-v7cub7aw\u001fnew_child"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "tag",
+      "said": "Tag the note",
+      "ops": [
+        {
+          "press_any": [
+            {
+              "rust": {
+                "prefix": "More actions for"
+              },
+              "tl": {
+                "prefix": "More actions"
+              }
+            }
+          ]
+        },
+        {
+          "actions": {
+            "rust": "tag",
+            "tl": "tag"
+          }
+        },
+        {
+          "key": "Escape"
+        }
+      ]
+    },
+    {
+      "id": "outline",
+      "said": "Open the heading outline, if the app has one",
+      "ops": [
+        {
+          "offered": [
+            {
+              "rust": "notes-outline",
+              "tl": "Outline"
+            },
+            {
+              "rust": "Outline",
+              "tl": "notes-outline"
+            },
+            "Packing"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "import",
+      "said": "Import a Markdown file",
+      "ops": {
+        "rust": [
+          {
+            "file": {
+              "name": "Lisbon.md",
+              "text": "# Lisbon in May\n\nA week of trams and tiles.\n\n- tram 28\n- pastel de nata\n"
+            }
+          },
+          {
+            "press_any": [
+              "Import Markdown",
+              "Import Markdown…"
+            ]
+          },
+          {
+            "questions": true
+          }
+        ],
+        "tl": [
+          {
+            "file": {
+              "name": "Lisbon.md",
+              "text": "# Lisbon in May\n\nA week of trams and tiles.\n\n- tram 28\n- pastel de nata\n"
+            }
+          },
+          {
+            "press_any": [
+              "File"
+            ]
+          },
+          {
+            "wait_for": "Import Markdown…"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Import Markdown"
+              }
+            ]
+          },
+          {
+            "questions": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "search",
+      "said": "Find the note through the system's search",
+      "ops": [
+        {
+          "search": {
+            "rust": "Trip to Lisbon",
+            "tl": "Trip to Lisbon"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "search-open",
+      "said": "Open the note the search found",
+      "ops": [
+        {
+          "key": "Enter"
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same note in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        },
+        {
+          "key": "Escape"
+        }
+      ]
+    }
+  ]
+}

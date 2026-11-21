@@ -85,6 +85,11 @@ inputs = ["scripts/headless-examples/tilolang-e2e.py"]
 suites = ["scripts/headless-examples/test_tilolang_e2e.py"]
 
 [[group]]
+name = "app-walk"
+inputs = ["scripts/headless-examples/app-walk.py", "scripts/headless-examples/app-walks/"]
+suites = ["scripts/headless-examples/test_app_walk.py"]
+
+[[group]]
 name = "runtime-dependency-closure"
 inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/verify-runtime-bundle-closure.sh", "dist/apps/package-apps.sh"]
 suites = ["os/tests/test_runtime_dependency_closure.py"]

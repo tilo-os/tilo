@@ -43,6 +43,37 @@ method running, and checks that the shell holds the body's caret, that it follow
 the typing, and that Super+V, pressed the moment the caret moves, opens the
 clipboard pane under that caret's line, its first frame as tall as its page.
 
+## App walks
+
+A Rust app under `apps/` is deleted only once the tilolang app under `apps/tl/`
+does what a person did with it at least as well. `app-walk.py` walks that first
+hour twice — once in the Rust app, once in the tilolang one — in headless
+sessions of their own, and snapshots every step of both so the runs can be put
+side by side and judged:
+
+```bash
+python3 scripts/headless-examples/app-walk.py notes --out target/app-walk/notes
+python3 scripts/headless-examples/app-walk.py notes --only tl
+```
+
+One step file per app under `app-walks/` holds the steps; both versions are
+driven by it, and only the control each version answers to is named per version.
+Every step is snapshotted in the light theme, and the ones the step file marks
+`dark` again in the dark theme. `walk.json` in the output says, per version,
+what each step found: the snapshot, how long the app took to answer, how many
+notes it held afterwards, and — where a version offers no control for a step —
+that it has none; `walk.md` is the same as a page, the two versions' snapshots
+and findings step by step. A walk needs the session build and the `tilolang`
+tool that `dist/dev/nested-session-build.sh` makes.
+
+t runs one as the check `app-walk/APP` (dispatch only), on the session the
+nested-session check built: `t test app-walk/notes` walks Notes there, and
+`t outputs app-walk/notes --to DIR` brings back DIR/walk.md with its snapshots.
+
+| Walk | The app, both versions |
+|---|---|
+| `notes.json` | Notes: `apps/notes` (`so.tilo.notes`) and `apps/tl/notes` (`so.tilo.lang.notes`) |
+
 For examples that connect to an existing compositor, start it once:
 
 ```bash
