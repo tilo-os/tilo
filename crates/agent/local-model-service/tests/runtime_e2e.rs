@@ -404,7 +404,7 @@ fn complete(socket: &Path, model: &str) -> ModelResponse {
 }
 
 #[test]
-#[ignore = "needs a built runtime archive, a model and the gateway: tools/release/local-model-runtime-e2e.sh"]
+#[ignore = "needs a built runtime archive, a model and the gateway; the local-model-runtime-e2e check runs it"]
 fn a_downloaded_gguf_model_answers_through_the_gateway_on_the_signed_runtime() {
     let work = tempfile::tempdir().unwrap();
     let artifacts = work.path().join("artifacts");

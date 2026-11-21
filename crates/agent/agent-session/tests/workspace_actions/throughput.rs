@@ -432,8 +432,8 @@ async fn heard_by(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fills workspaces to thousands of records and times every path; run with \
-            --ignored in a release build (`TILO_THROUGHPUT_SIZES=0,1000,25000`)"]
+#[ignore = "fills workspaces to thousands of records and times every path in a release build; \
+            the throughput check runs it"]
 async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
     // Where the time goes, as the server logs it, when `RUST_LOG` asks.
     if std::env::var_os("RUST_LOG").is_some() {

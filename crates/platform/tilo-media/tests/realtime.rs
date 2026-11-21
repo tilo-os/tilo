@@ -462,7 +462,7 @@ fn percentile(times: &[Duration], p: f64) -> Duration {
 }
 
 #[test]
-#[ignore = "latency measurement for a quiet machine, not a shared-runner check"]
+#[ignore = "latency on a quiet machine; the weekly-latency check runs it"]
 fn realtime_latency_per_frame() {
     common::shared_gst_registry();
     let mut paths = vec![

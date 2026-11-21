@@ -41,7 +41,7 @@ const PUBLISHER_KEY: &str =
 const APP_ID: &str = "com.example.hello";
 
 #[test]
-#[ignore = "cold build of the SDK graph outside the workspace; run in CI's SDK job"]
+#[ignore = "cold build of the SDK graph outside the workspace; the sdk-linux and sdk-macos checks run it"]
 fn a_generated_app_goes_from_new_to_a_release_awaiting_review() {
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
