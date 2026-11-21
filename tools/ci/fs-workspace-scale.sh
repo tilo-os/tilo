@@ -10,6 +10,10 @@
 #   tools/ci/fs-workspace-scale.sh photo     one photo-sized file (256 KiB)
 #                                            opened for the first time on the
 #                                            second device
+#   tools/ci/fs-workspace-scale.sh copy      a folder copied in with `cp -r`
+#                                            (TILO_FS_COPY_FILES and
+#                                            TILO_FS_COPY_BYTES), read back and
+#                                            restarted
 #   tools/ci/fs-workspace-scale.sh all       the first two
 #
 # Every rung writes the same shapes — many small files, one big folder, a few
@@ -68,12 +72,22 @@ photo)
         native_sync_bench::a_photo_the_second_device_never_fetched_opens \
         -- --nocapture --test-threads=1
     ;;
+copy)
+    # A folder copied in the way a person copies one (`cp -r` through the
+    # mount), at the size and file size the caller names.
+    bash scripts/ci-fuse-preflight.sh
+    export TILO_FS_SYNC_BENCH=1 TILO_FS_BENCH_BACKEND=fuse TILO_FS_BENCH_ONLY=copy
+    export TILO_FS_BENCH_DIR=${TILO_FS_BENCH_DIR:-$target/fs-copy}
+    cargo test --release --locked -p tilo-fs --test it \
+        native_sync_bench::copying_a_folder_in_and_restarting \
+        -- --nocapture --test-threads=1
+    ;;
 all)
     ladder
     daemons
     ;;
 *)
-    echo "usage: $0 [ladder|daemons|photo|all]" >&2
+    echo "usage: $0 [ladder|daemons|photo|copy|all]" >&2
     exit 2
     ;;
 esac
