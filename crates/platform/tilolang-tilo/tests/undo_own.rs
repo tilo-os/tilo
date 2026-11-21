@@ -682,7 +682,8 @@ fn a_task_indented_under_another_is_put_back_in_one_undo() {
         "the subtasks stand under their parent, in order"
     );
 
-    // Shift+Tab lifts the second out beside its parent, and one undo puts it back.
+    // Shift+Tab lifts the second out beside its parent, after the task it was under and the
+    // tasks still under it, and one undo puts it back.
     call(
         &ada,
         "ada",
@@ -694,8 +695,8 @@ fn a_task_indented_under_another_is_put_back_in_one_undo() {
     assert_eq!(under(&ada, &ring), None);
     assert_eq!(
         order(&ada, &tasks),
-        [id(&book), id(&ring), id(&find)],
-        "out again it stands beside the task it was under"
+        [id(&book), id(&find), id(&ring)],
+        "out again it stands beside the task it was under, after what is under it still"
     );
     undo(&mut ada);
     assert_eq!(

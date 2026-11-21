@@ -234,7 +234,7 @@ d-berwb3de-parent = Parent
 d-berwb3de-before = Before
 
 d-he6qkhh4 = Indent
-    .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does.
+    .doc = Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does; with none named, under the task above it in the list.
     .w-nothing-over-it-to-move-under = Nothing over it to move under
 
 d-he6qkhh4-above = Above

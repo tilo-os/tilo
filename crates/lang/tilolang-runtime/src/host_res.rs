@@ -15,12 +15,22 @@ use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap
 use crate::engine::Wasm;
 use crate::error::RuntimeError;
 use crate::handles::FrameKind;
-use crate::ids::{AppId, ModuleHash};
+use crate::ids::{AppId, ItemId, ModuleHash, TypeId};
 use crate::meta::{FieldKind, Ty};
 use crate::num::{counter_to_float, float_to_counter};
 use crate::registry::{FieldInfo, TypeInfo};
-use crate::store::{Applied, FieldSpec, FieldValue, Mutation, Scalar, Txn};
+use crate::store::{Applied, FieldRead, FieldSpec, FieldValue, Lit, Mutation, Scalar, Txn};
 use crate::value::{CollRef, RecordInit, RefValue, ResourceRef, Value, from_json, to_json};
+
+/// Where `place` sends an item and the branch under it.
+enum PlaceAt {
+    /// At the end of the collection.
+    End,
+    /// Just before an item.
+    Before(ItemId),
+    /// Just after an item and everything under it.
+    After(ItemId),
+}
 
 /// Everything a mutation import needs to know before it touches the store.
 struct MutCtx {
@@ -1112,6 +1122,7 @@ impl Core {
                 ret_void()
             }
             Imp::CollMoveAmong => self.coll_move_among(a),
+            Imp::CollPlace => self.coll_place(a),
             Imp::SetAdd
             | Imp::SetRemove
             | Imp::MapPut
@@ -1248,6 +1259,408 @@ impl Core {
             },
         )?;
         ret_void()
+    }
+
+    /// `place(x, .parent, inside: p | before: y | after: y)`: the item and everything under it
+    /// to one place of the tree its parent field says — at the end of `p`'s own (`none` for the
+    /// end of the top level), just before `y`, or just after `y` and all it holds.
+    ///
+    /// `inside` names the row a view shows over the item, which may stand deeper than it: the
+    /// item goes under the nearest of that row and the rows over it that stands beside the item
+    /// (at the same level), so indenting a row moves it under its neighbour's branch and never
+    /// out of it. A move takes the item's own branch with it, in its order, so a tree stays one
+    /// however deep it is; each item placed names the one placed before it, which is what a
+    /// concurrent move made elsewhere merges against.
+    fn coll_place(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
+        let item_tys = self.coll_field(&ctx)?;
+        let parent_name = self.text(a.h(2)?)?;
+        let item = self.moved_arg(&ctx, &item_tys, a.h(3)?)?;
+        let target = self.val(a.h(4)?)?;
+        let mode = a.h(5)?;
+        let Some(parent) = item_tys
+            .iter()
+            .find_map(|t| t.field_by_id_or_name(&parent_name).cloned())
+        else {
+            return trap(format!(
+                "the collection's items have no field `{parent_name}` to stand under"
+            ));
+        };
+        let Some(read) = FieldRead::of(&parent.id, parent.kind, &parent.ty, parent.default.as_ref())
+        else {
+            return trap(format!("`{parent_name}` is a map, not a parent field"));
+        };
+        let listing = self
+            .store
+            .borrow()
+            .listing(&ctx.target, &spec(&ctx.field))
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        if !listing.holds(&item).unwrap_or(false) {
+            return trap("the item is not in this collection");
+        }
+        let item_ty = self.item_ty(&ctx.target, &item)?;
+        let branch = self.branch(&ctx, &read, &item, &item_ty)?;
+        let holds = |id: &str| branch.iter().any(|(held, _)| held == id);
+        let ours = self.parent_of(&ctx, &read, &item, &item_ty)?;
+        // The row a verb names; none given, the one beside the item that the verb asks for.
+        let given = match &target {
+            Value::Opt(None) | Value::Unit => None,
+            Value::Opt(Some(held)) => match &**held {
+                Value::Ref(r) => match r.target.item.clone() {
+                    Some(id) => Some((id, r.target.ty.clone())),
+                    None => return trap("a row is an item, not a document"),
+                },
+                other => return trap(format!("a row is an item, not {}", other.kind_name())),
+            },
+            Value::Ref(r) => match r.target.item.clone() {
+                Some(id) => Some((id, r.target.ty.clone())),
+                None => return trap("a row is an item, not a document"),
+            },
+            other => return trap(format!("a row is an item, not {}", other.kind_name())),
+        };
+        if let Some((id, _)) = &given
+            && !listing.holds(id).unwrap_or(false)
+        {
+            return trap("the row an item goes beside is not in this collection");
+        }
+        // `under` goes under the row above, or the branch of the row above it at this level;
+        // `up` and `down` step the item over the row beside it. Each takes the row the view
+        // shows, or — for a caller with no view, an agent — the item beside it in the tree.
+        let (new_parent, at) = match mode {
+            // `inside: p`: at the end of `p`'s own, or of the top level for none.
+            0 => match &given {
+                None => (None, PlaceAt::End),
+                Some((id, ty)) => {
+                    if holds(id) {
+                        return trap("an item cannot go inside itself");
+                    }
+                    let chosen = self.beside(&ctx, &read, id, ty, &ours)?;
+                    let under = self.branch(&ctx, &read, &chosen.0, &chosen.1)?;
+                    let last = under
+                        .iter()
+                        .rev()
+                        .find(|(id, _)| !holds(id))
+                        .map_or_else(|| chosen.0.clone(), |(id, _)| id.clone());
+                    (Some(chosen), PlaceAt::After(last))
+                }
+            },
+            // `before: y` and `after: y`: beside the row named.
+            1 | 2 => {
+                let Some((id, ty)) = &given else {
+                    return trap("`before` and `after` take the row to go beside");
+                };
+                if holds(id) {
+                    return trap("an item cannot go inside itself");
+                }
+                let parent = self.parent_of(&ctx, &read, id, ty)?;
+                let at = if mode == 1 {
+                    PlaceAt::Before(id.clone())
+                } else {
+                    let under = self.branch(&ctx, &read, id, ty)?;
+                    PlaceAt::After(
+                        under
+                            .iter()
+                            .rev()
+                            .find(|(id, _)| !holds(id))
+                            .map_or_else(|| id.clone(), |(id, _)| id.clone()),
+                    )
+                };
+                (parent, at)
+            }
+            // `under: over`: indent, under the row above.
+            3 => {
+                let above = match &given {
+                    Some((id, ty)) => Some((id.clone(), ty.clone())),
+                    None => self.row_above(&ctx, &read, &listing, &item, &ours)?,
+                };
+                let Some((id, ty)) = above else {
+                    return ret_void();
+                };
+                if holds(&id) {
+                    return trap("an item cannot go inside itself");
+                }
+                let chosen = self.beside(&ctx, &read, &id, &ty, &ours)?;
+                let under = self.branch(&ctx, &read, &chosen.0, &chosen.1)?;
+                let last = under
+                    .iter()
+                    .rev()
+                    .find(|(id, _)| !holds(id))
+                    .map_or_else(|| chosen.0.clone(), |(id, _)| id.clone());
+                (Some(chosen), PlaceAt::After(last))
+            }
+            // `up: over`: before the row above; `down: below`: after the row below.
+            4 | 5 => {
+                let beside = match &given {
+                    Some((id, ty)) => Some((id.clone(), ty.clone())),
+                    None if mode == 4 => self.row_above(&ctx, &read, &listing, &item, &ours)?,
+                    None => self.row_below(&ctx, &read, &listing, &item, &ours, &branch)?,
+                };
+                let Some((id, ty)) = beside else {
+                    return ret_void();
+                };
+                let parent = self.parent_of(&ctx, &read, &id, &ty)?;
+                let at = if mode == 4 {
+                    PlaceAt::Before(id)
+                } else {
+                    let under = self.branch(&ctx, &read, &id, &ty)?;
+                    PlaceAt::After(under.last().map_or_else(|| id.clone(), |(id, _)| id.clone()))
+                };
+                (parent, at)
+            }
+            _ => return trap("place: no such place"),
+        };
+        // The item's parent first, so the rows that follow it read where they stand.
+        if new_parent.as_ref().map(|(id, _)| id.clone()) != ours.map(|(id, _)| id) {
+            let value = match &new_parent {
+                None => Value::none(),
+                Some((id, ty)) => Value::some(Value::Ref(RefValue {
+                    target: Rc::new(ctx.target.item(id, ty.clone())),
+                    author: Some(self.module_of_frame()?),
+                })),
+            };
+            let scalar = to_scalar(&value, &parent.ty)?;
+            // The field is the item's, so the change is addressed to the item.
+            let under = MutCtx {
+                target: ctx.target.item(&item, item_ty.clone()),
+                field: parent.clone(),
+                txn: ctx.txn,
+            };
+            self.apply_mut(
+                &under,
+                &Mutation::SetRegister {
+                    field: parent.id.clone(),
+                    value: scalar,
+                },
+            )?;
+        }
+        // The item's branch, in its order: each placed just after the one placed before it.
+        let mut previous: Option<String> = None;
+        for (id, _) in &branch {
+            if let Some(before) = &previous {
+                self.coll_move_beside(&ctx, id, before, true)?;
+            } else {
+                match &at {
+                    PlaceAt::End => {
+                        let field = ctx.field.id.clone();
+                        self.apply_mut(
+                            &ctx,
+                            &Mutation::CollMove {
+                                field,
+                                item: id.clone(),
+                                index: listing.len(),
+                            },
+                        )?;
+                    }
+                    PlaceAt::Before(before) => {
+                        self.coll_move_beside(&ctx, id, before, false)?;
+                    }
+                    PlaceAt::After(anchor) => {
+                        self.coll_move_beside(&ctx, id, anchor, true)?;
+                    }
+                }
+            }
+            previous = Some(id.clone());
+        }
+        ret_void()
+    }
+
+    /// The items of the tree under `id` in the collection's order, `id` first, each with the
+    /// type it is.
+    fn branch(
+        &self,
+        ctx: &MutCtx,
+        read: &FieldRead,
+        id: &str,
+        ty: &str,
+    ) -> HResult<Vec<(ItemId, TypeId)>> {
+        let mut out = vec![(id.to_owned(), ty.to_owned())];
+        let under = self
+            .store
+            .borrow()
+            .relatives(
+                &ctx.target,
+                &ctx.field.id,
+                &read.spec.id,
+                &ctx.target.item(id, ty),
+                true,
+            )
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        match under {
+            Some(found) => out.extend(found),
+            // A store that keeps no column of the parent field reads the items in their order.
+            None => {
+                let listing = self
+                    .store
+                    .borrow()
+                    .listing(&ctx.target, &spec(&ctx.field))
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                for held in listing.iter() {
+                    if &*held == id {
+                        continue;
+                    }
+                    let held = held.to_string();
+                    let held_ty = self.item_ty(&ctx.target, &held)?;
+                    if self.under(&ctx.target, read, &held, &held_ty, id)? {
+                        out.push((held, held_ty));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether the item `id` stands anywhere under `top`.
+    fn under(
+        &self,
+        at: &ResourceRef,
+        read: &FieldRead,
+        id: &str,
+        ty: &str,
+        top: &str,
+    ) -> HResult<bool> {
+        let mut cursor = Some((id.to_owned(), ty.to_owned()));
+        let mut steps = 0usize;
+        while let Some((item, ty)) = cursor {
+            if item == top {
+                return Ok(true);
+            }
+            steps = steps.saturating_add(1);
+            if steps > 1_000_000 {
+                return Ok(false);
+            }
+            cursor = self.parent_of_type(at, read, &item, &ty)?;
+        }
+        Ok(false)
+    }
+
+    /// The item `id` stands under, by the parent field `read`.
+    fn parent_of(
+        &self,
+        ctx: &MutCtx,
+        read: &FieldRead,
+        id: &str,
+        ty: &str,
+    ) -> HResult<Option<(ItemId, TypeId)>> {
+        self.parent_of_type(&ctx.target, read, id, ty)
+    }
+
+    /// [`Self::parent_of`] in `at`'s document.
+    fn parent_of_type(
+        &self,
+        at: &ResourceRef,
+        read: &FieldRead,
+        id: &str,
+        ty: &str,
+    ) -> HResult<Option<(ItemId, TypeId)>> {
+        let lit = self
+            .store
+            .borrow()
+            .field_lit(&at.item(id, ty), read)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        match lit {
+            Lit::Ref(parent) => {
+                let target = ResourceRef::parse_id(&parent, String::new()).ok_or_else(|| {
+                    crate::engine::HostFail::Trap(format!("`{parent}` is no item"))
+                })?;
+                let item = target.item.ok_or_else(|| {
+                    crate::engine::HostFail::Trap("a parent names an item".to_owned())
+                })?;
+                let held = self.item_ty(at, &item)?;
+                Ok(Some((item, held)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The row `id` or its nearest ancestor that stands beside the item under `ours`: the item
+    /// a move under `id` lands under.
+    fn beside(
+        &self,
+        ctx: &MutCtx,
+        read: &FieldRead,
+        id: &str,
+        ty: &str,
+        ours: &Option<(ItemId, TypeId)>,
+    ) -> HResult<(ItemId, TypeId)> {
+        let mut cursor = Some((id.to_owned(), ty.to_owned()));
+        while let Some((at, ty)) = cursor {
+            let parent = self.parent_of(ctx, read, &at, &ty)?;
+            if parent.as_ref().map(|(id, _)| id.as_str())
+                == ours.as_ref().map(|(id, _)| id.as_str())
+            {
+                return Ok((at, ty));
+            }
+            cursor = parent;
+        }
+        Ok((id.to_owned(), ty.to_owned()))
+    }
+
+    /// The item just before `item` under the same parent in the collection's order, as a verb
+    /// called with no row of its own takes it: the row above it.
+    fn row_above(
+        &self,
+        ctx: &MutCtx,
+        read: &FieldRead,
+        listing: &crate::store::Listing,
+        item: &str,
+        ours: &Option<(ItemId, TypeId)>,
+    ) -> HResult<Option<(ItemId, TypeId)>> {
+        let Some(Some(at)) = listing.position(item) else {
+            return Ok(None);
+        };
+        for index in (0..at).rev() {
+            let Some(held) = listing.get(index) else {
+                break;
+            };
+            let held = held.to_string();
+            let ty = self.item_ty(&ctx.target, &held)?;
+            if self.parent_of(ctx, read, &held, &ty)?.map(|(id, _)| id)
+                == ours.as_ref().map(|(id, _)| id.clone())
+            {
+                return Ok(Some((held, ty)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The item just after `item`'s branch under the same parent in the collection's order: the
+    /// row below it.
+    fn row_below(
+        &self,
+        ctx: &MutCtx,
+        read: &FieldRead,
+        listing: &crate::store::Listing,
+        item: &str,
+        ours: &Option<(ItemId, TypeId)>,
+        branch: &[(ItemId, TypeId)],
+    ) -> HResult<Option<(ItemId, TypeId)>> {
+        let Some(Some(at)) = listing.position(item) else {
+            return Ok(None);
+        };
+        for index in at.saturating_add(1)..listing.len() {
+            let Some(held) = listing.get(index) else {
+                break;
+            };
+            let held = held.to_string();
+            if branch.iter().any(|(id, _)| id == &held) {
+                continue;
+            }
+            let ty = self.item_ty(&ctx.target, &held)?;
+            if self.parent_of(ctx, read, &held, &ty)?.map(|(id, _)| id)
+                == ours.as_ref().map(|(id, _)| id.clone())
+            {
+                return Ok(Some((held, ty)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The type the item `id` of `at`'s document is.
+    fn item_ty(&self, at: &ResourceRef, id: &str) -> HResult<TypeId> {
+        self.store
+            .borrow()
+            .type_of(&at.item(id, String::new()))
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))
     }
 
     /// `move(x, to: i, among: run)`: to the place `i` among the items of `run` other than `x`,

@@ -87,6 +87,8 @@ tilolang-empty-start = Start your first { $noun }
 tilolang-empty-start-here = Start one here
 # What a tree says where it stands when the window's search finds nothing in it.
 tilolang-nothing-found = Nothing matches
+# What a heading with no words is called in a map of a document's headings.
+tilolang-untitled = Untitled
 # What a list's entry at its end says while it is empty.
 tilolang-add = Add an item
 

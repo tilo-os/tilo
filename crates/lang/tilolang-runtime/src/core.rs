@@ -455,7 +455,7 @@ impl Core {
             Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
             ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
             BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty, CollInsert,
-            CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRelatives, CollRemove, CollWhere,
+            CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
             CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek,
             DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField, EntryParts,
             EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
@@ -523,7 +523,7 @@ impl Core {
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
-            | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
+            | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong | CollPlace
             | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
             | MapGetValue | MapKeys | MapKeysValue | MapNew | MapPutValue | MapRemoveValue
             | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId

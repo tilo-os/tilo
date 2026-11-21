@@ -1745,7 +1745,7 @@ impl Checker<'_> {
         }
         // What a container field can be written through; its reads are its value's.
         let writes: &[&str] = match &f.ty {
-            Ty::Collection(_) => &["insert", "remove", "remove_where", "move"],
+            Ty::Collection(_) => &["insert", "remove", "remove_where", "move", "place"],
             Ty::Set(_) => &["add", "remove"],
             Ty::Map(v) if matches!(**v, Ty::Set(_)) => &["add", "remove", "put"],
             Ty::Map(_) => &["put", "remove"],
@@ -1825,6 +1825,7 @@ impl Checker<'_> {
                 Ex::host(Imp::CollRemove, vec![b, fid, v], Ty::Unit)
             }
             (Ty::Collection(t), "move") => self.move_item(b, fid, t, args, span),
+            (Ty::Collection(t), "place") => self.place_item(b, fid, t, args, span),
             (Ty::Collection(t), "remove_where") => self.remove_where(b, f, t, name, args, span),
             (Ty::Set(t), "add" | "remove") => {
                 if !self.arity(name, args, 1, span) {
@@ -1944,6 +1945,73 @@ impl Checker<'_> {
         let neighbour = self.expr_as(&place.value, t);
         let side = Ex::new(Ek::I32(i32::from(after)), Ty::Bool);
         Ex::host(Imp::CollMove, vec![b, fid, item, neighbour, side], Ty::Unit)
+    }
+
+    /// `items.place(item, .parent, inside: x)`, `before: x` or `after: x`: the item and
+    /// everything under it (by the parent field `.parent` names) to one place of the tree — at
+    /// the end of `x`'s own (`inside`, none for the end of the top level), just before `x`, or
+    /// just after `x` and all it holds. One step, so a move is one change and one undo, and the
+    /// subtree keeps its shape: what a view's `Tab`, `Shift-Tab`, `Alt-Up` and `Alt-Down` and its
+    /// drags ask for, named by the neighbour the view shows.
+    fn place_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
+        let usage = "write `.place(item, .parent, inside: parent)`, `.place(item, .parent, before: other)`, `.place(item, .parent, after: other)`, `.place(item, .parent, under: over)` (indent), `.place(item, .parent, up: over)` or `.place(item, .parent, down: below)`";
+        let (Some(item), Some(field), Some(place), 3) = (args.first(), args.get(1), args.get(2), args.len())
+        else {
+            self.err(
+                "E022",
+                span,
+                format!("`.place` takes the item, the field its tree is by, and where it goes: {usage}"),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        let Some((param, body)) = super::optional::lambda_of(&field.value) else {
+            self.err(
+                "E022",
+                field.value.span,
+                format!("`.place` reads the tree by one field of its items: `.place(item, .parent, …)`"),
+            );
+            let _ = self.expr(&field.value, None);
+            return Ex::error();
+        };
+        let parent = match &body.kind {
+            ExprKind::Field { base, name }
+                if matches!(&base.kind, ExprKind::Ident(at) if at == &param.name) =>
+            {
+                name.name.clone()
+            }
+            _ => {
+                self.err(
+                    "E022",
+                    field.value.span,
+                    "`.place` follows one parent field: write `.parent`",
+                );
+                return Ex::error();
+            }
+        };
+        let item = self.expr_as(&item.value, t);
+        let opt = Ty::Option(Box::new(t.clone()));
+        let (mode, target) = match place.name.as_ref().map(|n| n.name.as_str()) {
+            Some("inside") => (0, self.expr_as(&place.value, &opt)),
+            Some("before") => (1, self.expr_as(&place.value, t)),
+            Some("after") => (2, self.expr_as(&place.value, t)),
+            Some("under") => (3, self.expr_as(&place.value, &opt)),
+            Some("up") => (4, self.expr_as(&place.value, &opt)),
+            Some("down") => (5, self.expr_as(&place.value, &opt)),
+            _ => {
+                self.err("E022", place.value.span, format!(".place names where the item goes: {usage}"));
+                let _ = self.expr(&place.value, None);
+                return Ex::error();
+            }
+        };
+        let mode = Ex::new(Ek::I32(mode), Ty::Bool);
+        Ex::host(
+            Imp::CollPlace,
+            vec![b, fid, Ex::str(&parent), item, target, mode],
+            Ty::Unit,
+        )
     }
 
     /// `items.remove_where(x -> x.done)`: removes every item the predicate holds of and gives how

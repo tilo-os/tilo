@@ -64,8 +64,13 @@ primary action new_note(nb: Notebook, title: Text = "", body: Text = "") -> Note
     nb.notes.insert(Note(title: title, body: RichText.from_markdown(body)))
 }
 
-/// Starts a note inside `n`'s own, after the notes it already holds.
-action new_child(nb: Notebook, n: Note) -> Note (icon: .plus, label: "New sub-note") {
+/// Starts a note inside `n`'s own, after the notes it already holds: the note the window has
+/// open too, so a person writing one starts the note it stands under without finding its row.
+action new_child(nb: Notebook, n: Note) -> Note (
+    icon: .plus,
+    label: "New sub-note",
+    key: "Ctrl+Shift+N",
+) {
     let made = nb.notes.insert(Note(title: "", parent: n))
     if let last = nb.notes.filter(x -> x.parent == n and x != made).last() {
         nb.notes.move(made, after: last)
@@ -88,13 +93,9 @@ action move_to(nb: Notebook, moved: Note, parent: Option<Note>, before: Option<N
 ) {
     require not within(nb.notes, parent, moved) and not within(nb.notes, before?.parent, moved) "A note cannot go inside itself"
     if let b = before {
-        moved.parent = b.parent
-        nb.notes.move(moved, before: b)
+        nb.notes.place(moved, .parent, before: b)
     } else {
-        moved.parent = parent
-        if let last = nb.notes.filter(x -> x.parent == parent and x != moved).last() {
-            nb.notes.move(moved, after: last)
-        } else if let p = parent { nb.notes.move(moved, after: p) }
+        nb.notes.place(moved, .parent, inside: parent)
     }
 }
 
@@ -102,10 +103,44 @@ action move_to(nb: Notebook, moved: Note, parent: Option<Note>, before: Option<N
 /// for, which names the row it lands after rather than the row after that one.
 action move_after(nb: Notebook, moved: Note, n: Note) (label: "Move to") {
     require not within(nb.notes, n, moved) "A note cannot go inside itself"
-    moved.parent = n.parent
-    if let last = last_below(nb.notes, n) {
-        nb.notes.move(moved, after: last)
-    } else { nb.notes.move(moved, after: n) }
+    nb.notes.place(moved, .parent, after: n)
+}
+
+/// Puts a note under the note it stands over, with the notes under it, as `Tab` does in the
+/// tree; with none named, it goes under the note above it.
+action indent(n: Note, above: Option<Note> (above)) (
+    label: "Indent",
+    icon: .arrow_right,
+    group: "Move",
+) {
+    applies above != .none and above != n.parent "Nothing over it to move under"
+    notebook.notes.place(n, .parent, under: above)
+}
+
+/// Puts a note beside the note it stands in, just after it and the notes under it, as
+/// `Shift-Tab` does in the tree.
+action outdent(n: Note) (label: "Outdent", icon: .arrow_left, group: "Move") {
+    applies n.parent != .none "It is at the top level already"
+    if let p = n.parent {
+        notebook.notes.place(n, .parent, after: p)
+    }
+}
+
+/// Puts a note just over the note above it, with the notes under it, as `Alt-Up` does in the
+/// tree; with none named, over the note just above it.
+action move_up(n: Note, above: Option<Note> (above)) (
+    label: "Move up",
+    icon: .arrow_up,
+    group: "Move",
+) {
+    applies above != .none "Nothing over it to move it over"
+    notebook.notes.place(n, .parent, up: above)
+}
+
+/// Puts a note just under the note below it and the notes under that one, with its own notes
+/// after it, as `Alt-Down` does in the tree.
+action move_down(n: Note) (label: "Move down", icon: .arrow_down, group: "Move") {
+    notebook.notes.place(n, .parent, down: .none)
 }
 
 /// Copies a note, with every note under it, just after the one it copies.
@@ -658,6 +693,10 @@ view notebook(nb: Notebook) {
     // The note the window shows, kept by the window: the first note until a person chooses
     // another, and the one a link, a breadcrumb or a search shows.
     state open_note: Option<Note> = nb.notes.first()
+    // The open note's headings, as its editor reports them, and the block a person last chose
+    // in the map of them: what the page shows of them without reading the whole note.
+    state heading_lines: List<Text> = []
+    state reveal: Option<Text> = .none
     on show(x: Note): set(open_note, x)
     std.tree(
         nb,
@@ -671,22 +710,44 @@ view notebook(nb: Notebook) {
         place_after: (moved, x) -> move_after(nb, moved, x),
         add: add_child,
         path: n -> meta(n).title,
-        doc: note_page,
+        row: note_node,
         head: notebook_head,
         // A file dropped anywhere on the notebook comes in as a note or as the pages of an
         // archive it holds.
         drop_files: files -> import_dropped(nb, files),
-    ) { n ->
-        // A note with no title yet is called what its type calls it, as in every list of it.
-        note_node(n)
+    ) {
+        // What the tree cannot hold: the open note's headings under it, and the page beside it.
+        below: {
+            note_outline(heading_lines, reveal)
+        }
+        doc: {
+            if let n = open_note {
+                note_page(n, heading_lines, reveal)
+            }
+        }
     }
+}
+
+/// The open note's headings, under the tree: choosing one shows that block of the note beside
+/// it. Nothing stands there while the note has no headings.
+view note_outline(headings: List<Text>, reveal: State<Option<Text>>) {
+    std.headings("Outline", headings, reveal)
 }
 
 /// The notebook's controls in the window's bar, given the note open beside the tree: its file
 /// commands, the notebook's own and the open note's. What makes a note is the window's primary
 /// action, which the bar offers once, so no button of the head's draws it again.
 view notebook_head(open: Option<Note>) {
-    notebook_menu(root Notebook, open)
+    let nb = root Notebook
+    row(gap: .tight) {
+        notebook_menu(nb, open)
+        // The note open, written into: a note of its own under it, a keystroke away.
+        if let n = open {
+            ui.Button("New sub-note", icon: .plus, icon_only: true, key: "Ctrl+Shift+N") {
+                on press: new_child(nb, n)
+            }
+        }
+    }
 }
 
 /// The notebook's file commands: a Markdown file or a zip of them in, the whole notebook out,
@@ -755,15 +816,18 @@ view note_row(n: Note) {
 
 /// A note's window of its own: its page, as a document the window is for.
 view note_editor(n: Note) {
+    state heading_lines: List<Text> = []
+    state reveal: Option<Text> = .none
     std.document(n) {
-        note_page(n)
+        note_page(n, heading_lines, reveal)
     }
 }
 
 /// The open note: its title, where it stands and when it was written, its tags as chips, its
 /// body, what links to it, its discussion and its history. Its body's `[[` writes a link to
-/// another of the notebook's notes.
-view note_page(n: Note) {
+/// another of the notebook's notes. Its editor reports the note's headings, which the window's
+/// map of them is drawn from, and shows the block a person chose there.
+template view note_page(n: Note, headings: State<List<Text>>, reveal: State<Option<Text>>) {
     let nb = root Notebook
     state linking: Bool = false
     state link_text: Text = ""
@@ -791,12 +855,14 @@ view note_page(n: Note) {
             bind: n.body,
             placeholder: "Write something",
             links: if linking { nb.notes.matching(link_text).take(48) } else { [] },
+            reveal: reveal,
         ) {
             on links_open(open): set(linking, open)
             on links_query(text): set(link_text, text)
             // A picture pasted or dropped into the body is in it already, where the caret was:
             // the note keeps its name beside the address its bytes were kept at.
             on image(picture): keep_image(n, picture)
+            on headings(lines): set(headings, lines)
         }
         std.linked(n, compact: true)
         std.after_body {

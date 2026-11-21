@@ -359,6 +359,50 @@ view outline<T>(
     }
 }
 
+/// The headings of a document, as places under the tree it stands in: each heading a row, nested
+/// under the nearest shallower heading before it, choosing one showing that block. `lines` is
+/// what an editor reports of the document it edits (`on headings`), each heading as its Markdown
+/// line (`## Ship the editor`), and `show` is where a chosen row is kept: the block's place, then
+/// a count that changes with each ask (`3:1`), which is what an editor's `reveal` takes, so the
+/// same heading shows again when it is chosen again. The row a person chose stays chosen while
+/// the document is the one they read.
+///
+/// A document with no headings draws nothing: the place is not there to choose from.
+template view headings(name: Text, lines: List<Text>, show: State<Option<Text>>) {
+    // How many times a row was chosen: each ask is told apart from the one before, so a heading
+    // chosen twice shows twice.
+    state asked: Int = 0
+    if not lines.is_empty() {
+        let chosen = if let shown = show { shown.split(":").first() }
+        ui.NavList(title: name, selected: chosen) {
+            // What a heading's Markdown line says: the `#`s it opens with are how deep it stands,
+            // and what follows the space after them is what it says. A heading stands under the
+            // nearest heading before it that stands shallower; one that skips a level is given no
+            // row made up for the level it skipped.
+            for line in lines {
+                let at = lines.index_of(line) ?? 0
+                let level = (line.split(" ").first() ?? "").len()
+                let words = if line.len() <= level + 1 {
+                    ""
+                } else {
+                    line.slice(level + 1, line.len())
+                }
+                let above = lines
+                    .take(at)
+                    .filter(other -> (other.split(" ").first() ?? "").len() < level)
+                    .last()
+                ui.NavItem(
+                    "{at}",
+                    if words.trim() == "" { phrase("tilolang-untitled") } else { words },
+                    parent: if let over = above { "{lines.index_of(over) ?? 0}" },
+                ) {
+                    on select: set(asked, asked + 1).then(set(show, "{at}:{asked}"))
+                }
+            }
+        }
+    }
+}
+
 /// Items as the tree of a window's sidebar: `items` — the collection itself, so the tree asks
 /// the store for the rows it shows and for the place of each — each under the item it names as
 /// its parent (`parent`), its row the one `row` draws and its words `label`. A row says how deep
@@ -474,6 +518,11 @@ template view tree_rows<T>(
 /// in the sidebar's header, given the item open (or none), so what can be done with it
 /// stands in the window's bar at every width rather than on a line of the page.
 ///
+/// `below` draws what stands under the tree in the sidebar — a map of the open item the tree
+/// cannot hold, such as its headings (`std.headings`) — and `doc` the item open, as a page the
+/// window's own reading takes. Both are the caller's blocks, so they read the state the caller
+/// keeps, its `opened` among it: the page is the caller's to draw for the item it shows.
+///
 /// The window keeps which item it shows itself (`opened`): a view that answers `on show` with
 /// the item passes its own state here (`opened: open`), so a link, a breadcrumb or a search that
 /// shows an item moves the tree's choice to it and the page the window shows stays the tree's
@@ -507,11 +556,12 @@ template view tree<R, T>(
     place_after: (T, T) -> Action,
     add: (T) -> View,
     path: (T) -> Text,
+    below: View,
     above: List<Filter<T>> = [],
     empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
     head: (Option<T>) -> View,
     row: (T) -> View,
-    doc: (T) -> View,
+    doc: View,
     drop_files: (List<File>) -> Action,
 ) {
     // The item the window opens: the first of the tree until a person chooses another, kept for
@@ -577,16 +627,21 @@ template view tree<R, T>(
                         row(x)
                     }
                 }
+                // What the open item holds as a map of its own, under the tree: its headings,
+                // while a search is not what the sidebar shows.
+                if found.is_empty() {
+                    below
+                }
             }
         }
         content: {
-            if let x = opened {
+            if opened != .none {
                 ui.Scroll {
                     // The page is the view's: `doc` gives its blocks as one stack at the page's
                     // own rhythm, so a heading keeps its content a step under it and more room
                     // under the block over it.
                     page {
-                        doc(x)
+                        doc
                     }
                 }
             } else if items.is_empty() {

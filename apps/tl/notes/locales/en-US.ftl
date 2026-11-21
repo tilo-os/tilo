@@ -66,7 +66,7 @@ d-qymo5lg2-title = Title
 d-qymo5lg2-body = Body
 
 d-37dxigeq = New sub-note
-    .doc = Starts a note inside `n`'s own, after the notes it already holds.
+    .doc = Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row.
 
 d-37dxigeq-n = N
 
@@ -94,6 +94,25 @@ d-ai4sxgvt = Move to
 d-ai4sxgvt-moved = Moved
 
 d-ai4sxgvt-n = N
+
+d-pjxiode5 = Indent
+    .doc = Puts a note under the note it stands over, with the notes under it, as `Tab` does in the tree; with none named, it goes under the note above it.
+    .w-nothing-over-it-to-move-under = Nothing over it to move under
+
+d-pjxiode5-above = Above
+
+d-bosv7337 = Outdent
+    .doc = Puts a note beside the note it stands in, just after it and the notes under it, as `Shift-Tab` does in the tree.
+    .w-it-is-at-the-top-level = It is at the top level already
+
+d-gsiqqwwd = Move up
+    .doc = Puts a note just over the note above it, with the notes under it, as `Alt-Up` does in the tree; with none named, over the note just above it.
+    .w-nothing-over-it-to-move-it = Nothing over it to move it over
+
+d-gsiqqwwd-above = Above
+
+d-qi2ysxan = Move down
+    .doc = Puts a note just under the note below it and the notes under that one, with its own notes after it, as `Alt-Down` does in the tree.
 
 d-c34rzynx = Duplicate
     .doc = Copies a note, with every note under it, just after the one it copies.
@@ -215,8 +234,11 @@ d-7in2x6ql = Move after~present
 d-dimkzymo = Append to note~present
 
 d-akcqjax3 = Notebook
+    .w-outline = Outline
+    .w-write-something = Write something
 
 d-x4im3xs5 = Notebook head
+    .w-new-sub-note = New sub-note
 
 d-qrsfr4a5 = Notebook menu
     .w-file = File
@@ -237,8 +259,6 @@ d-kdl43aw7 = Notes
 d-xqxkoqbj = Note row
 
 d-6wqou47w = Note editor
-
-d-osyh3odz = Note page
     .w-write-something = Write something
 
 d-nki6assy = Note details

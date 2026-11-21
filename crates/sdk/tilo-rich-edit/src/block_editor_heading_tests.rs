@@ -224,4 +224,56 @@ tilo_test_env::scenario! {
         assert_eq!(content.kind, BlockKind::Heading(2));
         assert_eq!(content.text, "Plan");
     }
+
+    phase a_heading_chosen_in_a_map_shows_the_block_it_names_each_time_it_is_chosen;
+    {
+        let mut blocks = vec![
+            BlockContent::paragraph("b0", "Intro"),
+            BlockContent::paragraph("b1", "Ship it"),
+            BlockContent::paragraph("b2", "Then"),
+            BlockContent::paragraph("b3", "Grow it"),
+        ];
+        blocks[1].kind = BlockKind::Heading(2);
+        blocks[2].kind = BlockKind::Heading(3);
+        blocks[3].kind = BlockKind::Heading(2);
+        let mut editor = BlockEditor::new();
+        editor.present_blocks(&blocks);
+        editor.focus_block(0, CursorPlacement::End);
+
+        editor.reveal_asked(Some("2:0".into()));
+        assert_eq!(
+            editor.focused_index(),
+            Some(2),
+            "the editor shows the block the view chose"
+        );
+        // The person moves on, and chooses the same heading again: a new ask is answered.
+        editor.focus_block(0, CursorPlacement::End);
+        editor.reveal_asked(Some("2:0".into()));
+        assert_eq!(
+            editor.focused_index(),
+            Some(0),
+            "the ask already answered is not answered again"
+        );
+        editor.reveal_asked(Some("2:1".into()));
+        assert_eq!(
+            editor.focused_index(),
+            Some(2),
+            "the same block asked again is shown again"
+        );
+        editor.reveal_asked(Some("9:2".into()));
+        assert_eq!(
+            editor.focused_index(),
+            Some(2),
+            "a block the document does not hold shows nothing"
+        );
+
+        // What a view's map is drawn from: each heading as its Markdown line, so its level is in
+        // it.
+        let published: Vec<String> = editor
+            .headings()
+            .into_iter()
+            .map(|(level, text)| format!("{} {text}", "#".repeat(usize::from(level))))
+            .collect();
+        assert_eq!(published, ["## Ship it", "### Then", "## Grow it"]);
+    }
 }

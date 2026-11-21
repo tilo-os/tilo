@@ -109,7 +109,9 @@ mod cases {
             discussion.load(&rt);
             let app = App::compile(SOURCE, &[discussion.meta().clone()]);
             app.load(&rt);
-            let nb = rt.create("Notebook").unwrap();
+            // The notebook is the app's root, as the window a person opens on it holds it: an
+            // action that names `root Notebook` and one given the notebook act on one resource.
+            let nb = rt.create_root("Notebook").unwrap();
             Self {
                 rt,
                 app,
@@ -156,6 +158,7 @@ mod cases {
                 Value::Text(said) => said,
                 other => panic!("{field} reads {other:?}"),
             }
+
         }
 
         /// The clock reads `now` from here on: a change made now is later than those before it.
@@ -587,18 +590,178 @@ mod cases {
             "and the tree draws it under that row"
         );
 
-        // Dropped before a row, it takes that row's place among its own: a note of it keeps
-        // the place it has in the order.
+        // Dropped inside a row, the note stands at the end of that row's own, the notes under it
+        // with it: a tree keeps a child just after the note it stands in.
         let notes = n.titled("Notes");
-        view.poll_patches().unwrap();
-        move_on(&view, "drop", &meetings, Some(&notes));
-        assert_eq!(n.parent_of(&meetings), None);
         view.poll_patches().unwrap();
         assert_eq!(
             labels(&view),
-            ["Q3 plan", "Meetings", "Notes"],
+            ["Meetings", "Q3 plan", "Notes"],
             "the tree keeps the order the store does"
         );
+
+        // Dropped before a row, it takes that row's place among its own, with the notes under
+        // it: the branch moves whole.
+        move_on(&view, "drop", &notes, Some(&meetings));
+        assert_eq!(n.parent_of(&notes), None);
+        view.poll_patches().unwrap();
+        assert_eq!(
+            labels(&view),
+            ["Notes", "Meetings", "Q3 plan"],
+            "the tree keeps the order the store does"
+        );
+    }
+
+    /// The tree verbs a person reaches from a row's menu and an agent invokes: a note goes under
+    /// the one over it, out beside the one it stands in, and over or under the one beside it, and
+    /// the notes under it go with it.
+    #[test]
+    fn the_tree_verbs_move_a_note_and_the_notes_under_it() {
+        let n = Notes::new();
+        let top = n.titled("A");
+        let b = n.titled("B");
+        let c = n.titled("C");
+        assert_eq!(n.parent_of(&top), None, "the first note stands at the top");
+        let under_b = n.child_of(&b);
+        n.call(
+            "retitle",
+            vec![Value::resource(&under_b), Value::text("B1")],
+        );
+        let window = |n: &Notes| labels(&n.window());
+
+        // Indent: C goes under B, at the end of the notes B holds.
+        n.call(
+            "indent",
+            vec![Value::resource(&c), Value::some(Value::resource(&b))],
+        );
+        assert_eq!(n.parent_of(&c), Some(b.clone()));
+        assert_eq!(window(&n), ["A", "B", "B1", "C"]);
+
+        // Outdent: C leaves B, just after B and the notes it holds.
+        n.call("outdent", vec![Value::resource(&c)]);
+        assert_eq!(n.parent_of(&c), None);
+        assert_eq!(window(&n), ["A", "B", "B1", "C"]);
+
+        // Move up: C goes over B, and B keeps the note under it beside it.
+        n.call(
+            "move_up",
+            vec![Value::resource(&c), Value::some(Value::resource(&b))],
+        );
+        assert_eq!(window(&n), ["A", "C", "B", "B1"]);
+
+        // Move down: C goes under B and the note under B, its own branch with it.
+        let under_c = n.child_of(&c);
+        n.call(
+            "retitle",
+            vec![Value::resource(&under_c), Value::text("C1")],
+        );
+        n.call("move_down", vec![Value::resource(&c)]);
+        assert_eq!(window(&n), ["A", "B", "B1", "C", "C1"]);
+
+        // Move up with the branch: C and the note under it go over B's branch whole.
+        n.call(
+            "move_up",
+            vec![Value::resource(&c), Value::some(Value::resource(&b))],
+        );
+        assert_eq!(window(&n), ["A", "C", "C1", "B", "B1"]);
+    }
+
+    /// The verbs take the row a view shows over the note, which may stand deeper than it: a note
+    /// indented under a row of another branch goes under that branch's own at its level, never
+    /// inside the row.
+    #[test]
+    fn indent_lands_under_the_row_it_names_branch() {
+        let n = Notes::new();
+        let plan = n.titled("Plan");
+        let meetings = n.child_of(&plan);
+        n.call(
+            "retitle",
+            vec![Value::resource(&meetings), Value::text("Meetings")],
+        );
+        let agenda = n.child_of(&meetings);
+        n.call(
+            "retitle",
+            vec![Value::resource(&agenda), Value::text("Agenda")],
+        );
+        let loose = n.titled("Loose");
+        // The row over it is deep in another branch: the note goes under that branch's own.
+        n.call(
+            "indent",
+            vec![
+                Value::resource(&loose),
+                Value::some(Value::resource(&agenda)),
+            ],
+        );
+        assert_eq!(n.parent_of(&loose), Some(plan.clone()));
+        assert_eq!(labels(&n.window()), ["Plan", "Meetings", "Agenda", "Loose"]);
+    }
+
+    /// The open note's headings stand under the tree in the window's sidebar, nested by the level
+    /// they are written at, and choosing one asks the editor beside it to show that block.
+    #[test]
+    fn the_open_notes_headings_stand_under_the_tree() {
+        let n = Notes::new();
+        n.titled("Autumn plan");
+        let mut view = n.window();
+        // What the editor reports as the note opens, and again as its headings change: each as
+        // its Markdown line, so the level it stands at is in it.
+        let body = of_kind(view.tree(), "ui.BlockEditor")[0].key.clone();
+        let lines = ["## Ship the editor", "### Then", "## Grow the garden"];
+        view.fire_with(
+            &body,
+            "headings",
+            Some(&Value::List(lines.iter().map(|line| Value::text(*line)).collect())),
+        )
+        .unwrap();
+        view.poll_patches().unwrap();
+
+        let outline = of_kind(view.tree(), "ui.NavList")
+            .into_iter()
+            .find(|list| {
+                let title = match list.props.get("title") {
+                    Some(Value::Opt(Some(held))) => Some(&**held),
+                    Some(value) => Some(value),
+                    None => None,
+                };
+                title == Some(&Value::text("Outline"))
+            })
+            .unwrap_or_else(|| panic!("no outline in\n{}", dump(view.tree())));
+        let rows = of_kind(outline, "ui.NavItem");
+        assert_eq!(
+            rows.iter()
+                .map(|row| text_prop(row, "label"))
+                .collect::<Vec<_>>(),
+            ["Ship the editor", "Then", "Grow the garden"],
+            "each heading is a row of the map"
+        );
+        assert_eq!(
+            parent_key(rows[1]),
+            Some("0".to_owned()),
+            "a heading stands under the shallower heading before it"
+        );
+        assert_eq!(parent_key(rows[2]), None, "and the next at its own level");
+
+        // Choosing one asks the editor for that block: the place of the row, then the ask.
+        view.fire(&rows[2].key.clone(), "select").unwrap();
+        view.poll_patches().unwrap();
+        let editor = of_kind(view.tree(), "ui.BlockEditor")[0];
+        assert_eq!(
+            editor.props.get("reveal"),
+            Some(&Value::text("2:0")),
+            "the editor is asked for the block the row names"
+        );
+    }
+
+    /// The key a navigation row states as the place it stands under, when it states one.
+    fn parent_key(row: &UiNode) -> Option<String> {
+        match row.props.get("parent") {
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Text(key) => Some(key.clone()),
+                other => panic!("a row's parent is a key, not {other:?}"),
+            },
+            Some(Value::Text(key)) => Some(key.clone()),
+            _ => None,
+        }
     }
 
     /// A note cannot go inside itself, nor inside anything of its own.

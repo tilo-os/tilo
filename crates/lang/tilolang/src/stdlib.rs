@@ -3,7 +3,8 @@
 //!
 //! It is a package like any other, compiled from its source and locked by its `app.ids`; every package
 //! compiles with it. Its views are templates, expanded where a package calls them (`std.list(...)`), so
-//! what they build is the caller's UI, under the caller's authority.
+//! what they build is the caller's UI, under the caller's authority. A document's map of its own
+//! headings is one of them (`std.headings`), as are the frames a window of a tree or a list gets.
 
 use std::sync::OnceLock;
 

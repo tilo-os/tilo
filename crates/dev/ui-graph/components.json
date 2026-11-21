@@ -6199,7 +6199,7 @@
         },
         {
           "name": "headings",
-          "doc": "The document's headings, in the order they stand, each time they change.",
+          "doc": "The document's headings, in the order they stand, each as its Markdown line (`## Title`), so the level it stands at is in it, each time they change.",
           "value": {
             "list": "text"
           }
@@ -6224,6 +6224,15 @@
           "doc": "The document it edits, as Markdown (a `Text` field), the same text round-tripped.",
           "type": "text",
           "merge": "splice"
+        }
+      ],
+      "state": [
+        {
+          "name": "reveal",
+          "doc": "The block the document shows, asked by the view that places an outline beside it: the place of the block, then a count the view changes every time it asks (`3:1`), so asking for a block already shown shows it again. The editor puts the caret at the block's start and keeps it in view.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {
@@ -7504,6 +7513,13 @@
           "doc": "The person the place shows, when it is one (a direct conversation): their avatar and presence ring in the icon's place.",
           "type": {
             "option": "actor"
+          }
+        },
+        {
+          "name": "parent",
+          "doc": "The place this one stands under, by its key: the rows of a list that nests its places (an outline of headings) fold under the one they name, a level in, and stand open. A key that names no place of the list leaves the place at its own level, as a row whose parent is gone does.",
+          "type": {
+            "option": "text"
           }
         }
       ],

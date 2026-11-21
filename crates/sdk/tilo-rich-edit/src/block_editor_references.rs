@@ -57,7 +57,8 @@ pub struct BlockEditorProps {
     /// would for a button it placed.
     #[component(event(value = String))]
     pub command: Event,
-    /// The document's headings, in the order they stand, each time they change.
+    /// The document's headings, in the order they stand, each as its Markdown line (`## Title`),
+    /// so the level it stands at is in it, each time they change.
     #[component(event(value = Vec<String>))]
     pub headings: Event,
     /// A picture pasted or dropped into the document, written in at the caret: its name, then the
@@ -65,6 +66,12 @@ pub struct BlockEditorProps {
     /// document shows — an export writing each beside the note — records of one.
     #[component(event(value = Vec<String>))]
     pub image: Event,
+    /// The block the document shows, asked by the view that places an outline beside it: the
+    /// place of the block, then a count the view changes every time it asks (`3:1`), so asking
+    /// for a block already shown shows it again. The editor puts the caret at the block's start
+    /// and keeps it in view.
+    #[component(state)]
+    pub reveal: Option<String>,
 }
 
 /// The editor's references: how each reads, where each was painted, and what activating one does.
@@ -336,6 +343,7 @@ impl Described for BlockEditor {
             command,
             headings,
             image,
+            reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         let mut editor = if editing {
@@ -374,6 +382,7 @@ impl Described for BlockEditor {
             editor.show_rich_text(&value.unwrap_or_default());
         }
         editor.publish_headings();
+        editor.reveal_asked(reveal);
         editor
     }
 
@@ -391,6 +400,7 @@ impl Described for BlockEditor {
             command,
             headings,
             image,
+            reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         if editing != self.body.is_some() {
@@ -418,6 +428,9 @@ impl Described for BlockEditor {
         } else {
             self.rebind_body(rich, markdown, &placeholder.unwrap_or_default())
         };
+        // A view that asks for a block again changes its count, so the same block is shown
+        // again rather than read as the ask it already answered.
+        self.reveal_asked(reveal);
         self.publish_headings();
         rebound
     }
@@ -493,7 +506,11 @@ impl BlockEditor {
         if self.references.headings.is_none() {
             return;
         }
-        let headings: Vec<String> = self.headings().into_iter().map(|(_, text)| text).collect();
+        let headings: Vec<String> = self
+            .headings()
+            .into_iter()
+            .map(|(level, text)| format!("{} {text}", "#".repeat(usize::from(level))))
+            .collect();
         if self.references.reported.as_ref() == Some(&headings) {
             return;
         }

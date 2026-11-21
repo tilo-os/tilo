@@ -844,6 +844,60 @@ tilo_test_env::scenario! {
         assert_eq!(trailing.icon, Icon::Plus);
     }
 
+    phase a_place_that_names_another_stands_under_it_with_the_places_that_name_it;
+    {
+        use crate::component::Described as _;
+        let place = |key: &str, label: &str, parent: Option<&str>| NavItemProps {
+            key: key.into(),
+            label: label.into(),
+            parent: parent.map(str::to_owned),
+            ..NavItemProps::default()
+        };
+        let list = NavList::from_props(
+            "outline",
+            NavListProps {
+                title: Some("Outline".into()),
+                items: vec![
+                    NavEntry::Item(place("0", "Ship it", None)),
+                    NavEntry::Item(place("1", "Then", Some("0"))),
+                    NavEntry::Item(place("2", "Yet deeper", Some("1"))),
+                    NavEntry::Item(place("3", "Grow it", None)),
+                    // A place whose parent is not one of the list stands at its own level.
+                    NavEntry::Item(place("4", "Elsewhere", Some("gone"))),
+                ],
+                ..NavListProps::default()
+            },
+        );
+        let shown: Vec<(&str, Vec<&str>)> = list.sections[0]
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.label.as_str(),
+                    item.children.iter().map(|kid| kid.label.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Ship it", vec!["Then"]),
+                ("Grow it", vec![]),
+                ("Elsewhere", vec![]),
+            ],
+            "a place stands under the one its parent names, and the rest at their own level"
+        );
+        assert_eq!(
+            list.sections[0].items[0].children[0].children[0].label,
+            "Yet deeper",
+            "a place under a place under a place keeps its own level"
+        );
+        assert!(
+            list.sections[0].items[0].expanded,
+            "a place that holds places stands open"
+        );
+    }
+
     // What changes a row builds it again, and every walk publishes what a walk
     // keeping nothing publishes: a selection moved, a check toggled before the
     // app confirms it, a destination renamed, the theme changed.

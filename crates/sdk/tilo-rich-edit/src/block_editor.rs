@@ -778,6 +778,9 @@ pub struct BlockEditor {
     find_active: Option<usize>,
     window_find: bool,
     find_reveal: bool,
+    /// The block a view last asked the editor to show (`reveal`), as it asked: the ask it
+    /// answers again only when it changes.
+    revealed: Option<String>,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
@@ -972,6 +975,7 @@ impl BlockEditor {
             find_active: None,
             window_find: false,
             find_reveal: false,
+            revealed: None,
             presence_key: None,
             body: None,
         };
@@ -2044,6 +2048,26 @@ impl BlockEditor {
         self.focused = Some(target);
         self.is_focused = true;
         self.dirty = true;
+    }
+
+    /// Show the block a view asks for (`reveal: "3:1"`): the place of the block, then the count
+    /// the view changes with each ask, so asking for a block already shown shows it again. The
+    /// caret goes to the block's start and the scroll keeps it in view.
+    pub fn reveal_asked(&mut self, asked: Option<String>) {
+        if asked == self.revealed {
+            return;
+        }
+        self.revealed = asked.clone();
+        let Some(at) = asked.as_deref().and_then(|ask| ask.split(':').next()) else {
+            return;
+        };
+        let Ok(index) = at.trim().parse::<usize>() else {
+            return;
+        };
+        if index >= self.blocks.len() {
+            return;
+        }
+        self.focus_block(index, CursorPlacement::Start);
     }
 
     /// Splitting at byte 0 of an empty block still produces two blocks
@@ -8537,6 +8561,12 @@ impl Widget for BlockEditor {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    /// What a scroll around the page keeps in view while the editor holds the keyboard: the
+    /// block the caret is in, never the whole document.
+    fn focus_reveal_context(&self) -> Option<Rect> {
+        self.focused.and_then(|at| self.block_paint_rect(at))
     }
 
     /// The editor's popovers, in the window's top layer — unless its owner

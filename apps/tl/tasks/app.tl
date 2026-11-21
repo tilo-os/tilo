@@ -341,38 +341,35 @@ action move_to(tasks: Tasks, moved: Task, parent: Option<Task>, before: Option<T
     require not within(tasks.items, parent, moved)
         and not within(tasks.items, before?.parent, moved) "A task cannot go inside itself"
     if let b = before {
-        moved.parent = b.parent
-        tasks.items.move(moved, before: b)
+        tasks.items.place(moved, .parent, before: b)
     } else {
-        moved.parent = parent
-        if let last = tasks.items.filter(x -> x.parent == parent and x != moved).last() {
-            tasks.items.move(moved, after: last)
-        } else if let p = parent { tasks.items.move(moved, after: p) }
+        tasks.items.place(moved, .parent, inside: parent)
     }
     if not moved.done and tasks.items.ancestors(moved, .parent).any(a -> a.done) {
         check(moved, false)
     }
 }
 
-/// Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does.
+/// Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does; with
+/// none named, under the task above it in the list.
 action indent(t: Task, above: Option<Task> (above)) uses time (
     label: "Indent",
     icon: .arrow_right,
     key: "Ctrl+]",
+    group: "Move",
 ) {
     applies above != .none and above != t.parent "Nothing over it to move under"
-    if let a = above {
-        let under = tasks.items.ancestors(a, .parent).find(x -> x.parent == t.parent) ?? a
-        move_to(tasks, t, under, .none)
+    tasks.items.place(t, .parent, under: above)
+    if not t.done and tasks.items.ancestors(t, .parent).any(a -> a.done) {
+        check(t, false)
     }
 }
 
 /// Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
-action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[") {
+action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[", group: "Move") {
     applies t.parent != .none "It is at the top level already"
     if let p = t.parent {
-        t.parent = p.parent
-        tasks.items.move(t, after: p)
+        tasks.items.place(t, .parent, after: p)
     }
 }
 

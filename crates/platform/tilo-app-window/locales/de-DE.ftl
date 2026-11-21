@@ -86,6 +86,8 @@ tilolang-no-date = Kein Datum
 tilolang-all-done = Alles erledigt
 # What one of an app's places says on another app's page when nothing stands in it.
 tilolang-all-caught-up = Nichts offen
+# What a heading with no words is called in a map of a document's headings.
+tilolang-untitled = Ohne Titel
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-selected = { $count ->

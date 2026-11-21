@@ -88,6 +88,11 @@ pub struct NavItemProps {
     /// The person the place shows, when it is one (a direct conversation): their avatar and
     /// presence ring in the icon's place.
     pub person: Option<Person>,
+    /// The place this one stands under, by its key: the rows of a list that nests its places
+    /// (an outline of headings) fold under the one they name, a level in, and stand open. A key
+    /// that names no place of the list leaves the place at its own level, as a row whose parent
+    /// is gone does.
+    pub parent: Option<String>,
     /// The place was chosen: what choosing it does, beside the list's `select`.
     #[component(event(press))]
     pub select: Event,
@@ -120,6 +125,65 @@ impl From<NavItemProps> for NavItem {
         }
         item
     }
+}
+
+/// The places `items` stand for, folded: a place that names another of the list as its parent
+/// stands under it, a level in and open, and every other at its own level. A place whose parent
+/// names no place of the list — or names a place of a cycle — stands at its own level too, so no
+/// place is lost.
+fn nested(items: Vec<NavItemProps>) -> Vec<NavItem> {
+    let known: std::collections::HashSet<String> =
+        items.iter().map(|item| item.key.clone()).collect();
+    let mut children: std::collections::HashMap<String, Vec<NavItemProps>> =
+        std::collections::HashMap::new();
+    let mut roots: Vec<NavItemProps> = Vec::new();
+    let mut order: Vec<NavItemProps> = Vec::with_capacity(items.len());
+    for item in items {
+        order.push(item.clone());
+        match item
+            .parent
+            .clone()
+            .filter(|parent| parent != &item.key && known.contains(parent))
+        {
+            Some(parent) => children.entry(parent).or_default().push(item),
+            None => roots.push(item),
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = build(roots, &mut children, &mut seen);
+    // A place no branch reached — one caught in a cycle of parents — stands at the top.
+    for item in order {
+        if seen.contains(&item.key) {
+            continue;
+        }
+        seen.insert(item.key.clone());
+        out.push(NavItem::from(item));
+    }
+    out
+}
+
+/// The places `items` as rows, each with the places that stand under it, in order.
+fn build(
+    items: Vec<NavItemProps>,
+    children: &mut std::collections::HashMap<String, Vec<NavItemProps>>,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<NavItem> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        if !seen.insert(item.key.clone()) {
+            continue;
+        }
+        let key = item.key.clone();
+        let mut built = NavItem::from(item);
+        if let Some(under) = children.remove(&key) {
+            let kids = build(under, children, seen);
+            if !kids.is_empty() {
+                built = built.children(kids).expanded();
+            }
+        }
+        out.push(built);
+    }
+    out
 }
 
 impl Described for NavList {
@@ -193,14 +257,14 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
     let mut sections: Vec<NavSection> = Vec::new();
     let mut adds: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
     let mut bound_adds: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
-    let mut loose: Vec<NavItem> = Vec::new();
+    let mut loose: Vec<NavItemProps> = Vec::new();
     let mut title = title;
-    let mut flush = |loose: &mut Vec<NavItem>, sections: &mut Vec<NavSection>| {
+    let mut flush = |loose: &mut Vec<NavItemProps>, sections: &mut Vec<NavSection>| {
         if loose.is_empty() {
             return;
         }
         let id = format!("{key}/{}", sections.len());
-        let items = std::mem::take(loose);
+        let items = nested(std::mem::take(loose));
         sections.push(match title.take() {
             Some(title) => NavSection::new(id, title, items),
             None => NavSection::untitled(id, items),
@@ -208,11 +272,11 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
     };
     for entry in items {
         match entry {
-            NavEntry::Item(item) => loose.push(NavItem::from(item)),
+            NavEntry::Item(item) => loose.push(item),
             NavEntry::Section(section) => {
                 flush(&mut loose, &mut sections);
                 let id = format!("{key}/{}", sections.len());
-                let places = section.items.into_iter().map(NavItem::from).collect();
+                let places = nested(section.items);
                 let mut built = NavSection::new(id.clone(), section.title, places);
                 if section.collapsible {
                     built = built.collapsible();

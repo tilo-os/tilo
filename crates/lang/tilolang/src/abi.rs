@@ -121,6 +121,9 @@ imports! {
     CollInsert = "coll_insert" ([H, H, H] -> [H]);
     CollRemove = "coll_remove" ([H, H, H] -> []);
     CollMove = "coll_move" ([H, H, H, H, I32] -> []);
+    // A tree's order: the item and everything under it, to a place named by the parent field
+    // and a neighbour (or the end of a parent's own).
+    CollPlace = "coll_place" ([H, H, H, H, H, I32] -> []);
     CollWhere = "coll_where" ([H, H] -> [H]);
     CollRelatives = "coll_relatives" ([H, H, H, H, I32] -> [H]);
     CollCount = "coll_count" ([H] -> [I64]);

@@ -149,9 +149,6 @@ d-ojfhuiuf = Untergeordnete hinzufügen
 
 d-5y75taxm = Notizknoten
 
-d-osyh3odz = Notizseite
-    .w-write-something = Schreib etwas
-
 d-v7cub7aw = Notizen
     .doc = Die Notizen des Arbeitsbereichs.
     .noun = { $count ->
