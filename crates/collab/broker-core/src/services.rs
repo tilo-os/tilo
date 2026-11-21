@@ -422,6 +422,208 @@ pub enum ExecutingBindingPhase {
 /// dropped unsent is a host that stopped starting it.
 pub type WindowlessStart = tokio::sync::oneshot::Receiver<Result<(), String>>;
 
+/// Host-retained original ownership for one exact observed launch, built only by the broker from
+/// the launch it observed: no wire form, and it never grants rights.
+#[derive(Clone)]
+pub struct ObservedApplicationLaunch {
+    workspace: String,
+    app: String,
+    package_root: Option<String>,
+    check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
+}
+
+impl ObservedApplicationLaunch {
+    #[must_use]
+    pub fn new(
+        workspace: String,
+        app: String,
+        package_root: Option<String>,
+        check: Arc<dyn Fn() -> Result<tilo_user_identity::DeviceCert, String> + Send + Sync>,
+    ) -> Self {
+        Self {
+            workspace,
+            app,
+            package_root,
+            check,
+        }
+    }
+
+    pub fn matches(&self, app: &str, root: Option<&str>, workspace: &Workspace) -> bool {
+        self.app == app
+            && self.package_root.as_deref() == root
+            && self.workspace == workspace.id().to_string()
+    }
+
+    /// Recheck the actual original caller, pending invocation and policy clock.
+    pub fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
+        (self.check)()
+    }
+}
+
+pub trait LauncherServices: Send + Sync {
+    /// Bind an optional diagnostic observation to the host's current exact
+    /// launcher task. The returned ID is correlation only, never authority.
+    fn begin_executing_binding_observation(&self, _launcher_pid: u32) -> Option<u64> {
+        None
+    }
+    /// Optional host-side observation only. It grants no authority and receives
+    /// neither challenge bytes nor credentials, document or application output.
+    fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
+    fn applications(&self) -> Vec<LaunchableApplication>;
+    /// The ids installed apps were published under before, as the installed catalogue believes
+    /// them (`app_catalogue::apps::earlier_ids`): an application target naming one opens the app
+    /// that took its place. None where no app was renamed.
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        tilo_action_policy::EarlierIds::default()
+    }
+    /// The same installed entries as `applications`, narrowed to an exact ID.
+    /// Hosts may avoid constructing unrelated entries. This is discovery only;
+    /// the broker still decides which rows the caller may see or invoke.
+    fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
+        self.applications()
+            .into_iter()
+            .filter(|app| app.package_id == app_id)
+            .collect()
+    }
+    /// Whether the person's own input is behind what app `app_id` asks for
+    /// now: a press of theirs (never an agent's) reached one of its windows
+    /// within the activation window, and has not proved another open
+    /// already. Answering uses it up. A host without that record answers
+    /// `false`: an app then opens nothing on its own, only what an
+    /// invocation someone else asked of it calls for.
+    fn person_initiated(&self, _app_id: &str) -> bool {
+        false
+    }
+    /// Launches `app` into `workspace`, its view of `record` (else the
+    /// record it opens by default) opening at `place`.
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+        record: Option<&str>,
+        place: &LaunchPlace,
+    ) -> Result<(), String>;
+    /// Launch an exact installed package, or an ordinary host application,
+    /// and observe its real startup in the authenticated workspace.
+    fn begin_launch(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &Workspace,
+        author: Option<&str>,
+    ) -> Result<LaunchReadiness, String> {
+        let _ = (app, package_root, workspace, author);
+        Err("observed application startup is unavailable on this host".into())
+    }
+    /// Observe startup with host-retained original ownership, when available.
+    fn begin_launch_from_original(
+        &self,
+        app: &str,
+        package_root: Option<&str>,
+        workspace: &Workspace,
+        author: Option<&str>,
+        original: Option<ObservedApplicationLaunch>,
+    ) -> Result<LaunchReadiness, String> {
+        if let Some(original) = original {
+            if !original.matches(app, package_root, workspace) {
+                return Err("original launch target changed".into());
+            }
+            original.certificate()?;
+        }
+        self.begin_launch(app, package_root, workspace, author)
+    }
+    /// Launch `app` into `workspace` at `place`, opening the
+    /// content-addressed bytes `content` names read-only, read through the
+    /// calling application's own scope. An empty hash is a plain launch. A
+    /// host that cannot stage content refuses one.
+    ///
+    /// Answers what it started: a ticket the started instance presents when
+    /// it connects, where the host keeps one.
+    fn launch_content(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+        content: LaunchContent<'_>,
+        place: &LaunchPlace,
+    ) -> Result<Launched, String> {
+        if content.hash.is_empty() {
+            self.launch(app, workspace, None, place)
+                .map(|()| Launched::Unconfirmed)
+        } else {
+            Err("opening launch content is unsupported on this host".into())
+        }
+    }
+    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool;
+    /// Have an instance of `app` with no window run in `workspace`, started now
+    /// unless one runs there already, to take an invocation of the app's
+    /// actions on its records: what a closed app gets in place of a window
+    /// for an action that shows nothing. `Some` when this host runs one
+    /// there: how its start ends, which the action waits on with its
+    /// delivery; `None` when it runs none of `app` (its actions then launch
+    /// it as before). It ends with the session.
+    ///
+    /// # Errors
+    /// Why the instance this host runs of `app` there failed.
+    fn windowless(&self, app: &str, workspace: &str) -> Result<Option<WindowlessStart>, String> {
+        let _ = (app, workspace);
+        Ok(None)
+    }
+    /// Snapshot the original launch facts while admitting this connection.
+    /// Unsupported launchers retain no private window-instance authority.
+    /// `window_instance` is the window the connection says it was made for:
+    /// a host that makes connections for its own windows keys their launch
+    /// records by it; a launched process's record names its own.
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        workspace: &str,
+        window_instance: Option<u64>,
+    ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        let _ = window_instance;
+        if !self.attest_process(pid, app, workspace) {
+            return Ok(None);
+        }
+        Ok(Some(AuthenticatedApplicationLaunch {
+            continuation_instance: None,
+            launch_ticket: None,
+            windowless: false,
+        }))
+    }
+
+    /// Admit kernel-attested executing ownership only beneath this exact launch; it grants no new
+    /// identity or filesystem permissions.
+    #[cfg(target_os = "linux")]
+    fn attest_executing_process(
+        &self,
+        launcher_pid: u32,
+        peer: &runtime_portal::process_binding::ExecutingPeer,
+        app: &str,
+        workspace: &str,
+    ) -> bool {
+        let _ = (launcher_pid, peer, app, workspace);
+        false
+    }
+    /// An action invocation reached `app` in `workspace`. A person, an agent or
+    /// another device drives an app through its actions as much as through
+    /// keys and clicks, so a window the app closes after one was closed on
+    /// request, not lost.
+    fn note_acted_on(&self, app: &str, workspace: &str) {
+        let _ = (app, workspace);
+    }
+    /// Whether [`Self::close`] can close applications on this host.
+    fn closes_applications(&self) -> bool {
+        false
+    }
+    /// Ask every window of `app` in `workspace` to close the way a person
+    /// closing it would. The next launch starts a fresh process, which picks
+    /// up permissions granted since the last one.
+    fn close(&self, app: &str, workspace: &Workspace) -> Result<(), String> {
+        let _ = (app, workspace);
+        Err("closing applications is unsupported on this host".into())
+    }
+}
+
 /// One host-owned workspace governance action, already admitted to the remote-action vocabulary:
 /// the broker mints `invocation`, the service checks the caller's authority and applies it.
 pub struct WorkspaceGovernanceRequest<'a> {

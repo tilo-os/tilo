@@ -22,11 +22,10 @@ use std::time::Duration;
 
 use tilo_app_launch::links::ancestry;
 use tilo_broker_core::services::{
-    AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication,
+    AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication, LauncherServices,
 };
 use tilo_desktop_model::Workspace;
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::services::LauncherServices;
 
 /// How long a service, an app or an agent waits for the session's loop to answer a launch it asked
 /// for.

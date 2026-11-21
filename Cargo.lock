@@ -18397,6 +18397,7 @@ dependencies = [
  "key-group",
  "postcard",
  "runtime-collab",
+ "runtime-portal",
  "serde",
  "serde_json",
  "settings-store",

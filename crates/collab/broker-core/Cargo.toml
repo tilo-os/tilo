@@ -53,6 +53,10 @@ tempfile.workspace = true
 [lints]
 workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The kernel-attested executing peer a launcher admits beneath its own launch.
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The unified feature set is native (its tokio pulls mio, which refuses wasm32).
 workspace-hack = { version = "0.1" }
