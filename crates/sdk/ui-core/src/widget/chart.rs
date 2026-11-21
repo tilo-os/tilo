@@ -857,7 +857,7 @@ impl ChartStyle {
 
 /// How far a sparkline's readout card may stand outside its line: enough for the card beside
 /// the point, since a line this small cannot hold one.
-const SPARK_READOUT_REACH: f64 = 120.0;
+const SPARK_READOUT_REACH: f64 = 200.0;
 
 pub struct Sparkline {
     data: Vec<f32>,
