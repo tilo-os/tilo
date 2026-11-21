@@ -99,7 +99,20 @@ def name_self(one: Person, name: str) -> None:
     one.press(PROFILE, f"{one.name}'s own face in their top bar", exact=False)
     field = until(f"the name field on {one.name}'s profile card", lambda: next(
         (label for label in ("Add your name", "Your name") if one.target(label)), None), 15, 0.2)
-    one.press(field)
+    # A person types once the caret is in the field: a shell just started may still be showing
+    # its first hint, which takes the first press.
+    def caret_in_field():
+        one.press(field)
+        return until(f"the caret in {one.name}'s name field", lambda: (
+            ((one.session.state_dump() or {}).get("chrome") or {}).get("caret")), 3, 0.1)
+
+    for attempt in range(3):
+        try:
+            caret_in_field()
+            break
+        except Failed:
+            if attempt == 2:
+                raise
     one.session.chord("Control", "a")
     one.session.type(name)
     one.session.key("Enter")
