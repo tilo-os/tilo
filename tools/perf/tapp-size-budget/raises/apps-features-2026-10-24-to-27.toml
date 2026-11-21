@@ -39,9 +39,6 @@ aarch64 = 65536
 [apps."so.tilo.hex-editor"]
 aarch64 = 65536
 
-[apps."so.tilo.mail"]
-aarch64 = 131072
-
 [apps."so.tilo.messages"]
 aarch64 = 131072
 
