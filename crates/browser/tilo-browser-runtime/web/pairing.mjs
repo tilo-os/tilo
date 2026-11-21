@@ -297,7 +297,7 @@ const PLATFORMS = {macOS: 'Mac', 'Chrome OS': 'ChromeOS', 'Chromium OS': 'Chrome
  * on the system, "Safari on iPhone", "Firefox on Linux"; at most 64
  * characters. Read from `userAgentData` where the browser has it, else
  * from its user agent string. A native app that holds this page as its
- * person's device names the device itself (`name`, `native-host.mjs`):
+ * person's device names the device itself (`tiloNativeHost.name`):
  * "Tilo Assistant on Ada's Mac".
  */
 export function deviceLabel(navigator = globalThis.navigator ?? {}, native = globalThis.tiloNativeHost) {

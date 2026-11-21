@@ -90,87 +90,10 @@ workspace = true
 
 [features]
 default = []
-# The bundling crate supplies the Activity pane's code through
-# `defer_activity_pane`, which the browser desktop fetches as its own module
-# the first time someone opens Activity. Without it the pane is linked in.
-deferred-activity = []
-# The bundling crate supplies the model service's clients (`MODEL_CLIENTS`),
-# which the browser desktop fetches as their own module
-# the first time a window asks a model or opens provider settings. Without it
-# they are linked in.
-deferred-model-clients = []
-# The bundling crate registers the Feedback composer as an application
-# fetched the first time it opens, and hands its code over through
-# `install_feedback_composer`. Without it the composer is linked in.
-deferred-feedback-composer = []
-# Feedback's ownership and delivery (`FEEDBACK`) are fetched once the page is
-# configured with a destination: the bundling crate splits them out and hands
-# them over. Without it they are linked in.
-deferred-feedback = []
-# The bundling crate supplies the code that shows a mount as HTML
-# (`DOM_CODE`), which the browser desktop fetches as its own module the
-# first time a page asks for `dom: true`, with the toolkit's code that only a
-# page shows (`ui::composition::HTML_CODE`). Without it the code is linked in.
-deferred-dom-presenter = ["ui/lazy-html-faces"]
-# The bundling crate supplies the directory and invite sheets' and the
-# shortcut guide's code (`SHEETS`), which the browser desktop fetches as its
-# own module the first time the person opens one. Without it they are linked
-# in.
-deferred-sheets = []
-# The bundling crate supplies what a person's agents on a host ask them
-# (`QUESTIONS`): the approver session and the question sheet it fills, which
-# the browser desktop fetches as its own module the first time a page holding
-# someone's root is asked to answer. Without it they are linked in.
-deferred-questions = []
-# The bundling crate supplies the keeper of the person's settings sections
-# (`SETTINGS_KEEPER`), which the browser desktop fetches as its own module as
-# the page starts. Without it the keeper and the sections' models are linked
-# in.
-deferred-settings-keeper = []
-# The bundling crate supplies the renderer's maker (`RENDERER_CODE`): vello's
-# shaders and the code compiling them, which the browser desktop fetches as
-# its own module while the first frames rasterize on the CPU. Without it they
-# are linked in.
-deferred-renderer = []
-# The bundling crate supplies the code that reads a PDF's words for search
-# (`PDF_WORDS`), which the browser desktop fetches as its own module the first
-# time a workspace's file is a PDF. Without it the PDF engine is linked in.
-deferred-pdf-words = []
-# The bundling crate supplies the jobs band the page's card shows (`BAND`),
-# which the browser desktop fetches as its own module the first time a job
-# runs. Without it the band is linked in.
-deferred-jobs-band = ["ui/lazy-jobs-band"]
-# The bundling crate supplies what a page does with files dropped on the shell
-# or uploaded from its menu (`DROPS`), which the browser desktop fetches as its
-# own module the first time a drag reaches the shell. Without it the drops are
-# linked in.
-deferred-drops = []
-# The bundling crate supplies what carrying a file out of the page does after the click (asking
-# for its link, saving it, showing it in a tab: `CARRY_OUT`), which the browser desktop fetches as
-# its own module once its first frame is up. Without it the code is linked in.
-deferred-carry-out = []
-# The bundling crate supplies the code that follows what the person's workspace server tells
-# them (`TOLD_NOTICES`), which the browser desktop fetches as its own module once its first frame
-# is up. Without it the code is linked in.
-deferred-told-notices = []
 # The bundling crate supplies the code that reads the server an invitation
 # names (`INVITED_SERVER`), which the entry page fetches when it follows an
 # invitation. Without it the code is linked in.
 deferred-invited-server = []
-# The bundling crate supplies the code that reads the workspace's resources
-# (`WORKSPACE_RESOURCES`), which the browser desktop fetches as its own module
-# as the page starts; a window opened before it is in shows its app arriving.
-# Without it the code is linked in.
-deferred-workspace-resources = []
-# The bundling crate supplies the page's layout actions (`PAGE_LAYOUT`), which
-# the browser desktop fetches as its own module as the page first draws; an
-# action asked before they are in waits for them. Without it they are linked
-# in.
-deferred-page-layout = []
-# The bundling crate supplies the page's search (`PAGE_SEARCH`), which the
-# browser desktop fetches as its own module as the page first draws. Without it
-# the search is linked in.
-deferred-page-search = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.
