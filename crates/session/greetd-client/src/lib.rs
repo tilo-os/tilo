@@ -11,7 +11,7 @@
 //! such as fingerprint drops out of the same loop.
 
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::path::Path;
 
 pub use greetd_ipc::AuthMessageType;
 use greetd_ipc::codec::SyncCodec;
@@ -178,7 +178,7 @@ pub fn authenticate_and_start<F: FnMut(AuthPrompt), G: FnMut()>(
     on_prompt: F,
     on_accepted: G,
 ) -> Result<(), AuthError> {
-    let mut stream = UnixStream::connect(sock_path).map_err(|e| {
+    let mut stream = tilo_files::native::socket::connect(Path::new(sock_path)).map_err(|e| {
         AuthError::Transport(format!("cannot connect to greetd ({sock_path}): {e}"))
     })?;
 
@@ -479,7 +479,7 @@ pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
 /// [`AuthError::Denied`] if PAM refuses the attempt, or
 /// [`AuthError::Greetd`] on any other greetd-reported failure.
 pub fn verify_password(sock_path: &str, username: &str, password: &str) -> Result<(), AuthError> {
-    let mut stream = UnixStream::connect(sock_path).map_err(|e| {
+    let mut stream = tilo_files::native::socket::connect(Path::new(sock_path)).map_err(|e| {
         AuthError::Transport(format!("cannot connect to greetd ({sock_path}): {e}"))
     })?;
     verify_exchange(&mut stream, username, password, |_| {})
@@ -488,6 +488,7 @@ pub fn verify_password(sock_path: &str, username: &str, password: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixStream;
     use std::thread;
 
     /// Convenience: a no-op prompt sink for tests that don't assert on

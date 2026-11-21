@@ -15,6 +15,10 @@ greetd_ipc = { version = "0.10", features = ["sync-codec"] }
 tracing.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# greetd's socket is reached by path.
+tilo-files = { path = "../../platform/tilo-files" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

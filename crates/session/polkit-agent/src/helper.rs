@@ -44,7 +44,9 @@ impl Default for SystemHelper {
 
 impl SystemHelper {
     async fn over_socket(socket: &Path, user: &str, cookie: &str) -> std::io::Result<HelperIo> {
-        let stream = tokio::net::UnixStream::connect(socket).await?;
+        let socket = tilo_files::native::socket::connect(socket)?;
+        socket.set_nonblocking(true)?;
+        let stream = tokio::net::UnixStream::from_std(socket)?;
         let (read, mut write) = stream.into_split();
         write
             .write_all(format!("{user}\n{cookie}\n").as_bytes())

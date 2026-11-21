@@ -12,7 +12,6 @@
 //! account name) reads as "nobody", and the ordinary sign-in screen shows.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
@@ -153,7 +152,7 @@ pub fn set_secret_with_recovery(
 }
 
 pub(crate) fn exchange(socket: &Path, request: &[u8], bound: Duration) -> Option<String> {
-    let mut stream = UnixStream::connect(socket).ok()?;
+    let mut stream = tilo_files::native::socket::connect(socket).ok()?;
     stream.set_read_timeout(Some(bound)).ok()?;
     stream.set_write_timeout(Some(bound)).ok()?;
     stream.write_all(request).ok()?;
@@ -185,7 +184,7 @@ fn plain_account_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::{UnixListener, UnixStream};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     fn daemon(reply: Option<&'static str>) -> (tempfile::TempDir, std::thread::JoinHandle<String>) {

@@ -329,7 +329,7 @@ fn bind_private(path: &Path) -> io::Result<UnixListener> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let listener = UnixListener::bind(path)?;
+    let listener = tilo_files::native::socket::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }

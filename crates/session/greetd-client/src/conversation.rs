@@ -1,6 +1,7 @@
 //! Cancellation of the ordinary greetd exchange, with ordered complete frames.
 
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use greetd_ipc::codec::SyncCodec;
@@ -91,7 +92,7 @@ struct ConversationExchange {
 
 impl ConversationExchange {
     fn connect(sock: &str, control: ConversationControl) -> Result<Self, AuthError> {
-        let reader = UnixStream::connect(sock)
+        let reader = tilo_files::native::socket::connect(Path::new(sock))
             .map_err(|_| AuthError::Transport("Could not reach the login service".into()))?;
         let writer = reader
             .try_clone()

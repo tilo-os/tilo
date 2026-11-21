@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Connect to the control socket at `path`.
 pub fn connect(path: &Path) -> io::Result<UnixStream> {
-    UnixStream::connect(path)
+    tilo_files::native::socket::connect(path)
 }
 
 /// Send `request` (one JSON object, no newline) and read one answer line.
