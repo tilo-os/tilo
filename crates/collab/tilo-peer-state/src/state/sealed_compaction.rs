@@ -834,7 +834,7 @@ pub(super) enum WriteMerge {
 /// rather than failing the whole record. Automerge itself refuses the second
 /// change under a sequence, so that refusal is read as the fork it is.
 pub(super) fn merge_write(record: &mut AutoCommit, mutation: &DocumentMutation) -> WriteMerge {
-    match crate::document::merge_committed_with_status(record, mutation) {
+    match merge_committed(record, mutation) {
         Ok(crate::document::MergeOutcome::Changed(_)) => WriteMerge::Applied,
         Ok(crate::document::MergeOutcome::MissingDependencies) => WriteMerge::Waiting,
         Err(crate::document::MergeError::Invalid(why)) => match already_held(record, mutation) {
@@ -848,6 +848,30 @@ pub(super) fn merge_write(record: &mut AutoCommit, mutation: &DocumentMutation) 
             WriteMerge::Refused("the record has changes of its own open".into())
         }
     }
+}
+
+/// Merge `mutation`, a write of a sealed history, into `record`: a whole document (a compaction,
+/// which folds the record's base and the writes before it) is loaded on its own, as into a blank
+/// record, and what `record` holds beyond it merged into it. Merged into `record` the other way,
+/// each of the document's changes was applied to the record one at a time, in the isolate and
+/// again here: a compacted part of a tracker opened no faster than the writes it folds replayed.
+fn merge_committed(
+    record: &mut AutoCommit,
+    mutation: &DocumentMutation,
+) -> Result<crate::document::MergeOutcome, crate::document::MergeError> {
+    if let DocumentMutation::Snapshot(bytes) = mutation
+        && automerge::transaction::Transactable::pending_ops(record) == 0
+        && !record.get_heads().is_empty()
+        && record.get_missing_deps(&[]).is_empty()
+        && let Ok(mut loaded) = tilo_automerge_isolate::load(bytes)
+        && tilo_automerge::ApplyIncoming::merge_incoming(&mut loaded, record).is_ok()
+    {
+        let changed = loaded.get_heads() != record.get_heads();
+        let actor = record.get_actor().clone();
+        *record = loaded.with_actor(actor);
+        return Ok(crate::document::MergeOutcome::Changed(changed));
+    }
+    crate::document::merge_committed_with_status(record, mutation)
 }
 
 /// The change of `mutation` whose writer and sequence `record` already holds,
@@ -1028,7 +1052,7 @@ fn merged_at_once(document: &mut AutoCommit, writes: &[(usize, DocumentMutation)
     }
     let merges = |candidate: &mut AutoCommit, mutation: DocumentMutation| {
         matches!(
-            crate::document::merge_committed_with_status(candidate, &mutation),
+            merge_committed(candidate, &mutation),
             Ok(crate::document::MergeOutcome::Changed(_))
         )
     };

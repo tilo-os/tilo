@@ -1141,9 +1141,23 @@ tilo_test_env::scenario! {
         let mut read_write = |op: &SignedOp| Ok(plaintexts[&op.seq].clone());
         let opened = sealed_compaction::open_sealed(&document, &mut read_write).unwrap();
         assert_eq!(opened.unmerged, []);
+        // The same record as the whole history merged at once: the same changes, so the same
+        // heads and the same contents. Its bytes may order them otherwise, as a compaction loaded
+        // on its own and merged into does.
+        let merged = sealed_compaction::merge_sealed(&document, &mut read_write).unwrap();
+        let (mut opened, mut merged) = (
+            AutoCommit::load(&opened.document).unwrap(),
+            AutoCommit::load(&merged).unwrap(),
+        );
+        let heads = |doc: &mut AutoCommit| {
+            let mut heads = doc.get_heads();
+            heads.sort();
+            heads
+        };
+        assert_eq!(heads(&mut opened), heads(&mut merged));
         assert_eq!(
-            opened.document,
-            sealed_compaction::merge_sealed(&document, &mut read_write).unwrap()
+            serde_json::to_value(automerge::AutoSerde::from(&opened)).unwrap(),
+            serde_json::to_value(automerge::AutoSerde::from(&merged)).unwrap(),
         );
     }
 }
@@ -2985,4 +2999,72 @@ tilo_test_env::scenario! {
             opened.unmerged
         );
     }
+}
+
+impl Author {
+    /// `count` records from `from` on, each a long text, as an app writes a chain part's worth
+    /// of issues in one write.
+    fn texts(&mut self, from: usize, count: usize, body: &str) -> Vec<u8> {
+        let heads = self.0.get_heads();
+        for at in from..from + count {
+            let text = self
+                .0
+                .put_object(ROOT, format!("issue-{at}"), automerge::ObjType::Text)
+                .unwrap();
+            self.0.splice_text(&text, 0, 0, body).unwrap();
+        }
+        self.0.commit();
+        DocumentMutation::Incremental(self.0.save_after(&heads))
+            .encode()
+            .unwrap()
+    }
+}
+
+/// How long the record of `f` takes to open from nothing, as this device's own copy opens it
+/// after a restart: the least of a few reads.
+fn time_to_open(f: &Fixture, keys: &ContentKeys) -> Duration {
+    (0..3)
+        .map(|_| {
+            let mut kept = crate::KeptDocument::default();
+            let began = std::time::Instant::now();
+            f.replica
+                .open_document(
+                    f.authority.device_public_key,
+                    (APP, RECORD),
+                    f.now,
+                    64 * 1024 * 1024,
+                    Some(&mut |op| open(keys, op)),
+                    &mut kept,
+                )
+                .unwrap_or_else(|error| panic!("the record opens: {error}"));
+            began.elapsed()
+        })
+        .min()
+        .unwrap()
+}
+
+/// A record written in a few large writes of text (the part of a tracker's chain a moved-in
+/// tracker fills) opens compacted in a fraction of what replaying its writes took. A compaction
+/// used to be applied change by change onto the base it followed, in the isolate and again in the
+/// process, so a compacted part opened no faster than its writes replayed.
+#[test]
+fn a_record_of_a_few_large_writes_opens_compacted_much_faster() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let (now, editor) = (f.now, f.editor.clone());
+    let mut author = Author::new(&f.replica);
+    let body = "The service keeps its work beside its peers, and reads it back. ".repeat(250);
+    for batch in 0..2 {
+        let edit = author.texts(batch * 10, 10, &body);
+        let sealed = write(&f.replica, &editor, &keys, &edit, now);
+        admit(&mut f.replica, &editor, sealed, now);
+    }
+    let replayed = time_to_open(&f, &keys);
+    compact_set(&mut f, &keys, now);
+    let compacted = time_to_open(&f, &keys);
+    eprintln!("replayed in {replayed:?}, compacted in {compacted:?}");
+    assert!(
+        compacted * 2 <= replayed,
+        "the compacted record opened in {compacted:?}, its writes replayed in {replayed:?}"
+    );
 }
