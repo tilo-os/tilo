@@ -39,8 +39,15 @@ already held.
 
 App data shared in a workspace resolves to the same records for every member.
 Roles and document grants decide access to those records. Mail uses a workspace
-mailbox and Passwords uses a workspace vault. Mail accounts still use credentials
-from the account owner's profile. Native Mail and Passwords provide actions to
+mailbox and Passwords uses a workspace vault. What a host keeps beside a
+workspace's records is the workspace's too: its mail accounts and their
+sign-ins, its calendars, the vault's items, its model providers and their keys,
+its MCP connections and what its agents learned sit in one store per workspace,
+and the workspace's policy decides who reaches each (grants on Mail, Calendar,
+Passwords, or the provider's own node), for people, agents and keys alike. Only
+what is a person's own stays theirs on the host: how dates and numbers read to
+them and what they are told about. A store a host kept per person before moves
+into the workspaces that person owns when the host starts. Native Mail and Passwords provide actions to
 recover the current member's earlier data into these shared resources. In
 TiloLang Mail, **Recover previous mail** copies the current member's locally
 held conversations, messages, labels and drafts into the shared mailbox in
