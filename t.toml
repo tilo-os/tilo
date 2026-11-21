@@ -7366,7 +7366,10 @@ env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigne
 requires = ["arch=x86_64"]
 isolation = "vm"
 outputs = ["/target/publish/host-loader-signed/**"]
-on = ["dispatch"]
+# The release key's token reaches release tags only (a dispatch of main is refused it), so this
+# applies there; a dispatch of main seals the host image as it is, as seal-host's own fallback
+# says.
+on = ["tag:v*"]
 id_token = ["sts.amazonaws.com"]
 
 # The image sealed: its UKI's composefs digest the one `bootc install` computes from its layers,
