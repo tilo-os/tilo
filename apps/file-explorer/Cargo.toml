@@ -31,7 +31,6 @@ desktop = [
     "dep:cloud-source",
     "dep:ed25519-dalek",
     "dep:host-fs",
-    "dep:runtime-portal",
     "dep:sha2",
     "dep:taffy",
     "dep:tilo-archive",
@@ -100,7 +99,9 @@ accounts = { path = "../../crates/system/accounts", optional = true }
 cloud-source = { path = "../../crates/system/cloud-source", optional = true }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity", optional = true }
 ed25519-dalek = { workspace = true, optional = true }
-runtime-portal = { path = "../../crates/runtime/runtime-portal", optional = true }
+# Which apps open a kind of file, as the session answers: the workspace tree asks it too, on
+# every target.
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 # Credential-free cloud browsing and independent streamed imports.
 tilo-cloud-files = { path = "../../crates/platform/tilo-cloud-files", optional = true }
 tokio = { workspace = true, features = ["rt", "net", "io-util"], optional = true }
