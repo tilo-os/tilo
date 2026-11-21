@@ -343,7 +343,9 @@ impl Described for BlockEditor {
             command,
             headings,
             image,
-            reveal,
+            // A view opened with a block asked for is just opened: the ask is answered on the
+            // change that follows, never on the editor a note is first shown in.
+            reveal: _,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         let mut editor = if editing {
@@ -382,7 +384,6 @@ impl Described for BlockEditor {
             editor.show_rich_text(&value.unwrap_or_default());
         }
         editor.publish_headings();
-        editor.reveal_asked(reveal);
         editor
     }
 
