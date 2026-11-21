@@ -143,6 +143,20 @@ fn measure_one(
             },
             text,
         );
+        // What it needs with room to break anywhere: a text that asks for more than its box even
+        // then keeps its words whole and is cut off, where a text that breaks them says its
+        // longest word's width at the narrowest instead.
+        let tight = widget.measure(
+            Size {
+                width: None,
+                height: None,
+            },
+            Size {
+                width: AvailableSpace::Definite(1.0),
+                height: AvailableSpace::MaxContent,
+            },
+            text,
+        );
         // The widest word it holds: laid out for its narrowest (no width at all), text keeps its
         // words whole, so the width it asks for there is the longest of them. Given any room at
         // all it breaks a word that does not fit anywhere, which is why a text narrower than this
@@ -168,6 +182,15 @@ fn measure_one(
                 format!(
                     "needs {:.0} high at its width, has {} ({shown:?})",
                     tall.height,
+                    size(own)
+                ),
+            ))
+        } else if f64::from(tight.width) > own.width() + EPSILON {
+            Some((
+                Kind::ClippedText,
+                format!(
+                    "needs {:.0} wide at the narrowest, has {} ({shown:?})",
+                    tight.width,
                     size(own)
                 ),
             ))
