@@ -180,6 +180,10 @@ impl super::StatePeer {
     /// # Panics
     ///
     /// The copy holds no governance yet.
+    #[expect(
+        clippy::expect_used,
+        reason = "a governed copy always holds its governance; one that does not is a programming error, as the doc says"
+    )]
     pub fn name_person_as_founder(&mut self) {
         let mut doc = (**self
             .core

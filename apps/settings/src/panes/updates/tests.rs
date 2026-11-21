@@ -126,9 +126,10 @@ impl ui::tilo_actions::remote::ActionProvider for SessionHost {
         >,
     > {
         use ui::tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
-        let invocation = request.invocation.clone();
+        let invocation = request.invocation;
         self.asked.lock().unwrap().push(request);
-        let status = match self.refusal.lock().unwrap().clone() {
+        let refused = self.refusal.lock().unwrap().clone();
+        let status = match refused {
             Some(reason) => ReceiptStatus::Rejected {
                 error: ActionCallError::Unavailable { reason },
             },
