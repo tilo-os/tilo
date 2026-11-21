@@ -111,6 +111,21 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     /// The transport is gone.
     fn send(&self, command: Cmd) -> Result<(), Closed>;
 
+    /// Publish `op`, a write of this device that its holder signed and this replica admitted
+    /// already: it goes into this device's ownership as it is, sent once its host is reached
+    /// and answered for like any write of this device's. Never signed again, and never
+    /// admitted twice.
+    ///
+    /// # Errors
+    /// The transport is gone.
+    fn publish_signed(
+        &self,
+        route: DocumentRoute,
+        op: collab_types::SignedOp,
+    ) -> Result<(), Closed> {
+        self.send(Cmd::PublishSigned(route, Box::new(op)))
+    }
+
     /// Write `mutation` to `route`: split into signed frames, committed in order.
     ///
     /// # Errors
@@ -467,6 +482,9 @@ pub enum Cmd {
     /// Commit the frames of one write to a route, in order ([`Outbox::write`]). A
     /// [`crate::Link`] holds them in its engine, readable at once, and says the route alone.
     Write(DocumentRoute, Vec<Vec<u8>>),
+    /// Publish `op`, a write of this device its holder signed and its replica admitted already
+    /// ([`Outbox::publish_signed`]): ownership carries it as it is, once, and sends it.
+    PublishSigned(DocumentRoute, Box<collab_types::SignedOp>),
     /// Hold these keys as a route's channel keys, as if a member had admitted this session to
     /// the channel: for an application endpoint of a device that takes part in it.
     InstallGroupKeys(DocumentRoute, key_group::ContentKeys),

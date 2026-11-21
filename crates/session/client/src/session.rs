@@ -360,6 +360,7 @@ fn session_task(
         outbound_due: false,
         held_since: BTreeMap::new(),
         kept_why: BTreeMap::new(),
+        pending_signed: BTreeMap::new(),
         owed_since: BTreeMap::new(),
         answered: Vec::new(),
         arrived: Vec::new(),
@@ -521,6 +522,9 @@ struct Task {
     held_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
     /// What the replica last said a document's held writes wait for, where it named something.
     kept_why: BTreeMap<DocumentRoute, crate::Waits>,
+    /// Signed writes of this device whose publication waits for what they need: their record
+    /// here, or a signature. Their replica holds them already; only their ownership is owed.
+    pending_signed: BTreeMap<DocumentRoute, Vec<tilo_peer_state::owner_commit::OwnerCommitRequest>>,
     /// Since when each document has committed writes of this device its holder has not answered.
     owed_since: BTreeMap<DocumentRoute, tilo_clock::time::Instant>,
     /// Documents the host delivered that the replica decides together ([`Self::keep_arrived`]).
@@ -1717,6 +1721,11 @@ impl Task {
             // Its frames are held already ([`crate::Link`]).
             Command::Client(Cmd::Write(route, _)) => {
                 self.publish(&route);
+                true
+            }
+            // Its holder signed it and this replica admitted it: ownership takes it as it is.
+            Command::Client(Cmd::PublishSigned(route, op)) => {
+                self.publish_signed(&route, *op).await;
                 true
             }
             Command::Client(Cmd::Barrier(done)) => {

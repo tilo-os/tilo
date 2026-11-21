@@ -122,6 +122,7 @@ impl Task {
     /// writes; only writes the workspace refuses for good are let go, and a barrier waiting on
     /// them completes with the refusal: a write let go is never answered as saved.
     pub(super) async fn commit_held(&mut self) {
+        self.commit_signed_waiting().await;
         if !std::mem::take(&mut self.outbound_due) {
             return;
         }
@@ -186,6 +187,101 @@ impl Task {
         }
         self.persist_keys(drained);
         self.release_barriers(&refused);
+    }
+
+    /// Publish `op`, a write of this device that its holder signed and this replica admitted
+    /// already, as its outgoing ownership: ownership carries it as it is and its host answers
+    /// for it, as for any write of this device's. A publication that has to wait (its record is
+    /// not here yet, or this device has not signed it) is kept and tried again.
+    pub(super) async fn publish_signed(
+        &mut self,
+        route: &DocumentRoute,
+        op: collab_types::SignedOp,
+    ) {
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
+            self.fail(
+                "protocol-rejected",
+                "A document names an invalid workspace.",
+            );
+            return;
+        };
+        let author: [u8; 32] = *op.author.as_bytes();
+        let own = self
+            .replicas
+            .owner()
+            .replica(workspace)
+            .ok()
+            .and_then(|replica| {
+                replica.read(|peer| peer.own_write(&route.app_id, &route.document, &author))
+            });
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+            workspace: route.cluster_id.clone(),
+            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                app: route.app_id.clone(),
+                document: route.document.clone(),
+                envelope: Box::new(op),
+                own,
+                readers: None,
+            },
+        };
+        self.publish_request(route, workspace, request).await;
+    }
+
+    /// Commit the signed writes still waiting for what they need, in the turn.
+    pub(super) async fn commit_signed_waiting(&mut self) {
+        if self.pending_signed.is_empty() {
+            return;
+        }
+        let waiting = std::mem::take(&mut self.pending_signed);
+        for (route, requests) in waiting {
+            let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
+                continue;
+            };
+            for request in requests {
+                self.publish_request(&route, workspace, request).await;
+            }
+        }
+    }
+
+    /// Take `request` into this device's ownership: the op as it was signed, once, answered for
+    /// by the host as any write of this device's is.
+    async fn publish_request(
+        &mut self,
+        route: &DocumentRoute,
+        workspace: tilo_desktop_model::WorkspaceId,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) {
+        let now = crate::clock::system_time(tilo_clock::unix_now_ns());
+        match self
+            .replicas
+            .owner()
+            .commit_admitted(workspace, vec![request.clone()], now)
+        {
+            Ok(committed) => {
+                if committed.is_empty() {
+                    return;
+                }
+                self.owes(route);
+                self.landed(route, Some(self.config.cert.device_public_key));
+                self.count_ownership();
+            }
+            // What it waits for is still coming: its record here, or a signature.
+            Err(
+                refusals @ (WriteRefusal::Waiting(_) | WriteRefusal::Unsigned(_)),
+            ) => {
+                tracing::debug!(app = %route.app_id, record = %route.document, %refusals,
+                    "a signed write waits to be published");
+                self.pending_signed
+                    .entry(route.clone())
+                    .or_default()
+                    .push(request);
+            }
+            Err(refusal) => {
+                tracing::warn!(app = %route.app_id, record = %route.document, %refusal,
+                    "the workspace refused a write of this device for good");
+                self.fail("write-refused", refusal.to_string());
+            }
+        }
     }
 
     /// Seal, sign and commit `frames` of `route` into this device's ownership, in one owner turn.
