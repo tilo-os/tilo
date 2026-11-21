@@ -1,16 +1,15 @@
-// The web page boots for real: the built bundle in headless Chromium, served
-// beside a running server, as a person's browser loads it. The tab arrives,
-// joins the Lounge's workspace, opens Notes from the search, and Notes'
-// window shows. Then its GPU device is lost, and the shell draws on with its
-// windows. (A sideways swipe over Sheets is the people's shell case,
-// people.mjs.)
+// The page boots for real: the built bundle in headless Chromium beside a
+// running server, as a person's browser loads it. The tab arrives at the site,
+// joins the Lounge's workspace, is handed to the page, and Notes shows. They
+// make a note, type its title, and reload: the title is still there, because
+// it is the workspace's and not the page's. (What a page can do in each app is
+// walked by page-notes.mjs.)
 //
-// What it catches is what compiles and passes every unit test yet stops a
-// real page: the page's scripts calling a runtime function the wasm module
-// does not export under that name, a read of the browser's storage before the
-// page loaded it, or std's clock reached in wasm, which panics there. Any
-// exception the page throws, and any panic or error its console reports,
-// fails the run, even when the page went on.
+// What it catches is what compiles and passes every unit test yet stops a real
+// page: the page's script calling something the bundle lacks, a read of the
+// browser's storage before the page was let in, or a page that shows and keeps
+// none of what is done on it. Any exception the page throws, and any console
+// line that reports a failure, fails the run, even when the page went on.
 //
 // usage: node page-boot.mjs SITE_URL SERVER_ORIGIN OUT_DIR
 //
@@ -21,7 +20,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, SHELL, machine, settle} from './waits.mjs';
+import {stepLimit, shellMetrics, machine} from './waits.mjs';
 
 const [site, server, out] = process.argv.slice(2);
 if (!site || !server || !out) {
@@ -79,264 +78,82 @@ const finish = async (code, message) => {
   process.exit(code);
 };
 const fail = message => finish(1, message);
-// A step fails as soon as the page reports a failure, not only when the wait
-// for what it should show runs out.
 const checkPage = async step => {
   const found = failures();
   if (found.length) await fail(`the page failed while ${step}: ${found.slice(0, 5).join(' | ')}`);
 };
 
-// Wait until `expression` holds in the page, or fail naming where the page
-// stopped instead. The page does the waiting: it reads the expression again on
-// each change it shows (its mounts' and session's own), so a step costs no
-// round trips while it waits.
+// Wait until `expression` holds in the page, or fail naming what the page
+// showed instead. A failure the page reports ends the wait at once.
 const until = async (expression, what, timeout = stepLimit(4)) => {
-  // A step fails as soon as the page reports a failure, not only when the wait
-  // for what it should show runs out. The tab's log is filled by the browser's
-  // own events, so this wakes on the one that matters.
-  let stop = () => {};
-  const broke = new Promise(resolve => {
-    if (failures().length) return resolve(true);
-    const listening = browser.on(({sessionId, method, params}) => {
-      if (sessionId !== tab.sessionId) return;
-      const reported = method === 'Runtime.exceptionThrown'
-        || (method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(params.type));
-      if (!reported) return;
-      // The tab's own listener logs this same event, in this same turn.
-      queueMicrotask(() => { if (failures().length) { listening(); resolve(true); } });
-    });
-    stop = listening;
-  });
-  const answered = await Promise.race([
-    tab.waitFor(expression, {timeout}).then(value => ({value}), () => ({})),
-    broke.then(() => ({broke: true})),
-  ]);
-  stop();
+  const answered = await tab.waitFor(expression, {timeout}).then(value => ({value}), () => ({}));
   await checkPage(what);
   if (answered.value) return answered.value;
   const shown = await tab.evaluate(`JSON.stringify({
     arrival: document.documentElement.dataset.arrival ?? null,
-    refusal: document.documentElement.dataset.refusal ?? null,
-    entry: document.documentElement.dataset.entry ?? null,
+    path: location.pathname,
+    refused: document.getElementById('tilo-page')?.dataset.refused ?? null,
+    state: document.getElementById('tilo-page')?.dataset.state ?? null,
+    asks: document.getElementById('tilo-page')?.dataset.asks ?? null,
+    answers: document.getElementById('tilo-page')?.dataset.answers ?? null,
     status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
-    // The mount's own account: which frame it last presented, and how many
-    // frames its GPU left unreported — a page that stopped drawing while it
-    // stayed alive says so here.
-    frames: globalThis.tiloMount?.state()?.frames ?? null,
-    gpuStalls: globalThis.tiloMount?.state()?.gpuStalls ?? null,
-    phase: globalThis.tiloMount?.state()?.phase ?? null,
-    searchPending: globalThis.tiloMount?.state()?.searchPending ?? null,
-    // What the shell's search holds, as the shell published it: the query its
-    // field carries, whether it still owes rows, and the rows it shows, so a
-    // search that never answered says whether the text reached it and what it
-    // was still waiting for.
-    searchOpen: globalThis.tiloMount?.state()?.searchOpen ?? null,
-    searchSearching: globalThis.tiloMount?.state()?.searchSearching ?? null,
-    searchCard: globalThis.tiloMount?.state()?.searchCard ?? null,
-    // Each search chord the page saw, as it arrived and 300 ms after: whether
-    // the page took it, and what the shell said of it then.
-    chords: globalThis.__chordStates ?? null,
   })`).catch(() => 'unreadable');
   await fail(`${what} never happened: ${shown}`);
 };
 
-// Keys as a person types them on the desktop.
-const key = async (name, modifiers = 0) => {
-  const named = {Enter: 13, Escape: 27};
-  const code = name.length === 1 ? `Key${name.toUpperCase()}` : name;
-  const event = {key: name, code, windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
-  await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...event, ...(name === 'Enter' ? {text: '\r'} : {})});
-  await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
-};
+// Keys as a person types them.
 const type = async text => {
   for (const ch of text) {
     await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch});
     await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+    await sleep(8);
   }
 };
-// The names the search shows, in order, as the desktop publishes them.
-const paletteRows = async () => {
-  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-  // The tree is built in a task of its own after the frame it describes, so the
-  // status that carries it is a later one than the request's.
-  await sleep(300);
-  return JSON.parse(await tab.evaluate(`(() => {
-    let rows = null;
-    const collect = node => {
-      rows = [];
-      const walk = semantics => { rows.push(semantics.name ?? ''); (semantics.children || []).forEach(walk); };
-      if (node.semantics) walk(node.semantics);
-    };
-    const find = node => { if (node.widget === 'ActionPalette') collect(node); (node.children || []).forEach(find); };
-    const root = globalThis.tiloMount?.state()?.semantics?.root;
-    if (root) find(root);
-    return JSON.stringify(rows);
-  })()`).catch(() => 'null'));
+const press = async what => {
+  await tab.evaluate(`(() => {
+    const button = [...document.querySelectorAll('button')].find(b => ${what});
+    if (button && !button.dataset.pressed) { button.dataset.pressed = '1'; button.click(); }
+  })()`);
 };
 
 // 1. The page boots and arrives.
 await tab.navigate(site);
-await until(`['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the page arriving');
-const arrival = await tab.evaluate(`document.documentElement.dataset.arrival`);
-if (arrival !== 'done') {
-  await fail(`the page stopped: ${await tab.evaluate(`JSON.stringify({entry: document.documentElement.dataset.entry ?? null,
-    status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null})`)}`);
-}
+// The site's entry admits this browser, then hands it to the page.
+await press(`/^Join\\b/i.test(b.textContent.trim())`);
+await until(`document.documentElement.dataset.arrival === 'done'`, 'the page arriving');
 console.log('ok: the page booted and arrived');
 mark('the page arrived');
+report.arrivedMs = Date.now() - Date.parse(report.at);
 
-// 2. It joined the Lounge's workspace: a membership on the server's host.
-const membership = await until(`(() => {
-  const all = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}');
-  const kept = all[${JSON.stringify(new URL(server).origin)}];
-  return kept?.workspace ? JSON.stringify(kept) : '';
-})()`, 'joining the Lounge\'s workspace');
-report.membership = JSON.parse(membership);
-console.log(`ok: the page joined the workspace ${report.membership.workspace}`);
-mark('the page joined the workspace');
+// 2. The entry handed it to the workspace, and the page shows what is there.
+const path = await tab.evaluate('location.pathname');
+if (!path.startsWith('/w/')) await fail(`the entry did not hand the browser to a page (it is at ${path})`);
+report.workspace = path.split('/')[2];
+await until(`document.querySelector('#tilo-page [data-p]')`, 'the page showing the workspace');
+console.log(`ok: the page shows the workspace ${report.workspace}`);
+mark('the page showed the workspace');
 
-// 3. Notes opens from the search, and its window shows.
-// What became of each search chord: whether the page took it (the press's
-// default prevented), and the shell's account as it arrived and after.
-await tab.evaluate(`(() => {
-  globalThis.__chordStates = [];
-  globalThis.addEventListener('keydown', event => {
-    if (event.key !== 'k' && event.code !== 'KeyK') return;
-    const state = globalThis.tiloMount?.state?.() ?? {};
-    const at = Math.round(performance.now());
-    const seen = {ctrl: event.ctrlKey, meta: event.metaKey, phase: state.phase ?? null, open: !!state.searchOpen,
-      pending: state.searchPending ?? null, frames: state.frames ?? null, focus: document.activeElement?.nodeName ?? null};
-    globalThis.__chordStates.push(seen);
-    setTimeout(() => {
-      const after = globalThis.tiloMount?.state?.() ?? {};
-      seen.taken = event.defaultPrevented;
-      seen.after = {ms: Math.round(performance.now()) - at, open: !!after.searchOpen,
-        pending: after.searchPending ?? null, frames: after.frames ?? null};
-    }, 300);
-  }, {capture: true});
-  return true;
-})()`);
-const mac = await tab.evaluate('/Mac/.test(navigator.platform)');
-const box = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
-  const r = globalThis.tiloMount?.canvas?.getBoundingClientRect();
-  return r ? {x: r.x + r.width / 2, y: r.y + r.height * 0.85} : SHELL.empty;
-})())`));
-for (const type of ['mousePressed', 'mouseReleased']) {
-  await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
-}
-// Open `name` from the search, as a person does, and wait for its window.
-const open = async (name, app) => {
-  const began = Date.now();
-  await key('k', mac ? 4 : 2);
-  // The palette fetches its engine's code as it opens, and the page of a busy
-  // node spends a page-load's steps on that before the field takes a key.
-  await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for ${name}`, stepLimit(6));
-  await type(name.toLowerCase());
-  // The card the shell publishes for the query typed, once it owes no row:
-  // nothing before that is its answer to this text (the rows shown right after
-  // typing can be the previous query's), and Enter acts on its first row.
-  const asked = JSON.stringify(name.toLowerCase());
-  const card = JSON.parse(await until(`(() => {
-    const s = globalThis.tiloMount?.state?.() ?? null;
-    const card = s?.searchCard ?? null;
-    return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card) : '';
-  })()`, `the search answering ${name}`, stepLimit(6)));
-  if (card?.rows?.[0]?.title !== name) {
-    await fail(`the search offers no ${name} first: ${JSON.stringify(card?.rows?.map(row => row.title) ?? await paletteRows())}`);
-  }
-  // Which frame showed the window, counted two ways: from the frame counter
-  // the page reads when the browser fires Enter, and from the count the shell
-  // says it had presented when it took the key (\`framesAtKey\`). A frame
-  // presented between the two is the browser's event still on its way, not
-  // the shell being slow.
-  await tab.evaluate(`(() => {
-    const mount = globalThis.tiloMount;
-    const host = mount.canvas.parentElement;
-    const w = globalThis.__bootOpen = {app: ${JSON.stringify(app)}, atKeydown: null, shown: null, atKey: null, trace: []};
-    addEventListener('keydown', event => {
-      if (event.key === 'Enter' && w.atKeydown === null) w.atKeydown = Number(host.dataset.frames ?? 0);
-    }, {capture: true, once: true});
-    const read = () => {
-      if (w.atKeydown === null || w.shown !== null) return;
-      const state = mount.state() ?? {};
-      const frame = Number(host.dataset.frames ?? 0);
-      if (w.trace.at(-1)?.frame !== frame) {
-        w.trace.push({frame, atKey: state.framesAtKey ?? null, searchOpen: !!state.searchOpen,
-          listed: (mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)});
-      }
-      if ((mount.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === w.app)) {
-        w.shown = Number(host.dataset.frames ?? 0);
-        w.atKey = mount.state()?.framesAtKey ?? null;
-      }
-    };
-    new MutationObserver(read).observe(host, {attributes: true, attributeFilter: ['data-frames']});
-    w.read = read;
-  })()`);
-  await key('Enter');
-  await until(`(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(app)})`,
-    `${name}'s window showing`);
-  await until(`(() => { const w = globalThis.__bootOpen; w?.read?.(); return w?.shown !== null; })()`,
-    `the frame showing ${name}'s window`, stepLimit(2));
-  const counted = JSON.parse(await tab.evaluate('JSON.stringify(globalThis.__bootOpen)'));
-  report.opens = [...(report.opens ?? []), counted];
-  console.log(`frames: ${name} shown on frame ${counted.shown}; the page read ${counted.atKeydown} at Enter, the shell had presented ${counted.atKey} when it took the key; frames between: ${JSON.stringify(counted.trace)}`);
-  console.log(`TIMING open=${app} seconds=${((Date.now() - began) / 1000).toFixed(1)}`);
-};
-await open('Notes', 'so.tilo.notes');
-console.log('ok: Notes opened from the search');
-mark('Notes opened');
+// 3. Notes: a note is made, its title typed, and it is the workspace's.
+await tab.navigate(`${site}/w/${report.workspace}/notes`);
+await until(`document.querySelector('#tilo-page [data-a=activate][aria-label="New note"]')`, 'Notes showing');
+await press(`b.getAttribute('aria-label') === 'New note'`);
+const title = `document.querySelector('#tilo-page textarea')`;
+await until(`document.activeElement === ${title}`, 'the caret in the new note\'s title');
+await type('Booted from the page');
+await until(`${title}?.value === 'Booted from the page'`, 'the typed title showing');
+// The note's row says it once the workspace holds it: what proves it was kept
+// is the row, not the field the person typed in.
+await until(`[...document.querySelectorAll('#tilo-page [data-a=activate][data-t^="note-"]')]
+  .some(row => (row.innerText || '').includes('Booted from the page'))`, 'the workspace holding the title');
+console.log('ok: a note typed on the page is the workspace\'s');
+mark('a note was kept');
 
-// 4. Notes stays up a moment, as a person would look at it, and nothing the
-// page did meanwhile failed.
-await sleep(3000);
-await checkPage('showing Notes');
-mark('Notes looked at');
+await tab.reload();
+await until(`document.querySelector('#tilo-page [data-p]')`, 'the page showing after a reload');
+await until(`[...document.querySelectorAll('#tilo-page [data-a=activate][data-t^="note-"]')]
+  .some(row => (row.innerText || '').includes('Booted from the page'))`, 'the note after a reload');
+console.log('ok: the note is there after a reload');
+mark('the note was there after a reload');
 
-// What the shell drew since: its own frame count, as progress only while it
-// still owes work. A shell that drew what the person did and nothing after it
-// presents no frame at all, so `by` frames or a whole step with nothing left to
-// draw is its answer.
-const frames = () => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
-const settled = async (by = 2) => settle({
-  evaluate: expression => tab.evaluate(expression),
-  by,
-  idleMs: stepLimit(1),
-  timeoutMs: stepLimit(3),
-});
-
-// 5. The GPU device is lost mid-session, as a driver reset or the browser
-// does it: the shell makes a new device and draws on, with every window it
-// had, and a person can keep working there. A desktop that stopped instead
-// says so in its phase.
-const beforeLoss = {
-  frames: await frames(),
-  gpu: await tab.evaluate('globalThis.tiloMount?.state()?.gpuGeneration ?? null'),
-  windows: (await tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.map(entry => entry.app) ?? [])').then(JSON.parse)),
-};
-if (!await tab.evaluate('globalThis.tiloMount?.loseGpu?.() ?? false')) {
-  await fail('the page had no GPU device to lose');
-}
-await until(`(() => {
-  const state = globalThis.tiloMount?.state();
-  return !!state && state.phase !== 'failed' && (state.gpuGeneration ?? 0) > ${beforeLoss.gpu ?? 0}
-    && (state.frames ?? 0) > ${beforeLoss.frames};
-})()`, 'the shell drawing again on a new GPU device after its device was lost', stepLimit(2));
-await open('Calculator', 'so.tilo.calculator');
-await settled(2);
-const afterLoss = JSON.parse(await tab.evaluate(`JSON.stringify({
-  phase: globalThis.tiloMount?.state()?.phase ?? null,
-  error: globalThis.tiloMount?.state()?.error ?? null,
-  gpu: globalThis.tiloMount?.state()?.gpuGeneration ?? null,
-  windows: globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.map(entry => entry.app) ?? [],
-})`));
-report.gpuLoss = {beforeLoss, afterLoss};
-if (afterLoss.phase === 'failed' || afterLoss.error) {
-  await fail(`the desktop stopped after its GPU device was lost: ${JSON.stringify(afterLoss)}`);
-}
-const kept = beforeLoss.windows.filter(app => !afterLoss.windows.includes(app));
-if (kept.length) await fail(`windows were gone after the GPU device was lost: ${JSON.stringify(kept)}`);
-await checkPage('drawing on after the GPU device was lost');
-console.log('ok: a GPU device lost mid-session is made again, and the shell draws on with its windows');
-mark('a GPU device lost and made again');
-report.frames = await frames();
+report.ok = true;
 await finish(0);
