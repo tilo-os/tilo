@@ -88,7 +88,8 @@ pub trait Platform {
     fn grow_system_volume(&mut self, partition_guid: &str, to_bytes: u64) -> IoResult<()>;
     fn create_partition(&mut self, disk: &Disk, spec: &NewPartition) -> IoResult<String>;
     fn delete_partition(&mut self, disk: &Disk, partition_guid: &str) -> IoResult<()>;
-    /// Write `data` at `offset` bytes from the start of the partition.
+    /// Write `data` at `offset` bytes from the start of the partition. It is durable once
+    /// [`Self::sync_disk`] returns, which a step calls before it records itself done.
     fn write_partition(
         &mut self,
         disk: &Disk,

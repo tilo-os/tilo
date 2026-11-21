@@ -746,9 +746,11 @@ impl Platform for LinuxPlatform {
         let file = self.open_partition(disk, partition_guid, true)?;
         let mut buf = Aligned::new(data.len())?;
         buf.bytes()?.copy_from_slice(data);
+        // Durable once the caller syncs the disk (`sync_disk`), as every step does before it is
+        // recorded: a flush per chunk made a component thousands of device flushes, each one a
+        // flush of the whole image file under a virtual machine.
         file.write_all_at(buf.bytes()?, offset)
-            .map_err(|e| format!("write {partition_guid}: {e}"))?;
-        file.sync_data().map_err(|e| e.to_string())
+            .map_err(|e| format!("write {partition_guid}: {e}"))
     }
 
     fn write_staging_file(
