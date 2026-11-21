@@ -63,8 +63,11 @@ impl VirtualRows {
         let resets = changes
             .iter()
             .any(|change| matches!(change, ListModelChange::Reset));
+        // The frame's instant, as everything the frame reads: a change that lands while one is
+        // built is made by hand as that frame reads the input before it, not at the clock it is
+        // late by.
         let source = crate::collection_transition::RowMotions::<ListKey>::caused_by_hand(
-            crate::time::now(),
+            crate::motion::frame_now(),
             self.reduce_motion,
         )
         .filter(|_| structural && !resets);
@@ -78,12 +81,16 @@ impl VirtualRows {
         self.row_motion.capture(before, inserts, source);
     }
 
+    /// Start the glide of a change noted before this frame, at the instant the frame draws it at
+    /// ([`crate::motion::frame_now`] inside one): on the clock, a row on its way from an earlier
+    /// frame was read past where this frame had mounted it, and a read during layout failed.
     pub(super) fn start_row_motion(&mut self, motion: crate::tokens::EffectiveMotion) {
         let shown = self
             .mounted
             .iter()
             .filter_map(|row| Some((row.key.clone(), self.viewport.item_view_top(row.index)?)));
-        self.row_motion.start(shown, motion, crate::time::now());
+        self.row_motion
+            .start(shown, motion, crate::motion::frame_now());
     }
 
     fn apply_model_changes(&mut self, changes: &[ListModelChange<ListKey>]) {

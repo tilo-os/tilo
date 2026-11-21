@@ -2142,6 +2142,67 @@ fn rows_the_person_moves_glide_and_a_sync_lands_at_once() {
     assert!(!list.row_motion.has_pending(), "a shortcut's result lands");
 }
 
+/// A frame starts its rows' glide on its own instant, the one it paints them at: a row already on
+/// its way from an earlier frame keeps gliding from where this frame draws it, and no pass of a
+/// pinned frame reads the motion at the clock.
+#[test]
+fn a_frames_rows_glide_on_the_frames_instant() {
+    use crate::tokens::MotionSource;
+    let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(100.0);
+    let _ = lay_out(&mut list, 300.0);
+    let motion = Theme::dark().motion();
+
+    crate::motion::note_source(MotionSource::Pointer);
+    list.update_model_changes(
+        &[ListModelChange::RowsMoved {
+            from: 2,
+            to: 0,
+            count: 1,
+        }],
+        |model| assert!(model.move_item(2, 0)),
+    );
+    let _ = lay_out(&mut list, 300.0);
+
+    let first = crate::time::now();
+    {
+        let _frame = crate::motion::pin_frame_at(first);
+        list.start_row_motion(motion);
+        let moved = list
+            .row_motion
+            .get(&ListKey::new(1u64))
+            .expect("row 1 moved down");
+        assert!(
+            moved.offset(first) < 0.0,
+            "the frame starts it where it stood"
+        );
+    }
+
+    // The next frame draws that same glide further on, at the instant it is pinned at.
+    let next = first + Duration::from_millis(40);
+    {
+        let _frame = crate::motion::pin_frame_at(next);
+        list.start_row_motion(motion);
+        let moved = list
+            .row_motion
+            .get(&ListKey::new(1u64))
+            .expect("the row is still on its way");
+        let offset = moved.offset(next);
+        assert!(offset < 0.0 && offset > -40.0, "{offset}");
+        assert!(list.row_motion.is_moving(next), "and reaches the next frame");
+    }
+    let landed = first + Duration::from_millis(600);
+    assert!(!list.row_motion.is_moving(landed), "and lands");
+}
+
 /// A list among a page's other content stands as tall as its rows: every row shows, and what
 /// follows it stands after its last row, never over it.
 #[test]
