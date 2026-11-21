@@ -725,7 +725,14 @@ impl DeviceLists {
                 .transpose()
                 .map_err(|_| "the workspace's holder sent an invalid invitation".to_owned())?
                 .ok_or("the workspace's holder answered no invitation")?;
-            let link = tilo_peer_state::join::native_invitation_link(&signed);
+            // Older holders do not serve the compact lookup, so use the signed link they can admit.
+            let link = issued
+                .get("native_link")
+                .and_then(Value::as_str)
+                .map_or_else(
+                    || tilo_peer_state::join::native_invitation_link(&signed),
+                    str::to_owned,
+                );
             // Whoever redeems it dials this device.
             if let Some(lapses) = issued.get("expires_at_ns").and_then(Value::as_u64) {
                 noting.note_link(workspace_id, lapses);
@@ -733,6 +740,7 @@ impl DeviceLists {
             Ok(serde_json::json!({
                 "invite": issued.get("invite"),
                 "link": link,
+                "invitation": tilo_peer_state::join::encode_invitation_text(&signed),
                 "role": role,
                 "administrator": makes_administrator,
                 "expires_at_ns": issued.get("expires_at_ns"),

@@ -411,6 +411,7 @@ impl Workspace for PageWorkspace {
                         Ok(Issued {
                             invite: hex::encode(invite_id),
                             text: tilo_workspace_join::encode_invitation_text(&signed_invitation),
+                            link: None,
                             expires_at_ns,
                         })
                     }

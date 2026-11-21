@@ -66,11 +66,13 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
     let mut log = JoinLog::default();
     assert!(log.is_empty());
 
+    let request = invitation(Some(guest_cert.user_public_key), now_ns);
+    let expiry = request.expires_at_ns;
     let issued = log
         .issue(
             &workspace,
             &peer.owner_certificates()[0],
-            invitation(Some(guest_cert.user_public_key), now_ns),
+            request,
             Vec::new(),
             Signer {
                 key: &authority_key,
@@ -94,6 +96,89 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         .unwrap();
     assert_eq!(issued, again, "the same request answers what it issued");
     assert_eq!(log.pending(now_ns).len(), 1);
+    let verified = log
+        .inspect(&workspace, &issued.signed_invitation, now_ns)
+        .unwrap();
+    let reference = crate::join::native::InvitationRef::of(&verified);
+    let resolve =
+        |log: &JoinLog,
+         reference: &crate::join::native::InvitationRef,
+         cert: &DeviceCert,
+         endpoint,
+         at| { log.resolve_invitation(&workspace, reference, cert, endpoint, at) };
+    assert_eq!(
+        resolve(
+            &log,
+            &reference,
+            &guest_cert,
+            guest_cert.device_public_key,
+            now_ns
+        )
+        .unwrap(),
+        issued.signed_invitation
+    );
+    assert!(
+        resolve(
+            &log,
+            &reference,
+            &guest_cert,
+            guest_cert.device_public_key,
+            expiry
+        )
+        .is_err()
+    );
+    assert!(
+        resolve(
+            &log,
+            &reference,
+            workspace.host,
+            workspace.host.device_public_key,
+            now_ns
+        )
+        .is_err()
+    );
+    assert!(resolve(&log, &reference, &guest_cert, [9; 32], now_ns).is_err());
+    let mut wrong = reference.clone();
+    wrong.workspace = WorkspaceId::new();
+    assert!(
+        resolve(
+            &log,
+            &wrong,
+            &guest_cert,
+            guest_cert.device_public_key,
+            now_ns
+        )
+        .is_err()
+    );
+    wrong.workspace = reference.workspace;
+    wrong.invite_id = [9; 32];
+    assert!(
+        resolve(
+            &log,
+            &wrong,
+            &guest_cert,
+            guest_cert.device_public_key,
+            now_ns
+        )
+        .is_err()
+    );
+    let other_holder = Governed {
+        peer: (&peer).into(),
+        host: &guest_cert,
+        workspace_id: workspace.workspace_id,
+        generation: 1,
+        governance_messages: Some(&messages),
+    };
+    assert!(
+        log.resolve_invitation(
+            &other_holder,
+            &reference,
+            &guest_cert,
+            guest_cert.device_public_key,
+            now_ns
+        )
+        .is_err()
+    );
 
     let challenge = log
         .challenge(
@@ -172,6 +257,16 @@ fn a_join_through_the_log_admits_once_and_replays_its_answer() {
         Some(guest_cert.device_public_key)
     );
     assert!(log.pending(now_ns).is_empty(), "the invitation is spent");
+    assert!(
+        resolve(
+            &log,
+            &reference,
+            &guest_cert,
+            guest_cert.device_public_key,
+            now_ns
+        )
+        .is_err()
+    );
 
     let replayed = log
         .completed(
@@ -439,6 +534,10 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
         request_id: [8; 32],
         invite_id: issued.invite_id,
     };
+    let verified = log
+        .inspect(&workspace, &issued.signed_invitation, now_ns)
+        .unwrap();
+    let reference = crate::join::native::InvitationRef::of(&verified);
     assert!(log.cancel(&cancel).unwrap());
     assert!(!log.cancel(&cancel).unwrap());
     assert!(
@@ -449,6 +548,17 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
         .is_err()
     );
     assert!(log.pending(now_ns).is_empty());
+    let (_, guest) = guest();
+    assert!(
+        log.resolve_invitation(
+            &workspace,
+            &reference,
+            &guest,
+            guest.device_public_key,
+            now_ns
+        )
+        .is_err()
+    );
     assert!(
         log.inspect(&workspace, &issued.signed_invitation, now_ns)
             .is_err()

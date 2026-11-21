@@ -1174,9 +1174,14 @@ impl crate::Shared {
                 "desktop-joined-workspace-unknown",
             ));
         };
-        // A workspace an API let the person into is whoever let them in's: the person's other
-        // devices join it each through their own invitation, so their list never names it.
-        if let Some(personal) = &self.personal {
+        if matches!(joined.granted.way, tilo_workspace_directory::Way::Native(_)) {
+            if self.sync.is_none() || self.engine.is_none() {
+                return Err("This session cannot reach the invitation's workspace holder.".into());
+            }
+            if self.holds(workspace) {
+                return Err("This workspace is already on this device.".into());
+            }
+        } else if let Some(personal) = &self.personal {
             personal.borrow_mut().joined(workspace);
         }
         // A session the host started with a short link learns what it joined only here, and the
@@ -1349,6 +1354,12 @@ impl crate::Shared {
                         outcome = "enrolled",
                         "join: the host admitted this device and the workspace is held here"
                     );
+                    // A compact link's workspace id is only a routing hint until admission.
+                    if !enrolled.member
+                        && let Some(personal) = &self.personal
+                    {
+                        personal.borrow_mut().joined(enrolled.workspace_id);
+                    }
                     // The workspace's live session opens now, not when a key of some workspace
                     // next moves here.
                     sync.workspace_arrived();

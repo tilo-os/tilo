@@ -147,58 +147,23 @@ fn invitations_on_the_sheet(session: &mut Session, count: usize) -> usize {
     listed
 }
 
-/// What a QR scanner reads from the sheet's code, `code` , drawn as the sheet draws it — at the
-/// width it gives a payload of that size — and read by a decoder that knows nothing of the widget.
-/// The version the decoder found comes back with the bytes.
-fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
-    use ui::widget::QrWidget;
-
-    let widget = QrWidget::new(code.to_vec())
-        .with_id("invite-code")
-        .with_width_at_most(tilo_sheets::CODE_MAX_PX);
-    let px = widget.module_px().ok_or("no module width")?;
-    if let Some(error) = widget.error() {
-        return Err(format!("the code does not fit: {error}"));
-    }
-    let quiet = widget.quiet_modules();
-    let modules = widget
-        .total_modules()
-        .saturating_sub(quiet.saturating_mul(2));
-    if modules == 0 {
-        return Err("the code draws nothing".to_owned());
-    }
-    // The code is drawn at the width the sheet draws it: a scanner reads it there or it is
-    // unreadable on the screen.
-    let scale = usize::try_from(px).map_err(|_| "no module width".to_owned())?;
-    let side = u32::try_from(widget.total_modules().saturating_mul(scale))
-        .map_err(|_| "the code is too wide to draw".to_owned())?;
-    let mut luma = image::GrayImage::from_pixel(side, side, image::Luma([255]));
-    for y in 0..modules {
-        for x in 0..modules {
-            if !widget.module(x, y) {
-                continue;
-            }
-            let left = u32::try_from(x.saturating_add(quiet).saturating_mul(scale)).unwrap_or(0);
-            let top = u32::try_from(y.saturating_add(quiet).saturating_mul(scale)).unwrap_or(0);
-            for dy in 0..u32::try_from(scale).unwrap_or(1) {
-                for dx in 0..u32::try_from(scale).unwrap_or(1) {
-                    luma.put_pixel(
-                        left.saturating_add(dx),
-                        top.saturating_add(dy),
-                        image::Luma([0]),
-                    );
-                }
-            }
+/// Decode pixels painted by the invitation sheet on its screen, using the same
+/// detector as Camera. The decoder returns the QR payload and version.
+fn scanned(app: &mut HeadlessApp<InviteApp>) -> Result<(Vec<u8>, usize), String> {
+    app.settle();
+    let harness = app.harness();
+    let (width, height) = harness.device_size();
+    let rgba = image::RgbaImage::from_raw(width, height, harness.render_rgba())
+        .ok_or("the screen did not paint")?;
+    let mut prepared =
+        rqrr::PreparedImage::prepare(image::DynamicImage::ImageRgba8(rgba).to_luma8());
+    for grid in prepared.detect_grids() {
+        let mut read = Vec::new();
+        if let Ok(meta) = grid.decode_to(&mut read) {
+            return Ok((read, meta.version.0));
         }
     }
-    let mut prepared = rqrr::PreparedImage::prepare(luma);
-    let grids = prepared.detect_grids();
-    let grid = grids.first().ok_or("a scanner finds no code")?;
-    let mut read = Vec::new();
-    let meta = grid
-        .decode_to(&mut read)
-        .map_err(|error| format!("a scanner cannot read the code: {error:?}"))?;
-    Ok((read, meta.version.0))
+    Err("a scanner finds no readable QR on the sheet's screen".into())
 }
 
 /// The invitation a short `link` names, as its site's shelf `kept` it and the key in the link
@@ -381,7 +346,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         .and_then(|state| state.invite().created)
         .expect("the link the sheet made");
     assert_eq!(
-        scanned(made.link.as_bytes()).map(|(read, _)| read),
+        scanned(&mut app).map(|(read, _)| read),
         Ok(made.link.clone().into_bytes()),
         "the code is the link, read back out of the QR the sheet draws"
     );
@@ -413,7 +378,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .expect("a link for the part");
         shown.clone_from(&made.link);
         assert_eq!(
-            scanned(made.link.as_bytes()).map(|(read, _)| read),
+            scanned(&mut app).map(|(read, _)| read),
             Ok(made.link.clone().into_bytes()),
             "the code of a link at part {part} is its link, read back"
         );
@@ -484,6 +449,54 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
          such link: {dialed:?}"
     );
     runtime.block_on(endpoint.close());
+}
+
+#[test]
+fn a_native_invitation_scans_from_the_sheet_and_admits_over_iroh() {
+    let _settled = ui::motion::testing::settled();
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    let community = home.config().join("community.toml");
+    std::fs::write(&community, "site = ''").expect("no community site");
+    home.env().set("TILO_COMMUNITY_CONFIG", &community);
+    settings_store::relay::RELAY
+        .set(settings_store::relay::Relays::None)
+        .expect("use the signed direct routes");
+    let Hosted {
+        _kept,
+        mut session,
+        state,
+        workspace,
+        ..
+    } = hosted(&mut home);
+    let mut app = sheet_app(&state);
+    let link = press_create(&mut app, &mut session);
+    let locator = tilo_workspace_join::native::InvitationLink::parse(&link)
+        .expect("a compact native invitation");
+    assert_eq!(locator.reference.workspace, workspace);
+    assert_eq!(invitations_on_the_sheet(&mut session, 1), 1);
+    crate::common::app_shot(&mut app, "invite-sheet-native");
+    let mut read = String::new();
+    for theme in [ui::theme::Theme::light(), ui::theme::Theme::dark()] {
+        app.harness().set_theme(theme);
+        let (bytes, _) = scanned(&mut app).expect("Camera can read the painted QR");
+        assert_eq!(bytes, link.as_bytes());
+        read = String::from_utf8(bytes).expect("the QR carries a link");
+    }
+
+    let root = SigningKey::from_bytes(&[0x81; 32]);
+    let key = SigningKey::from_bytes(&tilo_test_env::node_key());
+    let cert = certified(&root, &key, "Guest", DeviceCapabilities::member());
+    let owner = joins_with(&read, workspace, &cert, &key)
+        .expect("the scanned link fetches the signed invitation and joins");
+    assert!(
+        members(&owner, workspace)
+            .contains(&(hex::encode(cert.user_public_key), Some(Role::Editor),))
+    );
+    assert!(
+        joins_with(&read, workspace, &cert, &key).is_err(),
+        "a spent link cannot be fetched again"
+    );
 }
 
 /// A community site's shelf on this machine: it keeps the sealed invitations it is left, under the
@@ -576,7 +589,7 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
     let made = state.invite().created.expect("the link the sheet made");
     assert_eq!(made.link, link, "the sheet shows the link it hands over");
     crate::common::app_shot(&mut app, "invite-sheet-short");
-    let (read, version) = scanned(made.link.as_bytes()).expect("a scanner reads the short code");
+    let (read, version) = scanned(&mut app).expect("a scanner reads the short code");
     assert_eq!(
         read,
         link.as_bytes(),

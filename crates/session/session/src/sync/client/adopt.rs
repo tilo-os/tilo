@@ -81,8 +81,26 @@ pub(super) async fn redeem(
     // enrollment, so there is nothing to pick here.
     identity.current_material(topic)?;
     let owner = engine.owner().clone();
-    let invitation = match request.way {
-        tilo_workspace_directory::Way::Invitation(invitation) => invitation,
+    let (client, hosted_here, invitation) = match request.way {
+        tilo_workspace_directory::Way::Invitation(invitation) => {
+            let (client, hosted_here) = join_client(endpoint, own_service, &identity, &invitation)?;
+            (client, hosted_here, invitation)
+        }
+        tilo_workspace_directory::Way::Native(locator) => {
+            use tilo_peer_state::join_transport::WorkspaceJoinClient;
+            let hosted_here = endpoint.id().as_bytes() == &locator.service;
+            let client = if hosted_here {
+                own_service
+                    .and_then(|service| service.join_client(identity.device_cert.device_public_key))
+                    .ok_or("this device's workspace service is not open")?
+            } else {
+                WorkspaceJoinClient::new(endpoint)
+            };
+            let invitation = locator
+                .to_link()
+                .ok_or("the native invitation link is malformed")?;
+            (client, hosted_here, invitation)
+        }
         tilo_workspace_directory::Way::Entry(entry) => {
             let hint = tokio::time::timeout(
                 REDEEM_WITHIN,
@@ -120,7 +138,6 @@ pub(super) async fn redeem(
             return Ok(());
         }
     };
-    let (client, hosted_here) = join_client(endpoint, own_service, &identity, &invitation)?;
     let enrollment = tokio::time::timeout(
         REDEEM_WITHIN,
         tilo_peer_state::owner::enroll::prepare_and_complete(

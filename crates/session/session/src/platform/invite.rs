@@ -220,9 +220,13 @@ impl Workspace for InviteWorkspace {
             listing();
             answer(value.and_then(|value| {
                 let field = |name: &str| value.as_ref().and_then(|value| value.get(name));
-                let text = field("link").and_then(serde_json::Value::as_str);
+                let link = field("link").and_then(serde_json::Value::as_str);
+                let text = field("invitation")
+                    .and_then(serde_json::Value::as_str)
+                    .or(link);
                 Ok(Issued {
                     text: text.ok_or(Refused::Unanswered)?.to_owned(),
+                    link: link.map(str::to_owned),
                     invite: field("invite")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()

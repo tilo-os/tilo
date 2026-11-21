@@ -104,6 +104,10 @@ def steps(story: Story) -> None:
         # As a person does: the top bar's Invite opens the sheet that makes a link into the
         # workspace in front; Create link makes it, and Copy link puts it where she pastes from.
         link["text"] = invite_link(ada)
+        length = len(link["text"].encode("utf-8"))
+        if not link["text"].startswith("tilo://invite#1.") or length > 380:
+            raise Failed(f"Ada copied no compact native invitation ({length} bytes)")
+        return {"linkBytes": length}
 
     story.step("Ada makes an invitation link", invitation, people=[ada])
 

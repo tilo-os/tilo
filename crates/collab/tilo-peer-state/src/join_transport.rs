@@ -13,13 +13,78 @@ use tilo_delivery_protocol::workspace_join::{
     WorkspaceDeviceHintV1, WorkspaceJoinAdmission, WorkspaceJoinError, WorkspaceJoinService,
 };
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::native::{
+    InvitationLink, InvitationRef, MAX_DIRECT_ADDRESSES, MAX_RELAY_CHARS,
+};
 use tilo_workspace_join::{
     JoinBootstrap, JoinChallengeRequest, JoinTransportRequest, JoinTransportResponse,
-    TransportHint, sign_join_proof,
+    TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint, VerifiedJoin, sign_join_proof,
 };
 
 /// How long one join exchange may take, on either side.
 pub const WORKSPACE_JOIN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The unique signed Iroh address that serves this exact workspace and issued the invitation.
+pub(crate) fn invitation_host(
+    join: &VerifiedJoin,
+) -> Result<(&TransportHint, WorkspaceDeviceHintV1), String> {
+    let mut hints = join
+        .grant()
+        .transport
+        .iter()
+        .filter(|hint| hint.kind == TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1);
+    let hint = hints
+        .next()
+        .ok_or("invitation has no authenticated native Iroh route")?;
+    if hints.next().is_some() {
+        return Err("invitation has ambiguous native Iroh routes".into());
+    }
+    let host =
+        WorkspaceDeviceHintV1::from_transport_hint(hint).map_err(|error| error.to_string())?;
+    host.validate_invitation(join.grant())
+        .map_err(|error| error.to_string())?;
+    Ok((hint, host))
+}
+
+/// Make a bounded handoff using only routes the issuer signed for this invitation.
+#[must_use]
+pub fn retained_invitation_link(signed: &[u8], now: u64) -> Option<String> {
+    let invitation = tilo_workspace_join::decode_and_verify_invitation(
+        signed,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        now,
+    )
+    .ok()?;
+    let (_, host) = invitation_host(&invitation).ok()?;
+    let endpoint = host.endpoint_addr;
+    let relay = endpoint
+        .relay_urls()
+        .map(ToString::to_string)
+        .find(|relay| relay.len() <= MAX_RELAY_CHARS);
+    // Keep both address families when the signed hint offers them.
+    let v6 = endpoint
+        .ip_addrs()
+        .find(|address| address.is_ipv6())
+        .copied();
+    let direct = v6
+        .into_iter()
+        .chain(
+            endpoint
+                .ip_addrs()
+                .copied()
+                .filter(|address| Some(*address) != v6),
+        )
+        .take(MAX_DIRECT_ADDRESSES)
+        .collect();
+    InvitationLink {
+        reference: InvitationRef::of(&invitation),
+        service: *endpoint.id.as_bytes(),
+        relay,
+        direct,
+    }
+    .to_link()
+}
 
 /// The next record of the exchange, at most `max` bytes.
 async fn record<R: tokio::io::AsyncRead + Unpin>(
@@ -105,6 +170,47 @@ impl WorkspaceJoinClient {
                 service,
                 caller: caller_endpoint,
             },
+        }
+    }
+
+    /// Fetch the exact signed invitation over the endpoint named by the link.
+    pub async fn resolve_invitation(
+        &self,
+        locator: &InvitationLink,
+        device_cert: DeviceCert,
+    ) -> Result<Vec<u8>, WorkspaceJoinError> {
+        let invalid = |message: &str| WorkspaceJoinError::Protocol(message.to_owned());
+        let service = iroh::EndpointId::from_bytes(&locator.service)
+            .map_err(|_| invalid("invalid invitation endpoint"))?;
+        let mut address = iroh::EndpointAddr::new(service);
+        if let Some(relay) = &locator.relay {
+            let relay = relay
+                .parse()
+                .map_err(|_| invalid("invalid invitation relay"))?;
+            address = address.with_relay_url(relay);
+        }
+        for direct in &locator.direct {
+            address = address.with_ip_addr(*direct);
+        }
+        match self
+            .request(
+                address,
+                JoinTransportRequest::ResolveInvitation {
+                    reference: locator.reference.clone(),
+                    device_cert,
+                },
+            )
+            .await?
+        {
+            JoinTransportResponse::ResolvedInvitation { signed_invitation }
+                if locator.reference.matches(&signed_invitation) =>
+            {
+                Ok(signed_invitation)
+            }
+            JoinTransportResponse::ResolvedInvitation { .. } => {
+                Err(invalid("pinned host returned a different invitation"))
+            }
+            response => Err(response_error(response)),
         }
     }
 

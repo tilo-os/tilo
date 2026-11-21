@@ -121,6 +121,8 @@ pub enum Way {
     /// An invitation for this person, in its text (a pasted or sealed link),
     /// redeemed at the host it names.
     Invitation(String),
+    /// A native link whose signed invitation still has to be fetched by the device.
+    Native(tilo_workspace_join::native::InvitationLink),
     /// The workspace's entry (its base address, `…/directory/<workspace>/`):
     /// the device enters through it on the session it opens with the entry's
     /// host, whose origin is the entry's own, and the workspace's own rules
@@ -134,7 +136,7 @@ impl Granted {
     pub fn invitation(&self) -> Option<&str> {
         match &self.way {
             Way::Invitation(text) => Some(text),
-            Way::Entry(_) => None,
+            Way::Native(_) | Way::Entry(_) => None,
         }
     }
 
@@ -143,7 +145,7 @@ impl Granted {
     pub fn entry_url(&self) -> Option<&url::Url> {
         match &self.way {
             Way::Entry(entry) => Some(entry),
-            Way::Invitation(_) => None,
+            Way::Native(_) | Way::Invitation(_) => None,
         }
     }
 }
@@ -594,6 +596,7 @@ pub fn invited_workspace(text: &str, person: &Person) -> Result<String, SiteErro
     // What a person is handed is a link, with the invitation in it; its own text is read alike.
     match classify(text)? {
         Pasted::Invitation { text, .. } => verify_workspace(&text, person.user),
+        Pasted::Native(link) => Ok(link.reference.workspace.to_string()),
         Pasted::Sealed { .. } | Pasted::Site { .. } => {
             Err(SiteError::Plain("that is not an invitation".to_owned()))
         }
@@ -633,6 +636,13 @@ pub async fn take(client: &Result<Client, SiteError>, text: &str, person: &Perso
         }
     };
     match pasted {
+        Pasted::Native(link) => Taken {
+            name: String::new(),
+            granted: Ok(Granted {
+                workspace: link.reference.workspace.to_string(),
+                way: Way::Native(link),
+            }),
+        },
         Pasted::Invitation { text, entry } => Taken {
             name: match (&entry, client) {
                 (Some(entry), Ok(client)) => site_name(client, entry).await,
@@ -712,6 +722,7 @@ fn host_of(entry: &url::Url) -> String {
 
 /// What the person pasted, as the join field reads it.
 enum Pasted {
+    Native(tilo_workspace_join::native::InvitationLink),
     /// An invitation's text, redeemed at the host it names; with the site the
     /// link it came in is under, when it came in a link.
     Invitation {
@@ -740,6 +751,11 @@ fn classify(text: &str) -> Result<Pasted, SiteError> {
     }
     if let Some(link) = tilo_workspace_join::sealed::parse_link(text) {
         return Ok(Pasted::Sealed { link });
+    }
+    if text.starts_with(tilo_workspace_join::native::PREFIX) {
+        return tilo_workspace_join::native::InvitationLink::parse(text)
+            .map(Pasted::Native)
+            .ok_or_else(|| "that native invitation link is malformed".into());
     }
     if let Some(text) = tilo_workspace_join::native_invitation_text(text) {
         return Ok(Pasted::Invitation {

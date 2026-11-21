@@ -1,11 +1,11 @@
 //! Redeeming an invitation with the host it names: the typed canonical
 //! exchange. The caller supplies its real endpoint and ownership.
 use crate::join::WorkspaceId;
+use crate::join::native::InvitationLink;
 use crate::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
-    TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
 };
-use crate::join_transport::WorkspaceJoinClient;
+use crate::join_transport::{WorkspaceJoinClient, invitation_host};
 use crate::owner::{
     NativeWorkspaceOwner, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
     VerifiedNativeEnrollmentIntent, enrollment::ns as now_ns,
@@ -69,7 +69,14 @@ pub async fn prepare_and_complete(
     for entry in entries {
         revocations.insert(entry).map_err(|e| e.to_string())?;
     }
-    let retained = match local {
+    let locator = InvitationLink::parse(&invitation);
+    if locator
+        .as_ref()
+        .is_some_and(|link| link.reference.workspace != identity_topic)
+    {
+        return Err("native invitation names a different workspace".into());
+    }
+    let retained = match local.or_else(|| locator.as_ref().map(|link| link.reference.workspace)) {
         Some(local) => owner.pending_enrollment(local)?,
         None => owner.pending_enrollment_for_invitation(&invitation)?,
     };
@@ -80,10 +87,17 @@ pub async fn prepare_and_complete(
             );
         }
         let intent = VerifiedNativeEnrollmentIntent::restore(pending.intent_bytes())?;
+        let signed = intent.verified_join().signed_invitation();
+        let same_invitation = locator.as_ref().map_or_else(
+            || join::encode_invitation_text(signed) == invitation,
+            |link| {
+                link.reference.matches(signed)
+                    && link.service == intent.transport_hint().service_public_key
+            },
+        );
         if (intent.local_device() != &device
             && !crate::owner::renewal::renews(&device, intent.local_device()))
-            || join::encode_invitation_text(intent.verified_join().signed_invitation())
-                != invitation
+            || !same_invitation
         {
             return Err(
                 "native retry differs from persisted invitation or selected ownership".into(),
@@ -97,31 +111,32 @@ pub async fn prepare_and_complete(
         }
         (intent, id)
     } else {
-        let join = join::decode_and_verify_invitation_text(
-            &invitation,
+        let signed = if let Some(locator) = &locator {
+            client
+                .resolve_invitation(locator, device.clone())
+                .await
+                .map_err(|error| error.to_string())?
+        } else {
+            join::invitation_bytes(&invitation)?
+        };
+        let join = join::decode_and_verify_invitation(
+            &signed,
             Some(device.user_public_key),
             &revocations,
             now_ns(tilo_clock::wall())?,
         )?;
-        if join::encode_invitation_text(join.signed_invitation()) != invitation {
+        if locator.is_none() && join::encode_invitation_text(join.signed_invitation()) != invitation
+        {
             return Err("noncanonical native invitation text".into());
         }
-        let mut hints = join
-            .grant()
-            .transport
-            .iter()
-            .filter(|hint| hint.kind == TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1);
-        let hint = hints
-            .next()
-            .cloned()
-            .ok_or("invitation has no authenticated native Iroh route")?;
-        if hints.next().is_some() {
-            return Err("invitation has ambiguous native Iroh routes".into());
+        let (hint, host) = invitation_host(&join)?;
+        if locator.as_ref().is_some_and(|link| {
+            link.reference.workspace != join.grant().workspace_id
+                || link.service != hint.service_public_key
+        }) {
+            return Err("resolved invitation changed its workspace or issuer endpoint".into());
         }
-        let (host, _) =
-            WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
-        host.validate_invitation(join.grant())
-            .map_err(|e| e.to_string())?;
+        let hint = hint.clone();
         match client
             .request(
                 host.endpoint_addr.clone(),

@@ -118,6 +118,7 @@ pub fn requested_workspace(
         JoinTransportRequest::Complete(request) => request.proof.challenge.workspace_id,
         JoinTransportRequest::MembershipChallenge(request) => request.workspace_id,
         JoinTransportRequest::MembershipComplete(request) => request.proof.challenge.workspace_id,
+        JoinTransportRequest::ResolveInvitation { reference, .. } => reference.workspace,
     })
 }
 
@@ -211,6 +212,30 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
         let workspace = requested_workspace(&request, now)?.to_string();
         let store = &self.0;
         Ok(match request {
+            JoinTransportRequest::ResolveInvitation {
+                reference,
+                device_cert,
+            } => {
+                store
+                    .with_workspace(&workspace, |workspace| {
+                        let governed = workspace.governed();
+                        if governed.host.device_public_key != store.signer().device_public_key() {
+                            return Err(JoinError::new(
+                                "the invitation is no longer available to this device",
+                            ));
+                        }
+                        let signed_invitation = workspace.log().resolve_invitation(
+                            &governed,
+                            &reference,
+                            &device_cert,
+                            remote_endpoint,
+                            now,
+                        )?;
+                        drop(governed);
+                        Ok(JoinTransportResponse::ResolvedInvitation { signed_invitation })
+                    })
+                    .await?
+            }
             JoinTransportRequest::Inspect { signed_invitation } => {
                 store
                     .with_workspace(&workspace, |workspace| {

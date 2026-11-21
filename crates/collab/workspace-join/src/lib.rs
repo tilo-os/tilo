@@ -16,6 +16,7 @@
 pub mod agent_cert;
 pub mod delegation;
 pub mod invitations;
+pub mod native;
 /// A link that carries an invitation's place and key, not its kilobytes.
 pub mod sealed;
 mod workspace_text;
@@ -404,11 +405,17 @@ impl VerifiedRedemption {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinTransportRequest {
-    Inspect { signed_invitation: Vec<u8> },
+    Inspect {
+        signed_invitation: Vec<u8>,
+    },
     Challenge(JoinChallengeRequest),
     Complete(JoinCompleteRequest),
     MembershipChallenge(MembershipChallengeRequest),
     MembershipComplete(MembershipCompleteRequest),
+    ResolveInvitation {
+        reference: native::InvitationRef,
+        device_cert: DeviceCert,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -494,6 +501,7 @@ pub enum JoinTransportResponse {
     MembershipComplete(JoinBootstrap),
     Error { code: u16, message: String },
     OwnerMembershipComplete(OwnerBootstrapV1),
+    ResolvedInvitation { signed_invitation: Vec<u8> },
 }
 
 /// Sign an invitation grant with the issuer device's `key`, which answers at once

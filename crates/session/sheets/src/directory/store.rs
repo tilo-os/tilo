@@ -420,8 +420,8 @@ impl Store {
         std::mem::take(&mut *self.shelvings.borrow_mut())
     }
 
-    /// Hand over the signed invitation as a native link. A site's shelf can
-    /// provide a shorter link to the same invitation.
+    /// Hand over the invitation with the holder's native link when supplied.
+    /// A site's shelf can also carry the same signed invitation.
     ///
     /// # Errors
     /// `text` is not an invitation's bytes.
@@ -434,7 +434,9 @@ impl Store {
         host: Option<&str>,
     ) -> Result<(), String> {
         let bytes = tilo_workspace_join::invitation_bytes(text)?;
-        created.link = tilo_workspace_join::native_invitation_link(&bytes);
+        if created.link.is_empty() {
+            created.link = tilo_workspace_join::native_invitation_link(&bytes);
+        }
         if let Some(site) = site
             && self
                 .shelve(&created.invite, bytes, created.expires_at_ns, site, host)
@@ -614,7 +616,6 @@ impl Store {
                     Err(reason) => {
                         tracing::info!(
                             target: JOIN_FLOW_TARGET,
-                            key = %key,
                             name = %name,
                             %reason,
                             outcome = "failed",
@@ -669,7 +670,6 @@ impl Store {
         tracing::info!(
             target: JOIN_FLOW_TARGET,
             workspace = %granted.workspace,
-            key = %key,
             name = %name,
             outcome = "granted",
             "join: the workspace is joined and its slot is next"

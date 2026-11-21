@@ -27,11 +27,12 @@ use crate::platform::clipboard::Clipboard;
 /// to whoever it is for, and no longer, because the link is what admits them.
 const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
 
-/// An invitation the workspace made, with its id, signed text or native link,
+/// An invitation the workspace made, with its id, signed text, native link if offered,
 /// and when it stops admitting anyone (nanoseconds since the epoch).
 pub struct Issued {
     pub invite: String,
     pub text: String,
+    pub link: Option<String>,
     pub expires_at_ns: u64,
 }
 
@@ -182,7 +183,11 @@ impl sheet::Invitations for Invite {
                 };
                 // The link can carry the signed invitation itself or point to it on a shelf.
                 let (role, recipient) = &asked;
-                let created = sheet::made(&issued.invite, role, recipient, issued.expires_at_ns);
+                let mut created =
+                    sheet::made(&issued.invite, role, recipient, issued.expires_at_ns);
+                if let Some(link) = issued.link {
+                    created.link = link;
+                }
                 // The sheet's state is let go before a refusal is said in it, which borrows it
                 // again.
                 let handed = store.hand_over(

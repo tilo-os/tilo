@@ -751,6 +751,45 @@ impl JoinLog {
             .map(|record| (record.issued.clone(), record.grant.expires_at_ns))
     }
 
+    /// Open the exact invitation named by a native link for the dialling device.
+    pub fn resolve_invitation(
+        &self,
+        workspace: &Governed<'_>,
+        reference: &crate::join::native::InvitationRef,
+        device: &DeviceCert,
+        remote_endpoint: [u8; 32],
+        now: u64,
+    ) -> Result<Vec<u8>, JoinError> {
+        let unavailable = || JoinError::new("the invitation is no longer available to this device");
+        if reference.workspace != workspace.workspace_id
+            || remote_endpoint != device.device_public_key
+        {
+            return Err(unavailable());
+        }
+        let (issued, _) = self
+            .open_invitation(reference.invite_id, now)
+            .ok_or_else(unavailable)?;
+        if !reference.matches(&issued.signed_invitation) {
+            return Err(unavailable());
+        }
+        let revocations = workspace.revocations()?;
+        let invitation = decode_and_verify_invitation(
+            &issued.signed_invitation,
+            Some(device.user_public_key),
+            &revocations,
+            now,
+        )
+        .map_err(|_| unavailable())?;
+        if invitation.grant().workspace_id != workspace.workspace_id
+            || invitation.grant().issuer.device_public_key != workspace.host.device_public_key
+            || revocations.refuses(device)
+            || tilo_user_identity::verify_device_cert_at(device, now).is_err()
+        {
+            return Err(unavailable());
+        }
+        Ok(issued.signed_invitation)
+    }
+
     /// The signed invitation still redeemable at `now` that names only
     /// `person`, as the workspace issued it: what a workspace that takes
     /// people by invitation answers its entry with when the person it

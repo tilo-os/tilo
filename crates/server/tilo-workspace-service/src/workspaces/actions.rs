@@ -1955,9 +1955,14 @@ impl Workspaces {
                     .await
                 }
                 .map_err(|error| refused(&error))?;
+                let native_link = tilo_peer_state::join_transport::retained_invitation_link(
+                    &issued.signed_invitation,
+                    now,
+                );
                 Ok(json!({
                     "invite": hex::encode(issued.invite_id),
                     "invitation": hex::encode(issued.signed_invitation),
+                    "native_link": native_link,
                     "administrator": makes_administrator,
                     "owner": place == super::MemberPlace::Owner,
                     "expires_at_ns": expires_at_ns,

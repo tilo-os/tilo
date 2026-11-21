@@ -77,6 +77,9 @@ impl tilo_session::directory::Host for PageHost {
     }
 
     fn add(&self, joined: &Joined) -> Result<(), String> {
+        if matches!(joined.granted.way, tilo_workspace_directory::Way::Native(_)) {
+            return Err("Open this invitation in the Tilo desktop to join.".into());
+        }
         let entry = joined.granted.entry_url();
         self.requests.borrow_mut().push(HostRequest::Joined {
             // An entry's host is reached at its own origin.
