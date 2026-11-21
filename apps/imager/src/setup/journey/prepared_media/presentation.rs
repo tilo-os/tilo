@@ -721,6 +721,5 @@ pub(in crate::setup) struct PortableAppsSelection {
 }
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use super::prepared_media_native::{
-    home_media_fixture, native_retained, protected_account_media_fixture,
-    selected_applications_media_fixture,
+    home_media_fixture, protected_account_media_fixture, selected_applications_media_fixture,
 };

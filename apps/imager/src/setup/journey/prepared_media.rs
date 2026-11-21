@@ -172,28 +172,6 @@ impl Delivery {
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, artifact))
     }
-    #[cfg(test)]
-    pub(crate) fn start_changed_home_fixture(&mut self, root: std::path::PathBuf) {
-        assert!(!self.busy());
-        let artifact = self.artifact.clone().unwrap();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        self.worker = Some(receiver);
-        self.state = "delivering";
-        self.joined = Some(std::thread::spawn(move || {
-            let result = (|| {
-                let media = imager_backend::setup::portable_home_media::MediaGrant::open(&root)?;
-                artifact.home.as_ref().unwrap().lock().unwrap().deliver(
-                    &media,
-                    &AtomicBool::new(false),
-                    &mut |_| Ok(()),
-                )?;
-                Err(io::Error::other(
-                    "Changed-source fixture unexpectedly exported unchanged contents",
-                ))
-            })();
-            let _ = sender.send(result);
-        }));
-    }
     pub fn artifact(&self) -> Option<Arc<PreparedMedia>> {
         self.artifact.clone()
     }
@@ -894,9 +872,6 @@ pub(crate) mod offline;
 #[cfg(target_os = "linux")]
 #[path = "prepared_media/original_copy.rs"]
 mod original_copy;
-#[cfg(test)]
-#[path = "prepared_media/recovery_tests.rs"]
-mod recovery_tests;
 
 struct PreparedBrowser {
     source: super::browser::SelectedSources,

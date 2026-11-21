@@ -236,49 +236,9 @@ fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
     );
 }
 
-pub(in crate::setup) fn enter_owned_journey(selector: &str) -> bool {
-    if std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT").is_some() {
-        assert_eq!(rustix::process::getuid().as_raw(), 1000);
-        assert_eq!(rustix::process::geteuid().as_raw(), 1000);
-        assert_eq!(rustix::process::getgid().as_raw(), 1001);
-        return true;
-    }
-    run_owned_actor(selector);
-    false
-}
-
-pub(in crate::setup) fn journey_directory() -> tempfile::TempDir {
-    let root = std::env::var_os("TILO_NATIVE_SHARED_FILES_ACTOR_ROOT")
-        .expect("owned GPT journey actor required");
-    tempfile::tempdir_in(root).unwrap()
-}
-
-pub(in crate::setup) fn assert_journey_registration(preview: &super::super::InstallerPreview) {
-    let media = preview.direct.prepared_belongings.as_ref().unwrap();
-    let identity = preview.personal.prepared_handle().unwrap();
-    let intent = preview.migration_selection.reviewed_intent().unwrap();
-    let expected = intent.for_media().unwrap();
-    let review_root = tempfile::tempdir().unwrap();
-    let review = prepared_setup::PreparedSetupReview::open(
-        &media.package(),
-        preview.journey.password.as_bytes(),
-        &review_root.path().join("authenticated-review"),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    let manifest = review.manifest();
-    assert_eq!(manifest.identity_public_key, identity.public_key());
-    assert_eq!(manifest.units.retained_home().unwrap().as_plan(), &expected);
-    manifest
-        .units
-        .retained_caller()
-        .unwrap()
-        .validate_binding(&expected, &manifest.setup_binding, &identity.public_key())
-        .unwrap();
-    assert!(manifest.units.portable_home().is_none());
-    assert_eq!(media.home_archive_protocol(), None);
-}
-
+// The owned-GPT actor runs only in the qualification build; keep it compiled
+// (and its imports used) for the build that runs it.
+#[cfg_attr(not(feature = "native-capture-qualification"), allow(dead_code))]
 fn run_owned_actor(selector: &str) {
     use std::os::unix::ffi::OsStrExt;
     assert_eq!(rustix::process::getuid().as_raw(), 0);

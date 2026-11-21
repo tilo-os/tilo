@@ -254,31 +254,6 @@ impl ImagerApp {
             self.goto(Step::Source);
         }
     }
-    #[cfg(all(test, target_os = "linux", feature = "installation"))]
-    pub(crate) fn start_changed_home_fixture(&mut self, root: PathBuf) {
-        self.prepared_delivery.start_changed_home_fixture(root);
-    }
-    #[cfg(all(test, target_os = "linux", feature = "installation"))]
-    pub(crate) fn review_media_inputs_fixture(
-        &mut self,
-        image: PathBuf,
-        inventory: &serde_json::Value,
-    ) -> EffectAnswer {
-        self.take_chosen_image(Some(image))?;
-        self.apply_drive_inventory(
-            crate::probe::parse_lsblk(inventory).ok_or("Invalid fixture block inventory")?,
-        );
-        self.goto(Step::Drive);
-        Ok(Effected::done())
-    }
-    #[cfg(all(test, target_os = "linux", feature = "installation"))]
-    pub(crate) fn validate_prepared_source_fixture(&self) -> std::io::Result<()> {
-        self.prepared_delivery
-            .artifact()
-            .ok_or_else(|| std::io::Error::other("No prepared source"))?
-            .validate_for_write(&std::sync::atomic::AtomicBool::new(false))
-    }
-
     fn releases(&self) -> &[TiloRelease] {
         &self.releases
     }
