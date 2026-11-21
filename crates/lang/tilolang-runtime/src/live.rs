@@ -722,6 +722,7 @@ impl Live {
     /// loops over a collection it changed take. Rows whose steps the store could not tell are
     /// built again by their boundary.
     fn reached(&self, core: &Core, change: &ChangeSummary, checked: &mut CollChecks) -> Reach {
+        crate::rt_probe(&format!("~change:f{}:c{}:l{}", change.fields.len(), change.collections.len(), change.listings.len()));
         let mut reach = Reach::default();
         // What the person looking did in this window, as opposed to anyone else's change:
         // the rows of a list they changed themselves linger ([`crate::live::virtual_rows`]).
@@ -743,9 +744,11 @@ impl Live {
                 .iter()
                 .all(|key| key.resource != change.doc && key.field == crate::marks::DOC_VERSIONS);
         if !renamed {
+            let before = reach.hit.len();
             reach
                 .hit
                 .extend(self.index.readers(&change.doc, crate::marks::DOC_VERSIONS));
+            for _ in before..reach.hit.len() { crate::rt_probe("~hit:versions"); }
         }
         if change.fields.is_empty() {
             if let Some(set) = self.index.docs.get(&change.doc) {
@@ -816,7 +819,7 @@ impl Live {
                                 mine,
                             });
                         }
-                        _ => reach.hit.push(id),
+                        _ => { crate::rt_probe("~hit:nolisting"); reach.hit.push(id) }
                     }
                 }
             }
@@ -1482,10 +1485,13 @@ impl Live {
             // The rows of a virtual list take their steps even when their holder runs again:
             // it then finds them as the listing is, and keeps them.
             let virtual_rows = self.lists.contains_key(&step.rows.parent);
+            crate::rt_probe(&format!("~step:{}", match &step.steps { Steps::Moved(_) => "moved", Steps::Splices(_) => "splices" }));
             if !held || (self.dirty.contains(&step.holder) && !virtual_rows) {
+                crate::rt_probe("~step:skipped");
                 continue;
             }
             if !self.splice_rows(core, &step, patches)? {
+                crate::rt_probe("~step:unfit");
                 self.dirty.insert(step.holder);
                 self.lose_rows(&step.rows.parent);
                 continue;
@@ -1502,6 +1508,7 @@ impl Live {
             // are checked even when their holder runs again.
             let check = !self.dirty.contains(&holder) || self.lists.contains_key(&rows.parent);
             if check && !self.rows_fit(core, holder, &rows) {
+                crate::rt_probe("~step:rows_unfit");
                 // The rows the host holds are the ones the list built, unchanged: the holder
                 // runs again and gives the host the steps between them and the listing as it
                 // is now, so its rows move rather than being read anew.
@@ -1657,6 +1664,7 @@ impl Live {
         id: BoundId,
         place: Option<(Rc<crate::value::CollRef>, usize)>,
     ) -> Result<(), RuntimeError> {
+        crate::rt_probe("~rowrender");
         self.reused.clear();
         let outer = core.row_place.replace(place);
         let content = self.render(core, id);

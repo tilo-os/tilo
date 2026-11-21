@@ -7,7 +7,7 @@
 //! they do not hold as only being there, in the chip's wording. A workspace's store holds only the
 //! records its reader was sent, so what the store holds is what they may read.
 //!
-//! The store ([`crate::store::TiloStore`]) and a snapshot of it read rich text this one way
+//! The store ([`crate::resources::ResourceStore`]) and a snapshot of it read rich text this one way
 //! ([`Holdings`]); what names a resource that itself names others is read the same way, each
 //! resource once.
 

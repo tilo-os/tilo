@@ -135,6 +135,7 @@ impl ListRows {
                 }
                 match view.row(&self.list, index) {
                     Ok(Some(row)) => {
+                        crate::resources::probe("~row", 1);
                         rows.push(row.clone());
                         self.keys.shown.insert(key);
                     }
@@ -160,6 +161,7 @@ impl ListRows {
 
     /// The view replaced the list as a whole: its rows are read anew.
     pub fn reread(&mut self) -> Vec<RowChange> {
+        crate::resources::probe("~reread", 1);
         self.keys = Keys::default();
         self.read = false;
         vec![RowChange::Reset]

@@ -671,6 +671,7 @@ impl Live {
             Steps::Moved(ids) => {
                 let Some(steps) = self.moved_in_query(core, list, &step.rows, ids, step.mine)
                 else {
+                    crate::rt_probe("~unfit:mq");
                     return Ok(false);
                 };
                 found = steps;
@@ -723,6 +724,7 @@ impl Live {
                             .is_some_and(|b| b.key == key)
                     });
                     if taken || *index > rows.len {
+                        crate::rt_probe(&format!("~unfit:ins:{taken}:{index}:{}", rows.len));
                         return Ok(false);
                     }
                     for (other, _) in &mut rows.built {
@@ -881,17 +883,19 @@ impl Live {
             return None;
         }
         let now = core.coll_listing(&rows.coll).ok()?;
-        let kept = self.keep_rows(core, list, &coll, &before, &now, ids, mine)?;
+        let Some(kept) = self.keep_rows(core, list, &coll, &before, &now, ids, mine) else { crate::rt_probe("~mq:keep"); return None; };
+        crate::rt_probe(&format!("~mq:lens:{}:{}", before.len(), now.len()));
         let after = Rows::Coll {
             coll,
             kept,
             listing: now,
         };
-        let steps = crate::store::moved_steps(
+        let Some(steps) = crate::store::moved_steps(
             before.as_ref(),
             after.listing()?.as_ref(),
             ids.iter().map(String::as_str),
-        )?;
+        ) else { crate::rt_probe("~mq:steps"); return None; };
+        crate::rt_probe(&format!("~mq:ok:{steps:?}"));
         // The rows the person's own change took out of the query are kept, and the steps just
         // left them where they are: the list stands for `after` from now on.
         if let Some(held) = self.lists.get_mut(list) {

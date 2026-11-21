@@ -1,6 +1,5 @@
 //! What the interactions of a window of a workspace a person has used for years cost: the
-//! table, read against what a person feels as instant, and the opens that read the workspace's
-//! index rather than the workspace.
+//! table, read against what a person feels as instant.
 
 use super::*;
 
@@ -454,6 +453,8 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
             now.saturating_sub(start).as_micros() as u64
         });
     let sum = |of: fn(&ui::profiling::FrameTiming) -> u64| frames.iter().map(of).sum::<u64>();
+    eprintln!("PROBE {label}: {}", tilolang_tilo::resources::take_probe());
+    eprintln!("RTPROBE {label}: {}", tilolang_tilo::runtime::rt_probe_take());
     Cost {
         label,
         cpu_us,
@@ -480,10 +481,7 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
 /// 3.5 GHz at an IPC of 2.5 retires 8.75 million instructions a millisecond, so 8 ms is 70
 /// million instructions, 16 ms 140 million and 300 ms 2.6 billion, and a callgrind run counts
 /// the same work the same on every machine. This test reports the times and fails a step past
-/// what it is held to; [`tilolang_tilo::bench::Work`] and `tilolang-tilo`'s `budgets` test hold
-/// the counts (a change publishes the rows it touched, whatever the workspace holds). Opening a
-/// workspace reads the workspace's index rather than the workspace:
-/// [`opening_a_window_reads_the_workspaces_index`].
+/// what it is held to.
 const TARGETS: &[(&str, Target)] = &[
     (
         "open",
@@ -1365,7 +1363,7 @@ fn a_step_reaches_the_window_in_one_frame(seeded: &Rc<tilolang_process::testing:
 //
 // The interactions above are costed in time, which a machine reads differently from week to
 // week. These are the same steps counted: what the window's instance read of the document and of
-// the workspace's indexes, how many items a filter was checked against one by one, which
+// the resource store, how many items a filter was checked against one by one, which
 // boundaries it rendered and what it sent the window; and what the window's layout built and
 // its text shaped. A step costs what it changed and what the window shows, so every one of
 // them reads the same in a workspace ten times the size.

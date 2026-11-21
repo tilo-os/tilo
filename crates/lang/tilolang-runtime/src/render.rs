@@ -346,6 +346,7 @@ impl Core {
         author: Option<&ModuleHash>,
         scoped: Option<Scoped<'_, '_>>,
     ) -> Result<Rendered, RuntimeError> {
+        crate::rt_probe(&format!("~bnd:{}", target.export));
         let (space, depth) = (offer.space, offer.depth);
         if depth > MAX_VIEW_DEPTH {
             return Err(RuntimeError::Package(format!(

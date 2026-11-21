@@ -600,19 +600,24 @@ impl crate::Shared {
     /// Keep the apps' resources the services run over in the workspace the person is in, once the
     /// session holds it: the store the app's windows open, so the service, the windows, an agent's
     /// programs and the person's other devices read and change one copy.
-    pub(crate) fn keep_app_stores(&self) {
+    pub(crate) fn keep_app_stores(&self, runtime: &tokio::runtime::Handle) {
         let Some(workspace) = self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.id().to_string())
+                .map(|workspace| workspace.id())
         }) else {
             return;
         };
+        if !self.engine.as_ref().is_some_and(|engine| engine.holds(workspace)) {
+            return;
+        }
+        let workspace = workspace.to_string();
         if !self.records.holds(&workspace) || self.workspace_service.service().is_none() {
             return;
         }
         let store: std::rc::Rc<dyn tilo_service::WorkspaceStore> = std::rc::Rc::new(HeldStore {
             service: self.workspace_service.clone(),
             workspace,
+            runtime: runtime.clone(),
         });
         if let Err(error) = self.services.borrow_mut().keep_in_workspace(&store) {
             tracing::warn!(%error, "the apps' resources are not kept in the workspace");
@@ -625,6 +630,7 @@ impl crate::Shared {
 struct HeldStore {
     service: tilo_workspace_service::service::ServiceSlot,
     workspace: String,
+    runtime: tokio::runtime::Handle,
 }
 
 impl tilo_service::WorkspaceStore for HeldStore {
@@ -637,12 +643,10 @@ impl tilo_service::WorkspaceStore for HeldStore {
             .ok_or("this device's workspace service is not open")?
             .workspaces()
             .clone();
-        // The store answers under the workspace's lock, which no reactor is needed to take.
-        let reply = futures::executor::block_on(workspaces.own_resource_command(
-            &self.workspace,
-            app,
-            command,
-        ))?;
+        // A first write can wait for this device's group keys on the reactor.
+        let reply = self
+            .runtime
+            .block_on(workspaces.own_resource_command(&self.workspace, app, command))?;
         serde_json::to_vec(&reply).map_err(|error| error.to_string())
     }
 }

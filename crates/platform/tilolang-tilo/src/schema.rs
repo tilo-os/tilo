@@ -205,15 +205,6 @@ impl TypeSchema {
         }
     }
 
-    /// Whether its origin derives its resources, and so they are never saved to a collaborative
-    /// document: the store keeps them in its unsaved layer ([`crate::store`]).
-    #[must_use]
-    pub fn derived(&self) -> bool {
-        self.origin
-            .as_deref()
-            .is_some_and(tilolang::origin::is_derived)
-    }
-
     #[must_use]
     pub fn with_field(mut self, field: FieldSchema) -> Self {
         self.fields.push(field);

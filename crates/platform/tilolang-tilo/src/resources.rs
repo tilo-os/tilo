@@ -21,6 +21,7 @@
 
 pub mod kinds;
 pub mod port;
+mod steps;
 
 use std::cell::{Cell as StdCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -269,7 +270,14 @@ struct Inner {
     run_marks: RefCell<Vec<RunMark>>,
     /// The trial runs open; see [`ResourceStore::checkpoint`].
     trials: RefCell<Vec<Saved>>,
-    listings: RefCell<HashMap<String, Rc<Listing>>>,
+    /// What the commits of the runs and trial runs open changed, told once the last of them
+    /// ends and the store holds what they wrote.
+    heard: RefCell<Vec<steps::Heard>>,
+    /// Whether the store held everything written here when the outermost of the runs and trial
+    /// runs open began: then what they wrote is all that is unsent.
+    held_all: StdCell<bool>,
+    /// The listings read, by query, with the pages they are read from.
+    listings: RefCell<HashMap<String, (Rc<Listing>, Rc<Pages>)>>,
     subs: RefCell<Vec<Subscription>>,
     next_sub: StdCell<u64>,
     journals: RefCell<HashMap<String, Journal>>,
@@ -527,6 +535,8 @@ impl ResourceStore {
                 runs: RefCell::default(),
                 run_marks: RefCell::default(),
                 trials: RefCell::default(),
+                heard: RefCell::default(),
+                held_all: StdCell::new(false),
                 listings: RefCell::default(),
                 subs: RefCell::default(),
                 next_sub: StdCell::new(1),
@@ -930,6 +940,7 @@ impl ResourceStore {
     /// The workspace's resources moved on: forget what was read, and tell every view to read
     /// what it shows again.
     pub fn moved(&self) {
+        PROBE.with(|p| { let mut p = p.borrow_mut(); let e = p.entry("~moved".into()).or_insert((0, 0)); e.0 += 1; });
         self.forget_reads();
         self.tell_watches(None);
         let docs: BTreeSet<DocId> = self
@@ -1032,12 +1043,10 @@ impl ResourceStore {
         if let Some(written) = self.inner.local.borrow().get(id) {
             return written
                 .as_ref()
-                .and_then(|held| self.entry_of_kind(&held.kind))
-                .map(|entry| entry.id);
+                .and_then(|held| self.type_of_kind(&held.kind));
         }
-        let known = self.inner.cache.borrow().get(id).cloned().flatten();
-        if let Some(held) = known {
-            return self.entry_of_kind(&held.kind).map(|entry| entry.id);
+        if let Some(Some(held)) = self.inner.cache.borrow().get(id) {
+            return self.type_of_kind(&held.kind);
         }
         let kinds: Vec<String> = self
             .inner
@@ -1058,7 +1067,7 @@ impl ResourceStore {
                 .cache
                 .borrow_mut()
                 .insert(id.to_owned(), Some(Held::of(&kind, indexed)));
-            return self.entry_of_kind(&kind).map(|entry| entry.id);
+            return self.type_of_kind(&kind);
         }
         // A removed resource is of the kind whose history holds it.
         let kinds = self
@@ -1075,7 +1084,7 @@ impl ResourceStore {
                 id: id.to_owned(),
             });
             if matches!(read, Ok(Reply::Versions(versions)) if !versions.is_empty()) {
-                return self.entry_of_kind(kind).map(|entry| entry.id);
+                return self.type_of_kind(kind);
             }
         }
         None
@@ -1298,6 +1307,7 @@ impl ResourceStore {
     /// [`Self::keep`] sends it or [`Self::rewind`] drops it.
     #[must_use]
     pub fn checkpoint(&self) -> Checkpoint {
+        self.note_held_all();
         let saved = self.saved();
         let mut trials = self.inner.trials.borrow_mut();
         trials.push(saved);
@@ -1310,7 +1320,7 @@ impl ResourceStore {
     /// When the store refused what was sent.
     pub fn keep(&self, at: Checkpoint) -> Result<(), StoreError> {
         self.inner.trials.borrow_mut().truncate(at.0.saturating_sub(1));
-        self.flush()
+        self.settle()
     }
 
     /// Ends the trial run `at`, dropping what it wrote.
@@ -1319,11 +1329,56 @@ impl ResourceStore {
             let mut trials = self.inner.trials.borrow_mut();
             let saved = trials.get(at.0.saturating_sub(1)).cloned();
             trials.truncate(at.0.saturating_sub(1));
+            // What the trial wrote is dropped, so nothing of it is told.
+            self.inner
+                .heard
+                .borrow_mut()
+                .retain(|heard| heard.trial < at.0);
             saved
         };
         if let Some(saved) = saved {
             self.restore(saved);
         }
+    }
+
+    /// Notes, as the first run or trial run opens, whether the store holds all written here.
+    fn note_held_all(&self) {
+        if self.inner.runs.borrow().is_empty() && self.inner.trials.borrow().is_empty() {
+            self.inner.held_all.set(
+                self.inner.local.borrow().is_empty() && self.inner.unsent.borrow().is_empty(),
+            );
+        }
+    }
+
+    /// Once no run or trial run is open: sends what they wrote and tells the views what it
+    /// changed, with the steps it took in the listings it changed when what they wrote is all
+    /// that was unsent.
+    fn settle(&self) -> Result<(), StoreError> {
+        if !self.inner.runs.borrow().is_empty() || !self.inner.trials.borrow().is_empty() {
+            return Ok(());
+        }
+        let heard = std::mem::take(&mut *self.inner.heard.borrow_mut());
+        let alone = self.inner.held_all.get() && self.inner.sample.borrow().is_none();
+        let stepping = if alone {
+            let mut collections: BTreeMap<DocId, BTreeSet<FieldKey>> = BTreeMap::new();
+            let mut order: Vec<String> = Vec::new();
+            for heard in &heard {
+                for (doc, keys) in &heard.collections {
+                    collections.entry(doc.clone()).or_default().extend(keys.iter().cloned());
+                }
+                for id in &heard.order {
+                    if !order.contains(id) {
+                        order.push(id.clone());
+                    }
+                }
+            }
+            self.steps_before(&collections, &order)
+        } else {
+            Vec::new()
+        };
+        let flushed = self.flush();
+        self.tell(heard, if flushed.is_ok() { stepping } else { Vec::new() });
+        flushed
     }
 
     fn saved(&self) -> Saved {
@@ -1343,7 +1398,12 @@ impl ResourceStore {
         if command.writes() {
             self.forget_versions_of(&command);
         }
-        self.inner.port.command(command).map_err(backend)
+        let name = format!("{command:?}").split([' ', '(', '{']).next().unwrap_or_default().to_owned();
+        let at = std::time::Instant::now();
+        let r = self.inner.port.command(command).map_err(backend);
+        let us = at.elapsed().as_micros() as u64;
+        PROBE.with(|p| { let mut p = p.borrow_mut(); let e = p.entry(name).or_insert((0, 0)); e.0 += 1; e.1 += us; });
+        r
     }
 
     /// Sends what was committed, as one batch, unless a run or a trial run is open.
@@ -1364,11 +1424,9 @@ impl ResourceStore {
         } else {
             Command::Batch(commands)
         };
-        let mut kinds = BTreeSet::new();
-        if kinds_written(&command, &mut kinds) {
-            for kind in &kinds {
-                self.forget_listings(Some(kind));
-            }
+        let mut written = BTreeMap::new();
+        if ids_written(&command, &mut written) {
+            self.freeze_listings(&written);
         } else {
             self.forget_listings(None);
         }
@@ -1454,6 +1512,11 @@ impl ResourceStore {
 
     fn entry_of_kind(&self, kind: &str) -> Option<TypeEntry> {
         self.inner.kinds.borrow().of_kind(kind).cloned()
+    }
+
+    /// The type whose resources are of `kind`.
+    fn type_of_kind(&self, kind: &str) -> Option<TypeId> {
+        self.inner.kinds.borrow().of_kind(kind).map(|entry| entry.id.clone())
     }
 
     /// The resource `id` of `kind` as it reads now: what was written here, else what the store
@@ -1624,8 +1687,13 @@ impl ResourceStore {
             dirty(state.dirty.entry(id.to_owned()).or_default());
         })?;
         let kind = held.as_ref().map(|held| held.kind.clone()).or_else(|| self.kind_held(id));
+        match kind {
+            Some(kind) => {
+                self.freeze_listings(&BTreeMap::from([(kind, BTreeSet::from([id.to_owned()]))]));
+            }
+            None => self.forget_listings(None),
+        }
         self.inner.local.borrow_mut().insert(id.to_owned(), held);
-        self.forget_listings(kind.as_deref());
         Ok(())
     }
 
@@ -1635,6 +1703,29 @@ impl ResourceStore {
             map.get(id).and_then(|held| held.as_ref().map(|held| held.kind.clone()))
         };
         held(&self.inner.local.borrow()).or_else(|| held(&self.inner.cache.borrow()))
+    }
+
+    /// Lets go of the open listings of the kinds `written` names, which the write about to be
+    /// sent changes; each is left as it read before the write. A view holding one compares it
+    /// with the listing read after the write, and moves the rows the write moved: where each
+    /// resource the write names stood in it is read from the store's index now, while the
+    /// store holds it as it was, and the listing reads nothing more.
+    fn freeze_listings(&self, written: &BTreeMap<String, BTreeSet<String>>) {
+        let frozen: Vec<(String, Rc<Pages>)> = {
+            let mut listings = self.inner.listings.borrow_mut();
+            let keys: Vec<String> = listings
+                .keys()
+                .filter(|key| written.keys().any(|kind| listing_of(key, kind)))
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| listings.remove(&key).map(|(_, pages)| (key, pages)))
+                .collect()
+        };
+        for (_, pages) in frozen {
+            let ids = written.get(&pages.kind).cloned().unwrap_or_default();
+            pages.freeze(&ids);
+        }
     }
 
     /// Lets go of the open listings of `kind`, which a write of one of its resources changed:
@@ -1919,29 +2010,22 @@ impl ResourceStore {
         };
         let kind = self.kind_of_type(item_ty)?;
         let holder = id_of(at);
-        let mut query = Query::of(kind.clone(), 1)
+        let local = self.inner.local.borrow();
+        // What was written here and not sent stands in for what the store holds of it: the
+        // store's last is the first of its items, newest first, that none of them overrides, so
+        // one page as long as what is unsent reaches it.
+        let query = Query::of(kind.clone(), local.len().saturating_add(1))
             .filter(Filter::Is(PARENT.to_owned(), Value::Text(holder.clone())))
             .order(Order::default().descending());
-        let mut last = None;
-        // A resource removed here may be the store's last: read past it.
-        let local = self.inner.local.borrow().clone();
-        loop {
-            let page = match self.command(Command::Query(query.clone()))? {
-                Reply::Page(page) => page,
-                other => return Err(backend(format!("a query answered {other:?}"))),
-            };
-            let Some((id, indexed)) = page.resources.first() else {
-                break;
-            };
-            if !local.contains_key(id) {
-                last.clone_from(&indexed.order);
-                break;
-            }
-            match page.next {
-                Some(next) => query = query.after(Some(next)),
-                None => break,
-            }
-        }
+        let page = match self.command(Command::Query(query))? {
+            Reply::Page(page) => page,
+            other => return Err(backend(format!("a query answered {other:?}"))),
+        };
+        let mut last = page
+            .resources
+            .iter()
+            .find(|(id, _)| !local.contains_key(id))
+            .and_then(|(_, indexed)| indexed.order.clone());
         for held in local.values().flatten() {
             if held.kind == kind && held.parent.as_deref() == Some(&holder) && held.order > last {
                 last.clone_from(&held.order);
@@ -2778,7 +2862,7 @@ impl ResourceStore {
         let mut filters = filters;
         filters.insert(0, Filter::Is(PARENT.to_owned(), Value::Text(holder)));
         let key = format!("{kind}#{}#{field}#{filters:?}#{order:?}", id_of(at));
-        if let Some(listing) = self.inner.listings.borrow().get(&key) {
+        if let Some((listing, _)) = self.inner.listings.borrow().get(&key) {
             return Rc::clone(listing);
         }
         let query = Query {
@@ -2788,7 +2872,7 @@ impl ResourceStore {
             after: None,
             limit: PAGE,
         };
-        let listing = Rc::new(Listing::paged(Rc::new(Pages {
+        let pages = Rc::new(Pages {
             store: Rc::downgrade(&self.inner),
             doc: at.doc.clone(),
             kind: kind.to_owned(),
@@ -2797,11 +2881,13 @@ impl ResourceStore {
             next: RefCell::default(),
             done: StdCell::new(false),
             len: StdCell::new(None),
-        })));
+            before: RefCell::default(),
+        });
+        let listing = Rc::new(Listing::paged(Rc::clone(&pages) as Rc<dyn PagedItems>));
         self.inner
             .listings
             .borrow_mut()
-            .insert(key, Rc::clone(&listing));
+            .insert(key, (Rc::clone(&listing), pages));
         listing
     }
 
@@ -3218,6 +3304,9 @@ struct Pages {
     next: RefCell<Option<Cursor>>,
     done: StdCell<bool>,
     len: StdCell<Option<usize>>,
+    /// Once a write moved the store on past it, where each resource the write named stood in
+    /// it, by item, `None` for one it did not hold: the listing as it read before the write.
+    before: RefCell<Option<HashMap<String, Option<usize>>>>,
 }
 
 impl std::fmt::Debug for Pages {
@@ -3230,9 +3319,40 @@ impl std::fmt::Debug for Pages {
 }
 
 impl Pages {
+    /// Keep the listing as it reads before a write of `ids` reaches the store: where each of
+    /// them stands in it now, and how many it lists. It reads no page after.
+    fn freeze(&self, ids: &BTreeSet<String>) {
+        let _ = PagedItems::len(self);
+        let mut before = HashMap::with_capacity(ids.len());
+        if let Some(inner) = self.store.upgrade() {
+            for id in ids {
+                // A resource nested in another document is no item of this listing's.
+                if !id.starts_with(&format!("{}/", self.doc)) {
+                    continue;
+                }
+                if let Ok(Reply::Position(at)) = inner.port.command(Command::Position {
+                    query: self.query.clone(),
+                    id: id.clone(),
+                }) {
+                    before.insert(item_of(id), at);
+                }
+            }
+        }
+        *self.before.borrow_mut() = Some(before);
+    }
+
+    /// Where `id` stood before the write that froze the listing, when it named it.
+    fn stood(&self, id: &str) -> Option<Option<usize>> {
+        self.before.borrow().as_ref()?.get(id).copied()
+    }
+
+    fn frozen(&self) -> bool {
+        self.before.borrow().is_some()
+    }
+
     /// Reads the next page; false when there is none.
     fn more(&self) -> bool {
-        if self.done.get() {
+        if self.done.get() || self.frozen() {
             return false;
         }
         let Some(inner) = self.store.upgrade() else {
@@ -3296,6 +3416,17 @@ impl PagedItems for Pages {
     /// turns up. What a view asks about is mostly a row it already drew; one the listing does
     /// not hold reads no page.
     fn position(&self, id: &str) -> Option<Option<usize>> {
+        if let Some(stood) = self.stood(id) {
+            return Some(stood);
+        }
+        if self.frozen() {
+            let found = self.ids.borrow().iter().position(|held| &**held == id);
+            return match found {
+                Some(at) => Some(Some(at)),
+                None if self.done.get() => Some(None),
+                None => None,
+            };
+        }
         if self.holds(id) == Some(false) {
             return Some(None);
         }
@@ -3321,8 +3452,14 @@ impl PagedItems for Pages {
     /// Whether the listing holds the item: among those read so far, or as the store holds the
     /// item itself, checked against the listing's filters.
     fn holds(&self, id: &str) -> Option<bool> {
+        if let Some(stood) = self.stood(id) {
+            return Some(stood.is_some());
+        }
         if self.ids.borrow().iter().any(|held| &**held == id) {
             return Some(true);
+        }
+        if self.frozen() {
+            return self.done.get().then_some(false);
         }
         let inner = self.store.upgrade()?;
         match inner.port.command(Command::Get {
@@ -3510,7 +3647,6 @@ impl Store for ResourceStore {
         };
         let stamp = self.stamp(note);
         let commands = self.commands(&state, &stamp);
-        self.inner.unsent.borrow_mut().extend(commands);
         let by = note.invoker.clone();
         let mut state = state;
         // What was made from a resource links to it: whoever reads its links reads them again.
@@ -3524,17 +3660,41 @@ impl Store for ResourceStore {
                     field: tilolang_runtime::store::LINKS.to_owned(),
                 });
         }
-        for (doc, fields) in &state.touched {
-            let collections = state.collections.get(doc).cloned().unwrap_or_default();
-            self.notify(&ChangeSummary {
-                doc: doc.clone(),
-                fields: fields.iter().cloned().collect(),
-                collections: collections.into_iter().collect(),
-                listings: Vec::new(),
-                by: by.clone(),
-            });
+        let depth = self.inner.runs.borrow().len();
+        let trial = self.inner.trials.borrow().len();
+        let heard = steps::Heard {
+            depth,
+            trial,
+            touched: state.touched,
+            collections: state.collections,
+            order: state.order,
+            by,
+        };
+        // A run's writes are sent, and told, when it ends, and a trial run's once it is kept.
+        if depth > 0 || trial > 0 {
+            self.inner.unsent.borrow_mut().extend(commands);
+            self.inner.heard.borrow_mut().push(heard);
+            return Ok(());
         }
-        self.flush()
+        // Where what leaves a listing stood is read before the write reaches the store, which
+        // holds everything else as it was only when nothing else written here is unsent.
+        let alone = self.inner.unsent.borrow().is_empty()
+            && self.inner.sample.borrow().is_none()
+            && !state
+                .before
+                .values()
+                .any(|before| matches!(before, Before::Was(_)));
+        let stepping = if alone {
+            self.steps_before(&heard.collections, &heard.order)
+        } else {
+            Vec::new()
+        };
+        self.inner.unsent.borrow_mut().extend(commands);
+        // The views are told once the store holds the write: where what came stands is read
+        // from it, and a view reading what changed reads the store.
+        let flushed = self.flush();
+        self.tell(vec![heard], if flushed.is_ok() { stepping } else { Vec::new() });
+        flushed
     }
 
     fn rollback(&mut self, txn: Txn) {
@@ -3564,6 +3724,7 @@ impl Store for ResourceStore {
     }
 
     fn begin_run(&mut self, run: &str) {
+        self.note_held_all();
         let saved = self.saved();
         let invocation = uuid::Uuid::new_v4().to_string();
         self.inner
@@ -3573,12 +3734,14 @@ impl Store for ResourceStore {
     }
 
     fn end_run(&mut self, run: &str) {
-        let mut runs = self.inner.runs.borrow_mut();
-        if let Some(at) = runs.iter().rposition(|(open, _, _)| open == run) {
+        {
+            let mut runs = self.inner.runs.borrow_mut();
+            let Some(at) = runs.iter().rposition(|(open, _, _)| open == run) else {
+                return;
+            };
             runs.truncate(at);
         }
-        drop(runs);
-        if let Err(error) = self.flush() {
+        if let Err(error) = self.settle() {
             tracing::warn!(%error, "the store refused what a run wrote");
         }
     }
@@ -3591,6 +3754,8 @@ impl Store for ResourceStore {
             };
             let saved = runs.get(at).map(|(_, saved, _)| saved.clone());
             runs.truncate(at);
+            // What the failed run wrote is taken back, so nothing of it is told.
+            self.inner.heard.borrow_mut().retain(|heard| heard.depth <= at);
             saved
         };
         if let Some(saved) = saved {
@@ -3707,8 +3872,12 @@ impl Store for ResourceStore {
                 return Ok(self.paged(at, &field.id, &kind, filters, sort));
             }
         }
+        let why = if self.writes_of(&kind) { "~fallback:writes" } else { "~fallback:unpushed" };
         let all = self.listing(at, field)?;
-        self.evaluated(at, all.items(), item, pred, order)
+        let items = all.items();
+        PROBE.with(|p| { let mut p = p.borrow_mut(); let e = p.entry(why.into()).or_insert((0, 0)); e.0 += 1; e.1 += items.len() as u64 * 1000; });
+        if why == "~fallback:unpushed" { PROBE.with(|p| { let mut p = p.borrow_mut(); let e = p.entry(format!("~unpushed:{kind}:{pred:?}:{order:?}").chars().take(300).collect()).or_insert((0, 0)); e.0 += 1; }); }
+        self.evaluated(at, items, item, pred, order)
     }
 
     fn select(
@@ -3907,8 +4076,7 @@ impl Store for ResourceStore {
                 .or_else(|| cache.get(doc))
                 .cloned()
                 .flatten()
-                .and_then(|held| self.entry_of_kind(&held.kind))
-                .map(|entry| entry.id)
+                .and_then(|held| self.type_of_kind(&held.kind))
         };
         let Some(ty) = ty else {
             return Ok(Vec::new());
@@ -4294,16 +4462,38 @@ fn listing_of(key: &str, kind: &str) -> bool {
     key.strip_prefix(kind).is_some_and(|rest| rest.starts_with('#'))
 }
 
-/// Adds the kinds `command` writes to `kinds`; `false` when it writes resources whose kinds it
-/// does not name (an undo).
-fn kinds_written(command: &Command, kinds: &mut BTreeSet<String>) -> bool {
+/// Adds the resources `command` writes to `written`, by kind; `false` when it writes resources
+/// it does not name (an undo).
+fn ids_written(command: &Command, written: &mut BTreeMap<String, BTreeSet<String>>) -> bool {
     match command {
-        Command::Put { kind, .. } | Command::Remove { kind, .. } | Command::Edit { kind, .. } => {
-            kinds.insert(kind.clone());
+        Command::Put { kind, id, .. }
+        | Command::Remove { kind, id, .. }
+        | Command::Edit { kind, id, .. } => {
+            written.entry(kind.clone()).or_default().insert(id.clone());
             true
         }
-        Command::Batch(commands) => commands.iter().all(|command| kinds_written(command, kinds)),
+        Command::Batch(commands) => commands.iter().all(|command| ids_written(command, written)),
         Command::Undo { .. } => false,
         _ => true,
     }
+}
+
+thread_local! {
+    static PROBE: RefCell<BTreeMap<String, (u64, u64)>> = RefCell::new(BTreeMap::new());
+}
+
+/// Temporary probe.
+#[doc(hidden)]
+pub fn probe(name: &str, n: u64) {
+    PROBE.with(|p| { let mut p = p.borrow_mut(); let e = p.entry(name.to_owned()).or_insert((0, 0)); e.0 += n; });
+}
+
+/// Temporary probe.
+#[doc(hidden)]
+#[must_use]
+pub fn take_probe() -> String {
+    PROBE.with(|p| {
+        let p = std::mem::take(&mut *p.borrow_mut());
+        p.iter().map(|(k, (n, us))| format!("{k}:{n}x/{}ms", us / 1000)).collect::<Vec<_>>().join(" ")
+    })
 }

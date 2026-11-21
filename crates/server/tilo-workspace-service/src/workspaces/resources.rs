@@ -1146,7 +1146,8 @@ fn stamp_resource_invoker(command: &mut tilo_resource_store::wire::Command, invo
         | Command::Grouped { .. }
         | Command::Removed { .. }
         | Command::MadeFrom { .. }
-        | Command::Newest { .. } => {}
+        | Command::Newest { .. }
+        | Command::Position { .. } => {}
     }
 }
 

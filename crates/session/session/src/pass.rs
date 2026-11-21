@@ -80,7 +80,7 @@ impl Session {
         self.shared.feed_agents();
         self.shared.follow_recipients();
         // The apps' resources the services run over are the workspace's, once the session holds it.
-        self.shared.keep_app_stores();
+        self.shared.keep_app_stores(self.automation_runtime.handle());
         let mut services = self.shared.services.borrow_mut();
         // What the records the services keep themselves reference: each record's content, kept in
         // the store of the workspace it stands in and offered on its route, so a device of the

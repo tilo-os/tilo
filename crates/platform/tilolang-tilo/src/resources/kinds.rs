@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::Value as Json;
 use tilo_resource_store::Value;
 use tilolang_runtime::ids::{FieldId, TypeId};
-use tilolang_runtime::meta::{FieldKind, Meta, Ty, TypeKey, parse_ty};
+use tilolang_runtime::meta::{FieldKind, FieldMeta, Meta, Ty, TypeKey, TypeMeta, parse_ty};
 use tilolang_runtime::store::Scalar;
 use tilolang_runtime::value::{self, EnumValue, ResourceRef};
 
@@ -110,10 +110,6 @@ impl Kinds {
     /// `former` is the retired declarations of the package's ids lock, `(name, id)` each: a
     /// type that keeps its id across a rename is read from what the earlier name wrote, and a
     /// field from the name it held its value under then.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass over what a package declares, its enums then its types, kept where a reader follows them"
-    )]
     pub fn declare(&mut self, meta: &Meta, former: &[(String, String)]) {
         for declared in &meta.enums {
             let plain = declared
@@ -130,6 +126,7 @@ impl Kinds {
                 },
             );
         }
+        // Every type's id first: a collection names the types of its items by name.
         for declared in &meta.types {
             self.by_key.insert(
                 (meta.app.clone(), declared.name.clone()),
@@ -137,97 +134,99 @@ impl Kinds {
             );
         }
         for declared in &meta.types {
-            let mut fields = BTreeMap::new();
-            for field in &declared.fields {
-                let Ok(ty) = parse_ty(field.ty.trim(), &meta.app) else {
-                    continue;
-                };
-                let kind = tilolang_runtime::meta::field_kind(field, &ty);
-                let items = match &ty {
-                    Ty::Collection(inner) => match inner.as_ref() {
-                        Ty::Record(key) => self.type_id(key).into_iter().collect(),
-                        Ty::Union(keys) => keys.iter().filter_map(|key| self.type_id(key)).collect(),
-                        _ => Vec::new(),
-                    },
-                    _ => Vec::new(),
-                };
-                let initial = match kind {
-                    FieldKind::Register | FieldKind::Text => {
-                        self.initial(&ty, field.default.as_ref())
-                    }
-                    _ => None,
-                };
-                fields.insert(
-                    field.id.clone(),
-                    FieldEntry {
-                        name: field.name.clone(),
-                        former: Vec::new(),
-                        ty,
-                        kind,
-                        items,
-                        initial,
-                    },
-                );
-            }
-            let title = declared
-                .title
-                .as_deref()
-                .and_then(|name| declared.fields.iter().find(|field| field.name == name))
-                // Else its first text, plain or rich: what a message is called by is what it says.
-                .or_else(|| {
-                    declared
-                        .fields
-                        .iter()
-                        .find(|field| matches!(field.ty.trim(), "Text" | "RichText"))
-                })
-                .map(|field| field.id.clone());
-            // A type that says what names it is named by that alone; one that does not, by its
-            // first text that holds any.
-            let texts = if declared.title.is_some() {
-                title.iter().cloned().collect()
-            } else {
-                declared
-                    .fields
-                    .iter()
-                    .filter(|field| matches!(field.ty.trim(), "Text" | "RichText"))
-                    .map(|field| field.id.clone())
-                    .collect()
+            let entry = self.entry(&meta.app, declared);
+            self.by_kind.insert(entry.kind.clone(), declared.id.clone());
+            self.types.insert(declared.id.clone(), entry);
+        }
+        self.take_former(&meta.app, former);
+    }
+
+    /// The type `declared` of `app`, as the store names it and its fields.
+    fn entry(&self, app: &str, declared: &TypeMeta) -> TypeEntry {
+        let mut fields = BTreeMap::new();
+        for field in &declared.fields {
+            let Ok(ty) = parse_ty(field.ty.trim(), app) else {
+                continue;
             };
-            let kind = kind_of(&meta.app, &declared.name);
-            self.by_kind.insert(kind.clone(), declared.id.clone());
-            self.types.insert(
-                declared.id.clone(),
-                TypeEntry {
-                    id: declared.id.clone(),
-                    app: meta.app.clone(),
-                    name: declared.name.clone(),
-                    kind,
+            let kind = tilolang_runtime::meta::field_kind(field, &ty);
+            let items = match &ty {
+                Ty::Collection(inner) => match inner.as_ref() {
+                    Ty::Record(key) => self.type_id(key).into_iter().collect(),
+                    Ty::Union(keys) => keys.iter().filter_map(|key| self.type_id(key)).collect(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            let initial = match kind {
+                FieldKind::Register | FieldKind::Text => self.initial(&ty, field.default.as_ref()),
+                _ => None,
+            };
+            fields.insert(
+                field.id.clone(),
+                FieldEntry {
+                    name: field.name.clone(),
                     former: Vec::new(),
-                    fields,
-                    title,
-                    texts,
+                    ty,
+                    kind,
+                    items,
+                    initial,
                 },
             );
         }
-        // What the earlier names of kept ids wrote: a type under the kind its name made then,
-        // a field under the name it held its value under. A retired name of another app's, or
-        // of a declaration the ids lock no longer names a type or a field of, tells nothing.
+        let is_text = |field: &&FieldMeta| {
+            matches!(field.ty.trim(), "Text" | "RichText")
+        };
+        let title = declared
+            .title
+            .as_deref()
+            .and_then(|name| declared.fields.iter().find(|field| field.name == name))
+            // Else its first text, plain or rich: what a message is called by is what it says.
+            .or_else(|| declared.fields.iter().find(is_text))
+            .map(|field| field.id.clone());
+        // A type that says what names it is named by that alone; one that does not, by its
+        // first text that holds any.
+        let texts = if declared.title.is_some() {
+            title.iter().cloned().collect()
+        } else {
+            declared
+                .fields
+                .iter()
+                .filter(is_text)
+                .map(|field| field.id.clone())
+                .collect()
+        };
+        TypeEntry {
+            id: declared.id.clone(),
+            app: app.to_owned(),
+            name: declared.name.clone(),
+            kind: kind_of(app, &declared.name),
+            former: Vec::new(),
+            fields,
+            title,
+            texts,
+        }
+    }
+
+    /// What the earlier names of kept ids wrote: a type under the kind its name made then, a
+    /// field under the name it held its value under. A retired name of another app's, or of a
+    /// declaration the ids lock no longer names a type or a field of, tells nothing.
+    fn take_former(&mut self, app: &str, former: &[(String, String)]) {
         for (name, id) in former {
             let Some((_, field)) = name.split_once('.') else {
                 let Some(entry) = self.types.get_mut(id) else {
                     continue;
                 };
-                if entry.app != meta.app {
+                if entry.app != app {
                     continue;
                 }
-                let kind = kind_of(&meta.app, name);
+                let kind = kind_of(app, name);
                 if !entry.former.contains(&kind) {
                     entry.former.push(kind.clone());
                 }
                 self.by_kind.entry(kind).or_insert_with(|| id.clone());
                 continue;
             };
-            for entry in self.types.values_mut().filter(|entry| entry.app == meta.app) {
+            for entry in self.types.values_mut().filter(|entry| entry.app == app) {
                 let Some(held) = entry.fields.get_mut(id) else {
                     continue;
                 };

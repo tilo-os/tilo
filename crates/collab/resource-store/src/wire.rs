@@ -82,6 +82,10 @@ pub enum Command {
     /// The newest version of each resource `within` names (it, and those whose ids are under
     /// it), of at most `limit` of them, most recent first.
     Newest { within: String, limit: usize },
+    /// Where the resource `id` stands in the listing of `query`, read from the index's order
+    /// rather than by paging to it: where a reader showing the listing puts a row that came,
+    /// and finds one that left.
+    Position { query: Query, id: String },
 }
 
 /// One edit of a resource's content.
@@ -138,6 +142,9 @@ pub enum Reply {
         versions: Vec<(String, String, Version)>,
         more: bool,
     },
+    /// Where a resource stands in a listing, `None` where the listing holds none the person may
+    /// read.
+    Position(Option<usize>),
 }
 
 impl Command {
@@ -264,6 +271,7 @@ fn write_into(
         | Command::Count { .. }
         | Command::Content { .. }
         | Command::Newest { .. }
+        | Command::Position { .. }
         | Command::Versions { .. }
         | Command::At { .. }
         | Command::Grouped { .. }
@@ -329,6 +337,7 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
             let (versions, more) = store.newest(within, *limit, may_read);
             Reply::Newest { versions, more }
         }
+        Command::Position { query, id } => Reply::Position(store.position(query, id, may_read)),
         Command::Put { .. }
         | Command::Remove { .. }
         | Command::Undo { .. }

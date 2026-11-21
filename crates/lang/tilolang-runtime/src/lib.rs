@@ -105,3 +105,16 @@ pub use view_instance::{EditOutcome, UndoAsk, ViewEvent, ViewInstance};
 pub use view_state::StateKey;
 pub use words::{LoadedCatalogues, SourceWords, Words, WordsRole};
 pub use written::WrittenViewInfo;
+
+thread_local! {
+    static RT_PROBE: std::cell::RefCell<std::collections::BTreeMap<String, u64>> = std::cell::RefCell::new(std::collections::BTreeMap::new());
+}
+#[doc(hidden)]
+pub fn rt_probe(name: &str) {
+    RT_PROBE.with(|p| *p.borrow_mut().entry(name.to_owned()).or_default() += 1);
+}
+#[doc(hidden)]
+#[must_use]
+pub fn rt_probe_take() -> String {
+    RT_PROBE.with(|p| std::mem::take(&mut *p.borrow_mut()).iter().map(|(k, n)| format!("{k}:{n}")).collect::<Vec<_>>().join(" "))
+}
