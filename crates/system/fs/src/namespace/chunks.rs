@@ -11,6 +11,7 @@
 //! tree is an [`Obj`], a chunk and an object of that chunk's document.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, AutomergeError, ObjId, ObjType, Prop, ROOT, ReadDoc as _, Value};
@@ -53,7 +54,6 @@ pub(super) struct Chunk {
 }
 
 /// The tree's own record and its chunks, each a document of its own.
-#[derive(Clone)]
 pub(crate) struct Chunks {
     index: ChangeTrackedDoc,
     held: BTreeMap<TreeChunk, Chunk>,
@@ -62,10 +62,42 @@ pub(crate) struct Chunks {
     workspace: Option<String>,
     /// The chunk each node lives in, as the chunks hold them.
     located: HashMap<String, TreeChunk>,
-    /// The last chunk whose node count was asked for, and the count: making a node asks the
-    /// newest chunk how full it is, and counting it in the document walks every node it holds,
-    /// so a create that asked again would cost the chunk per file.
-    counted: std::cell::Cell<Option<(TreeChunk, usize)>>,
+    /// The last chunk whose node count was asked for, and the count, packed in one word: making
+    /// a node asks the newest chunk how full it is, and counting it in the document walks every
+    /// node it holds, so a create that asked again would cost the chunk per file. One word
+    /// written atomically, because a namespace is shared by reference across the mount's threads
+    /// and the answer is only a cache of what the document already holds.
+    counted: AtomicU64,
+}
+
+/// What [`Chunks::counted`] holds when no chunk's count is kept.
+const NOT_COUNTED: u64 = u64::MAX;
+
+/// The count of `chunk` as the one word [`Chunks::counted`] holds.
+fn counted_word(chunk: TreeChunk, count: usize) -> u64 {
+    (u64::from(chunk) << 32) | u64::from(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+/// The chunk and count [`Chunks::counted`] holds, `None` when it holds none.
+fn counted_value(word: u64) -> Option<(TreeChunk, usize)> {
+    if word == NOT_COUNTED {
+        return None;
+    }
+    let chunk = TreeChunk::try_from(word >> 32).ok()?;
+    let count = usize::try_from(word & u64::from(u32::MAX)).ok()?;
+    Some((chunk, count))
+}
+
+impl Clone for Chunks {
+    fn clone(&self) -> Self {
+        Self {
+            index: self.index.clone(),
+            held: self.held.clone(),
+            workspace: self.workspace.clone(),
+            located: self.located.clone(),
+            counted: AtomicU64::new(self.counted.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 /// Make `doc` a chunk of the tree: its map of nodes, the one change every replica makes alike,
@@ -81,7 +113,7 @@ impl Chunks {
             held: BTreeMap::new(),
             workspace,
             located: HashMap::new(),
-            counted: std::cell::Cell::new(None),
+            counted: AtomicU64::new(NOT_COUNTED),
         }
     }
 
@@ -282,10 +314,11 @@ impl Chunks {
         // A create is the one action that adds a node to the chunk's map, and the count the
         // next create asks for is this one's plus it.
         if matches!(action, fs_protocol::FileAction::Create { .. })
-            && let Some((counted, count)) = self.counted.get()
+            && let Some((counted, count)) = counted_value(self.counted.load(Ordering::Relaxed))
             && counted == chunk
         {
-            self.counted.set(Some((chunk, count.saturating_add(1))));
+            self.counted
+                .store(counted_word(chunk, count.saturating_add(1)), Ordering::Relaxed);
         }
         Ok(())
     }
@@ -305,7 +338,7 @@ impl Chunks {
     /// How many nodes chunk `chunk` holds. Counting it in the document walks every node, so the
     /// answer is kept: placing a node asks the newest chunk's count before every create.
     pub(super) fn nodes_in(&self, chunk: TreeChunk) -> usize {
-        if let Some((counted, count)) = self.counted.get()
+        if let Some((counted, count)) = counted_value(self.counted.load(Ordering::Relaxed))
             && counted == chunk
         {
             return count;
@@ -314,7 +347,8 @@ impl Chunks {
             .held
             .get(&chunk)
             .map_or(0, |held| held.doc.length(&held.nodes));
-        self.counted.set(Some((chunk, count)));
+        self.counted
+            .store(counted_word(chunk, count), Ordering::Relaxed);
         count
     }
 
@@ -325,7 +359,7 @@ impl Chunks {
 
     /// Forget the kept node count: nodes arrived from somewhere other than a create here.
     fn forget_node_count(&self) {
-        self.counted.set(None);
+        self.counted.store(NOT_COUNTED, Ordering::Relaxed);
     }
 
     /// Up to `limit` node ids in key order after `after`, over every chunk.
