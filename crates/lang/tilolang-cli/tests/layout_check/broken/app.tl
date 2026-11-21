@@ -43,16 +43,12 @@ view clipped(s: Sample) {
     }
 }
 
-/// A row that squeezed a label into two lines rather than moving the whole fact down: the row
-/// is wider than the label's word, so the word had room to stand whole.
+/// A row that gave each label an equal share of a line too short for them: the row stands wider
+/// than any one label's word, so each word had room to stand whole.
 view squeezed(s: Sample) {
     row(max: 6rem) {
-        stack {
-            text("Created")
-        }
-        stack {
-            text("just now")
-        }
+        text("Created", fill: 1.0)
+        text("just now", fill: 1.0)
     }
 }
 
