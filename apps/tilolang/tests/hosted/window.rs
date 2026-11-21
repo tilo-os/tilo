@@ -403,7 +403,11 @@ fn an_empty_notebook_says_so_in_both_columns_and_its_states_action_makes_the_fir
     let mut session = Session::notes();
     let shell_tree = composed(&mut session);
     let empty = shell_tree.of_kind("ui.EmptyState");
-    assert_eq!(empty.len(), 2, "a state where each column stands: {empty:?}");
+    assert_eq!(
+        empty.len(),
+        2,
+        "a state where each column stands: {empty:?}"
+    );
     assert!(
         empty
             .iter()
@@ -411,7 +415,9 @@ fn an_empty_notebook_says_so_in_both_columns_and_its_states_action_makes_the_fir
         "the tree's column says it holds none yet: {empty:?}"
     );
     assert!(
-        empty.iter().any(|state| prop(state, "title").as_deref() == Some("Start your first note")),
+        empty
+            .iter()
+            .any(|state| prop(state, "title").as_deref() == Some("Start your first note")),
         "the body says what starts the first: {empty:?}"
     );
     let offered: Vec<&UiNode> = empty

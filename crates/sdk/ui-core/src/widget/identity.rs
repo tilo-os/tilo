@@ -50,10 +50,12 @@ impl super::Decorator for Identified {
         // of its own (an empty state's action) says it on that button, whose box a person, a
         // screen reader and an agent press. Said on the box around it, it would name a control
         // nothing answers at.
-        self.content.accessibility().map(|node| match self.content.pressable_child() {
-            Some(part) => node.with_action_on_child(part, self.identity.clone()),
-            None => node.with_action(self.identity.clone()),
-        })
+        self.content
+            .accessibility()
+            .map(|node| match self.content.pressable_child() {
+                Some(part) => node.with_action_on_child(part, self.identity.clone()),
+                None => node.with_action(self.identity.clone()),
+            })
     }
 
     fn identify(&mut self, identity: &str) -> bool {
