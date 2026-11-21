@@ -8,6 +8,10 @@ pub enum Kind {
     Overflow,
     /// Text needs more room than its box gives it, so part of it is not shown.
     ClippedText,
+    /// A word a text breaks inside, the line narrower than the word while the row it stands in
+    /// had the room: a label cut in two mid-word ("Create" over "d") where the whole fact could
+    /// have moved on to the next line.
+    BrokenWord,
     Overlap,
     /// Something a person presses or types into is smaller than the design system's minimum.
     SmallHitTarget,
@@ -205,6 +209,7 @@ impl Kind {
         match self {
             Self::Overflow => "overflow",
             Self::ClippedText => "clipped-text",
+            Self::BrokenWord => "broken-word",
             Self::Overlap => "overlap",
             Self::SmallHitTarget => "small-hit-target",
             Self::ScrollsSideways => "scrolls-sideways",

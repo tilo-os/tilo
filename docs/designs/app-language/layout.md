@@ -102,6 +102,10 @@ reaches is checked like the one the window opens on. A window that draws on a su
 person pointed at, so a finger taps that surface once where nothing else stands, and the page at that
 point is checked too.
 
+It reads that a text is not laid out narrower than the longest word it holds while the row it
+stands in is wide enough for that word: a label cut inside a word ("Create" over "d") where the
+whole fact could have moved down to the next line is a `broken-word` finding.
+
 It also reads what a screen says and how its rows line up: every row at one depth starts its title
 at one x, nesting indents by one gutter, a box's rows end at one right edge, one choice is drawn
 selected once, a list offers one add entry, a name a screen reader announces is words rather than a

@@ -17,7 +17,7 @@ pub fn clipped_text(
 ) -> Vec<Problem> {
     let mut out = Vec::new();
     let clip = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
-    measure_walk(root, &mut Vec::new(), clip, text, &mut out);
+    measure_walk(root, &mut Vec::new(), clip, None, text, &mut out);
     out
 }
 
@@ -82,6 +82,7 @@ fn measure_walk(
     widget: &mut dyn Widget,
     keys: &mut Vec<String>,
     clip: Rect,
+    room: Option<f64>,
     text: &mut ui::TextRenderer,
     out: &mut Vec<Problem>,
 ) {
@@ -89,7 +90,7 @@ fn measure_walk(
         .test_id()
         .map(|id| keys.push(id.to_owned()))
         .is_some();
-    measure_one(widget, keys, clip, text, out);
+    measure_one(widget, keys, clip, room, text, out);
     cut_text(widget, keys, text, out);
     selection_lifts(widget, keys, out);
     chevrons_on_their_lines(widget, keys, out);
@@ -97,8 +98,15 @@ fn measure_walk(
     let inner = widget
         .child_clip_rect()
         .map_or(clip, |child| clip.intersect(child));
+    // A row's width is the room its labels could have had: one laid out narrower than its own
+    // words while the row stands wider is a row that squeezed it rather than moved it down.
+    let room = if widget.name() == super::LINE {
+        Some(widget.get_rect().width())
+    } else {
+        room
+    };
     for child in widget.children_mut() {
-        measure_walk(child, keys, inner, text, out);
+        measure_walk(child, keys, inner, room, text, out);
     }
     if pushed {
         keys.pop();
@@ -113,6 +121,7 @@ fn measure_one(
     widget: &mut dyn Widget,
     keys: &[String],
     clip: Rect,
+    room: Option<f64>,
     text: &mut ui::TextRenderer,
     out: &mut Vec<Problem>,
 ) {
@@ -134,15 +143,17 @@ fn measure_one(
             },
             text,
         );
-        // The narrowest the text can be laid out at: a word longer than its line breaks anywhere,
-        // so only text that cannot break (one line) needs more than a glyph.
-        let narrowest = widget.measure(
+        // The widest word it holds: laid out for its narrowest (no width at all), text keeps its
+        // words whole, so the width it asks for there is the longest of them. Given any room at
+        // all it breaks a word that does not fit anywhere, which is why a text narrower than this
+        // broke one inside a word.
+        let widest = widget.measure(
             Size {
                 width: None,
                 height: None,
             },
             Size {
-                width: AvailableSpace::Definite(1.0),
+                width: AvailableSpace::MinContent,
                 height: AvailableSpace::MaxContent,
             },
             text,
@@ -152,23 +163,33 @@ fn measure_one(
             .and_then(|access| access.name)
             .unwrap_or_default();
         let detail = if f64::from(tall.height) > own.height() + EPSILON {
-            Some(format!(
-                "needs {:.0} high at its width, has {} ({shown:?})",
-                tall.height,
-                size(own)
+            Some((
+                Kind::ClippedText,
+                format!(
+                    "needs {:.0} high at its width, has {} ({shown:?})",
+                    tall.height,
+                    size(own)
+                ),
             ))
-        } else if f64::from(narrowest.width) > own.width() + EPSILON {
-            Some(format!(
-                "needs {:.0} wide at the narrowest, has {} ({shown:?})",
-                narrowest.width,
-                size(own)
+        } else if f64::from(widest.width) > own.width() + EPSILON
+            && room.is_some_and(|room| room + EPSILON >= f64::from(widest.width))
+        {
+            Some((
+                Kind::BrokenWord,
+                format!(
+                    "breaks {shown:?} inside a word: its widest word needs {:.0} wide and its \
+                     line has {:.0}, in a row {:.0} wide",
+                    widest.width,
+                    own.width(),
+                    room.unwrap_or_default()
+                ),
             ))
         } else {
             None
         };
-        if let Some(detail) = detail {
+        if let Some((kind, detail)) = detail {
             out.push(Problem {
-                kind: Kind::ClippedText,
+                kind,
                 keys: keys.iter().rev().cloned().collect(),
                 widget: widget.name().to_owned(),
                 id: widget.test_id().map(str::to_owned),

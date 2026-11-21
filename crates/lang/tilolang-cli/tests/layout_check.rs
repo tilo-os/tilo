@@ -31,6 +31,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
         // one over the other breaks in both ways.
         (Kind::TextOnText, "overlapping"),
         (Kind::ScrollsSideways, "sideways"),
+        // A row squeezed a label below its own word while the row stood wider than it.
+        (Kind::BrokenWord, "squeezed"),
     ] {
         assert!(
             found(kind, view),
@@ -48,6 +50,7 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // A word wider than its column breaks (`clipped` is laid out right), and the chip takes
             // a finger's room on touch (`small_target` is laid out right).
             Kind::ClippedText | Kind::SmallHitTarget | Kind::LostContent => "",
+            Kind::BrokenWord => "squeezed",
             Kind::ScrollsSideways => "sideways",
             // Layout snaps every edge, broken or not; and a window gives a view that composes no
             // shell its page, so no page anywhere is one bare row.

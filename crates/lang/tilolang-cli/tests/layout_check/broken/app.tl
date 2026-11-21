@@ -19,6 +19,7 @@ view samples(s: Sample) {
     stack {
         overflowing(s)
         clipped(s)
+        squeezed(s)
         overlapping(s)
         small_target(s)
         sideways(s)
@@ -39,6 +40,19 @@ view overflowing(s: Sample) {
 view clipped(s: Sample) {
     stack(max: 6rem) {
         text("Donaudampfschifffahrtsgesellschaft")
+    }
+}
+
+/// A row that squeezed a label into two lines rather than moving the whole fact down: the row
+/// is wider than the label's word, so the word had room to stand whole.
+view squeezed(s: Sample) {
+    row(max: 6rem) {
+        stack {
+            text("Created")
+        }
+        stack {
+            text("just now")
+        }
     }
 }
 
