@@ -1924,15 +1924,7 @@ impl Workspaces {
                 let expires_at_ns = now.saturating_add(invitation_lifetime(args)?);
                 let place = args.place_at("role")?;
                 let wait_list_entry = args.key("wait_list_entry")?;
-                let (role, makes_administrator) = match place {
-                    super::MemberPlace::Role(role) => (role, false),
-                    // An administrator joins as an Editor and is made one by
-                    // the invitation's own grant, never by a role above the
-                    // inviter's; an owner is an administrator as well.
-                    super::MemberPlace::Administrator | super::MemberPlace::Owner => {
-                        (Role::Editor, true)
-                    }
-                };
+                let (role, makes_administrator) = place.invited_as();
                 let request = IssueInvitationRequest {
                     request_id,
                     role,

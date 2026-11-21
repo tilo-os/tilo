@@ -48,6 +48,17 @@ pub enum MemberPlace {
 }
 
 impl MemberPlace {
+    /// The role an invitation for this place holds, and whether its grant makes the person an
+    /// administrator: an administrator joins as an Editor and is made one by the invitation's
+    /// own grant, never by a role above the inviter's; an owner is an administrator as well.
+    #[must_use]
+    pub fn invited_as(self) -> (Role, bool) {
+        match self {
+            Self::Role(role) => (role, false),
+            Self::Administrator | Self::Owner => (Role::Editor, true),
+        }
+    }
+
     /// The place `text` names: a role, `administrator` or `owner`.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
