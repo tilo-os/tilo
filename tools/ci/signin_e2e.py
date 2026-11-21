@@ -118,6 +118,25 @@ class Failed(Exception):
     """A step that could not be carried out; its item is reported failed with this reason."""
 
 
+# The guest's memory, in MiB: TILO_MEM, or 8 GiB where the machine holds that beside what its own
+# QEMU and this check use; a check's VM can hold less (t books it from what its runs used), and a
+# guest asked for more than it holds never starts ("cannot set up guest memory").
+GUEST_OVERHEAD_MIB = 1536
+GUEST_MIN_MIB = 4096
+
+
+def guest_memory() -> str:
+    if os.environ.get("TILO_MEM"):
+        return os.environ["TILO_MEM"]
+    with open("/proc/meminfo", encoding="ascii") as meminfo:
+        total = next(int(line.split()[1]) // 1024 for line in meminfo if line.startswith("MemTotal:"))
+    memory = min(8192, total - GUEST_OVERHEAD_MIB)
+    if memory < GUEST_MIN_MIB:
+        raise SystemExit(f"this machine has {total} MiB; the guest needs {GUEST_MIN_MIB} MiB "
+                         f"and its QEMU {GUEST_OVERHEAD_MIB} MiB more")
+    return str(memory)
+
+
 class Cycle:
     """One named vm.sh cycle: an installer boot, then any number of target boots."""
 
@@ -128,7 +147,7 @@ class Cycle:
         self.env = dict(os.environ, TILO_VM_CYCLE=name, TILO_INSTALLER_OUTPUT=str(storage),
                         TILO_INSTALLER_DISK=str(medium), TILO_RUN=str(self.run),
                         TILO_DISTROBOX="", TILO_TPM="1", TILO_ACCEL="kvm",
-                        TILO_MEM=os.environ.get("TILO_MEM", "8192"),
+                        TILO_MEM=guest_memory(),
                         TILO_SMP=os.environ.get("TILO_SMP", "4"), TILO_TARGET_SIZE="40G")
         self.shell_socket = self.run / "test-shell.sock"
         self.boots = 0
