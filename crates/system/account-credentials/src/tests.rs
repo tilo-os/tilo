@@ -484,10 +484,11 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    /// Accounts that are not OAuth grants: a WebDAV password and an iCloud session.
-    fn webdav_and_icloud_accounts_hand_off_their_own_credentials;
+    /// Accounts that are not OAuth grants: a WebDAV password, which is the workspace's vault
+    /// entry's, and an iCloud session.
+    fn webdav_and_icloud_accounts_hand_off_only_a_session;
 
-    phase webdav_hands_off_its_own_basic_credential;
+    phase webdav_hands_off_nothing_since_its_password_is_the_workspaces;
     {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("tilo");
@@ -502,13 +503,7 @@ tilo_test_env::scenario! {
         CredentialStore::for_root(Some(root.clone()))
             .publish(&id, false)
             .unwrap();
-        match HandoffStore::open_in(&root).read(&id).unwrap() {
-            Some(HandoffCredential::Basic { username, password }) => {
-                assert_eq!(username, "ada");
-                assert_eq!(password.as_str(), "dav-password");
-            }
-            other => panic!("unexpected {other:?}"),
-        }
+        assert!(HandoffStore::open_in(&root).read(&id).unwrap().is_none());
     }
 
     phase icloud_session_headers_are_handed_off_and_reauthentication_is_reported;
@@ -1076,16 +1071,13 @@ tilo_test_env::scenario! {
                 original.password
             );
             save(&root, &id, type_id, &copy, account.config.clone());
-            CredentialStore::for_root(Some(root.clone()))
-                .publish(&id, false)
-                .unwrap();
-            let Some(HandoffCredential::Basic { username, password }) =
-                HandoffStore::open_in(&root).read(&id).unwrap()
-            else {
-                panic!("protected DAV grant was not consumed")
-            };
-            assert_eq!(username, "ada");
-            assert_eq!(password.as_str(), original.password);
+            let kept = SecretVault::open_in(&root)
+                .get(&id)
+                .expect("the protected DAV grant is kept");
+            assert_eq!(
+                crate::password_credential(&kept).as_str(),
+                original.password
+            );
             assert_eq!(original, Secret::password("source-private-password"));
         }
         let ordinary = Secret::password("ordinary-mail-password");

@@ -2580,25 +2580,7 @@ impl AccountsPane {
                     Err(error) => return settle(pane, Err(error)),
                 };
                 let typed = !draft.password.trim().is_empty();
-                let publishes =
-                    typed && matches!(draft.kind, AccountKind::WebDav | AccountKind::Nextcloud);
-                let id = stored.id.clone();
-                let after: Settle = Box::new(
-                    move |pane: &mut Self, committed: Result<(), String>| {
-                        if committed.is_err() || !publishes {
-                            return settle(pane, committed);
-                        }
-                        Step::vault(
-                            move |vault| {
-                                if let Err(error) = vault.credential_store().publish(&id, false) {
-                                    warn!(target: "tilo::settings", %error, "could not publish the updated credential");
-                                }
-                            },
-                            move |pane, ()| settle(pane, Ok(())),
-                        )
-                    },
-                );
-                pane.commit_then(vec![(stored, typed.then_some(secret))], after)
+                pane.commit_then(vec![(stored, typed.then_some(secret))], settle)
             },
         )
     }
@@ -2653,12 +2635,13 @@ impl AccountsPane {
         mut accounts: Vec<(accounts::Account, Option<accounts::Secret>)>,
         settle: Settle,
     ) -> Step {
-        // An email account's typed password is the workspace's: it goes to the workspace's
-        // vault through the session first, one account at a time, and the account names the
-        // entry it is kept in. A grant its provider's page signed in stays this device's.
+        // An email or file account's typed password is the workspace's: it goes to the
+        // workspace's vault through the session first, one account at a time, and the account
+        // names the entry it is kept in. A grant its provider's page signed in stays this
+        // device's.
         if let Some(client) = self.session_secrets.clone()
             && let Some(index) = accounts.iter().position(|(account, secret)| {
-                account.type_id.as_str() == accounts::email::TYPE_ID
+                keeps_password_in_vault(account)
                     && secret
                         .as_ref()
                         .is_some_and(|secret| !secret.password.is_empty())
@@ -2666,7 +2649,7 @@ impl AccountsPane {
         {
             let (mut account, secret) = accounts.remove(index);
             let secret = secret.unwrap_or_default();
-            let asked = mail_password_command(&account, &secret.password)
+            let asked = password_command(&account, &secret.password)
                 .and_then(|command| client.request(command, None));
             let pending = match asked {
                 Ok(pending) => pending,
@@ -3591,24 +3574,47 @@ fn account_trailing(files: Option<Button>, menu: Option<RowMenu>) -> Option<El> 
 #[cfg(test)]
 mod tests;
 
-/// The request that keeps `password` as the email `account`'s, bound to the servers its
-/// settings name.
-fn mail_password_command(
+/// Whether a password typed for `account` is kept in the workspace's vault: an email account's,
+/// and a file account's that signs in with one (`WebDAV`, Nextcloud).
+fn keeps_password_in_vault(account: &accounts::Account) -> bool {
+    use accounts::cloud_types::{NEXTCLOUD, WEBDAV};
+    [accounts::email::TYPE_ID, NEXTCLOUD, WEBDAV].contains(&account.type_id.as_str())
+}
+
+/// The request that keeps `password` as `account`'s, bound to the servers its settings name.
+fn password_command(
     account: &accounts::Account,
     password: &str,
 ) -> Result<ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand, String> {
-    let config = accounts::email::AccountConfig::from_value(account.config.clone())
-        .map_err(|_| "This email account's settings are incomplete".to_owned())?;
-    let servers = accounts::email::password_places(&config)
-        .map_err(|error| error.to_string())?
-        .iter()
-        .map(|place| place.as_str().to_owned())
-        .collect();
+    let (username, servers) = if account.type_id.as_str() == accounts::email::TYPE_ID {
+        let config = accounts::email::AccountConfig::from_value(account.config.clone())
+            .map_err(|_| "This email account's settings are incomplete".to_owned())?;
+        let servers = accounts::email::password_places(&config)
+            .map_err(|error| error.to_string())?
+            .iter()
+            .map(|place| place.as_str().to_owned())
+            .collect();
+        (config.username, servers)
+    } else {
+        let servers: Vec<String> = accounts::typed_for::servers_of(account)
+            .into_iter()
+            .collect();
+        if servers.is_empty() {
+            return Err("This account names no server to sign in to".to_owned());
+        }
+        let username = account
+            .config
+            .get("username")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        (username, servers)
+    };
     Ok(
         ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::StoreAccountSecret {
             account: account.id.as_str().to_owned(),
             password: zeroize::Zeroizing::new(password.to_owned()),
-            username: config.username,
+            username,
             servers,
         },
     )

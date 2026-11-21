@@ -139,6 +139,19 @@ agent or host connection.
   app acting for its person may read what that person may, so the person's
   role on Passwords is the boundary.
 
+File accounts are mounted by the person's cloud service (`fs cloud-service`),
+not by an app, so it asks on a socket of its own (`accounts::sign_ins`, below
+the runtime directory, served by the session and handed to no app). It reads
+the file accounts from the published accounts records of the workspaces this
+device holds, and a `WebDAV` or Nextcloud account signs in with the entry it
+names, released by the same path as an app's (`ReleaseAccountSecret`, decided
+on the person's grants on Passwords, with the use naming Files). The secret goes
+to the account's mount on its standard input and stays in memory. No password
+of such an account is handed off in a file. An account its provider's page
+signed in (Google Drive, OneDrive, Dropbox, iCloud Drive) keeps that grant on
+this device, and only its short-lived access token or session headers pass
+through the sealed handoff store, which Settings' credential helper fills.
+
 Ownership does not sign in for the app: Mail's IMAP and SMTP sessions run in
 Mail, so an account's secret is released to it. The session logs each keep,
 release and refusal with the entry and app, never the value

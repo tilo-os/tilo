@@ -1,6 +1,7 @@
 //! The credential store: the one place that turns a sealed long-lived grant into a
-//! short-lived credential, for the storage daemon (through the handoff
-//! store) and for Mail (an access token for `XOAUTH2`).
+//! short-lived credential, for the storage daemon (an access token or session headers,
+//! through the handoff store) and for Mail (an access token for `XOAUTH2`). A `WebDAV` or
+//! Nextcloud password is no grant of this device's: it is the workspace's vault entry's.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1320,6 +1321,15 @@ impl CredentialStore {
         if !account.enabled {
             return Err(CredentialError::Account("account is disabled".into()));
         }
+        if matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE) {
+            // Its password is the workspace's vault entry's, which the session releases to the
+            // cloud service in memory: nothing of it is handed off in a file, and what an older
+            // version handed off goes.
+            return self
+                .handoff()?
+                .withdraw(id)
+                .map_err(CredentialError::Storage);
+        }
         let mut credentials = self.credentials()?;
         let secret = credentials
             .get(id)
@@ -1358,18 +1368,6 @@ impl CredentialStore {
                 headers: headers.headers,
                 expires_unix: headers.expires_unix,
             }
-        } else if matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE) {
-            let password = password_credential(&secret);
-            if password.is_empty() {
-                return Err(CredentialError::NeedsAuthentication);
-            }
-            let username = account
-                .config
-                .get("username")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            HandoffCredential::Basic { username, password }
         } else {
             return Err(CredentialError::Account(
                 "this account type is not a file provider".into(),

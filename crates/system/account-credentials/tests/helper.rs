@@ -114,7 +114,8 @@ tilo_test_env::scenario! {
             source(&root, &unsigned).credential(),
             Err(cloud_source::Error::Unauthorized)
         ));
-        // A WebDAV account hands off the server's own Basic credential.
+        // A WebDAV account's password is the workspace's vault entry's: the helper hands off
+        // nothing for it, even where this device still keeps one.
         let dav = AccountId::from("dav-1");
         save(
             &root,
@@ -122,13 +123,8 @@ tilo_test_env::scenario! {
             account_credentials::providers::WEBDAV_TYPE,
             Some(&Secret::password("dav-password")),
         );
-        match source(&root, &dav).credential().unwrap() {
-            cloud_source::Credential::Basic { username, password } => {
-                assert_eq!(username, "ada");
-                assert_eq!(password.as_str(), "dav-password");
-            }
-            other => panic!("unexpected {other:?}"),
-        }
+        assert!(source(&root, &dav).credential().is_err());
+        assert!(HandoffStore::open_in(&root).read(&dav).unwrap().is_none());
         let status = std::process::Command::new(helper())
             .args(["refresh", "missing", "--config-root"])
             .arg(&root)

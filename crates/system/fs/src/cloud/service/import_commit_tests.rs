@@ -1,14 +1,18 @@
-use super::tests::{NoRefresh, publish_credential};
+use super::tests::{publish_credential, told_by};
 use super::*;
-use crate::cloud::service::{Arc, CloudRequest, InProcessLauncher, ServiceConfig};
+use crate::cloud::service::{CloudRequest, InProcessLauncher, ServiceConfig};
 use std::path::Path;
 
-fn config(root: &Path, home: &Path) -> ServiceConfig {
+fn config(
+    root: &Path,
+    home: &Path,
+    session: &accounts::sign_ins::fixture::Fixture,
+) -> ServiceConfig {
     ServiceConfig {
         config_root: Some(root.into()),
         mounts_root: home.join("Remote"),
         state_root: home.join("state"),
-        refresher: Arc::new(NoRefresh),
+        accounts: told_by(session),
         control_socket: None,
         file_socket: None,
     }
@@ -24,10 +28,12 @@ fn pinned_commit_survives_expiry_restart_and_fences_recovery_against_writer() {
     account.config = server.account_config();
     store.upsert(account);
     store.save_in(root.path()).unwrap();
-    publish_credential(root.path());
+    let session = publish_credential(root.path());
     let launcher = InProcessLauncher::default();
-    let mut service =
-        CloudService::new(config(root.path(), home.path()), Box::new(launcher.clone()));
+    let mut service = CloudService::new(
+        config(root.path(), home.path(), &session),
+        Box::new(launcher.clone()),
+    );
     service.reconcile();
     let writer = runtime_fs::cloud::import_writer_lock(root.path(), "files-1").unwrap();
     let CloudResponse::ImportPrepared { token } = service.request(
@@ -48,7 +54,10 @@ fn pinned_commit_survives_expiry_restart_and_fences_recovery_against_writer() {
     assert!(service.import_holds["files-1"].phase == Phase::Committing);
     service.shutdown();
     drop(service);
-    let mut service = CloudService::new(config(root.path(), home.path()), Box::new(launcher));
+    let mut service = CloudService::new(
+        config(root.path(), home.path(), &session),
+        Box::new(launcher),
+    );
     service.reconcile();
     assert!(
         service.mounted().is_empty(),

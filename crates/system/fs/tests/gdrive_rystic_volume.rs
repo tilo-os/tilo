@@ -160,13 +160,21 @@ fn import_service(root_id: &ItemId, dirs: &Path) -> fs::cloud::CloudService {
             },
         )
         .unwrap();
+    // The stand-in session tells the account for as long as the test process runs.
+    let session = accounts::sign_ins::fixture::Fixture::serve(&root, &root);
+    let socket = session.socket();
+    std::mem::forget(session);
     let launcher = InProcessLauncher::default();
     let mut service = CloudService::new(
         ServiceConfig {
             config_root: Some(root),
             mounts_root: dirs.join("Remote"),
             state_root: dirs.join("state"),
-            refresher: Arc::new(Published(handoff)),
+            accounts: Arc::new(fs::cloud::SessionAccounts::new(
+                socket,
+                Some(handoff.clone()),
+                Arc::new(Published(handoff)),
+            )),
             control_socket: None,
             file_socket: None,
         },

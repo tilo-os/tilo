@@ -1,7 +1,8 @@
 //! A workspace's mail account signs in with one entry of its vault on every member's device:
 //! two members' devices sign in to the same mail server with it, each from its own copy of the
 //! vault document; a member whose role leaves Passwords out is refused it in words; and a
-//! password a device kept before is carried into the vault once, and leaves the device.
+//! password a device kept before, a mail account's or a file account's, is carried into the
+//! vault once, and leaves the device.
 
 #![allow(
     clippy::unwrap_used,
@@ -440,8 +441,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     let by = members.member_caller();
     let refused = tilo_test_env::within("the member's device reads the rule", async {
         loop {
-            match member.account_secret(&workspace, &by, MAIL, &named).await
-            {
+            match member.account_secret(&workspace, &by, MAIL, &named).await {
                 Err(error) if error == MAY_NOT_USE_PASSWORDS => return error,
                 _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
             }
@@ -515,15 +515,10 @@ async fn a_password_the_device_kept_is_carried_into_the_vault_once_and_leaves_th
     // The account names the entry, and the member's device signs in with it.
     let item = named_entry(&members.member, &workspace).await;
     assert_eq!(
-        released(
-            &members.member,
-            &workspace,
-            &members.member_caller(),
-            &item,
-        )
-        .await
-        .unwrap()
-        .as_str(),
+        released(&members.member, &workspace, &members.member_caller(), &item,)
+            .await
+            .unwrap()
+            .as_str(),
         PASSWORD
     );
 
@@ -538,4 +533,92 @@ async fn a_password_the_device_kept_is_carried_into_the_vault_once_and_leaves_th
     assert_eq!(named_entry(&members.owner, &workspace).await, item);
     let entries = members.owner.open_vault(&workspace).await.unwrap();
     assert_eq!(entries.entries().len(), 1, "one entry, kept once");
+}
+
+#[tokio::test]
+async fn a_file_accounts_password_the_device_kept_is_carried_and_signs_in_by_its_entry() {
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    let mut account = accounts::Account::new("files-1", accounts::cloud_types::WEBDAV);
+    account.display_name = "Team files".into();
+    account.config = serde_json::json!({
+        "server_url": "https://dav.example.test/remote.php/dav/files/ada/",
+        "username": "ada",
+    });
+    members.keep_account(&account).await;
+
+    // The owner's device kept the account's password itself, as devices did before.
+    let root = tempfile::tempdir().unwrap();
+    {
+        let mut credentials = accounts::AccountCredentials::open_in(root.path()).unwrap();
+        credentials.put_for(&account, &accounts::Secret::password(PASSWORD));
+        credentials.try_save().unwrap();
+    }
+    let by = Caller::authenticated(
+        members.owner_cert.user_public_key,
+        members.owner_cert.device_public_key,
+    );
+    let mut credentials = accounts::AccountCredentials::open_in(root.path()).unwrap();
+    let carried = members
+        .owner
+        .carry_device_passwords(&mut credentials, &by)
+        .await
+        .unwrap();
+    assert_eq!(carried.carried, vec!["files-1".to_owned()], "{carried:?}");
+
+    // The member's device lists the account with the entry it names, as the cloud service reads
+    // it, and signs in with that entry.
+    let is_files =
+        |kept: &accounts::Account| kept.type_id.as_str() == accounts::cloud_types::WEBDAV;
+    let item = tilo_test_env::within("the member's copy names the file account's entry", async {
+        loop {
+            if let Some(item) = members
+                .member
+                .held_accounts(is_files)
+                .await
+                .into_iter()
+                .find(|(held, kept)| *held == workspace && kept.id.as_str() == "files-1")
+                .and_then(|(_, kept)| {
+                    accounts::email::password_item(&kept.config).and_then(ItemRef::parse)
+                })
+            {
+                return item;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let signed_in =
+        tilo_test_env::within("the member's copy of the vault keeps the entry", async {
+            loop {
+                match members
+                    .member
+                    .account_secret(
+                        &workspace,
+                        &members.member_caller(),
+                        tilo_app_id::apps::FILE_EXPLORER,
+                        &item,
+                    )
+                    .await
+                {
+                    Ok(released) => return released,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+                }
+            }
+        })
+        .await;
+    assert_eq!(signed_in.secret.as_str(), PASSWORD);
+    let opened = members.member.open_vault(&workspace).await.unwrap();
+    let uses = opened
+        .entries()
+        .iter()
+        .find(|(entry, _)| entry.id.0 == item.id())
+        .map(|(_, uses)| uses.clone())
+        .unwrap();
+    let files = tilo_app_id::apps::FILE_EXPLORER;
+    assert!(
+        uses.iter()
+            .any(|used| used.what == format!("{files} signed in to Team files")),
+        "the release is written down with what signed in: {uses:?}"
+    );
 }

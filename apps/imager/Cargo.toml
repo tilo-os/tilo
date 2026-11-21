@@ -187,7 +187,7 @@ required-features = ["installation", "destination"]
 # The destination's capacity test asks the same compiled rule that
 # `tilo-guided-partition` delegates to.
 tilo-install-helpers = { path = "../../crates/system/install-helpers" }
-accounts = { path = "../../crates/system/accounts" }
+accounts = { path = "../../crates/system/accounts", features = ["sign-ins-fixture"] }
 account-credentials = { path = "../../crates/system/account-credentials" }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 url.workspace = true

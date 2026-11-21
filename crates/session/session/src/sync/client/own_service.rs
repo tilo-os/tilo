@@ -100,8 +100,8 @@ pub(crate) async fn open_with_groups(
     .await
     .map_err(|error| error.to_string())?;
     let service = own.install(Arc::new(service));
-    // The mail passwords this device kept before an account's was the workspace's are carried
-    // into its vault once the service holds the workspaces, and taken off the device.
+    // The passwords this device kept before an account's was the workspace's are carried into
+    // its vault once the service holds the workspaces, and taken off the device.
     #[cfg(target_os = "linux")]
     {
         let workspaces = service.workspaces().clone();
@@ -109,6 +109,8 @@ pub(crate) async fn open_with_groups(
             identity.device_cert.user_public_key,
             identity.device_cert.device_public_key,
         );
+        // The cloud service's file accounts, and their sign-ins, are the workspaces' too.
+        crate::account_sign_ins::serve(workspaces.clone(), by.clone());
         tokio::spawn(async move { crate::account_passwords::carry(&workspaces, &by).await });
     }
     Ok(service)

@@ -58,6 +58,8 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [features]
 person = ["dep:tilo-resource"]
+# A stand-in for the session's account sign-ins socket, for the cloud service's tests.
+sign-ins-fixture = []
 
 [[example]]
 name = "account_storage_probe"

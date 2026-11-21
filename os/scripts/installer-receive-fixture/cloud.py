@@ -1,8 +1,10 @@
-"""Actual imported DAV account -> default helper -> Files -> hydrated FUSE bytes.
+"""Actual imported DAV account -> workspace vault entry -> Files -> hydrated FUSE bytes.
 
-The caller owns the real user session bus/keyring and Services children. This
-module never connects an account, opens plaintext credentials or substitutes a
-vault provider. DAV expectations describe the disposable outer server only.
+The caller owns the real user session bus/keyring, the session and the Services
+children. The session carries the imported password into the workspace vault and
+the cloud service signs in by that entry. This module never connects an account,
+opens plaintext credentials or substitutes a vault provider. DAV expectations
+describe the disposable outer server only.
 """
 import hashlib
 import os
@@ -180,8 +182,8 @@ def verify(control, account, dav, services, private_log, deadline):
         os.fsync(fd)
     finally:
         os.close(fd)
-    if os.path.lexists(local_key) or private_bytes(vault / 'vault.enc', 16 * 1024 * 1024) != cipher:
-        raise RuntimeError('default account helper did not preserve imported grant ownership')
+    if private_bytes(vault / 'vault.enc', 16 * 1024 * 1024) != cipher:
+        raise RuntimeError('signing in changed the imported device vault')
     if not mounted(mount):
         raise RuntimeError('cloud mount disappeared during actual receiving use')
     services.check_live()
@@ -190,5 +192,5 @@ def verify(control, account, dav, services, private_log, deadline):
     return {'schema': 1, 'files_account_opened': True, 'cloud_fuse_mounted': True,
             'hydrated_sha256': hashlib.sha256(actual).hexdigest(),
             'written_sha256': hashlib.sha256(written).hexdigest(),
-            'local_key_retired': True, 'imported_ciphertext_preserved': True,
+            'imported_ciphertext_preserved': True,
             'server_upload_observed': False}

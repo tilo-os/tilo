@@ -858,16 +858,31 @@ fn idle_polls_back_off_and_reset_on_activity() {
     }
 }
 
-fn publish(root: &Path, id: &str, password: &str) {
-    accounts::HandoffStore::open_in(root)
-        .publish(
-            &accounts::AccountId::from(id),
-            &accounts::HandoffCredential::Basic {
-                username: USER.into(),
-                password: zeroize::Zeroizing::new(password.into()),
-            },
-        )
+/// The stand-in session telling the accounts `root` keeps: one per root, for as long as the
+/// tests run.
+fn session(root: &Path) -> Arc<accounts::sign_ins::fixture::Fixture> {
+    static SESSIONS: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                std::path::PathBuf,
+                Arc<accounts::sign_ins::fixture::Fixture>,
+            >,
+        >,
+    > = std::sync::OnceLock::new();
+    let mut sessions = SESSIONS
+        .get_or_init(std::sync::Mutex::default)
+        .lock()
         .unwrap();
+    Arc::clone(
+        sessions
+            .entry(root.to_path_buf())
+            .or_insert_with(|| Arc::new(accounts::sign_ins::fixture::Fixture::serve(root, root))),
+    )
+}
+
+/// Keep `password` in the vault entry account `id` signs in with.
+fn publish(root: &Path, id: &str, password: &str) {
+    session(root).keep(id, password);
 }
 
 struct Published(accounts::HandoffStore);
@@ -890,7 +905,11 @@ fn service_config(root: &Path, home: &Path) -> ServiceConfig {
         config_root: Some(root.to_path_buf()),
         mounts_root: home.join("Remote"),
         state_root: home.join("state"),
-        refresher: std::sync::Arc::new(Published(accounts::HandoffStore::open_in(root))),
+        accounts: Arc::new(fs::cloud::SessionAccounts::new(
+            session(root).socket(),
+            Some(accounts::HandoffStore::open_in(root)),
+            Arc::new(Published(accounts::HandoffStore::open_in(root))),
+        )),
         control_socket: None,
         file_socket: None,
     }

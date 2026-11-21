@@ -204,6 +204,13 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
     let state_root = home.join("cloud-state");
     let mount = mount_root.join("Work files");
     assert!(!mounted(&mount));
+    // The session carries the imported password into the workspace's vault and releases it to
+    // the cloud service; the stand-in session keeps the one the import sealed here.
+    let imported = account_credentials::password_credential(
+        &SecretVault::open_read_only_in(&target).get(&id).unwrap(),
+    );
+    let session = accounts::sign_ins::fixture::Fixture::serve(&home, &target);
+    session.keep(id.as_str(), imported.as_str());
     let mut service = Service(CloudService::new(
         ServiceConfig {
             config_root: None,
@@ -211,7 +218,11 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
             state_root: state_root.clone(),
             control_socket: None,
             file_socket: None,
-            refresher: Arc::new(accounts::CommandRefresher::new(None).with_program(HELPER)),
+            accounts: Arc::new(fs::cloud::SessionAccounts::new(
+                session.socket(),
+                Some(handoff.clone()),
+                Arc::new(accounts::CommandRefresher::new(None).with_program(HELPER)),
+            )),
         },
         Box::new(ProcessLauncher {
             executable: FS.into(),
@@ -226,26 +237,16 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
         Duration::from_secs(30)
     ));
     assert!(mounted(&mount));
-    assert!(
-        !local_key.exists(),
-        "default helper must retire the migrated local key"
+    assert_eq!(
+        session.released(),
+        [accounts::sign_ins::fixture::item_for(id.as_str())]
     );
-    let live = SecretVault::open();
-    assert_eq!(live.backend(), VaultBackend::System);
-    assert!(live.recovery_error().is_none());
-    assert!(account_credentials::is_copied_secret(
-        &live.get(&id).unwrap()
-    ));
     assert_eq!(
         std::fs::read(accounts::vault_dir_in(&target).join("vault.enc")).unwrap(),
         cipher_before
     );
-    assert!(handoff.read(&id).unwrap().is_some());
-    assert!(
-        !accounts::handoff::handoff_dir_in(&target)
-            .join("vault.key")
-            .exists()
-    );
+    // The password reached the mount in memory: no file on this device hands it off.
+    assert!(handoff.read(&id).unwrap().is_none());
     assert_eq!(
         std::fs::read(mount.join("Documents/hello.txt")).unwrap(),
         b"actual receiving read"
@@ -301,7 +302,7 @@ fn migrated_dav_grant_default_helper_promotes_system_ownership_and_mounts_real_f
     );
     let mut receipt = unsafe { File::from_raw_fd(87) };
     let public = serde_json::json!({"schema":1,"qualification":"migrated-dav-default-session",
-        "migrated_grant_verified":true,"default_system_ownership_verified":true,"local_key_retired":true,
+        "migrated_grant_verified":true,"released_in_memory":true,"no_handoff_file":true,
         "real_helper_verified":true,"kernel_read_write_verified":true,"account_removal_unmounted":true,
         "source_unchanged":true,"provider_authentication_verified":false});
     let bytes = serde_json::to_vec(&public).unwrap();

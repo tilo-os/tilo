@@ -15,6 +15,7 @@
 //! replicate signed records between peers, while a cloud account mirrors a
 //! server that is the authority for its own tree.
 
+pub mod account_source;
 pub mod credential;
 pub mod fuse;
 mod import;
@@ -22,5 +23,6 @@ pub mod providers;
 pub mod service;
 pub mod volume;
 
+pub use account_source::{AccountSource, AccountsWatch, SessionAccounts};
 pub use service::{CloudService, InProcessLauncher, Launcher, ProcessLauncher, ServiceConfig};
 pub use volume::{CloudVolume, VolumeConfig};

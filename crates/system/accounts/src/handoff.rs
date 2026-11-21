@@ -1,11 +1,12 @@
 //! The narrowly scoped credential **handoff** from Settings to the storage
 //! daemon.
 //!
-//! - a short-lived `OAuth` access token with its expiry,
-//! - short-lived web session headers with their expiry, or
-//! - for plain `WebDAV` and Nextcloud, the Basic credential the server itself
-//!   requires (a Nextcloud app password minted for this device by Login Flow
-//!   v2, never the account password).
+//! - a short-lived `OAuth` access token with its expiry, or
+//! - short-lived web session headers with their expiry.
+//!
+//! A `WebDAV` or Nextcloud account's password is never handed off: it is the
+//! workspace's vault entry's, which the session releases to the storage daemon
+//! in memory ([`crate::sign_ins`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,10 +30,6 @@ const FORMAT: VaultFormat = VaultFormat {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HandoffCredential {
-    Basic {
-        username: String,
-        password: Zeroizing<String>,
-    },
     /// An `OAuth` access token. Never a refresh token.
     Bearer {
         token: Zeroizing<String>,
@@ -49,10 +46,6 @@ pub enum HandoffCredential {
 impl std::fmt::Debug for HandoffCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Basic { username, .. } => f
-                .debug_struct("Basic")
-                .field("username", username)
-                .finish_non_exhaustive(),
             Self::Bearer { expires_unix, .. } => f
                 .debug_struct("Bearer")
                 .field("expires_unix", expires_unix)
@@ -75,7 +68,6 @@ impl std::fmt::Debug for HandoffCredential {
 impl HandoffCredential {
     pub fn expires_unix(&self) -> Option<u64> {
         match self {
-            Self::Basic { .. } => None,
             Self::Bearer { expires_unix, .. } | Self::Session { expires_unix, .. } => *expires_unix,
         }
     }
@@ -90,10 +82,6 @@ impl HandoffCredential {
             unix.and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
         };
         match self {
-            Self::Basic { username, password } => cloud_source::Credential::Basic {
-                username: username.clone(),
-                password: password.clone(),
-            },
             Self::Bearer {
                 token,
                 expires_unix,
@@ -405,9 +393,9 @@ mod tests {
         store
             .publish(
                 &b,
-                &HandoffCredential::Basic {
-                    username: "ada".into(),
-                    password: Zeroizing::new("app-password".into()),
+                &HandoffCredential::Session {
+                    headers: vec![("Cookie".into(), Zeroizing::new("session-cookie".into()))],
+                    expires_unix: None,
                 },
             )
             .unwrap();
@@ -421,7 +409,7 @@ mod tests {
         for path in &files {
             let bytes = std::fs::read(path).unwrap();
             let text = String::from_utf8_lossy(&bytes);
-            assert!(!text.contains("access-a") && !text.contains("app-password"));
+            assert!(!text.contains("access-a") && !text.contains("session-cookie"));
         }
         match store.read(&a).unwrap() {
             Some(HandoffCredential::Bearer {

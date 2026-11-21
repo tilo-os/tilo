@@ -1,7 +1,8 @@
 //! The per-user cloud account service and its mount processes.
 //!
-//! `fs cloud-service` (user unit `tilo-fs-cloud.service`) watches the account store
-//! Settings writes and keeps exactly one mount per enabled file account at
+//! `fs cloud-service` (user unit `tilo-fs-cloud.service`) follows the file accounts of the
+//! workspaces this device holds, as the session tells them ([`super::account_source`]), and
+//! keeps exactly one mount per enabled file account at
 //! `~/Remote/<account label>`. An account that appears or is enabled gets a mount
 //! process with its one short-lived credential on stdin; one disabled, reconfigured or
 //! removed has its mount stopped, and removal also drops its cache and queued state.
@@ -13,9 +14,10 @@
 //! capabilities, syncs, pauses and resumes; the file socket also asks a mount for a
 //! file's revisions, to restore a revision or for a share link. Each request travels
 //! down the mount's stdin and its answer comes back on stdout, so no credential
-//! crosses either socket. Neither the service nor its mounts open Settings' vault:
-//! the credential comes from the handoff store, which runs Settings' credential
-//! helper when it is missing, expired or rejected.
+//! crosses either socket. Neither the service nor its mounts open a vault: a password
+//! is released by the session from the workspace's vault entry the account names, and
+//! an access token comes from the handoff store, which runs Settings' credential helper
+//! when it is missing, expired or rejected.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -28,16 +30,12 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use accounts::{
-    AccountId, AccountStore, AccountSyncReporter, AccountSyncStatusStore, CredentialRefresher,
-    HandoffCredentialSource, HandoffStore,
-};
-use cloud_source::{Credential, CredentialSource as _};
+use accounts::{AccountId, AccountStore, AccountSyncReporter, AccountSyncStatusStore};
+use cloud_source::{Credential, CredentialSource};
 use runtime_fs::cloud::{
     CLOUD_FRAMING, CloudCapabilities, CloudMount, CloudRequest, CloudResponse, CloudSocket,
     MountHealth,
 };
-use tilo_files::native::{ChangeWatch, watch_changes};
 
 use super::credential::{
     CAPABILITIES_PREFIX, EXPIRED_LINE, HEALTH_PREFIX, MountReply, PipeCredential, READY_LINE,
@@ -80,13 +78,13 @@ pub trait Launcher: Send + Sync {
 }
 
 pub struct ServiceConfig {
+    /// Where the accounts' sync statuses and Settings' import commits are kept on this device.
     pub config_root: Option<PathBuf>,
     pub mounts_root: PathBuf,
     pub state_root: PathBuf,
-    /// Publishes a fresh handoff credential when one is missing, expired or
-    /// rejected: [`accounts::CommandRefresher`] (Settings' credential
-    /// helper) in production.
-    pub refresher: Arc<dyn CredentialRefresher>,
+    /// The file accounts and what each signs in with: [`super::SessionAccounts`] in
+    /// production.
+    pub accounts: Arc<dyn super::AccountSource>,
     /// Where to serve the account socket ([`CloudSocket::Accounts`]: list, sync now,
     /// pause, resume); `None` serves none, and tools drive [`CloudService::request`].
     pub control_socket: Option<PathBuf>,
@@ -133,7 +131,7 @@ pub struct CloudService {
     config: ServiceConfig,
     launcher: Box<dyn Launcher>,
     mounts: HashMap<String, Mounted>,
-    credentials: HashMap<String, Arc<HandoffCredentialSource>>,
+    credentials: HashMap<String, Arc<dyn CredentialSource>>,
     retry: HashSet<String>,
     paused: BTreeSet<String>,
     /// File requests sent to a mount, by request id: the account and where the answer
@@ -189,17 +187,7 @@ impl CloudService {
     }
 
     fn store(&self) -> AccountStore {
-        match &self.config.config_root {
-            Some(root) => AccountStore::load_in(root),
-            None => AccountStore::load(),
-        }
-    }
-
-    fn handoff(&self) -> Option<HandoffStore> {
-        match &self.config.config_root {
-            Some(root) => Some(HandoffStore::open_in(root)),
-            None => HandoffStore::open(),
-        }
+        self.config.accounts.store()
     }
 
     fn reporter(&self, id: &str) -> AccountSyncReporter {
@@ -209,22 +197,18 @@ impl CloudService {
         }
     }
 
-    /// The account's credential from the handoff store, refreshed through the
-    /// credential helper when needed; failures go to the account status store.
+    /// The account's credential, from where it signs in with
+    /// ([`super::AccountSource::credential`]); failures go to the account status store.
     fn credential(&mut self, account_id: &str, need: Need) -> Option<Credential> {
         let source = if let Some(source) = self.credentials.get(account_id) {
             Arc::clone(source)
         } else {
-            let Some(handoff) = self.handoff() else {
-                tracing::warn!("no config directory for the credential handoff");
-                let _ = self.reporter(account_id).failed();
+            let store = self.store();
+            let Some(account) = store.get(&AccountId::from(account_id)) else {
+                let _ = self.reporter(account_id).needs_authentication();
                 return None;
             };
-            let source = Arc::new(HandoffCredentialSource::new(
-                AccountId::from(account_id),
-                handoff,
-                Arc::clone(&self.config.refresher),
-            ));
+            let source = self.config.accounts.credential(account);
             self.credentials
                 .insert(account_id.to_owned(), Arc::clone(&source));
             source
@@ -557,19 +541,12 @@ impl CloudService {
                         .filter_map(providers::source_spec)
                         .collect(),
                 );
-                let Some(handoff) = self.handoff() else {
-                    let _ = reply.send(CloudResponse::Import(
-                        runtime_fs::cloud::ImportReply::Error(super::import::failure(
-                            runtime_fs::cloud::ImportErrorKind::AuthenticationRequired,
-                        )),
-                    ));
-                    return;
-                };
-                let credentials = Arc::new(HandoffCredentialSource::new(
-                    AccountId::from(account.as_str()),
-                    handoff,
-                    Arc::clone(&self.config.refresher),
-                ));
+                // An account that is gone is refused by the imports, which know it no longer.
+                let credentials: Arc<dyn CredentialSource> =
+                    match store.get(&AccountId::from(account.as_str())) {
+                        Some(kept) => self.config.accounts.credential(kept),
+                        None => Arc::new(super::account_source::NoCredential),
+                    };
                 self.imports.request(account, request, credentials, reply);
                 return;
             }
@@ -670,16 +647,12 @@ impl CloudService {
         }
     }
 
-    /// Serve until the process is stopped: reconcile now and whenever the account store
-    /// changes.
+    /// Serve until the process is stopped: reconcile now and whenever the accounts change.
     pub fn run(mut self) -> io::Result<()> {
-        let accounts_dir = match &self.config.config_root {
-            Some(root) => root.join("accounts"),
-            None => accounts::config_root()
-                .ok_or_else(|| io::Error::other("no user config directory"))?
-                .join("accounts"),
-        };
-        let _watcher = watch_accounts(&accounts_dir, self.signals.clone())?;
+        let signals = Mutex::new(self.signals.clone());
+        let _watch = self.config.accounts.watch(Box::new(move || {
+            let _ = signals.lock_recover().send(Signal::Accounts);
+        }))?;
         // A grant of the account socket's directory must never reach file
         // requests: a file socket inside it is not served.
         let file_socket = self.config.file_socket.clone().filter(|files| {
@@ -873,103 +846,6 @@ pub fn dispatch(
             }
         }
         ToMount::Start(_) | ToMount::Credential(_) => {}
-    }
-}
-
-/// Subscribe to mutations of the account store on the normal service channel. The watch
-/// reports writes, creation, removal and renames only, so the service reading the store
-/// does not feed itself.
-fn watch_accounts(directory: &Path, signals: Sender<Signal>) -> io::Result<ChangeWatch> {
-    fs::create_dir_all(directory)?;
-    let store = directory.join("store.json");
-    watch_changes(
-        directory,
-        move |entry| entry == store,
-        move || {
-            let _ = signals.send(Signal::Accounts);
-        },
-    )
-}
-
-#[cfg(test)]
-mod watcher_tests {
-    use super::*;
-
-    #[cfg(target_os = "linux")]
-    fn watching(directory: &Path, signals: Sender<Signal>) -> (ChangeWatch, String) {
-        tilo_test_env::idle::spawned_thread(tilo_files::native::CHANGE_WATCH_THREAD, || {
-            watch_accounts(directory, signals).unwrap()
-        })
-    }
-
-    /// Waits until the watch's thread has handled every event queued so far: inotify
-    /// queues an event in the syscall that causes it and wakes the thread, which sleeps
-    /// again only once the queue is empty.
-    #[cfg(target_os = "linux")]
-    fn caught_up(watch_thread: &str) {
-        tilo_test_env::wait_until("the accounts watch to catch up", || {
-            std::fs::read_to_string(format!("/proc/self/task/{watch_thread}/stat")).is_ok_and(
-                |stat| {
-                    stat.rsplit_once(") ")
-                        .is_some_and(|(_, rest)| rest.starts_with('S'))
-                },
-            )
-        });
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn account_store_reads_do_not_retrigger_the_service_watcher() {
-        let root = tempfile::tempdir().unwrap();
-        AccountStore::new().save_in(root.path()).unwrap();
-        let directory = root.path().join("accounts");
-        let (signals, inbox) = mpsc::channel();
-        let (_watcher, watch_thread) = watching(&directory, signals);
-        let store = AccountStore::load_in(root.path());
-        assert!(store.all().is_empty());
-        caught_up(&watch_thread);
-        assert!(
-            matches!(inbox.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "reloading accounts must not queue another reload"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn watcher_tracks_atomic_store_changes_but_not_its_status_reports() {
-        let root = tempfile::tempdir().unwrap();
-        let directory = root.path().join("accounts");
-        let (signals, inbox) = mpsc::channel();
-        let (_watcher, watch_thread) = watching(&directory, signals);
-        AccountSyncReporter::in_root("fixture", root.path())
-            .offline()
-            .unwrap();
-        caught_up(&watch_thread);
-        assert!(
-            matches!(inbox.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "mount health reports must not trigger account reconciliation"
-        );
-        AccountStore::new().save_in(root.path()).unwrap();
-        assert!(matches!(
-            inbox.recv_timeout(tilo_test_env::hang_bound()),
-            Ok(Signal::Accounts)
-        ));
-        caught_up(&watch_thread);
-        while inbox.try_recv().is_ok() {}
-        // The writer replaces the inode. Subsequent replacement and deletion
-        // must still be observed through the containing-directory watch.
-        AccountStore::new().save_in(root.path()).unwrap();
-        assert!(matches!(
-            inbox.recv_timeout(tilo_test_env::hang_bound()),
-            Ok(Signal::Accounts)
-        ));
-        caught_up(&watch_thread);
-        while inbox.try_recv().is_ok() {}
-        fs::remove_file(accounts::store_path_in(root.path())).unwrap();
-        assert!(matches!(
-            inbox.recv_timeout(tilo_test_env::hang_bound()),
-            Ok(Signal::Accounts)
-        ));
     }
 }
 

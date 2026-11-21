@@ -1,0 +1,259 @@
+//! Where the cloud service reads its file accounts and signs in to them.
+//!
+//! [`SessionAccounts`] asks the session ([`accounts::sign_ins`]): the accounts are the
+//! workspaces' published accounts records, and an account that signs in with a password (`WebDAV`,
+//! Nextcloud) signs in with the vault entry it names, released by the session in memory. No
+//! account's password is in a file on this device. An account its provider's page signed in
+//! (Google Drive, `OneDrive`, Dropbox, iCloud Drive) keeps that grant on this device, and its
+//! short-lived access token comes through the handoff store, which Settings' credential helper
+//! fills.
+
+use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use accounts::sign_ins::{self, Answer, Ask, Held};
+use accounts::{
+    Account, AccountId, AccountStore, CredentialRefresher, HandoffCredentialSource, HandoffStore,
+};
+use cloud_source::{Credential, CredentialSource};
+use tilo_lock::MutexRecover as _;
+use zeroize::Zeroizing;
+
+/// The cloud service's file accounts and their sign-ins.
+pub trait AccountSource: Send + Sync {
+    /// The file accounts now.
+    fn store(&self) -> AccountStore;
+    /// Call `changed` each time the accounts may have changed, until the returned watch drops.
+    fn watch(&self, changed: Box<dyn Fn() + Send + Sync>) -> io::Result<AccountsWatch>;
+    /// What `account` signs in with.
+    fn credential(&self, account: &Account) -> Arc<dyn CredentialSource>;
+}
+
+/// Keeps an [`AccountSource::watch`] going; dropping it stops it.
+pub struct AccountsWatch {
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for AccountsWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// How long the watch waits before it asks again after the session did not answer.
+const RECONNECT: Duration = Duration::from_secs(1);
+
+/// The accounts and sign-ins the session tells on its socket.
+pub struct SessionAccounts {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    socket: PathBuf,
+    /// The last accounts the session told, and their revision.
+    latest: Mutex<Option<(String, Vec<Held>)>>,
+    /// Where an account its provider's page signed in finds its access token.
+    handoff: Option<HandoffStore>,
+    refresher: Arc<dyn CredentialRefresher>,
+}
+
+impl SessionAccounts {
+    /// The session's accounts on `socket`; `handoff` and `refresher` give the access tokens of
+    /// the accounts their provider's page signed in.
+    #[must_use]
+    pub fn new(
+        socket: PathBuf,
+        handoff: Option<HandoffStore>,
+        refresher: Arc<dyn CredentialRefresher>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                socket,
+                latest: Mutex::new(None),
+                handoff,
+                refresher,
+            }),
+        }
+    }
+}
+
+impl Inner {
+    fn ask(&self, ask: &Ask) -> io::Result<Answer> {
+        sign_ins::Client::connect(&self.socket)?.ask(ask)
+    }
+
+    /// Ask for the accounts after `after`, and keep what is told. Whether they changed.
+    fn fetch(&self, after: Option<String>) -> io::Result<bool> {
+        match self.ask(&Ask::Accounts { after })? {
+            Answer::Accounts { revision, accounts } => {
+                let mut latest = self.latest.lock_recover();
+                let changed = latest.as_ref().is_none_or(|(held, _)| *held != revision);
+                *latest = Some((revision, accounts));
+                Ok(changed)
+            }
+            Answer::Refused { error } => Err(io::Error::other(error)),
+            Answer::SignIn { .. } => Err(io::Error::other("the session answered another ask")),
+        }
+    }
+
+    fn revision(&self) -> Option<String> {
+        self.latest
+            .lock_recover()
+            .as_ref()
+            .map(|(revision, _)| revision.clone())
+    }
+
+    fn workspace_of(&self, account: &AccountId) -> Option<String> {
+        self.latest.lock_recover().as_ref().and_then(|(_, held)| {
+            held.iter()
+                .find(|held| held.account.id == *account)
+                .map(|held| held.workspace.clone())
+        })
+    }
+}
+
+impl AccountSource for SessionAccounts {
+    fn store(&self) -> AccountStore {
+        // Read anew: a removal must not wait for the watch to tell it.
+        if let Err(error) = self.inner.fetch(None) {
+            tracing::info!(%error, "the session does not tell the file accounts now");
+        }
+        let mut store = AccountStore::new();
+        if let Some((_, held)) = self.inner.latest.lock_recover().as_ref() {
+            for held in held {
+                store.upsert(held.account.clone());
+            }
+        }
+        store
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the watch waits on the session's socket on a thread of its own"
+    )]
+    fn watch(&self, changed: Box<dyn Fn() + Send + Sync>) -> io::Result<AccountsWatch> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let inner = Arc::clone(&self.inner);
+        let stopped = Arc::clone(&stop);
+        std::thread::Builder::new()
+            .name("cloud-accounts".into())
+            .spawn(move || {
+                while !stopped.load(Ordering::SeqCst) {
+                    match inner.fetch(inner.revision()) {
+                        Ok(true) if !stopped.load(Ordering::SeqCst) => changed(),
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::debug!(%error, "the session's file accounts are not told yet");
+                            std::thread::sleep(RECONNECT);
+                        }
+                    }
+                }
+            })?;
+        Ok(AccountsWatch { stop })
+    }
+
+    fn credential(&self, account: &Account) -> Arc<dyn CredentialSource> {
+        if sign_ins::signs_in_with_entry(account) {
+            // What an older version handed off for it in a file goes.
+            if let Some(handoff) = &self.inner.handoff
+                && let Err(error) = handoff.withdraw(&account.id)
+            {
+                tracing::warn!(%error, "a file account's old handed-off password stays on this device");
+            }
+            return Arc::new(EntrySignIn {
+                inner: Arc::clone(&self.inner),
+                account: account.id.clone(),
+                item: accounts::email::password_item(&account.config).map(ToOwned::to_owned),
+                username: account
+                    .config
+                    .get("username")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                held: Mutex::new(None),
+                rejected: Mutex::new(None),
+            });
+        }
+        match &self.inner.handoff {
+            Some(handoff) => Arc::new(HandoffCredentialSource::new(
+                account.id.clone(),
+                handoff.clone(),
+                Arc::clone(&self.inner.refresher),
+            )),
+            None => Arc::new(NoCredential),
+        }
+    }
+}
+
+/// An account's password, released by the session from the vault entry the account names and
+/// kept in this process's memory.
+struct EntrySignIn {
+    inner: Arc<Inner>,
+    account: AccountId,
+    item: Option<String>,
+    username: String,
+    held: Mutex<Option<Zeroizing<String>>>,
+    /// The password the server refused: released again unchanged, the account needs signing in.
+    rejected: Mutex<Option<Zeroizing<String>>>,
+}
+
+impl CredentialSource for EntrySignIn {
+    fn credential(&self) -> cloud_source::Result<Credential> {
+        if let Some(password) = self.held.lock_recover().as_ref() {
+            return Ok(Credential::Basic {
+                username: self.username.clone(),
+                password: password.clone(),
+            });
+        }
+        let Some(item) = &self.item else {
+            return Err(cloud_source::Error::Unauthorized);
+        };
+        let Some(workspace) = self.inner.workspace_of(&self.account) else {
+            return Err(cloud_source::Error::Unauthorized);
+        };
+        let answer = self.inner.ask(&Ask::SignIn {
+            workspace,
+            item: item.clone(),
+        });
+        match answer {
+            Ok(Answer::SignIn { secret }) => {
+                if self.rejected.lock_recover().as_ref() == Some(&secret) {
+                    return Err(cloud_source::Error::Unauthorized);
+                }
+                *self.held.lock_recover() = Some(secret.clone());
+                Ok(Credential::Basic {
+                    username: self.username.clone(),
+                    password: secret,
+                })
+            }
+            Ok(Answer::Refused { error }) => {
+                tracing::info!(%error, "the session released no sign-in for a file account");
+                Err(cloud_source::Error::Unauthorized)
+            }
+            Ok(Answer::Accounts { .. }) => Err(cloud_source::Error::Unauthorized),
+            // The session is not up yet, or restarting: tried again later.
+            Err(_) => Err(cloud_source::Error::Offline),
+        }
+    }
+
+    fn rejected(&self) {
+        let refused = self.held.lock_recover().take();
+        if refused.is_some() {
+            *self.rejected.lock_recover() = refused;
+        }
+    }
+}
+
+/// An account with nowhere to find its credential.
+pub(crate) struct NoCredential;
+
+impl CredentialSource for NoCredential {
+    fn credential(&self) -> cloud_source::Result<Credential> {
+        Err(cloud_source::Error::Unauthorized)
+    }
+
+    fn rejected(&self) {}
+}

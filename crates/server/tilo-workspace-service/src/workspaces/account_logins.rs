@@ -305,6 +305,13 @@ impl Workspaces {
     }
 }
 
+/// Whether a password this device kept for `account` is carried into the workspace's vault: an
+/// email account's, and a file account's that signs in with a password (`WebDAV`, Nextcloud).
+fn carries(account: &accounts::Account) -> bool {
+    use accounts::cloud_types::{NEXTCLOUD, WEBDAV};
+    [accounts::email::TYPE_ID, NEXTCLOUD, WEBDAV].contains(&account.type_id.as_str())
+}
+
 /// What [`Workspaces::carry_device_passwords`] did with a device's mail passwords.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CarriedPasswords {
@@ -315,6 +322,32 @@ pub struct CarriedPasswords {
 }
 
 impl Workspaces {
+    /// The accounts of every workspace this device holds that `keep` keeps, each with its
+    /// workspace, in the order the workspaces and their records list them. A workspace whose
+    /// accounts do not read here yet lists none.
+    pub async fn held_accounts(
+        &self,
+        keep: impl Fn(&accounts::Account) -> bool,
+    ) -> Vec<(String, accounts::Account)> {
+        let mut held = Vec::new();
+        let mut workspaces = self.held_workspaces();
+        workspaces.sort();
+        for workspace in workspaces {
+            let Ok(accounts) = self.workspace_accounts(&workspace).await else {
+                continue;
+            };
+            held.extend(
+                accounts
+                    .store()
+                    .all()
+                    .iter()
+                    .filter(|account| keep(account))
+                    .map(|account| (workspace.clone(), account.clone())),
+            );
+        }
+        held
+    }
+
     /// Carry the mail passwords this device kept in its own `credentials` before an account's
     /// password was the workspace's, into each workspace this device holds: every email
     /// account of a workspace's accounts that names no vault entry yet, and has a password
@@ -344,7 +377,7 @@ impl Workspaces {
             };
             let by = by.clone().in_workspace(workspace.clone());
             for account in held.store().all() {
-                if account.type_id.as_str() != accounts::email::TYPE_ID {
+                if !carries(account) {
                     continue;
                 }
                 let Some(secret) = credentials.get_for(account) else {
@@ -354,8 +387,7 @@ impl Workspaces {
                     continue;
                 }
                 let id = account.id.as_str().to_owned();
-                match Box::pin(self.carry_one(&workspace, &by, account, secret.password)).await
-                {
+                match Box::pin(self.carry_one(&workspace, &by, account, secret.password)).await {
                     Ok(()) => {
                         carried.insert(id);
                     }
@@ -411,22 +443,33 @@ impl Workspaces {
         {
             return Ok(());
         }
-        let config = accounts::email::AccountConfig::from_value(account.config.clone())
-            .map_err(|error| format!("its settings do not read: {error}"))?;
-        let places =
-            accounts::email::password_places(&config).map_err(|error| error.to_string())?;
-        let item = self
-            .keep_account_password(
-                workspace,
-                by,
-                None,
-                AccountLogin {
-                    title: config.email.clone(),
-                    username: config.username.clone(),
-                    places,
+        let login = if account.type_id.as_str() == accounts::email::TYPE_ID {
+            let config = accounts::email::AccountConfig::from_value(account.config.clone())
+                .map_err(|error| format!("its settings do not read: {error}"))?;
+            AccountLogin {
+                title: config.email.clone(),
+                username: config.username.clone(),
+                places: accounts::email::password_places(&config)
+                    .map_err(|error| error.to_string())?,
+            }
+        } else {
+            AccountLogin {
+                title: if account.display_name.is_empty() {
+                    account.id.as_str().to_owned()
+                } else {
+                    account.display_name.clone()
                 },
-                Zeroizing::new(password),
-            )
+                username: account
+                    .config
+                    .get("username")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                places: super::person_settings::kept_sign_ins::places_of(account)?,
+            }
+        };
+        let item = self
+            .keep_account_password(workspace, by, None, login, Zeroizing::new(password))
             .await?;
         self.name_account_password(workspace, account.id.as_str(), &item)
             .await

@@ -620,23 +620,20 @@ fn protected_accounts_require_authenticated_manifest_protocol_before_adoption() 
     )
     .unwrap();
     assert_eq!(review.manifest().account_credentials_protocol, Some(1));
-    // The current canonical credential store genuinely consumes the resealed grant;
+    // The current canonical credential store genuinely reads the resealed grant;
     // image/first-login admission separately verifies its installed counterpart.
     let target = root.join("target-accounts");
     assert_eq!(
         review.import_accounts(&target, PASSWORD).unwrap(),
         vec![id.clone()]
     );
-    account_credentials::CredentialStore::for_root(Some(target.clone()))
-        .publish(&id, false)
-        .unwrap();
-    let Some(accounts::HandoffCredential::Basic { username, password }) =
-        accounts::HandoffStore::open_in(&target).read(&id).unwrap()
-    else {
-        panic!("missing canonical credential")
-    };
-    assert_eq!(username, "ada");
-    assert_eq!(password.as_str(), "private-source-password");
+    let kept = accounts::SecretVault::open_in(&target)
+        .get(&id)
+        .expect("missing canonical credential");
+    assert_eq!(
+        account_credentials::password_credential(&kept).as_str(),
+        "private-source-password"
+    );
     assert_eq!(
         fs::read(accounts::vault_dir_in(&original).join("vault.enc")).unwrap(),
         bytes

@@ -432,8 +432,7 @@ def target_child(candidate, evidence, delivery_context, target, parent_control):
                 raise RuntimeError('actual application verification did not prove ' + key)
         cloud = observations['cloud']
         if not all(cloud.get(key) is True for key in
-                   ('files_account_opened', 'cloud_fuse_mounted', 'local_key_retired',
-                    'imported_ciphertext_preserved')):
+                   ('files_account_opened', 'cloud_fuse_mounted', 'imported_ciphertext_preserved')):
             raise RuntimeError('actual default cloud ownership and Files hydration remain unproven')
         if (not observations['firstuse']['rw_available']
                 or observations['firstuse'].get('certified_owner_surface') is not True

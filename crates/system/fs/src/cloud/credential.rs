@@ -1,16 +1,16 @@
 //! The pipe between the account service and a mount: the credential
 //! handoff, and the service's control of the mount.
 //!
-//! Neither side opens Settings' account vault. The service reads one
-//! account's short-lived credential from the handoff store through
-//! [`accounts::HandoffCredentialSource`] (an access token, session headers,
-//! or the Basic credential a `WebDAV` server itself needs) and hands the
-//! mount process just that [`Credential`], as a line on the mount's stdin.
-//! It never appears in arguments, the environment or logs.
+//! Neither side opens a vault. The service takes one account's credential
+//! from where it signs in with ([`super::AccountSource`]): a `WebDAV` or
+//! Nextcloud password the session releases from the workspace's vault, or an
+//! access token or session headers from the handoff store. It hands the mount
+//! process just that [`Credential`], as a line on the mount's stdin. It never
+//! appears in arguments, the environment, a file or logs.
 //!
 //! When the server rejects a credential, or the one the mount holds has
-//! expired, the mount says so on stdout; the service asks the handoff for a
-//! fresh one (which runs Settings' credential helper when needed) and sends
+//! expired, the mount says so on stdout; the service asks for a fresh one
+//! (from the session again, or through Settings' credential helper) and sends
 //! it, or marks the account as needing sign-in. Closing the mount's stdin
 //! tells it to unmount.
 //!

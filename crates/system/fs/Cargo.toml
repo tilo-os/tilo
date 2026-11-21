@@ -203,6 +203,7 @@ test-server = { path = "../../dev/test-server" }
 cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
 cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }
+accounts = { version = "0.1.0", path = "../accounts", features = ["sign-ins-fixture"] }
 
 [lints]
 workspace = true

@@ -1,27 +1,30 @@
 use super::*;
-use crate::cloud::service::{
-    Arc, CloudRequest, CredentialRefresher, HandoffStore, InProcessLauncher, ServiceConfig, mpsc,
-};
-use cloud_source_dav::fake::{FakeDav, PASSWORD, USER};
+use crate::cloud::service::{Arc, CloudRequest, InProcessLauncher, ServiceConfig, mpsc};
+use accounts::sign_ins::fixture::Fixture;
+use cloud_source_dav::fake::{FakeDav, PASSWORD};
 use std::path::Path;
 
-pub(super) struct NoRefresh;
-impl CredentialRefresher for NoRefresh {
-    fn refresh(&self, _: &AccountId, _: bool) -> Result<(), accounts::RefreshError> {
-        Err(accounts::RefreshError::NeedsAuthentication)
-    }
+/// A stand-in session telling the accounts `root` keeps, which keeps the fake server's password
+/// as the sign-in of account `files-1`.
+pub(super) fn publish_credential(root: &Path) -> Fixture {
+    let session = Fixture::serve(root, root);
+    session.keep("files-1", PASSWORD);
+    session
 }
 
-pub(super) fn publish_credential(root: &Path) {
-    HandoffStore::open_in(root)
-        .publish(
-            &AccountId::from("files-1"),
-            &accounts::HandoffCredential::Basic {
-                username: USER.into(),
-                password: zeroize::Zeroizing::new(PASSWORD.into()),
-            },
-        )
-        .unwrap();
+/// The accounts `session` tells, as the cloud service reads them.
+pub(super) fn told_by(session: &Fixture) -> Arc<dyn crate::cloud::AccountSource> {
+    struct NoRefresh;
+    impl accounts::CredentialRefresher for NoRefresh {
+        fn refresh(&self, _: &AccountId, _: bool) -> Result<(), accounts::RefreshError> {
+            Err(accounts::RefreshError::NeedsAuthentication)
+        }
+    }
+    Arc::new(crate::cloud::SessionAccounts::new(
+        session.socket(),
+        None,
+        Arc::new(NoRefresh),
+    ))
 }
 
 #[test]
@@ -36,14 +39,14 @@ fn expired_preparation_remounts_without_changing_pause_or_queued_data() {
     account.config = server.account_config();
     store.upsert(account);
     store.save_in(root.path()).unwrap();
-    publish_credential(root.path());
+    let session = publish_credential(root.path());
     let launcher = InProcessLauncher::default();
     let mut service = CloudService::new(
         ServiceConfig {
             config_root: Some(root.path().into()),
             mounts_root: home.path().join("Remote"),
             state_root: home.path().join("state"),
-            refresher: Arc::new(NoRefresh),
+            accounts: told_by(&session),
             control_socket: None,
             file_socket: None,
         },
