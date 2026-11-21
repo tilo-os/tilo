@@ -1,4 +1,9 @@
-use super::*;
+use ui::widget::document_line::DocumentLine as _;
+use ui::widget::{EventCtx, Widget};
+use winit::event::{KeyEvent, Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use super::{BlockEditor, DocumentPosition, DocumentSelection, handle_visual_formula_key};
 
 impl BlockEditor {
     /// For an event that can only type into the focused paragraph (a
