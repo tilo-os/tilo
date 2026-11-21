@@ -523,6 +523,7 @@ async fn an_agents_ask_edited_on_the_sheet_runs_exactly_the_edited_arguments() {
                     text: "true".into(),
                 },
             ],
+            reply: None,
         })
         .unwrap();
     let approved = approval.await.expect("answered").expect("approved");
@@ -566,6 +567,7 @@ async fn arguments_changed_after_the_person_allowed_them_are_refused() {
                     path: vec!["text".into()],
                     text: "Buy oat milk".into(),
                 }],
+                reply: None,
             })
             .unwrap();
         let approved = approval.await.expect("answered").expect("approved");
@@ -599,6 +601,7 @@ async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
                 path: vec!["owner".into()],
                 text: "mallory".into(),
             }],
+            reply: None,
         })
         .unwrap();
     assert!(matches!(

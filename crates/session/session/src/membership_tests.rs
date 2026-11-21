@@ -1833,6 +1833,7 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         moderation: None,
         scope: None,
         draft: None,
+        ask: None,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

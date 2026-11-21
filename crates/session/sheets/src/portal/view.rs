@@ -180,8 +180,12 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         ));
     }
     if !dialog.detail.is_empty() {
+        // The question itself: a screen reader moves to it and reads it whole,
+        // as the person does before they answer.
         body = body.push(Box::new(
-            Text::new(&dialog.detail).with_role(TextRole::Body),
+            Text::new(&dialog.detail)
+                .with_role(TextRole::Body)
+                .focusable(true),
         ));
     }
     if !dialog.facts.is_empty() {

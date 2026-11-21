@@ -175,6 +175,7 @@ impl AppBrokerState {
                 moderation: None,
                 scope: None,
                 draft,
+                ask: None,
             },
             grant,
         )))

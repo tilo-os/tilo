@@ -145,6 +145,9 @@ pub struct Text {
     dimmed: bool,
     tone: Option<super::Tone>,
     access: TextAccess,
+    /// Whether assistive technology may move focus to these words: what a
+    /// sheet asks, which a person reads whole before answering.
+    focusable: bool,
     /// What assistive technology reads instead of the shown words: a
     /// failure's headline shown, its whole reason spoken.
     spoken: Option<String>,
@@ -203,6 +206,7 @@ impl Text {
             dimmed: false,
             tone: None,
             access: TextAccess::Text,
+            focusable: false,
             spoken: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
@@ -570,6 +574,15 @@ impl Text {
     /// heard before the person can proceed (for example, a rejected login),
     /// and `Polite` for non-blocking progress. This does not move focus or
     /// change visual styling.
+    /// Assistive technology may move focus to these words, so a sheet's
+    /// question is read by a screen reader as a control rather than as
+    /// decoration: what the person answers the sheet about.
+    #[must_use]
+    pub fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
+    }
+
     #[must_use]
     pub fn with_live(mut self, politeness: crate::a11y::Politeness) -> Self {
         self.live = Some(politeness);
@@ -1233,6 +1246,9 @@ impl Widget for Text {
         let mut node = AccessNode::new(role)
             .with_name(label)
             .with_interface_name(self.interface_copy());
+        if self.focusable {
+            node = node.with_state(crate::a11y::AccessState::new().focusable(true));
+        }
         if let Some(politeness) = self.live {
             node = node.with_live(politeness);
         }
@@ -1939,6 +1955,15 @@ mod tests {
                 assert_eq!(node.role, Role::StaticText);
                 assert_eq!(node.name.as_deref(), Some("Incorrect password"));
                 assert_eq!(node.live, Some(Politeness::Assertive));
+            }
+
+            {
+                // A sheet's question is one a screen reader moves to and reads
+                // whole, and the session lists as a control by its words.
+                let t = Text::new("Shall I file the budget under Spring?").focusable(true);
+                let node = Widget::accessibility(&t).expect("a question is accessible");
+                assert_eq!(node.name.as_deref(), Some("Shall I file the budget under Spring?"));
+                assert!(node.state.focusable, "the person's attention reaches it");
             }
         }
     }

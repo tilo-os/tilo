@@ -1800,6 +1800,12 @@ impl AppBrokerState {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
+        // An agent asks the person it works for something in its own words:
+        // the question goes on this device's sheet, and their answer is the
+        // invocation's outcome.
+        if tilo_actions::remote::is_ask(&request.target) {
+            return self.invoke_person_ask(caller, origin, request);
+        }
         // Host-service replay is an observation under the original ownership,
         // not another dispatch through a possibly changed live catalogue.
         if let Some(origin) = origin {

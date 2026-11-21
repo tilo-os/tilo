@@ -25,6 +25,10 @@ pub const AGENT_SESSION_ASK: &str = "agent-session-ask:";
 /// action begins with.
 pub const APP_ACTION_ASK: &str = "app-action:";
 
+/// What the handle of an agent's question in its own words begins with
+/// ([`AppActionConsentRequest::ask`]).
+pub const AGENT_ASK: &str = "agent-ask:";
+
 /// What the person is asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppActionConsentRequest {
@@ -64,6 +68,12 @@ pub struct AppActionConsentRequest {
     /// The invocation as the person reviews it, field by field, where they
     /// confirm exact arguments: what is admitted is what these render.
     pub draft: Option<tilo_actions::Draft>,
+    /// What an agent asks the person it works for in its own words
+    /// ([`tilo_actions::remote::ASK`]): a decision only they make, or
+    /// something only they know. The action fields above are empty then; the
+    /// person answers with one of its choices or what they type
+    /// ([`AppActionAnswer::reply`]).
+    pub ask: Option<tilo_actions::remote::PersonAsk>,
 }
 
 /// The Store moderation disclosure and the root identity the host will use.
@@ -168,6 +178,11 @@ pub struct AppActionAnswer {
     /// How long the person allowed it; `None` when they declined.
     pub lifetime: Option<tilo_action_policy::Lifetime>,
     pub edits: Vec<tilo_actions::DraftEdit>,
+    /// What they answered where the request asked them something in an
+    /// agent's own words ([`AppActionConsentRequest::ask`]): one of its
+    /// choices, or what they typed. `None` where they declined or the
+    /// question offered no answer they picked.
+    pub reply: Option<String>,
 }
 
 impl AppActionAnswer {
@@ -177,6 +192,17 @@ impl AppActionAnswer {
         Self {
             lifetime,
             edits: Vec::new(),
+            reply: None,
+        }
+    }
+
+    /// The person answered an agent's question with `reply`.
+    #[must_use]
+    pub const fn answered(reply: String) -> Self {
+        Self {
+            lifetime: Some(tilo_action_policy::Lifetime::Once),
+            edits: Vec::new(),
+            reply: Some(reply),
         }
     }
 

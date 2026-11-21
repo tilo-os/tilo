@@ -19,7 +19,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::Lifetime;
+use tilo_actions::remote::PersonAsk;
 use tilo_service::{Question, Questions};
+use tilo_sheets::portal::{AgentAsk, AgentQuestion};
 use tilo_workspace_service::apps::app_actions::{
     AGENT_SESSION_ASK, APP_ACTION_ASK, AppActionAnswer, AppActionConsentPrompter,
     AppActionConsentRequest,
@@ -92,6 +94,77 @@ impl Sheet {
         );
         Some(AppActionAnswer::unedited(Some(Lifetime::Once)))
     }
+
+    /// Ask the person `ask` in the agent's own words, as `request` names the
+    /// agent and its workspace: the sheet a workspace host asks an agent's
+    /// question on, with its choices and, where it takes one, a typed answer.
+    /// `None` when nobody here is asked questions.
+    fn ask_in_words(
+        &self,
+        request: &AppActionConsentRequest,
+        ask: PersonAsk,
+    ) -> Option<tokio::sync::oneshot::Receiver<AppActionAnswer>> {
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        let agent = request
+            .scope
+            .clone()
+            .unwrap_or_else(|| request.app_id.clone());
+        let asked = self.questions.ask(Question {
+            handle: request.handle.clone(),
+            kind: crate::network::AGENT_QUESTION.to_owned(),
+            app_id: None,
+            label: agent.clone(),
+            details: serde_json::to_value(AgentQuestion {
+                agent,
+                workspace: request.workspace.clone(),
+                ask: Some(AgentAsk {
+                    question: ask.question.clone(),
+                    choices: ask.choices.clone(),
+                    typed: ask.typed,
+                    secret: false,
+                }),
+                ..AgentQuestion::default()
+            })
+            .unwrap_or_default(),
+        });
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let mut answer = Some(answer);
+        runtime.spawn(async move {
+            let mut asked = asked;
+            let chosen = {
+                let Some(waiting) = answer.as_mut() else {
+                    return;
+                };
+                tokio::select! {
+                    chosen = &mut asked => chosen,
+                    // The asker stopped waiting: dropping the question takes the sheet down.
+                    () = waiting.closed() => return,
+                }
+            };
+            // The choice they picked, or what they typed where the question
+            // takes one; Declining, Escape, or a sheet closed without an
+            // answer is no answer at all.
+            let reply = chosen.and_then(|given| {
+                given
+                    .choice
+                    .and_then(|index| ask.choices.get(index).cloned())
+                    .or_else(|| {
+                        given
+                            .values
+                            .first()
+                            .map(|typed| typed.trim().to_owned())
+                            .filter(|typed| ask.typed && !typed.is_empty())
+                    })
+            });
+            if let Some(answer) = answer.take() {
+                let _ = answer.send(match reply {
+                    Some(reply) => AppActionAnswer::answered(reply),
+                    None => AppActionAnswer::DENY,
+                });
+            }
+        });
+        Some(answered)
+    }
 }
 
 impl AppActionConsentPrompter for Sheet {
@@ -99,6 +172,11 @@ impl AppActionConsentPrompter for Sheet {
         &self,
         request: AppActionConsentRequest,
     ) -> Option<tokio::sync::oneshot::Receiver<AppActionAnswer>> {
+        // An agent's question in its own words: the same sheet a workspace host
+        // asks it on ([`crate::network::AGENT_QUESTION`]), with the answers it offers.
+        if let Some(ask) = request.ask.clone() {
+            return self.ask_in_words(&request, ask);
+        }
         // A Store disclosure is shown on its own sheet, which this one is not.
         if request.moderation.is_some() {
             return None;
@@ -209,6 +287,7 @@ mod tests {
             moderation: None,
             scope: scope.map(str::to_owned),
             draft: None,
+            ask: None,
         }
     }
 
@@ -234,6 +313,80 @@ mod tests {
         };
         assert!(given, "the question was up to answer");
         answer.await.ok()
+    }
+
+    /// An agent's question in its own words goes on the sheet a workspace host
+    /// asks it on: the person picks a choice, or types one where it takes that,
+    /// and decline answers nothing.
+    #[tokio::test]
+    async fn an_agents_question_is_asked_with_its_choices_and_answered_with_what_they_pick() {
+        async fn asked(typed: bool, answer: tilo_service::Answer) -> Option<AppActionAnswer> {
+            let questions = Questions::new();
+            let sheet = Sheet::new(questions.clone(), AgentSessions::new());
+            let mut question = request(Some("Claude Code"));
+            question.handle = "agent-ask:i1".into();
+            question.ask = Some(tilo_actions::remote::PersonAsk {
+                question: "Shall I file the budget under Spring?".into(),
+                choices: vec!["Yes, file it".into(), "Leave it for now".into()],
+                typed,
+            });
+            let answered = sheet.ask(question).expect("asked");
+            let pending = questions.pending();
+            assert_eq!(pending.len(), 1, "the sheet is up");
+            assert_eq!(pending[0].kind, crate::network::AGENT_QUESTION);
+            let shown: AgentQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
+            assert_eq!(shown.agent, "Claude Code");
+            assert_eq!(shown.workspace, "w1");
+            let ask = shown.ask.expect("the question in the agent's words");
+            assert_eq!(ask.question, "Shall I file the budget under Spring?");
+            assert_eq!(ask.choices, ["Yes, file it", "Leave it for now"]);
+            assert_eq!(ask.typed, typed);
+            assert!(!ask.secret, "an agent's own question asks for no secret");
+            if questions.answer(&pending[0].handle, answer) {
+                answered.await.ok()
+            } else {
+                assert!(questions.decline(&pending[0].handle), "the question was up");
+                answered.await.ok()
+            }
+        }
+
+        let picked = asked(
+            false,
+            tilo_service::Answer {
+                choice: Some(1),
+                ..tilo_service::Answer::default()
+            },
+        )
+        .await
+        .expect("answered");
+        assert_eq!(picked.reply.as_deref(), Some("Leave it for now"));
+        assert!(picked.allowed());
+
+        let typed = asked(
+            true,
+            tilo_service::Answer {
+                values: vec![zeroize::Zeroizing::new("File it next week".to_owned())],
+                ..tilo_service::Answer::default()
+            },
+        )
+        .await
+        .expect("answered");
+        assert_eq!(typed.reply.as_deref(), Some("File it next week"));
+
+        // Declining (or Escape) is no answer at all.
+        let questions = Questions::new();
+        let sheet = Sheet::new(questions.clone(), AgentSessions::new());
+        let mut question = request(Some("Claude Code"));
+        question.handle = "agent-ask:i2".into();
+        question.ask = Some(tilo_actions::remote::PersonAsk {
+            question: "Shall I file the budget under Spring?".into(),
+            choices: vec!["Yes, file it".into()],
+            typed: false,
+        });
+        let answered = sheet.ask(question).expect("asked");
+        assert!(questions.decline(&questions.pending()[0].handle));
+        let declined = answered.await.expect("answered");
+        assert_eq!(declined, AppActionAnswer::DENY);
     }
 
     /// The person's choice on the sheet is the answer; Deny (the sheet declined) refuses it.

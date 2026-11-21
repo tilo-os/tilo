@@ -519,6 +519,7 @@ impl AppBrokerState {
                     .as_ref()
                     .and_then(|_| caller.agent_name().map(str::to_owned)),
                 draft,
+                ask: None,
             },
             binding,
             answer,

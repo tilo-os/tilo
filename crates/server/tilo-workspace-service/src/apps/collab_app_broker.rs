@@ -261,6 +261,7 @@ mod turns;
 pub use agent_connection::AgentConnection;
 mod approval;
 mod person_answer;
+mod person_ask;
 mod window_provider;
 mod windowless_instances;
 use approval::requires_store_approval;
