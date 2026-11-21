@@ -132,6 +132,25 @@ impl Connects for ServiceLinks {
     fn shell_ui(&self, app: &str, instance: u64, launcher_pid: Option<u32>) -> Option<OwnedFd> {
         self.window_shell_ui(app, launcher_pid, instance)
     }
+
+    /// The collaboration connection of a call of `app` that shows nothing: recorded as that call,
+    /// which the broker admits and hands no view to open.
+    fn collaboration_with_no_view(&self, app: &str, workspace: &str, call: u64) -> Option<OwnedFd> {
+        let mut stream = tilo_files::native::socket::connect(&launcher::services::collab_socket())
+            .inspect_err(|error| {
+                tracing::warn!(%error, %app, "a call that shows nothing could not reach its workspace");
+            })
+            .ok()?;
+        self.launches.record_no_view(app, workspace, call);
+        if let Err(error) =
+            launcher::services::write_collab_window_handoff(&mut stream, app, workspace, call)
+        {
+            self.launches.window_withdrawn(app, workspace, call);
+            tracing::warn!(%error, %app, "a call that shows nothing was not named to its workspace");
+            return None;
+        }
+        Some(OwnedFd::from(stream))
+    }
 }
 
 /// The shell-ui socket this session serves: what an app asks about its own tabs arrives here, and

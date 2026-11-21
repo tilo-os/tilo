@@ -179,6 +179,19 @@ pub struct AppBuild {
     pub module_len: u64,
 }
 
+/// What a call shows: a view of the app's tree where someone uses it, or nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Shows {
+    /// A view someone uses: the app's code draws it, hears what they do, and offers to bring it
+    /// forward.
+    #[default]
+    View,
+    /// Nothing: the app's code runs for whoever calls it — an agent's step, an app's `start` — and
+    /// nothing is drawn. A call that shows nothing has no view connection, offers no verb to bring
+    /// a view forward, and stays until the session ends it.
+    Nothing,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceRequest {
     pub app: String,
@@ -191,14 +204,8 @@ pub struct InstanceRequest {
     /// the same publisher signed it. The broker admits the instance's connection to that document
     /// only on the same belief.
     pub documents_under: Option<String>,
-    /// The instance applies one change to the document at its origin instead of running a
-    /// window: an agent task's invocation the broker admitted (`docs/designs/app-language/agents.md`,
-    /// "Reading documents outside their app"). The descriptor in the window's place is the change's
-    /// connection: the session writes the [`Change`] on it as one JSON line, and the process runs
-    /// the action's code against the document as it is then, applies what it wrote as the
-    /// invoker's step and answers on it with one JSON line. No window and no instance run.
-    /// `instance` is then the change's own id, never a window's.
-    pub applies_change: bool,
+    /// Whether the call shows a view, or nothing ([`Shows`]).
+    pub shows: Shows,
     /// The person's formats (`locale` in their settings): the clock a time of day reads by and the
     /// style a date does, for what the instance writes in a sentence (`t.clock()`, a change's
     /// before and after) and its window shows.
@@ -241,8 +248,10 @@ pub struct InstanceFds {
     pub identity: Descriptor,
     #[serde(with = "crate::packet::fd")]
     pub module: Descriptor,
-    #[serde(with = "crate::packet::fd")]
-    pub window: Descriptor,
+    /// The instance's end of its view's patch connection. `None` for a call that shows nothing
+    /// ([`Shows::Nothing`]).
+    #[serde(with = "crate::packet::optional_fd")]
+    pub window: Option<Descriptor>,
     /// The instance's connection to its app's origin connector, when its types hold an outside
     /// service's resources.
     #[serde(with = "crate::packet::optional_fd")]
@@ -270,7 +279,7 @@ impl InstanceFds {
             broker: self.broker.try_clone()?,
             identity: self.identity.try_clone()?,
             module: self.module.try_clone()?,
-            window: self.window.try_clone()?,
+            window: self.window.as_ref().map(Descriptor::try_clone).transpose()?,
             origin: self
                 .origin
                 .as_ref()
@@ -308,22 +317,6 @@ pub struct TaskFds {
     pub program: Descriptor,
     #[serde(with = "crate::packet::fd")]
     pub apps: Descriptor,
-}
-
-/// One change an instance applies at its origin, written on the change's own connection as one
-/// JSON line ([`InstanceRequest::applies_change`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Change {
-    pub resource: String,
-    pub action: String,
-    /// The arguments, by parameter name, as the caller gave them.
-    #[serde(default)]
-    pub arguments: serde_json::Map<String, serde_json::Value>,
-    pub invoker: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview: Option<serde_json::Value>,
 }
 
 /// One app a task's programs may name, as the session hands it to the task's process: a tilolang
@@ -607,7 +600,7 @@ mod tests {
             person: "ada".into(),
             module_len: 12,
             documents_under: Some("so.tilo.lang.older-notes".into()),
-            applies_change: true,
+            shows: Shows::View,
             formats: RegionFormats {
                 time: tilo_formats::TimeStyle::H12,
                 ..RegionFormats::default()
@@ -670,12 +663,15 @@ mod tests {
                 open: Some(OpenedFile { hash: "cd".repeat(32), name: None }),
                 ..opened.clone()
             };
-            for (request, (origin, content, chooser)) in [
-                (opened.clone(), (None, None, None)),
-                (opened, (Some(connection()), Some(connection()), Some(connection()))),
-                (plain.clone(), (None, None, None)),
-                (plain, (Some(connection()), Some(connection()), Some(connection()))),
-                (unnamed, (None, Some(connection()), None)),
+            // An instance that shows nothing crosses with no window connection.
+            let nothing = InstanceRequest { shows: Shows::Nothing, ..opened.clone() };
+            for (request, window, (origin, content, chooser)) in [
+                (opened.clone(), Some(connection()), (None, None, None)),
+                (opened, Some(connection()), (Some(connection()), Some(connection()), Some(connection()))),
+                (plain.clone(), Some(connection()), (None, None, None)),
+                (plain, Some(connection()), (Some(connection()), Some(connection()), Some(connection()))),
+                (unnamed, Some(connection()), (None, Some(connection()), None)),
+                (nothing, None, (None, None, None)),
             ] {
                 let had = (origin.is_some(), content.is_some(), chooser.is_some());
                 ToProcess::Instance {
@@ -684,7 +680,7 @@ mod tests {
                         broker: connection(),
                         identity: connection(),
                         module: connection(),
-                        window: connection(),
+                        window,
                         origin,
                         content,
                         chooser,
@@ -698,6 +694,11 @@ mod tests {
                     panic!("an instance arrives as one");
                 };
                 assert_eq!(*received, request);
+                assert_eq!(
+                    fds.window.is_some(),
+                    request.shows == Shows::View,
+                    "a window crosses with the instance that draws one"
+                );
                 assert_eq!(
                     (fds.origin.is_some(), fds.content.is_some(), fds.chooser.is_some()),
                     had,

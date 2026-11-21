@@ -135,12 +135,23 @@ fn member_with_archive(
     let record =
         InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), person);
     let mut host = TilolangProcess::new(None, wake());
-    let kept = host.kept(MAIL).unwrap();
+    let kept = tilolang_process::hosted::Kept {
+        documents: Rc::new(durable_store::MemoryStore::default()),
+        indexes: None,
+        earlier: Some(Rc::new(durable_store::MemoryStore::default())),
+        content: None,
+        chooser: None,
+    };
     if let Some(mut archive) = archive {
         let earlier = tilolang_tilo::member_document_of(MAIL, person).unwrap();
         let document = collab_types::document::DocumentId::parse(&earlier).unwrap();
+        // The copy an earlier Mail left on this device, which only its recovery reads: the
+        // instance keeps no copy of its own.
+        let document_id_of = |app: &str, person: &str| {
+            tilolang_tilo::member_document_of(app, person).unwrap()
+        };
         collaboration::document::save::resource_document(
-            &kept.documents,
+            kept.earlier.as_ref().expect("the store an earlier Mail wrote"),
             MAIL,
             &workspace.to_string(),
             &document.storage_key(),
@@ -148,6 +159,30 @@ fn member_with_archive(
         .unwrap()
         .save(&mut archive)
         .unwrap();
+        // What the instance's recovery will read is what the conversion left.
+        let earlier_store = kept.earlier.as_ref().unwrap();
+        let read = collaboration::document::save::resource_document(
+            earlier_store,
+            MAIL,
+            &workspace.to_string(),
+            &collab_types::document::DocumentId::parse(&document_id_of(MAIL, person))
+                .unwrap()
+                .storage_key(),
+        )
+        .unwrap()
+        .load()
+        .unwrap();
+        assert!(read.is_some(), "the archive reads back");
+        let archived =
+            tilolang_tilo::instance::document::archived_member_document(
+                earlier_store,
+                MAIL,
+                MAIL,
+                workspace,
+                person,
+            )
+            .unwrap();
+        assert!(archived.is_some(), "the recovery finds the archive");
     }
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
@@ -592,6 +627,7 @@ fn an_archive_owner_recovers_mail_into_the_shared_mailbox_once() {
         ada.settle();
         bo.settle();
         assert!(ada.answer(id).contains("Succeeded"), "{}", ada.answer(id));
+        eprintln!("recovery {id}: drafts {:?}", draft_subjects(&ada));
         let expected = ["Re: Launch plan for the autumn release"];
         assert_eq!(draft_subjects(&ada), expected);
         assert_eq!(draft_subjects(&bo), expected);

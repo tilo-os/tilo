@@ -1,10 +1,10 @@
-//! Tilolang processes: one process per workspace and author that runs that author's tilolang apps
-//! in that workspace, each window's instance in it (`docs/designs/app-language/app-window.md`).
+//! Tilolang processes: one process per workspace and app, which runs that app's code in that
+//! workspace, each view's call in it (`docs/designs/app-language/app-window.md`).
 //!
 //! A tilolang app's window is a launched process of its own, with its own launch identity for its
 //! surface and accessibility, started as its window alone (no `--tilolang-process`: the launcher gives
 //! it no collaboration connection). The session hands each window's instance to the process of its
-//! workspace and author ([`Processes::hand_over`]):
+//! workspace and app ([`Processes::hand_over`]):
 //!
 //! - the process's end of the window's patch connection, whose other end the window took on its
 //!   link (`runtime_portal::process_link::ToProcess::Patch`);
@@ -22,21 +22,19 @@
 //! do in the app, said again on the sockets of the workspace's processes when its policy changes
 //! ([`Processes::policy_changed`]): a viewer's window offers no change they cannot make.
 //!
-//! The author is the publisher whose key signed the package; a person's own build, signed with
-//! their own key, runs in a process of that person's. A process is started through the launch kind
-//! "tilolang process" (`tilo-launcher tilolang-process`), keyed by its workspace, its author and the
-//! runtimes it runs on, with the storage of that workspace and author; it ends once the last of its
-//! instances ended, which it says on its socket.
+//! A process is started through the launch kind "tilolang process" (`tilo-launcher
+//! tilolang-process`), keyed by its workspace, its app and the runtimes it runs on, with the
+//! storage of that workspace and app; it ends once the last of its calls ended, which it says on
+//! its socket.
 //!
 //! In a development session (`TILO_LAUNCHER_LIVE_MODULES`), a reinstall of an app a process runs is
 //! verified as a launch verifies it and handed to the process on its socket ([`Processes::reinstalled`]):
 //! its open windows take the new build over without restarting, as `tilolang dev` expects.
 //!
-//! A window that ran its instance in its own process kept the app's record in the app's own
-//! directory. The first time a process keeps that app's record in that workspace, it takes that copy
-//! over ([`adopt_window_copy`]), so nothing a person kept before is lost.
+//! Every call opens what it works on from the workspace's committed read, which is the one store:
+//! a process keeps no copy of its own on disk.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -169,40 +167,11 @@ pub fn origin_of(app: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// Whose apps a process runs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Author {
-    /// The publisher whose key signed the packages.
-    Publisher([u8; 32]),
-    /// A person, for their own builds.
-    Person(String),
-}
-
-impl Author {
-    /// The author of a package signed by `publisher`: the person themselves when it is their own
-    /// key, else the publisher.
-    fn of(publisher: [u8; 32], person: &str) -> Self {
-        if hex::encode(publisher) == person {
-            Self::Person(person.to_owned())
-        } else {
-            Self::Publisher(publisher)
-        }
-    }
-
-    /// The author's key in the processes' names and storage: one path component.
-    fn key(&self) -> String {
-        match self {
-            Self::Publisher(key) => format!("publisher-{}", hex::encode(key)),
-            Self::Person(person) => format!("person-{}", hex::encode(person)),
-        }
-    }
-}
-
-/// What identifies one process.
+/// What identifies one process: one workspace and one app, on the runtimes its package names.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct HostKey {
     workspace: String,
-    author: String,
+    app: String,
     /// The tilolang runtime and the Tilo runtime it runs on: an instance runs only in a process of
     /// the runtimes its package names.
     runtime: String,
@@ -221,14 +190,14 @@ struct Host {
     builds: HashMap<String, Build>,
 }
 
-/// The build of an app a process runs: whose window it was handed for, and its module's hash.
+/// The build of an app a process runs: its module's hash.
 struct Build {
-    person: String,
     module: u64,
 }
 
-/// One window's instance, as the session hands it over: the app and workspace it runs in, the
-/// window it draws, who is at it, and the connections the session made for it.
+/// One instance, as the session hands it over: the app and workspace it runs in, the window it
+/// draws (or none, for an action that shows nothing), who is at it, and the connections the
+/// session made for it.
 pub struct Instance {
     pub app: String,
     pub workspace: String,
@@ -236,9 +205,11 @@ pub struct Instance {
     pub instance: u64,
     /// The member at the window, whose steps its undo takes back.
     pub person: String,
-    /// The process's end of the window's patch connection.
-    pub patch: OwnedFd,
-    /// The instance's collaboration connection, attested as that window.
+    /// The process's end of the window's patch connection: `None` for an instance that shows
+    /// nothing.
+    pub patch: Option<OwnedFd>,
+    /// The instance's collaboration connection, attested as that window, or as an instance that
+    /// shows nothing.
     pub collaboration: OwnedFd,
     /// Its identity-service connection, named for the app and workspace.
     pub identity: OwnedFd,
@@ -253,14 +224,17 @@ pub struct Instance {
     pub opens: crate::Opens,
     /// What the person may do in the app ([`crate::authority::access`]).
     pub access: Option<tilo_action_policy::MemberAccess>,
+    /// The person's formats and language, as the session resolved them: what the instance writes
+    /// its dates and clocks in, and the language its window reads every word in.
+    pub locale: runtime_portal::process_link::Locale,
 }
 
 /// How a process is started: the command for one on `runtime` and `app_runtime`, keeping `storage`.
 type Starts = dyn Fn(&str, &str, &Path) -> Command + Send + Sync;
-/// How an installed app is verified for a process.
-type Verifies = dyn Fn(&str) -> Result<VerifiedInstance, String> + Send + Sync;
+/// How an installed app is verified for a process: the workspace it is installed in, and the app.
+type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
 
-/// The tilolang processes this session runs, by workspace, author and runtimes.
+/// The tilolang processes this session runs, by workspace, app and runtimes.
 pub struct Processes {
     /// Where processes keep what their instances keep, and where windows kept it before.
     data_home: PathBuf,
@@ -316,8 +290,7 @@ impl Processes {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The processes running now, each by its workspace and author, with the windows whose instances
-    /// it runs.
+    /// The processes running now, each by its workspace and app, with the calls it runs.
     #[must_use]
     pub fn instances(&self) -> Vec<(String, String, Vec<u64>)> {
         let mut processes: Vec<_> = self
@@ -326,7 +299,7 @@ impl Processes {
             .map(|(key, process)| {
                 let mut instances: Vec<u64> = process.instances.keys().copied().collect();
                 instances.sort_unstable();
-                (key.workspace.clone(), key.author.clone(), instances)
+                (key.workspace.clone(), key.app.clone(), instances)
             })
             .collect();
         processes.sort();
@@ -337,11 +310,7 @@ impl Processes {
     /// instances write the times and days their windows show again in the new formats (their
     /// week's first day, their date and clock styles), and their windows read their words in the
     /// language, where they stand. A process started later is handed them with its first instance.
-    pub fn locale_changed(&self) {
-        let locale = runtime_portal::process_link::Locale {
-            formats: ui::format::region::current(),
-            language: ui::i18n::preferred_language().unwrap_or_default(),
-        };
+    pub fn locale_changed(&self, locale: &runtime_portal::process_link::Locale) {
         for (key, process) in self.running().iter() {
             if let Err(error) = ToProcess::Locale(locale.clone()).send(&process.socket) {
                 // Its follow thread reads the end of the socket and forgets it: the next instance
@@ -349,7 +318,7 @@ impl Processes {
                 tracing::warn!(
                     %error,
                     workspace = %key.workspace,
-                    author = %key.author,
+                    app = %key.app,
                     "a tilolang process was not told the person's formats or language changed"
                 );
             }
@@ -365,28 +334,25 @@ impl Processes {
             if key.workspace != workspace.id {
                 continue;
             }
-            let apps: BTreeSet<&String> = process.instances.values().collect();
-            for app in apps {
-                let access = runtime_portal::process_link::AppAccess {
-                    app: app.clone(),
-                    access: crate::authority::access(workspace, app),
-                };
-                if let Err(error) = ToProcess::Access(access).send(&process.socket) {
-                    // Its follow thread reads the end of the socket and forgets it: the next
-                    // instance starts another.
-                    tracing::warn!(
-                        %error,
-                        workspace = %key.workspace,
-                        author = %key.author,
-                        app,
-                        "a tilolang process was not told what the person may now do"
-                    );
-                }
+            let app = key.app.clone();
+            let access = runtime_portal::process_link::AppAccess {
+                app: app.clone(),
+                access: crate::authority::access(workspace, &app),
+            };
+            if let Err(error) = ToProcess::Access(access).send(&process.socket) {
+                // Its follow thread reads the end of the socket and forgets it: the next
+                // instance starts another.
+                tracing::warn!(
+                    %error,
+                    workspace = %key.workspace,
+                    app,
+                    "a tilolang process was not told what the person may now do"
+                );
             }
         }
     }
 
-    /// Hand `instance` to the process of its workspace and author, starting the process when none runs.
+    /// Hand `instance` to the process of its workspace and app, starting the process when none runs.
     /// Done off the caller's thread: it verifies the package and may start the process.
     pub fn hand_over(self: &Arc<Self>, instance: Instance) {
         let processes = Arc::clone(self);
@@ -416,10 +382,10 @@ impl Processes {
         let refused =
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
         let began = std::time::Instant::now();
-        let verified = (self.verifies)(&instance.app).map_err(refused)?;
+        let verified = (self.verifies)(&instance.workspace, &instance.app).map_err(refused)?;
         let key = HostKey {
             workspace: instance.workspace.clone(),
-            author: Author::of(verified.publisher, &instance.person).key(),
+            app: instance.app.clone(),
             runtime: verified.runtime,
             app_runtime: verified.app_runtime,
         };
@@ -429,7 +395,6 @@ impl Processes {
         let uses_packages = !module.imports.is_empty();
         let module = module.encode();
         let build = Build {
-            person: instance.person.clone(),
             module: hash(&module),
         };
         let module_len = module.len() as u64;
@@ -440,14 +405,6 @@ impl Processes {
                 .to_owned(),
         )
         .filter(|id| *id != instance.app);
-        let storage = self.storage(&key)?;
-        adopt_window_copy(
-            &self.data_home,
-            &storage,
-            &instance.app,
-            documents_under.as_deref().unwrap_or(&instance.app),
-            &instance.workspace,
-        );
         let request = InstanceRequest {
             app: instance.app.clone(),
             workspace: instance.workspace.clone(),
@@ -455,11 +412,17 @@ impl Processes {
             person: instance.person,
             module_len,
             documents_under,
-            applies_change: false,
-            formats: ui::format::region::current(),
+            // An instance with no patch connection draws nothing: it runs the app's actions for
+            // whoever invokes them.
+            shows: if instance.patch.is_some() {
+                runtime_portal::process_link::Shows::View
+            } else {
+                runtime_portal::process_link::Shows::Nothing
+            },
+            formats: instance.locale.formats,
             // The person's language, as this session resolved it: their windows read every word in
             // it, so the process that draws them must not read its own process's language instead.
-            language: ui::i18n::preferred_language().unwrap_or_default(),
+            language: instance.locale.language,
             document: instance.opens.record,
             reveal: instance.opens.reveal,
             open: instance.opens.content.map(|content| OpenedFile {
@@ -494,6 +457,16 @@ impl Processes {
         Ok(started)
     }
 
+    /// Start an instance of an app in its tilolang host with no window: what an action that shows
+    /// nothing runs in. It is [`Self::hand_over_now`] of an [`Instance`] with no `patch`, which
+    /// the host runs as one that shows nothing, drawing nothing, till the session ends it.
+    ///
+    /// # Errors
+    /// As [`Self::hand_over_now`].
+    pub fn start_with_no_view(self: &Arc<Self>, call: Instance) -> std::io::Result<bool> {
+        self.hand_over_now(call)
+    }
+
     /// The module the process `key` runs `app` from, its verified `module`: the person's views get
     /// every installed tilolang app its process can run (`key`'s runtimes), each verified as a launch
     /// verifies it, since a written view reads any type the workspace has.
@@ -517,7 +490,7 @@ impl Processes {
             .iter()
             .filter(|app| app.app_id != PERSON_VIEWS_APP && runs_in_process(&app.app_id))
         {
-            let Ok(verified) = (self.verifies)(&app.app_id) else {
+            let Ok(verified) = (self.verifies)(&key.workspace, &app.app_id) else {
                 tracing::warn!(package_id = %app.app_id, "the person's views leave out an app that could not be verified");
                 continue;
             };
@@ -535,7 +508,7 @@ impl Processes {
     /// A package was installed, in a development session: every app a running process runs whose
     /// installed build changed is verified as a launch verifies it and handed to that process on its
     /// socket, once, so its open windows take the new build over. A build that does not verify, or
-    /// that only a process of another author or other runtimes could run, is left for the app's next
+    /// that only a process of other runtimes could run is left for the app's next
     /// start.
     pub fn reinstalled(&self) {
         let mut running = self.running();
@@ -565,16 +538,16 @@ impl Processes {
     ) -> std::io::Result<bool> {
         let refused =
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
-        let verified = (self.verifies)(app).map_err(refused)?;
+        let verified = (self.verifies)(&key.workspace, app).map_err(refused)?;
         let runs_in = HostKey {
             workspace: key.workspace.clone(),
-            author: Author::of(verified.publisher, &build.person).key(),
+            app: app.to_owned(),
             runtime: verified.runtime,
             app_runtime: verified.app_runtime,
         };
         if runs_in != *key {
             return Err(refused(
-                "another author signed it, or it names other runtimes: only a new start runs it"
+                "it names other runtimes than the process runs: only a new start runs it"
                     .to_owned(),
             ));
         }
@@ -694,7 +667,7 @@ impl Processes {
             .join("tilo")
             .join("tilolang-processes")
             .join(&key.workspace)
-            .join(&key.author);
+            .join(&key.app);
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
     }
@@ -729,7 +702,7 @@ impl Processes {
         let mut child = command.spawn()?;
         drop(command);
         drop(theirs);
-        let tag = format!("{} {}", key.workspace, key.author);
+        let tag = format!("{} {}", key.workspace, key.app);
         let said = child.stderr.take().map(|stderr| {
             std::thread::Builder::new()
                 .name("tilolang-process-err".into())
@@ -739,7 +712,7 @@ impl Processes {
         let socket = Arc::new(ours);
         tracing::info!(
             workspace = %key.workspace,
-            author = %key.author,
+            app = %key.app,
             pid = child.id(),
             "tilolang process started"
         );
@@ -775,11 +748,11 @@ impl Processes {
                 Ok(None) => break,
                 // The packet was taken: the socket carries the next one.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                    tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang process said something unreadable");
+                    tracing::error!(%error, workspace = %key.workspace, app = %key.app, "a tilolang process said something unreadable");
                 }
                 // The socket failed: it carries nothing more; the process is waited for.
                 Err(error) => {
-                    tracing::error!(%error, workspace = %key.workspace, author = %key.author, "a tilolang process's socket failed");
+                    tracing::error!(%error, workspace = %key.workspace, app = %key.app, "a tilolang process's socket failed");
                     break;
                 }
             }
@@ -793,9 +766,9 @@ impl Processes {
             .unwrap_or_default();
         let reason = reason.unwrap_or_else(|| seen_end(&status, &last));
         if clean {
-            tracing::info!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang process ended");
+            tracing::info!(workspace = %key.workspace, app = %key.app, ?status, reason, "tilolang process ended");
         } else {
-            tracing::error!(workspace = %key.workspace, author = %key.author, ?status, reason, "tilolang process ended");
+            tracing::error!(workspace = %key.workspace, app = %key.app, ?status, reason, "tilolang process ended");
         }
         let mut processes = self.running();
         if processes
@@ -859,7 +832,7 @@ fn verified_package(app: &str) -> Result<VerifiedInstance, String> {
 }
 
 /// `app`, installed here, verified as a launch verifies it, on runtimes installed here.
-fn verified_installed(app: &str) -> Result<VerifiedInstance, String> {
+fn verified_installed(_workspace: &str, app: &str) -> Result<VerifiedInstance, String> {
     let verified = verified_package(app)?;
     if !verified.runs_here() {
         return Err(format!(
@@ -868,54 +841,6 @@ fn verified_installed(app: &str) -> Result<VerifiedInstance, String> {
         ));
     }
     Ok(verified)
-}
-
-/// Take over what a window of `app` that ran its instance in its own process kept of its record
-/// in `workspace`, the first time the process whose storage is `storage` keeps it: the app's own
-/// directory held it (`<data home>/tilo-workspaces/<workspace>/<app>`, its documents under its data
-/// home, keyed by `records`, the id its records are kept under), and the process's documents hold
-/// it from now on, the same files in the same layout. Once the process holds a copy, nothing moves.
-pub fn adopt_window_copy(
-    data_home: &Path,
-    storage: &Path,
-    app: &str,
-    records: &str,
-    workspace: &str,
-) {
-    let window_root = launcher::appdir::host_app_dir(
-        data_home,
-        &launcher::appdir::workspace_slug(Some(workspace)),
-        app,
-    )
-    .join(".local/share");
-    let host_root = storage.join(app).join("documents");
-    let (Ok(from), Ok(to)) = (
-        app_state::workspace_index_directory(&window_root, records, workspace),
-        app_state::workspace_index_directory(&host_root, records, workspace),
-    ) else {
-        return;
-    };
-    if !from.exists() || to.exists() {
-        return;
-    }
-    let moved = to
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::rename(&from, &to));
-    match moved {
-        Ok(()) => tracing::info!(
-            app,
-            workspace,
-            "a process took over what the app's windows kept"
-        ),
-        Err(error) => tracing::error!(
-            %error,
-            app,
-            workspace,
-            from = %from.display(),
-            "what the app's windows kept could not be taken over by its process"
-        ),
-    }
 }
 
 /// A process's error output, read on a thread of its own: its last lines once it has ended.
@@ -980,12 +905,12 @@ mod tests {
         let processes = Processes::with(
             std::env::temp_dir(),
             Box::new(|_, _, _| Command::new("true")),
-            Box::new(|_| Err("no package store here".to_owned())),
+            Box::new(|_, _| Err("no package store here".to_owned())),
         );
         for (workspace, socket) in running {
             let key = HostKey {
                 workspace: workspace.to_owned(),
-                author: "person-ada".to_owned(),
+                app: NOTES.to_owned(),
                 runtime: "tilolang@1".to_owned(),
                 app_runtime: "tilo@1".to_owned(),
             };
@@ -1014,7 +939,11 @@ mod tests {
             ..before
         };
         ui::format::region::install(sunday);
-        processes.locale_changed();
+        let locale = runtime_portal::process_link::Locale {
+            formats: ui::format::region::current(),
+            language: ui::i18n::preferred_language().unwrap_or_default(),
+        };
+        processes.locale_changed(&locale);
         let handed = ToProcess::receive(&theirs).unwrap();
         ui::format::region::install(before);
         let Some(ToProcess::Locale(locale)) = handed else {
@@ -1091,7 +1020,7 @@ mod tests {
         let processes = Processes::with(
             std::env::temp_dir(),
             Box::new(|_, _, _| Command::new("true")),
-            Box::new(move |_| {
+            Box::new(move |_, _| {
                 Ok(VerifiedInstance {
                     runtime: "tilolang@1".to_owned(),
                     app_runtime: "tilo@1".to_owned(),
@@ -1103,12 +1032,11 @@ mod tests {
         let (ours, theirs) = runtime_portal::process_link::pair().unwrap();
         let key = HostKey {
             workspace: "7a110d00-0000-4000-8000-0000000000f4".to_owned(),
-            author: Author::Publisher([7; 32]).key(),
+            app: NOTES.to_owned(),
             runtime: "tilolang@1".to_owned(),
             app_runtime: "tilo@1".to_owned(),
         };
         let build = Build {
-            person: "ada".to_owned(),
             module: hash(&module(b"old").encode()),
         };
         let builds = HashMap::from([(NOTES.to_owned(), build)]);
@@ -1174,97 +1102,5 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_hosts_author_is_its_publisher_or_the_person_whose_own_build_it_is() {
-        let key = [7_u8; 32];
-        assert_eq!(Author::of(key, "ada"), Author::Publisher(key));
-        assert_eq!(
-            Author::of(key, &hex::encode(key)),
-            Author::Person(hex::encode(key))
-        );
-        let names = [
-            Author::Publisher(key).key(),
-            Author::Person("ada".into()).key(),
-        ];
-        assert!(names.iter().all(|name| !name.contains(['/', '\0', '.'])));
-        assert_ne!(names[0], names[1], "kinds never collide");
-    }
 
-    /// What a window kept of its app's record in its own process, before the app's windows ran
-    /// their instances in a process, is what the process opens: the record and the member records
-    /// beside it, nothing lost. Once the process holds a copy, a later adoption leaves it alone.
-    #[test]
-    fn a_host_opens_what_the_apps_windows_kept_before() {
-        use automerge::ReadDoc as _;
-        use automerge::transaction::Transactable as _;
-        use std::rc::Rc;
-        const APP: &str = "so.tilo.notes";
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a1";
-        let home = tempfile::tempdir().unwrap();
-        let data_home = home.path();
-        let storage = data_home
-            .join("tilo/tilolang-processes")
-            .join(WORKSPACE)
-            .join("publisher-ab");
-        std::fs::create_dir_all(&storage).unwrap();
-        // The window's own process: its app directory, its documents under its data home.
-        let window_root =
-            launcher::appdir::host_app_dir(data_home, WORKSPACE, APP).join(".local/share");
-        let write = |root: &Path, member: Option<&str>, note: &str| {
-            let documents: Rc<dyn durable_store::DurableStore> =
-                Rc::new(app_state::FsStore::new(root.to_path_buf()));
-            let mut store = match member {
-                None => {
-                    collaboration::document::save::workspace_document(&documents, APP, WORKSPACE)
-                }
-                Some(record) => collaboration::document::save::resource_document(
-                    &documents, APP, WORKSPACE, record,
-                ),
-            }
-            .unwrap();
-            let mut doc = store.load_or_new();
-            doc.put(automerge::ROOT, "note", note).unwrap();
-            store.save(&mut doc).unwrap();
-            documents.flush(None).unwrap();
-        };
-        let read = |root: &Path, member: Option<&str>| -> Option<String> {
-            let documents: Rc<dyn durable_store::DurableStore> =
-                Rc::new(app_state::FsStore::provisioned(root.to_path_buf()));
-            let mut store = match member {
-                None => {
-                    collaboration::document::save::workspace_document(&documents, APP, WORKSPACE)
-                }
-                Some(record) => collaboration::document::save::resource_document(
-                    &documents, APP, WORKSPACE, record,
-                ),
-            }
-            .unwrap();
-            let doc = store.load_or_new();
-            doc.get(automerge::ROOT, "note")
-                .unwrap()
-                .and_then(|(value, _)| value.into_string().ok())
-        };
-        write(&window_root, None, "kept by the window");
-        write(&window_root, Some("member-ada"), "ada's own");
-
-        adopt_window_copy(data_home, &storage, APP, APP, WORKSPACE);
-        let host_root = storage.join(APP).join("documents");
-        assert_eq!(
-            read(&host_root, None).as_deref(),
-            Some("kept by the window")
-        );
-        assert_eq!(
-            read(&host_root, Some("member-ada")).as_deref(),
-            Some("ada's own")
-        );
-
-        // The window's directory holds a copy again (a window started before its app ran in a
-        // process): the process's is what counts, and stays.
-        write(&window_root, None, "a stale copy");
-        adopt_window_copy(data_home, &storage, APP, APP, WORKSPACE);
-        assert_eq!(
-            read(&host_root, None).as_deref(),
-            Some("kept by the window")
-        );
-    }
 }

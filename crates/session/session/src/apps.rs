@@ -37,6 +37,24 @@ mod outdated;
 #[cfg(target_os = "linux")]
 mod windows;
 
+/// The connections and grants a tilolang instance runs with, opened for one app in one
+/// workspace: the same for a window's instance and for one that shows nothing.
+struct AppConnections {
+    /// The member the instance runs for.
+    person: String,
+    /// Its identity-service connection, named for the app and workspace.
+    identity: std::os::fd::OwnedFd,
+    /// Its connection to the app's origin connector, when its types hold an outside service's
+    /// resources.
+    origin: Option<std::os::fd::OwnedFd>,
+    /// Its connection to the device's content store, scoped to the app in its workspace.
+    content: Option<std::os::fd::OwnedFd>,
+    /// Its connection to the person's chooser, when this session serves one.
+    chooser: Option<std::os::fd::OwnedFd>,
+    /// What the person may do in the app.
+    access: Option<tilo_action_policy::MemberAccess>,
+}
+
 use crate::agents::Kept;
 use crate::search::AppActions;
 
@@ -631,7 +649,16 @@ impl Apps {
     pub fn locale_changed(&self) {
         let processes = self.state.borrow().processes.clone();
         if let Some(processes) = processes {
-            processes.locale_changed();
+            processes.locale_changed(&Self::person_locale());
+        }
+    }
+
+    /// The person's formats and language, as this session resolved them: what every tilolang
+    /// instance it starts writes its dates and clocks in, and the language its windows read.
+    fn person_locale() -> runtime_portal::process_link::Locale {
+        runtime_portal::process_link::Locale {
+            formats: ui::format::region::current(),
+            language: ui::i18n::preferred_language().unwrap_or_default(),
         }
     }
 
@@ -646,106 +673,117 @@ impl Apps {
         tilo_app_launch::tilolang_processes::runs_in_process(app)
     }
 
-    /// Hand the instance of the tilolang window `hosted` to the host of its workspace and author,
-    /// with the connections an instance holds: who is at it, its identity service and its app's
-    /// origin connector, when the app has one.
-    fn host_window(&self, hosted: tilo_app_launch::HostedWindow) {
-        let (processes, person, connectors) = {
+    /// The connections and grants a tilolang instance of `app` in `workspace` runs with, opened
+    /// as the launcher opens them for a launched app of the app: the windowed and the windowless
+    /// instance of it get exactly the same, so what an instance may reach never depends on
+    /// whether anyone looks at a window.
+    fn app_connections(&self, app: &str, workspace: &str) -> Result<AppConnections, String> {
+        let (person, connectors) = {
             let state = self.state.borrow();
-            (
-                state.processes.clone(),
-                state.person.clone(),
-                state.connectors.clone(),
-            )
-        };
-        let app = hosted.app.clone();
-        let instance = hosted.instance;
-        let refused = |why: String| {
-            tracing::error!(
-                app,
-                instance,
-                why,
-                "a tilolang window's instance runs nowhere"
-            );
-        };
-        let Some(processes) = processes else {
-            return refused("no tilolang host can start here".to_owned());
+            (state.person.clone(), state.connectors.clone())
         };
         // Opened and named for the app and workspace exactly as the launcher opens a launched
         // app's: the identity service signs for that app in that workspace only.
-        let identity = match launcher::services::resolve_identity_bind(
-            &hosted.app,
-            Some(&hosted.workspace),
-            false,
-        ) {
+        let identity = match launcher::services::resolve_identity_bind(app, Some(workspace), false) {
             Ok(Some(identity)) => identity.host,
-            Ok(None) => return refused("the identity service is unavailable".to_owned()),
-            Err(error) => return refused(format!("the identity service: {error}")),
+            Ok(None) => return Err("the identity service is unavailable".to_owned()),
+            Err(error) => return Err(format!("the identity service: {error}")),
         };
         // An app whose types hold an outside service's resources reaches its connector, which
         // holds the network and ownership the host has none of.
-        let origin = match tilo_app_launch::tilolang_processes::origin_of(&hosted.app) {
+        let origin = match tilo_app_launch::tilolang_processes::origin_of(app) {
             Ok(None) => None,
             Ok(Some(origin)) => {
                 let Some(connectors) = connectors else {
-                    return refused("no connector can start here".to_owned());
+                    return Err("no connector can start here".to_owned());
                 };
-                let workspace = self.workspace_named(&hosted.workspace);
-                match connectors.connection(&hosted.app, &origin, &workspace.id, &|origin| {
-                    self.plan_connector(&hosted.app, origin, &workspace)
+                let named = self.workspace_named(workspace);
+                match connectors.connection(app, &origin, &named.id, &|origin| {
+                    self.plan_connector(app, origin, &named)
                 }) {
                     Ok(connection) => Some(connection),
-                    Err(error) => return refused(error),
+                    Err(error) => return Err(error),
                 }
             }
-            Err(error) => return refused(error),
+            Err(error) => return Err(error),
         };
         // The device's content store, opened and scoped exactly as the launcher scopes a launched
         // app's: the files a person chooses and the pictures the document holds are kept there,
         // and a document's other readers reach them on its route.
-        let content = match launcher::services::resolve_blob_bind(
-            &hosted.app,
-            Some(&hosted.workspace),
-            false,
-        ) {
+        let content = match launcher::services::resolve_blob_bind(app, Some(workspace), false) {
             Ok(content) => content.map(|bind| bind.host),
             Err(error) => {
-                tracing::warn!(app = %hosted.app, %error, "the document media service is unusable");
+                tracing::warn!(app, %error, "the document media service is unusable");
                 None
             }
         };
         // The person's chooser, over the shell's socket, as the launcher opens it for a launched
         // app: what `file.choose` asks, so the person picks in the session's own sheet.
-        let chooser = match launcher::services::resolve_chooser_bind(
-            &hosted.app,
-            Some(&hosted.workspace),
-            false,
-        ) {
+        let chooser = match launcher::services::resolve_chooser_bind(app, Some(workspace), false) {
             Ok(chooser) => chooser.map(|bind| bind.host),
             Err(error) => {
-                tracing::warn!(app = %hosted.app, %error, "the chooser service is unusable");
+                tracing::warn!(app, %error, "the chooser service is unusable");
                 None
             }
         };
         // What the person may do in the app, as a launched app of it reads it: the instance's
         // views offer and refuse by it.
-        let access = tilo_app_launch::authority::access(
-            &self.workspace_named(&hosted.workspace),
-            &hosted.app,
-        );
-        processes.hand_over(tilo_app_launch::tilolang_processes::Instance {
-            access,
-            app: hosted.app,
-            workspace: hosted.workspace,
-            instance: hosted.instance,
+        let access = tilo_app_launch::authority::access(&self.workspace_named(workspace), app);
+        Ok(AppConnections {
             person,
-            patch: hosted.patch,
-            collaboration: hosted.collaboration,
             identity,
             origin,
             content,
             chooser,
+            access,
+        })
+    }
+
+    /// Hand the instance of the tilolang window `hosted` to the host of its workspace and author,
+    /// with the connections an instance holds: who is at it, its identity service and its app's
+    /// origin connector, when the app has one.
+    fn host_window(&self, hosted: tilo_app_launch::HostedWindow) {
+        let processes = self.state.borrow().processes.clone();
+        let (app, workspace, instance) = (
+            hosted.app.clone(),
+            hosted.workspace.clone(),
+            hosted.instance,
+        );
+        let Some(processes) = processes else {
+            tracing::error!(
+                app,
+                instance,
+                why = "no tilolang host can start here",
+                "a tilolang window's instance runs nowhere"
+            );
+            return;
+        };
+        let resources = match self.app_connections(&app, &workspace) {
+            Ok(resources) => resources,
+            Err(why) => {
+                tracing::error!(
+                    app,
+                    instance,
+                    why,
+                    "a tilolang window's instance runs nowhere"
+                );
+                return;
+            }
+        };
+        processes.hand_over(tilo_app_launch::tilolang_processes::Instance {
+            access: resources.access,
+            app,
+            workspace,
+            instance,
+            person: resources.person,
+            patch: Some(hosted.patch),
+            collaboration: hosted.collaboration,
+            identity: resources.identity,
+            origin: resources.origin,
+            content: resources.content,
+            chooser: resources.chooser,
             opens: hosted.opens,
+            locale: Self::person_locale(),
         });
     }
 
@@ -2111,14 +2149,63 @@ impl Apps {
     /// process takes the app's actions on its records and makes a window only when the shell
     /// asks it for one, through the link it holds as every launch of the app does. A process of
     /// the app running there already takes the action instead, and nothing starts.
+    ///
+    /// An app whose windows' instances run in a tilolang host starts an instance with no window
+    /// there ([`Self::start_with_no_view`]): the app's calls are its own, and no
+    /// process of its own runs.
     fn start_windowless(&self, launch: &Launch, workspace: &Workspace) -> Result<(), ApiError> {
         if self.runs_in_process(launch.app()) {
-            return Err(ApiError::Failed(format!(
-                "{}'s windows hold none of its data: it runs in a tilolang host, never without a window",
-                launch.app()
-            )));
+            return self.start_with_no_view(launch.app(), workspace);
         }
         self.start_launched_windowless(launch, workspace)
+    }
+
+    /// Start an instance of `app` in `workspace` in its tilolang host with no window: what an
+    /// action that shows nothing runs in, whether an agent invokes it or the workspace starts the
+    /// app. The instance gets the connections and grants a window's instance gets, and its
+    /// collaboration connection is attested windowless, so the broker never hands it an `open`.
+    fn start_with_no_view(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+    ) -> Result<(), ApiError> {
+        let (processes, links) = {
+            let state = self.state.borrow();
+            (state.processes.clone(), state.links.clone())
+        };
+        let (Some(processes), Some(links)) = (processes, links) else {
+            return Err(ApiError::Failed(format!(
+                "{app}'s instance runs in no tilolang host here"
+            )));
+        };
+        let resources = self
+            .app_connections(app, &workspace.id)
+            .map_err(ApiError::Failed)?;
+        let instance = links.next_instance();
+        let collaboration = links
+            .connections()
+            .collaboration_with_no_view(app, &workspace.id, instance)
+            .ok_or_else(|| {
+                ApiError::Failed(format!("{app} could not reach its workspace with no window"))
+            })?;
+        processes
+            .start_with_no_view(tilo_app_launch::tilolang_processes::Instance {
+                access: resources.access,
+                app: app.to_owned(),
+                workspace: workspace.id.clone(),
+                instance,
+                person: resources.person,
+                patch: None,
+                collaboration,
+                identity: resources.identity,
+                origin: resources.origin,
+                content: resources.content,
+                chooser: resources.chooser,
+                opens: tilo_app_launch::Opens::default(),
+                locale: Self::person_locale(),
+            })
+            .map_err(|error| ApiError::Failed(error.to_string()))?;
+        Ok(())
     }
 
     fn start_launched_windowless(

@@ -50,6 +50,10 @@ pub trait Connects {
 
     /// The shell-ui connection of that window, attributed to its launch.
     fn shell_ui(&self, app: &str, instance: u64, launcher_pid: Option<u32>) -> Option<OwnedFd>;
+
+    /// The collaboration connection of a call of `app` in `workspace` that shows nothing:
+    /// attested as that call, and handed no view to open.
+    fn collaboration_with_no_view(&self, app: &str, workspace: &str, call: u64) -> Option<OwnedFd>;
 }
 
 /// A window of a tilolang app whose instance a tilolang host runs: the
@@ -194,6 +198,12 @@ impl Links {
             generations: AtomicU64::new(1),
             instances: AtomicU64::new(1),
         })
+    }
+
+    /// The connections this session makes for a window of the apps it starts.
+    #[must_use]
+    pub fn connections(&self) -> &dyn Connects {
+        &*self.connections
     }
 
     fn links(&self) -> std::sync::MutexGuard<'_, HashMap<Key, Link>> {
@@ -754,6 +764,17 @@ mod tests {
             _launcher_pid: Option<u32>,
         ) -> Option<OwnedFd> {
             None
+        }
+
+        fn collaboration_with_no_view(
+            &self,
+            app: &str,
+            _workspace: &str,
+            _call: u64,
+        ) -> Option<OwnedFd> {
+            let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("a socket");
+            self.made.borrow_mut().push((app.to_owned(), theirs.into()));
+            Some(ours.into())
         }
     }
 

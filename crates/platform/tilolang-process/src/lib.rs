@@ -7,13 +7,15 @@
 //! app's: it holds only its api and its storage. Everything an instance is arrives over the API
 //! from the session (`runtime_portal::process_link`): its broker connection and its
 //! identity-service connection, which the session opened and attested as that app's launch, its
-//! verified module, and its window's patch connection. The broker attributes everything the
-//! instance says to the app from the session's own document of the connection, never from the
-//! process.
+//! verified module, and — for an instance that shows a window — its window's patch connection. The
+//! broker attributes everything the instance says to the app from the session's own document of
+//! the connection, never from the process.
 //!
 //! Each instance ([`hosted::Hosted`]) holds its workspace document with its undo log and save state,
-//! publishes the app's actions and runs what the broker delivers, all on its own connection, and
-//! drives its window with component patches; the window sends back what the person did.
+//! publishes the app's actions and runs what the broker delivers, all on its own connection. A
+//! window's instance drives its window with component patches, and the window sends back what the
+//! person did; an instance that shows nothing ([`Shows::Nothing`]) runs the app's actions for
+//! whoever invokes them and draws nothing.
 //!
 //! **Storage.** One directory per workspace and author, granted to the process at its start, keyed by
 //! package inside: `<storage>/<package>/documents` holds the workspace document's on-disk copy, and
@@ -45,7 +47,7 @@ use collaboration::native_initial::PrimaryRead;
 /// The person's formats and language, as the session says them on the API
 /// ([`TilolangProcess::set_locale`]).
 pub use runtime_portal::process_link::Locale;
-use runtime_portal::process_link::{AppBuild, InstanceFds, InstanceRequest, Module};
+use runtime_portal::process_link::{AppBuild, InstanceFds, InstanceRequest, Module, Shows};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_tilo::background::Waker;
@@ -185,11 +187,9 @@ struct Opening {
     /// The window's instance.
     instance: u64,
     stage: Stage,
-    /// The window's connection, until the instance runs.
+    /// The window's connection, until the instance runs: `None` for an instance that shows
+    /// nothing ([`Shows::Nothing`]).
     window: Option<Channel>,
-    /// For a change applied at the document's origin instead of a window: the change's
-    /// connection ([`InstanceRequest::applies_change`]).
-    change: Option<OwnedFd>,
     identity: Option<OwnedFd>,
     /// The connection to the app's origin connector, for an app whose types hold an outside
     /// service's resources.
@@ -253,10 +253,9 @@ enum Stage {
 /// What became of an opening after a step.
 enum Step {
     Waiting,
-    /// A change applies, its connection watched by the applier.
-    Apply(Box<hosted::Applier>),
-    /// It runs, its window's connection watched by the second.
-    Open(Box<Hosted>, OwnedFd),
+    /// It runs, its window's connection watched by the second (none for an instance that shows
+    /// nothing).
+    Open(Box<Hosted>, Option<OwnedFd>),
 }
 
 /// The host: its storage, what wakes it, and its instances.
@@ -273,14 +272,15 @@ pub struct TilolangProcess {
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
     opening: Vec<Opening>,
-    /// Changes being applied at their document's origin, each until the session lets go of it.
-    appliers: Vec<hosted::Applier>,
     /// The windows whose instances ended since the session was last told.
     ended: Vec<u64>,
     /// The agent task whose programs this host runs, when its author is a task.
     task: Option<task::Task>,
     /// The later builds of each app it runs, which its instances of the app follow.
     builds: std::collections::HashMap<String, Arc<LaterBuilds>>,
+    /// The one copy this host holds of each app's documents, in memory: what two windows of the
+    /// app in it read and write together, as they read and wrote one copy on disk before.
+    documents: std::cell::RefCell<std::collections::HashMap<String, Rc<durable_store::MemoryStore>>>,
 }
 
 impl TilolangProcess {
@@ -301,10 +301,10 @@ impl TilolangProcess {
             scope,
             running: Vec::new(),
             opening: Vec::new(),
-            appliers: Vec::new(),
             ended: Vec::new(),
             task: None,
             builds: std::collections::HashMap::new(),
+            documents: std::cell::RefCell::default(),
         }
     }
 
@@ -341,12 +341,27 @@ impl TilolangProcess {
         }
     }
 
-    /// Where the instances of `app` keep their workspace document's copy and indexes.
+    /// What the instances of `app` hold: their workspace document in memory, its indexes on disk,
+    /// and what an earlier app of the same id kept on this device.
+    ///
+    /// The workspace is the one store of an app's documents: every instance opens its document
+    /// from the broker's committed read of the workspace, so a host keeps no copy of its own on
+    /// disk to open from, on a device and on a server alike.
     pub fn kept(&self, app: &str) -> std::io::Result<Kept> {
+        // One copy the host holds of the app's documents, shared by every instance of it in
+        // this process.
+        let documents: Rc<dyn durable_store::DurableStore> = {
+            let mut held = self.documents.borrow_mut();
+            Rc::clone(
+                held.entry(app.to_owned())
+                    .or_insert_with(|| Rc::new(durable_store::MemoryStore::default())),
+            ) as Rc<dyn durable_store::DurableStore>
+        };
         let Some(storage) = &self.storage else {
             return Ok(Kept {
-                documents: Rc::new(durable_store::MemoryStore::default()),
+                documents,
                 indexes: None,
+                earlier: None,
                 content: None,
                 chooser: None,
             });
@@ -355,19 +370,14 @@ impl TilolangProcess {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }
         let package = storage.join(app);
-        let documents = package.join("documents");
-        // What was made is durable up to the storage the session granted; nothing above it is
-        // the host's, and its sandbox opens nothing there. A start over directories an earlier
-        // one made waits for no disk.
-        if !documents.is_dir() {
-            std::fs::create_dir_all(&documents)?;
-            for made in [&package, storage] {
-                std::fs::File::open(made)?.sync_all()?;
-            }
-        }
         Ok(Kept {
-            documents: Rc::new(app_state::FsStore::provisioned(&documents)),
+            documents,
             indexes: Some(package.join("indexes")),
+            // What an earlier version of the app — a native app the package replaced, or an
+            // earlier Mail — kept in this directory, read once by the package's own conversion
+            // (`earlier_documents`, the mailbox's recovery). Nothing writes it any more: a
+            // conversion reads what a version before this one left, and a host keeps no live copy.
+            earlier: Some(Rc::new(durable_store::MemoryStore::default())),
             content: None,
             chooser: None,
         })
@@ -515,13 +525,18 @@ impl TilolangProcess {
     /// connection joins and its document is read off the host's loop, and it runs once all three
     /// are done ([`Self::turn`]).
     pub fn admit(&mut self, request: InstanceRequest, fds: InstanceFds) -> Result<(), AdmitError> {
-        let (window, change) = if request.applies_change {
-            (None, Some(fds.window))
-        } else {
-            (
-                Some(Channel::from_socket(fds.window).map_err(AdmitError::Window)?),
-                None,
-            )
+        let window = match (request.shows, fds.window) {
+            (Shows::View, Some(window)) => {
+                Some(Channel::from_socket(window).map_err(AdmitError::Window)?)
+            }
+            // The session draws nothing for it: it has no window to hand, and none to expect.
+            (Shows::Nothing, _) => None,
+            (Shows::View, None) => {
+                return Err(AdmitError::Window(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "a window's instance arrived with no window connection",
+                )));
+            }
         };
         // The formats the session hands with any instance are the person's: the same for all of
         // them, so the last one said holds for the host, and the instances already running
@@ -549,7 +564,6 @@ impl TilolangProcess {
                 decoded,
             },
             window,
-            change,
             identity: Some(fds.identity),
             origin: fds.origin,
             content: store_of(fds.content),
@@ -584,7 +598,6 @@ impl TilolangProcess {
                 manager,
             },
             window: Some(window),
-            change: None,
             identity: None,
             origin: None,
             content: None,
@@ -744,8 +757,7 @@ impl TilolangProcess {
             }
         }
         let workspace = uuid::Uuid::parse_str(&request.workspace)
-            .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;
-        let identity =
+            .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;        let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
         if bundle.meta.uses_personal_profile()
             && collab_types::personal_cluster_of(&request.person).is_none()
@@ -783,6 +795,7 @@ impl TilolangProcess {
                 installed: request.installed,
                 language: request.language,
                 access: request.access,
+                shows: request.shows,
                 ..Spec::new(
                     request.app,
                     request.workspace,
@@ -847,35 +860,31 @@ impl TilolangProcess {
                 .clone()
                 .unwrap_or_else(tilo_content_device::for_app),
         );
-        if let Some(change) = opening.change.take() {
-            // A change at the document's origin: the document and the package, no instance.
-            let applier = hosted::Applier::open(
-                spec,
-                record,
-                &bundle,
-                &self.phrases,
-                Arc::clone(&self.wake),
-                change,
-            )
-            .map_err(AdmitError::Join)?;
-            opening.reached("opened");
-            return Ok(Step::Apply(Box::new(applier)));
-        }
-        let window = opening
-            .window
-            .take()
-            .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
-        let watched = window
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(AdmitError::Window)?;
-        let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
+        // A window's instance draws and hears its window; one that shows nothing sends its
+        // patches nowhere and hears nothing.
+        let (transport, watched): (Box<dyn tilo_render_protocol::patch::Transport>, _) =
+            match spec.shows {
+                Shows::View => {
+                    let window = opening
+                        .window
+                        .take()
+                        .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
+                    let watched = window
+                        .as_fd()
+                        .try_clone_to_owned()
+                        .map_err(AdmitError::Window)?;
+                    let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
+                    (Box::new(transport), Some(watched))
+                }
+                Shows::Nothing => (Box::new(hosted::NoView), None),
+            };
+        let shows = spec.shows;
         let mut hosted = Hosted::with_document(
             spec,
             record,
             bundle,
             &kept,
-            Box::new(transport),
+            transport,
             &self.phrases,
             &self.formats,
             Arc::clone(&self.wake),
@@ -892,14 +901,17 @@ impl TilolangProcess {
             Some(identity) => hosted.holding_identity(identity),
             None => hosted,
         };
-        // The item its window was asked to open on, shown as its `open` shows one.
-        if let Some(anchor) = opening.reveal.take() {
-            hosted.reveal(anchor);
-        }
-        // The file the app was opened with, which its package's action takes once the window's
-        // surface is published.
-        if let Some(file) = opening.open.take() {
-            hosted.open_file(file);
+        // What a window was asked to show: an instance that shows nothing opens on nothing.
+        if shows == Shows::View {
+            // The item its window was asked to open on, shown as its `open` shows one.
+            if let Some(anchor) = opening.reveal.take() {
+                hosted.reveal(anchor);
+            }
+            // The file the app was opened with, which its package's action takes once the window's
+            // surface is published.
+            if let Some(file) = opening.open.take() {
+                hosted.open_file(file);
+            }
         }
         self.attach_origin(opening, &mut hosted)?;
         opening.reached("opened");
@@ -948,17 +960,12 @@ impl TilolangProcess {
         let mut changed = false;
         let mut opening = std::mem::take(&mut self.opening);
         let mut started = Vec::new();
-        let mut applying = Vec::new();
         let mut ended = Vec::new();
         opening.retain_mut(|open| {
             if open
                 .window
                 .as_ref()
                 .is_some_and(|window| hung_up(window.as_fd()))
-                || open
-                    .change
-                    .as_ref()
-                    .is_some_and(|change| hung_up(change.as_fd()))
             {
                 tracing::info!(
                     app = open.app,
@@ -974,11 +981,6 @@ impl TilolangProcess {
                     started.push((*hosted, watched));
                     false
                 }
-                Ok(Step::Apply(applier)) => {
-                    applying.push(*applier);
-                    changed = true;
-                    false
-                }
                 Err(error) => {
                     tracing::error!(app = open.app, %error, "an instance did not start");
                     ended.push(open.instance);
@@ -989,22 +991,19 @@ impl TilolangProcess {
         });
         self.opening = opening;
         self.ended.extend(ended);
-        self.appliers.extend(applying);
         for (hosted, watched) in started {
             changed = true;
-            self.add(hosted, Some(watched));
+            self.add(hosted, watched);
         }
         changed
     }
 
     /// The running instances' window connections, to wait on: what one sends is its instance's
-    /// next frame's, and one closing ends its instance.
+    /// next frame's, and one closing ends its instance. An instance that shows nothing has none.
     pub fn windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
         self.running
             .iter()
             .filter_map(|running| running.window.as_ref().map(OwnedFd::as_fd))
-            // A change's connection: its line arriving, and the session letting go of it.
-            .chain(self.appliers.iter().map(hosted::Applier::connection))
     }
 
     /// The window connections of the instances being opened, to wait on for closing only: what
@@ -1013,11 +1012,6 @@ impl TilolangProcess {
         self.opening
             .iter()
             .filter_map(|open| open.window.as_ref().map(AsFd::as_fd))
-            .chain(
-                self.opening
-                    .iter()
-                    .filter_map(|open| open.change.as_ref().map(AsFd::as_fd)),
-            )
     }
 
     /// One frame of every instance; an instance whose window closed ends, its document written
@@ -1062,25 +1056,7 @@ impl TilolangProcess {
         });
         // A change runs, is answered, and ends once the session let go of its connection: the
         // workspace was handed what it wrote by then.
-        for applier in &mut self.appliers {
-            changed |= applier.turn();
-        }
-        let applying = self.appliers.len();
-        let ended = &mut self.ended;
-        self.appliers.retain(|applier| {
-            let gone = hung_up(applier.connection());
-            if gone {
-                if !applier.answered() {
-                    tracing::warn!(
-                        app = applier.spec().app,
-                        "a change's session left before it was answered"
-                    );
-                }
-                ended.push(applier.spec().instance);
-            }
-            !gone
-        });
-        changed || self.running.len() != before || self.appliers.len() != applying
+        changed || self.running.len() != before
     }
 
     /// Take the step the person asked to undo in `asked_in` back: in that unit alone when no
@@ -1206,29 +1182,24 @@ impl TilolangProcess {
     /// Whether the host runs no instance and opens none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.running.is_empty()
-            && self.opening.is_empty()
-            && self.appliers.is_empty()
-            && self.task.is_none()
+        self.running.is_empty() && self.opening.is_empty() && self.task.is_none()
     }
 
-    /// Whether the host owes work of its own: an instance being opened, a change being applied,
-    /// or a window with a frame coming. A host that owes none draws nothing more until something
-    /// reaches it — its api, a window, or a wake — so a frame taken then is the same frame the
-    /// next one would be.
+    /// Whether the host owes work of its own: an instance being opened, or a window with a frame
+    /// coming. A host that owes none draws nothing more until something reaches it — its api, a
+    /// window, or a wake — so a frame taken then is the same frame the next one would be.
     #[must_use]
     pub fn owes_work(&self) -> bool {
         !self.opening.is_empty()
-            || self.appliers.iter().any(hosted::Applier::owes)
             || self
                 .running
                 .iter()
                 .any(|running| running.hosted.owes_a_frame())
     }
 
-    /// What [`Self::owes_work`] owes, in words: each app whose instance is opening, each app
-    /// whose change is being applied, and each window whose frame is coming. What a caller that
-    /// waited longer than it may says of the host it left.
+    /// What [`Self::owes_work`] owes, in words: each app whose instance is opening, and each
+    /// window whose frame is coming. What a caller that waited longer than it may says of the
+    /// host it left.
     #[must_use]
     pub fn owed(&self) -> Vec<String> {
         let mut owed: Vec<String> = self
@@ -1236,11 +1207,6 @@ impl TilolangProcess {
             .iter()
             .map(|opening| format!("{} opening", opening.app))
             .collect();
-        owed.extend(
-            self.appliers
-                .iter()
-                .map(|applier| format!("{} applying a change", applier.spec().app)),
-        );
         for running in &self.running {
             if running.hosted.owes_a_frame() {
                 owed.push(format!(

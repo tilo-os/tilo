@@ -14,13 +14,15 @@
 //!   offers an action directory on the connection too, answering it from what it published
 //!   ([`PublishedDirectory`]): what makes the instance one the API and agents can browse.
 //! - **What every app publishes:** on its app's resource the instance publishes the history
-//!   verbs (Undo, Redo, History, ...: `collaboration::history_source::verbs`), `read`
-//!   (`tilo_resource::read`) and "Show this window" (`tilo_actions::remote::activate_spec`), and
-//!   answers them as a framework app does: history on its document, `read` through the runtime,
-//!   and "Show this window" by asking its window to come forward. The person's Undo on a notice
-//!   in the window is the same `undo`, as theirs: there is one undo.
-//! - **The window:** the instance sends it patches and hears what the person did over the patch
-//!   connection.
+//!   verbs (Undo, Redo, History, ...: `collaboration::history_source::verbs`) and `read`
+//!   (`tilo_resource::read`), and answers them as a framework app does: history on its document,
+//!   `read` through the runtime. A window's instance also publishes "Show this window"
+//!   (`tilo_actions::remote::activate_spec`) and answers it by asking its window to come forward;
+//!   an instance that shows nothing ([`Spec::shows`]) offers no such verb. The person's Undo on a
+//!   notice in the window is the same `undo`, as theirs: there is one undo.
+//! - **The window:** a window's instance sends it patches and hears what the person did over the
+//!   patch connection; an instance that shows nothing sends its patches nowhere and hears
+//!   nothing.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
@@ -38,7 +40,9 @@ use tilo_actions::{
     ActionAddress, ActionContext, ActionDescriptor, ActionInvoker, ActionRegistry, EncodedAction,
     InvocationId, InvocationUpdate, ResourceSpec,
 };
+use tilo_render_protocol::WireError;
 use tilo_render_protocol::patch::{ActionCatalogue, ToUi, Transport};
+use runtime_portal::process_link::Shows;
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -55,9 +59,7 @@ use tilolang_tilo::runtime::ids::MemberId;
 use tilolang_tilo::runtime::{InvokeOutcome, Value};
 use tilolang_tilo::used::UsedApp;
 
-mod applier;
 mod used;
-pub use applier::Applier;
 use tilolang_tilo::{HostEffect, OpenEffect};
 use used::{Used, used_apps, workspace_id};
 
@@ -98,6 +100,10 @@ pub struct Spec {
     /// runtime refuses it before it reaches the broker. `None` where the session holds no policy
     /// for the workspace: the broker alone decides.
     pub access: Option<tilo_action_policy::MemberAccess>,
+    /// Whether the instance shows a window or runs with none (`InstanceRequest::shows`): an
+    /// instance that shows nothing draws no window, offers no window verb, and runs the app's
+    /// actions on its document alone.
+    pub shows: Shows,
 }
 
 impl Spec {
@@ -118,6 +124,7 @@ impl Spec {
             installed: BTreeMap::new(),
             language: String::new(),
             access: None,
+            shows: Shows::View,
         }
     }
 
@@ -134,18 +141,45 @@ impl Spec {
         self.access = Some(access);
         self
     }
+
+    /// [`Self::new`] for an instance that shows `shows`: a window, or nothing.
+    #[must_use]
+    pub fn showing(mut self, shows: Shows) -> Self {
+        self.shows = shows;
+        self
+    }
+}
+
+/// The transport of an instance that shows nothing ([`Shows::Nothing`]): every batch the runtime
+/// sends its window is dropped, and no window ever sent one.
+#[derive(Debug, Default)]
+pub struct NoView;
+
+impl Transport for NoView {
+    fn send(&mut self, _batch: Vec<u8>) -> Result<(), WireError> {
+        Ok(())
+    }
+
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, WireError> {
+        Ok(None)
+    }
 }
 
 /// The documents a native app of `record`'s app id kept in its workspace on this device, when
 /// this device governs the workspace (none elsewhere), each by the key it is stored under: its
 /// records, which the package now under that id carries over once with a migration of its own.
-/// Read here, never written. While one of them does not read, or the store cannot list them, none
-/// are handed over: carrying some of them would leave the rest behind for good, so the carrying
-/// waits for a start that reads them all.
+/// Read from the store an earlier version wrote, and never written: the host keeps no live copy
+/// of a document, and this is the one remaining read of what a version before it left behind.
+/// While one of them does not read, or the store cannot list them, none are handed over: carrying
+/// some of them would leave the rest behind for good, so the carrying waits for a start that
+/// reads them all.
 fn earlier_documents(
-    documents: &Rc<dyn durable_store::DurableStore>,
+    documents: Option<&Rc<dyn durable_store::DurableStore>>,
     record: &InstanceDocument,
 ) -> Vec<(String, automerge::AutoCommit)> {
+    let Some(documents) = documents else {
+        return Vec::new();
+    };
     if !record.governs() {
         return Vec::new();
     }
@@ -219,8 +253,9 @@ type DirectoryInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
 struct Surface {
     /// The instance's app: its resource carries what every app publishes.
     app: String,
-    /// "Show this window", in the person's language.
-    activate: tilo_actions::ActionSpec,
+    /// "Show this window", in the person's language: a window's alone (`None` for an instance
+    /// that shows nothing).
+    activate: Option<tilo_actions::ActionSpec>,
     host: Host,
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
@@ -230,16 +265,21 @@ struct Surface {
 }
 
 impl Surface {
-    fn new(app: &str, activate: tilo_actions::ActionSpec, host: &Host, wake: Waker) -> Self {
+    fn new(
+        app: &str,
+        activate: Option<tilo_actions::ActionSpec>,
+        host: &Host,
+        wake: Waker,
+    ) -> Self {
         let handle = Arc::new(
             host.handle()
                 .with_caller(|| CALLER.with(|caller| caller.borrow().clone())),
         );
         let mut publications = Publications::new(host);
         publications.set_waker(wake.clone());
-        // This surface is a window's: it publishes the documents the window draws and the
-        // resources its invocations name, not the whole workspace. What a caller that asks the
-        // directory reads is read from the workspace on demand (`everything`).
+        // Nothing here is published up front: what an invocation names is published when it
+        // names it (`addressed`), whether a window shows it or no window does. A workspace of ten
+        // thousand costs an open what it takes.
         publications.window();
         let planner: Arc<dyn Planner> = handle.clone();
         let surface = Self {
@@ -298,7 +338,7 @@ impl Surface {
         for package in self.host.packages() {
             let mut resource = publish_package(&package.meta, &self.planner, &*words);
             if package.meta.app == self.app {
-                resource = with_app_actions(resource, &self.activate);
+                resource = with_app_actions(resource, self.activate.as_ref());
             }
             if !resource.actions.is_empty() {
                 out.push(resource);
@@ -410,10 +450,15 @@ impl Publication for Held {
 }
 
 /// `resource` with what every app publishes, those it does not offer itself: the history verbs
-/// of its document, `read` and "Show this window".
-fn with_app_actions(resource: ResourceSpec, activate: &tilo_actions::ActionSpec) -> ResourceSpec {
+/// of its document, `read`, and "Show this window" where the instance shows one.
+fn with_app_actions(
+    resource: ResourceSpec,
+    activate: Option<&tilo_actions::ActionSpec>,
+) -> ResourceSpec {
     let mut resource = tilolang_tilo::history::with_verbs(resource);
-    for spec in [tilo_resource::read::spec(None), activate.clone()] {
+    for spec in std::iter::once(tilo_resource::read::spec(None))
+        .chain(activate.cloned())
+    {
         if !resource
             .actions
             .iter()
@@ -440,6 +485,9 @@ struct HostPlatform {
     /// The apps installed here ([`Spec::installed`]): a package the app uses that is one of them
     /// is loaded as another app's.
     installed: BTreeMap<String, String>,
+    /// Whether this instance shows a window: its surface offers "Show this window" only when one
+    /// exists to bring forward.
+    shows: Shows,
     /// The words of this window: its app's own and its frames', in the language the window speaks
     /// (the person's where the package ships it), so what its dates and clocks read in is the same
     /// language the toolkit's own say them in.
@@ -624,21 +672,31 @@ impl Platform for HostPlatform {
     }
 
     fn publish(&self, host: &Host, wake: Waker) -> Option<Box<dyn Publication>> {
-        let activate = tilo_actions::remote::activate_spec(
-            self.phrases.say("app-activate-window", &[]),
-            self.phrases.say("app-activate-window-description", &[]),
-        );
+        // A window's instance offers to bring its window forward; one that shows nothing has none
+        // to bring.
+        let activate = (self.shows == Shows::View).then(|| {
+            tilo_actions::remote::activate_spec(
+                self.phrases.say("app-activate-window", &[]),
+                self.phrases.say("app-activate-window-description", &[]),
+            )
+        });
         let surface = Rc::new(Surface::new(&self.bundle.meta.app, activate, host, wake));
         *self.surface.borrow_mut() = Some(Rc::clone(&surface));
         Some(Box::new(Held(surface)))
     }
 }
 
-/// Where an instance keeps what it keeps: its workspace document's on-disk copy and its indexes,
-/// under its package's directory in the host's storage.
+/// Where an instance keeps what it keeps: its workspace document in memory, its indexes under
+/// its package's directory in the host's storage, and what an earlier app of its id kept there.
 pub struct Kept {
+    /// The document, in memory: the workspace's own store holds it, and the host keeps no copy of
+    /// its own (see [`crate::TilolangProcess::kept`]).
     pub documents: Rc<dyn durable_store::DurableStore>,
     pub indexes: Option<std::path::PathBuf>,
+    /// What an earlier version of the app kept on this device, for the package's one-time
+    /// conversion of it (a native app's records, a mailbox before this one). Read once, never
+    /// written: `None` where this host keeps nothing on disk.
+    pub earlier: Option<Rc<dyn durable_store::DurableStore>>,
     /// The device content store of the app in its workspace, when the session opened one for
     /// this instance: the files a person chooses and the pictures its document holds are kept
     /// there, outliving the window.
@@ -694,12 +752,12 @@ struct Answered {
 /// A row that shows what an app says of an action on it: what it is called there, the icon
 /// beside it and whether it can run. The window's catalogue and the action directory carry the
 /// same answer, so both are shown it the same way.
-trait Shows {
-    fn shows(&mut self, offered: &tilolang_tilo::host::Offered);
+trait Offers {
+    fn offers(&mut self, offered: &tilolang_tilo::host::Offered);
 }
 
-impl Shows for ActionDescriptor {
-    fn shows(&mut self, offered: &tilolang_tilo::host::Offered) {
+impl Offers for ActionDescriptor {
+    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) {
         if let Some(label) = &offered.label {
             self.action_label.clone_from(label);
         }
@@ -712,8 +770,8 @@ impl Shows for ActionDescriptor {
     }
 }
 
-impl Shows for collaboration::ExportedAction {
-    fn shows(&mut self, offered: &tilolang_tilo::host::Offered) {
+impl Offers for collaboration::ExportedAction {
+    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) {
         if let Some(label) = &offered.label {
             self.action_label.clone_from(label);
         }
@@ -917,14 +975,15 @@ impl DocumentScope {
 }
 
 impl Hosted {
-    /// The instance `spec` of `bundle` over `document`, which it holds from now on.
+    /// The instance `spec` of `bundle` over `document`, which it holds from now on, its window's
+    /// patches carried by `transport`.
     #[must_use]
     pub fn with_document(
         spec: Spec,
         record: InstanceDocument,
         bundle: Arc<Bundle>,
         kept: &Kept,
-        window: Box<dyn Transport>,
+        transport: Box<dyn Transport>,
         phrases: &Rc<Phrases>,
         formats: &Formats,
         wake: Waker,
@@ -955,6 +1014,7 @@ impl Hosted {
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
             installed: spec.installed.clone(),
+            shows: spec.shows,
             phrases: Rc::clone(&phrases),
             formats: Rc::clone(formats),
             wake: Arc::clone(&wake),
@@ -980,12 +1040,12 @@ impl Hosted {
             Rc::new(platform),
             // People by what the workspace's member list calls them, once it arrived.
             Rc::new(tilolang_tilo::names::Unnamed),
-            window,
+            transport,
         );
         // The device that governs the workspace is its documents' origin: the package's migrations
         // run there, once, over what a native app of the package's id kept there too.
         instance.set_origin(record.governs());
-        instance.set_earlier(earlier_documents(&kept.documents, &record));
+        instance.set_earlier(earlier_documents(kept.earlier.as_ref(), &record));
         // What its runtime offers and invokes is decided by the person's access as the session
         // says it, read at each decision.
         let access = Rc::new(RefCell::new(spec.access.clone()));
@@ -995,8 +1055,11 @@ impl Hosted {
         registry.connect_content(record.content().clone());
         drop(in_scope);
         let presence = Presence::new(&spec.app, &spec.person);
-        let mail_archive =
-            (spec.app == crate::mail_recovery::APP).then(|| Rc::clone(&kept.documents));
+        // The mailbox's recovery reads the copy an earlier Mail left on this device: the
+        // package's one-time conversion, as a native app's records are.
+        let mail_archive = (spec.app == crate::mail_recovery::APP)
+            .then(|| kept.earlier.clone())
+            .flatten();
 
         Self {
             spec,
@@ -1250,8 +1313,17 @@ impl Hosted {
             .take_personal(self.personal.state(), self.spec.instance);
         self.personal
             .keep(&self.spec.person, keeps, self.record.manager_mut());
+        // An invocation the broker cancelled before this frame ran it writes nothing: the caller
+        // stopped waiting, so the app's code never runs for it.
+        let cancelled: std::collections::HashSet<u64> = events
+            .iter()
+            .filter_map(|event| match event {
+                CollabEvent::InvocationCancellation { id } => Some(*id),
+                _ => None,
+            })
+            .collect();
         for event in events {
-            changed |= self.delivered(event);
+            changed |= self.delivered(event, &cancelled);
         }
         changed |= self.read_used();
         self.send_asks();
@@ -1656,7 +1728,7 @@ impl Hosted {
         ) else {
             return;
         };
-        descriptor.shows(&offered);
+        descriptor.offers(&offered);
     }
 
     fn apply_document_grants(&self, descriptors: &mut [ActionDescriptor]) {
@@ -1799,7 +1871,7 @@ impl Hosted {
                 if let Some(offered) =
                     answers.answer(&host, at, &descriptor.resource, &descriptor.action)
                 {
-                    descriptor.shows(&offered);
+                    descriptor.offers(&offered);
                 }
             });
         }
@@ -1826,7 +1898,7 @@ impl Hosted {
     /// cursors, results of requests it never makes), but for what it names: what each app
     /// installed here is called rides with the context, and is what this window's history reads
     /// another app's change as.
-    fn delivered(&mut self, event: CollabEvent) -> bool {
+    fn delivered(&mut self, event: CollabEvent, cancelled: &std::collections::HashSet<u64>) -> bool {
         if let Some(moved) = self.personal.take(&event, self.record.manager_mut()) {
             return moved;
         }
@@ -1853,7 +1925,15 @@ impl Hosted {
                 argument,
                 actor,
                 context,
-            } => (id, invocation, resource, action, argument, actor, context),
+            } => {
+                // The caller stopped waiting before this frame ran it: the app's code does not
+                // run, nothing is written, and the broker, which cancelled it, expects no answer.
+                if cancelled.contains(&id) {
+                    tracing::debug!(id, "an invocation cancelled before it ran is not run");
+                    return false;
+                }
+                (id, invocation, resource, action, argument, actor, context)
+            }
             CollabEvent::Handoff { request } => {
                 self.handoff(&request);
                 return true;
@@ -1864,7 +1944,8 @@ impl Hosted {
             }
             CollabEvent::InvocationCancellation { id } => {
                 // An invocation runs to its end in the frame it arrives in and is answered
-                // there: by the time its cancellation arrives nothing of it is left to stop.
+                // there: a cancellation that was not in the frame its invocation was stops
+                // nothing.
                 tracing::debug!(id, "a cancellation of an invocation already answered");
                 return false;
             }

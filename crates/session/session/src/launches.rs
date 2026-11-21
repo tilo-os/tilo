@@ -58,14 +58,16 @@ struct Launch {
     tab: Option<u64>,
 }
 
-/// One window of a running app the session is connecting: the window's own instance, and the launch
-/// whose process it opens in.
+/// One instance of a running app the session is connecting: a window's own, or one that shows no
+/// window, and the launch whose process it opens in.
 struct Window {
     app: String,
     workspace: String,
     instance: u64,
     /// The process of the launch it belongs to, while that runs.
     launch: Option<u32>,
+    /// The call shows nothing: the app's code runs for it and no view is handed to it.
+    no_view: bool,
 }
 
 /// A launch a service, an app or an agent asked this session for, waiting for the pass that starts
@@ -282,6 +284,22 @@ impl Launches {
             workspace: workspace.to_owned(),
             instance,
             launch,
+            no_view: false,
+        });
+    }
+
+    /// Record that the session is about to connect the call `call` of `app` in `workspace`, which
+    /// shows nothing: an agent's step or the workspace starts the app's code without a view. The
+    /// broker admits the connection as that call, and hands it no view to open.
+    pub fn record_no_view(&self, app: &str, workspace: &str, call: u64) {
+        let mut windows = self.windows.lock_recover();
+        windows.retain(|window| !window.is(app, workspace, call));
+        windows.push(Window {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            instance: call,
+            launch: None,
+            no_view: true,
         });
     }
 
@@ -463,7 +481,7 @@ impl Launches {
         Some(AuthenticatedApplicationLaunch {
             continuation_instance: Some(instance),
             launch_ticket: None,
-            windowless: false,
+            windowless: record.no_view,
         })
     }
 }
@@ -526,8 +544,8 @@ impl LauncherServices for Launches {
 
     /// Have package `app` run with no window in `workspace`, for an action that shows nothing:
     /// the session's loop starts it unless a process of it runs there already, and the start's
-    /// answer is the one returned. An app whose windows' instances run in a tilolang host (its
-    /// process holds none of its data), or one that is no package, has no such instance.
+    /// answer is the one returned. An app whose windows' instances run in a tilolang host starts
+    /// an instance there with no window; one that is no package has no such instance.
     ///
     /// # Errors
     /// More launches are waiting than a person's apps ask for.
@@ -536,9 +554,6 @@ impl LauncherServices for Launches {
         app: &str,
         workspace: &str,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
-        if tilo_app_launch::tilolang_processes::runs_in_process(app) {
-            return Ok(None);
-        }
         let Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) =
             tilo_app_launch::Launch::parse(app)
         else {

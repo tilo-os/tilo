@@ -255,9 +255,18 @@ fn known_unsent(chunks: &Chunks, draft: &ResourceRef, fields: &[String]) -> bool
         return false;
     };
     let payload = serde_json::json!(fields);
+    // A job an earlier build wrote may carry fields more than this one reads (the signature it
+    // put in the message): it is the draft's job when its leading fields are the draft's own.
+    let leading = payload.as_array().map_or(0, Vec::len);
     let mut matching = outbox_entries(doc, APP, &draft.doc)
         .into_iter()
-        .filter(|job| job.capability == "smtp.send" && job.payload == payload);
+        .filter(|job| {
+            job.capability == "smtp.send"
+                && job
+                    .payload
+                    .as_array()
+                    .is_some_and(|job| job.get(..leading) == payload.as_array().map(Vec::as_slice))
+        });
     let unsent = |job: tilolang_tilo::action::StoredEntry| {
         matches!(
             job.delivery().state.as_str(),
