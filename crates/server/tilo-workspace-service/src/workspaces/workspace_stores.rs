@@ -52,7 +52,8 @@ impl Store {
         app: tilo_app_id::apps::MAIL,
         kind: tilo_actions::remote::person_accounts::PROVIDER,
     };
-    /// The workspace's calendar accounts, in Calendar.
+    /// The workspace's calendar accounts, in Calendar: only agents' hosts keep them.
+    #[cfg(feature = "agents")]
     pub(super) const CALENDARS: Self = Self {
         app: tilo_app_id::apps::CALENDAR,
         kind: tilo_actions::remote::person_accounts::PROVIDER,
