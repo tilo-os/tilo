@@ -437,7 +437,7 @@ fn turn(cx: &ViewCx<Table>, hand: &game::Hand, me: &str) -> Element {
     };
     row = row.push(Box::new(cx.button(call_label, Table::CALL.invoke())));
     if let Some((least, most)) = hand.raise_range(me) {
-        #[allow(clippy::cast_precision_loss, reason = "chip counts are small")]
+        #[allow(clippy::cast_precision_loss, reason = "a table's chip counts fit f32")]
         let (least, most) = (least as f64, most as f64);
         let form = cx.form::<game::table::Raise>();
         let slider = cx.control(
