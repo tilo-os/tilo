@@ -77,6 +77,10 @@ struct Shared<P: Resource> {
     /// ([`PersonState::kept_to_take_in`]): it waits for the store as an
     /// edit does.
     taking_in: RefCell<Option<ui_core::automerge::AutoCommit>>,
+    /// The window the record is opened for: woken while edits or what is
+    /// taken in wait for the store, so a frame's settle makes them and its
+    /// next pass shows them, rather than whichever pass comes next.
+    wake: Option<ui_core::wake::WakeHandle>,
 }
 
 impl<P: Resource> Shared<P> {
@@ -85,6 +89,9 @@ impl<P: Resource> Shared<P> {
     fn refresh(&self) -> bool {
         self.take_in();
         self.apply_waiting();
+        if self.owes() {
+            self.wake();
+        }
         let mut moved = match self.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
@@ -124,6 +131,28 @@ impl<P: Resource> Shared<P> {
             return true;
         }
         moved
+    }
+
+    /// Whether edits or what is taken in still wait for the store.
+    fn owes(&self) -> bool {
+        self.taking_in.borrow().is_some() || !self.waiting.borrow().is_empty()
+    }
+
+    /// Make what waited for the store, in a frame's settle, where the store
+    /// is free, and wake the window so its next pass reads what it made.
+    fn settle(&self) {
+        if !self.owes() {
+            return;
+        }
+        self.take_in();
+        self.apply_waiting();
+        self.wake();
+    }
+
+    fn wake(&self) {
+        if let Some(wake) = &self.wake {
+            wake.wake();
+        }
     }
 
     /// Take what the person kept before into the record, while it still
@@ -313,8 +342,8 @@ impl<P: Resource> PersonResource<P> {
                     false
                 }
                 // The store is read by whatever runs now (a pass of the
-                // app's view): the edit is made once it lets go, on the
-                // window's next refresh, and what is read until then holds it.
+                // app's view): the edit is made once it lets go, in the
+                // window's next settle, and what is read until then holds it.
                 Err(unavailable) if unavailable.is_momentary() => true,
                 Err(unavailable) => return Err(ActionError::Refused(unavailable.to_string())),
             };
@@ -438,6 +467,8 @@ pub(crate) struct PersonState {
     others: RefCell<HashMap<&'static str, PersonResources>>,
     owners: Rc<RefCell<Vec<HistoryOwner>>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+    /// What each open record makes in a frame's settle ([`Self::settle`]).
+    settlers: RefCell<Vec<Box<dyn Fn()>>>,
     /// The open records' undo and redo, as the palette and agents reach
     /// them.
     published: RefCell<Vec<Published>>,
@@ -686,6 +717,7 @@ impl PersonState {
             others: RefCell::default(),
             owners: Rc::default(),
             refreshers: RefCell::default(),
+            settlers: RefCell::default(),
             published: RefCell::default(),
             unavailable: RefCell::default(),
         }
@@ -969,10 +1001,17 @@ impl PersonState {
             waiting: RefCell::default(),
             ahead: RefCell::default(),
             taking_in: RefCell::default(),
+            wake: self.wake.clone(),
         });
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
             weak.upgrade().is_some_and(|shared| shared.refresh())
+        }));
+        let weak = Rc::downgrade(&shared);
+        self.settlers.borrow_mut().push(Box::new(move || {
+            if let Some(shared) = weak.upgrade() {
+                shared.settle();
+            }
         }));
         Ok(shared)
     }
@@ -1102,6 +1141,15 @@ impl PersonState {
     fn publish(&self, key: OpenKey, open: Rc<dyn Any>, published: Published) {
         self.published.borrow_mut().push(published);
         self.opened.borrow_mut().insert(key, open);
+    }
+
+    /// Make what waited for each open record's store (an edit asked for
+    /// during a pass of the view, what is taken into a record the workspace
+    /// keeps): in a frame's settle, where the store is free.
+    pub(crate) fn settle(&self) {
+        for settle in self.settlers.borrow().iter() {
+            settle();
+        }
     }
 
     /// Read every open record that moved. Whether one did.

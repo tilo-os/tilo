@@ -934,6 +934,9 @@ impl ViewStorage {
     /// a frame's settle, where the store takes the writer opening it needs,
     /// so the views' next sync reads it.
     pub(crate) fn settle(&self) {
+        if let Some(person) = &self.person {
+            person.settle();
+        }
         for chain in self.chains.apis() {
             let _ = chain.revision();
         }
