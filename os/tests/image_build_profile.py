@@ -50,6 +50,8 @@ msg() { printf '%s\\n' "$*" >&2; }
 die() { printf '%s\\n' "$*" >&2; exit 1; }
 warn() { printf 'WARN: %s\\n' "$*" >&2; }
 warn_slow_podman_storage() { :; }
+# Sealing reads the built image's UKI with podman; these tests stop before any image exists.
+seal_image_for_install() { :; }
 cargo_build_jobs() { echo 4; }
 TILO_PODMAN_BUILD_FLAGS=()
 """)
