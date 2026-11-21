@@ -21,16 +21,24 @@ copy of important data.
 
 - **Workspaces are the unit of collaboration.** Each has its own members,
   roles, apps, layout and data, and is on every device of every member.
-- **People and devices are separate.** A member is an identity; each of their
-  devices has its own key. Devices sync directly over iroh, end to end
-  encrypted with MLS. A server is just a device that stores more.
+- **A workspace has one set of resources.** Files, mail, calendar, vault,
+  models and agents belong to the workspace, shared under the permissions its
+  owners set.
+- **One identity, and it controls your devices.** A member is an identity; each
+  of their devices has its own key, certified by that identity, and gets their
+  workspaces. Devices sync directly over iroh, end to end encrypted with MLS.
+- **Decentralized first.** A server is just a device that stores more; Tilo
+  needs none. [tilo.sh](https://tilo.sh) is our cloud offering.
 - **All shared state is CRDT.** Edits from several people and devices merge.
 - **Apps are resources, actions and views.** An app declares its typed state
   and the actions that change it; collaboration, history and undo,
-  permissions, sync and search come from that. Scripts, assistive technology
-  and agents use the same actions as the buttons.
-- **The shell is built like an app.** Launcher, top bar and settings run on
-  the same toolkit and model as every other app. Windows sit in horizontally
+  permissions, sync and search come from that. Scripts, assistive technology,
+  automations and agents use the same actions as the buttons, and when an agent
+  acts, every view of that resource shows it.
+- **Views compose.** Any resource can be shown again in another view, and a
+  new view can be written quickly in tilolang, also by an agent in a chat.
+- **The shell is a view.** Launcher, top bar and settings run on the same
+  toolkit and model as every other app, and you can customize it deeply. Windows sit in horizontally
   scrolling strips; tabs can group different apps.
 
 The [architecture overview](docs/architecture/README.md) explains the model

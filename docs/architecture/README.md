@@ -13,7 +13,15 @@ window groups and the apps open in them), people (members, roles and grants)
 and state with its history. Every workspace a person has is on every one of
 their devices. There is nothing beside or under a workspace.
 
-**A member is a person's identity; devices are separate.** A member is a
+**A workspace has one set of resources.** Its files, mail, calendar, vault,
+models, connections, agents and skills belong to the workspace, and every member
+uses them as the permissions set by the workspace's owners allow. Only what
+belongs to a person's identity is theirs alone: their keys and devices,
+appearance and device settings.
+
+**One identity system, and your identity controls your devices.** The OS, the
+web and the CLI use the same identity. A member is a person's identity; devices
+are separate. A member is a
 certified identity root. Each of their devices has its own key, certified by
 that root, and that key is the device's iroh endpoint id. Membership, roles,
 grants and history name members, never devices. In each workspace a device is
@@ -24,7 +32,10 @@ search, agents. A server is a device with a large appetite, not a different
 kind of node: per workspace it stores ciphertext or holds the keys and takes
 work, and it acts for a member only under that member's delegation. A
 workspace held by one person's PC is complete; servers add reachability,
-copies and compute, never a requirement.
+copies and compute, never a requirement. Tilo works with no server at all;
+tilo.sh is our cloud offering of such devices for people who want one.
+Your identity certifies, revokes and configures each of your devices, and every
+device it certifies gets your workspaces.
 
 **Devices sync over iroh, end to end encrypted.** Devices reach the other
 devices of a workspace directly or through any device that stores it. Content
@@ -37,7 +48,8 @@ including settings. Membership itself is a resource (`workspace.members`)
 whose ops are signed and checked against the membership as their author saw
 it, so every key holder reaches the same answer without a coordinator.
 
-**Apps are typed resources, actions and bound views.** An app declares its
+**Apps are typed resources, actions and bound views,** in tilolang or in Rust;
+both use the same model. An app declares its
 state as a model (`#[derive(Model)]`), the changes it allows as actions
 (`#[resource]` with `#[action]` methods), and views whose controls bind to
 fields and actions. Because every change is a typed action on a CRDT resource,
@@ -56,7 +68,20 @@ the framework gives every app the same things for free:
 
 [Build an app](../app-development.md) shows this in code.
 
-**The shell runs on the same stack.** The launcher, top bar, overview, quick
+**Every actor uses the same actions, and every action can be seen.** People,
+agents, scripts and automations invoke the same typed actions. An action belongs
+to a resource and its views, so when an agent calls one, every view showing that
+resource shows the change and who made it, in whichever shell view the person
+uses.
+
+**Views compose, and anyone can write one.** A view presents resources and
+places their actions as controls. One view can contain another, and a resource
+can be shown again anywhere: in another app, in the shell, in a chat. A person
+can change a view, or ask an agent in a chat to write a new one in tilolang,
+without rebuilding Tilo.
+
+**The shell is a view, on the same stack.** A person can customize it as deeply
+as any other view. The launcher, top bar, overview, quick
 settings, notifications and onboarding are apps on the same toolkit and the
 same resource/action/view model. The compositor stays thin: windows, input,
 outputs and scanout. Rendering capabilities the shell needs belong in the

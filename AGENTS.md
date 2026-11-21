@@ -17,15 +17,18 @@
 
 ## What Tilo is
 
-People and agents work in one shared workspace instead of each needing a whole environment of
-their own. Every device (a laptop, a phone, a server, a browser tab) holds the workspace or
-reaches it. Compute in the workspace is shared: a program goes wherever it fits, and a Linux VM
-exists only when a program needs one. Apps are untrusted packages. Identity belongs to people
-and devices, not to a service.
+The [architecture overview](docs/architecture/README.md) states these; work keeps them:
 
-A workspace has one set of resources (files, mail, calendar, vault, models, agents), shared by
-everyone in it under the permissions its owners set. Only identity is per person: keys,
-devices, appearance and device settings.
+- A workspace spans devices and has members: people and agents. It has one set of resources,
+  shared under the permissions its owners set; only identity is per person.
+- One identity system. Your devices share your identity, and it controls them.
+- Decentralized first: a server is a device that stores more. tilo.sh is our cloud offering.
+- Compute is shared: a program goes wherever it fits, and a Linux VM exists only when one is
+  needed. Apps are untrusted packages.
+- Everything is resources, actions and views, in Rust and tilolang alike. People, agents,
+  scripts and automations call the same actions, and every view of a resource shows the change.
+- Views compose, can be shown again anywhere, and can be written quickly, also by an agent in a
+  chat. The shell is a view.
 
 Tilo is a small Rust core plus apps written in tilolang. The core holds workspace state, sync,
 identity and permissions, the tilolang runtime, running programs, and drawing views. Everything
