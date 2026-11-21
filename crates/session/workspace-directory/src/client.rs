@@ -339,10 +339,12 @@ pub async fn join_home(
 /// An invitation verified for `person`: the workspace it grants, and the text
 /// the workspace's host admits this device by.
 pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, SiteError> {
+    let text = text.trim();
+    let text = tilo_workspace_join::native_invitation_text(text).unwrap_or(text);
     let workspace = verify_workspace(text, person.user)?;
     Ok(Granted {
         workspace,
-        way: Way::Invitation(text.trim().to_owned()),
+        way: Way::Invitation(text.to_owned()),
     })
 }
 
@@ -739,6 +741,12 @@ fn classify(text: &str) -> Result<Pasted, SiteError> {
     if let Some(link) = tilo_workspace_join::sealed::parse_link(text) {
         return Ok(Pasted::Sealed { link });
     }
+    if let Some(text) = tilo_workspace_join::native_invitation_text(text) {
+        return Ok(Pasted::Invitation {
+            text: text.to_owned(),
+            entry: None,
+        });
+    }
     if is_invitation(text) {
         return Ok(Pasted::Invitation {
             text: text.to_owned(),
@@ -939,6 +947,34 @@ mod tests {
             .expect("a link carries a key")
             .1
             .to_owned()
+    }
+
+    #[test]
+    fn a_native_link_uses_the_signed_invitation_without_a_site() {
+        let person = Person {
+            user: [0x21; 32],
+            name: "Ada".to_owned(),
+        };
+        let text = invitation_for(person.user);
+        let signed = tilo_workspace_join::invitation_bytes(&text).expect("the invitation's bytes");
+        let link = tilo_workspace_join::native_invitation_link(&signed);
+        let no_http = Err("no web client".into());
+        let granted = tilo_rt::block_on(take(&no_http, &link, &person))
+            .expect("the join task answers")
+            .granted
+            .expect("a join");
+        assert_eq!(granted.workspace, WORKSPACE);
+        assert_eq!(granted.invitation(), Some(text.as_str()));
+        let other = Person {
+            user: [0x42; 32],
+            name: "Grace".to_owned(),
+        };
+        assert!(
+            tilo_rt::block_on(take(&no_http, &link, &other))
+                .expect("the join task answers")
+                .granted
+                .is_err()
+        );
     }
 
     #[test]

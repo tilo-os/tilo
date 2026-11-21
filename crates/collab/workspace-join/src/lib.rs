@@ -722,10 +722,26 @@ pub fn encode_invitation_text(signed_invitation: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signed_invitation)
 }
 
-/// The signed invitation behind its text ([`encode_invitation_text`]): what
-/// the text spells out without base64, for a code that has to be small
-/// enough to scan.
+const NATIVE_INVITATION: &str = "tilo://invite#";
+
+/// Carry the signed invitation in a link a Tilo device can open without a site.
+#[must_use]
+pub fn native_invitation_link(signed: &[u8]) -> String {
+    format!("{NATIVE_INVITATION}{}", encode_invitation_text(signed))
+}
+
+/// The signed text carried by a native invitation link.
+#[must_use]
+pub fn native_invitation_text(link: &str) -> Option<&str> {
+    link.trim().strip_prefix(NATIVE_INVITATION)
+}
+
+/// Recover the signed bytes from an invitation code or native link.
+///
+/// # Errors
+/// The invitation is not base64url text.
 pub fn invitation_bytes(text: &str) -> Result<Vec<u8>, String> {
+    let text = native_invitation_text(text).unwrap_or(text);
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(text)
         .map_err(|_| "invalid invitation text encoding".to_string())

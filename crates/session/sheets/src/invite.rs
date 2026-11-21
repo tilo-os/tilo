@@ -185,9 +185,7 @@ impl Invite {
 /// What a host keeps of the sheet between passes: the link it last made, the
 /// invitation still on its way to a site's shelf, and what became of the last
 /// ask. The session's shell and a page's host replica keep this the same way,
-/// so a link is handed over the same way wherever the sheet is shown: as the
-/// site's short link, once the site keeps the invitation, and never as the
-/// invitation's own text.
+/// so the sheet can show the native link or its site's short link.
 #[derive(Clone, Debug, Default)]
 pub struct Making {
     created: Option<Created>,
@@ -221,8 +219,22 @@ impl Making {
         self.note = None;
     }
 
-    /// The site answered for `invite`: its short link when it kept the
-    /// invitation, else why not, which the sheet says in place of a link.
+    /// Show the link that can be handed over now.
+    pub fn handed_over(&mut self, created: Created) {
+        self.created = Some(created);
+        self.note = None;
+    }
+
+    /// The link that is waiting for a shelf answer.
+    #[must_use]
+    pub fn waiting_to_show(&self, invite: &str) -> bool {
+        self.shelving
+            .as_ref()
+            .is_some_and(|pending| pending.invite == invite)
+    }
+
+    /// Show the site's short link for `invite` if it kept it. Use the native
+    /// link if the site refuses and the invitation can travel directly.
     pub fn shelved(&mut self, invite: &str, link: Result<String, String>) {
         let Some(mut created) = self.shelving.take() else {
             return;
@@ -234,9 +246,9 @@ impl Making {
         match link {
             Ok(link) => {
                 created.link = link;
-                self.created = Some(created);
-                self.note = None;
+                self.handed_over(created);
             }
+            Err(_) if !created.link.is_empty() => self.handed_over(created),
             Err(reason) => self.say(words("invite-failed", &[("reason", &reason)]), true),
         }
     }

@@ -420,27 +420,30 @@ impl Store {
         std::mem::take(&mut *self.shelvings.borrow_mut())
     }
 
-    /// Hand over the link `created` names, whose text is `text`. `site` is the
-    /// shelf to keep it
-    /// — the community a computer is set up with, the site a page comes from —
-    /// and `host` the origin the workspace is served from. The sheet shows the
-    /// site's short link once the site keeps it ([`Self::follow_shelf`]): it
-    /// is the one link a person hands over.
+    /// Hand over the signed invitation as a native link. A site's shelf can
+    /// provide a shorter link to the same invitation.
     ///
     /// # Errors
-    /// `text` is not an invitation's bytes, or there is no site to keep it.
+    /// `text` is not an invitation's bytes.
     pub fn hand_over(
         &self,
         made: &mut sheet::Making,
-        created: sheet::Created,
+        mut created: sheet::Created,
         text: &str,
         site: Option<&url::Url>,
         host: Option<&str>,
     ) -> Result<(), String> {
         let bytes = tilo_workspace_join::invitation_bytes(text)?;
-        let site = site.ok_or_else(|| "there is no site to keep the link on".to_owned())?;
-        self.shelve(&created.invite, bytes, created.expires_at_ns, site, host)?;
-        made.shelving(created);
+        created.link = tilo_workspace_join::native_invitation_link(&bytes);
+        if let Some(site) = site
+            && self
+                .shelve(&created.invite, bytes, created.expires_at_ns, site, host)
+                .is_ok()
+        {
+            made.shelving(created);
+        } else {
+            made.handed_over(created);
+        }
         Ok(())
     }
 

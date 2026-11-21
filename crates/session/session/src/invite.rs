@@ -3,7 +3,7 @@
 //! The sheet shows and asks; the workspace's host makes, lists and cancels the invitations
 //! ([`Workspace`]): on a desktop the shell's own published actions, so a link handed over from here
 //! is the same invitation an app or an agent makes; on the page the workspace's host it reaches.
-//! What is the role's here is what the sheet says, leaving the link on its site's shelf, and
+//! What is the role's here is what the sheet says, optionally leaving the link on a site's shelf, and
 //! putting it on the clipboard long enough to hand it over.
 
 #![cfg_attr(
@@ -27,8 +27,8 @@ use crate::platform::clipboard::Clipboard;
 /// to whoever it is for, and no longer, because the link is what admits them.
 const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
 
-/// An invitation the workspace made: its id (hex), its text (which its site keeps behind the short
-/// link), and when it stops admitting anyone (nanoseconds since the epoch).
+/// An invitation the workspace made, with its id, signed text or native link,
+/// and when it stops admitting anyone (nanoseconds since the epoch).
 pub struct Issued {
     pub invite: String,
     pub text: String,
@@ -142,7 +142,12 @@ impl sheet::Invitations for Invite {
     }
 
     fn pending(&self) -> Vec<sheet::Pending> {
-        self.workspace.pending()
+        let made = self.made.borrow();
+        self.workspace
+            .pending()
+            .into_iter()
+            .filter(|pending| !made.waiting_to_show(&pending.key))
+            .collect()
     }
 
     fn made(&self) -> Option<sheet::Created> {
@@ -175,9 +180,7 @@ impl sheet::Invitations for Invite {
                     Ok(issued) => issued,
                     Err(refused) => return say_refused(&made, "invite-failed", refused),
                 };
-                // The person hands over a link, not an invitation's kilobytes: the signed bytes
-                // are sealed under a fresh key and wait on the site's shelf under a handle, and
-                // the link carries the key in its fragment.
+                // The link can carry the signed invitation itself or point to it on a shelf.
                 let (role, recipient) = &asked;
                 let created = sheet::made(&issued.invite, role, recipient, issued.expires_at_ns);
                 // The sheet's state is let go before a refusal is said in it, which borrows it

@@ -725,7 +725,7 @@ impl DeviceLists {
                 .transpose()
                 .map_err(|_| "the workspace's holder sent an invalid invitation".to_owned())?
                 .ok_or("the workspace's holder answered no invitation")?;
-            let link = tilo_peer_state::join::encode_invitation_text(&signed);
+            let link = tilo_peer_state::join::native_invitation_link(&signed);
             // Whoever redeems it dials this device.
             if let Some(lapses) = issued.get("expires_at_ns").and_then(Value::as_u64) {
                 noting.note_link(workspace_id, lapses);

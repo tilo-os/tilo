@@ -47,34 +47,41 @@ fn a_link_awaited_from_a_store_no_loop_reads_arrives() {
     );
 }
 
-/// The sheet hands over one link form, the site's short one: with no site to
-/// keep it, or a site that keeps nothing, it shows no link and says why,
-/// never the invitation's own text.
+/// The sheet can hand over the signed invitation even when no site keeps it.
 #[test]
-fn a_link_no_site_keeps_is_not_handed_over_as_the_invitations_text() {
+fn a_link_no_site_keeps_carries_the_signed_invitation() {
     use tilo_sheets::invite::Making;
 
-    let text = tilo_workspace_join::encode_invitation_text(b"the signed invitation");
+    let signed = b"the signed invitation";
+    let native = tilo_workspace_join::native_invitation_link(signed);
     let store = Store::default();
     let mut made = Making::default();
-    let refused = store.hand_over(
-        &mut made,
-        tilo_sheets::invite::made("invite", "editor", "", u64::MAX),
-        &text,
-        None,
-        None,
+    store
+        .hand_over(
+            &mut made,
+            tilo_sheets::invite::made("invite", "editor", "", u64::MAX),
+            &native,
+            None,
+            None,
+        )
+        .expect("the invitation can be handed over without a shelf");
+    let shown = made.made().expect("a native link is shown immediately");
+    assert_eq!(shown.link, native);
+    assert_eq!(
+        tilo_workspace_join::invitation_bytes(&shown.link).expect("the link's signed bytes"),
+        signed
     );
-    assert!(refused.is_err(), "no site, no link");
-    assert!(made.made().is_none() && !made.making());
+    assert!(!made.making());
 
-    // A site that refuses it: the sheet says why once its answer is in.
+    // A refusal from the optional shelf still leaves a link to copy.
+    made.opening();
     let site = Responder::start(vec![Reply::status(500)]);
     let site_url = url::Url::parse(&format!("{}/", site.url())).expect("the site's address");
     store
         .hand_over(
             &mut made,
             tilo_sheets::invite::made("invite", "editor", "", u64::MAX),
-            &text,
+            &native,
             Some(&site_url),
             None,
         )
@@ -86,9 +93,6 @@ fn a_link_no_site_keeps_is_not_handed_over_as_the_invitations_text() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert!(store.follow_shelf(&mut made));
-    assert!(made.made().is_none(), "nothing is handed over");
-    assert!(
-        made.note().is_some_and(|note| note.bad),
-        "the sheet says why"
-    );
+    assert_eq!(made.made().expect("native link after refusal").link, native);
+    assert!(made.note().is_none());
 }
