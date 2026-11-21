@@ -6450,7 +6450,7 @@ outputs = ["/target/app-walk/{app}/**"]
 timeout_secs = 2400
 on = ["dispatch"]
 [check.matrix]
-app = ["notes"]
+app = ["notes", "tube"]
 
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks

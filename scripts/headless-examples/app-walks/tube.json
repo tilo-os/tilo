@@ -1,0 +1,121 @@
+{
+  "app": "tube",
+  "said": "YouTube",
+  "tl": {
+    "id": "so.tilo.tube",
+    "package": "tube"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open YouTube for the first time",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "Search YouTube"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "find",
+      "said": "Find a video: search YouTube from inside the app",
+      "ops": [
+        {
+          "select_row": "Search YouTube"
+        },
+        {
+          "click_any": [
+            {
+              "prefix": "Search YouTube"
+            }
+          ]
+        },
+        {
+          "type": "lofi hip hop"
+        },
+        {
+          "key": "Enter"
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "lofi"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "open-video",
+      "said": "Open a video the search found",
+      "ops": [
+        {
+          "press_any": [
+            {
+              "prefix": "lofi"
+            }
+          ]
+        },
+        {
+          "wait_for": "Play"
+        }
+      ]
+    },
+    {
+      "id": "play",
+      "said": "Play the video",
+      "ops": [
+        {
+          "press_any": [
+            "Play"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "back",
+      "said": "Go back to where the video was found",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "select_row": "History"
+        }
+      ]
+    },
+    {
+      "id": "search",
+      "said": "Look for a video through the system's search",
+      "ops": [
+        {
+          "search": "lofi hip hop"
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The app in the dark theme",
+      "ops": [
+        {
+          "key": "Escape"
+        },
+        {
+          "theme": true
+        }
+      ]
+    }
+  ]
+}
