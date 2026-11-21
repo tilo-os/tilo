@@ -191,6 +191,10 @@ impl ResourceApp for SettingsShell {
             accounts::person::PersonAccounts,
         >()];
 
+    /// Settings edits the person's own: each section is a resource of theirs,
+    /// kept and published by the session's settings service (`resources`).
+    const WINDOWS_ARE_PERSONAL: bool = true;
+
     fn fixture(fixture: &mut Fixture<Settings>) {
         crate::scenarios::prepare(fixture);
     }

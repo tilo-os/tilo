@@ -123,6 +123,16 @@ def window_kind(app_dir: pathlib.Path) -> str:
     return ""
 
 
+def windows_are_personal(app_dir: pathlib.Path) -> bool:
+    """Whether a window of the app is the person's own, as the app declares it:
+    `const WINDOWS_ARE_PERSONAL: bool = true;` in its `ResourceApp`."""
+    declared = re.compile(r"^\s*const\s+WINDOWS_ARE_PERSONAL\s*:\s*bool\s*=\s*true\s*;", re.M)
+    return any(
+        declared.search(source.read_text(encoding="utf-8"))
+        for source in sorted((app_dir / "src").rglob("*.rs"))
+    )
+
+
 def window_documents(app_dir: pathlib.Path) -> bool:
     """Whether each window of the app shows a document of its own (a workbook, a
     terminal's session) and the app keeps none for the workspace: the app's own
@@ -178,6 +188,7 @@ def fleet(root: pathlib.Path) -> list[dict]:
                 actions=offers(manifest),
                 own=own_kinds(manifest),
                 window_kind=window_kind(app_dir),
+                windows_personal=windows_are_personal(app_dir),
                 window_documents=window_documents(app_dir),
                 surface=((app_dir / "surface.toml").read_text(encoding="utf-8")
                          if (app_dir / "surface.toml").is_file() else ""),
@@ -233,9 +244,9 @@ def render(apps: list[dict], own: list[tuple[str, str]]) -> str:
         *(f"    ({text(app)}, {text(kind)})," for app, kind in own),
         "];",
         "",
-        "/// The apps whose window opens a kind each member keeps as their own.",
+        "/// The apps a window of which is the person's own (`WINDOWS_ARE_PERSONAL`).",
         "pub(super) const OWN_WINDOWS: &[&str] = &[",
-        *(f"    {text(app['id'])}," for app in apps if app["window_kind"] and app["window_kind"] in app["own"]),
+        *(f"    {text(app['id'])}," for app in apps if app["windows_personal"]),
         "];",
         "",
         "/// The apps each window of which shows a document of its own (`ResourceApp::WINDOW_RESOURCE`).",

@@ -7,8 +7,8 @@ use super::FleetApp;
 /// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).
 pub(super) const OWN_KINDS: &[(&str, &str)] = &[];
 
-/// The apps whose window opens a kind each member keeps as their own.
-pub(super) const OWN_WINDOWS: &[&str] = &[];
+/// The apps a window of which is the person's own (`WINDOWS_ARE_PERSONAL`).
+pub(super) const OWN_WINDOWS: &[&str] = &["so.tilo.settings"];
 
 /// The apps each window of which shows a document of its own (`ResourceApp::WINDOW_RESOURCE`).
 pub(super) const DOCUMENT_WINDOWS: &[&str] = &[

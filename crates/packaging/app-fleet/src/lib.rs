@@ -137,8 +137,9 @@ pub fn own_kinds(package_id: &str) -> impl Iterator<Item = &'static str> {
         .map(|(_, kind)| *kind)
 }
 
-/// Whether a window of `package_id` opens a record each member keeps as their own: it is the
-/// person's who opened it, and never stands on a workspace's shared desktop.
+/// Whether a window of `package_id` is the person's own, as the app declares it
+/// (`ResourceApp::WINDOWS_ARE_PERSONAL`): it shows what the person keeps for themselves, and
+/// never stands on a workspace's shared desktop.
 #[must_use]
 pub fn windows_are_own(package_id: &str) -> bool {
     let app = canonical(package_id);

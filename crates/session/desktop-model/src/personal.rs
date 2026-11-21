@@ -1,10 +1,11 @@
 //! Windows that are a person's own, whatever layout they open on.
 //!
-//! Some apps show a person's own things rather than a workspace's: their
-//! manifest declares the kind of record a window opens one each member keeps
-//! as their own (`[resources] own`), which nobody else in the workspace
-//! receives or reads (Settings, Mail). A window of such an app belongs to the
-//! person who opened it. It stands on their own
+//! Some apps show a person's own things rather than a workspace's: each
+//! declares with itself that its windows are the person's own
+//! (`ResourceApp::WINDOWS_ARE_PERSONAL`), as Settings does, whose sections are
+//! the person's own resources that nobody else in the workspace receives or
+//! reads. A window of such an app belongs to the person who opened it. It
+//! stands on their own
 //! layout, and a workspace's shared desktop never holds it: nobody else in the
 //! workspace sees it, opens it, or finds it on their layout later.
 //!
@@ -17,10 +18,10 @@ use crate::layout::{Tab, TileContent};
 use crate::ownership::SharedDesktop;
 use crate::tree::Layout;
 
-/// Whether a window of `app_id` is a person's own: its manifest declares the
-/// record it opens each member's own ([`app_fleet::windows_are_own`]). On a
-/// shared desktop it would name one person's record to everyone, who could
-/// neither read it nor open their own in its place.
+/// Whether a window of `app_id` is a person's own: the app declares its
+/// windows are ([`app_fleet::windows_are_own`]). On a shared desktop it would
+/// name one person's own resources to everyone, who could neither read them
+/// nor open their own in their place.
 #[must_use]
 pub fn is_personal_app(app_id: &str) -> bool {
     app_fleet::windows_are_own(app_id)

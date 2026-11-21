@@ -371,6 +371,18 @@ pub trait ResourceApp: 'static {
     /// ```
     const PERSON_RESOURCES: &'static [super::PersonKind] = &[];
 
+    /// Whether a window of this app is the person's own
+    /// ([`crate::personal`]): it shows what the person keeps for themselves,
+    /// not the workspace's record, so it never stands on a workspace's shared
+    /// desktop and comes back on the person's own shell. Declared with the
+    /// app, which the fleet records, since the desktop that draws the
+    /// workspace's shared one opens none of the app's code.
+    ///
+    /// ```ignore
+    /// const WINDOWS_ARE_PERSONAL: bool = true;
+    /// ```
+    const WINDOWS_ARE_PERSONAL: bool = false;
+
     /// The app's windows on a platform this one does not serve, shown by another `ResourceApp`
     /// under the same app id (a page's, where this one is a computer's): the resources those
     /// windows keep are part of the app's committed surface too, so a workspace takes their
