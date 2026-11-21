@@ -74,6 +74,14 @@ by = "tools/tests/test_test_environment.py"
 suite = "tools/test-env.sh"
 by = "tools/tests/test_test_environment.py"
 
+[[covered]]
+suite = "os/tests/airplay-encrypted-session.sh"
+by = "os/tests/airplay_encrypted_session_test.sh"
+
+[[covered]]
+suite = "os/tests/run-fex-tests.py"
+by = "os/tests/test_fex_payload.py"
+
 [[group]]
 name = "android-runtime-supervisor"
 inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "tools/android/test_sticky_entry.py"]
@@ -1904,7 +1912,8 @@ check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/dev/test-internal-install-cycle.sh"
-reason = "boots VMs (KVM) from a built installer image and a retained Fedora Cloud Base qcow2, which the release run pins through repository variables; a t check has no pinned Fedora image to name"
+reason = "boots VMs (KVM) from a built installer image and a retained Fedora Cloud Base qcow2, which the release run pins through repository variables; a t check has no pinned Fedora image to name, so release-imager.yml runs it through os/dev/ci-internal-install-cycle.sh"
+workflow = "release-imager.yml"
 
 [[unrequired]]
 suite = "os/dev/test-server-plan-install-cycle.sh"
@@ -1934,10 +1943,6 @@ check = "os-build-contracts"
 suite = "os/kernel/tests/test-rpm.sh"
 check = "kernel-acceptance-x86_64"
 reason = "needs the built kernel RPM and QEMU firmware; kernel-acceptance-x86_64 runs it when dispatched"
-
-[[unrequired]]
-suite = "os/tests/airplay-encrypted-session.sh"
-reason = "needs the signed OpenH264 codec extension: the composed image carries Fedora's noopenh264 stub, which os/scripts/verify-no-cisco-openh264.sh enforces, so the test's plugin discovery fails until an installation adds the extension"
 
 [[unrequired]]
 suite = "os/tests/boot_chain_invariants.sh"
@@ -2145,10 +2150,6 @@ check = "os-image-contracts"
 reason = "needs cryptsetup and the built tilo-rollback binary, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
 
 [[unrequired]]
-suite = "os/tests/run-fex-tests.py"
-reason = "needs an upstream FEX build tree (its Bin/FEXServer and ctest suite) and a guest rootfs mounted read-only; t builds FEX only into the artifact payload image, whose scratch result has no ctest suite to run"
-
-[[unrequired]]
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU; kernel-acceptance-<arch> runs it"
 check = "kernel-acceptance-{arch}"
@@ -2205,10 +2206,6 @@ reason = "builds real images with rootful Podman and compares mounted filesystem
 [[covered]]
 suite = "os/tests/windows_vm_schema.sh"
 check = "windows-vm-schema"
-
-[[unrequired]]
-suite = "tools/tests/test_vendor_history.sh"
-reason = "needs the vendor-upstream remote-tracking refs a fresh clone receives; a t check's Git view holds only the commit under test and has no remote or credential to fetch them, and a job's egress cannot add one"
 
 [[covered]]
 suite = "crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs"
