@@ -61,11 +61,14 @@ pub use own_process::{in_own_process, in_own_process_here};
 pub use stand_in::{StandIn, stand_in};
 pub use wall::held_wall_clock;
 
+use hang::HANG_BOUND_ENV;
 use std::ffi::{OsStr, OsString};
 use std::marker::PhantomData;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
+use std::time::{Duration, Instant};
 use std::{env, fs, io};
 use tilo_lock::MutexRecover as _;
 
@@ -167,11 +170,23 @@ pub fn launch_env(command: &mut std::process::Command) {
 struct LockState {
     owner: Option<ThreadId>,
     depth: usize,
+    /// Who holds it: a test waiting on it names them, so a lock kept past the test that took it
+    /// (a [`TestHome`] leaked for the process, a [`ScopedEnv`] in a static) fails the next test
+    /// that needs the environment legibly instead of hanging it.
+    holder: Option<Holder>,
+}
+
+/// The thread holding the lock, where it took it, and since when.
+struct Holder {
+    thread: String,
+    at: &'static Location<'static>,
+    since: Instant,
 }
 
 static STATE: Mutex<LockState> = Mutex::new(LockState {
     owner: None,
     depth: 0,
+    holder: None,
 });
 static RELEASED: Condvar = Condvar::new();
 
@@ -180,22 +195,60 @@ pub struct EnvLock {
     _not_send: PhantomData<*const ()>,
 }
 
+/// Take the environment lock, waiting while another thread holds it.
+///
+/// # Panics
+/// Another thread has held it for longer than [`hang_bound`]: the message names that thread and
+/// where it took the lock.
+#[track_caller]
+#[allow(
+    clippy::panic,
+    reason = "test support: a lock that is never let go fails the test that waits for it"
+)]
 pub fn lock() -> EnvLock {
-    let me = thread::current().id();
+    let me = thread::current();
+    let at = Location::caller();
     let mut state = STATE.lock_recover();
     loop {
         match state.owner {
             None => {
-                state.owner = Some(me);
+                state.owner = Some(me.id());
                 state.depth = 1;
+                state.holder = Some(Holder {
+                    thread: me.name().unwrap_or("an unnamed thread").to_owned(),
+                    at,
+                    since: Instant::now(),
+                });
                 break;
             }
-            Some(owner) if owner == me => {
+            Some(owner) if owner == me.id() => {
                 state.depth = state.depth.saturating_add(1);
                 break;
             }
             Some(_) => {
-                state = RELEASED.wait(state).unwrap_or_else(PoisonError::into_inner);
+                let held = state
+                    .holder
+                    .as_ref()
+                    .map_or(Duration::ZERO, |holder| holder.since.elapsed());
+                let Some(left) = hang_bound()
+                    .checked_sub(held)
+                    .filter(|left| !left.is_zero())
+                else {
+                    let holder = state.holder.as_ref().map_or_else(
+                        || "a thread that did not say".to_owned(),
+                        |holder| format!("{:?}, which took it at {}", holder.thread, holder.at),
+                    );
+                    drop(state);
+                    panic!(
+                        "the environment lock {at} waits for has been held for {held:?} by \
+                         {holder}: what took it outlived its test, or that test hangs (set \
+                         {HANG_BOUND_ENV} to wait longer)"
+                    );
+                };
+                state = RELEASED
+                    .wait_timeout(state, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
             }
         }
     }
@@ -212,6 +265,7 @@ impl Drop for EnvLock {
         let released = state.depth == 0;
         if released {
             state.owner = None;
+            state.holder = None;
         }
         drop(state);
         if released {
@@ -339,6 +393,7 @@ pub struct ScopedEnv {
 }
 
 impl ScopedEnv {
+    #[track_caller]
     pub fn new() -> Self {
         Self {
             saved: Vec::new(),
@@ -399,6 +454,7 @@ pub struct TestHome {
 }
 
 impl TestHome {
+    #[track_caller]
     pub fn new() -> io::Result<Self> {
         let root = tempfile::Builder::new()
             .prefix("tilo-test-home-")
