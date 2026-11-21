@@ -1248,17 +1248,24 @@ impl Workspaces {
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        let mut kept = Vec::new();
+        for state in members {
+            if state.lock().await.member.is_some() {
+                kept.push(state);
+            }
+        }
+        // A service that keeps no member copy, a server's, has none to sync.
+        if kept.is_empty() {
+            return;
+        }
         let device = match self.member_identity() {
             Ok(device) => device,
             Err(error) => {
-                tracing::warn!(%error, "member copies are kept here but not synced");
+                tracing::warn!(%error, copies = kept.len(), "member copies are kept here but not synced");
                 return;
             }
         };
-        for state in members {
-            if state.lock().await.member.is_none() {
-                continue;
-            }
+        for state in kept {
             if let Err(error) = self.serve_member(&state, &device).await {
                 tracing::warn!(%error, "a member copy is not synced with its device");
             }
