@@ -51,6 +51,7 @@ pub fn check_program(
         last_writes: Vec::new(),
         at: None,
         outer_at: None,
+        migrating: false,
         shown: std::collections::HashSet::new(),
     };
     c.begin(Ctx::Program, params, Ty::Unit, export);

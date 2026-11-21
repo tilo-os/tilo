@@ -729,6 +729,7 @@ impl Reader<'_> {
             outside: Vec::new(),
             invokes: false,
             opens: Vec::new(),
+            carries: false,
         });
     }
 

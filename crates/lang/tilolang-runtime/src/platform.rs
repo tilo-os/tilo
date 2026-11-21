@@ -1800,6 +1800,31 @@ impl Core {
         }
     }
 
+    /// `earlier(r)`: what an earlier build of the app declaring `r`'s type kept
+    /// ([`crate::earlier`]), each item a `host.Earlier`. Only a migration reads it (the checker
+    /// says so), and it is the same on every run: the earlier documents never change under it.
+    pub(crate) fn earlier_import(&self, a: &Args<'_>) -> HResult<Value> {
+        let target = self.ref_arg(a.h(0)?)?;
+        let app = {
+            let registry = self.registry.borrow();
+            registry
+                .type_owner(&target.target.ty)
+                .and_then(|owner| registry.package(owner))
+                .map(|pkg| pkg.meta.app.clone())
+        };
+        let items = app.and_then(|app| self.earlier.borrow().get(&app).cloned());
+        let blobs = self.blobs.borrow();
+        let keep = |name: &str, bytes: &[u8]| {
+            let blobs = blobs.as_ref()?;
+            crate::blob::kept_file(blobs.as_ref(), name, bytes)
+                .ok()
+                .map(Value::file)
+        };
+        Ok(Value::List(items.map_or_else(Vec::new, |items| {
+            items.iter().map(|item| item.value(&keep)).collect()
+        })))
+    }
+
     /// `linked(r)`: the resources made from `r`, mentioning it in their rich text or naming it
     /// in a reference field, as a `host.Link` each: the resource and how it is linked.
     fn links_import(&self, a: &Args<'_>) -> HResult<Value> {

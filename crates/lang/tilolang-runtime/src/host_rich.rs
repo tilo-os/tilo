@@ -1,6 +1,6 @@
 //! The `RichText` imports: `RichText(...)` (with a time as a part, `rich_time`),
 //! `RichText.from_markdown(text)`, and the members `r.excerpt`, `r.text`, `r.markdown`,
-//! `r.references`, `r.people` and `r.is_empty()` (see [`crate::rich`]).
+//! `r.references`, `r.people`, `r.relinked(...)` and `r.is_empty()` (see [`crate::rich`]).
 //!
 //! `r.excerpt`, `r.text` and `r.markdown` are the text as the person running the code reads
 //! it: each reference to a resource they hold by its title now, one they cannot read as only
@@ -91,6 +91,7 @@ impl Core {
                     Err(why) => trap(format!("this text is not a document: {why}")),
                 }
             }
+            Imp::RichRelinked => self.rich_relinked(a),
             // `r.markdown(links: pages, from: folder)`: the document as Markdown, each reference
             // to a page of the bundle written as the link to that page — the path from the
             // folder this one is written in, so a reader of the file follows it to the note.
@@ -287,6 +288,57 @@ impl Core {
             })
             .collect())
     }
+}
+
+impl Core {
+    /// `r.relinked(links: pages, sources: sources)`: the document `r` is, block for block, with
+    /// each link to a page of `pages` (the address it stands at, by the resource it is) the
+    /// reference to that resource, as a bundle of pages reads one ([`pages_read`]), and each
+    /// picture whose source is a key of `sources` showing the source it names there.
+    fn rich_relinked(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let r = self.rich_arg(a.h(0)?)?;
+        let pages = self.text_map(a.h(1)?)?;
+        let sources = self.text_map(a.h(2)?)?;
+        let app = self.text(a.h(3)?)?;
+        let blocks = pages_read(r.blocks, &pages, "", &app)
+            .into_iter()
+            .map(|block| picture_moved(block, &sources))
+            .collect();
+        self.ret_h(Value::Rich(RichValue { blocks }))
+    }
+}
+
+/// `block` with the picture it is, `![alt](source)` alone in a paragraph, showing the source
+/// `sources` gives for its own; every other block, and a picture of a source `sources` does not
+/// name, as it is. A mark that reached the end of the text reaches the end of the new one.
+fn picture_moved(
+    mut block: tilo_doc::snapshot::BlockView,
+    sources: &BTreeMap<String, String>,
+) -> tilo_doc::snapshot::BlockView {
+    if block.kind != "paragraph" || !block.text.starts_with("![") || !block.text.ends_with(')') {
+        return block;
+    }
+    let Some(open) = block.text.rfind("](") else {
+        return block;
+    };
+    let source = block
+        .text
+        .get(open.saturating_add(2)..block.text.len().saturating_sub(1))
+        .unwrap_or_default();
+    let Some(moved) = sources.get(source) else {
+        return block;
+    };
+    let before = block.text.chars().count();
+    let alt = block.text.get(..open).unwrap_or_default().to_owned();
+    block.text = format!("{alt}]({moved})");
+    let after = block.text.chars().count();
+    let kept = alt.chars().count().saturating_add(2);
+    for mark in &mut block.marks {
+        let shift = |at: usize| if at >= before { after } else { at.min(kept) };
+        mark.start = shift(mark.start);
+        mark.end = shift(mark.end);
+    }
+    block
 }
 
 /// `blocks` as Markdown writes a bundle of pages: each reference to a page of `pages` — the
