@@ -41,6 +41,10 @@ pub(super) async fn open(
     reachability: &Reachability,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
     let handed = Arc::downgrade(engine);
+    // A record this device holds sealed under an epoch its group has moved past opens only when
+    // the group's frames arrive: the person's other devices hand them to it, as the workspace's
+    // host would when it is there.
+    let behind = Arc::downgrade(engine);
     let groups = tilo_workspace_service::own_device::key_groups(
         engine.keys(),
         Some(Box::new(move |workspace| {
@@ -49,6 +53,11 @@ pub(super) async fn open(
         })),
         Some(Arc::new(DeviceKeySink {
             engine: Arc::downgrade(engine),
+        })),
+        Some(Arc::new(move |group, held| {
+            if let Some(link) = behind.upgrade().and_then(|engine| engine.link()) {
+                link.want_frames(group, held);
+            }
         })),
     );
     open_with_groups(own, identity, engine, endpoint, reachability, groups).await

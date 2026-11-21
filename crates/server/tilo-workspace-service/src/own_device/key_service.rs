@@ -115,6 +115,7 @@ impl KeyService {
             self.keys.clone(),
             None,
             Some(Arc::clone(&self.link) as Arc<dyn KeySink>),
+            None,
         )
     }
 

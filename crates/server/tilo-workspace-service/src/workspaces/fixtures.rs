@@ -268,6 +268,9 @@ pub struct TestGroupKeys {
     admitted_only: bool,
     /// How many times keys were handed to the device, for whoever waits for them.
     handed: tokio::sync::watch::Sender<u64>,
+    /// The groups a read asked the person's other devices for the frames of, and the epoch the
+    /// device held at the time.
+    behind: Mutex<Vec<(collab_types::WorkspaceId, u64)>>,
 }
 
 impl Default for TestGroupKeys {
@@ -276,6 +279,7 @@ impl Default for TestGroupKeys {
             held: Mutex::default(),
             admitted_only: false,
             handed: tokio::sync::watch::Sender::new(0),
+            behind: Mutex::default(),
         }
     }
 }
@@ -299,6 +303,13 @@ impl TestGroupKeys {
         self.held.lock().expect("the fixture's keys").extend(held);
         self.handed
             .send_modify(|handed| *handed = handed.wrapping_add(1));
+    }
+
+    /// The groups a read asked the person's other devices for the frames of, and the epoch this
+    /// device held then, oldest first.
+    #[must_use]
+    pub fn asked_behind(&self) -> Vec<(collab_types::WorkspaceId, u64)> {
+        self.behind.lock().expect("the fixture's asks").clone()
     }
 
     /// Hand the fixture `keys` as every member's keys of `workspace`: keys that reach a device
@@ -370,6 +381,13 @@ impl GroupKeys for TestGroupKeys {
             let handed = handed.wait_for(|handed| *handed != after).await.ok()?;
             Some(*handed)
         })
+    }
+
+    fn behind(&self, group: collab_types::WorkspaceId, held: u64) {
+        self.behind
+            .lock()
+            .expect("the fixture's asks")
+            .push((group, held));
     }
 }
 

@@ -2048,6 +2048,11 @@ impl std::fmt::Display for NoWindow<'_> {
     }
 }
 
+/// How long one read of Chat's record waits for a change before a wait asks again. A key the
+/// record was sealed under arrives with nothing written to the record, so a read is not always
+/// woken by a write; this keeps a wait's own bound the one that comes due.
+const IDLE_SLICE: Duration = Duration::from_secs(1);
+
 /// Chat as a device runs it: the app publishes its reading and sending as actions of its own, so a
 /// test asks the app what it shows rather than its session or its records.
 pub struct Chat<'a> {
@@ -2129,14 +2134,14 @@ impl Chat<'_> {
     /// none: a person who is in no workspace with this device's person has no conversation here,
     /// and until the workspace's people are in its shared record nobody has one.
     fn read(&self, peer: &str) -> Result<Conversation, String> {
-        self.held(None).conversation(peer)
+        self.held(None, tilo_test_env::hang_bound())
+            .conversation(peer)
     }
 
     /// Chat's record and the first part of its messages (all a conversation here writes), as this
     /// device holds them, once they differ from the revision `after`: read through the record API
-    /// as plain JSON, which wakes the read on the next write to any of them.
-    fn held(&self, after: Option<&str>) -> HeldChat {
-        let wait = tilo_test_env::hang_bound();
+    /// as plain JSON, which wakes the read on the next write to any of them, or after `wait`.
+    fn held(&self, after: Option<&str>, wait: Duration) -> HeldChat {
         let answer = self.device.ask(&json!({
             "op": "resource_read",
             "app": "so.tilo.chat",
@@ -2165,6 +2170,11 @@ impl Chat<'_> {
 
     /// Wait until Chat's record here holds what `wanted` names, woken by each write to it: `done`
     /// says what it holds instead, `None` once it holds that.
+    ///
+    /// Each read waits only as long as the wait has left, and no longer than [`IDLE_SLICE`]: a key
+    /// the record was sealed under arrives with nothing written to it, so a read not woken by a
+    /// write would otherwise hold the wait for the whole hang bound and this loop's own bound
+    /// would come due too late to say what the device shows.
     fn wait_for(&self, wanted: &str, mut done: impl FnMut(&HeldChat) -> Option<String>) {
         // Chat's record is sealed in the workspace's channel, and what a device reads of it follows
         // the channel service's own longest wait between asking for its keys: the wait spans that
@@ -2177,7 +2187,8 @@ impl Chat<'_> {
             .expect("the wait's bound fits in an Instant");
         let mut after = None;
         loop {
-            let held = self.held(after.as_deref());
+            let left = deadline.saturating_duration_since(Instant::now());
+            let held = self.held(after.as_deref(), left.min(IDLE_SLICE));
             let Some(instead) = done(&held) else {
                 return;
             };

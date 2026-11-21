@@ -66,6 +66,12 @@ pub trait GroupKeys: collab_types::signer::MaybeSendSync + 'static {
     fn keys_changed<'a>(&'a self, _workspace: &'a str, _after: u64) -> KeysChangedFuture<'a> {
         Box::pin(std::future::ready(None))
     }
+
+    /// This device holds `group` at `held`, and a record it must open was sealed under a later
+    /// epoch: ask the person's other devices for the group's frames from `held`, as the
+    /// workspace's host would replay them. A device with none of the person's other devices to
+    /// ask does nothing. `group` is a workspace, a reader set's group or a document's.
+    fn behind(&self, _group: collab_types::WorkspaceId, _held: u64) {}
 }
 
 /// [`GroupKeys`] as the host's shared handle.
@@ -102,3 +108,8 @@ pub struct DeviceKeyGroups {
     /// runs the device's key service itself.
     pub sink: Option<Arc<dyn KeySink>>,
 }
+
+/// Asks the person's other devices for the frames of a group this device holds behind them: the
+/// group, and the epoch the device holds it at.
+#[cfg(not(target_arch = "wasm32"))]
+pub type AskingBehind = Arc<dyn Fn(collab_types::WorkspaceId, u64) + Send + Sync>;

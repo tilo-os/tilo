@@ -23,7 +23,8 @@ use tilo_workspace_keys::KeyProvider;
 
 use crate::service::{ServiceConfig, ServiceError, ServiceIdentity, WorkspaceService};
 use crate::workspaces::{
-    DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeySink, KeysChangedFuture, MemberDevice,
+    AskingBehind, DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeySink, KeysChangedFuture,
+    MemberDevice,
 };
 
 /// How long the service waits for the device's key service to open a group: far more than the
@@ -117,15 +118,21 @@ pub async fn hold_as_members(
 pub type HandedKeys = Box<dyn Fn(&str) -> Option<key_group::ContentKeys> + Send + Sync>;
 
 /// The device's key service as its workspace service asks it, answering first from `handed`,
-/// with `sink` taking what the service's members send for the groups.
+/// with `sink` taking what the service's members send for the groups, and `behind` asking the
+/// person's other devices for the frames of a group this device holds behind them.
 #[must_use]
 pub fn key_groups(
     keys: KeyProvider,
     handed: Option<HandedKeys>,
     sink: Option<Arc<dyn KeySink>>,
+    behind: Option<AskingBehind>,
 ) -> DeviceKeyGroups {
     DeviceKeyGroups {
-        keys: Arc::new(DeviceGroupKeys { keys, handed }),
+        keys: Arc::new(DeviceGroupKeys {
+            keys,
+            handed,
+            behind,
+        }),
         sink,
     }
 }
@@ -135,6 +142,8 @@ pub fn key_groups(
 struct DeviceGroupKeys {
     keys: KeyProvider,
     handed: Option<HandedKeys>,
+    /// Where the person's other devices are asked for a group's frames this device is behind.
+    behind: Option<AskingBehind>,
 }
 
 impl GroupKeys for DeviceGroupKeys {
@@ -172,5 +181,11 @@ impl GroupKeys for DeviceGroupKeys {
             let workspace = tilo_desktop_model::WorkspaceId::parse(workspace)?;
             Some(self.keys.workspace_changed(workspace, after).await)
         })
+    }
+
+    fn behind(&self, group: collab_types::WorkspaceId, held: u64) {
+        if let Some(behind) = &self.behind {
+            behind(group, held);
+        }
     }
 }

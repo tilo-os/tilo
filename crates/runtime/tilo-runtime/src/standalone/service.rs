@@ -492,6 +492,7 @@ impl ServiceWorkspaces {
                 tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
                 None,
                 None,
+                None,
             ),
             true,
             // The fixture's endpoint names no address anywhere: nothing will,

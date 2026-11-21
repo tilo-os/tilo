@@ -424,7 +424,10 @@ pub(crate) async fn content_keys(
             {
                 Ok(Sealing::Sealed(Box::new(keys)))
             }
-            Ok(_) => Ok(Sealing::Due),
+            Ok(keys) => {
+                device.behind(keys.keys.workspace(), keys.epoch());
+                Ok(Sealing::Due)
+            }
             Err(error) => {
                 tracing::debug!(%workspace, %app, %resource, %error, "a sealed resource waits for its document keys");
                 Ok(Sealing::Due)
@@ -447,6 +450,7 @@ pub(crate) async fn content_keys(
         Some(Ok(keys)) if !epochs.iter().all(|epoch| keys.holds_epoch(*epoch)) => {
             tracing::debug!(%workspace, %app, %resource, held = keys.epoch(), ?epochs,
                 "a sealed resource waits for the keys of an epoch it was written under");
+            device.behind(keys.workspace(), keys.epoch());
             Ok(Sealing::Due)
         }
         Some(Ok(keys)) => Ok(Sealing::Sealed(Box::new(DocumentKeys::app_document(

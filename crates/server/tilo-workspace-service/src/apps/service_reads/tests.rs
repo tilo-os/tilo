@@ -14,7 +14,9 @@ use automerge::transaction::Transactable as _;
 use super::*;
 use crate::apps::route::CrdtRoute;
 use crate::workspace_documents::DocumentRead;
-use crate::workspaces::fixtures::{TestHost, device_cert, governor, test_host_taking_part};
+use crate::workspaces::fixtures::{
+    TestGroupKeys, TestHost, device_cert, governor, test_host_holding, test_host_taking_part,
+};
 use std::sync::Arc;
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
@@ -452,6 +454,64 @@ async fn after_a_restart_a_document_read_again_opens_only_what_was_written_since
     assert!(
         again * 4 < first,
         "a read after one write took {again:?}, the first read of {WRITTEN} writes {first:?}"
+    );
+    server.shutdown().await;
+}
+
+/// A record sealed under an epoch this device's group has moved past, read on a device that holds
+/// no host to replay the frames: the read is on its way, and the person's other devices are asked
+/// for the group's frames from the epoch the device holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_behind_its_groups_epoch_asks_the_persons_devices_for_the_frames() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let keys = Arc::new(TestGroupKeys::default());
+    let server = test_host_holding(scratch.path(), &key, &cert, Arc::clone(&keys)).await;
+    let created = server.workspaces().create("Reads").await.unwrap();
+    let workspace = created.workspace;
+    let group = collab_types::WorkspaceId::parse(&workspace).unwrap();
+    // The group this device held before it moved: a fresh group of the workspace is its first
+    // epoch, and no key of the epoch below is in it.
+    let held =
+        key_group::KeyGroup::create(group, key_group::MemberKey::generate("before").unwrap())
+            .unwrap()
+            .content_keys()
+            .unwrap();
+    // The group moves on: admitting another device commits a second epoch.
+    let mut moved =
+        key_group::KeyGroup::create(group, key_group::MemberKey::generate("after").unwrap())
+            .unwrap();
+    let joiner = key_group::MemberKey::generate("another device").unwrap();
+    moved
+        .add_member(joiner.fresh_key_package().unwrap())
+        .unwrap();
+    let moved = moved.content_keys().unwrap();
+    assert_ne!(held.epoch(), moved.epoch(), "the group moved on");
+    keys.hand(&workspace, moved);
+    server
+        .workspaces()
+        .author_workspace_document(&workspace, &cert, (APP, RESOURCE), |doc| {
+            doc.put(automerge::ROOT, "text", "under the new key")
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap();
+    // The device comes back with the group as it held it before the move.
+    let asked_from = held.epoch();
+    keys.hand(&workspace, held);
+    let reads = server.host().document_reads();
+    let reading = context(&workspace, RESOURCE, cert);
+    assert!(
+        matches!(
+            reads.capture(&reading, None, MAXIMUM).unwrap(),
+            NativeDocumentRead::Pending
+        ),
+        "the record's epoch is not the one this device holds"
+    );
+    assert_eq!(
+        keys.asked_behind(),
+        vec![(group, asked_from)],
+        "the read asked the person's devices for the frames from the epoch held"
     );
     server.shutdown().await;
 }

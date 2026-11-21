@@ -2163,6 +2163,14 @@ impl SharedKeys {
             .map_or(group, |service| service.carrier(group))
     }
 
+    /// The scope `group`'s governance travels under ([`WorkspaceKeys::wire_scope`]): its document's
+    /// route, else the workspace that carries it. `None` for a document group the service holds no
+    /// route of, whose frames go as its carrier's.
+    #[must_use]
+    pub fn scope_of(&self, group: WorkspaceId) -> Option<String> {
+        self.inner.lock().ok()?.wire_scope(group)
+    }
+
     /// See [`WorkspaceKeys::reader_group`]; `None` also when the service is unavailable.
     pub fn reader_group(&self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
         self.inner.lock().ok()?.reader_group(workspace, readers)

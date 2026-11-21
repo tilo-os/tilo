@@ -308,10 +308,14 @@ impl KeyLink {
                 };
                 let frames =
                     keys.frames_for(workspace, &Ed25519PublicKey::from_bytes(peer), *from_epoch);
-                let carrier = keys.carrier(workspace);
+                // The frames go under the scope their group's governance travels in: a document's
+                // frames name its route, and are read as that group's, not as the workspace's.
+                let scope = keys
+                    .scope_of(workspace)
+                    .unwrap_or_else(|| keys.carrier(workspace).to_string());
                 for frame in frames {
                     self.tell_siblings(NeighbourMsg::MlsGovernance {
-                        workspace: carrier.to_string(),
+                        workspace: scope.clone(),
                         frame: Box::new(frame),
                         delivery: 0,
                     });

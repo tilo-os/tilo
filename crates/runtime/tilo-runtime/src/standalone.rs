@@ -1473,6 +1473,7 @@ pub(in crate::standalone) fn open_member_service(
             tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
             None,
             None,
+            None,
         );
         service::block_on_owned(async move {
             tilo_workspace_service::own_device::open(

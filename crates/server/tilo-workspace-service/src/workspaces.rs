@@ -173,8 +173,8 @@ pub enum Held {
     MemberCopy,
 }
 pub use crate::documents::device_keys::{
-    DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeySink,
-    KeysChangedFuture,
+    AskingBehind, DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture,
+    KeySink, KeysChangedFuture,
 };
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_documents::fixtures as sealed_fixtures;
@@ -965,7 +965,8 @@ pub(crate) struct WorkspaceServices {
     pub(crate) channels: Option<DeviceKeyGroups>,
     /// The device this embedder's member copies act as, when it keeps any:
     /// what the copies kept from an earlier run sync as, from the open on.
-    pub(crate) member: Option<Arc<member::MemberDevice>>,    /// The app surfaces this device knows, which its workspaces' stores judge resource writes
+    pub(crate) member: Option<Arc<member::MemberDevice>>,
+    /// The app surfaces this device knows, which its workspaces' stores judge resource writes
     /// by ([`crate::service::ServiceConfig::surfaces`]).
     pub(crate) surfaces: Arc<collab_types::app_surface::Surfaces>,
 }
