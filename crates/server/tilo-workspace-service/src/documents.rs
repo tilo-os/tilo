@@ -1,0 +1,621 @@
+//! Holding one workspace's documents: what a device reads of them and the
+//! writes it authors, for whichever holder keeps them.
+//!
+//! A workspace service holds a workspace beside its store, and a page holds one
+//! over its own storage; both read a record, decide whether it reads now, list
+//! what there is and draft a write as their device. The algorithms are here,
+//! once, over the replica ([`tilo_peer_state::StatePeer`]) and the device's
+//! channel keys ([`device_keys::DeviceKeys`]); a holder answers only where its
+//! replica and keys are.
+
+pub(crate) mod device_keys;
+pub(crate) mod sealed;
+
+
+use std::sync::Arc;
+
+use automerge::ReadDoc as _;
+use collab_types::{ContentRetention, DocumentMutation, document_artifact_id};
+use tilo_peer_state::owner::WriteRefusal;
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::workspace_documents::DocumentRead;
+use tilo_peer_state::{KeptDocument, PeerDocumentReadError, StatePeer};
+
+#[cfg(feature = "apps")]
+use tilo_peer_state::PeerDocumentCapture;
+
+use device_keys::DeviceKeys;
+use tilo_lock::MutexRecover as _;
+use sealed::DocumentKeys;
+use web_time::SystemTime;
+
+/// The device a document was opened as, and the epoch of the keys that opened it, `None` for one
+/// held in the clear: what was opened under other keys (the workspace rotated them, as removing a
+/// member does) is let go, and the resource opens whole under the keys held now.
+pub(crate) type OpenedWith = ([u8; 32], Option<u64>);
+
+/// One resource as this device last opened it; `None` until a read opened it.
+pub(crate) type Kept = Option<(OpenedWith, KeptDocument)>;
+
+/// How many resources a holder keeps opened at most.
+const OPENED: usize = 64;
+
+/// One resource as this device last opened it; `None` until a read opened it.
+type KeptSlot = Arc<std::sync::Mutex<Kept>>;
+
+/// Most bytes [`Opened`] keeps opened ([`KeptDocument::size`]), the least recently read let go
+/// first. It is never bounded by how many resources there are: a tracker of thousands of issues
+/// is kept in eighty parts or more, read part after part by each reader in turn (the tracker's
+/// own copy, a caller's, the search index), and a bound below the number of parts let each
+/// reader's pass push out the parts the next was about to read, so every reader opened every
+/// part's whole sealed history again.
+const OWN_OPENED_BYTES: usize = 256 * 1024 * 1024;
+
+/// Sealed resources as a device last opened them, by workspace, app and resource, so the next
+/// read opens only what was sealed since: a resource a session follows is opened once per write,
+/// not whole per read. What it holds is plaintext the device's keys opened, kept in its memory
+/// alone.
+#[derive(Default)]
+pub(crate) struct Opened(std::sync::Mutex<Openings>);
+
+/// What [`Opened`] keeps, and how many reads it counted.
+#[derive(Default)]
+struct Openings {
+    entries: std::collections::HashMap<OpenedResource, OpenedEntry>,
+    reads: u64,
+}
+
+/// A resource of a workspace, by its app: `(workspace, app, resource)`.
+type OpenedResource = (String, String, String);
+
+/// One resource [`Opened`] keeps: what is opened of it, the read that last asked for it, and the
+/// bytes it kept after its last read.
+struct OpenedEntry {
+    kept: KeptSlot,
+    read: u64,
+    size: usize,
+}
+
+impl Opened {
+    /// What is kept of `app`'s `resource` of `workspace`, held while it is read.
+    pub(crate) fn of(&self, workspace: &str, app: &str, resource: &str) -> KeptSlot {
+        let key = (workspace.to_owned(), app.to_owned(), resource.to_owned());
+        let mut kept = self.0.lock_recover();
+        kept.reads = kept.reads.wrapping_add(1);
+        let read = kept.reads;
+        let entry = kept.entries.entry(key).or_insert_with(|| OpenedEntry {
+            kept: KeptSlot::default(),
+            read,
+            size: 0,
+        });
+        entry.read = read;
+        let opened = Arc::clone(&entry.kept);
+        drop(kept);
+        opened
+    }
+
+    /// `app`'s `resource` of `workspace` keeps `size` bytes now: what was read least recently
+    /// is let go while everything kept comes to more than [`OWN_OPENED_BYTES`].
+    pub(crate) fn kept(&self, (workspace, app, resource): (&str, &str, &str), size: usize) {
+        let key = (workspace.to_owned(), app.to_owned(), resource.to_owned());
+        let mut kept = self.0.lock_recover();
+        if let Some(entry) = kept.entries.get_mut(&key) {
+            entry.size = size;
+        }
+        let mut total: usize = kept.entries.values().map(|entry| entry.size).sum();
+        while total > OWN_OPENED_BYTES {
+            let Some(oldest) = kept
+                .entries
+                .iter()
+                .filter(|(other, _)| **other != key)
+                .min_by_key(|(_, entry)| entry.read)
+                .map(|(other, _)| other.clone())
+            else {
+                break;
+            };
+            if let Some(gone) = kept.entries.remove(&oldest) {
+                total = total.saturating_sub(gone.size);
+            }
+        }
+    }
+}
+
+/// Wait for `future` with this thread, or on a thread of its own where this one already drives a
+/// runtime: what a read that must not jam its caller's executor waits with.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn on_its_own<F>(future: F) -> F::Output
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_err() {
+        return futures::executor::block_on(future);
+    }
+    std::thread::scope(|scope| match scope.spawn(|| futures::executor::block_on(future)).join() {
+        Ok(output) => output,
+        Err(panic) => std::panic::resume_unwind(panic),
+    })
+}
+
+/// Wait for `future` with this thread: a page drives no runtime beside it.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn on_its_own<F>(future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    futures::executor::block_on(future)
+}
+
+/// What a read of one document needs before it opens anything: the keys it opens it under, or
+/// the answer a holder hands out without opening it.
+pub(crate) enum Prepared {
+    /// Handed out as it stands: absent from this device's copy, or still on its way.
+    Answer(DocumentRead),
+    /// The keys it opens under, `None` for one held in the clear, and the device and epoch they
+    /// are.
+    Keys {
+        used: OpenedWith,
+        keys: Option<Box<DocumentKeys>>,
+    },
+}
+
+/// What reading `app`'s `resource` of `workspace` as the device `reader` needs first: whether it
+/// is here at all, and the keys it opens under. A holder asks this, takes what it keeps of the
+/// resource, and finishes with [`finish`], so nothing holds a lock across the device's key
+/// service answering.
+///
+/// # Errors
+///
+/// This device may not read the resource, or it is sealed and this device holds no keys of it.
+pub(crate) async fn prepare(
+    peer: &StatePeer,
+    device: Option<&DeviceKeys>,
+    workspace: &str,
+    (app, resource): (&str, &str),
+    reader: [u8; 32],
+) -> Result<Prepared, String> {
+    if !peer.holds_document(app, resource) {
+        return Ok(Prepared::Answer(DocumentRead::Absent));
+    }
+    if peer.checkpoint_pending(app, resource) {
+        return Ok(Prepared::Answer(DocumentRead::Pending));
+    }
+    let keys = match content_keys(peer, device, workspace, (app, resource))
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Sealing::Due => return Ok(Prepared::Answer(DocumentRead::Pending)),
+        Sealing::Clear => None,
+        Sealing::Sealed(keys) => Some(keys),
+    };
+    let used = (reader, keys.as_deref().map(DocumentKeys::epoch));
+    Ok(Prepared::Keys { used, keys })
+}
+
+/// `app`'s `resource` of `workspace` as [`prepare`] left it, opened for the device `reader`: the
+/// document whole, or, for `since` heads this device holds, only what changed after them.
+///
+/// `kept` is what the previous read of the same resource opened, so a read that follows one opens
+/// only the writes sealed since rather than the whole history again; it is left holding what this
+/// read opened, under the device and key epoch that opened it.
+///
+/// # Errors
+///
+/// Its history does not open, or it exceeds `maximum`.
+pub(crate) fn finish(
+    peer: &StatePeer,
+    (app, resource): (&str, &str),
+    reader: [u8; 32],
+    since: &[[u8; 32]],
+    maximum: usize,
+    prepared: Prepared,
+    kept: &mut Kept,
+) -> Result<DocumentRead, String> {
+    let Prepared::Keys { used, keys } = prepared else {
+        let Prepared::Answer(read) = prepared else {
+            return Err("a read is prepared or answered".to_owned());
+        };
+        return Ok(read);
+    };
+    let mut opened = keys.as_deref().map(DocumentKeys::open);
+    // What this device opened of the resource before is read on, so a read opens only the
+    // writes sealed since rather than the whole history again.
+    let mut held = held(kept.take(), used);
+    let read = match peer.open_document(
+        reader,
+        (app, resource),
+        tilo_clock::wall(),
+        maximum,
+        opened
+            .as_mut()
+            .map(|open| open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>),
+        &mut held,
+    ) {
+        Ok(document) => answer(document, since, maximum),
+        // A write this copy knows of has not reached it yet: the next pass reads it.
+        Err(PeerDocumentReadError::Incomplete) => Ok(Answer::Read(DocumentRead::Pending)),
+        Err(refused) => Err(refused.to_string()),
+    };
+    let read = match read {
+        Ok(Answer::Whole { revision, heads }) => {
+            whole(peer, &mut held, reader, (app, resource), maximum).map(|bytes| {
+                DocumentRead::Whole {
+                    revision,
+                    heads,
+                    bytes,
+                }
+            })
+        }
+        Ok(Answer::Read(read)) => Ok(read),
+        Err(error) => Err(error),
+    };
+    if held.is_open() {
+        *kept = Some((used, held));
+    }
+    read
+}
+
+/// What the previous read of `route` opened, where it opened it as the same device under the
+/// same key epoch.
+fn held(kept: Kept, used: OpenedWith) -> KeptDocument {
+    kept.filter(|(opened_with, _)| *opened_with == used)
+        .map(|(_, kept)| kept)
+        .unwrap_or_default()
+}
+
+/// Whether `app`'s `resource` of `workspace` reads for this device now: held here, its checkpoint
+/// and its keys arrived, and the sealed writes held cover its history. One this device may not
+/// read, or that does not open, waits for nothing: its read says why. Opening a sealed resource
+/// costs its whole history the first time after a start, seconds for a part of a large tracker, so
+/// nothing that only asks whether it could read one opens it.
+pub(crate) async fn readable(
+    peer: &StatePeer,
+    device: Option<&DeviceKeys>,
+    workspace: &str,
+    (app, resource): (&str, &str),
+    reader: [u8; 32],
+    now: SystemTime,
+) -> bool {
+    if !peer.holds_document(app, resource) || peer.checkpoint_pending(app, resource) {
+        return false;
+    }
+    let sealed = match content_keys(peer, device, workspace, (app, resource)).await {
+        Ok(Sealing::Due) => return false,
+        Ok(Sealing::Clear) => false,
+        Ok(Sealing::Sealed(_)) => true,
+        Err(_) => return true,
+    };
+    !matches!(
+        peer.document_opens(reader, (app, resource), now, sealed),
+        Err(PeerDocumentReadError::Incomplete)
+    )
+}
+
+/// Every document `peer` holds, by its app and route.
+pub(crate) fn listing(peer: &StatePeer) -> Vec<(String, String)> {
+    peer.plaintext_routes()
+        .into_iter()
+        .chain(peer.sealed_routes())
+        .collect()
+}
+
+/// The members' own records `peer` knows, by app and route, each with whose it is.
+pub(crate) fn own_records(peer: &StatePeer) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+    peer.own_resources()
+}
+
+/// Whether `peer` holds anything of `app`'s `resource`, committed or sealed alike.
+pub(crate) fn holds(peer: &StatePeer, app: &str, resource: &str) -> bool {
+    peer.holds_document(app, resource)
+}
+
+/// A device's write to one document: `changes` to `app`'s `document`, the whole document when
+/// `founding` it, a change of it otherwise, kept for `readers` where only some members read it,
+/// sealed under `sealed` (the keys of the document's group) where the workspace seals its
+/// documents, as made at `now`.
+#[derive(Clone, Copy)]
+pub(crate) struct Write<'a> {
+    pub(crate) app: &'a str,
+    pub(crate) document: &'a str,
+    pub(crate) readers: Option<&'a str>,
+    pub(crate) changes: &'a [u8],
+    pub(crate) founding: bool,
+    pub(crate) sealed: Option<&'a key_group::ContentKeys>,
+    pub(crate) now: SystemTime,
+}
+
+/// The `write` as `device` makes it to `workspace`. Answers the request to commit and the
+/// author's access in the workspace.
+///
+/// # Errors
+///
+/// The device may not write it, or a founding write finds the document held already.
+pub(crate) fn draft(
+    peer: &StatePeer,
+    workspace: &str,
+    device: &[u8; 32],
+    write: Write<'_>,
+) -> Result<(OwnerCommitRequest, tilo_action_policy::MemberAccess), WriteRefusal> {
+    let Write {
+        app,
+        document,
+        readers,
+        changes,
+        founding,
+        sealed,
+        now,
+    } = write;
+    if founding && peer.document(app, document).is_some() {
+        return Err(WriteRefusal::Refused(format!(
+            "{document} of {app} is in the workspace already"
+        )));
+    }
+    let author = peer
+        .permissions(*device, now)
+        .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+    let artifact = document_artifact_id(app, workspace, document);
+    let frame = if founding {
+        DocumentMutation::Snapshot(changes.to_vec())
+    } else {
+        DocumentMutation::Incremental(changes.to_vec())
+    }
+    .encode()
+    .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+    let mut seal = sealed.map(|keys| {
+        move |plaintext: &[u8]| {
+            keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
+                .map_err(|error| error.to_string())
+        }
+    });
+    let envelope = peer
+        .draft_write(
+            (app, document),
+            readers,
+            &frame,
+            seal.as_mut()
+                .map(|seal| seal as &mut tilo_peer_state::SealCheckpoint<'_>),
+            *device,
+            0,
+            now,
+        )
+        .map_err(WriteRefusal::Refused)?;
+    let own = peer.own_write(app, document, device);
+    Ok((
+        OwnerCommitRequest {
+            workspace: workspace.to_owned(),
+            operation: CommitOperation::Document {
+                app: app.to_owned(),
+                document: document.to_owned(),
+                envelope: Box::new(envelope),
+                own,
+                readers: readers.map(str::to_owned),
+            },
+        },
+        author,
+    ))
+}
+
+/// What [`read`] answers from a document it opened.
+enum Answer {
+    /// Answered from its heads alone: unchanged, or the changes after the reader's.
+    Read(DocumentRead),
+    /// The document whole, at these heads: captured from what is kept of it.
+    Whole {
+        revision: [u8; 32],
+        heads: Vec<[u8; 32]>,
+    },
+}
+
+/// What `document` answers a reader holding `since`: only what changed after those heads, or the
+/// document whole where the reader holds none, or heads this device does not hold.
+fn answer(
+    document: &automerge::Automerge,
+    since: &[[u8; 32]],
+    maximum: usize,
+) -> Result<Answer, String> {
+    let heads: Vec<[u8; 32]> = document.get_heads().iter().map(|head| head.0).collect();
+    let revision = tilo_peer_state::committed_document_revision(&document.get_heads());
+    // A reader's heads this device does not hold are answered with the whole document: the
+    // changes it would send are not the complete ones after them.
+    let holds_since = since.iter().all(|head| {
+        document
+            .get_change_by_hash(&automerge::ChangeHash(*head))
+            .is_some()
+    });
+    if since.is_empty() || !holds_since {
+        return Ok(Answer::Whole { revision, heads });
+    }
+    let since: Vec<automerge::ChangeHash> = since
+        .iter()
+        .map(|head| automerge::ChangeHash(*head))
+        .collect();
+    let bytes = tilo_peer_state::changes_since(document, &since, maximum)
+        .map_err(|error| error.to_string())?;
+    if bytes.is_empty() && heads == since.iter().map(|head| head.0).collect::<Vec<_>>() {
+        return Ok(Answer::Read(DocumentRead::Unchanged(revision)));
+    }
+    Ok(Answer::Read(DocumentRead::Changes {
+        revision,
+        heads,
+        bytes,
+    }))
+}
+
+/// `app`'s `resource` saved whole for `reader`, at most `maximum` bytes: what its last capture
+/// handed out with the changes since appended where it is kept opened, rather than the document
+/// saved again; saved from the copy itself where it is held in the clear.
+fn whole(
+    peer: &StatePeer,
+    kept: &mut KeptDocument,
+    reader: [u8; 32],
+    route: (&str, &str),
+    maximum: usize,
+) -> Result<Vec<u8>, String> {
+    if let Some(captured) = kept.capture(maximum) {
+        return captured.map_err(|error| error.to_string());
+    }
+    let mut unkept = KeptDocument::default();
+    let document = peer
+        .open_document(
+            reader,
+            route,
+            tilo_clock::wall(),
+            maximum,
+            None,
+            &mut unkept,
+        )
+        .map_err(|error| error.to_string())?;
+    tilo_peer_state::saved_whole(document, maximum).map_err(|error| error.to_string())
+}
+
+/// How `app`'s `resource` of a workspace is opened on this device.
+pub(crate) enum Sealing {
+    /// It is held in the clear.
+    Clear,
+    /// It is sealed, and opens with these keys.
+    Sealed(Box<DocumentKeys>),
+    /// It is sealed for a group this device takes part in, under keys it does not hold yet: the
+    /// welcome or commit that brings them is on its way, and it reads once that arrived.
+    Due,
+}
+
+/// How `app`'s `resource` of `workspace` opens on this device: in the clear, with the keys of the
+/// group it is sealed for, or once the keys this device is due arrive. Nothing waits here: a read
+/// answered [`Sealing::Due`] says the resource is on its way, and its reader reads it again when
+/// the device's keys change, as an app's held read and the session's next pass do.
+pub(crate) async fn content_keys(
+    peer: &StatePeer,
+    device: Option<&DeviceKeys>,
+    workspace: &str,
+    (app, resource): (&str, &str),
+) -> Result<Sealing, PeerDocumentReadError> {
+    if !peer.publication().is_sealed_document(app, resource) {
+        return Ok(Sealing::Clear);
+    }
+    let Some(device) = device else {
+        return Err(PeerDocumentReadError::Encrypted);
+    };
+    let scoped = peer.publication().has_document_keys(app, resource);
+    if scoped || neighbour_wire::KeyScope::has_named_readers(resource) {
+        let keys = sealed::read_document_keys(device, workspace, (app, resource), scoped, false)
+            .await;
+        return match keys {
+            Ok(keys)
+                if peer
+                    .publication()
+                    .sealed_keys_available(app, resource, |metadata| keys.covers(metadata)) =>
+            {
+                Ok(Sealing::Sealed(Box::new(keys)))
+            }
+            Ok(_) => Ok(Sealing::Due),
+            Err(error) => {
+                tracing::debug!(%workspace, %app, %resource, %error, "a sealed resource waits for its document keys");
+                Ok(Sealing::Due)
+            }
+        };
+    }
+    let epochs = peer.publication().sealed_epochs(app, resource);
+    match device
+        .group_keys(workspace, collab_types::EVERY_MEMBER, false)
+        .await
+    {
+        None => Err(PeerDocumentReadError::Encrypted),
+        // Taking part in the group and holding none of its keys yet, or not yet an epoch a write
+        // was sealed under, is a member's state between its admission and the welcome or commit
+        // its group sends it.
+        Some(Err(error)) => {
+            tracing::debug!(%workspace, %app, %resource, %error, "a sealed resource waits for its keys");
+            Ok(Sealing::Due)
+        }
+        Some(Ok(keys)) if !epochs.iter().all(|epoch| keys.holds_epoch(*epoch)) => {
+            tracing::debug!(%workspace, %app, %resource, held = keys.epoch(), ?epochs,
+                "a sealed resource waits for the keys of an epoch it was written under");
+            Ok(Sealing::Due)
+        }
+        Some(Ok(keys)) => Ok(Sealing::Sealed(Box::new(DocumentKeys::app_document(
+            keys,
+            workspace,
+            (app, resource),
+        )))),
+    }
+}
+
+/// `app`'s `resource` of `workspace` for the device `reader` at `now`, as a capture answers it.
+#[cfg(feature = "apps")]
+pub(crate) async fn capture(
+    peer: &StatePeer,
+    device: Option<&DeviceKeys>,
+    workspace: &str,
+    (app, resource): (&str, &str),
+    reader: [u8; 32],
+    now: SystemTime,
+    maximum: usize,
+) -> Result<Option<PeerDocumentCapture>, PeerDocumentReadError> {
+    let keys = match content_keys(peer, device, workspace, (app, resource)).await? {
+        Sealing::Due => return Ok(None),
+        Sealing::Clear => None,
+        Sealing::Sealed(keys) => Some(keys),
+    };
+    let mut opened = keys.as_deref().map(DocumentKeys::open);
+    match peer.capture_document(
+        reader,
+        (app, resource),
+        now,
+        maximum,
+        opened
+            .as_mut()
+            .map(|open| open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>),
+    ) {
+        Ok(capture) => Ok(Some(capture)),
+        // A write this copy knows of has not reached it yet: it is on its way, and its landing
+        // wakes the reader.
+        Err(PeerDocumentReadError::Incomplete) => Ok(None),
+        Err(refused) => Err(refused),
+    }
+}
+
+/// The revision `app`'s `resource` of `workspace` stands at for the device `reader` at `now`,
+/// decided as a read is; `None` while a checkpoint is arriving.
+#[cfg(feature = "apps")]
+pub(crate) async fn revision(
+    peer: &StatePeer,
+    device: Option<&DeviceKeys>,
+    workspace: &str,
+    (app, resource): (&str, &str),
+    reader: [u8; 32],
+    now: SystemTime,
+) -> Result<Option<[u8; 32]>, String> {
+    peer.check_document_read(reader, app, resource, now)?;
+    if peer.checkpoint_pending(app, resource) {
+        return Ok(None);
+    }
+    let keys = match content_keys(peer, device, workspace, (app, resource))
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Sealing::Due => return Ok(None),
+        Sealing::Clear => None,
+        Sealing::Sealed(keys) => Some(keys),
+    };
+    let mut opened = keys.as_deref().map(DocumentKeys::open);
+    let mut kept = KeptDocument::default();
+    let document = peer.open_document(
+        reader,
+        (app, resource),
+        now,
+        usize::MAX,
+        opened
+            .as_mut()
+            .map(|open| open as &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>),
+        &mut kept,
+    );
+    let document = match document {
+        Ok(document) => document,
+        // Missing a write it knows of: undecided until that lands, as the capture answers.
+        Err(PeerDocumentReadError::Incomplete) => return Ok(None),
+        Err(refused) => return Err(refused.to_string()),
+    };
+    Ok(Some(tilo_peer_state::committed_document_revision(
+        &document.get_heads(),
+    )))
+}

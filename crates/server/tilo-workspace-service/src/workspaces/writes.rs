@@ -6,104 +6,11 @@
 //! commit path ([`Workspaces::commit_local_document`]), so it is kept, carried and published as
 //! any member's write is.
 
-use collab_types::{ContentRetention, DocumentMutation, document_artifact_id, sign_op};
+use collab_types::sign_op;
 use tilo_peer_state::owner::{AppWrite, WriteRefusal};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::owner_commit::CommitOperation;
 
-use super::{GovernedWorkspace, SystemTime, Workspaces};
-
-/// A device's write to one document: `changes` to `app`'s `document`, the whole document when
-/// `founding` it, a change of it otherwise, kept for `readers` where only some members read it,
-/// sealed under `sealed` (the keys of the document's group) where the workspace seals its
-/// documents, as made at `now`.
-#[derive(Clone, Copy)]
-pub(super) struct DocumentWrite<'a> {
-    pub(super) app: &'a str,
-    pub(super) document: &'a str,
-    pub(super) readers: Option<&'a str>,
-    pub(super) changes: &'a [u8],
-    pub(super) founding: bool,
-    pub(super) sealed: Option<&'a key_group::ContentKeys>,
-    pub(super) now: SystemTime,
-}
-
-impl GovernedWorkspace {
-    /// The `write` as `device` makes it to this workspace. Answers the request to commit and the
-    /// author's access in the workspace.
-    pub(super) fn draft_document_write(
-        &self,
-        device: &[u8; 32],
-        write: DocumentWrite<'_>,
-    ) -> Result<(OwnerCommitRequest, tilo_action_policy::MemberAccess), WriteRefusal> {
-        self.draft_document_write_from(&self.peer(), device, write)
-    }
-
-    /// [`Self::draft_document_write`] against `peer`, a staged state of this workspace.
-    pub(super) fn draft_document_write_from(
-        &self,
-        peer: &tilo_peer_state::StatePeer,
-        device: &[u8; 32],
-        write: DocumentWrite<'_>,
-    ) -> Result<(OwnerCommitRequest, tilo_action_policy::MemberAccess), WriteRefusal> {
-        let DocumentWrite {
-            app,
-            document,
-            readers,
-            changes,
-            founding,
-            sealed,
-            now,
-        } = write;
-        if founding && peer.document(app, document).is_some() {
-            return Err(WriteRefusal::Refused(format!(
-                "{document} of {app} is in the workspace already"
-            )));
-        }
-        let author = peer
-            .permissions(*device, now)
-            .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
-        let artifact = document_artifact_id(app, self.workspace(), document);
-        let frame = if founding {
-            DocumentMutation::Snapshot(changes.to_vec())
-        } else {
-            DocumentMutation::Incremental(changes.to_vec())
-        }
-        .encode()
-        .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
-        let mut seal = sealed.map(|keys| {
-            move |plaintext: &[u8]| {
-                keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
-                    .map_err(|error| error.to_string())
-            }
-        });
-        let envelope = peer
-            .draft_write(
-                (app, document),
-                readers,
-                &frame,
-                seal.as_mut()
-                    .map(|seal| seal as &mut tilo_peer_state::SealCheckpoint<'_>),
-                *device,
-                0,
-                now,
-            )
-            .map_err(WriteRefusal::Refused)?;
-        let own = peer.own_write(app, document, device);
-        Ok((
-            OwnerCommitRequest {
-                workspace: self.workspace().to_owned(),
-                operation: CommitOperation::Document {
-                    app: app.to_owned(),
-                    document: document.to_owned(),
-                    envelope: Box::new(envelope),
-                    own,
-                    readers: readers.map(str::to_owned),
-                },
-            },
-            author,
-        ))
-    }
-}
+use super::Workspaces;
 
 impl Workspaces {
     /// Write `changes` to `app`'s `document` of `workspace` as this device's own: the document's
@@ -133,9 +40,11 @@ impl Workspaces {
         let drafting = crate::timing::start();
         let (mut request, author) = {
             let governed = state.lock().await;
-            governed.draft_document_write(
+            crate::documents::draft(
+                &governed.peer(),
+                governed.workspace(),
                 &device.device(),
-                DocumentWrite {
+                crate::documents::Write {
                     app,
                     document,
                     readers: None,

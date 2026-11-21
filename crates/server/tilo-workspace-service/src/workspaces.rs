@@ -54,7 +54,6 @@ mod desktop_writes;
 mod device_actions;
 #[cfg(test)]
 mod device_actions_tests;
-mod device_keys;
 mod follow;
 mod founding;
 mod removals;
@@ -156,7 +155,7 @@ mod resources;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 pub(crate) mod sealed_documents;
-pub use device_keys::{
+pub use crate::documents::device_keys::{
     DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeySink,
 };
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]

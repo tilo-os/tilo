@@ -643,21 +643,21 @@ impl GovernedWorkspace {
         } else {
             write.change.raw_bytes().to_vec()
         };
-        let (mut request, _) = self
-            .draft_document_write_from(
-                peer,
-                &device.device(),
-                super::writes::DocumentWrite {
-                    app,
-                    document: &write.doc,
-                    readers: named,
-                    changes: &bytes,
-                    founding,
-                    sealed: Some(&keys),
-                    now: tilo_clock::wall(),
-                },
-            )
-            .map_err(|error| error.to_string())?;
+        let (mut request, _) = crate::documents::draft(
+            peer,
+            self.workspace(),
+            &device.device(),
+            crate::documents::Write {
+                app,
+                document: &write.doc,
+                readers: named,
+                changes: &bytes,
+                founding,
+                sealed: Some(&keys),
+                now: tilo_clock::wall(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
         if let CommitOperation::Document { envelope, .. } = &mut request.operation {
             collab_types::sign_op(envelope, &*device.signer).map_err(|error| error.to_string())?;
         }

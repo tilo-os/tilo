@@ -21,10 +21,15 @@ use key_group::ContentKeys;
 pub type GroupKeysAnswer = Option<Result<ContentKeys, String>>;
 
 /// A device's answer, asked for.
+#[cfg(not(target_family = "wasm"))]
 pub type GroupKeysAnswerFuture<'a> = Pin<Box<dyn Future<Output = GroupKeysAnswer> + Send + 'a>>;
+/// A device's answer, asked for: a page's key service answers through JavaScript, on its one
+/// thread.
+#[cfg(target_family = "wasm")]
+pub type GroupKeysAnswerFuture<'a> = Pin<Box<dyn Future<Output = GroupKeysAnswer> + 'a>>;
 
 /// The group keys of the device a workspace service runs on, asked of it.
-pub trait GroupKeys: Send + Sync + 'static {
+pub trait GroupKeys: collab_types::signer::MaybeSendSync + 'static {
     /// The reader list bound to a document's registered key group, if held here.
     fn named_readers(
         &self,
@@ -52,12 +57,13 @@ pub type DeviceKeys = Arc<dyn GroupKeys>;
 
 /// Where a workspace service hands the group governance its members send: the
 /// device's key service, when the host runs it.
+#[cfg(not(target_arch = "wasm32"))]
 ///
 /// A device whose key service runs beside the host hears its members'
 /// requests and commits on its own sessions, and is handed no sink. A host that
 /// runs the service itself has no such sessions: its members' sessions end
 /// here, so what they send for a group arrives here too.
-pub trait KeySink: Send + Sync + 'static {
+pub trait KeySink: collab_types::signer::MaybeSendSync + 'static {
     /// Take in what members sent for groups: access requests and commits,
     /// each signed by the device that sent it. The service verifies them as it
     /// verifies any it hears.
@@ -71,6 +77,7 @@ pub trait KeySink: Send + Sync + 'static {
 }
 
 /// The key service of the device a host runs on.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct DeviceKeyGroups {
     /// The device's keys, asked when the host seals or opens a record.

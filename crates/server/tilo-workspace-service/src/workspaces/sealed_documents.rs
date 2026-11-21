@@ -14,7 +14,7 @@
 //! governor's copy follows that checkpoint like any other member write, and
 //! no device's history waits for someone else to fold it.
 
-use collab_types::{ArtifactId, ContentRetention, SignedOp};
+use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use key_group::ContentKeys;
 use neighbour_wire::NeighbourMsg;
@@ -23,7 +23,7 @@ use tilo_peer_state::StatePeer;
 
 use tilo_peer_state::UnmergedReason;
 
-use super::{GovernedWorkspace, SystemTime, Workspaces};
+use super::{CollaborationError, GovernedWorkspace, SystemTime, Workspaces};
 
 /// Member writes followed before a failed compaction is tried again. A
 /// record whose history does not merge yet does not compact; trying on every
@@ -37,72 +37,12 @@ use super::{GovernedWorkspace, SystemTime, Workspaces};
 )]
 const COMPACTION_RETRY: usize = 256;
 
-/// The content keys of one document, as the node holds them: its readers'
-/// group's keys, scoped to the document.
-pub(super) struct DocumentKeys {
-    keys: ContentKeys,
-    workspace_keys: Option<ContentKeys>,
-    prior_reader_keys: Option<ContentKeys>,
-    readers: Option<String>,
-    artifact: ArtifactId,
-}
+pub(crate) use crate::documents::sealed::{DocumentKeys, read_document_keys, read_document_keys_for};
+use crate::documents::device_keys::{DeviceKeys, GroupKeysAnswer};
 
 impl DocumentKeys {
-    /// The workspace's keys for a document every member can read.
-    pub(super) fn app_document(
-        keys: ContentKeys,
-        workspace: &str,
-        (app, document): (&str, &str),
-    ) -> Self {
-        Self {
-            keys,
-            workspace_keys: None,
-            prior_reader_keys: None,
-            readers: None,
-            artifact: collab_types::document_artifact_id(app, workspace, document),
-        }
-    }
-
     pub(super) fn same_write_key(&self, keys: &ContentKeys) -> bool {
         self.keys.same_write_key(keys)
-    }
-
-    /// The epoch of the keys: a rotation moves it.
-    pub(super) fn epoch(&self) -> u64 {
-        self.keys.epoch()
-    }
-
-    pub(super) fn covers(&self, metadata: collab_types::EncryptionMetadata) -> bool {
-        self.keys.holds_epoch(metadata.epoch)
-            || (!matches!(
-                metadata.scheme,
-                collab_types::EncryptionScheme::DocumentContentKey { .. }
-            ) && [&self.prior_reader_keys, &self.workspace_keys]
-                .into_iter()
-                .any(|keys| {
-                    keys.as_ref()
-                        .is_some_and(|keys| keys.holds_epoch(metadata.epoch))
-                }))
-    }
-
-    /// Open any write of the record's history, under any epoch the keys
-    /// hold, a compaction included.
-    pub(super) fn open(&self) -> impl FnMut(&SignedOp) -> Result<Vec<u8>, String> + '_ {
-        |op| {
-            let metadata = op.encryption.ok_or("the write is not sealed")?;
-            let ciphertext =
-                collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
-            let keys = match metadata.scheme {
-                collab_types::EncryptionScheme::DocumentContentKey { .. } => &self.keys,
-                _ if op.artifact != self.artifact => {
-                    self.workspace_keys.as_ref().unwrap_or(&self.keys)
-                }
-                _ => self.prior_reader_keys.as_ref().unwrap_or(&self.keys),
-            };
-            keys.open_content(op.artifact, &metadata, &ciphertext)
-                .map(|plaintext| plaintext.to_vec())
-                .map_err(|error| error.to_string())
-        }
     }
 
     /// Seal content of the record under the channel's current epoch.
@@ -352,79 +292,6 @@ impl GovernedWorkspace {
     }
 }
 
-pub(super) async fn read_document_keys(
-    device: &super::DeviceKeys,
-    workspace: &str,
-    route: (&str, &str),
-    scoped: bool,
-    create: bool,
-) -> Result<DocumentKeys, String> {
-    read_document_keys_for(device, workspace, route, scoped, create, None).await
-}
-
-pub(super) async fn read_document_keys_for(
-    device: &super::DeviceKeys,
-    workspace: &str,
-    (app, document): (&str, &str),
-    scoped: bool,
-    create: bool,
-    named: Option<String>,
-) -> Result<DocumentKeys, String> {
-    let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: app.to_owned(),
-        cluster_id: workspace.to_owned(),
-        document: document.to_owned(),
-    };
-    let named = if neighbour_wire::KeyScope::has_named_readers(document) {
-        let workspace = route.workspace_id().map_err(|error| error.to_string())?;
-        Some(
-            named
-                .or_else(|| device.named_readers(workspace, document))
-                .ok_or("the reader set of the document is not known here")?,
-        )
-    } else {
-        None
-    };
-    let readers = named.as_deref().unwrap_or(collab_types::EVERY_MEMBER);
-    let group = if scoped {
-        route
-            .key_scope_for(named.as_deref())
-            .map_err(|error| error.to_string())?
-            .to_string()
-    } else {
-        workspace.to_owned()
-    };
-    let keys = device
-        .group_keys(&group, readers, create)
-        .await
-        .ok_or("no keys are available for this document")??;
-    let workspace_keys = if scoped || named.is_some() {
-        device
-            .group_keys(workspace, collab_types::EVERY_MEMBER, false)
-            .await
-            .and_then(Result::ok)
-    } else {
-        None
-    };
-    let prior_reader_keys = if scoped && named.is_some() {
-        device
-            .group_keys(workspace, readers, false)
-            .await
-            .and_then(Result::ok)
-    } else if scoped {
-        workspace_keys.clone()
-    } else {
-        None
-    };
-    Ok(DocumentKeys {
-        keys,
-        workspace_keys,
-        prior_reader_keys,
-        readers: named,
-        artifact: route.artifact(),
-    })
-}
-
 /// [`GovernedWorkspace::readable_document`] as the workspace `reading` reads
 /// holds it now, without the workspace's lock: the device's key service can
 /// take long to answer (it settles a newcomer's access first), and every other
@@ -621,7 +488,7 @@ fn merged_or_named(
 /// or its channel's keys are not here.
 pub(super) async fn whole_document(
     peer: &StatePeer,
-    device: Option<&super::DeviceKeys>,
+    device: Option<&DeviceKeys>,
     workspace: &str,
     (app, document): (&str, &str),
 ) -> Result<Vec<u8>, String> {
@@ -665,7 +532,7 @@ pub(super) async fn whole_document(
 /// this host holds no keys of.
 pub(crate) async fn unsent_writes(
     peer: &StatePeer,
-    device: Option<&super::DeviceKeys>,
+    device: Option<&DeviceKeys>,
     workspace: &str,
     (app, document): (&str, &str),
 ) -> Vec<SignedOp> {
@@ -908,7 +775,7 @@ impl Workspaces {
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
-    ) -> super::GroupKeysAnswer {
+    ) -> GroupKeysAnswer {
         self.own_route_keys_read_by(route, None, create).await
     }
 
@@ -917,7 +784,7 @@ impl Workspaces {
         route: &tilo_peer_state::document_frame::DocumentRoute,
         readers: Option<&str>,
         create: bool,
-    ) -> super::GroupKeysAnswer {
+    ) -> GroupKeysAnswer {
         let device = self.device_keys()?;
         let scope = match route.key_scope_for(readers) {
             Ok(scope) => scope,
@@ -985,13 +852,13 @@ impl Workspaces {
         workspace: &str,
         app: &str,
         record: &str,
-    ) -> Result<Option<tilo_peer_state::OpenedHistory>, super::CollaborationError> {
+    ) -> Result<Option<tilo_peer_state::OpenedHistory>, CollaborationError> {
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
         let keys = governed
             .document_keys(app, record)
             .await
-            .map_err(super::CollaborationError::new)?;
+            .map_err(CollaborationError::new)?;
         let mut sealed_shut = |_: &SignedOp| Err("this host holds no keys of it".to_owned());
         let history = match &keys {
             Some(keys) => {
@@ -1027,14 +894,14 @@ impl Workspaces {
         app: &str,
         record: &str,
         rebuilt: Vec<u8>,
-    ) -> Result<(), super::CollaborationError> {
+    ) -> Result<(), CollaborationError> {
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
         let keys = governed
             .document_keys(app, record)
             .await
-            .map_err(super::CollaborationError::new)?
-            .ok_or_else(|| super::CollaborationError::new("the record is held in the clear"))?;
+            .map_err(CollaborationError::new)?
+            .ok_or_else(|| CollaborationError::new("the record is held in the clear"))?;
         let now = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
         keys.compact(
@@ -1044,7 +911,7 @@ impl Workspaces {
             &self.inner.host.key,
             now,
         )
-        .map_err(super::CollaborationError::new)?;
+        .map_err(CollaborationError::new)?;
         let collaboration = governed.collaboration().clone();
         governed.commit(candidate, &self.inner.host.key, now, |_, _| {
             Ok(collaboration)

@@ -11,6 +11,13 @@
 //! the document vocabulary ([`workspace_documents`]).
 #![deny(rust_2018_idioms)]
 #![cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    allow(
+        clippy::future_not_send,
+        reason = "a page reaches JavaScript handles bound to its one page thread, and its futures stay on it"
+    )
+)]
+#![cfg_attr(
     test,
     allow(
         clippy::string_slice,
@@ -39,6 +46,9 @@ mod connections;
 pub mod content_queue;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod content_work;
+/// Holding one workspace's documents: what a device reads of them and the writes it authors,
+/// over the replica and keys whichever holder keeps them.
+pub mod documents;
 /// A device's own documents, as its workspace service holds them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;
