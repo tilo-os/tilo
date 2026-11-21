@@ -2100,6 +2100,7 @@ impl<R, A: NoParams> ActionRef<R, A> {
             arguments: serde_json::Map::new(),
             refusal: None,
             effect: false,
+            on: None,
             marker: PhantomData,
         }
     }
@@ -2113,6 +2114,8 @@ pub struct Invoke<R> {
     /// Why the input it was built from does not bind, if it does not.
     refusal: Option<String>,
     effect: bool,
+    /// The published row it acts on ([`Self::on`]), when not the resource.
+    on: Option<String>,
     marker: PhantomData<fn() -> R>,
 }
 
@@ -2123,6 +2126,7 @@ impl<R> Clone for Invoke<R> {
             arguments: self.arguments.clone(),
             refusal: self.refusal.clone(),
             effect: self.effect,
+            on: self.on.clone(),
             marker: PhantomData,
         }
     }
@@ -2135,6 +2139,7 @@ impl<R> std::fmt::Debug for Invoke<R> {
             .field("arguments", &self.arguments)
             .field("refusal", &self.refusal)
             .field("effect", &self.effect)
+            .field("on", &self.on)
             .finish()
     }
 }
@@ -2144,14 +2149,39 @@ impl<R> Invoke<R> {
     /// list — through the same API as its actions: what a launch asks of
     /// an app beside editing its resource (`tilo-store:app/<id>` showing that
     /// app). It changes no document, so it never builds an action.
+    ///
+    /// An effect offered only on rows (`#[effect(row, on = Page)]`) acts on
+    /// the row it is invoked on: name it with [`Self::on`]. Until then it
+    /// refuses, saying so, since the resource does not offer it.
     pub fn effect<E: crate::Effect>(effect: &E) -> Self {
+        let id = effect.id();
+        let refusal = E::declaration(id)
+            .is_some_and(|declaration| declaration.row)
+            .then(|| format!("`{id}` is offered only on rows: invoke it on one"));
         Self {
-            id: effect.id(),
+            id,
             arguments: effect.arguments(),
-            refusal: None,
+            refusal,
             effect: true,
+            on: None,
             marker: PhantomData,
         }
+    }
+
+    /// This invocation on the published row `row` (the Browser's page, one
+    /// download), which offers its action, rather than on the resource.
+    #[must_use]
+    pub fn on(mut self, row: impl Into<String>) -> Self {
+        if self.effect {
+            self.refusal = None;
+        }
+        self.on = Some(row.into());
+        self
+    }
+
+    /// The published row it acts on, when [`Self::on`] named one.
+    pub fn row(&self) -> Option<&str> {
+        self.on.as_deref()
     }
 
     /// The invocation of action `id` with what its input bound to, or one
@@ -2171,6 +2201,7 @@ impl<R> Invoke<R> {
             arguments,
             refusal,
             effect: false,
+            on: None,
             marker: PhantomData,
         }
     }
@@ -2221,6 +2252,7 @@ impl<R: Resource> Invoke<R> {
             arguments: serde_json::Map::from_iter([(crate::APPLY_PARAM.to_owned(), value)]),
             refusal: None,
             effect: false,
+            on: None,
             marker: PhantomData,
         })
     }
@@ -2238,6 +2270,7 @@ impl<R: Resource> Invoke<R> {
             )]),
             refusal: None,
             effect: false,
+            on: None,
             marker: PhantomData,
         })
     }
@@ -2251,6 +2284,7 @@ impl<R: Resource> Invoke<R> {
             arguments: serde_json::Map::new(),
             refusal: Some(error.to_string()),
             effect: false,
+            on: None,
             marker: PhantomData,
         })
     }
@@ -2285,6 +2319,7 @@ impl<R: Resource> Invoke<R> {
             )]),
             refusal,
             effect: false,
+            on: None,
             marker: PhantomData,
         }
     }

@@ -1359,11 +1359,12 @@ impl<R: Resource> Dispatcher<R> {
         self.queue(invoke);
     }
 
+    /// Queue `invoke` on the resource, or on the published row it names
+    /// ([`Invoke::on`]): the page an address loads in, the download it stops.
     fn queue(&self, invoke: Invoke<R>) {
-        self.core.queue_invocation(
-            ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
-            invoke.arguments,
-        );
+        let resource = invoke.row().unwrap_or_else(|| self.core.resource_id.as_ref());
+        let address = ActionAddress::new(resource, invoke.id);
+        self.core.queue_invocation(address, invoke.arguments);
     }
 
     /// Whether the member may take `invoke`: what its declaration, or
