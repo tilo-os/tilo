@@ -99,6 +99,7 @@ impl StatePeer {
             workspace_host: false,
             own_device: None,
             refused_base: None,
+            governance_now: None,
         })
     }
     /// Add a root-certified viewer to existing governed history, as a member

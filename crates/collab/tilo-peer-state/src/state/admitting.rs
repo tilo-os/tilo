@@ -206,13 +206,14 @@ impl StatePeer {
         } else {
             now
         };
-        let (member, history) = match self
+        let (member, by_owner, shows) = match self
             .authorize_document(
                 &source,
                 &app_id,
                 &document_id,
                 &envelope,
                 authorization_time,
+                retained_replay,
             )
             .map_err(|refusal| match refusal {
                 super::authority::AuthorizeRefusal::Rules(refusal, said) => {
@@ -239,7 +240,12 @@ impl StatePeer {
             {
                 return Err(super::MembershipError::Revoked.to_string().into());
             }
-            super::authority::Authorized::Admit { member, history } => (member, history),
+            super::authority::Authorized::Admit {
+                member,
+                by_governor,
+                shows,
+                ..
+            } => (member, by_governor, shows),
             super::authority::Authorized::Hold(prerequisite) => {
                 return self.defer(
                     source,
@@ -260,9 +266,6 @@ impl StatePeer {
                 );
             }
         };
-        // Whether the change's writer is one of the owner's devices: a device
-        // of theirs removed since wrote its history as one.
-        let by_owner = self.wrote_as_governor(&source, history);
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
@@ -493,7 +496,6 @@ impl StatePeer {
         candidate.channel = inbound;
         if let DocumentMutation::Incremental(bytes) = &mutation {
             let changes = collab_types::parse_changes(bytes).map_err(err)?;
-            let shows = self.appearance_author(&source, authorization_time, history);
             collab_types::check_appearances(&changes, shows.as_ref())
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }

@@ -56,10 +56,14 @@ pub enum GovernanceRow {
     /// Where each document's history stood when a device was removed
     /// ([`crate::removals`]).
     Removals,
+    /// What history of theirs a change that took someone's standing away
+    /// kept ([`crate::standing`]): written with that change, by whoever may
+    /// make it.
+    Standing,
 }
 
 impl GovernanceRow {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::Owner,
         Self::Membership,
         Self::Identities,
@@ -72,6 +76,7 @@ impl GovernanceRow {
         Self::Log,
         Self::Sandbox,
         Self::Removals,
+        Self::Standing,
     ];
 
     /// The digest of this part of `doc`: every value it holds, whatever shape
@@ -117,6 +122,7 @@ impl GovernanceRow {
             Self::Checkpoints => &CHECKPOINT_KEYS,
             Self::Hosts => &[KEEPING_DEVICES_KEY, COPIES_KEY],
             Self::Removals => &[crate::removals::FIELD_V1],
+            Self::Standing => &[crate::standing::FIELD_V1],
             Self::Log => &[],
         }
     }
@@ -137,7 +143,8 @@ impl GovernanceRow {
             | Self::Identities
             | Self::Settings
             | Self::Log
-            | Self::Sandbox => None,
+            | Self::Sandbox
+            | Self::Standing => None,
         }
     }
 }

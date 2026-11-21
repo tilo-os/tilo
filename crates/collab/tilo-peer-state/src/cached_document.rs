@@ -44,6 +44,15 @@ pub(crate) struct CachedDocument {
     /// [`Self::security_basis`], with the revocations it was worked out
     /// under.
     security_basis: Arc<OnceLock<SecurityBasis>>,
+    /// [`Self::changes_named`], once asked.
+    named: Arc<OnceLock<Named>>,
+}
+/// A governance state's changes by the bytes a write names each by
+/// ([`collab_types::governance_head`]), and its changes that build on none.
+#[derive(Default)]
+pub(crate) struct Named {
+    pub(crate) by_head: std::collections::HashMap<[u8; 4], Vec<automerge::ChangeHash>>,
+    pub(crate) roots: Vec<automerge::ChangeHash>,
 }
 /// A document state's security basis under the revocations named beside it.
 type SecurityBasis = (
@@ -138,6 +147,7 @@ impl From<AutoCommit> for CachedDocument {
             before: None,
             layout: Arc::default(),
             security_basis: Arc::default(),
+            named: Arc::default(),
         }
     }
 }
@@ -168,6 +178,7 @@ impl DerefMut for CachedDocument {
         self.workspace_policy = Arc::default();
         self.redemptions = Arc::default();
         self.security_basis = Arc::default();
+        self.named = Arc::default();
         #[cfg(test)]
         if Arc::strong_count(&self.doc) > 1 {
             DETACHES.with(|count| count.set(count.get().saturating_add(1)));
@@ -195,6 +206,32 @@ impl CachedDocument {
             "a document governs one workspace"
         );
         policy
+    }
+    /// The changes this state holds by the bytes a write names each by, and
+    /// those that build on no other: read once per state.
+    pub(crate) fn changes_named(&self) -> &Named {
+        self.named.get_or_init(|| {
+            let mut named = Named::default();
+            for change in self.doc.committed_document().get_changes_meta(&[]) {
+                if change.deps.is_empty() {
+                    named.roots.push(change.hash);
+                }
+                named
+                    .by_head
+                    .entry(collab_types::governance_head(&change.hash.0))
+                    .or_default()
+                    .push(change.hash);
+            }
+            named
+        })
+    }
+    /// This state read as governing by `policy` instead of the policy its
+    /// operations replay to: what judges a write by the standing a cut kept
+    /// ([`crate::standing::Standing::held_in`]). Every other view of the state
+    /// is the state's own.
+    pub(crate) fn governing_by(mut self, policy: tilo_action_policy::WorkspacePolicy) -> Self {
+        self.workspace_policy = Arc::new(OnceLock::from(policy));
+        self
     }
     /// Whether the replay of the document moved `workspace`'s owner from the
     /// one its `owner` row names: the transfer it carries

@@ -135,7 +135,7 @@ impl StatePeer {
             return Err("transport author or document workspace mismatch".into());
         }
         if matches!(
-            self.authorize_document(&source, app, document, op, now)
+            self.authorize_document(&source, app, document, op, now, false)
                 .map_err(|refusal| match refusal {
                     super::authority::AuthorizeRefusal::Rules(refusal, said) => {
                         AdmissionError::ChangeRefused(Box::new(crate::ChangeRefused::of(

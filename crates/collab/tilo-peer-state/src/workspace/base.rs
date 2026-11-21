@@ -28,6 +28,31 @@ pub fn generation(doc: &AutoCommit) -> u64 {
 /// does not hold ([`carried`]).
 pub const COVERS_KEY: &str = "base_covers_v1";
 
+/// The root key of the governance heads a base replaced: the first bytes of
+/// the hash of every change the history before it held
+/// ([`collab_types::governance_head`]), those of the bases before it included,
+/// sorted, one after the other. A write names the governance it was written
+/// under by those bytes; one naming a head a base replaced was written before
+/// that base ([`replaced`]).
+pub const REPLACED_KEY: &str = "base_replaced_v1";
+
+/// The governance heads the bases `doc` was built on replaced
+/// ([`REPLACED_KEY`]): none for a document that never had a base, or whose
+/// base was made before bases said.
+#[must_use]
+pub fn replaced(doc: &AutoCommit) -> std::collections::BTreeSet<[u8; 4]> {
+    match doc.get(ROOT, REPLACED_KEY) {
+        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+            ScalarValue::Bytes(bytes) => bytes
+                .chunks_exact(4)
+                .filter_map(|head| head.try_into().ok())
+                .collect(),
+            _ => std::collections::BTreeSet::new(),
+        },
+        _ => std::collections::BTreeSet::new(),
+    }
+}
+
 /// A document holding `doc`'s state as it stands, in one change by `actor`
 /// with no dependencies, at the next base generation.
 pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge::AutomergeError> {
@@ -38,7 +63,9 @@ pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge:
         ));
     };
     let mut covered = std::collections::BTreeMap::<String, u64>::new();
+    let mut heads = replaced(doc);
     for change in doc.clone().get_changes(&[]) {
+        heads.insert(collab_types::governance_head(&change.hash().0));
         let seq = covered
             .entry(change.actor_id().to_hex_string())
             .or_default();
@@ -51,6 +78,11 @@ pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge:
     for (actor, seq) in covered {
         base.put(&covers, actor, ScalarValue::Uint(seq))?;
     }
+    base.put(
+        ROOT,
+        REPLACED_KEY,
+        ScalarValue::Bytes(heads.into_iter().flatten().collect()),
+    )?;
     base.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
     Ok(base)
 }
@@ -181,7 +213,7 @@ fn carry_map(
 ) -> Result<bool, automerge::AutomergeError> {
     let mut wrote = false;
     for (key, value) in is.iter() {
-        if root && (key == BASE_KEY || key == COVERS_KEY) {
+        if root && (key == BASE_KEY || key == COVERS_KEY || key == REPLACED_KEY) {
             continue;
         }
         let value = &value.value;

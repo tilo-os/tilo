@@ -126,6 +126,7 @@ pub use sealed_compaction::{
 /// admits, what it signs and seals, and the durable record it restores from.
 mod admitting;
 mod authority;
+mod written_under;
 mod construction;
 mod durable;
 pub use durable::DURABLE_VERSION;
@@ -400,6 +401,11 @@ pub struct StatePeer {
     /// copy takes in no write on those it holds
     /// ([`Self::behind_its_governor`]). Never persisted.
     refused_base: Option<u64>,
+    /// The governance this copy holds now, when this peer is the copy as it
+    /// judges a write by the governance the write was written under
+    /// ([`Self::judged_under`]): what a cut kept since is read from. Boxed:
+    /// every copy carries it, and only one judging a write holds one.
+    governance_now: Option<Box<CachedDocument>>,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,

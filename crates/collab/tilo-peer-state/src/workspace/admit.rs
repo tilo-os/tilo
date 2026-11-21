@@ -146,7 +146,8 @@ pub enum WorkspaceRefusal {
     RefusalWriter,
     Coverage(String),
     /// A change erases or lowers the cut of a device's removal
-    /// ([`crate::removals::monotonic`]).
+    /// ([`crate::removals::monotonic`]), or of a change that took standing
+    /// away ([`crate::standing::monotonic`]).
     Removals(String),
     /// A change erases a member's work delegation or moves its row back to an
     /// earlier form ([`crate::state::work_delegation_rows_kept`]).
@@ -506,6 +507,7 @@ fn checked_as(
     }
     crate::coverage::monotonic(before, candidate).map_err(WorkspaceRefusal::Coverage)?;
     crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
+    crate::standing::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     // Every writer, the owner's devices included, and a base as a batch: what
     // a member's own devices signed about their work is never taken back by
     // whoever writes the workspace. Only a newer base whose receiver writes

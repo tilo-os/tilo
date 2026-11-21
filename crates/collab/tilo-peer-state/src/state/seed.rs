@@ -140,6 +140,7 @@ fn founding_rows(
         super::invitation_receipts::PARTS_KEY,
         crate::document_import::WORKSPACE_KEY,
         crate::removals::FIELD_V1,
+        crate::standing::FIELD_V1,
         crate::coverage::FIELD_V2,
         crate::durability::FIELD_V2,
     ] {

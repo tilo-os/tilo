@@ -367,6 +367,15 @@ tilo_test_env::scenario! {
             .unwrap();
         let mut member = governor.clone();
         let before = edit(&mut member, &key, now);
+        // What it wrote and the governor took in before the withdrawal stays
+        // its own.
+        assert!(
+            governor
+                .receive_from(TransportOrigin::ServerDelta(device), before, now)
+                .unwrap()
+                .changed
+        );
+        let unseen = edit(&mut member, &key, now);
 
         assert!(
             governor
@@ -409,12 +418,12 @@ tilo_test_env::scenario! {
                 .map(|(_, _, at)| at),
             Some(Some(ns(withdrawn)))
         );
-        // What it wrote before the withdrawal is still its own.
+        // A write on the governance from before the withdrawal that the
+        // withdrawal did not take is judged as written after it.
         assert!(
             governor
-                .receive_from(TransportOrigin::ServerDelta(device), before, now)
-                .unwrap()
-                .changed
+                .receive_from(TransportOrigin::ServerDelta(device), unseen, withdrawn)
+                .is_err()
         );
         let after = edit(&mut member, &key, withdrawn);
         assert!(

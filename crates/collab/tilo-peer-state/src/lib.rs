@@ -102,6 +102,7 @@ pub use state::{vm_lease, vm_rank};
 pub mod coverage;
 mod governed_routes;
 pub mod removals;
+pub mod standing;
 pub use collab_types::DocumentMutation;
 
 pub mod outbox;

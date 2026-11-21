@@ -10,6 +10,7 @@ use super::{
     err, held_units, now_ns, resource_type, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
+use super::written_under::Under;
 
 /// What a refused change made by a key adds: the workspace holds no grant
 /// its person approved for the key (or its grant was revoked), and the one
@@ -70,11 +71,24 @@ fn access_of(
 }
 
 /// What [`StatePeer::authorize_document`] decided of a change.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "matched where it is decided, never kept or moved far"
+)]
 pub(super) enum Authorized {
     /// It is its author's to make, under `member`. `history` when its
     /// author's device was removed since and the cut of the removal keeps
-    /// the change ([`crate::removals`]).
-    Admit { member: MemberAccess, history: bool },
+    /// the change ([`crate::removals`]). `by_governor` when its author wrote
+    /// it as one of the workspace's governors ([`StatePeer::wrote_as_governor`]),
+    /// and `shows` the bot it may show other names as
+    /// ([`StatePeer::appearance_author`]): both as the governance it was
+    /// judged by says.
+    Admit {
+        member: MemberAccess,
+        history: bool,
+        by_governor: bool,
+        shows: Option<collab_types::MemberId>,
+    },
     /// Not decided until what it waits for is here.
     Hold(crate::MissingPrerequisite),
 }
@@ -707,7 +721,9 @@ impl StatePeer {
         match self.permissions(*author, now) {
             Ok(member) => Ok(Some((member, false, None))),
             Err(MembershipError::Revoked) => {
-                let Some(workspace) = self.core.workspace_doc.as_deref() else {
+                // The cut is read where it is kept: the governance this copy
+                // holds now, whatever the write is judged by.
+                let Some(workspace) = self.governance_held_now().map(|doc| &**doc) else {
                     return Err(MembershipError::Revoked);
                 };
                 // A compaction restates history under a number its author
@@ -770,6 +786,9 @@ impl StatePeer {
     /// Why the author may not make the write, as [`Self::permissions`]; a
     /// removed device's write whose cut is not here yet is
     /// [`MembershipError::Revoked`] too.
+    ///
+    /// The write is one this copy took, judged by the governance it was
+    /// written under ([`Self::judged_under`]).
     pub fn permissions_as_written(
         &self,
         app: &str,
@@ -777,7 +796,18 @@ impl StatePeer {
         write: &SignedOp,
         now: SystemTime,
     ) -> Result<MemberAccess, MembershipError> {
-        self.written_as(app, document, write, now)?
+        let written = match self
+            .judged_under(app, document, write, true)
+            .map_err(|_| MembershipError::GovernanceMissing)?
+        {
+            Under::Now => self.written_as(app, document, write, now)?,
+            Under::Past(judged) | Under::Unresolved(Some(judged)) => {
+                judged.written_as(app, document, write, now)?
+            }
+            Under::Unresolved(None) => self.written_as(app, document, write, now)?,
+            Under::Missing => return Err(MembershipError::GovernanceMissing),
+        };
+        written
             .map(|(member, _, _)| member)
             .ok_or(MembershipError::Revoked)
     }
@@ -795,7 +825,7 @@ impl StatePeer {
     }
     /// The id the cut of a removal names `write`, a write to `document` of
     /// `app`, by: `None` when the write does not encode.
-    fn write_id(&self, app: &str, document: &str, write: &SignedOp) -> Option<[u8; 32]> {
+    pub(super) fn write_id(&self, app: &str, document: &str, write: &SignedOp) -> Option<[u8; 32]> {
         crate::admission::DocumentAdmission::from_op(&self.core.workspace, app, document, write)
             .ok()
             .map(|admitted| admitted.operation_id())
@@ -1365,14 +1395,6 @@ impl StatePeer {
             .collect())
     }
 
-    /// Whether `envelope` names governance heads this peer does not hold yet.
-    fn lacks_governance_of(&self, envelope: &SignedOp) -> bool {
-        !self
-            .governance()
-            .held_heads()
-            .holds_named(&envelope.governance)
-    }
-
     /// Whether this copy refused a base of its governor that is newer than
     /// the workspace document it holds: its governor then governs by roles
     /// and grants the copy does not hold, and what the copy holds says of no
@@ -1388,9 +1410,12 @@ impl StatePeer {
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`
-    /// of `app_id`, refused when the change is not granted; held while what
-    /// it is decided against is not here: its app surface, or the cut of its
-    /// author's removal ([`Self::written_as`]).
+    /// of `app_id`, judged by the governance it was written under
+    /// ([`Self::judged_under`]): refused when that governance does not grant
+    /// it, held while what it is decided against is not here: that
+    /// governance, its app surface, or the cut of its author's removal
+    /// ([`Self::written_as`]). `retained` for a change a holder hands on from
+    /// what it kept.
     pub(super) fn authorize_document(
         &self,
         source: &[u8; 32],
@@ -1398,27 +1423,76 @@ impl StatePeer {
         record: &str,
         envelope: &SignedOp,
         authorization_time: SystemTime,
+        retained: bool,
     ) -> Result<Authorized, AuthorizeRefusal> {
         if envelope.author.as_bytes() != source {
             return Err(AuthorizeRefusal::Denied(
                 "the change is not its sender's own".into(),
             ));
         }
-        // Its writer may be a member under governance this peer does not hold
-        // yet.
-        let Some(written) = self
-            .written_as(app_id, record, envelope, authorization_time)
-            .map(Some)
-            .or_else(|error| {
-                self.lacks_governance_of(envelope)
-                    .then_some(None)
-                    .ok_or_else(|| AuthorizeRefusal::Denied(error.to_string()))
-            })?
-        else {
-            return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance));
+        let (decided, delegated) = match self
+            .judged_under(app_id, record, envelope, retained)
+            .map_err(AuthorizeRefusal::Denied)?
+        {
+            Under::Missing => return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance)),
+            Under::Now => self.decide_written(source, app_id, record, envelope, authorization_time)?,
+            Under::Past(judged) => {
+                judged.decide_written(source, app_id, record, envelope, authorization_time)?
+            }
+            // The governance it names may be on its way: what this copy holds
+            // refusing it, it waits for that.
+            Under::Unresolved(judged) => {
+                match judged.as_deref().unwrap_or(self).decide_written(
+                    source,
+                    app_id,
+                    record,
+                    envelope,
+                    authorization_time,
+                ) {
+                    Ok(decided) => decided,
+                    Err(_) => {
+                        return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance));
+                    }
+                }
+            }
         };
+        if !matches!(decided, Authorized::Admit { .. }) {
+            return Ok(decided);
+        }
+        // A server's work for a member who took it back since is history only
+        // as far as the withdrawal kept it, whatever governance it names.
+        if delegated
+            && self.delegated_work(source, authorization_time).is_none()
+            && self.withdrawal_keeping(app_id, record, envelope).is_none()
+        {
+            return Err(AuthorizeRefusal::Denied(
+                "the member this server worked for took the work back before it was taken".into(),
+            ));
+        }
+        // A copy behind its governor's base takes nothing in on the roles and
+        // grants it holds: the write waits, and the base the copy takes
+        // decides it.
+        if self.behind_its_governor() {
+            return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance));
+        }
+        Ok(decided)
+    }
+
+    /// [`Self::authorize_document`] by the governance this peer holds, and
+    /// whether the change was a server's work under a live delegation.
+    fn decide_written(
+        &self,
+        source: &[u8; 32],
+        app_id: &str,
+        record: &str,
+        envelope: &SignedOp,
+        authorization_time: SystemTime,
+    ) -> Result<(Authorized, bool), AuthorizeRefusal> {
+        let written = self
+            .written_as(app_id, record, envelope, authorization_time)
+            .map_err(|error| AuthorizeRefusal::Denied(error.to_string()))?;
         let Some((member, history, kept)) = written else {
-            return Ok(Authorized::Hold(crate::MissingPrerequisite::RemovalCut));
+            return Ok((Authorized::Hold(crate::MissingPrerequisite::RemovalCut), false));
         };
         // A change made with another version of the app than the workspace runs
         // is held: its author's desktop switches to the workspace's version, and
@@ -1427,7 +1501,7 @@ impl StatePeer {
             && let Some(running) = self.workspace_surface(app_id)
             && envelope.surface != Some(running)
         {
-            return Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface));
+            return Ok((Authorized::Hold(crate::MissingPrerequisite::AppSurface), false));
         }
         let route = Route {
             app: app_id.into(),
@@ -1458,6 +1532,7 @@ impl StatePeer {
         // the member's authority bounds it above, the delegation below.
         // History a withdrawal's cut keeps is bounded by the form that keeps
         // it, as the work was when it was done ([`Self::written_as`]).
+        let live = kept.is_none();
         let delegation = kept.or_else(|| {
             backend::member::legacy(&self.core, source, authorization_time)
                 .is_err()
@@ -1490,22 +1565,21 @@ impl StatePeer {
             &self.surfaces,
             &allows,
         );
+        let delegated = live && delegation.is_some();
         match decided {
-            // A copy behind its governor's base takes nothing in on the
-            // roles and grants it holds: the write waits, and the base the
-            // copy takes decides it. What those roles refuse stays refused.
-            Ok(collab_types::Receipt::Admit) if self.behind_its_governor() => {
-                Ok(Authorized::Hold(crate::MissingPrerequisite::Governance))
-            }
-            Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit { member, history }),
-            Ok(collab_types::Receipt::Hold) => {
-                Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
-            }
-            // Written under governance this peer does not hold yet (a role
-            // given just before): decided once it does, against all of it.
-            Err(_) if self.lacks_governance_of(envelope) => {
-                Ok(Authorized::Hold(crate::MissingPrerequisite::Governance))
-            }
+            Ok(collab_types::Receipt::Admit) => Ok((
+                Authorized::Admit {
+                    by_governor: self.wrote_as_governor(source, history),
+                    shows: self.appearance_author(source, authorization_time, history),
+                    member,
+                    history,
+                },
+                delegated,
+            )),
+            Ok(collab_types::Receipt::Hold) => Ok((
+                Authorized::Hold(crate::MissingPrerequisite::AppSurface),
+                false,
+            )),
             Err(refusal) => {
                 let mut said = refused_change(&refusal, &route, source, envelope);
                 // Another member's write of a person's view of the layout is refused because the

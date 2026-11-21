@@ -2728,3 +2728,6 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
         "every write of the replay is taken in"
     );
 }
+
+#[path = "written_under_tests.rs"]
+mod written_under;

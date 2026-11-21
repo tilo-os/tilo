@@ -747,7 +747,6 @@ impl StatePeer {
             .map(ExactAdmissions::decode)
             .transpose()
             .map_err(|error| format!("exact admissions: {error}"))?;
-        let canonical_workspace = uuid::Uuid::parse_str(workspace).map_err(err)?.to_string();
         let verified_certificates = backend::restore_certificate_roster(
             durable.certificates,
             roster,
@@ -757,7 +756,7 @@ impl StatePeer {
         .map_err(err)?;
         let mut peer = Self {
             core: PeerCore {
-                workspace: canonical_workspace,
+                workspace: uuid::Uuid::parse_str(workspace).map_err(err)?.to_string(),
                 owner,
                 origin: owner_device.device_public_key,
                 certificates: verified_certificates.into(),
@@ -779,6 +778,7 @@ impl StatePeer {
             workspace_host: false,
             own_device: None,
             refused_base: None,
+            governance_now: None,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(

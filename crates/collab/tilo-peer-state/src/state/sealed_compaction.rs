@@ -221,6 +221,7 @@ impl<'peer> PeerPublication<'peer> {
             record,
             compaction,
             now,
+            false,
         )? {
             super::authority::Authorized::Admit { .. } => Ok(()),
             super::authority::Authorized::Hold(crate::MissingPrerequisite::AppSurface) => {

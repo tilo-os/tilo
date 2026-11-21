@@ -78,6 +78,7 @@ fn founded_maps(doc: &mut AutoCommit) {
         crate::coverage::FIELD_V2,
         crate::durability::FIELD_V2,
         crate::removals::FIELD_V1,
+        crate::standing::FIELD_V1,
         crate::document_import::WORKSPACE_KEY,
         crate::state::invitation_receipts::RECEIPTS_KEY,
         crate::state::invitation_receipts::PARTS_KEY,

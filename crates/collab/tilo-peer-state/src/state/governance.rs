@@ -17,14 +17,10 @@ use tilo_action_policy::Change;
 pub struct GovernanceHeads(Option<crate::cached_document::CachedDocument>);
 
 impl GovernanceHeads {
-    /// Whether this state holds every head of `heads`, or `heads` names more
-    /// than [`collab_types::MAX_GOVERNANCE_HEADS`] (and so names none): a few
-    /// hash lookups, whatever it is asked.
+    /// Whether this state holds every head of `heads`: a few hash lookups,
+    /// whatever it is asked.
     #[must_use]
     pub fn holds(&self, heads: &[[u8; 32]]) -> bool {
-        if heads.len() > collab_types::MAX_GOVERNANCE_HEADS {
-            return true;
-        }
         heads.iter().all(|head| {
             self.0
                 .as_ref()
@@ -33,16 +29,11 @@ impl GovernanceHeads {
     }
 
     /// Whether this state holds a change for every head an op names
-    /// ([`collab_types::SignedOp::governance`]), or the op names more than
-    /// [`collab_types::MAX_GOVERNANCE_HEADS`] (and so names none). Asked only
-    /// of a change that would be refused: a head that is one of the
-    /// governance's own is found at once, an older one by a pass over its
-    /// change hashes.
+    /// ([`collab_types::SignedOp::governance`]). Asked only of a change that
+    /// would be refused: a head that is one of the governance's own is found
+    /// at once, an older one by a pass over its change hashes.
     #[must_use]
     pub fn holds_named(&self, heads: &[[u8; 4]]) -> bool {
-        if heads.len() > collab_types::MAX_GOVERNANCE_HEADS {
-            return true;
-        }
         let Some(doc) = self.0.as_ref() else {
             return heads.is_empty();
         };

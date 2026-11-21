@@ -656,19 +656,13 @@ mod claims_wire {
     }
 }
 
-/// The most governance heads an op names ([`SignedOp::governance`]): a
-/// governance with more concurrent heads than this is rare, and an op naming
-/// none is decided at once.
-pub const MAX_GOVERNANCE_HEADS: usize = 8;
-
 /// How an op names the governance change whose hash is `hash`
 /// ([`SignedOp::governance`]): by the first four bytes of the hash, as a short
 /// commit id names a commit. Every op a member writes carries its governance
 /// heads, so each costs what tells one workspace's governance changes apart,
-/// not a whole 32-byte hash on every keystroke. A receiver looks a head up
-/// only for a change it would otherwise refuse, and two changes sharing these
-/// bytes cost nothing but timing: the receiver then decides the op at once,
-/// as it decides an op naming no heads.
+/// not a whole 32-byte hash on every keystroke. Two changes sharing these
+/// bytes are both taken as named: the op is then judged by a governance that
+/// holds a change more than its writer did.
 #[must_use]
 pub fn governance_head(hash: &[u8; 32]) -> [u8; 4] {
     hash.first_chunk::<4>().copied().unwrap_or_default()
@@ -725,12 +719,11 @@ pub struct SignedOp {
     /// by. A receiver fetches it by hash and holds the op until it has it.
     pub surface: Option<[u8; 32]>,
     /// The heads of the workspace's governance its writer held when it wrote
-    /// the op: the roles and grants it wrote under. A receiver that would
-    /// refuse the op while some of these are not in its governance yet holds
-    /// it until they are, then decides it against all the governance it holds
-    /// by then, revocations made since included: the heads say when to decide,
-    /// never what against. At most [`MAX_GOVERNANCE_HEADS`], each named as
-    /// [`governance_head`] names it.
+    /// the op: the roles and grants it wrote under, and so what every receiver
+    /// judges it by, whatever order changes reach it in. A receiver holds the
+    /// op until it holds these heads. A change since that took its writer's
+    /// standing away judges it too, unless the change kept the op as written
+    /// before it. Each is named as [`governance_head`] names it.
     pub governance: Vec<[u8; 4]>,
     /// Detached Ed25519 signature by `author` over the canonical-bytes view
     /// of every other field. See `SignedOp::signing_bytes`.
@@ -810,8 +803,7 @@ impl SignedOp {
     }
 
     /// The op written under the governance whose heads are `heads`
-    /// ([`Self::governance`]); past [`MAX_GOVERNANCE_HEADS`] of them it names
-    /// none, and is decided at once as before.
+    /// ([`Self::governance`]).
     #[must_use]
     pub fn with_governance(mut self, heads: &[[u8; 32]]) -> Self {
         self.name_governance(heads);
@@ -821,11 +813,7 @@ impl SignedOp {
     /// Name `heads` as the governance this op was written under, as
     /// [`Self::with_governance`] does.
     pub fn name_governance(&mut self, heads: &[[u8; 32]]) {
-        self.governance = if heads.len() > MAX_GOVERNANCE_HEADS {
-            Vec::new()
-        } else {
-            heads.iter().map(governance_head).collect()
-        };
+        self.governance = heads.iter().map(governance_head).collect();
     }
 
     /// Whether this op is the whole record rather than a change to it: a

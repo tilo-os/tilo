@@ -236,6 +236,7 @@ fn rows_permitted(
         match row {
             GovernanceRow::Settings => settings(workspace, at, after, &held, writer)?,
             GovernanceRow::Sandbox => sandbox(&before, &written, &held, writer)?,
+            GovernanceRow::Standing => standing(workspace, at, after)?,
             GovernanceRow::Identities => {
                 let invited = redemptions(
                     workspace,
@@ -271,6 +272,23 @@ fn row_name(row: GovernanceRow) -> &'static str {
         GovernanceRow::Log => "the workspace's operations",
         GovernanceRow::Sandbox => "the capabilities of its apps' sandboxes",
         GovernanceRow::Removals => "the cuts of its devices' removals",
+        GovernanceRow::Standing => "the history kept of standing taken away",
+    }
+}
+
+/// Whether the change from `at` to `after` cuts only whom it takes standing
+/// from ([`crate::standing::taken_from`]): a cut is the record of a change
+/// that took standing away, written by whoever may make that change, and of
+/// no one else.
+fn standing(workspace: &str, at: &AutoCommit, after: &AutoCommit) -> Result<(), MembershipRefusal> {
+    let taken = crate::standing::taken_from(workspace, at, after);
+    let cut = crate::standing::subjects_cut(at, after).map_err(MembershipRefusal::Refused)?;
+    match cut.into_iter().find(|subject| !taken.contains(subject)) {
+        Some(subject) => Err(MembershipRefusal::Refused(format!(
+            "a cut of {}, whose standing the change takes nothing of",
+            hex::encode(subject)
+        ))),
+        None => Ok(()),
     }
 }
 

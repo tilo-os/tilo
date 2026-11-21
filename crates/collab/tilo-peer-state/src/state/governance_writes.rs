@@ -5,6 +5,7 @@ use super::{
     now_ns, workspace,
 };
 use automerge::transaction::Transactable as _;
+use std::collections::BTreeSet;
 use collab_types::signer::DeviceSigner;
 
 /// Commit what `doc` holds as one governance change, stamped with `unix_secs`.
@@ -114,6 +115,11 @@ impl StatePeer {
         if admits {
             rows.retain(|row| *row != crate::workspace::GovernanceRow::Identities);
         }
+        if self.cut_standing_taken(&mut doc, before, key)?
+            && !rows.contains(&crate::workspace::GovernanceRow::Standing)
+        {
+            rows.push(crate::workspace::GovernanceRow::Standing);
+        }
         self.record_governance(&mut doc, rows, key, now)?;
         // The operations, and the policy bound to what they leave, are one change of this
         // device's, stamped like the one that moved the rows.
@@ -135,6 +141,83 @@ impl StatePeer {
             )
             .map_err(|error| error.to_string())?;
         Ok(outcome.changed || outcome.metadata_changed)
+    }
+
+    /// Write into `doc`, the governance a change of `key`'s device leaves, the
+    /// cut of every standing the change takes away ([`crate::standing`]): of
+    /// each person it takes ownership, a role, an assigned role or a grant
+    /// from, or gives a refusal, with what this copy had taken of each device
+    /// of theirs; of each server it no longer has keep the workspace; and of
+    /// each agent whose delegation it withdraws. Whether it wrote any.
+    fn cut_standing_taken(
+        &self,
+        doc: &mut CachedDocument,
+        before: &[automerge::ChangeHash],
+        key: &dyn DeviceSigner,
+    ) -> Result<bool, String> {
+        use crate::standing::{self, Standing};
+        let held = self
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("missing workspace")?;
+        let workspace = &self.core.workspace;
+        let was = Standing::all(held.workspace_policy(workspace));
+        let is = Standing::all(&crate::members::replay(doc, workspace));
+        let id = |subject: &[u8; 32]| {
+            let mut hasher = blake3::Hasher::new_derive_key("tilo standing cut v1");
+            for head in before {
+                hasher.update(&head.0);
+            }
+            hasher.update(subject);
+            hasher.update(&key.device_public_key());
+            hex::encode(&hasher.finalize().as_bytes()[..16])
+        };
+        let mut wrote = false;
+        for (person, prior) in was {
+            if prior.kept_by(&is.get(&person).cloned().unwrap_or_default()) {
+                continue;
+            }
+            let Some(root) = hex::decode(&person)
+                .ok()
+                .and_then(|root| <[u8; 32]>::try_from(root).ok())
+            else {
+                continue;
+            };
+            let taken = held
+                .identities()
+                .values()
+                .filter_map(|row| row.as_ref().ok())
+                .filter(|row| row.device_cert.user_public_key == root)
+                .map(|row| {
+                    let device = row.device_cert.device_public_key;
+                    (device, self.taken_from(&device))
+                })
+                .collect();
+            standing::write(doc, &root, &id(&root), &prior, &taken)?;
+            wrote = true;
+        }
+        let kept: BTreeSet<[u8; 32]> = super::keeping_devices_of(doc)
+            .iter()
+            .map(|hint| hint.host.device_public_key)
+            .collect();
+        let taken_out: BTreeSet<[u8; 32]> = super::keeping_devices_of(held)
+            .iter()
+            .map(|hint| hint.host.device_public_key)
+            .filter(|server| !kept.contains(server))
+            .collect();
+        for server in taken_out {
+            let taken = std::collections::BTreeMap::from([(server, self.taken_from(&server))]);
+            standing::write(doc, &server, &id(&server), &Standing::default(), &taken)?;
+            wrote = true;
+        }
+        let had = standing::withdrawn(held);
+        for agent in standing::withdrawn(doc).difference(&had) {
+            let taken = std::collections::BTreeMap::from([(*agent, self.taken_from(agent))]);
+            standing::write(doc, agent, &id(agent), &Standing::default(), &taken)?;
+            wrote = true;
+        }
+        Ok(wrote)
     }
 
     /// Write `changes` to the workspace's membership as `key`'s device, and

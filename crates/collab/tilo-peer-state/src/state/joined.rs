@@ -76,7 +76,7 @@ impl StatePeer {
         }
         let at = if retained { envelope.timestamp } else { now };
         Ok(matches!(
-            self.authorize_document(&source, app_id, document_id, envelope, at)?,
+            self.authorize_document(&source, app_id, document_id, envelope, at, retained)?,
             super::authority::Authorized::Admit { .. }
         ))
     }
