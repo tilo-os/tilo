@@ -171,7 +171,10 @@ class Console:
         A command that takes the session down with it — a reboot the line
         requests — never prints its status; a fresh `login:` on the line means
         the session ended, and that is reported at once rather than after the
-        deadline.
+        deadline. So does the firmware starting again (OVMF's `BdsDxe:` line,
+        printed on every boot): a machine with an encrypted root stops at its
+        unlock prompt before any login prompt, and while this holds the serial
+        line nothing else can answer it.
         """
         begin = "__TILO_RUN_BEGIN__"
         line = (
@@ -179,7 +182,7 @@ class Console:
             "printf '\\n__TILO_RUN_END__%s\\n' \"$?\""
         )
         self.send(line)
-        text, match = self.read_until(r"__TILO_RUN_END__([0-9]+)|login: ")
+        text, match = self.read_until(r"__TILO_RUN_END__([0-9]+)|login: |BdsDxe: ")
         # The console echoes what was typed, markers and all; only what follows
         # the last BEGIN is the command's own output.
         if begin in text:
