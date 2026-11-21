@@ -3222,35 +3222,6 @@ outputs = ["/target/nested-session/**"]
 timeout_secs = 5400
 default = false
 
-# Typing into a note on the web page shown as HTML stays within one frame of typing into a plain page
-# in the same browser, at p50 and p90 (tools/web/html-renderer/typing-budget.mjs). The nodes have no
-# GPU, where the canvas's frames wait on a software raster: its one frame per key is held by the
-# Notes tests, and its time on screen by the same tool run on a machine with a GPU.
-[[check]]
-name = "web-typing-latency"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode tools/web/html-renderer/typing-budget.mjs /target/publish/web-entry/bundle --render dom --keys 60 --attempts 3 --budget\n"
-needs = ["web-entry-bundle"]
-env = { npm_config_cache = "/tmp/npm-cache" }
-requires = ["arch=x86_64"]
-timeout_secs = 1800
-on = ["idle"]
-
-# The tilolang gallery shown as HTML in a real browser (tools/web/html-renderer/tilolang-perf.mjs):
-# each place of its sidebar is clicked once and must show its page by the frames of that click,
-# and every interaction stays within the numbers pinned in tilolang-perf.pinned.json.
-[[check]]
-name = "tilolang-web-gallery"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\nbash tools/web/html-renderer/build-tilolang-web.sh\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode tools/web/html-renderer/tilolang-perf.mjs \"$CARGO_TARGET_DIR/htmlrenderer/tilolang\" --budget --attempts 3\n"
-env = { npm_config_cache = "/tmp/npm-cache" }
-requires = ["arch=x86_64"]
-timeout_secs = 3600
-on = ["idle"]
-
-
 # The tilolang apps laid out headlessly at the standard window sizes: 320x568 and 390x844, a
 # phone's, and 1280x800, a laptop's. What `tilolang layout-check` finds is the check's verdict (a
 # finding the allow-list does not name, a line it names that no longer shows, a view no scenario

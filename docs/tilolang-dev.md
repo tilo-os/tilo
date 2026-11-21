@@ -131,35 +131,13 @@ There, on every save `tilolang dev`:
 ## The gallery
 
 `apps/tl/gallery` places every component of the toolkit with the values an app gives
-it. Open it as a native window, as a web page, or in a session:
+it. Open it as a native window or in a session:
 
 ```sh
 target/fast/tilolang dev apps/tl/gallery --search apps/tl       # a window on this desktop
 tilolang run apps/tl/gallery --search apps/tl                   # a nested session, the gallery open in it
 tilolang dev apps/tl/gallery --search apps/tl --session /tmp/s.json   # into a nested session already running
-tools/web/html-renderer/tilolang-web.sh                         # the web page: canvas and HTML
 ```
-
-## On the web
-
-```sh
-tools/web/html-renderer/tilolang-web.sh            # the gallery, apps/tl/gallery
-tools/web/html-renderer/tilolang-web.sh apps/tl/tasks --search apps/tl
-```
-
-builds the package and the tilolang runtime's web bundle on the build machine
-(`build-tilolang-web.sh` through `$CARGO exec`), fetches them and serves them on
-this machine's loopback. It prints the page to open: the app on the WebGPU canvas
-and as HTML, side by side or one at a time, in light or dark. `--no-build`
-serves the last build again.
-
-The runtime's web bundle is `tilo-app build --target web --bundle app apps/tilolang`:
-the browser runtime with the tilolang runtime linked, as the native runtime bundle is
-the binary every tilolang app runs on. The package is the payload of its `.tapp`,
-served beside it under `tl/<app-id>/`; the page installs it from there
-(`installTilolangPackage`), and its window runs the package's instance in the page,
-over a workspace record the page keeps in memory: what a person does there is gone
-when the page closes.
 
 ## The app loop
 
