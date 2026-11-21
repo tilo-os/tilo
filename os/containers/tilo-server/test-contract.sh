@@ -66,10 +66,12 @@ need "$containerfile" "microdnf install -y --setopt=reposdir=/repo --disablerepo
 need "$containerfile" "microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5"
 
 # The programs are one check's, thin LTO and read back off the ELF, from one feature resolution
-# per image: the server and the replica in one, as the image compiled them before.
-need "$binaries" "packages=(-p tilo-server -p tilo-fs --bins)"
-need "$binaries" "bins=(tilo-server tilo-server-admin tilo-enroll fs)"
-need "$binaries" "export CARGO_PROFILE_RELEASE_LTO=thin"
+# per image: the server and the replica in one, as the image compiled them before. Thin LTO is
+# the default; only a development image's build asks for none, and the server image's does not.
+need "$binaries" "packages+=(-p tilo-server -p tilo-fs --bins)"
+need "$binaries" "bins+=(tilo-server tilo-server-admin tilo-enroll fs)"
+need "$binaries" ': "${TILO_SERVER_LTO:=thin}"'
+need "$binaries" "thin) export CARGO_PROFILE_RELEASE_LTO=thin ;;"
 need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
 
 # The build t runs (image-server): this contract first; the base and the frozen RPM snapshot are
