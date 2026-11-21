@@ -36054,6 +36054,12 @@
         ],
         "description": "A bound control changes the field it shows."
       },
+      "tl.so.tilo.lang.notes.Note.new_child.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Starts a note inside `n`'s own, after the notes it already holds: the note the window has\nopen too, so a person writing one starts the note it stands under without finding its row.\nIt is `n`'s action, so the window offers it for the note it shows and a person reaches it by\nthe shortcut or the note's row."
+      },
       "tl.so.tilo.lang.notes.Note.pin.Arguments": {
         "type": "object",
         "properties": {
@@ -36292,47 +36298,6 @@
         },
         "required": [],
         "description": "Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the\ncaller knows them already. Started from the notebook both are empty: what is typed first\nnames it."
-      },
-      "tl.so.tilo.lang.notes.Notebook.new_child.Arguments": {
-        "type": "object",
-        "properties": {
-          "n": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
-            "type": "object"
-          }
-        },
-        "required": [
-          "n"
-        ],
-        "description": "Starts a note inside `n`'s own, after the notes it already holds: the note the window has\nopen too, so a person writing one starts the note it stands under without finding its row."
       },
       "tl.so.tilo.lang.notes.Notebook.move_to.Arguments": {
         "type": "object",
@@ -47450,6 +47415,12 @@
     {
       "app": "so.tilo.lang.notes",
       "resource": "tl.so.tilo.lang.notes.Note",
+      "action": "new_child",
+      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.new_child.Arguments"
+    },
+    {
+      "app": "so.tilo.lang.notes",
+      "resource": "tl.so.tilo.lang.notes.Note",
       "action": "pin",
       "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.pin.Arguments"
     },
@@ -47548,12 +47519,6 @@
       "resource": "tl.so.tilo.lang.notes.Notebook",
       "action": "new_note",
       "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.new_note.Arguments"
-    },
-    {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
-      "action": "new_child",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.new_child.Arguments"
     },
     {
       "app": "so.tilo.lang.notes",
