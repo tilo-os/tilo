@@ -312,15 +312,14 @@ view parts(g: Gallery, last: State<Text>) {
         ui.Time(2026-06-30T09:00Z, role: .caption, secondary: true)
     }
     part("Scripts", "Every script the toolkit sets: right to left, mixed, without spaces, emoji.") {
-        ui.Text("العربية — مرحبًا بالعالم")
-        ui.Text("עברית — שלום עולם")
-        ui.Text(
-            "हिन्दी — नमस्ते दुनिया · বাংলা — নমস্কার বিশ্ব",
-        )
-        ui.Text(
-            "ไทย — สวัสดีชาวโลก · 日本語 東京 · 简体中文 上海",
-        )
-        ui.Text("Invoice 123 — חשבון ٤٥٦ — total €78")
+        ui.Text("مرحبًا بالعالم")
+        ui.Text("שלום עולם")
+        ui.Text("नमस्ते दुनिया")
+        ui.Text("নমস্কার বিশ্ব")
+        ui.Text("สวัสดีชาวโลก")
+        ui.Text("東京の天気")
+        ui.Text("上海的早晨")
+        ui.Text("Invoice 123 for חשבון ٤٥٦, total €78")
         ui.Text("👩🏽‍💻 👨‍👩‍👧‍👦 🏳️‍🌈 🇪🇺")
     }
     part("Button", "What a press does, by its role: the one primary, the usual, the destructive.") {
