@@ -569,7 +569,7 @@ fn add_mail(call: &str, address: &str, reference: &str) -> Reply {
 /// protected field, in the system's words, keeps what she types in the workspace's vault, and
 /// wakes the assistant once with the reference. The reference.
 pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
-    hosted: &mut Hosted,
+    hosted: &Hosted,
 ) -> String {
     let conversation = hosted.conversation();
     let devices = hosted.her_devices();
@@ -849,7 +849,7 @@ async fn the_password_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, line
 async fn the_assistant_signs_in_to_mail_with_a_password_it_never_sees() {
     let lines = logged();
     let mut hosted = Hosted::start().await;
-    let reference = the_password_goes_from_the_persons_device_to_their_vault(&mut hosted).await;
+    let reference = the_password_goes_from_the_persons_device_to_their_vault(&hosted).await;
     the_first_use_asks_and_always_signs_in(&hosted, &reference).await;
     the_second_use_asks_nothing(&mut hosted, &reference).await;
     the_password_is_nowhere_a_model_or_a_reader_looks(&hosted, &lines).await;

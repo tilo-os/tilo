@@ -333,9 +333,7 @@ pub(crate) fn own_refusal(
     delta: &[u8],
 ) -> Option<tilo_server_protocol::refusal::Refusal> {
     let owner = store.frame_owner(delta)?;
-    let reason = if owner != *person {
-        "another member's private record"
-    } else {
+    let reason = if owner == *person {
         let body = crate::coedit::retention_view(delta).map_or(delta, |(_, _, body)| body);
         let live = store
             .payloads()
@@ -349,6 +347,8 @@ pub(crate) fn own_refusal(
             return None;
         }
         collab_types::own_resource::ARCHIVE_READ_ONLY
+    } else {
+        "another member's private record"
     };
     Some(tilo_server_protocol::refusal::Refusal::NotAllowed(
         reason.into(),

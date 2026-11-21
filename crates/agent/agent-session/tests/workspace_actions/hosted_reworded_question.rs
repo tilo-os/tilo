@@ -75,8 +75,8 @@ pub(super) async fn ended(hosted: &Hosted) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn always_to_a_question_its_agent_reworded_does_nothing_and_lets_nothing_stand() {
-    let mut hosted = Hosted::start().await;
-    let reference = the_password_goes_from_the_persons_device_to_their_vault(&mut hosted).await;
+    let hosted = Hosted::start().await;
+    let reference = the_password_goes_from_the_persons_device_to_their_vault(&hosted).await;
     let using = |call: &str| add_mail(call, "ada@example.test", &reference);
     let waits = Reply::text("I asked you to allow it. It waits for your answer.");
     hosted

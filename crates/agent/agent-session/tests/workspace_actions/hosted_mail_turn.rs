@@ -684,7 +684,7 @@ async fn with_every_device_off_the_assistant_reads_arrived_mail_drafts_and_asks_
     let servers = Arc::new(Servers::default());
     hosted.workspaces.carry_mail_through(servers.clone());
     // The account: signed in to with a password the assistant never saw.
-    let reference = the_password_goes_from_the_persons_device_to_their_vault(&mut hosted).await;
+    let reference = the_password_goes_from_the_persons_device_to_their_vault(&hosted).await;
     the_first_use_asks_and_always_signs_in(&hosted, &reference).await;
     every_device_of_hers_goes_off(&hosted);
 
