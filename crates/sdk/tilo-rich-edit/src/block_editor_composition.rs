@@ -17,6 +17,12 @@ impl BlockEditor {
         }
     }
 
+    /// The editor's document as a page shows it: its blocks, set at the edges they are set at.
+    pub(super) fn composed_html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        let edges = self.composed_edges(cx.theme());
+        cx.blocks(self.composed_blocks(), edges);
+    }
+
     pub(super) fn composed_blocks(&self) -> Vec<ui::composition::DocBlock> {
         use ui::composition::{DocBlock, InlineMark};
         let ordinals = numbered_ordinals(&self.blocks);

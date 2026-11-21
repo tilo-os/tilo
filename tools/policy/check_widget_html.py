@@ -9,13 +9,9 @@ scrollers rather than a picture of the frame. A widget that is genuinely
 drawn (a chart, a canvas, a map) renders as a `<canvas>` of its paint
 (`HtmlCx::picture`), and says so in its own `html`.
 
-The trait's default (`HtmlCx::from_layout`) only stands in for widgets not yet
-given their own rendering. This refuses a production `impl Widget for T`
-block in `crates/` or `apps/` that does not define `fn html`. The ones still
-on the default are listed in `widget_html_baseline.txt`, one line per file
-with how many such impls it holds. A count only shrinks: more than listed
-fails, fewer fails until the line is lowered, so a widget given its HTML
-cannot lose it and a new widget cannot skip it.
+The trait's default (`HtmlCx::from_layout`) stands in for nothing: this
+refuses a production `impl Widget for T` block in `crates/` or `apps/` that
+does not define `fn html`, and every widget renders itself.
 """
 
 from __future__ import annotations
@@ -28,10 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path(__file__).resolve().parent / "widget_html_baseline.txt"
 
 SCOPES = ("crates", "apps")
-RULE = "widget-without-html"
 IMPL = re.compile(
     r"\bimpl\b(?:\s*<[^{;]*?>)?\s+(?:[A-Za-z_][\w:]*::)?Widget\s+for\s+[^{;]+\{")
 HTML = re.compile(r"\bfn\s+html\s*\(")
@@ -95,57 +89,15 @@ def scan(root: Path) -> dict[str, int]:
     return found
 
 
-def load_baseline(path: Path) -> dict[str, int]:
-    allowed: dict[str, int] = {}
-    if not path.exists():
-        return allowed
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        rule, count, file = line.split(maxsplit=2)
-        if rule != RULE:
-            raise ValueError(f"{path.name}: unknown rule {rule!r}")
-        allowed[file] = int(count)
-    return allowed
-
-
-def check(root: Path, baseline_path: Path) -> list[str]:
-    found = scan(root)
-    allowed = load_baseline(baseline_path)
-    listed = (baseline_path.relative_to(root).as_posix()
-              if baseline_path.is_relative_to(root) else baseline_path.name)
-    errors = []
-    for file in sorted(set(found) | set(allowed)):
-        have, may = found.get(file, 0), allowed.get(file, 0)
-        if have > may:
-            errors.append(f"{file}: {have} {RULE} (allowed {may}); {ADVICE}")
-        elif have < may:
-            errors.append(f"{listed}: {RULE} {may} {file} is now {have}; "
-                          "lower the count (or delete the line at 0)")
-    return errors
-
-
-def print_baseline(root: Path) -> None:
-    print("# Widgets that still render as HTML through the toolkit's default")
-    print("# (tools/policy/check_widget_html.py). Counts only shrink.")
-    for file, count in sorted(scan(root).items()):
-        print(f"{RULE} {count} {file}")
-
-
-def main(argv: list[str]) -> int:
-    if argv[1:] == ["--print-baseline"]:
-        print_baseline(ROOT)
-        return 0
-    errors = check(ROOT, BASELINE)
-    if errors:
-        print("\n".join(errors))
-        return 1
+def main() -> int:
     found = scan(ROOT)
-    print(f"widget html OK ({sum(found.values())} widget impls still on the default "
-          f"in {len(found)} files; none new)", file=sys.stderr)
+    if found:
+        for file, count in sorted(found.items()):
+            print(f"{file}: {count} widget impls without html; {ADVICE}")
+        return 1
+    print("widget html OK (every widget renders itself)", file=sys.stderr)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

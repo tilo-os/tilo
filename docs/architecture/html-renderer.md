@@ -38,12 +38,9 @@ is part of the widget contract, beside `draw`:
   path a native window's accessibility and automation take.
 
 The trait's default, `HtmlCx::from_layout`, renders a widget from its layout
-node and its role (its children, or a picture for a leaf). It exists only for
-widgets not yet given their own rendering. `tools/policy/check_widget_html.py`
-refuses an `impl Widget` without `fn html` beyond the counts listed in
-`tools/policy/widget_html_baseline.txt`, and asks for a count to be lowered
-once a widget gets its own, so the list only shrinks and new widgets cannot
-skip it.
+node and its role (its children, or a picture for a leaf). It stands in for
+nothing: `tools/policy/check_widget_html.py` refuses an `impl Widget` without
+`fn html`, so every widget says what it is on a page.
 
 ## Controls
 

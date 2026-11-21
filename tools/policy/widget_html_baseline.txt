@@ -1,3 +1,0 @@
-# Widgets that still render as HTML through the toolkit's default
-# (tools/policy/check_widget_html.py). Counts only shrink.
-widget-without-html 1 crates/sdk/tilo-rich-edit/src/block_editor.rs
