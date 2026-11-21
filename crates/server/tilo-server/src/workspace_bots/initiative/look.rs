@@ -1,11 +1,10 @@
-//! What one look finds, with no model asked: what came in for the person,
-//! what changed in the workspace's documents, which tasks became due, and
-//! what is open.
+//! What one look finds, with no model asked: what came in for the person and
+//! what changed in the workspace's documents.
 //!
 //! A look compares the workspace with where the last look left it
-//! ([`Seen`]): every document's heads, the newest mail arrival, the tasks it
-//! already said were due. The first look only notes where everything
-//! stands, as a bot starts at a document's heads: the workspace's past is
+//! ([`Seen`]): every document's heads and the newest mail arrival. The
+//! first look only notes where everything stands, as a bot starts at a
+//! document's heads: the workspace's past is
 //! not news. What the assistant did itself is not news to it either: its
 //! own changes, the look-round's own asks, what is said in its own thread
 //! with its person, and what the server keeps about the workspace's agents
@@ -21,11 +20,7 @@ use tilo_automation::dispatch::DocumentEvent;
 
 use crate::workspaces::Workspaces;
 
-/// The app that keeps the workspace's tasks.
-const TASKS: &str = "so.tilo.tasks";
-/// How far ahead a task counts as due: a day.
-const DUE_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
-/// The most documents and the most tasks a look names; the rest it counts.
+/// The most documents a look names; the rest it counts.
 const MAX_NAMED: usize = 20;
 /// What Chat calls the conversation a message is in, as a verb's argument and on the
 /// message itself.
@@ -42,9 +37,6 @@ pub(super) struct Seen {
     documents: BTreeMap<String, Vec<String>>,
     /// The newest place of the person's arrival log a look has counted.
     mail_seq: u64,
-    /// The tasks a look already said were due, each by its id and its due
-    /// time, so a task is said once and again when its date moves.
-    due: BTreeSet<String>,
 }
 
 /// What is the assistant's own in a workspace, which a look leaves out.
@@ -115,7 +107,7 @@ fn who(event: &DocumentEvent) -> &'static str {
 }
 
 /// Look at `workspace` for `own.person` against what `seen` says the last
-/// look left, at `now_ms`.
+/// look left.
 ///
 /// A document that cannot be read here is left out, as a bot leaves it out:
 /// what the server does hold is still looked at.
@@ -128,7 +120,6 @@ pub(super) async fn gather(
     person: &[u8; 32],
     own: &Own,
     seen: &Seen,
-    now_ms: i64,
 ) -> Result<Gathered, String> {
     let routes = workspaces
         .workspace_document_routes(workspace)
@@ -138,19 +129,9 @@ pub(super) async fn gather(
         looked: true,
         documents: seen.documents.clone(),
         mail_seq: seen.mail_seq,
-        due: BTreeSet::new(),
     };
     let mut found = Found::default();
-    let (mut changed, mut due) = (Vec::new(), Vec::new());
-    let against = Against {
-        own,
-        assistant: own
-            .assistant
-            .as_deref()
-            .map(|agent| tasks_model::agent_assignee(agent).0),
-        seen,
-        now_ms,
-    };
+    let mut changed = Vec::new();
     // The workspace's list of its agents is where the server counts what a
     // turn cost and where agents say how they stand: bookkeeping about the
     // assistant and its helpers, written after every turn, and never news.
@@ -186,22 +167,6 @@ pub(super) async fn gather(
             }
         }
         next.documents.insert(key, heads);
-        let tasks_part = app == TASKS
-            && collab_types::document::DocumentId::parse(&document)
-                .and_then(|id| id.chain_part())
-                .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
-        if tasks_part
-            && let Ok(part) =
-                crate::workspace_bots::opened::<tasks::issue_list::IssueList>(&mut doc)
-        {
-            tasks_in(
-                part.issues.iter(),
-                &against,
-                &mut found,
-                &mut due,
-                &mut next,
-            );
-        }
     }
     // The first look starts at the newest arrival: mail from before it is
     // where the inbox stands.
@@ -225,8 +190,6 @@ pub(super) async fn gather(
     let findings = json!({
         "cameIn": { "mail": found.came_in },
         "changed": { "documents": found.changed, "named": changed },
-        "due": { "tasks": found.due, "named": due },
-        "open": { "tasks": found.open },
     });
     Ok(Gathered {
         found,
@@ -266,57 +229,4 @@ fn changes_in(
         "changes": theirs.len(),
         "by": by,
     }))
-}
-
-/// What a look holds a tracker's tasks against.
-struct Against<'a> {
-    own: &'a Own,
-    /// The assistant, as a task's assignee names it.
-    assistant: Option<String>,
-    seen: &'a Seen,
-    now_ms: i64,
-}
-
-/// The open tasks among `issues`: those that are the person's or their
-/// assistant's counted, and each that became due said once, and again when
-/// its date moves.
-fn tasks_in<'a>(
-    issues: impl IntoIterator<Item = (&'a tilo_resource::Id, &'a tasks_model::Issue)>,
-    against: &Against<'_>,
-    found: &mut Found,
-    due: &mut Vec<Value>,
-    next: &mut Seen,
-) {
-    for (id, issue) in issues {
-        if issue.status.closed() {
-            continue;
-        }
-        let theirs = issue.assignee.as_ref().is_some_and(|assignee| {
-            assignee.0 == against.own.person
-                || against.assistant.as_deref() == Some(assignee.0.as_str())
-        });
-        if theirs {
-            found.open = found.open.saturating_add(1);
-        }
-        let Some(due_ms) = issue
-            .due_ms
-            .filter(|due_ms| *due_ms <= against.now_ms.saturating_add(DUE_WITHIN_MS))
-        else {
-            continue;
-        };
-        let said = format!("{id}@{due_ms}");
-        if against.seen.looked && !against.seen.due.contains(&said) {
-            found.due = found.due.saturating_add(1);
-            if due.len() < MAX_NAMED {
-                due.push(json!({
-                    "issue": tasks_model::issue_resource(id),
-                    "number": issue.number,
-                    "title": issue.title,
-                    "dueMs": due_ms,
-                    "overdue": due_ms < against.now_ms,
-                }));
-            }
-        }
-        next.due.insert(said);
-    }
 }

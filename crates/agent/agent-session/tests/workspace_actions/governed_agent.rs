@@ -570,7 +570,7 @@ fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner() {
 
 async fn a_hosted_roster_turn() {
     use super::hosted_agent_turns::{
-        TASKS, answered_to, does_then_answers, file_issue, make_agent,
+        CHAT, answered_to, does_then_answers, make_agent, write_to_agent,
     };
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
     use tilo_server::workspace_agents::ServerAgents;
@@ -629,7 +629,7 @@ async fn a_hosted_roster_turn() {
             json(&serde_json::json!({
                 "agentId": agent,
                 "workspaces": [workspace.workspace],
-                "apps": [SHEETS, TASKS, STORE_FIXTURE],
+                "apps": [SHEETS, CHAT, STORE_FIXTURE],
                 "expiresInSecs": 3600,
             })),
         )
@@ -843,13 +843,13 @@ async fn a_hosted_roster_turn() {
 
     let roster = hosted.roster.as_ref().unwrap();
     let workbook = page.create(SHEETS);
-    let tracker = page.create("so.tilo.tasks");
-    file_issue(
+    let notebook = page.create("so.tilo.notes");
+    write_to_agent(
         &roster.actions,
         &workspaces,
         &workspace.workspace,
-        &owner,
-        (&node, &page_device),
+        (&owner, &page_device),
+        "Work on the roster sheet.",
     )
     .await;
     let read = |route: &DocumentRoute| {

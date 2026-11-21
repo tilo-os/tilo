@@ -1,6 +1,6 @@
 # Aufgaben auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
 
-d-so-tilo-lang-tasks = Aufgaben
+d-so-tilo-tasks = Aufgaben
 
 d-75ojxgs3 = Aufgabe
     .doc = Etwas zu tun: was, bis wann, von wem und in welchem Projekt.

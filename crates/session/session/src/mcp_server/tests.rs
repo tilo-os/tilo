@@ -9,7 +9,7 @@ fn a_turns_open_and_place_stand_beside_its_conversation() {
     let address = |action: &str| {
         tilo_actions::ActionAddress::new(tilo_session_core::layout::RESOURCE, action)
     };
-    let resource = serde_json::json!({"resource": "tl:so.tilo.lang.tasks:root-t"});
+    let resource = serde_json::json!({"resource": "tl:so.tilo.tasks:root-t"});
     let resource = resource.as_object().expect("an object");
     for action in ["open", "place"] {
         let filled = with_turn_beside(&address(action), resource, conversation);

@@ -148,22 +148,19 @@ impl Writes {
     }
 }
 
-/// The reply `turn` answers with, by the id Chat derives for it: none for an issue's turn,
-/// whose answer is a comment.
+/// The reply `turn` answers with, by the id Chat derives for it.
 pub(super) fn reply_of(turn: &Turn) -> Option<String> {
-    match &turn.ask {
-        Ask::Message {
-            message, attempt, ..
-        } => Some(
-            chat::chat::reply_id_at(
-                &tilo_resource::Id::from_raw(message),
-                &MemberId::agent(&turn.agent.id.0),
-                *attempt,
-            )
-            .to_string(),
-        ),
-        Ask::Issue { .. } => None,
-    }
+    let Ask::Message {
+        message, attempt, ..
+    } = &turn.ask;
+    Some(
+        chat::chat::reply_id_at(
+            &tilo_resource::Id::from_raw(message),
+            &MemberId::agent(&turn.agent.id.0),
+            *attempt,
+        )
+        .to_string(),
+    )
 }
 
 /// How far a turn's reply has grown, and the messages its answer went on in.

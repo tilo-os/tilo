@@ -14,7 +14,7 @@ pub(crate) const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 /// What a task's page is drawn from: the tasks and the discussion under them.
 pub(crate) const PACKAGES: &[(&str, &str)] = &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)];
-pub(crate) const APP: &str = "so.tilo.lang.tasks";
+pub(crate) const APP: &str = "so.tilo.tasks";
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -2945,7 +2945,7 @@ tilo_test_env::scenario! {
             .into_iter()
             .map(|committed| committed.action.kind)
             .collect();
-        assert_eq!(kinds, ["tl.so.tilo.lang.tasks.Task"], "{kinds:?}");
+        assert_eq!(kinds, ["tl.so.tilo.tasks.Task"], "{kinds:?}");
     }
 }
 

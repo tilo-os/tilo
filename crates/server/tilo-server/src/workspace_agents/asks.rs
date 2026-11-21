@@ -770,9 +770,7 @@ impl Agents {
     /// nothing this server kept for it. That is every question the agent put to that person in
     /// the conversation since the message the turn began on, taken back as the agent.
     pub(super) async fn take_back_asked(&self, workspace: &str, turn: &Turn, began: &Ask) {
-        let Ask::Message { part, message, .. } = began else {
-            return;
-        };
+        let Ask::Message { part, message, .. } = began;
         let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             return;
         };

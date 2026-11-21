@@ -616,7 +616,7 @@ mod tests {
                     "ada",
                     seen(
                         "ada",
-                        "tl:so.tilo.lang.tasks:inbox",
+                        "tl:so.tilo.tasks:inbox",
                         Some(SeenMark {
                             change: "ab".repeat(32),
                             at: "2026-11-04T12:00:00Z".to_owned(),
@@ -644,7 +644,7 @@ mod tests {
                 StateKey::view("tasks", actor("ada"), "scroll")
             );
             assert_eq!(theirs.seen.len(), 1);
-            assert_eq!(theirs.seen[0].resource, "tl:so.tilo.lang.tasks:inbox");
+            assert_eq!(theirs.seen[0].resource, "tl:so.tilo.tasks:inbox");
             assert_eq!(theirs.seen[0].mark.change, "ab".repeat(32));
             assert_eq!(theirs.runs[0].run, "run-7");
         }
@@ -714,7 +714,7 @@ mod tests {
                     view("ada", "tasks", "scroll", Json::from(120)),
                     seen(
                         "ada",
-                        "tl:so.tilo.lang.tasks:inbox",
+                        "tl:so.tilo.tasks:inbox",
                         Some(SeenMark {
                             change: "ab".repeat(32),
                             at: "2026-11-04T12:00:00Z".to_owned(),
@@ -884,14 +884,14 @@ mod tests {
                 "ada",
                 seen(
                     "ada",
-                    "tl:so.tilo.lang.tasks:inbox",
+                    "tl:so.tilo.tasks:inbox",
                     Some(SeenMark {
                         change: "cd".repeat(32),
                         at: "2026-11-04T12:00:00Z".to_owned(),
                     }),
                 ),
             ),
-            ("ada", seen("ada", "tl:so.tilo.lang.tasks:inbox", None)),
+            ("ada", seen("ada", "tl:so.tilo.tasks:inbox", None)),
             (
                 "ada",
                 Keep::Runs {

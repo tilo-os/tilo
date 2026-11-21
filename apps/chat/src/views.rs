@@ -1818,16 +1818,16 @@ mod tests {
         phase a_resource_attachments_chip_shows_its_title_not_its_id;
         {
             // A resource the session placed is attached by its published address
-            // (`tl:so.tilo.lang.tasks:root-fjqi4yze`): the chip the message draws says what the
+            // (`tl:so.tilo.tasks:root-fjqi4yze`): the chip the message draws says what the
             // resource is called, never the address the drag carried or a step of it
             // (`root-fjqi4yze`).
-            const ADDRESS: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
+            const ADDRESS: &str = "tl:so.tilo.tasks:root-fjqi4yze";
             let attached = tilo_reference::Attached::resource(
                 tilo_reference::ResourceAt {
-                    app: "so.tilo.lang.tasks".into(),
+                    app: "so.tilo.tasks".into(),
                     record: None,
                     reference: tilo_reference::ResourceRef::whole(
-                        "tl.so.tilo.lang.tasks.Tasks",
+                        "tl.so.tilo.tasks.Tasks",
                         ADDRESS,
                         "Tasks",
                     ),
@@ -1844,7 +1844,7 @@ mod tests {
                 .clone()
                 .expect("the chip holds the resource");
             assert_eq!(shown.id, ADDRESS, "the address is what a press places");
-            assert_eq!(shown.ty, "tl.so.tilo.lang.tasks.Tasks");
+            assert_eq!(shown.ty, "tl.so.tilo.tasks.Tasks");
             let mut channel = demo_channel();
             channel.messages.push(Message {
                 id: "m_dropped".to_owned(),

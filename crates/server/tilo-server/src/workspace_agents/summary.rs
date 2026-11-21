@@ -139,9 +139,7 @@ impl ServerAgents {
     /// in, and the conversation asks for something else or for nothing. Where it cannot be
     /// read the summary stays as it stands.
     async fn still_asked(&self, workspace: &str, turn: &Turn, fold: &Fold) -> bool {
-        let super::Ask::Message { part, message, .. } = &turn.ask else {
-            return false;
-        };
+        let super::Ask::Message { part, message, .. } = &turn.ask;
         let (Ok(Some(chat)), Ok(Some(held))) = (
             self.read::<chat::chat::Chat>(workspace, CHAT, "").await,
             self.read::<chat::parts::ChatMessages>(workspace, CHAT, part)

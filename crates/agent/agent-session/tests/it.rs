@@ -42,8 +42,6 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 tilo_agent_session::app_worker!();
 
-#[path = "action_cost.rs"]
-mod action_cost;
 #[path = "app_coverage.rs"]
 mod app_coverage;
 #[path = "chain_listing.rs"]
@@ -54,16 +52,10 @@ mod chain_reads;
 mod empty_state_actions;
 #[path = "host_agents.rs"]
 mod host_agents;
-#[path = "issue_listing.rs"]
-mod issue_listing;
-#[path = "issue_reads.rs"]
-mod issue_reads;
 #[path = "messages_for_agents.rs"]
 mod messages_for_agents;
 #[path = "page_view.rs"]
 mod page_view;
-#[path = "part_handover.rs"]
-mod part_handover;
 #[path = "render_video.rs"]
 mod render_video;
 #[path = "replicas.rs"]

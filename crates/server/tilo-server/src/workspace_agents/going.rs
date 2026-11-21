@@ -35,20 +35,15 @@ use tilo_lock::MutexRecover as _;
 
 use super::{Ask, Turn};
 
-/// Where an agent has one turn at a time: the workspace, the agent, and the conversation, or
-/// for an issue its ask.
+/// Where an agent has one turn at a time: the workspace, the agent, and the conversation.
 type Place = (String, String, String);
 
 fn place(workspace: &str, turn: &Turn) -> Place {
-    let at = match &turn.ask {
-        Ask::Message { .. } => turn.conversation.clone(),
-        Ask::Issue {
-            record,
-            issue,
-            cause,
-        } => format!("{record}\0{issue}\0{cause}"),
-    };
-    (workspace.to_owned(), turn.agent.id.0.clone(), at)
+    (
+        workspace.to_owned(),
+        turn.agent.id.0.clone(),
+        turn.conversation.clone(),
+    )
 }
 
 /// One turn going.

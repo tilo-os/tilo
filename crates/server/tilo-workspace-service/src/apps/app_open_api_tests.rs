@@ -29,7 +29,7 @@ impl crate::apps::services::LauncherServices for PressedOpens {
             "so.tilo.word-processor",
             "so.tilo.chat",
             "so.tilo.notes",
-            "so.tilo.lang.tasks",
+            "so.tilo.tasks",
         ]
         .into_iter()
         .map(|app| crate::apps::services::LaunchableApplication {
@@ -67,7 +67,7 @@ impl crate::apps::services::LauncherServices for PressedOpens {
 
 async fn pressed_opens_rig(env: &Environment) -> (Rig, Arc<PressedOpens>) {
     let mut earlier = tilo_action_policy::EarlierIds::new();
-    earlier.insert("so.tilo.lang.tasks", ["so.tilo.lang.todo"]);
+    earlier.insert("so.tilo.tasks", ["so.tilo.lang.todo"]);
     let launcher = Arc::new(PressedOpens {
         presses: Mutex::new(Vec::new()),
         opened: Mutex::new(Vec::new()),
@@ -332,7 +332,7 @@ async fn a_reference_under_an_earlier_app_id_opens_the_renamed_app() {
             launcher.press(&env.route.app_id);
             let opened = app_asks(&app, request).await;
             assert!(!refused(&opened), "{opened:?}");
-            assert_eq!(launcher.opened(), ["so.tilo.lang.tasks"]);
+            assert_eq!(launcher.opened(), ["so.tilo.tasks"]);
             rig.stop().await;
         })
         .await;

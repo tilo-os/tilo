@@ -117,10 +117,7 @@ pub(crate) async fn turn_ended(
         part,
         message,
         attempt,
-    } = &turn.ask
-    else {
-        return;
-    };
+    } = &turn.ask;
     let words = match outcome {
         Outcome::Answered(words) | Outcome::Stopped(words) | Outcome::Failed(words) => words,
         Outcome::Cancelled => return,

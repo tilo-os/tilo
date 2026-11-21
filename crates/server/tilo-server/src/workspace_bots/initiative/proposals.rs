@@ -12,24 +12,13 @@
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::person_events::SetUp;
 use tilo_actions::remote::person_initiative::{
-    self, Proposal, Proposals, Propose, ProposedTask, State,
+    self, Proposal, Proposals, Propose, State,
 };
 use tilo_agent_session::bot::event::{Definition, told_as_of};
 
 /// The most proposals kept for a person. Past it the oldest that were
 /// decided go; what still waits is never dropped.
 const MAX_KEPT: usize = 200;
-
-/// What a task a proposal stands as says about it in the tracker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum InTracker {
-    /// Nobody gave it to the assistant and it is still open.
-    Waits,
-    /// Its person gave it to the assistant, or work on it began.
-    Given,
-    /// It was cancelled, or is gone.
-    Dropped,
-}
 
 /// A person's proposals, oldest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,62 +211,11 @@ impl Book {
         }
     }
 
-    /// The task `id` stands as in the tracker.
-    pub(super) fn stands_as(&mut self, id: &str, task: ProposedTask) {
-        if let Ok(proposal) = self.get_mut(id) {
-            proposal.task = Some(task);
-        }
-    }
-
     /// The event that was set up when `id` was accepted.
     pub(super) fn set_up_as(&mut self, id: &str, event: String) {
         if let Ok(proposal) = self.get_mut(id) {
             proposal.set_up = Some(event);
         }
-    }
-
-    /// Take `id` back as if it was never proposed: what it should have
-    /// stood as could not be written.
-    pub(super) fn withdraw(&mut self, id: &str) {
-        self.proposals.retain(|proposal| proposal.id != id);
-    }
-
-    /// Whether anything that waits stands as a task in the tracker.
-    pub(super) fn waits_in_tracker(&self) -> bool {
-        self.proposals
-            .iter()
-            .any(|proposal| proposal.state.waits() && proposal.task.is_some())
-    }
-
-    /// Hold every proposal that waits against what its task says in the
-    /// tracker, as `in_tracker` answers for an issue's address: given to the
-    /// assistant there it is accepted, cancelled or gone there it is
-    /// declined. So a person decides where they look, and the server keeps
-    /// score from the tracker. Whether anything changed.
-    pub(super) fn reconcile(
-        &mut self,
-        in_tracker: impl Fn(&str) -> InTracker,
-        now_ms: i64,
-    ) -> bool {
-        let decided: Vec<(String, InTracker)> = self
-            .proposals
-            .iter()
-            .filter(|proposal| proposal.state.waits())
-            .filter_map(|proposal| {
-                let task = proposal.task.as_ref()?;
-                Some((proposal.id.clone(), in_tracker(&task.issue)))
-            })
-            .filter(|(_, stands)| *stands != InTracker::Waits)
-            .collect();
-        for (id, stands) in &decided {
-            // Each was waiting a moment ago, so neither is refused.
-            let _ = match stands {
-                InTracker::Given => self.accept(id, now_ms),
-                InTracker::Dropped => self.decline(id, now_ms),
-                InTracker::Waits => continue,
-            };
-        }
-        !decided.is_empty()
     }
 
     /// Everything, as its person reads it: the proposals newest first.
@@ -357,48 +295,6 @@ mod tests {
         );
         book.accept("a", 2).unwrap();
         assert!(proposed(&mut book, "tidy", "One more", "more").is_ok());
-    }
-
-    #[test]
-    fn what_its_person_did_with_the_task_counts_as_their_answer() {
-        let mut book = Book::default();
-        for (id, title) in [("a", "One"), ("b", "Two"), ("c", "Three"), ("d", "Four")] {
-            proposed(&mut book, "tidy", title, id).unwrap();
-            book.stands_as(
-                id,
-                ProposedTask {
-                    issue: format!("issues/{id}"),
-                    number: None,
-                },
-            );
-        }
-        proposed(&mut book, "tidy", "No task yet", "e").unwrap();
-        let changed = book.reconcile(
-            |issue| match issue {
-                "issues/a" => InTracker::Given,
-                "issues/b" => InTracker::Dropped,
-                _ => InTracker::Waits,
-            },
-            9,
-        );
-        assert!(changed);
-        let state = |id: &str| book.get(id).map(|proposal| proposal.state);
-        assert_eq!(state("a"), Ok(State::Accepted));
-        assert_eq!(state("b"), Ok(State::Declined));
-        assert_eq!(state("c"), Ok(State::Proposed));
-        assert_eq!(state("e"), Ok(State::Proposed), "no task says nothing");
-        // Read again, nothing is counted twice.
-        let mut again = book.clone();
-        assert!(!again.reconcile(|_| InTracker::Waits, 10));
-        assert!(!again.reconcile(
-            |issue| if issue == "issues/b" {
-                InTracker::Dropped
-            } else {
-                InTracker::Waits
-            },
-            11
-        ));
-        assert_eq!(again, book);
     }
 
     #[test]

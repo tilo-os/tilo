@@ -14,10 +14,8 @@
 //! ([`look_round_spender`]), which a look reads before it starts a turn.
 //!
 //! What a look-round's turn finds to do it proposes ([`proposals`]): a
-//! piece of work is filed in the workspace's tracker as a task of the
-//! assistant's that nobody gave it ([`tracker`]), so it stands among its
-//! person's tasks and nothing starts until they give it; an event is kept
-//! as a card and set up only when they accept it. A kind of work turned
+//! piece of work or an event is kept as a card, and an event is set up only
+//! when its person accepts it. A kind of work turned
 //! down twice is refused from then on, by the server, whatever a model was
 //! told.
 //!
@@ -68,7 +66,6 @@ use crate::workspaces::person_model::{Interaction, Spender};
 
 mod look;
 mod proposals;
-mod tracker;
 
 /// The file a person's initiative is kept in.
 const FILE: &str = "initiative.json";
@@ -78,8 +75,8 @@ const NAME: &str = "Look-round";
 /// What the look-round's event says its assistant is told. Its person
 /// reads it on the event and may change it; the rules of a look are the
 /// server's and come with every look ([`RULES`]).
-const TOLD: &str = "Look round for work you could do for your person: what came in, what changed \
-                    where they work, and what became due.";
+const TOLD: &str = "Look round for work you could do for your person: what came in and what \
+                    changed where they work.";
 /// What the look-round is for, as its note says.
 const PURPOSE: &str = "Find work the assistant could do without being asked.";
 /// The rules of a look, said with every one.
@@ -212,9 +209,6 @@ struct Inner {
     state: PathBuf,
     /// The events the look-round is one of, once they are started.
     events: OnceLock<PersonEvents>,
-    /// The server's action service, where it has one: a proposed piece of
-    /// work is filed in the workspace's tracker through it.
-    actions: Option<WorkspaceActions>,
     kept: Mutex<BTreeMap<Owner, Kept>>,
     /// The people whose mail the server watches because their assistant
     /// looks round.
@@ -237,8 +231,7 @@ impl Initiative {
     /// put in front of each look-round's instruction, and keep what the
     /// assistants' initiative keeps under `state`. With `actions`, the
     /// server's action service, an instruction an event hands over starts a
-    /// turn of its person's assistant, and a proposed piece of work is filed
-    /// in the workspace's tracker. Called on the runtime the events are
+    /// turn of its person's assistant. Called on the runtime the events are
     /// carried out on.
     #[must_use]
     pub fn start(
@@ -247,7 +240,7 @@ impl Initiative {
         events_state: PathBuf,
         actions: Option<WorkspaceActions>,
     ) -> (Self, PersonEvents) {
-        let initiative = Self::new(workspaces.clone(), state, actions.clone());
+        let initiative = Self::new(workspaces.clone(), state);
         let before = Some(initiative.before());
         let events = PersonEvents::start_behind(workspaces, events_state, actions, before);
         let _ = initiative.inner.events.set(events.clone());
@@ -262,29 +255,27 @@ impl Initiative {
         events_state: PathBuf,
         steps: Arc<dyn Steps>,
     ) -> (Self, PersonEvents) {
-        Self::started(workspaces, (state, events_state), None, steps)
+        Self::started(workspaces, (state, events_state), steps)
     }
 
     fn started(
         workspaces: Workspaces,
         (state, events_state): (PathBuf, PathBuf),
-        actions: Option<WorkspaceActions>,
         steps: Arc<dyn Steps>,
     ) -> (Self, PersonEvents) {
-        let initiative = Self::new(workspaces.clone(), state, actions);
+        let initiative = Self::new(workspaces.clone(), state);
         let looking = (initiative.before())(steps);
         let events = PersonEvents::start_with(workspaces, events_state, looking);
         let _ = initiative.inner.events.set(events.clone());
         (initiative, events)
     }
 
-    fn new(workspaces: Workspaces, state: PathBuf, actions: Option<WorkspaceActions>) -> Self {
+    fn new(workspaces: Workspaces, state: PathBuf) -> Self {
         Self {
             inner: Arc::new(Inner {
                 workspaces,
                 state,
                 events: OnceLock::new(),
-                actions,
                 kept: Mutex::default(),
                 listening: Mutex::default(),
                 handing: Mutex::default(),
@@ -466,8 +457,7 @@ impl Initiative {
     }
 
     /// Take one action for `caller`. The look-round's are answered at once;
-    /// one on what was proposed may read and write the workspace's tracker
-    /// first, and is answered when that is done.
+    /// one on what was proposed is answered once what it carries out is done.
     #[must_use]
     pub fn invoking(
         &self,
@@ -744,14 +734,7 @@ impl Initiative {
                         assistant,
                         event: event.clone(),
                     };
-                    let gathered =
-                        look::gather(workspaces, &owner.0, &person, &own, &kept.seen, now_ms)
-                            .await?;
-                    // What its person did with a proposed task counts
-                    // before the assistant is told what they made of each
-                    // kind of work.
-                    self.reconcile(owner).await;
-                    Ok(gathered)
+                    look::gather(workspaces, &owner.0, &person, &own, &kept.seen).await
                 })
                 .map_err(StepError::Unavailable)
         })?;
@@ -825,8 +808,7 @@ impl Initiative {
             person_initiative::PROPOSE => {
                 asked.only(
                     Asker::Assistant,
-                    "a proposal is the assistant's to make: its person gives it a task in the \
-                     tracker",
+                    "a proposal is the assistant's to make",
                 )?;
                 let wanted: Propose = argument(
                     request,
@@ -848,60 +830,18 @@ impl Initiative {
         said(&self.listed(&asked.owner).await)
     }
 
-    /// What was proposed, as its person reads it now: what they did with a
-    /// proposed task in the tracker counted first.
+    /// What was proposed, as its person reads it now.
     async fn listed(&self, owner: &Owner) -> Proposals {
-        self.reconcile(owner).await;
         self.kept(owner).book.listed()
     }
 
-    /// Hold what waits against the workspace's tracker
-    /// ([`proposals::Book::reconcile`]). A tracker that cannot be read says
-    /// nothing: what waits goes on waiting.
-    async fn reconcile(&self, owner: &Owner) {
-        let mut book = self.kept(owner).book;
-        if !book.waits_in_tracker() {
-            return;
-        }
-        let Ok(issues) = tracker::issues(&self.inner.workspaces, &owner.0).await else {
-            return;
-        };
-        let now_ms = tilo_clock::unix_now_ms_i64();
-        if !book.reconcile(|issue| tracker::in_tracker(&issues, issue), now_ms) {
-            return;
-        }
-        let kept = self.change(owner, |kept| {
-            kept.book
-                .reconcile(|issue| tracker::in_tracker(&issues, issue), now_ms);
-        });
-        if let Err(error) = kept {
-            tracing::warn!(workspace = %owner.0, %error, "what a person decided in the tracker is not kept");
-        }
-    }
-
-    /// The tracker's actions as `asked`'s caller takes them, where this
-    /// server has an action service.
-    fn tracker(&self, asked: &Asked<'_>) -> Option<tracker::Tracker> {
-        let actions = self.inner.actions.clone()?;
-        Some(tracker::Tracker {
-            workspaces: self.inner.workspaces.clone(),
-            actions,
-            workspace_id: asked.workspace_id,
-            workspace: asked.owner.0.clone(),
-            caller: asked.caller.clone(),
-        })
-    }
-
-    /// Put what `wanted` proposes in front of the assistant's person: kept,
-    /// and for a piece of work filed as a task of the assistant's that
-    /// nobody gave it.
+    /// Put what `wanted` proposes in front of the assistant's person: kept.
     async fn propose(
         &self,
         asked: &Asked<'_>,
         wanted: Propose,
     ) -> Result<Proposal, ActionCallError> {
         let wanted = proposals::checked(wanted).map_err(refused)?;
-        self.reconcile(&asked.owner).await;
         let id = uuid::Uuid::new_v4().to_string();
         let now_ms = tilo_clock::unix_now_ms_i64();
         let proposal = self
@@ -910,35 +850,7 @@ impl Initiative {
             })
             .map_err(unavailable)?
             .map_err(refused)?;
-        // An event is a card to look at, and the same thing proposed again
-        // is the task that stands already.
-        let Some(tracker) = self
-            .tracker(asked)
-            .filter(|_| proposal.task.is_none() && proposal.event.is_none())
-        else {
-            return Ok(proposal);
-        };
-        let assistant = asked.caller.acting().agent_id().unwrap_or_default();
-        match tracker
-            .file(assistant, &proposal.title, &proposal.why)
-            .await
-        {
-            Ok(task) => self
-                .change(&asked.owner, |kept| {
-                    kept.book.stands_as(&proposal.id, task);
-                    kept.book.get(&proposal.id).cloned()
-                })
-                .map_err(unavailable)?
-                .map_err(refused),
-            Err(why) => {
-                // What its person cannot find among their tasks was not
-                // proposed.
-                let _ = self.change(&asked.owner, |kept| kept.book.withdraw(&proposal.id));
-                Err(unavailable(format!(
-                    "the proposal could not be filed as a task: {why}"
-                )))
-            }
-        }
+        Ok(proposal)
     }
 
     /// The person's nod: a task is given to the assistant, which starts
@@ -947,7 +859,6 @@ impl Initiative {
     /// out, so one given twice, or on two devices at once, starts nothing
     /// twice; where it could not be carried out, the proposal waits again.
     async fn accept(&self, asked: &Asked<'_>, nod: &Accept) -> Result<Proposal, ActionCallError> {
-        self.reconcile(&asked.owner).await;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let (accepted, first) = self
             .change(&asked.owner, |kept| {
@@ -994,16 +905,12 @@ impl Initiative {
                 .map_err(unavailable)?
                 .map_err(refused);
         }
-        if let (Some(task), Some(tracker)) = (&accepted.task, self.tracker(asked)) {
-            tracker.give(&task.issue).await.map_err(unavailable)?;
-        }
         Ok(accepted.clone())
     }
 
     /// A proposal turned down: its kind counts one more, and its task is
     /// cancelled. Turned down again, or by two at once, it counts once.
     async fn decline(&self, asked: &Asked<'_>, no: &Decline) -> Result<Proposal, ActionCallError> {
-        self.reconcile(&asked.owner).await;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let (declined, first) = self
             .change(&asked.owner, |kept| {
@@ -1018,11 +925,6 @@ impl Initiative {
             .map_err(unavailable)?
             .map_err(refused)?;
         if first {
-            if let (Some(task), Some(tracker)) = (&declined.task, self.tracker(asked))
-                && let Err(error) = tracker.cancel(&task.issue).await
-            {
-                tracing::warn!(workspace = %asked.owner.0, %error, "a declined proposal's task is not cancelled in the tracker");
-            }
             self.learn(asked, &declined, no.why.as_deref());
         }
         Ok(declined)
@@ -1315,8 +1217,8 @@ fn for_both() -> Vec<Offered> {
             action: person_initiative::TURN_ON,
             label: "Look round on your own",
             description: "Have the server wake you on a rhythm to look for work you could do for \
-                          your person: what came in, what changed where they work, what became \
-                          due. A look that finds nothing new costs nothing and writes nothing.",
+                          your person: what came in and what changed where they work. A look \
+                          that finds nothing new costs nothing and writes nothing.",
             params: settings(),
             kind: ActionKind::Undoable,
         },

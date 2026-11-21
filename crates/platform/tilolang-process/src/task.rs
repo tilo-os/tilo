@@ -888,12 +888,12 @@ mod tests {
         )
     }
 
-    /// Tasks, as the app publishes it.
+    /// Tasks, as its Rust build published it: a native app keeping items in parts of a chain.
     fn tasks() -> PackageMeta {
         native(
             "so.tilo.tasks",
             "Tasks",
-            include_str!("../../../../apps/tasks/surface.toml"),
+            include_str!("../../tilolang-tilo/tests/legacy/rust_tasks_surface.toml"),
         )
     }
 

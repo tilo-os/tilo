@@ -11,7 +11,7 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const APP: &str = "so.tilo.lang.tasks";
+const APP: &str = "so.tilo.tasks";
 
 /// Each row of the home list as the list groups it: the heading its run stands under, and
 /// whether that heading says the day the task was finished rather than the day it is due.

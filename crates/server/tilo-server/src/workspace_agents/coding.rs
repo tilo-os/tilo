@@ -757,9 +757,7 @@ impl super::ServerAgents {
     /// job and a note are their own words, a note with whose it is; anything else is what the
     /// message asks as every agent is told it.
     async fn asked(&self, workspace: &str, turn: &Turn) -> (String, Option<String>) {
-        let Ask::Message { part, message, .. } = &turn.ask else {
-            return (turn.request.clone(), None);
-        };
+        let Ask::Message { part, message, .. } = &turn.ask;
         let Ok(Some(held)) = self
             .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
             .await

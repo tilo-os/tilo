@@ -32,8 +32,9 @@ struct Served {
     ada: SigningKey,
 }
 
-/// The app that keeps the tracker the issues are in.
-const TASKS: &str = "so.tilo.tasks";
+/// The app that keeps the notes whose bodies the folder mirrors as `.md` files.
+const NOTES: &str = "so.tilo.notes";
+
 /// A search with many hits in one conversation.
 #[path = "hosted_search_many.rs"]
 mod many_hits;
@@ -418,21 +419,6 @@ impl Served {
             .join("\n");
         let failed = answer["result"]["isError"] == true || answer.get("error").is_some();
         (text, failed)
-    }
-
-    /// Whether `needle` finds `wanted` for `caller` within a few seconds: what a search that
-    /// may never find it is asked.
-    async fn finds_in_time(&self, workspace: &str, caller: &Caller, wanted: &str) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(8);
-        loop {
-            if self.finds(workspace, caller, wanted).await.contains(wanted) {
-                return true;
-            }
-            if Instant::now() > deadline {
-                return false;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
     }
 
     /// What `needle` finds for `caller` in `workspace`, narrowed to `within`, best first, as
@@ -981,30 +967,6 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
             .await;
         assert!(found.contains(WRITER), "{who} finds the letter: {found}");
     }
-    // What each of them finds of an issue in Tasks by its title is said here and not judged:
-    // being held to what they may read takes nothing of Tasks from any of them.
-    file_issue(
-        &served.actions,
-        &served.workspaces,
-        &workspace,
-        &served.ada,
-        (&served.devices.0, &served.devices.1),
-    )
-    .await;
-    let title = "Plan the launch";
-    let by_her = served.finds_in_time(&workspace, &ada, title).await;
-    let by_him = served
-        .finds(&workspace, &bo_himself, title)
-        .await
-        .contains(title);
-    let by_her_turn = served
-        .finds(&workspace, &her_turn, title)
-        .await
-        .contains(title);
-    eprintln!(
-        "an issue is found by its title: by the server's own person {by_her}, by another \
-         member {by_him}, by a turn of hers {by_her_turn}"
-    );
     page.peer.close();
 }
 
@@ -1374,53 +1336,6 @@ async fn a_page_search_finds_a_word_in_an_issues_body() {
         assert!(
             Instant::now() < deadline,
             "the page's search never finds a word in an issue's body: {found:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    page.peer.close();
-}
-
-/// What the page's search asks the workspace answers a title prefix with the issue that carries
-/// it, named as its own app lists it: what a person types in the search box.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_search_finds_a_title_prefix_in_an_issue() {
-    let mut served = Served::start(1).await;
-    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
-    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-    let her_agent = on_a_turn(
-        &ada,
-        SCOUT,
-        (&conversation_with(&served.ada, SCOUT), &said),
-        Vec::new(),
-    );
-    let title = "Write a launch checklist note with five short items";
-    let (answered, failed) = served
-        .tool(
-            &workspace,
-            &her_agent,
-            "tilo_do",
-            serde_json::json!({
-                "path": "tasks#create",
-                "args": {
-                    "title": title,
-                    "body": "Link it here and move this to In review.",
-                },
-            }),
-        )
-        .await;
-    assert!(!failed, "tasks#create: {answered}");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let found = served
-            .found(&workspace, &ada, ("Write a launch", &Within::default()))
-            .await;
-        let kept_by = |app: &str| found.iter().any(|found| found.app.as_deref() == Some(app));
-        if kept_by(TASKS) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "a title prefix finds the issue: {found:?}"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }

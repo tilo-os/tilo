@@ -4,8 +4,7 @@
 //! `tilo.workspace.agent`): every active agent made to run on the host ([`Agent::on_host`]) works
 //! here, whoever keeps it, and none other. What they are asked is what the workspace's people
 //! write: a message in a conversation the agent takes part in or that names it
-//! ([`chat::summons`]), and an issue given to the agent
-//! or written in once it has it ([`tasks_model::IssueAsk`]). A message asks too when something
+//! ([`chat::summons`]). A message asks too when something
 //! else started the turn for a person (a reminder that is due, an event that fired) through
 //! Chat's `ask-agent`: the agent then acts for the person its cause names ([`chat::cause`]). The
 //! records hold every ask and every answer, so the host keeps nothing of its own: a host that
@@ -82,7 +81,6 @@ mod carried;
 mod coding;
 mod going;
 mod instructions;
-mod issue_work;
 mod learned;
 mod mail;
 mod mail_connect;
@@ -116,8 +114,6 @@ const LEFT_BEGUN: &str = "I was interrupted while I worked on this: the server r
 const CHAT: &str = "so.tilo.chat";
 /// The app that keeps the workspace's list of its agents.
 const AGENTS_OWNER: &str = tilo_workspace_agent::OWNER;
-/// The app that keeps the issues.
-const TASKS: &str = "so.tilo.tasks";
 /// The longest the server goes without looking at every workspace, whatever is written in
 /// between: what a missed wake costs.
 const IDLE: Duration = Duration::from_secs(60);
@@ -610,15 +606,6 @@ pub enum Ask {
         message: String,
         attempt: u32,
     },
-    /// An issue given to the agent, or written in once it had it: the answer is the agent's
-    /// comment in its thread.
-    Issue {
-        /// The tracker that keeps it.
-        record: String,
-        issue: String,
-        /// What asked: the person's message, or the assignment.
-        cause: String,
-    },
 }
 
 /// One turn the server owes an agent: who asks what, of whom.
@@ -873,7 +860,7 @@ impl ServerAgents {
             }
             match woke(&mut writes, whole_at).await {
                 Woke::Write(write) => {
-                    if write.app == CHAT || write.app == TASKS || write.app == AGENTS_OWNER {
+                    if write.app == CHAT || write.app == AGENTS_OWNER {
                         due.insert(write.workspace);
                     }
                 }
@@ -891,7 +878,7 @@ impl ServerAgents {
             }
             // A burst of writes (a person typing, an agent's own steps) is read as one look.
             while let Ok(write) = writes.try_recv() {
-                if write.app == CHAT || write.app == TASKS || write.app == AGENTS_OWNER {
+                if write.app == CHAT || write.app == AGENTS_OWNER {
                     due.insert(write.workspace);
                 }
             }
@@ -1080,70 +1067,20 @@ impl ServerAgents {
         Ok(Box::pin(self.asks(workspace)).await?.turns)
     }
 
-    /// [`Self::turns`] at `now_ms`: an issue whose wait was to end by then is owed a turn again.
-    ///
-    /// # Errors
-    /// A document could not be read.
-    pub async fn turns_at(&self, workspace: &str, now_ms: i64) -> Result<Vec<Turn>, String> {
-        Ok(Box::pin(self.asks_at(workspace, now_ms)).await?.turns)
-    }
-
     /// What `workspace`'s records ask of the agents its host runs: the turns they owe, and the
     /// turns a person stopped whose work is not ended yet.
     async fn asks(&self, workspace: &str) -> Result<Asks, String> {
-        self.asks_at(workspace, tilo_clock::unix_now_ms_i64()).await
-    }
-
-    /// [`Self::asks`] at `now_ms`.
-    async fn asks_at(&self, workspace: &str, now_ms: i64) -> Result<Asks, String> {
         let agents = self.agents(workspace).await?;
         if agents.is_empty() {
             self.workspaces.note_waiting(workspace, Vec::new());
             return Ok(Asks::default());
         }
-        let mut routes = self
+        let routes = self
             .workspaces
             .document_routes(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        if !routes.iter().any(|(app, _)| app == TASKS) && self.found_tracker(workspace).await {
-            routes = self
-                .workspaces
-                .document_routes(workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        let mut asks = self.chat_asks(workspace, &agents, &routes).await?;
-        asks.turns.extend(
-            self.issue_turns(workspace, &agents, &routes, now_ms)
-                .await?,
-        );
-        Ok(asks)
-    }
-
-    /// Found the tracker of `workspace`, which keeps none: nobody opened Tasks in it yet. This
-    /// server keeps an agent at work there, and an agent is given work as an issue of the
-    /// workspace's tracker: without one its person can give it none from a device that shows no
-    /// Tasks. The server founds it as it founds any app's document a member's first window
-    /// opens: from the app's own factory in its trusted catalogue, as the workspace's governor.
-    /// Whether it stands now.
-    async fn found_tracker(&self, workspace: &str) -> bool {
-        let catalogue = tilo_agent_session::AppCatalogue::native();
-        let tracker = crate::workspace_bots::workspace_resource(&catalogue, TASKS);
-        let founded = self
-            .workspaces
-            .prepare_application(
-                workspace,
-                self.workspaces.governor(),
-                &catalogue,
-                TASKS,
-                &tracker,
-            )
-            .await;
-        if let Err(error) = &founded {
-            tracing::warn!(%workspace, %error, "the workspace's tracker could not be founded: its agents can be given no issue");
-        }
-        founded.is_ok()
+        self.chat_asks(workspace, &agents, &routes).await
     }
 
     /// What `workspace`'s conversations ask of `agents`: the turns they owe, and the turns a
@@ -1253,78 +1190,6 @@ impl ServerAgents {
         asks.answered = answered;
         team.settle(&mut asks);
         Ok(asks)
-    }
-
-    /// The turns `workspace`'s issues owe `agents` at `now_ms`: an issue that waits is owed one
-    /// again once the latest moment its wait ends has come.
-    async fn issue_turns(
-        &self,
-        workspace: &str,
-        agents: &BTreeMap<String, Agent>,
-        routes: &[(String, String)],
-        now_ms: i64,
-    ) -> Result<Vec<Turn>, String> {
-        // Every part is taken before anything is asked: an issue's pieces may be kept in another
-        // part than the issue itself.
-        let mut kept = Vec::new();
-        for (app, record) in routes {
-            if app != TASKS
-                || collab_types::document::DocumentId::parse(record)
-                    .and_then(|id| id.chain_part())
-                    .is_none_or(|(chain, _)| chain != tasks::issue_list::chain())
-            {
-                continue;
-            }
-            let bytes = self
-                .workspaces
-                .resource_document(workspace, TASKS, record)
-                .await
-                .map_err(|error| error.to_string())?;
-            if let Some(bytes) = bytes {
-                kept.push((record, bytes));
-            }
-        }
-        // They are read only now that nothing more is awaited: an issue's rich text does not
-        // travel between threads, and this look does.
-        let mut parts = Vec::new();
-        for (document, bytes) in kept {
-            let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-            let part = crate::workspace_bots::opened::<tasks::issue_list::IssueList>(&mut doc)?;
-            parts.push((document, part));
-        }
-        let asks = tasks_model::agent_asks_at(
-            parts.iter().flat_map(|(_, part)| part.issues.iter()),
-            now_ms,
-        );
-        let mut turns = Vec::new();
-        for ask in asks {
-            let Some(agent) = agents.get(&ask.agent) else {
-                continue;
-            };
-            let Some((document, issue)) = parts.iter().find_map(|(document, part)| {
-                part.issues.get(&ask.issue).map(|issue| (*document, issue))
-            }) else {
-                continue;
-            };
-            let request = issue_work::asked(issue, &ask);
-            turns.push(Turn {
-                agent: agent.clone(),
-                person: ask.person.person_id().unwrap_or_default().to_owned(),
-                conversation: tasks_model::issue_resource(&ask.issue),
-                cause: ask.cause.clone(),
-                request,
-                asked: issue.title.clone(),
-                fold: None,
-                typed: true,
-                line: None,
-                ask: Ask::Issue {
-                    record: document.clone(),
-                    issue: ask.issue.to_string(),
-                    cause: ask.cause,
-                },
-            });
-        }
-        Ok(turns)
     }
 
     /// The agents of `workspace` its host runs, by id.
@@ -1502,10 +1367,7 @@ impl ServerAgents {
             part,
             message,
             attempt,
-        } = &turn.ask
-        else {
-            return false;
-        };
+        } = &turn.ask;
         match self
             .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
             .await
@@ -1526,26 +1388,11 @@ impl ServerAgents {
     /// turn that is still owed is told its conversation as it stands now, with the answer
     /// before it.
     ///
-    /// An issue's turn is held to the same: where its agent answered the ask since, or the
-    /// issue waits or stopped since, nothing begins, so no second session is counted on it and
-    /// no model is asked again. Whether an issue is owed depends on the time as well, and
-    /// whoever read the turn may have read it at a later time than the clock's
-    /// ([`Self::turns_at`]). The one ask that hangs on the time is a wait that ended, which
-    /// names its moment and is owed from then on: so what the clock's time does not owe is
-    /// looked for once more with every wait ended, where only that same ask is found.
-    ///
     /// # Errors
     /// What the workspace owes could not be read.
     async fn owed_now(&self, workspace: &str, turn: &Turn) -> Result<Option<Turn>, String> {
         let same = |now: &Turn| now.agent.id.0 == turn.agent.id.0 && now.ask == turn.ask;
         let owed = Box::pin(self.asks(workspace)).await?.turns;
-        if let Some(owed) = owed.into_iter().find(same) {
-            return Ok(Some(owed));
-        }
-        if matches!(turn.ask, Ask::Message { .. }) {
-            return Ok(None);
-        }
-        let owed = Box::pin(self.asks_at(workspace, i64::MAX)).await?.turns;
         Ok(owed.into_iter().find(same))
     }
 
@@ -1607,17 +1454,6 @@ impl ServerAgents {
         (scope, mut turn, mut reply, began): (TurnScope, Turn, Reply, Ask),
         going: &going::Going,
     ) -> (Ask, Result<(), String>, Option<summary::Owed>) {
-        // An issue is worked on over many agent sessions: its place is made and the session
-        // counted before the model is asked, and one that may not begin ends here with its
-        // plain line.
-        let task = match self.issue_session(workspace, &mut turn, &reply).await {
-            Ok(task) => task,
-            Err(words) => {
-                let ended = reply.finished(&Outcome::Stopped(words)).await;
-                return (turn.ask, ended, None);
-            }
-        };
-        let clock = Instant::now();
         reply.taken().await;
         self.sub_began(workspace, &turn).await;
         let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
@@ -1645,20 +1481,11 @@ impl ServerAgents {
             ),
             (Err(why), _) => (Outcome::Failed(why), 0, TurnUsage::default()),
             (Ok(model), _) => {
-                // The day's limit and the issue's own budget both bound the turn: the smaller.
-                let day_left = limit.map(|limit| limit.saturating_sub(spent_before));
-                let task_left = task.as_ref().and_then(|(_, before)| before.money_left());
-                let budget = match (day_left, task_left) {
-                    (Some(day), Some(task)) => Some(day.min(task)),
-                    (day, task) => day.or(task),
-                };
+                // The day's limit bounds the turn.
+                let budget = limit.map(|limit| limit.saturating_sub(spent_before));
                 let keeping = keeping.as_ref();
                 work(model, &scope, &mut turn, budget, &mut reply, going, keeping).await
             }
-        };
-        let outcome = match &task {
-            Some((task, before)) => task.ended_as(outcome, cost, clock.elapsed(), before).await,
-            None => outcome,
         };
         // An answer is logged where the model gives it; a turn that ends any other way says
         // so here, or the log reads as if it were still going.
@@ -1701,60 +1528,6 @@ impl ServerAgents {
             .then(|| summary::Owed::of((workspace, scope.workspace_id), turn, reply, day))
             .flatten();
         (ended_on, ended, summary)
-    }
-
-    /// Begin an agent session on the issue `turn` asks about: its place is made when it has
-    /// none, the session is said to have begun, and `turn` is told where the issue's working
-    /// material is and what its note reads now. The issue's work as it read before the session;
-    /// none for a turn that is no issue's, or whose issue is gone.
-    ///
-    /// # Errors
-    /// No session may begin (its budget is used up, or its sessions were lost too often): the
-    /// plain line, which is written on the issue as its stop.
-    async fn issue_session(
-        &self,
-        workspace: &str,
-        turn: &mut Turn,
-        reply: &Reply,
-    ) -> Result<Option<(issue_work::IssueWork, tasks_model::Work)>, String> {
-        let (document, issue) = match &turn.ask {
-            Ask::Issue {
-                record: document,
-                issue,
-                ..
-            } => (document.clone(), issue.clone()),
-            Ask::Message { .. } => return Ok(None),
-        };
-        let id = tilo_resource::Id::from_raw(issue.clone());
-        // Only what a session needs of the issue is taken from its document: an issue's rich
-        // text does not travel between threads, and this turn does.
-        let kept = self
-            .read::<tasks::issue_list::IssueList>(workspace, TASKS, &document)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|part| part.issues.get(&id).map(issue_work::Kept::of));
-        let Some(kept) = kept else {
-            return Ok(None);
-        };
-        let task = issue_work::IssueWork {
-            service: reply.provider.clone(),
-            caller: reply.caller.clone(),
-            workspace: workspace.to_owned(),
-            document,
-            issue,
-        };
-        if let Some((why, words)) = issue_work::refused(kept.work.as_ref()) {
-            task.stopped(why, &words).await;
-            return Err(words);
-        }
-        let place = task.place(&self.workspaces, &kept).await;
-        if let Err(error) = task.began().await {
-            tracing::warn!(%workspace, issue = %task.issue, %error, "a session on an issue is not said to have begun");
-        }
-        let before = kept.work.unwrap_or_default();
-        turn.request = issue_work::with_place(&turn.request, &before, &place);
-        Ok(Some((task, before)))
     }
 
     /// The model `turn` is worked with, or why none works on it, in words its person reads.
@@ -2068,9 +1841,7 @@ impl Reply {
     /// Tell the person what the agent is doing now. A note Chat does not take costs the person
     /// the step alone, and [`Self::work`] says why.
     async fn doing(&self, did: &str) {
-        if let Ask::Message { .. } = &self.ask {
-            let _ = self.work(json!({"state": "doing", "did": did}), None).await;
-        }
+        let _ = self.work(json!({"state": "doing", "did": did}), None).await;
     }
 
     /// Tell the person what the agent is doing now, and wait for nothing: the note is handed
@@ -2078,9 +1849,7 @@ impl Reply {
     /// they came. So it stands on the reply before whatever the turn writes there next, and
     /// no tool waits until Chat has taken it. Whether the turn has a reply that takes notes.
     fn notes(&self, did: &str) -> bool {
-        let Ask::Message { part, message, .. } = &self.ask else {
-            return false;
-        };
+        let Ask::Message { part, message, .. } = &self.ask;
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: self.workspace.clone(),
@@ -2192,39 +1961,6 @@ impl Reply {
                     Err(error) => Err(self.unfinished(&error).await),
                 }
             }
-            Ask::Issue { record, issue, .. } => {
-                let words = match outcome {
-                    Outcome::Answered(words) | Outcome::Stopped(words) | Outcome::Failed(words) => {
-                        words.as_str()
-                    }
-                    Outcome::Cancelled => "I was stopped.",
-                };
-                let route = DocumentRoute {
-                    app_id: TASKS.to_owned(),
-                    cluster_id: self.workspace.clone(),
-                    document: record.clone(),
-                };
-                let mut arguments = Map::new();
-                arguments.insert("issue".into(), json!(issue));
-                arguments.insert(
-                    "text".into(),
-                    json!(if words.trim().is_empty() {
-                        "I finished without saying what I did; look at the issue's history for my changes."
-                    } else {
-                        words.trim()
-                    }),
-                );
-                invoke_named(
-                    &self.provider,
-                    &self.caller,
-                    &route,
-                    &tasks_model::issue_resource(&tilo_resource::Id::from_raw(issue)),
-                    "comment",
-                    arguments,
-                )
-                .await
-                .map(drop)
-            }
         }
     }
 
@@ -2233,12 +1969,7 @@ impl Reply {
     /// reads back, and whether it failed. The message is the turn's own ask, and the view's
     /// author is whoever Chat pins from this caller: nothing the model says names either.
     async fn view(&self, input: &Value) -> (String, bool) {
-        let Ask::Message { part, message, .. } = &self.ask else {
-            return (
-                "only an answer in a conversation carries a view".to_owned(),
-                true,
-            );
-        };
+        let Ask::Message { part, message, .. } = &self.ask;
         let given = input.as_object().cloned().unwrap_or_default();
         if let Some(other) = given
             .keys()
@@ -2299,9 +2030,7 @@ impl Reply {
     /// # Errors
     /// Chat did not take it, as it says.
     async fn work(&self, work: Value, say: Option<&str>) -> Result<(), String> {
-        let Ask::Message { part, message, .. } = &self.ask else {
-            return Err("the ask is no message of a conversation".to_owned());
-        };
+        let Ask::Message { part, message, .. } = &self.ask;
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: self.workspace.clone(),

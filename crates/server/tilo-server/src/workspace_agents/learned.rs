@@ -157,9 +157,7 @@ impl Keeping {
     /// facts ([`knows`]).
     pub(super) fn of(workspaces: &Workspaces, workspace: &str, turn: &Turn) -> Option<Self> {
         let keeper = keeps(turn)?;
-        let Ask::Message { message, .. } = &turn.ask else {
-            return None;
-        };
+        let Ask::Message { message, .. } = &turn.ask;
         Some(Self {
             workspaces: workspaces.clone(),
             keeper,

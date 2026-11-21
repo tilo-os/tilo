@@ -73,7 +73,7 @@ fn workspace() -> Replica {
         "so.tilo.lang.discussion",
         "so.tilo.lang.chat",
         "so.tilo.notes",
-        "so.tilo.lang.tasks",
+        "so.tilo.tasks",
     ]
     .iter()
     .map(|app| replica.host.package(app).unwrap().meta)

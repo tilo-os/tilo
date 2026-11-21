@@ -304,7 +304,7 @@ fn field(replica: &Replica, app: &str, ty: &str, name: &str) -> (String, String)
 fn items_of_an_older_document_move_change_and_go_keeping_their_ids() {
     let packages = vec![app!("discussion"), app!("tasks")];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
-    let app = "so.tilo.lang.tasks";
+    let app = "so.tilo.tasks";
     let list = root(&replica, app);
     let (items_field, item_ty) = field(&replica, app, "Tasks", "items");
     let before = listed(&replica, &list, &items_field);
@@ -623,14 +623,14 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
     let _ = id;
 }
 
-/// Tasks, published as `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before: the
+/// Tasks, published as `so.tilo.tasks`, declaring it was `so.tilo.lang.todo` before: the
 /// id Todo's documents were written under.
 fn todo_as_tasks() -> (String, &'static str) {
     let (source, ids) = app!("tasks");
     // Read as the compiler reads it: the header's wrapping is the formatter's
     // business, what it declares is not.
     let (app, previously, _) = PackageSource::single(source).header_with_previously();
-    assert_eq!(app.as_deref(), Some("so.tilo.lang.tasks"), "{source}");
+    assert_eq!(app.as_deref(), Some("so.tilo.tasks"), "{source}");
     assert_eq!(previously, vec!["so.tilo.lang.todo".to_owned()], "{source}");
     (source.to_owned(), ids)
 }
@@ -641,7 +641,7 @@ fn a_renamed_app_opens_the_documents_of_its_earlier_id_where_they_are() {
     let packages = vec![app!("discussion"), (source.as_str(), ids)];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
     let heads = replica.doc.get_heads();
-    let app = "so.tilo.lang.tasks";
+    let app = "so.tilo.tasks";
     let stored = |replica: &Replica| -> Vec<(String, String)> {
         records(&replica.doc)
             .into_iter()

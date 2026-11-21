@@ -1,6 +1,6 @@
 //! A key's calls while a mail import goes on in the same workspace: Ada's logged-in computer
 //! writes mail into the workspace as fast as it reads it in, one new message after another, and
-//! her backend's key lists her tasks, her notes and her folder all the while, through the API
+//! her backend's key lists her notes and her folder all the while, through the API
 //! server as `tilo ls -w` asks it. Mail's writes are another app's: every listing answers at once,
 //! the last as fast as the first, and a folder of more files than a page holds lists whole, never
 //! "kept changing" for writes to Mail.
@@ -72,7 +72,7 @@ async fn beside_an_import() {
     let workspace = made["id"].as_str().unwrap().to_owned();
     let base = format!("/v1/workspaces/{workspace}");
 
-    // Her computer holds the workspace, with her tasks, her notes and her folder.
+    // Her computer holds the workspace, with her notes and her folder.
     let mut page = super::resource_support::open_admitted_peer(
         &on_server.hosted,
         &computer,
@@ -80,7 +80,6 @@ async fn beside_an_import() {
         &workspace,
     )
     .await;
-    page.create("so.tilo.tasks");
     page.create("so.tilo.notes");
     let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
     for index in 0..FILES {
@@ -90,7 +89,6 @@ async fn beside_an_import() {
     }
     super::put_files::write_tree(&page, &mut folder).unwrap();
     page.durable().await;
-    let tasks = format!("{base}/resources?path=tasks&limit=40");
     let notes = format!("{base}/resources?path=notes&limit=40");
     let files = format!("{base}/resources?path=files&limit=100");
     let deadline = tilo_test_env::hang_deadline();
@@ -135,7 +133,7 @@ async fn beside_an_import() {
     for round in 0..ROUNDS {
         let before = written.load(Ordering::Relaxed);
         let mut took = Vec::new();
-        for (call, path) in [("tasks", &tasks), ("notes", &notes)] {
+        for (call, path) in [("notes", &notes)] {
             let (elapsed, (status, listed)) = timed(key.get(path)).await;
             assert_eq!(status, 200, "listing {call} in round {round}: {listed}");
             took.push((call, elapsed));

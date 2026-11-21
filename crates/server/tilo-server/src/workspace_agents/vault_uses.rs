@@ -134,8 +134,6 @@ pub(super) struct TurnUses {
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
-    /// The person the turn acts for, by their person id.
-    person: String,
     /// The ask the turn began with: its conversation is where a question goes.
     ask: Ask,
     /// The uses this turn is offered: none for a turn the entry refuses.
@@ -170,7 +168,6 @@ impl TurnUses {
             workspace: reply.workspace.clone(),
             workspace_id,
             agent: turn.agent.clone(),
-            person: turn.person.clone(),
             ask: turn.ask.clone(),
             offered,
             service: reply.provider.clone(),
@@ -377,11 +374,6 @@ impl TurnUses {
                     .map(|asked| asked.channel.to_string())
                     .ok_or_else(|| "the message that asked is gone".to_owned())
             }
-            Ask::Issue { .. } => Ok(chat::Chat::direct_id([
-                MemberId::person(self.person.clone()),
-                MemberId::agent(self.agent.id.0.clone()),
-            ])
-            .to_string()),
         }
     }
 }

@@ -567,7 +567,7 @@ pub struct Target {
     /// The resource's label, as the place is shown under.
     pub title: String,
     /// The resource's kind, as its app publishes it (`tube.video`,
-    /// `tl.so.tilo.lang.tasks.Tasks`): what a reference to it names.
+    /// `tl.so.tilo.tasks.Tasks`): what a reference to it names.
     pub kind: String,
     /// The view a place shows the resource through when it stands as content on its own
     /// (`place view v for T`), when its app declares one: an app's root whose default view is the
