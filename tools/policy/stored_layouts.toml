@@ -87,3 +87,12 @@ types = [
   "crates/collab/tilo-peer-state/src/owner_commit.rs:CommitBinding",
   "crates/collab/tilo-peer-state/src/owner_commit.rs:CommitTarget",
 ]
+
+[[layout]]
+format = "peer store frames"
+version = 3
+digest = "56bfe06527a2d93f"
+what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key)"""
+types = [
+  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
+]

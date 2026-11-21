@@ -743,9 +743,13 @@ const WORKSPACES: &str = "workspaces";
 
 /// The layout of the frames a store keeps, one postcard [`NeighbourMsg`] per file. Version 1 kept
 /// a document write without the reader set it is sealed for, which version 2 ends it with
-/// ([`NeighbourMsg::AppDocument`]); a store opening frames of version 1 writes each again as
-/// version 2 ([`written_as_today`]) before it records the version it keeps.
-pub(crate) const FRAMES_VERSION: u32 = 2;
+/// ([`NeighbourMsg::AppDocument`]). Version 3 is the frames a document write may name its own
+/// content key in ([`collab_types::EncryptionScheme::DocumentContentKey`]): a build before it
+/// cannot decode such a frame, so it refuses the store by version instead of reading a frame it
+/// cannot. A store opening frames of an earlier version writes each again as version 3
+/// ([`written_as_today`]) before it records the version it keeps; a version-2 frame reads as
+/// today, its envelope naming the workspace's own key.
+pub(crate) const FRAMES_VERSION: u32 = 3;
 /// Where a store records the version of the frames it keeps: no file is version 1, kept before
 /// a store recorded one.
 const FRAMES_VERSION_FILE: &str = "frames-version";

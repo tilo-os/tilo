@@ -365,3 +365,30 @@ tilo_test_env::scenario! {
         assert!(f.replica.publication().sealed_history(APP, DOC).is_empty());
     }
 }
+
+/// A store that kept its frames as version 2, which a version-3 frame reads as today: it brings
+/// the version it keeps up to today's before serving, and the frame reads whole.
+#[test]
+fn a_store_kept_as_version_two_is_brought_up_to_three() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join(FRAME_PATH);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let bytes = kept(include_str!("frame.hex"));
+    std::fs::write(&path, &bytes).unwrap();
+    std::fs::write(root.path().join("frames-version"), b"2").unwrap();
+    let store = crate::store::Store::open(root.path(), crate::store::Appetite::StoreAll).unwrap();
+    let workspace = crate::join::WorkspaceId::parse(WORKSPACE).unwrap();
+    let replay = store
+        .replay(workspace, &[], crate::store::Budget::default())
+        .unwrap();
+    assert_eq!(replay.frames.len(), 1, "the frame is served");
+    assert!(matches!(
+        &replay.frames[0],
+        NeighbourMsg::AppDocument { readers: None, .. }
+    ));
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("frames-version")).unwrap(),
+        "3",
+        "the store records the version it keeps now"
+    );
+}
