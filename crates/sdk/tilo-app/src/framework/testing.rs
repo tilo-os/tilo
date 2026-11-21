@@ -153,7 +153,7 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
         "test-device".into(),
         TEST_WORKSPACE,
         MemberId::person(AUTHOR),
-        role_permissions(AUTHOR, Role::Owner),
+        role_permissions(TEST_WORKSPACE, AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
     let mut app = live_window::<A>(host, profile.path())?;
@@ -214,7 +214,7 @@ pub fn live_window_in_workspace<A: ResourceApp>(
         "test-device".into(),
         workspace,
         MemberId::person(AUTHOR),
-        role_permissions(AUTHOR, Role::Owner),
+        role_permissions(workspace, AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
     let (component, content, inputs) = live_window_component::<A>(&mut host, profile.path())?;
@@ -263,7 +263,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
         "test-device".into(),
         TEST_WORKSPACE,
         MemberId::person(AUTHOR),
-        role_permissions(AUTHOR, Role::Owner),
+        role_permissions(TEST_WORKSPACE, AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
     let app = live_window::<A>(host, profile.path())?;

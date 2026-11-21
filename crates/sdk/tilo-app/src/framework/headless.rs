@@ -2664,7 +2664,7 @@ fn open_app(
     let arguments = arguments.as_slice();
     let person = launch.author.to_owned();
     let author = MemberId::person(person.clone());
-    let permissions = role_permissions(&person, launch.role);
+    let permissions = role_permissions(profile.workspace(), &person, launch.role);
     let host_phase = tilo_resource::profiling::Phase::start("start.host");
     let (mut owner, instance) = opening_owner(&profile, author, &permissions, beside)?;
     host_phase.end();

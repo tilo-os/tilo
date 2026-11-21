@@ -29,7 +29,8 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
     let Ok(reader) = Reader::<A::Resource>::read(&doc) else {
         return 0;
     };
-    let permissions = LivePermissions::fixed(role_permissions("dev", Role::Owner).borrow().clone());
+    let permissions =
+        LivePermissions::fixed(role_permissions("dev", "dev", Role::Owner).borrow().clone());
     let me = ui_core::collaboration::local_user_id();
     let root = build_root::<A>(
         reader,

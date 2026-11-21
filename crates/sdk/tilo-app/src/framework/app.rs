@@ -1674,13 +1674,17 @@ fn merge_peer(
 const CAPTURE_INSTANCE: u64 = 1;
 
 #[cfg(not(target_arch = "wasm32"))]
-/// The permissions of `author` holding `role`, shared with the host so a
-/// later role change reaches the running app.
+/// The permissions of `author` holding `role` in `workspace`, shared with the
+/// host so a later role change reaches the running app. They name the
+/// workspace the app keeps its records in, so what the host decides about
+/// those records is what the app is granted there.
 pub(crate) fn role_permissions(
+    workspace: &str,
     author: &str,
     role: Role,
 ) -> ui_core::permissions::SharedPermissions {
-    ui_core::permissions::SharedPermissions::new(PermissionContext::member(
+    ui_core::permissions::SharedPermissions::new(PermissionContext::member_of(
+        workspace,
         &ui_core::permissions::MemberId::person(author),
         role,
     ))
@@ -2018,7 +2022,7 @@ fn prepare_named(
             "capture-device".into(),
             &workspace,
             MemberId::person("capture-author"),
-            role_permissions("capture-author", Role::Owner),
+            role_permissions(&workspace, "capture-author", Role::Owner),
             tilo_actions::ActionContext::default(),
             Rc::new(profile),
         )?;
@@ -2058,7 +2062,11 @@ fn prepare_named(
         let mut host = super::headless::data_dir_host(
             std::path::Path::new(directory),
             &author,
-            role_permissions(author.id(), Role::Owner),
+            role_permissions(
+                super::headless::DATA_DIR_WORKSPACE,
+                author.id(),
+                Role::Owner,
+            ),
         )?;
         let mut prepared = prepare_on(
             &mut host,
