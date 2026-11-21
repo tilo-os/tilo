@@ -1345,6 +1345,7 @@ impl Workspaces {
         if let Ok(mut links) = self.inner.member.links.lock() {
             links.insert(workspace_id, link.clone());
         }
+        self.take_part_in_keys(&name);
         let following = self.follow_member(&name, &link);
         let (up, waiting) = tokio::sync::watch::channel(false);
         drop(waiting);
@@ -1378,6 +1379,29 @@ impl Workspaces {
             }
         }
         Ok(())
+    }
+
+    /// Have this device take part in the group of the member copy `workspace`, as the copy is
+    /// synced: its key service asks the group's key holders to admit it, and keeps asking until
+    /// one does. The group admits only a device that asks, and reading a sealed record never asks
+    /// (it waits for keys the device is due, [`crate::documents::Sealing::Due`]): a device that
+    /// joined a workspace and only reads what was written there before it arrived would
+    /// otherwise hold every sealed record unopened, however long it waited.
+    fn take_part_in_keys(&self, workspace: &str) {
+        let Some(keys) = self.device_keys() else {
+            return;
+        };
+        let workspace = workspace.to_owned();
+        tokio::spawn(async move {
+            // The first ask starts the device's part in the group; the key service keeps asking
+            // on its own after the wait, so a wait that ends first leaves nothing undone.
+            if let Some(Err(error)) = keys
+                .group_keys(&workspace, collab_types::EVERY_MEMBER, true)
+                .await
+            {
+                tracing::debug!(%workspace, %error, "a member copy's group has not admitted this device yet");
+            }
+        });
     }
 
     /// Project this copy's retained resource frames before starting its link.

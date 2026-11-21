@@ -1741,10 +1741,10 @@ lay_out_lounge() {
 }
 
 # The bundle the web entry serves (build.sh --bundle runtime);
-# TILO_SH_BUNDLE names a built one instead. By default build.sh's local
-# profile, compiled, bound and split on the build server and brought up to
-# date in place (--update): a module that did not change is neither bound nor
-# split again, and only the files that changed come back. The site the web
+# TILO_SH_BUNDLE names a built one instead. By default build.sh's quick
+# profile, the development one `cargo web` builds too, compiled and bound on
+# the build server and brought up to date in place (--update): a module that
+# did not change is not bound again, and only the files that changed come back. The site the web
 # entry serves is laid out from it afterwards (lay_out_web), so a build that
 # stops halfway is never served. With TILO_SH_BUILD=t, t's
 # web-entry-bundle. TILO_SH_BUNDLE_NAMES=1 builds it with its function
@@ -1765,12 +1765,12 @@ build_bundle() {
     from=(--wasm-from "$repo/target/$(bundle_stage)")
     say "laying out the web entry's bundle around the module the build server made (build.sh --wasm-from)"
   else
-    say "building the web entry's bundle (build.sh --bundle runtime --profile local --update ${names[*]}, compiled by $cargo)"
+    say "building the web entry's bundle (build.sh --bundle runtime --profile quick --update ${names[*]}, compiled by $cargo)"
   fi
   mkdir -p "$out"
   CARGO=$here/cargo.sh TILO_SH_CARGO=$cargo TILO_SOURCE_REVISION=$commit \
     "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$out" \
-    --bundle runtime --profile local --update "${names[@]}" "${from[@]}" >&2 \
+    --bundle runtime --profile quick --update "${names[@]}" "${from[@]}" >&2 \
     || die 'the desktop bundle did not build (above)'
   [[ -L $native/bundle ]] || rm -rf "${native:?}/bundle"
   ln -sfn "${out##*/}" "$native/bundle"

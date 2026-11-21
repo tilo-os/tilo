@@ -10,8 +10,8 @@
 #              incremental, without the whole-program link), into
 #              STAGE/programs; a program that did not change keeps its file
 #              there, so the fetch passes over it
-#   bundle     the desktop bundle's module (build.sh --profile local
-#              --wasm-only --update): compiled, bound and split, into
+#   bundle     the web entry's bundle module (build.sh --profile quick
+#              --wasm-only --update): compiled and bound, into
 #              STAGE/bundle (STAGE/bundle-names with --names)
 #
 # Both at once: their profiles are their own, so neither waits for the
@@ -116,7 +116,7 @@ build_bundle() {
   bindgen=$(bindgen_tool) || { echo 'could not build wasm-bindgen' >&2; return 1; }
   [[ ${#names[@]} == 0 ]] || bundle+=-names
   WASM_BINDGEN=$bindgen bash "$repo/crates/browser/tilo-browser-runtime/scripts/build-wasm-on-builder.sh" "$bundle" "$run" \
-    --bundle runtime --profile local --no-wasm-opt --update "${names[@]}"
+    --bundle runtime --profile quick --no-wasm-opt --update "${names[@]}"
 }
 
 mkdir -p "$CARGO_TARGET_DIR/$stage"
