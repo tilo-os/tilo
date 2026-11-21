@@ -164,7 +164,9 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
 
     /// [`Self::barrier`] for `workspaces` alone: a receipt that completes once every write said
     /// before it to one of them is durable at its holder, or with the refusal that prevents it.
-    /// What this device still holds or owes in a workspace not named does not keep it waiting.
+    /// The changes this device made to who is in one of them wait until the host answers the
+    /// write that carries them. What this device still holds or owes in a workspace not named does not keep
+    /// it waiting.
     ///
     /// # Errors
     /// The transport is gone.

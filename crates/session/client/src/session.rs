@@ -300,6 +300,10 @@ pub fn start_session_lent(
 /// before it runs: over `keys` when the device's own key service settles them. One that is
 /// `lent` what its device's own session runs ([`start_session_lent`]) and is handed no keys holds
 /// none.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one struct literal: the session's state, a field a line"
+)]
 fn session_task(
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
@@ -384,6 +388,7 @@ fn session_task(
         when_opened: BTreeSet::new(),
         barriers: Vec::new(),
         sending: BTreeMap::new(),
+        governance_answered: BTreeMap::new(),
         not_ready: BTreeSet::new(),
         awaiting_surface: BTreeMap::new(),
         surfaces_arrived: false,
@@ -623,6 +628,10 @@ struct Task {
     barriers: Vec<outbound::Owed>,
     /// What this connection sent its host of each workspace's ownership.
     sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::membership_check::Sending>,
+    /// The write carrying this device's governance of each workspace the host last answered as
+    /// durable: it stays in ownership after, and a barrier of the workspace waits for it only
+    /// while it is not this one ([`outbound::Scope::Workspaces`]).
+    governance_answered: BTreeMap<tilo_desktop_model::WorkspaceId, [u8; 32]>,
     /// The writes the host was not ready for: each is sent again once the host says the
     /// workspace is ready, and refused if the host turns it away again.
     not_ready: BTreeSet<[u8; 32]>,

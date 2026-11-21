@@ -126,6 +126,9 @@ struct PageWorkspaceSettings {
     opening: Rc<Cell<bool>>,
     /// Whether the host was asked who is in the workspace since the sheet was last down.
     asked: bool,
+    /// Set once the workspace's host holds a change this page made to its people: who is in it
+    /// is asked again.
+    relist: Rc<Cell<bool>>,
     /// Whether the server was asked which servers keep the workspace since the sheet was last down.
     asked_servers: bool,
     /// The members the page followed when the host was last asked: asked again when they move.
@@ -171,6 +174,7 @@ impl PageWorkspaceSettings {
             refresh_documents: Rc::default(),
             opening: Rc::new(Cell::new(false)),
             asked: false,
+            relist: Rc::default(),
             asked_servers: false,
             asked_for: None,
             built: None,
@@ -248,6 +252,39 @@ impl PageWorkspaceSettings {
                 take(reply);
             },
         );
+    }
+
+    /// Write `change` to the workspace's people as this page's own device, as the person's
+    /// desktop writes it: the workspace's host relays it, and the sheet asks who is in the
+    /// workspace again once the host holds it, or says why the workspace refused it.
+    fn govern(&self, change: tilo_action_policy::Change) {
+        let Some(peer) = self.peer else {
+            return self.answered(Err(NO_HOST.to_owned()));
+        };
+        let changes_access = change.is_custom_role_change();
+        let (relist, refresh, state, woken) = (
+            Rc::clone(&self.relist),
+            Rc::clone(&self.refresh_documents),
+            self.state.clone(),
+            Arc::clone(&self.shared.woken),
+        );
+        let written = crate::replicated::govern(
+            peer,
+            vec![change],
+            Box::new(move |written| {
+                match written {
+                    Ok(()) => {
+                        relist.set(true);
+                        refresh.set(changes_access);
+                    }
+                    Err(why) => state.refuse(workspace_people::refusal(&why)),
+                }
+                crate::desktop::wake(&woken);
+            }),
+        );
+        if let Err(why) = written {
+            self.state.refuse(workspace_people::refusal(&why));
+        }
     }
 
     fn list_documents(&self) {
@@ -405,69 +442,46 @@ impl PageWorkspaceSettings {
                 );
             }
             WorkspaceSettingsEffect::SetRole { member, role } => {
-                let (Some(user_public_key), Some(role)) = (
+                let (Some(_), Some(role)) = (
                     person(&member),
                     Role::parse(&role).filter(|r| r.assignable()),
                 ) else {
                     return;
                 };
-                self.change(move |workspace, request_id| WorkspacesRequest::SetRole {
-                    workspace,
-                    request_id,
-                    user_public_key,
+                // A role for someone in the workspace moves them to it, an administrator's
+                // grants and all, as the desktop's sheet writes it.
+                self.govern(tilo_action_policy::Change::SetRole {
+                    person: member,
                     role,
                 });
             }
             WorkspaceSettingsEffect::SaveCustomRole { role, name } => {
-                let role = if role.is_empty() {
+                let id = if role.is_empty() {
                     uuid::Uuid::new_v4().simple().to_string()
                 } else {
                     role
                 };
-                self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
-                    workspace,
-                    request_id,
-                    change: tilo_action_policy::Change::DefineRole {
-                        id: if role.is_empty() {
-                            hex::encode(request_id)
-                        } else {
-                            role
-                        },
-                        name,
-                    },
-                });
+                self.govern(tilo_action_policy::Change::DefineRole { id, name });
             }
             WorkspaceSettingsEffect::SetCustomRole {
                 member,
                 role,
                 assigned,
             } => {
-                self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
-                    workspace,
-                    request_id,
-                    change: tilo_action_policy::Change::SetMemberCustomRole {
-                        person: member,
-                        role,
-                        assigned,
-                    },
+                self.govern(tilo_action_policy::Change::SetMemberCustomRole {
+                    person: member,
+                    role,
+                    assigned,
                 });
             }
             WorkspaceSettingsEffect::RemoveCustomRole { role } => {
-                self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
-                    workspace,
-                    request_id,
-                    change: tilo_action_policy::Change::RemoveRole { id: role },
-                });
+                self.govern(tilo_action_policy::Change::RemoveRole { id: role });
             }
             WorkspaceSettingsEffect::RemoveMember { member } => {
-                let Some(user_public_key) = person(&member) else {
+                if person(&member).is_none() {
                     return;
-                };
-                self.change(move |workspace, request_id| WorkspacesRequest::Remove {
-                    workspace,
-                    request_id,
-                    user_public_key,
-                });
+                }
+                self.govern(tilo_action_policy::Change::RemoveMember { person: member });
             }
             _ => {}
         }
@@ -920,7 +934,11 @@ impl OverSheet for PageWorkspaceSettings {
             self.list_documents();
         }
         // Opening, or the workspace's people moved while the sheet is up: ask who is in it now.
-        if up && (!self.asked || self.asked_for != *self.shared.members.borrow()) {
+        if up
+            && (!self.asked
+                || self.relist.replace(false)
+                || self.asked_for != *self.shared.members.borrow())
+        {
             self.list();
         }
         // Which servers keep the workspace: whether the person may choose them is the server's to

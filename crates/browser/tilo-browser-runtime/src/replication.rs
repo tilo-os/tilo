@@ -93,6 +93,7 @@ pub(crate) fn install() {
         content,
         permit,
         host_then,
+        govern,
         workspace_uuid,
         records,
         desktop_history_heads,
@@ -752,6 +753,36 @@ pub(crate) fn host_then(
     };
     let joined = joined.borrow();
     Ok(ask_then(&joined.peer, request(&joined.uuid), done)?)
+}
+
+/// Write `changes` to peer `id`'s workspace's people as this page's own device, signed with its
+/// key as the desktop signs its own ([`tilo_session_client::membership::Membership`]); `done`
+/// hears once the workspace's host holds them, or why the workspace refused one. A change only
+/// the workspace's owner makes (unmaking an administrator) is theirs to sign, never its host's.
+///
+/// # Errors
+/// The peer replicates no workspace.
+pub(crate) fn govern(
+    id: u32,
+    changes: Vec<tilo_action_policy::Change>,
+    done: crate::replicated::Governed,
+) -> Result<(), String> {
+    let Some(joined) = replica_of(id) else {
+        return Err(crate::replicated::NONE.to_owned());
+    };
+    let (peer, workspace) = {
+        let joined = joined.borrow();
+        (joined.peer.clone(), joined.workspace)
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let membership = tilo_session_client::membership::Membership::of(peer.engine(), workspace);
+        let written = match membership.write(&changes).await {
+            Ok(()) => membership.settled(&peer).await,
+            Err(why) => Err(why),
+        };
+        done(written);
+    });
+    Ok(())
 }
 
 /// Ask `peer`'s host `request` of its workspace administration, and hand `answered` the answer

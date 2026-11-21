@@ -154,12 +154,50 @@ impl Workspaces {
         self.decide(device, workspace, op, now).is_ok()
     }
 
+    /// Whether `device` may make the change `op` in `workspace` now, signed on that device
+    /// itself and relayed by this host: what its person may do there, whether or not this host
+    /// could sign it for them.
+    ///
+    /// # Errors
+    ///
+    /// Why the device may not.
+    pub(super) async fn check_signed_now(
+        &self,
+        device: &DeviceCert,
+        workspace: &str,
+        op: WorkspaceOp<'_>,
+    ) -> Result<(), CollaborationError> {
+        let governed = self.workspace(workspace).await?;
+        let governed = governed.lock().await;
+        self.decide_signed(
+            device,
+            Some(&governed),
+            op,
+            tilo_clock::unix_now_ns(),
+            false,
+        )
+        .map(drop)
+    }
+
     fn decide(
         &self,
         device: &DeviceCert,
         workspace: Option<&GovernedWorkspace>,
         op: WorkspaceOp<'_>,
         now: u64,
+    ) -> Result<String, CollaborationError> {
+        self.decide_signed(device, workspace, op, now, true)
+    }
+
+    /// [`Self::decide`], for a change this host signs when `host_signs`, and otherwise for one
+    /// the device signs itself.
+    fn decide_signed(
+        &self,
+        device: &DeviceCert,
+        workspace: Option<&GovernedWorkspace>,
+        op: WorkspaceOp<'_>,
+        now: u64,
+        host_signs: bool,
     ) -> Result<String, CollaborationError> {
         let host = self.inner.host.cert.user_public_key;
         let server_person = device.user_public_key == host;
@@ -218,7 +256,7 @@ impl Workspaces {
             return Ok(hex::encode(host));
         }
         let workspace = workspace.ok_or_else(|| CollaborationError::new(HOST_PERSON_ONLY))?;
-        decide_by_governance(workspace, device, op, now, host)
+        decide_by_governance(workspace, device, op, now, host_signs.then_some(host))
     }
 }
 
@@ -242,13 +280,14 @@ fn refuse_changing_the_owner(
 /// is one the workspace's governance lets its person do now, and this host,
 /// whose key signs what it carries out, may make that change itself: what
 /// only the workspace's owner may do is signed on a device of theirs, never
-/// relayed by its host. `host` is the host's own person.
+/// relayed by its host. `host` is the host's own person, when it signs the
+/// change; `None` for one the device signs itself.
 fn decide_by_governance(
     workspace: &GovernedWorkspace,
     device: &DeviceCert,
     op: WorkspaceOp<'_>,
     now: u64,
-    host: [u8; 32],
+    host: Option<[u8; 32]>,
 ) -> Result<String, CollaborationError> {
     let member = workspace
         .peer()
@@ -332,6 +371,9 @@ fn decide_by_governance(
         }
     };
     decided.map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
+    let Some(host) = host else {
+        return Ok(person.to_owned());
+    };
     let host = hex::encode(host);
     let signs = member.policy.person_on_device(&host, false);
     let relayed = match op {

@@ -1580,8 +1580,15 @@ impl Workspaces {
             workspace.workspace().to_owned()
         };
         let args = Args::of(&request.argument)?;
+        // The caller's own device writes this change to who is in the workspace, signed as its
+        // person's, and the host only answers whether it may: it removes nobody itself, so there
+        // is no removal of its own to confirm.
+        let signed_by_caller = matches!(
+            address.action.as_str(),
+            ADD_MEMBER | governance::REMOVE_MEMBER
+        ) && args.flag(tilo_server_session::workspaces::SIGNED_BY_CALLER)?;
         let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-        if unconfirmed(&address.action, &args, owner) {
+        if !signed_by_caller && unconfirmed(&address.action, &args, owner) {
             return Err(ActionCallError::confirmation_required());
         }
         // A key's own grant is its own business; anything else an agent asks
@@ -1593,7 +1600,7 @@ impl Workspaces {
                 .chain(&OWNER_CONFIRMED)
                 .find(|verb| verb.id == address.action)
         {
-            self.check_governance(&device, &workspace, verb.id, &args)
+            self.check_governance(&device, &workspace, verb.id, &args, signed_by_caller)
                 .await?;
             self.admit_operation(
                 Some(workspace_id),
@@ -1603,6 +1610,9 @@ impl Workspaces {
                 &arguments_of(request),
             )
             .await?;
+        }
+        if signed_by_caller {
+            return Ok(json!({ "admitted": true }));
         }
         let call = GovernanceCall {
             workspace: &workspace,
@@ -1615,13 +1625,15 @@ impl Workspaces {
 
     /// The person's own checks of the governance action `action` with `args`
     /// by `device`, beyond the action itself, as carrying it out makes them: the place
-    /// a person is given or invited to, and whom a removal or a ban reaches.
+    /// a person is given or invited to, and whom a removal or a ban reaches. A change
+    /// `signed_by_caller` is checked as the device's own, which this host only relays.
     async fn check_governance(
         &self,
         device: &DeviceCert,
         workspace: &str,
         action: &str,
         args: &Args,
+        signed_by_caller: bool,
     ) -> Result<(), ActionCallError> {
         let change;
         let op = match action {
@@ -1642,6 +1654,12 @@ impl Workspaces {
             }
             _ => return Ok(()),
         };
+        if signed_by_caller {
+            return self
+                .check_signed_now(device, workspace, op)
+                .await
+                .map_err(|error| refused(&error));
+        }
         self.check_now(device, Some(workspace), op)
             .await
             .map_err(|error| refused(&error))

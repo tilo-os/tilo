@@ -286,6 +286,27 @@ impl PeerWorkspace<'_> {
     }
 }
 impl PeerWorkspaceMut<'_> {
+    /// Whether `key` may sign for `caller`: a device acts for its own person, and another
+    /// person's certificate is not one its signature may stand for.
+    fn signed_for_caller(
+        &self,
+        caller: &DeviceCert,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if key.device_public_key() != caller.device_public_key
+            && self
+                .peer
+                .certificate(&key.device_public_key(), now)
+                .map_err(|error| error.to_string())?
+                .user_public_key
+                != caller.user_public_key
+        {
+            return Err("a membership change is signed by its caller's own device".into());
+        }
+        Ok(())
+    }
+
     /// Apply the retained person's typed membership command using actual
     /// governor signing ownership. Public command arguments grant no authority.
     pub fn apply_workspace_membership_command(
@@ -315,18 +336,7 @@ impl PeerWorkspaceMut<'_> {
         if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
             return outcome;
         }
-        if key.device_public_key() != caller.device_public_key
-            && self
-                .peer
-                .certificate(&key.device_public_key(), now)
-                .map_err(|error| error.to_string())?
-                .user_public_key
-                != caller.user_public_key
-        {
-            // A device acts for its own person: another person's certificate is
-            // not one its signature may stand for.
-            return Err("a membership change is signed by its caller's own device".into());
-        }
+        self.signed_for_caller(caller, key, now)?;
         if matches!(
             command,
             WorkspaceMembershipCommand::Grant { .. } | WorkspaceMembershipCommand::Revoke { .. }
@@ -337,6 +347,20 @@ impl PeerWorkspaceMut<'_> {
         }
         if let WorkspaceMembershipCommand::Member { change } = command {
             return self.peer.apply_member_change(caller, change, key, now);
+        }
+        if let WorkspaceMembershipCommand::Place {
+            person,
+            place,
+            name,
+        } = command
+        {
+            return self.peer.governance_mut().place_member(
+                *person,
+                *place,
+                name.as_deref(),
+                key,
+                now,
+            );
         }
         if let WorkspaceMembershipCommand::Settings(change) = command {
             return self.peer.apply_settings_change(caller, change, key, now);

@@ -564,21 +564,29 @@ mod tests {
         assert!(!row(&page, &owner).is_self);
         assert!(row(&page, &member).is_self);
 
-        // And the workspace lets them change a person's role.
-        let changed = workspaces
-            .page_workspaces(
+        // And the workspace lets them change a person's role, which the page reads.
+        workspaces
+            .set_member_role(
+                &lounge,
                 &owner,
-                WorkspacesRequest::SetRole {
-                    workspace: lounge,
+                tilo_server_session::workspaces::SetMemberRoleRequest {
                     request_id: rand::random(),
                     user_public_key: member.user_public_key,
                     role: Role::Viewer,
                 },
             )
-            .await;
-        let WorkspacesReply::Workspace(changed) = changed else {
-            panic!("the owner may change a role: {changed:?}");
+            .await
+            .expect("the owner may change a role");
+        let WorkspacesReply::Workspaces(listed) = workspaces
+            .page_workspaces(&owner, WorkspacesRequest::List)
+            .await
+        else {
+            panic!("the owner's page lists its workspaces");
         };
+        let changed = listed
+            .into_iter()
+            .find(|page| page.workspace == lounge)
+            .expect("the Lounge is listed");
         assert_eq!(row(&changed, &member).role, Some(Role::Viewer));
         server.shutdown().await;
     }

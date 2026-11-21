@@ -213,6 +213,8 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+pub(crate) use actions::ADD_MEMBER as ADD_MEMBER_ACTION;
 pub(crate) use actions::{GovernedServer, ServiceWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};

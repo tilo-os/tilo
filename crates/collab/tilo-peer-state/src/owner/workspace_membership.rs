@@ -63,6 +63,10 @@ impl NativeWorkspaceOwner {
             let previous = candidate.peer.clone();
             let (receipt, record) = candidate.change(|live, record| {
                 let before = live.workspace_heads().unwrap_or_default();
+                // A device that changes the workspace's governance drops the names it keeps for
+                // nobody first, as its host does: a removal and a naming merged from two devices
+                // leave one, and governance holding it reads nowhere, so no change is made on it.
+                live.governance_mut().drop_names_of_nobody(key, now)?;
                 live.workspace_mut()
                     .apply_workspace_membership_command(&caller, &command, key, now)?;
                 let next_generation = record

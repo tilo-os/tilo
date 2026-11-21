@@ -357,7 +357,7 @@ pub(crate) fn question_id() -> [u8; 32] {
 /// Each request a page asks ([`WorkspacesRequest`]), by its name, as the
 /// action asked of the server itself (`true`) or of the workspaces it is: an agent's grant
 /// for the one is its grant for the other.
-const PAGE_ACTIONS: [(&str, bool, &str); 24] = [
+const PAGE_ACTIONS: [(&str, bool, &str); 21] = [
     ("List", true, LIST_WORKSPACES),
     ("Create", true, CREATE_WORKSPACE),
     ("Place", true, CREATE_WORKSPACE),
@@ -369,10 +369,7 @@ const PAGE_ACTIONS: [(&str, bool, &str); 24] = [
     ("WaitList", false, super::WAIT_LIST),
     ("Unlist", false, super::UNLIST),
     ("MailInvite", false, super::MAIL_INVITATION),
-    ("SetRole", false, super::ADD_MEMBER),
     ("Remove", false, governance::REMOVE_MEMBER),
-    ("Ban", false, governance::BAN),
-    ("Unban", false, governance::UNBAN),
     ("Notices", false, super::MEMBERS),
     ("Permits", false, super::MEMBERS),
     ("Name", false, super::NAME),
@@ -496,39 +493,12 @@ impl Workspaces {
         use WorkspacesRequest as Asked;
         let change;
         let (workspace, op) = match request {
-            Asked::SetRole {
-                workspace,
-                user_public_key,
-                role,
-                ..
-            } => {
-                change = tilo_action_policy::Change::SetRole {
-                    person: hex::encode(user_public_key),
-                    role: *role,
-                };
-                (Some(workspace), WorkspaceOp::Change(&change))
-            }
             Asked::Remove {
                 workspace,
                 user_public_key,
                 ..
-            }
-            | Asked::Ban {
-                workspace,
-                user_public_key,
-                ..
-            }
-            | Asked::Unban {
-                workspace,
-                user_public_key,
-                ..
             } => {
-                let membership = match request {
-                    Asked::Remove { .. } => Membership::Remove,
-                    Asked::Ban { .. } => Membership::Ban,
-                    _ => Membership::Unban,
-                };
-                change = membership.change(*user_public_key);
+                change = Membership::Remove.change(*user_public_key);
                 (Some(workspace), WorkspaceOp::Change(&change))
             }
             Asked::Invite {

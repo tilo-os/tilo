@@ -590,9 +590,22 @@ impl Task {
             .filter(|workspace_id| scope.reaches(**workspace_id))
             .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
             .flat_map(|workspace| {
-                let owed = owner.owed_writes(workspace).unwrap_or_default();
+                let mut owed = owner.owed_writes(workspace).unwrap_or_default();
                 match scope {
-                    Scope::Session | Scope::Workspaces(_) => owed,
+                    Scope::Session => owed,
+                    // A barrier of whole workspaces also waits for the host to answer the write
+                    // that carries this device's changes to who is in them: whoever asks the
+                    // host after reads the change in what it says.
+                    Scope::Workspaces(_) => {
+                        owed.extend(
+                            owner
+                                .governance_write(workspace)
+                                .ok()
+                                .flatten()
+                                .filter(|id| self.governance_answered.get(&workspace) != Some(id)),
+                        );
+                        owed
+                    }
                     Scope::Documents(documents) => self.owed_to(workspace, documents, owed),
                 }
             })
@@ -827,6 +840,17 @@ impl Task {
             return;
         }
         self.not_ready.remove(&id);
+        if outcome.is_ok()
+            && self
+                .replicas
+                .owner()
+                .governance_write(workspace)
+                .ok()
+                .flatten()
+                == Some(id)
+        {
+            self.governance_answered.insert(workspace, id);
+        }
         // What the refused write would have brought, as its envelope claims it: read before the
         // entry leaves ownership, so whoever holds the record withdraws exactly those changes.
         let withdrawn = match &outcome {

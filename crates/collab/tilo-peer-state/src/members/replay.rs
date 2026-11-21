@@ -556,7 +556,15 @@ fn effect(
                 (&person, &device, &authority, &cx),
                 change,
             )
-            .map_err(|own| Box::new((change.clone(), format!("{refusal:?}; {own}"))))?,
+            .map_err(|own| {
+                // A member's own rule covers grants and their ends alone: why it did not
+                // cover one is part of the answer, and says nothing about any other change.
+                let why = match change {
+                    Change::Grant(_) | Change::Revoke(_) => format!("{refusal}; {own}"),
+                    _ => refusal.to_string(),
+                };
+                Box::new((change.clone(), why))
+            })?,
         };
     }
     Ok(next)
@@ -571,9 +579,7 @@ pub fn refused(
     policy: &WorkspacePolicy,
     op: &SignedMembershipOp,
 ) -> Option<String> {
-    effect(doc, policy, op)
-        .err()
-        .map(|refused| format!("{:?} was refused: {}", refused.0, refused.1))
+    effect(doc, policy, op).err().map(|refused| refused.1)
 }
 
 /// Whether `candidate` keeps every operation `before` holds and adds only

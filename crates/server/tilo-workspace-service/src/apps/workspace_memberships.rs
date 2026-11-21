@@ -81,6 +81,21 @@ impl AppBrokerState {
                 change.action(),
                 Some(encoded(change)?),
             ),
+            // The host's own `member.add`, which it signs as the workspace's
+            // administrator: a member's own device signs this command itself.
+            WorkspaceMembershipCommand::Place {
+                person,
+                place,
+                name,
+            } => (
+                governance_resource(workspace),
+                crate::workspaces::ADD_MEMBER_ACTION,
+                Some(encoded(&serde_json::json!({
+                    "person": hex::encode(person),
+                    "role": place.key(),
+                    "name": name,
+                }))?),
+            ),
             WorkspaceMembershipCommand::Settings(SettingsChange::Rename { name }) => (
                 governance_resource(workspace),
                 "rename",

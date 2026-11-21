@@ -305,38 +305,12 @@ pub enum WorkspacesRequest {
     Pending {
         workspace: String,
     },
-    /// Change a member's role.
-    SetRole {
-        workspace: String,
-        /// Caller-chosen idempotency key.
-        request_id: [u8; 32],
-        /// The member.
-        user_public_key: [u8; 32],
-        role: Role,
-    },
     /// Remove a member and every device of theirs.
     Remove {
         workspace: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
         /// The member.
-        user_public_key: [u8; 32],
-    },
-    /// Remove a person, when a member, and keep them out until unbanned.
-    /// The owner, and a Moderator for members ranked below Moderator.
-    Ban {
-        workspace: String,
-        /// Caller-chosen idempotency key.
-        request_id: [u8; 32],
-        /// The person.
-        user_public_key: [u8; 32],
-    },
-    /// Let a banned person be admitted again.
-    Unban {
-        workspace: String,
-        /// Caller-chosen idempotency key.
-        request_id: [u8; 32],
-        /// The person.
         user_public_key: [u8; 32],
     },
     /// Issue a single-use invitation that admits whoever redeems it with

@@ -127,13 +127,17 @@ impl Page {
                     workspace: cluster_id.into(),
                 })
                 .unwrap();
-            assert!(matches!(
-                tilo_test_env::within("the node enters the governed fixture", answer)
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                tilo_server_protocol::workspaces::WorkspacesReply::Workspace(_)
-            ));
+            let entered = tilo_test_env::within("the node enters the governed fixture", answer)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(
+                    entered,
+                    tilo_server_protocol::workspaces::WorkspacesReply::Workspace(_)
+                ),
+                "the node enters the governed fixture: {entered:?}"
+            );
             peer.send(Cmd::Join(workspace)).unwrap();
         }
         // The page acts as soon as it is open, and an action the host has not

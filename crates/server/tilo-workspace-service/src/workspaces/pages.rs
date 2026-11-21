@@ -30,8 +30,7 @@ use super::collaboration::carried;
 use super::hosts::holders_of;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
-    IssuedInvitation, RemoveMemberRequest, SetMemberRoleRequest, WorkspaceSummary, Workspaces,
-    system_time,
+    IssuedInvitation, RemoveMemberRequest, WorkspaceSummary, Workspaces, system_time,
 };
 use crate::service_authority::ServiceOperation;
 use tilo_lock::MutexRecover as _;
@@ -269,10 +268,14 @@ impl Workspaces {
             | WorkspacesRequest::MailInvite { .. }) => {
                 self.page_invitations(device, request, now).await?
             }
-            request @ (WorkspacesRequest::SetRole { .. }
-            | WorkspacesRequest::Remove { .. }
-            | WorkspacesRequest::Ban { .. }
-            | WorkspacesRequest::Unban { .. }) => self.page_membership(device, request).await?,
+            WorkspacesRequest::Remove {
+                workspace,
+                request_id,
+                user_public_key,
+            } => {
+                self.page_remove(&workspace, device, request_id, user_public_key)
+                    .await?
+            }
             WorkspacesRequest::EditRoles {
                 workspace,
                 request_id,
@@ -578,59 +581,6 @@ impl Workspaces {
         Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
     }
 
-    /// A page's change to who is in a workspace and with which role.
-    async fn page_membership(
-        &self,
-        device: &DeviceCert,
-        request: WorkspacesRequest,
-    ) -> Result<WorkspacesReply, CollaborationError> {
-        Ok(match request {
-            WorkspacesRequest::SetRole {
-                workspace,
-                request_id,
-                user_public_key,
-                role,
-            } => {
-                self.set_member_role(
-                    &workspace,
-                    device,
-                    SetMemberRoleRequest {
-                        request_id,
-                        user_public_key,
-                        role,
-                    },
-                )
-                .await?;
-                self.page_workspace(&workspace, device).await?
-            }
-            WorkspacesRequest::Remove {
-                workspace,
-                request_id,
-                user_public_key,
-            } => {
-                self.page_remove(&workspace, device, request_id, user_public_key)
-                    .await?
-            }
-            WorkspacesRequest::Ban {
-                workspace,
-                request_id,
-                user_public_key,
-            } => {
-                self.page_ban(&workspace, device, request_id, user_public_key, true)
-                    .await?
-            }
-            WorkspacesRequest::Unban {
-                workspace,
-                request_id,
-                user_public_key,
-            } => {
-                self.page_ban(&workspace, device, request_id, user_public_key, false)
-                    .await?
-            }
-            _ => return Err(CollaborationError::new("not a membership request")),
-        })
-    }
-
     /// A page listing the servers keeping a workspace, having another keep it
     /// as well by its site, and letting one go: each answers the servers as
     /// they are then, the one the workspace was made on first.
@@ -737,27 +687,6 @@ impl Workspaces {
             invite_id: issued.invite_id,
             signed_invitation: issued.signed_invitation,
         })
-    }
-
-    /// Ban (`ban`) or unban a person, as the workspace's policy lets `device`.
-    async fn page_ban(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        request_id: [u8; 32],
-        user_public_key: [u8; 32],
-        ban: bool,
-    ) -> Result<WorkspacesReply, CollaborationError> {
-        let request = RemoveMemberRequest {
-            request_id,
-            user_public_key,
-        };
-        if ban {
-            self.ban_member(workspace, device, request).await?;
-        } else {
-            self.unban_member(workspace, device, request).await?;
-        }
-        self.page_workspace(workspace, device).await
     }
 
     async fn page_remove(

@@ -12,6 +12,7 @@ use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+pub use tilo_peer_state::workspace_membership::MemberPlace;
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 /// The workspaces a member shows, as a workspace's governance writes into them: the ones it
@@ -109,6 +110,57 @@ impl<'a> Membership<'a> {
             change: change.clone(),
         })
         .await
+    }
+
+    /// Hold the person `person` (their user root) in the workspace at `place`, as this device:
+    /// a role, one of its administrators, or its owner, whom this device's person hands the
+    /// workspace to. Someone no device of theirs has brought in yet is held all the same, and
+    /// `name` is how the workspace names them until they name themselves. Moving an
+    /// administrator to a role takes their grants back, which, like handing the workspace on,
+    /// is its owner's alone: the change is this device's own, so the workspace's owner makes it
+    /// here and its host relays it as it relays every member's change.
+    ///
+    /// # Errors
+    /// The workspace refused it, saying why, or this device could not publish it.
+    pub async fn place(
+        &self,
+        person: [u8; 32],
+        place: MemberPlace,
+        name: Option<&str>,
+    ) -> Result<(), String> {
+        self.command(WorkspaceMembershipCommand::Place {
+            person,
+            place,
+            name: name.map(str::to_owned),
+        })
+        .await
+    }
+
+    /// Remove the member `person` (their user root) and every device of theirs, as this device:
+    /// an administrator only by the workspace's owner.
+    ///
+    /// # Errors
+    /// The workspace refused it, saying why, or this device could not publish it.
+    pub async fn remove(&self, person: [u8; 32]) -> Result<(), String> {
+        self.commit(&Change::RemoveMember {
+            person: hex::encode(person),
+        })
+        .await
+    }
+
+    /// Wait until the workspace's host holds every change this device wrote to it over `link`,
+    /// the session this membership's engine writes through, or says why it refused one: a
+    /// caller that answers with the workspace as its host reads it answers with the change in
+    /// it.
+    ///
+    /// # Errors
+    /// The host refused a change, or the session ended before it answered.
+    pub async fn settled(&self, link: &crate::Link) -> Result<(), String> {
+        use crate::Outbox as _;
+        link.barrier_of(&[self.workspace_id])
+            .map_err(|closed| closed.to_string())?
+            .await
+            .map_err(|_| "the session ended before the workspace's host answered".to_owned())?
     }
 
     /// Name the workspace `name` as this device: the one name its governance

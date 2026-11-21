@@ -62,3 +62,41 @@ fn a_removed_persons_name_goes_with_them() {
         "nothing is left to drop"
     );
 }
+
+/// A person the workspace names by their root alone, held before any device of theirs joins, may
+/// be handed the workspace: the handing over takes them out of its members, and their name names
+/// its owner, so the workspace's security basis still reads, and no name is dropped as nobody's.
+#[test]
+fn a_named_person_handed_the_workspace_keeps_their_name() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32])
+        .verifying_key()
+        .to_bytes();
+    assert!(
+        peer.governance_mut()
+            .declare_member(
+                root,
+                crate::join::Role::Editor,
+                true,
+                Some("Grace Hopper"),
+                &authority_key,
+                now,
+            )
+            .unwrap()
+    );
+    assert!(
+        peer.governance_mut()
+            .transfer_ownership(root, &authority_key, now)
+            .expect("the owner hands the workspace to the person it names")
+    );
+    peer.security_basis()
+        .unwrap()
+        .expect("the basis reads with the new owner's name in it");
+    assert!(
+        !peer
+            .governance_mut()
+            .drop_names_of_nobody(&authority_key, now)
+            .unwrap(),
+        "the new owner's name is somebody's"
+    );
+}

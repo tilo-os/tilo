@@ -1335,7 +1335,7 @@ pub struct WasmPeer {
     device_key: [u8; 32],
     reporter_cert: DeviceCert,
     owner_cert: DeviceCert,
-    handle: Link,
+    pub(crate) handle: Link,
     /// This page's device in its person's workspaces, over the same session: how it enters them.
     device: Device,
     durable_events: Events,

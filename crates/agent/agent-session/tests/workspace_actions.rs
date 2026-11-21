@@ -96,6 +96,9 @@ mod computer_restart;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_machine_agents.rs"]
 mod hosted_machine_agents;
+#[cfg(test)]
+#[path = "workspace_actions/owner_signs_governance.rs"]
+mod owner_signs_governance;
 
 #[cfg(test)]
 #[path = "workspace_actions/bulk_import.rs"]

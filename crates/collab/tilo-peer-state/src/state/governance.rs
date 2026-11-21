@@ -1272,6 +1272,48 @@ impl PeerGovernanceMut<'_> {
         )
     }
 
+    /// Hold the person `user_public_key` in the workspace at `place`, as
+    /// `key`'s device: a role or one of its administrators, whether or not a
+    /// device of theirs has joined ([`Self::declare_member`]), or its owner,
+    /// whom the workspace is handed to ([`Self::transfer_ownership`]). `name`,
+    /// when given, is how the workspace names them until they name themselves;
+    /// a new owner is no member beside it, and a name they bring is still theirs.
+    /// The same change whichever device writes it, the host's or a member's own,
+    /// and every device that replays it decides it by its writer's grants
+    /// ([`crate::workspace_membership::WorkspaceMembershipCommand::Place`]).
+    ///
+    /// # Errors
+    ///
+    /// The change is not `key`'s device's to make, the person is the workspace's
+    /// own owner and the place a role, `name` is not a display name, or
+    /// governance cannot be updated.
+    pub fn place_member(
+        self,
+        user_public_key: [u8; 32],
+        place: crate::workspace_membership::MemberPlace,
+        name: Option<&str>,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        use crate::workspace_membership::MemberPlace;
+        let (role, administrator) = match place {
+            MemberPlace::Owner => {
+                let handed = PeerGovernanceMut {
+                    peer: &mut *self.peer,
+                }
+                .transfer_ownership(user_public_key, key, now)?;
+                let named = match name {
+                    Some(name) => self.name_person(user_public_key, name, key, now)?,
+                    None => false,
+                };
+                return Ok(handed || named);
+            }
+            MemberPlace::Administrator => (crate::join::Role::Editor, true),
+            MemberPlace::Role(role) => (role, false),
+        };
+        self.declare_member(user_public_key, role, administrator, name, key, now)
+    }
+
     /// Name the person `user_public_key` `name` in the workspace: the name
     /// every reader of [`PeerGovernance::governed_members`] shows for them.
     /// The name is kept under the person's root, where the workspace holds
@@ -1365,7 +1407,7 @@ impl PeerGovernanceMut<'_> {
             return Ok(false);
         };
         let owner = hex::encode(self.peer.core.owner);
-        let members = crate::members::replay_declared(held).members;
+        let declared = crate::members::replay_declared(held);
         let identities = held.identities();
         let nobody: Vec<String> = held
             .policy()
@@ -1373,8 +1415,9 @@ impl PeerGovernanceMut<'_> {
             .keys()
             .filter(|named| {
                 **named != owner
+                    && declared.owner.as_ref() != Some(*named)
                     && !identities.contains_key(*named)
-                    && !members.contains_key(*named)
+                    && !declared.members.contains_key(*named)
             })
             .cloned()
             .collect();

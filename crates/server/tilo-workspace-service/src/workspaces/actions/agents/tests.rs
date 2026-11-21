@@ -411,16 +411,15 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
     let allowing = Person::answering(ConfirmationAnswer::AllowOnce);
     workspaces.ask_people(allowing.clone());
 
-    // Ada moves nobody herself, so her agent is refused before she is asked:
+    // Ada removes nobody herself, so her agent is refused before she is asked:
     // her yes would be refused after.
-    let set_role = WorkspacesRequest::SetRole {
+    let removing = WorkspacesRequest::Remove {
         workspace: workspace.clone(),
         request_id: rand::random(),
         user_public_key: bo.user_public_key,
-        role: tilo_action_policy::Role::Viewer,
     };
     let refused = workspaces
-        .admit_page(&ada, &agent_of(&ada), &set_role)
+        .admit_page(&ada, &agent_of(&ada), &removing)
         .await;
     assert!(refused.is_err(), "{refused:?}");
 

@@ -9,7 +9,7 @@
 use collab_types::workspace_grant::WorkspaceGrant;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::join::{JoinBootstrap, Role};
+use tilo_peer_state::join::JoinBootstrap;
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_log::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_log::{JoinError as CollaborationError, Redeeming};
@@ -35,42 +35,7 @@ pub(super) fn carried(name: &str) -> Option<String> {
         .then(|| name.to_owned())
 }
 
-/// Where [`Workspaces::add_member`] puts a person.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MemberPlace {
-    /// A member at this role, governing nothing.
-    Role(Role),
-    /// An editor holding every governance action.
-    Administrator,
-    /// An administrator the workspace is kept for: they make and unmake its
-    /// administrators and owners.
-    Owner,
-}
-
-impl MemberPlace {
-    /// The role an invitation for this place holds, and whether its grant makes the person an
-    /// administrator: an administrator joins as an Editor and is made one by the invitation's
-    /// own grant, never by a role above the inviter's; an owner is an administrator as well.
-    #[must_use]
-    pub fn invited_as(self) -> (Role, bool) {
-        match self {
-            Self::Role(role) => (role, false),
-            Self::Administrator | Self::Owner => (Role::Editor, true),
-        }
-    }
-
-    /// The place `text` names: a role, `administrator` or `owner`.
-    #[must_use]
-    pub fn parse(text: &str) -> Option<Self> {
-        match text {
-            "administrator" => Some(Self::Administrator),
-            "owner" => Some(Self::Owner),
-            role => Role::parse(role)
-                .filter(|role| role.assignable())
-                .map(Self::Role),
-        }
-    }
-}
+pub use tilo_peer_state::workspace_membership::MemberPlace;
 
 /// Hold a person in a workspace by their key ([`Workspaces::add_member`]).
 #[derive(Clone, Debug)]
@@ -768,12 +733,8 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         let person = request.user_public_key;
-        let (role, makes_administrator, makes_owner) = match request.place {
-            MemberPlace::Role(role) => (role, false, false),
-            MemberPlace::Administrator => (Role::Editor, true, false),
-            MemberPlace::Owner => (Role::Editor, false, true),
-        };
-        let op = WorkspaceOp::Place(person, request.place);
+        let place = request.place;
+        let op = WorkspaceOp::Place(person, place);
         self.authorize(administrator, Some(&workspace), op, now)?;
         let key = self.inner.host.key.clone();
         let name = request.name.as_deref();
@@ -781,35 +742,10 @@ impl Workspaces {
             .administer(
                 &mut workspace,
                 request.request_id,
-                request_digest(&("member", person, &request.place, name))?,
+                request_digest(&("member", person, &place, name))?,
                 |peer| {
-                    // The workspace is handed to its new owner, who is no
-                    // member beside it; a name they bring is still theirs.
-                    if makes_owner {
-                        let handed = peer.governance_mut().transfer_ownership(
-                            person,
-                            &key,
-                            system_time(now),
-                        )?;
-                        let named = match name {
-                            Some(name) => peer.governance_mut().name_person(
-                                person,
-                                name,
-                                &key,
-                                system_time(now),
-                            )?,
-                            None => false,
-                        };
-                        return Ok(handed || named);
-                    }
-                    peer.governance_mut().declare_member(
-                        person,
-                        role,
-                        makes_administrator,
-                        name,
-                        &key,
-                        system_time(now),
-                    )
+                    peer.governance_mut()
+                        .place_member(person, place, name, &key, system_time(now))
                 },
                 now,
             )

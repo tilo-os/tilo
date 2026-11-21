@@ -191,11 +191,7 @@ impl StatePeer {
             command,
         )?;
         if let Some(why) = members::refused(doc, &members::replay(doc, &workspace), &op) {
-            return Err(format!(
-                "the membership change is not this device's to make, as device {} of {}: {why}",
-                hex::encode(op.author.device_public_key),
-                op.person(),
-            ));
+            return Err(why);
         }
         members::put_op(doc, &op)?;
         Ok(())

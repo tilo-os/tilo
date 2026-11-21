@@ -49,6 +49,7 @@ use base64::Engine as _;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_session_client::device::DeviceRefusal;
+use tilo_session_client::membership::{MemberPlace, Membership};
 
 /// The path of a workspace's people.
 pub const ROOT: &str = "workspace/members";
@@ -76,6 +77,11 @@ const MEMBERS: &str = "member.list";
 const INVITATIONS: &str = "invitation.list";
 const CANCEL: &str = "invitation.cancel";
 const NAME: &str = "member.name";
+/// The workspace's governance verb that removes a member.
+const REMOVE: &str = "remove-member";
+/// The step a refused change of who is in the workspace names.
+const OWN_NEXT: &str = "its owner makes and unmakes its administrators and hands it on, from a \
+                        device of their own; an administrator gives every other place";
 
 /// Whether `tool` with `arguments` is about the workspace's people.
 pub(crate) fn addresses(tool: &str, arguments: &Value) -> bool {
@@ -349,10 +355,64 @@ impl Session {
             }
             asked.insert("name".into(), json!(name));
         }
+        let key = hex::decode(person)
+            .ok()
+            .and_then(|key| <[u8; 32]>::try_from(key).ok());
+        if let (Some(place), Some(key)) = (MemberPlace::parse(role), key) {
+            let name = asked.get("name").and_then(Value::as_str);
+            if let Some(signed) = self
+                .sign_own(workspace, OwnChange::Place(key, place, name), &asked)
+                .await
+            {
+                return match signed {
+                    Ok(()) => self.list(workspace).await,
+                    Err(outcome) => outcome,
+                };
+            }
+        }
         match self.govern(workspace, ADD, asked).await {
             Ok(_) => self.list(workspace).await,
             Err(outcome) => outcome,
         }
+    }
+
+    /// Write `change` as the key's own device, when the key is one: a device of its person's,
+    /// which signs their changes to the workspace's governance itself, as their desktop and
+    /// their page do, and the workspace's host relays it. `None` for a key made to act for them
+    /// (an agent's grant, a server key), whose changes the host makes after asking the person
+    /// as far as their grants let it: such a key governs no workspace itself.
+    ///
+    /// The host is asked first, with the same verb and `asked`, whether the change is the
+    /// device's to make: by its person's place in the workspace and, as the session of a
+    /// computer `tilo login` made a device of is its agent's run, by that agent's grants there,
+    /// which ask the person before it where they say so. Only then does the device sign it.
+    async fn sign_own(
+        &self,
+        workspace: &str,
+        change: OwnChange<'_>,
+        asked: &Map<String, Value>,
+    ) -> Option<Result<(), Outcome>> {
+        let connection = match self.connection() {
+            Ok(connection) => connection,
+            Err(error) => return Some(Err(refused(&error))),
+        };
+        let capabilities = &connection.device.cert().capabilities;
+        if capabilities.agent.is_some() || capabilities.stand_in || capabilities.server_key {
+            return None;
+        }
+        let verb = match change {
+            OwnChange::Place(..) => ADD,
+            OwnChange::Remove(_) => REMOVE,
+        };
+        let mut asked = asked.clone();
+        asked.insert(
+            tilo_server_session::workspaces::SIGNED_BY_CALLER.into(),
+            json!(true),
+        );
+        if let Err(outcome) = admitted(connection, workspace, verb, asked).await {
+            return Some(Err(outcome));
+        }
+        Some(sign_as(connection, workspace, change).await)
     }
 
     /// Move the member `args.person` names to `args.role`: what adding them
@@ -377,6 +437,17 @@ impl Session {
                 "workspace/members#list names each member's key",
             );
         };
+        let mut asked = Map::new();
+        asked.insert("person".into(), json!(hex::encode(person)));
+        if let Some(signed) = self
+            .sign_own(workspace, OwnChange::Remove(person), &asked)
+            .await
+        {
+            return match signed {
+                Ok(()) => self.list(workspace).await,
+                Err(outcome) => outcome,
+            };
+        }
         let connection = match self.connection() {
             Ok(connection) => connection,
             Err(error) => return refused(&error),
@@ -460,6 +531,100 @@ impl Session {
             Err(outcome) => outcome,
         }
     }
+}
+
+/// A change the key's own device signs ([`Session::sign_own`]).
+enum OwnChange<'a> {
+    /// The person, the place, and the name the workspace calls them by.
+    Place([u8; 32], MemberPlace, Option<&'a str>),
+    /// The person to remove.
+    Remove([u8; 32]),
+}
+
+/// Whether the workspace's host admits `verb` with `asked` (which says the caller signs it,
+/// [`tilo_server_session::workspaces::SIGNED_BY_CALLER`]) for `connection`: waited for while the
+/// host asks the person, since the device signs the change only once they allowed it. The host
+/// answers at once that a question waits on them, and the same invocation asked again is
+/// followed until they answer.
+async fn admitted(
+    connection: &crate::server::Connection,
+    workspace: &str,
+    verb: &str,
+    asked: Map<String, Value>,
+) -> Result<(), Outcome> {
+    let id = connection
+        .server()
+        .enter(connection, workspace)
+        .await
+        .map_err(|error| refused(&error))?;
+    let target = RemoteActionTarget::workspace_governance(workspace, verb);
+    let invocation = tilo_actions::InvocationId::new();
+    let mut asked_again = false;
+    loop {
+        let answer = connection
+            .device
+            .ask_server_as(id, target.clone(), asked.clone(), invocation)
+            .await;
+        match answer {
+            Ok(_) => return Ok(()),
+            Err(error) if error.code == DeviceRefusal::AWAITING_APPROVAL && !asked_again => {
+                asked_again = true;
+            }
+            Err(error) if error.code == DeviceRefusal::AWAITING_APPROVAL => {
+                return Err(failed(
+                    crate::v1::AWAITING_APPROVAL,
+                    error.message,
+                    "the person did not answer in time; ask again once they can",
+                ));
+            }
+            Err(error) if error.code == DeviceRefusal::UNANSWERED => {
+                return Err(failed("unavailable", error.message, "try again shortly"));
+            }
+            Err(error) => {
+                return Err(failed(
+                    "not_permitted",
+                    format!("the workspace refused: {}", error.message),
+                    OWN_NEXT,
+                ));
+            }
+        }
+    }
+}
+
+/// Write `change` to `workspace`'s governance as `connection`'s device, entering the workspace
+/// first, and wait for its host to hold it: what the workspace refused, as the refusal.
+async fn sign_as(
+    connection: &crate::server::Connection,
+    workspace: &str,
+    change: OwnChange<'_>,
+) -> Result<(), Outcome> {
+    let refusal = |why: String| {
+        failed(
+            "not_permitted",
+            format!("the workspace refused: {why}"),
+            OWN_NEXT,
+        )
+    };
+    let id = connection
+        .server()
+        .enter(connection, workspace)
+        .await
+        .map_err(|error| refused(&error))?;
+    if !connection.device.admitted(id).await {
+        return Err(failed(
+            "unavailable",
+            "the workspace has not let this device in yet",
+            "try again shortly",
+        ));
+    }
+    let link = connection.device.session();
+    let membership = Membership::of(link.engine(), id);
+    match change {
+        OwnChange::Place(person, place, name) => membership.place(person, place, name).await,
+        OwnChange::Remove(person) => membership.remove(person).await,
+    }
+    .map_err(refusal)?;
+    membership.settled(link).await.map_err(refusal)
 }
 
 /// The user public key `args.person` names.

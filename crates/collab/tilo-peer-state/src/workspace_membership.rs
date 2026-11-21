@@ -315,6 +315,66 @@ pub enum WorkspaceMembershipCommand {
     /// that device's to take back, so it travels from the member's own device
     /// and no other ([`crate::WorkDelegation`]).
     RevokeWorkDelegation { server: [u8; 32] },
+    /// Hold the person whose user root is `person` in the workspace at `place`,
+    /// whether or not a device of theirs has joined yet: a role, one of its
+    /// administrators, or its owner, whom the caller then hands it to. A member
+    /// already is moved to the place, which takes an administrator's grants
+    /// back when it is a role. `name`, when it carries one, is how the
+    /// workspace names them until they name themselves. Decided against the
+    /// caller's own grants where they made it, on every device that receives
+    /// it: an administrator is unmade and the workspace handed on by its owner
+    /// alone.
+    Place {
+        person: [u8; 32],
+        place: MemberPlace,
+        name: Option<String>,
+    },
+}
+
+/// Where [`WorkspaceMembershipCommand::Place`] puts a person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemberPlace {
+    /// A member at this role, governing nothing.
+    Role(crate::join::Role),
+    /// An editor holding every governance action.
+    Administrator,
+    /// The workspace's owner: the owner the caller is hands the workspace to them.
+    Owner,
+}
+
+impl MemberPlace {
+    /// The role an invitation for this place holds, and whether its grant makes the person an
+    /// administrator: an administrator joins as an Editor and is made one by the invitation's
+    /// own grant, never by a role above the inviter's; an owner is an administrator as well.
+    #[must_use]
+    pub fn invited_as(self) -> (crate::join::Role, bool) {
+        match self {
+            Self::Role(role) => (role, false),
+            Self::Administrator | Self::Owner => (crate::join::Role::Editor, true),
+        }
+    }
+
+    /// What [`Self::parse`] reads this place from.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Role(role) => role.key(),
+            Self::Administrator => "administrator",
+            Self::Owner => "owner",
+        }
+    }
+
+    /// The place `text` names: a role, `administrator` or `owner`.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "administrator" => Some(Self::Administrator),
+            "owner" => Some(Self::Owner),
+            role => crate::join::Role::parse(role)
+                .filter(|role| role.assignable())
+                .map(Self::Role),
+        }
+    }
 }
 
 /// The longest lease id a member claims.
@@ -425,6 +485,13 @@ impl WorkspaceMembershipCommand {
         }
         if let Self::Member { change } = self {
             return validate_member_change(change);
+        }
+        if let Self::Place { name, .. } = self {
+            return name.as_deref().map_or(Ok(()), |name| {
+                tilo_user_identity::display_name(name)
+                    .map(drop)
+                    .map_err(|error| error.reason().to_owned())
+            });
         }
         if let Self::Settings(change) = self {
             return match change {

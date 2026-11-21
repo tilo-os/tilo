@@ -58,6 +58,10 @@ pub(crate) type Ask = Box<dyn FnOnce(&str) -> WorkspacesRequest>;
 pub(crate) type Answer =
     Box<dyn FnOnce(Result<tilo_server_protocol::workspaces::WorkspacesReply, String>)>;
 
+/// Where what the workspace's host made of a page's own governance change goes: nothing once it
+/// holds it, or why it refused it.
+pub(crate) type Governed = Box<dyn FnOnce(Result<(), String>)>;
+
 /// What a page without a peer answers when it is asked about the workspace it
 /// replicates: it replicates none.
 pub(crate) const NONE: &str = "this page joined no workspace";
@@ -107,6 +111,9 @@ pub(crate) struct Replicated {
     pub(crate) permit: fn(u32, &str, bool),
     /// Ask the workspace's host a request through its workspaces API.
     pub(crate) host_then: fn(u32, Ask, Answer) -> Result<(), String>,
+    /// Write changes to the workspace's people into its governance as this page's own device,
+    /// as every member's device writes its own: its host relays them.
+    pub(crate) govern: fn(u32, Vec<tilo_action_policy::Change>, Governed) -> Result<(), String>,
     /// The workspace peer `id` replicates, by its uuid.
     pub(crate) workspace_uuid: fn(u32) -> Option<String>,
     /// The records of that workspace the page holds, as wire `(app, record)`.
@@ -238,6 +245,16 @@ pub(crate) fn permit(id: u32, node: &str, may: bool) {
 pub(crate) fn host_then(id: u32, request: Ask, done: Answer) -> Result<(), String> {
     installed(Err(NONE.to_owned()), |replicated| {
         (replicated.host_then)(id, request, done)
+    })
+}
+
+pub(crate) fn govern(
+    id: u32,
+    changes: Vec<tilo_action_policy::Change>,
+    done: Governed,
+) -> Result<(), String> {
+    installed(Err(NONE.to_owned()), |replicated| {
+        (replicated.govern)(id, changes, done)
     })
 }
 

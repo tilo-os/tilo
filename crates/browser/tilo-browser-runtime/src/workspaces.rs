@@ -84,26 +84,19 @@ impl WorkspacesArgs {
         })
     }
 
-    /// Removing, banning or unbanning the person these arguments name.
-    fn about_member(&self, op: &str, workspace: String) -> Result<WorkspacesRequest, JsError> {
-        let user_public_key = named_key(self.user_public_key.as_ref(), "person")?;
-        let request_id = new_request_id()?;
+    /// The change to the person these arguments name that `op` asks for: their role set,
+    /// or removing, banning or unbanning them.
+    fn about_member(&self, op: &str) -> Result<tilo_action_policy::Change, JsError> {
+        use tilo_action_policy::Change;
+        let person = hex::encode(named_key(self.user_public_key.as_ref(), "person")?);
         Ok(match op {
-            "remove" => WorkspacesRequest::Remove {
-                workspace,
-                request_id,
-                user_public_key,
+            "setRole" => Change::SetRole {
+                person,
+                role: self.role()?,
             },
-            "ban" => WorkspacesRequest::Ban {
-                workspace,
-                request_id,
-                user_public_key,
-            },
-            _ => WorkspacesRequest::Unban {
-                workspace,
-                request_id,
-                user_public_key,
-            },
+            "remove" => Change::RemoveMember { person },
+            "ban" => Change::Ban { person },
+            _ => Change::Unban { person },
         })
     }
 }
@@ -253,6 +246,19 @@ impl WasmPeer {
     }
 }
 
+impl WasmPeer {
+    /// Write `change` to the people of the workspace `id` names as this page's device, and wait
+    /// for its host to hold it.
+    async fn govern(&self, id: &str, change: tilo_action_policy::Change) -> Result<(), JsError> {
+        let workspace = tilo_desktop_model::WorkspaceId::parse(id)
+            .ok_or_else(|| js_error(format!("{id} names no workspace")))?;
+        let membership =
+            tilo_session_client::membership::Membership::of(self.handle.engine(), workspace);
+        membership.commit(&change).await.map_err(js_error)?;
+        membership.settled(&self.handle).await.map_err(js_error)
+    }
+}
+
 #[wasm_bindgen]
 impl WasmPeer {
     /// Administer the host's workspaces as this device: `op` names the call and
@@ -331,17 +337,17 @@ impl WasmPeer {
             "waitList" | "unlist" | "mailInvite" | "cancel" => {
                 self.entries_asked(op, &args, &id).await?
             }
-            "setRole" => one(self
-                .workspaces_request(WorkspacesRequest::SetRole {
-                    workspace: id.clone(),
-                    request_id: new_request_id()?,
-                    user_public_key: named_key(args.user_public_key.as_ref(), "person")?,
-                    role: args.role()?,
-                })
-                .await?)?,
-            "remove" | "ban" | "unban" => one(self
-                .workspaces_request(args.about_member(op, id.clone())?)
-                .await?)?,
+            // A change to the workspace's people is this page's own, signed as its person's
+            // device as the desktop signs it, and relayed by the workspace's host: answered with
+            // the workspace as the host lists it once it holds the change.
+            "setRole" | "remove" | "ban" | "unban" => {
+                self.govern(&id, args.about_member(op)?).await?;
+                let list = governed(self.workspaces_request(WorkspacesRequest::List).await?)?;
+                match list.iter().find(|held| held.workspace == id) {
+                    Some(held) => workspace(held),
+                    None => return Err(js_error("the server does not hold this workspace")),
+                }
+            }
             other => return Err(js_error(format!("no such request: {other}"))),
         };
         serde_json::to_string(&answer).map_err(js_error)

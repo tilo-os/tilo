@@ -1804,6 +1804,18 @@ impl NativeWorkspaceOwner {
             ownership_ids(publication, self.ownership(workspace))
         })
     }
+    /// The write in `workspace`'s ownership that carries this device's governance of it, by id:
+    /// the changes it made to who is in the workspace, as one of its members or as the device of
+    /// its owner. It stays in ownership after the host answers it, so a caller that waits for the
+    /// host to hold it waits for that answer.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    pub fn governance_write(&self, workspace: WorkspaceId) -> Result<Option<[u8; 32]>, String> {
+        self.with_current(workspace, |view| {
+            Ok(state(view)?.governance.first().map(|entry| entry.id))
+        })
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn outgoing_status(
         &self,
