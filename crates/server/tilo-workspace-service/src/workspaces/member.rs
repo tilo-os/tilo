@@ -2028,6 +2028,12 @@ impl Workspaces {
             // service) is still the apps' to show, which may hold its keys.
             self.hand_on(&governed, author, message, history);
         }
+        // A write of this device's own the serving device sent is one this
+        // device made before it lost what it held, an empty disk after a move:
+        // its apps never had it in this life, and take it in as anyone's.
+        if self.member_device_key() == Some(author) {
+            self.hand_on_any(&governed, author, message, history);
+        }
         // Kept before the copy is let go, so the copy taking in what it kept once its keys
         // arrive ([`Self::take_in_what_keys_open`]) reads this write too, if this copy could not
         // take it in.

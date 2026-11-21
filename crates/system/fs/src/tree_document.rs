@@ -167,6 +167,39 @@ struct TreePublisher {
     /// Where this device asks for a record's content keys, when the workspace seals its records.
     identity: PathBuf,
     signer: Option<Arc<BrokerSigningIdentity>>,
+    /// The changes this connection published lately.
+    published: Published,
+}
+
+/// The sequence numbers of the changes one connection published lately. A change signed with this
+/// device's key that the connection did not publish is one this device made before it lost what it
+/// held (a restart on an empty disk, a state put back from an older copy): it is taken like
+/// anyone's, or the device never holds its own files again.
+#[derive(Default)]
+struct Published {
+    order: std::collections::VecDeque<u64>,
+    seqs: std::collections::HashSet<u64>,
+}
+
+impl Published {
+    /// How many published changes are remembered; one that came back after more is taken again,
+    /// which changes nothing in a tree that holds it.
+    const KEPT: usize = 4096;
+
+    fn note(&mut self, seq: u64) {
+        if self.seqs.insert(seq) {
+            self.order.push_back(seq);
+        }
+        while self.order.len() > Self::KEPT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.seqs.remove(&oldest);
+            }
+        }
+    }
+
+    fn contains(&self, seq: u64) -> bool {
+        self.seqs.contains(&seq)
+    }
 }
 
 /// This device's side of one record of the tree: its channel, what it published of the record, and
@@ -243,6 +276,7 @@ impl TreePublisher {
             records: BTreeMap::new(),
             identity: identity.to_path_buf(),
             signer: None,
+            published: Published::default(),
         })
     }
 
@@ -494,7 +528,11 @@ impl TreePublisher {
         tell: &tokio::sync::mpsc::UnboundedSender<FromRecord>,
     ) -> Result<()> {
         let op: SignedOp = postcard::from_bytes(&event.op).context("a signed change decodes")?;
-        if op.author.as_bytes() == &self.credentials.device_public_key() {
+        // A change this connection published may come back to it, and changes nothing here; one
+        // this device published before it lost what it held is taken as anyone's is.
+        if op.author.as_bytes() == &self.credentials.device_public_key()
+            && self.published.contains(op.seq)
+        {
             return Ok(());
         }
         let Some(record) = self.records.get_mut(&chunk) else {
@@ -746,6 +784,7 @@ impl TreePublisher {
             sign_op(&mut op, self.credentials.signer())
                 .context("this device signs the change it publishes")?;
             let bytes = postcard::to_stdvec(&op).context("a signed change encodes")?;
+            self.published.note(op.seq);
             record
                 .handle
                 .send(&bytes)

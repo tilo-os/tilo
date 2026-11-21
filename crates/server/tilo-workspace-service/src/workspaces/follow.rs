@@ -97,8 +97,24 @@ impl Workspaces {
         message: &neighbour_wire::NeighbourMsg,
         history: bool,
     ) {
-        if self.member_device_key() == Some(author)
-            || !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. })
+        if self.member_device_key() == Some(author) {
+            return;
+        }
+        self.hand_on_any(workspace, author, message, history);
+    }
+
+    /// Hand `message`, `author`'s write `workspace` took in, to the apps of
+    /// this device that follow it, whoever wrote it: a write of this device's
+    /// own that its copy lacked, one it made before it lost what it held (a
+    /// restart on an empty disk), is the apps' to take in as anyone's is.
+    pub(super) fn hand_on_any(
+        &self,
+        workspace: &GovernedWorkspace,
+        author: [u8; 32],
+        message: &neighbour_wire::NeighbourMsg,
+        history: bool,
+    ) {
+        if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. })
             || self.inner.member.writes.receiver_count() == 0
         {
             return;
