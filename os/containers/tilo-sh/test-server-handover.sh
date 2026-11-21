@@ -5,18 +5,18 @@
 # finishes the move alone. Two tilo.sh stacks come up on this machine from this checkout's stack.sh, the first
 # from the earlier build's programs and the second from this commit's. The second is another
 # server of the same person, as a real move's is: it starts with the earlier stack's workspace
-# root (the operator's secret) and its Lounge's id, and a fresh state. Each stack has its own
-# person. Then, each step said as it passes or fails:
+# root (the operator's secret), its Lounge's id and its person, and a fresh state. Then, each
+# step said as it passes or fails:
 #
 #   1. the earlier server holds a workspace with members and records in notes, chat, files and
 #      mail, counted as its API answers them;
 #   2. this commit's server founds nothing under the Lounge's id: it waits until the earlier
-#      server hands it the Lounge (`workspace/servers#add`), then comes up, and its stack's
-#      person is made an owner of the workspace;
+#      server hands it the Lounge (`workspace/servers#add`), then comes up;
 #   3. the workspace's owner has the earlier server hand it over (`workspace/servers#add`, the
 #      governance action `server.add`, with this commit's server's site);
 #   4. this commit's server holds every record and member, and a write on the earlier server
-#      reaches it;
+#      reaches it. The earlier build kept the workspace for its person while its server owned
+#      it; this commit's server hands it to that person, who is its owner from then on;
 #   5. the earlier stack stops, its state kept, as a server taken off the move does; the owner
 #      has this commit's server let it go (`server.remove`, naming it by its device key, since
 #      its site answers no more), and the workspace is still served, takes writes, and its
@@ -164,13 +164,15 @@ fi
 # -- 2. this commit's server, another of the same person's -----------------------------------
 # It takes the earlier stack's workspace root and the Lounge's id, as a server a workspace moves
 # to is given its operator's secret, and comes up only once it holds the Lounge: the earlier
-# server's owner hands it over as any workspace is handed to another server. Its stack's own
-# person is made an owner of the workspace, who later lets the earlier server go from this
-# commit's side.
+# server's owner hands it over as any workspace is handed to another server. Its person is the
+# earlier stack's, on the same device of theirs, who approves a key of their own for this
+# commit's API and later lets the earlier server go from this commit's side.
 say "2. this commit's stack on $to_base ($to_programs), handed the Lounge"
-mkdir -p "$work/to/secrets" "$work/to/server/lounge"
+mkdir -p "$work/to/secrets" "$work/to/server/lounge" "$work/to/owner"
 cp "$work/from/secrets/workspace-root-lounge" "$work/to/secrets/workspace-root-lounge"
 cp "$work/from/server/lounge/workspace-id" "$work/to/server/lounge/workspace-id"
+cp "$work/from/owner/key" "$work/to/owner/key"
+ln -s "$work/from/owner/home" "$work/to/owner/home"
 lounge=$(cat "$work/from/server/lounge/workspace-id")
 stack to up >"$steps/to-up.log" 2>&1 &
 to_up=$!
@@ -193,14 +195,7 @@ if ! stack to owner --here >"$steps/to-owner.log" 2>&1; then
   fail '2. this commit'\''s stack names its owner' "$(tail -3 "$steps/to-owner.log")"
   report; exit 1
 fi
-if stack from tilo workspace people add "$(cat "$work/to/owner/key")" --role owner -w "$workspace" \
-  >"$steps/member-to-owner.log" 2>&1; then
-  pass '2. this commit'\''s stack is up, handed the Lounge, its owner an owner of the workspace'
-else
-  fail '2. the earlier server makes this commit'\''s owner an owner of the workspace' "$(tail -3 "$steps/member-to-owner.log")"
-fi
-api from
-data counts "$workspace" >"$steps/from-counts.json"
+pass '2. this commit'\''s stack is up, handed the Lounge'
 
 # -- 3. the hand-over ----------------------------------------------------------------------------
 say "3. the earlier server hands the workspace to $to_origin (server.add)"
@@ -238,8 +233,15 @@ python3 -I - "$steps/from-counts.json" "$steps/to-counts.json" >"$steps/members.
   || fail '4c. this commit'\''s server holds every member at their role' "$(cat "$steps/members.err")"
 import json, sys
 before, after = (json.load(open(path)) for path in sys.argv[1:])
-if before.get("members") != after.get("members"):
-    print(f"members before: {before.get('members')}, after: {after.get('members')}")
+# The earlier build names the person it keeps the workspace for an editor beside its server, the
+# owner; this commit names them its owner.
+wanted = dict(before.get("members") or {})
+if isinstance(before.get("members"), dict) and "owner" not in wanted and wanted.get("editor"):
+    wanted["editor"] -= 1
+    wanted["owner"] = 1
+    wanted = {role: count for role, count in wanted.items() if count}
+if wanted != after.get("members"):
+    print(f"members before: {before.get('members')}, wanted: {wanted}, after: {after.get('members')}")
     sys.exit(1)
 PY
 api from
