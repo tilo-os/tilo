@@ -19,25 +19,18 @@
 //!
 //! What stays a person's own (their formats and zone, what may interrupt
 //! them) is kept apart, under `people/<person>/`, and no workspace reaches it.
-//! A host that kept these stores per person converts them as it opens
-//! ([`Workspaces::move_people_stores`]): each person's store goes into the
-//! workspaces they own here, and nowhere they are merely a member.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use tilo_action_policy::{ActionKind, Answer, Context, Role, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::certify::PendingConfirmation;
 use tilo_user_identity::DeviceCert;
 
 use super::{WorkspaceId, Workspaces};
 
-/// What a host kept for a person beside their own settings, before a
-/// workspace kept it: everything under `people/<person>/` but these.
 /// How long the person has to answer a question about a use.
 const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
-
-const PERSON_OWN: [&str; 2] = ["formats.json", "telling"];
 
 /// Where a store stands in the workspace's policy: an app's node, and the
 /// kind of resource it is in that app.
@@ -303,168 +296,4 @@ impl Workspaces {
         let access = tilo_action_policy::MemberAccess::person(policy, person.as_str());
         access.answer(&node, effect, &Context::at_time(tilo_clock::wall())) != Answer::Deny
     }
-
-    /// Move what this host kept per person before its workspaces kept it:
-    /// each `people/<person>/` store goes into every workspace governed here
-    /// that the person owns (by its governance, or as one of their own
-    /// here), its sealed secrets sealed again under that workspace's key, and
-    /// then leaves the person's folder, where only what is theirs alone
-    /// stays. A workspace they are merely a member of gets nothing of it. A
-    /// workspace that keeps a store already keeps it as it is.
-    pub(super) async fn move_people_stores(&self) {
-        let people = self.inner.dir.join("people");
-        let Ok(folders) = std::fs::read_dir(&people) else {
-            return;
-        };
-        let owned_index = owned_index(&self.inner.dir);
-        let governed: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
-        for folder in folders.flatten() {
-            let from = folder.path();
-            let Some(person) = person_of(&from) else {
-                continue;
-            };
-            if !holds_a_store(&from) {
-                continue;
-            }
-            let mut owned: Vec<String> = owned_index
-                .get(&hex::encode(person))
-                .cloned()
-                .unwrap_or_default();
-            for workspace in &governed {
-                if self.member_role(workspace, person).await == Some(Role::Owner)
-                    && !owned.contains(workspace)
-                {
-                    owned.push(workspace.clone());
-                }
-            }
-            owned.retain(|workspace| governed.contains(workspace));
-            let mut moved = true;
-            for workspace in &owned {
-                if let Err(error) = move_store(&from, &self.workspace_root(workspace), workspace) {
-                    moved = false;
-                    tracing::error!(%workspace, %error, "a person's store did not move into their workspace");
-                }
-            }
-            // A person who owns no workspace here keeps their store until one is.
-            if moved && !owned.is_empty() {
-                forget_moved(&from);
-                tracing::info!(person = %hex::encode(person), workspaces = owned.len(), "a person's store moved into the workspaces they own");
-            }
-        }
-    }
-}
-
-/// Whose folder `folder` under `people/` is.
-fn person_of(folder: &Path) -> Option<[u8; 32]> {
-    let name = folder.file_name()?.to_str()?;
-    let mut person = [0; 32];
-    hex::decode_to_slice(name, &mut person).ok()?;
-    Some(person)
-}
-
-/// Whether the person's folder `from` keeps anything a workspace keeps now.
-fn holds_a_store(from: &Path) -> bool {
-    std::fs::read_dir(from)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| !PERSON_OWN.contains(&name))
-        })
-}
-
-/// The own workspaces this host's index names for each person (hex root),
-/// as `own-workspaces.json` keeps them, whether or not this host offers own
-/// workspaces this run.
-fn owned_index(dir: &Path) -> std::collections::BTreeMap<String, Vec<String>> {
-    let Ok(bytes) = std::fs::read(dir.join(super::own::INDEX)) else {
-        return std::collections::BTreeMap::new();
-    };
-    serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-        tracing::warn!(%error, "the index of own workspaces does not read: nothing is moved by it");
-        std::collections::BTreeMap::new()
-    })
-}
-
-/// Copy the person's store at `from` into the store of `workspace` at `to`:
-/// what was learned in that workspace, and every other file as it is. The
-/// secrets the person's store sealed stay behind: a workspace keeps every
-/// secret in its one vault, and its accounts are signed in to again there.
-/// Who the person named for which account is not copied: a workspace's grants
-/// say what its agents reach. What `to` keeps already stays as it is.
-fn move_store(from: &Path, to: &Path, workspace: &str) -> Result<(), String> {
-    std::fs::create_dir_all(to).map_err(|error| error.to_string())?;
-    let skip = [
-        accounts::vault_dir_in(from),
-        from.join(LEARNED),
-        from.join("mail").join("assistants.json"),
-    ];
-    copy_tree(from, to, &skip)?;
-    let learned = Path::new(LEARNED).join(format!("{workspace}.automerge"));
-    if from.join(&learned).exists() && !to.join(&learned).exists() {
-        std::fs::create_dir_all(to.join(LEARNED)).map_err(|error| error.to_string())?;
-        std::fs::copy(from.join(&learned), to.join(&learned)).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-/// The folder of a store that keeps what agents learned, one file a
-/// workspace.
-const LEARNED: &str = "learned";
-
-/// Copy every regular file below `from` that is not the person's own, nor one
-/// of `skip`, to the same place below `to`, keeping a file `to` has already.
-/// What a store keeps while its host runs, a socket it talks to itself over,
-/// is no part of the store and is left behind.
-fn copy_tree(from: &Path, to: &Path, skip: &[PathBuf]) -> Result<(), String> {
-    let mut pending = vec![from.to_owned()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let path = entry.path();
-            if skip.contains(&path) || (dir == from && is_person_own(&path)) {
-                continue;
-            }
-            let below = path.strip_prefix(from).map_err(|error| error.to_string())?;
-            let target = to.join(below);
-            let kind = entry.file_type().map_err(|error| error.to_string())?;
-            if kind.is_dir() {
-                std::fs::create_dir_all(&target).map_err(|error| error.to_string())?;
-                pending.push(path);
-            } else if kind.is_file() && !target.exists() {
-                std::fs::copy(&path, &target).map_err(|error| error.to_string())?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn is_person_own(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| PERSON_OWN.contains(&name))
-}
-
-/// Take what moved out of the person's folder `from`, leaving what is
-/// theirs alone.
-fn forget_moved(from: &Path) {
-    for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if is_person_own(&path) {
-            continue;
-        }
-        let removed = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        if let Err(error) = removed {
-            tracing::warn!(path = %path.display(), %error, "what moved into a workspace stays in its person's folder too");
-        }
-    }
-    // A folder with nothing of the person's own left goes.
-    let _ = std::fs::remove_dir(from);
 }

@@ -145,8 +145,6 @@ mod account_logins_tests;
 // What a workspace keeps on the host beside its records, and who reaches it.
 #[cfg(not(target_arch = "wasm32"))]
 mod workspace_stores;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod workspace_stores_tests;
 // A secret used by reference by a turn this server carries out itself.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted_use;
@@ -1411,10 +1409,6 @@ impl Workspaces {
         *this.inner.workspaces.lock().await = workspaces;
         let kept = this.served_kept().await;
         this.serve_kept(&kept).await?;
-        // What this host kept per person goes into the workspaces those
-        // people own, before anybody asks for it.
-        #[cfg(not(target_arch = "wasm32"))]
-        this.move_people_stores().await;
         // A page reading an invitation answers without a workspace's lock
         // from its first read on.
         for workspace in &kept {
