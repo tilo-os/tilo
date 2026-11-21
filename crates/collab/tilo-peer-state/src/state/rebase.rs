@@ -22,4 +22,31 @@ impl StatePeer {
         self.core.workspace_doc = Some(base.into());
         Ok(true)
     }
+
+    /// Write again onto the newer base this copy adopted from `before` the
+    /// changes `device` made there that the base does not hold
+    /// ([`workspace::base::carried`]): a holder that wrote against the
+    /// history its base maker replaced keeps what it wrote. Returns whether
+    /// anything was carried; a copy that adopted no newer base carries nothing.
+    ///
+    /// # Errors
+    /// The documents could not be read or written.
+    pub fn carry_onto_base(&mut self, before: &Self, device: &[u8; 32]) -> Result<bool, String> {
+        let (Some(was), Some(is)) = (
+            before.core.workspace_doc.as_deref(),
+            self.core.workspace_doc.as_deref(),
+        ) else {
+            return Ok(false);
+        };
+        if workspace::base::generation(is) <= workspace::base::generation(was) {
+            return Ok(false);
+        }
+        let mut doc = is.clone();
+        let actor = self.workspace_actor_for(device);
+        if !workspace::base::carried(was, &mut doc, &actor).map_err(err)? {
+            return Ok(false);
+        }
+        self.core.workspace_doc = Some(doc.into());
+        Ok(true)
+    }
 }

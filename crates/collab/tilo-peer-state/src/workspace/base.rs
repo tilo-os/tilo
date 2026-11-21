@@ -22,6 +22,12 @@ pub fn generation(doc: &AutoCommit) -> u64 {
     }
 }
 
+/// The root key of the map a base keeps of the changes it holds: each
+/// actor's highest sequence number in the document it was made from. A
+/// device adopting the base reads there which of its own changes the base
+/// does not hold ([`carried`]).
+pub const COVERS_KEY: &str = "base_covers_v1";
+
 /// A document holding `doc`'s state as it stands, in one change by `actor`
 /// with no dependencies, at the next base generation.
 pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge::AutomergeError> {
@@ -31,9 +37,18 @@ pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge:
             automerge::ObjType::Map,
         ));
     };
+    let mut covered = std::collections::BTreeMap::<String, u64>::new();
+    for change in doc.clone().get_changes(&[]) {
+        let seq = covered.entry(change.actor_id().to_hex_string()).or_default();
+        *seq = (*seq).max(change.seq());
+    }
     let mut base = AutoCommit::new().with_actor(actor);
     base.init_root_from_hydrate(&state)?;
     base.put(ROOT, BASE_KEY, ScalarValue::Uint(next))?;
+    let covers = base.put_object(ROOT, COVERS_KEY, automerge::ObjType::Map)?;
+    for (actor, seq) in covered {
+        base.put(&covers, actor, ScalarValue::Uint(seq))?;
+    }
     base.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
     Ok(base)
 }
@@ -48,6 +63,158 @@ pub fn root(doc: &mut AutoCommit) -> Option<ChangeHash> {
         .into_iter()
         .find(|change| change.deps().is_empty())
         .map(|change| change.hash())
+}
+
+/// Carry onto `adopted`, a newer base, the changes `actor` made in `before`
+/// that the base does not hold, as `actor`'s own change: what `actor` wrote
+/// against the history the base replaced is written again on the base, not
+/// dropped with that history. The base names what it holds ([`COVERS_KEY`]);
+/// the difference `actor`'s other changes made is taken from `before`
+/// itself, between its state without them and with them, so whatever the
+/// base's maker wrote meanwhile stays as the base holds it. Returns whether
+/// anything was carried.
+///
+/// # Errors
+/// `before` could not be read at the heads it is compared at, or `adopted`
+/// could not be written.
+pub fn carried(
+    before: &AutoCommit,
+    adopted: &mut AutoCommit,
+    actor: &ActorId,
+) -> Result<bool, automerge::AutomergeError> {
+    let Some(covered) = covered_seq(adopted, actor) else {
+        // A base that names nothing it holds was made before bases said:
+        // there is no telling which of `actor`'s changes it holds.
+        return Ok(false);
+    };
+    let mut before = before.clone();
+    let changes = before.get_changes(&[]);
+    let uncovered: std::collections::HashSet<ChangeHash> = changes
+        .iter()
+        .filter(|change| change.actor_id() == actor && change.seq() > covered)
+        .map(automerge::Change::hash)
+        .collect();
+    if uncovered.is_empty() {
+        return Ok(false);
+    }
+    // Another's change built on one of `actor`'s uncovered changes is not
+    // `actor`'s to write again: the state compared against leaves it out too.
+    let mut excluded = uncovered.clone();
+    loop {
+        let grown = changes.iter().filter(|change| {
+            !excluded.contains(&change.hash())
+                && change.deps().iter().any(|dep| excluded.contains(dep))
+        });
+        let grown: Vec<ChangeHash> = grown.map(automerge::Change::hash).collect();
+        if grown.is_empty() {
+            break;
+        }
+        excluded.extend(grown);
+    }
+    let without: Vec<&automerge::Change> = changes
+        .iter()
+        .filter(|change| !excluded.contains(&change.hash()))
+        .collect();
+    let with: Vec<&automerge::Change> = changes
+        .iter()
+        .filter(|change| {
+            !excluded.contains(&change.hash()) || uncovered.contains(&change.hash())
+        })
+        .collect();
+    let state_at = |doc: &mut AutoCommit, at: &[&automerge::Change]| {
+        let heads = heads_of(at);
+        let forked = doc.fork_at(&heads)?;
+        match forked.hydrate(ROOT, None)? {
+            automerge::hydrate::Value::Map(map) => Ok(map),
+            _ => Err(automerge::AutomergeError::InvalidOp(
+                automerge::ObjType::Map,
+            )),
+        }
+    };
+    let was = state_at(&mut before, &without)?;
+    let is = state_at(&mut before, &with)?;
+    adopted.set_actor(actor.clone());
+    let wrote = carry_map(adopted, &ROOT, &was, &is, true)?;
+    if wrote {
+        adopted.commit();
+    }
+    Ok(wrote)
+}
+
+/// `actor`'s highest sequence number `base` says it holds, `0` for none;
+/// `None` for a base that says nothing of what it holds.
+fn covered_seq(base: &AutoCommit, actor: &ActorId) -> Option<u64> {
+    let Ok(Some((Value::Object(automerge::ObjType::Map), covers))) = base.get(ROOT, COVERS_KEY)
+    else {
+        return None;
+    };
+    Some(match base.get(&covers, actor.to_hex_string()) {
+        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+            ScalarValue::Uint(seq) => *seq,
+            ScalarValue::Int(seq) => u64::try_from(*seq).unwrap_or(0),
+            _ => 0,
+        },
+        _ => 0,
+    })
+}
+
+/// The changes of `set` no other change of it builds on.
+fn heads_of(set: &[&automerge::Change]) -> Vec<ChangeHash> {
+    let deps: std::collections::HashSet<&ChangeHash> =
+        set.iter().flat_map(|change| change.deps()).collect();
+    set.iter()
+        .map(|change| change.hash())
+        .filter(|hash| !deps.contains(hash))
+        .collect()
+}
+
+/// Write into `obj` of `doc` what changed from `was` to `is`, key by key:
+/// a key both hold as maps is walked into, any other changed value is
+/// written whole, and a key `is` no longer holds is deleted. The base's own
+/// keys are the base's.
+fn carry_map(
+    doc: &mut AutoCommit,
+    obj: &automerge::ObjId,
+    was: &automerge::hydrate::Map,
+    is: &automerge::hydrate::Map,
+    root: bool,
+) -> Result<bool, automerge::AutomergeError> {
+    let mut wrote = false;
+    for (key, value) in is.iter() {
+        if root && (key == BASE_KEY || key == COVERS_KEY) {
+            continue;
+        }
+        let value = &value.value;
+        match (was.get(key), value) {
+            (Some(prior), _) if prior == value => {}
+            (Some(automerge::hydrate::Value::Map(prior)), automerge::hydrate::Value::Map(now)) => {
+                if let Some((Value::Object(automerge::ObjType::Map), inner)) = doc.get(obj, key)? {
+                    wrote |= carry_map(doc, &inner, prior, now, false)?;
+                } else {
+                    doc.batch_create_object(obj, key.as_str(), value, false)?;
+                    wrote = true;
+                }
+            }
+            (_, automerge::hydrate::Value::Scalar(scalar)) => {
+                doc.put(obj, key.as_str(), scalar.clone())?;
+                wrote = true;
+            }
+            _ => {
+                doc.batch_create_object(obj, key.as_str(), value, false)?;
+                wrote = true;
+            }
+        }
+    }
+    for (key, _) in was.iter() {
+        if root && (key == BASE_KEY || key == COVERS_KEY) {
+            continue;
+        }
+        if is.get(key).is_none() && doc.get(obj, key)?.is_some() {
+            doc.delete(obj, key.as_str())?;
+            wrote = true;
+        }
+    }
+    Ok(wrote)
 }
 
 /// How a batch relates to the base of the document it is admitted to.
@@ -578,6 +745,66 @@ mod tests {
             base,
             based,
             new_history,
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_holder_keeps_what_it_wrote_against_the_history_a_base_replaced;
+
+        phase what_the_base_lacks_is_written_again_and_the_makers_change_stays;
+        {
+            let (maker, holder) = (
+                ActorId::from(b"maker".as_slice()),
+                ActorId::from(b"holder".as_slice()),
+            );
+            let mut shared = AutoCommit::new().with_actor(maker.clone());
+            let leases = shared
+                .put_object(ROOT, "leases", automerge::ObjType::Map)
+                .unwrap();
+            shared.put(&leases, "update", "nas").unwrap();
+            shared.put(ROOT, "name", "Servers").unwrap();
+            shared.commit();
+
+            // The holder lets its lease go on the history both hold; the maker,
+            // before that reaches it, starts the workspace over and renames it.
+            let mut held = shared.fork().with_actor(holder.clone());
+            let leases_here = held.get(ROOT, "leases").unwrap().unwrap().1;
+            held.delete(&leases_here, "update").unwrap();
+            held.put(&leases_here, "backup", "nas").unwrap();
+            held.commit();
+            let mut base = rebase(&shared, maker.clone()).unwrap();
+            base.put(ROOT, "name", "Our servers").unwrap();
+            base.commit();
+
+            let mut adopted = base.clone();
+            assert!(carried(&held, &mut adopted, &holder).unwrap());
+            let leases = adopted.get(ROOT, "leases").unwrap().unwrap().1;
+            assert!(adopted.get(&leases, "update").unwrap().is_none());
+            assert_eq!(
+                adopted.get(&leases, "backup").unwrap().unwrap().0.into_string().ok(),
+                Some("nas".to_owned())
+            );
+            assert_eq!(
+                adopted.get(ROOT, "name").unwrap().unwrap().0.into_string().ok(),
+                Some("Our servers".to_owned()),
+                "what the maker wrote on the base stays"
+            );
+            // Carried as the holder's own change, on the base.
+            let last = adopted.get_changes(&base.get_heads());
+            assert_eq!(last.len(), 1);
+            assert_eq!(last[0].actor_id(), &holder);
+        }
+
+        phase a_base_that_holds_everything_carries_nothing;
+        {
+            let holder = ActorId::from(b"holder".as_slice());
+            let mut doc = AutoCommit::new().with_actor(holder.clone());
+            doc.put(ROOT, "name", "Team").unwrap();
+            doc.commit();
+            let base = rebase(&doc, ActorId::random()).unwrap();
+            let mut adopted = base.clone();
+            assert!(!carried(&doc, &mut adopted, &holder).unwrap());
+            assert_eq!(adopted.get_heads(), base.clone().get_heads());
         }
     }
 }

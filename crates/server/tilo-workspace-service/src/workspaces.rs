@@ -368,6 +368,13 @@ struct GovernedWorkspace {
     resources: resources::Resources,
 }
 
+/// The generation of the base `peer`'s workspace document starts from: `0`
+/// for one that never started over.
+fn base_generation(peer: &StatePeer) -> u64 {
+    peer.admitted_workspace()
+        .map_or(0, tilo_peer_state::workspace::base::generation)
+}
+
 /// The people `peer`'s governance admits now.
 fn member_roots(peer: &StatePeer, now: SystemTime) -> std::collections::BTreeSet<[u8; 32]> {
     peer.governance()
@@ -728,6 +735,18 @@ impl GovernedWorkspace {
         {
             return Err("a workspace change cannot replace the workspace".into());
         }
+        // A holder that does not make the base takes the one its maker made as
+        // the maker's own commit did: the workspace starts over from it here
+        // too. Published as a change of the history before it, every holder's
+        // check that a publication keeps the workspace's history would refuse
+        // it, and the holders would part, each holding back the other's
+        // changes for a history neither keeps any more. What this holder wrote
+        // against that history and the base does not hold it writes again on
+        // the base before anything is signed.
+        let adopted = base_generation(&candidate) > base_generation(replica);
+        if adopted {
+            candidate.carry_onto_base(replica, &key.verifying_key().to_bytes())?;
+        }
         let preparing = crate::timing::start();
         prepare_governance(&mut candidate, key, now)?;
         crate::timing::window("workspace.commit.prepare", preparing);
@@ -758,7 +777,7 @@ impl GovernedWorkspace {
                     && !member_roots(&candidate, now).is_subset(&member_roots(replica, now))));
         let mut since_base = self.since_base;
         let mut rebased = false;
-        if started_over {
+        if started_over || adopted {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
@@ -776,7 +795,11 @@ impl GovernedWorkspace {
                     .collect::<std::collections::BTreeSet<_>>();
             // The workspace's document starts over from a base holding its
             // state as it stands, with none of the history that led there.
-            rebased = candidate.rebase_workspace()?;
+            if adopted {
+                rebased = true;
+            } else {
+                rebased = candidate.rebase_workspace()?;
+            }
             since_base = SinceBase::Added;
             record.outgoing = candidate
                 .publication_mut()

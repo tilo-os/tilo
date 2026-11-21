@@ -591,6 +591,15 @@ impl StatePeer {
             },
             workspace_changes,
         )?;
+        // What this copy's device wrote against the history the base replaced,
+        // and the base does not hold, it writes again on the base.
+        if rebased
+            && let Some(device) = self.own_device
+            && let Some(before) = self.core.workspace_doc.as_deref()
+        {
+            let actor = self.workspace_actor_for(&device);
+            workspace::base::carried(before, &mut candidate, &actor).map_err(err)?;
+        }
         // The copy keeps what it saw: the forms the base lacks go back into
         // their rows as its device's own change, before anything reads the
         // adopted document.

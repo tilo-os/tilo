@@ -283,8 +283,15 @@ impl PeerPublicationMut<'_> {
             .workspace_doc
             .as_mut()
             .ok_or("missing workspace governance")?;
+        // A newer base replaces the history before it: the workspace started
+        // over from it, which is the base maker's to decide and every other
+        // holder's to adopt. Any other publication keeps the history it was
+        // built on.
         let before_heads = before_workspace.base_heads();
-        if before_heads.iter().any(|head| !workspace.has_change(head)) {
+        if crate::workspace::base::generation(workspace)
+            <= crate::workspace::base::generation(before_workspace)
+            && before_heads.iter().any(|head| !workspace.has_change(head))
+        {
             return Err("publication discards workspace history".into());
         }
         crate::coverage::monotonic(Some(before_workspace), workspace)?;
