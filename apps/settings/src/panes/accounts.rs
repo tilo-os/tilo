@@ -1202,7 +1202,8 @@ impl AccountsPane {
             | AccountsEffect::SyncNow { account }
             | AccountsEffect::PauseSync { account }
             | AccountsEffect::ResumeSync { account }
-            | AccountsEffect::RecoverCloudMode { account } => Some(account),
+            | AccountsEffect::RecoverCloudMode { account }
+            | AccountsEffect::ConnectNextcloudCalendars { account } => Some(account),
             _ => None,
         }
     }

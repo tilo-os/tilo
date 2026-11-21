@@ -173,13 +173,45 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
         pane.changed = true;
     })
     .unwrap();
-    app.settle();
-    app.call_on(
-        "settings.account:cloud",
-        "connect-nextcloud-calendars",
-        serde_json::json!({}),
+    app.call(
+        "open-pane",
+        serde_json::json!({ "pane": crate::categories::Category::ExternalAccounts.slug() }),
     )
-    .unwrap();
+    .expect("the Accounts page opens");
+    app.settle();
+    // A person reaches it from the account row's More menu: the entry's
+    // action is one the window publishes, on the account's row.
+    let bindings = ui::widget::controls::action_control_bindings(app.harness().root_widget());
+    let connect = bindings
+        .iter()
+        .filter(|binding| {
+            binding
+                .control_id
+                .starts_with("settings.accounts.more.cloud/")
+        })
+        .find_map(|binding| match &binding.kind {
+            ui::widget::ControlBindingKind::Action(address)
+                if address.action == "connect-nextcloud-calendars" =>
+            {
+                Some(address.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the account's More menu offers Connect calendars; the window binds {bindings:#?}"
+            )
+        });
+    assert_eq!(connect.resource, "settings.account:cloud");
+    assert!(
+        app.actions()
+            .unwrap()
+            .iter()
+            .any(|action| action.address == connect),
+        "the menu's Connect calendars is an action the window publishes"
+    );
+    app.call_on(&connect.resource, &connect.action, serde_json::json!({}))
+        .unwrap();
     let href = format!("http://localhost:{}/calendars/personal/", server.port());
     let choice = format!("settings.calendar-choice:{href}");
     let deadline = ui::time::now() + tilo_test_env::hang_bound();
