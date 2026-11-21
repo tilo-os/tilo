@@ -74,6 +74,7 @@ SHELL_RESOURCE = "desktop:shell"
 FILE_CHOOSER = "so.tilo.file-chooser"
 FILE_CHOOSER_STEP = f"{FILE_CHOOSER}.step"
 FILE_CHOOSER_QUESTION = "portal.file-chooser"
+FILE_CHOOSER_RESOURCE = "file-chooser.request"
 
 
 def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
@@ -607,10 +608,14 @@ class Walk:
     def chooser_step(self, ident: str) -> dict | None:
         """The chooser's own step `ident` ("select", "confirm"), as the sheet
         publishes it: the person's way through the chooser, not a shortcut past
-        it. The action's operation is the sheet's vocabulary; a session that
-        lists it another way still names the sheet in its provider."""
+        it. The session lists the sheet's steps on its request resource
+        (`file-chooser.request`), the step's name its operation; a session that
+        lists them another way still names the sheet in the operation or its
+        provider."""
         def of(action: dict) -> bool:
             operation = str(action.get("operation") or "")
+            if action.get("resource") == FILE_CHOOSER_RESOURCE:
+                return ident in (action.get("id"), operation)
             return (action.get("id") == ident
                     and (operation.startswith(FILE_CHOOSER_STEP)
                          or FILE_CHOOSER in operation
@@ -620,28 +625,47 @@ class Walk:
 
     def op_choose(self, value) -> dict:
         """Choose the fixture file a person's chooser offers: the sheet the app's
-        request opens is answered by its own steps — the file is selected, then
-        used — as the person clicks them. Selecting waits for the chooser to have
-        listed the file; the answer ends it."""
+        request opens is answered by its own steps. The file is selected through
+        the chooser's published step, which waits for it to have listed the file;
+        then its confirm button is pressed as a person's pointer does. Giving an
+        app a file is the person's alone: the chooser refuses its confirm step to
+        any caller that is not at the computer, so the walk never invokes it."""
         name = value["name"]
         path = (self.state / "home" / name).resolve()
         question = until_value("the file chooser to ask for a file",
                                self.chooser_question, 60)
         handle = question["handle"]
+        # What each step last said when it did not take: the walk's finding when
+        # the chooser never does.
+        said: dict[str, str] = {}
 
         def act(ident: str) -> bool:
             action = self.chooser_step(ident)
             if action is None:
+                said[ident] = "the chooser lists no such step"
                 return False
             try:
                 self.session.invoke(action["provider"], action["id"],
                                     {"handle": handle, "path": str(path)}
                                     if ident == "select" else {"handle": handle})
                 return True
-            except Failed:
+            except Failed as error:
                 # The chooser has not listed the file yet, or the answer is
                 # already given: what it says is the finding, not a failure.
+                said[ident] = str(error)
                 return False
+
+        def confirm() -> bool:
+            """Press the chooser's confirm button: its own word for what it does,
+            or the one the asking app gave it."""
+            names = [question.get("accept_label"), "Save" if question.get("save") else "Open",
+                     "Choose folder"]
+            for button in filter(None, names):
+                if control(self.session, button) is not None:
+                    press(self.session, button)
+                    return True
+            said["confirm"] = f"no confirm button among {names}"
+            return False
 
         deadline = time.monotonic() + 60
         selected = used = False
@@ -649,14 +673,15 @@ class Walk:
             if not selected:
                 selected = act("select")
             if selected and not used:
-                used = act("confirm")
+                used = confirm()
             if used or self.chooser_question() is None:
                 break
             time.sleep(0.1)
         answered = self.chooser_question() is None
         if not (selected and (used or answered)):
             raise Failed(f"the chooser did not take {name!r} "
-                         f"(selected: {selected}, used: {used}, answered: {answered})")
+                         f"(selected: {selected}, used: {used}, answered: {answered}; "
+                         f"it said: {said})")
         return {"chose": str(path), "question": handle}
 
     # -- a step ---------------------------------------------------------------------------
