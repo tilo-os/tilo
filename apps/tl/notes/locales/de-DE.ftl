@@ -25,20 +25,6 @@ d-erijxfd3 = Quelle
 d-uquoltho = Herkunft
     .doc = Der Name, den diese Datei hatte, samt Pfad in ihrem Archiv: ein Import, der die Verschachtelung eines Pakets behält, findet darüber die Notiz, unter der eine Seite steht.
 
-d-ngwafrjq = Von
-    .doc = Wer die Seite dort geschrieben hat, wo sie herkam, als ein anderer Dienst sie vor diesem Notizbuch hielt: mit der Notiz aufbewahrt, damit eine herübergeholte Seite noch sagt, wessen Worte sie sind.
-
-d-buuvovaf = Dienst
-    .doc = Der Dienst, aus dem die Seite kam, wenn sie aus einem kam (`Outline`).
-
-d-jznzkj47 = Seite
-    .doc = Wo die Seite dort zu lesen ist, wenn sie aus einem Dienst kam: dieselbe Seite noch einmal zu importieren öffnet diese Notiz, statt eine zweite anzulegen.
-
-d-hchfoqqm = Erstellt
-    .doc = Wann die Seite dort geschrieben und zuletzt geändert wurde, wie der Dienst es sagte.
-
-d-5wdceapz = Bearbeitet
-
 d-gfk6rqxp = Angeheftet
 
 d-xcpasjg7 = Schlagwörter
@@ -83,11 +69,6 @@ d-6fwsh5ui = Text hinzufügen
     .doc = Schreibt `text` (Markdown) ans Ende einer Notiz, unter das, was sie schon sagt: eine Zeile, eine Liste oder ein Absatz dazu.
     .did = hat einer Notiz etwas hinzugefügt
 
-d-4yaqj7z5 = Zu einer Notiz hinzufügen
-    .doc = Schreibt `text` (Markdown) ans Ende der Notiz mit dem Titel `title`, gleich ob groß oder klein geschrieben: so schreibt ein Agent oder ein Skript, das eine Notiz bei ihrem Namen kennt („schreib das zu Besprechungsnotizen“), hinein, ohne erst nachzusehen, welche Notiz das ist.
-    .did = hat einer Notiz etwas hinzugefügt
-    .w-no-note-is-titled = Keine Notiz heißt { $title }
-
 d-gc34cbhl = Notiz ablegen
     .doc = Legt in einem Schritt eine Notiz mit dem Titel `title` und dem Schlagwort `t` an: was eine andere App von dem aufschreibt, was sie getan hat (der Morgen in Heute), ohne auf die gemachte Notiz zu warten, um sie zu benennen.
 
@@ -116,22 +97,6 @@ d-t4nxxtng = Markdown importieren
 
 d-t4nxxtng-file = Datei
 
-d-n75ltziu = Eine Seite aus einem Dienst importieren
-    .doc = Importiert eine Seite, die ein anderer Dienst hielt, als Notiz und behält, wessen Worte sie sind und wo sie dort stand: was `tilo migrate` für jede herübergeholte Seite aufruft, und was der eigene Import einer Datei ohne die Worte eines Dienstes tut.
-    .did = importierte eine Notiz
-
-d-n75ltziu-file = Datei
-
-d-n75ltziu-by = Von
-
-d-n75ltziu-service = Dienst
-
-d-n75ltziu-page = Seite
-
-d-n75ltziu-created = Erstellt
-
-d-n75ltziu-updated = Bearbeitet
-
 d-h3zczsen = Archiv importieren
     .doc = Importiert ein Zip aus Markdown (ein Notizbuch, das diese App exportiert hat, oder einen Notion-Export) als Notizen unter dem Notizbuch, eine Seite unter der Seite, die sie hielt, in einer Änderung: Rückgängig nimmt den ganzen Import zurück.
     .did = importierte ein Notizbuch
@@ -141,8 +106,6 @@ d-m6rqg3kf = Angeheftet
 d-cn43mwee = Verschieben nach~present
 
 d-7in2x6ql = Danach verschieben~present
-
-d-dimkzymo = Zu einer Notiz hinzufügen~present
 
 d-ojfhuiuf = Untergeordnete hinzufügen
     .w-new-sub-note = Untergeordnete Notiz
@@ -218,10 +181,6 @@ d-qymo5lg2-body = Text
 
 d-6fwsh5ui-text = Text
 
-d-4yaqj7z5-title = Titel
-
-d-4yaqj7z5-text = Text
-
 d-gc34cbhl-title = Titel
 
 d-gc34cbhl-tag = Schlagwort
@@ -233,9 +192,3 @@ d-3u3bevec-t = T
 d-4s5iqnfo-image = Bild
 
 d-h3zczsen-file = Datei
-
-d-zfjavdpr = Bild behalten
-    .doc = Behält ein Bild, das der Editor dort in eine Notiz geschrieben hat, wo die Person es eingefügt oder abgelegt hat: die Notiz hält die Adresse seiner Bytes und den Namen, mit dem es kam, den ein Export daneben schreibt.
-    .did = hat ein Bild hinzugefügt
-
-d-zfjavdpr-picture = Bild
