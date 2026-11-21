@@ -454,16 +454,24 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, St
 /// hosted, as a connection to the process holding that device's session ([`held`]), started when
 /// none runs. `hold` is that process (`tilo mcp --hold`, which a connection starts).
 pub fn serve(hold: bool) -> Result<ExitCode> {
-    let device = match tilo_mcp::session_api::desktop_server() {
-        Ok(Some(server)) => {
+    let desktop = tilo_mcp::session_api::desktop_server();
+    if let Ok(Some(server)) = &desktop
+        && tilo_mcp::session_api::answers(server)
+    {
+        tilo_mcp::session_api::bridge(server, tilo_mcp::session_api::session_name())?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    // No desktop answers here: one that ended leaves its socket behind, and one whose first login
+    // is not complete has none yet. This computer's own login then holds its device, as on any
+    // other computer; without one the agent hears what it waits for.
+    let device = match (crate::login::load(&crate::login::device_dir()?)?, desktop) {
+        (Some(device), _) => Ok(device),
+        (None, Ok(Some(server))) => {
             tilo_mcp::session_api::bridge(&server, tilo_mcp::session_api::session_name())?;
             return Ok(ExitCode::SUCCESS);
         }
-        Ok(None) => crate::login::load(&crate::login::device_dir()?)?
-            .ok_or_else(|| NOT_LOGGED_IN.to_owned()),
-        // A desktop whose server is not open yet (its first login is not complete) is no computer
-        // that needs a login: the agent hears what it waits for.
-        Err(error) => Err(error.to_string()),
+        (None, Ok(None)) => Err(NOT_LOGGED_IN.to_owned()),
+        (None, Err(error)) => Err(error.to_string()),
     };
     // The agent's connection goes where `tilo login` went: a host whose
     // certificate only a test trusts is reached the same way here.

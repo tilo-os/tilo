@@ -144,6 +144,13 @@ pub fn bridge(server: &Path, session_name: Option<String>) -> io::Result<()> {
     )
 }
 
+/// Whether a desktop's MCP server answers at `server`: a desktop that ended leaves its socket
+/// file behind, which nothing accepts on.
+#[must_use]
+pub fn answers(server: &Path) -> bool {
+    tilo_files::native::socket::connect(server).is_ok()
+}
+
 /// The variable naming the file that holds the agent key this client presents: the key a person
 /// started their session with for an agent (`tilo-session --agent-key FILE`), which the session's
 /// server admits without asking them, as the agent the key's grant names.
@@ -929,6 +936,21 @@ pub fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A desktop that ended leaves its socket file behind: only a server that accepts answers.
+    #[test]
+    fn a_socket_an_ended_desktop_left_does_not_answer() {
+        let dir = std::env::temp_dir().join(format!("tilo-mcp-answers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("agent.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(answers(&path));
+        drop(listener);
+        assert!(path.exists());
+        assert!(!answers(&path));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_client_is_proposed_as_a_canonical_agent_id() {
