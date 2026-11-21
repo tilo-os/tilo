@@ -463,6 +463,8 @@ d-dhradxj7 = Kontohinweis
 
 d-7rcrynvm = Mail
     .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
+    .w-mail = Mail
+    .w-recovered-mail = Wiederhergestellte Mail
 
 d-4fjgzcq6 = Zusammengeführt
     .w-all-accounts = Alle Konten
@@ -495,6 +497,8 @@ d-77noqogh = Entwurfszeile
 d-bbuecgsi = Unterhaltung
     .w-reply-to = Antwort auf { $subject }
     .w-reply = Antworten
+
+d-krn2y5tw = Nachrichten der Unterhaltung
 
 d-n2xgxnbw = Nachricht
     .w-reply = Antworten

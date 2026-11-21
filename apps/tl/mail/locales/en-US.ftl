@@ -464,6 +464,8 @@ d-dhradxj7 = Account notice
 
 d-7rcrynvm = Mail
     .w-add-a-mail-account-in-settings = Add a mail account in Settings
+    .w-mail = Mail
+    .w-recovered-mail = Recovered mail
 
 d-4fjgzcq6 = Unified
     .w-all-accounts = All accounts
@@ -496,6 +498,8 @@ d-77noqogh = Draft row
 d-bbuecgsi = Conversation
     .w-reply-to = Reply to { $subject }
     .w-reply = Reply
+
+d-krn2y5tw = Conversation messages
 
 d-n2xgxnbw = Message
     .w-reply = Reply
