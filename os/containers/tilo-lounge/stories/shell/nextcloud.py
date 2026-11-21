@@ -106,8 +106,10 @@ ADD_NEXTCLOUD = "Add Nextcloud"
 # The sign-in form's server field and its finish.
 SERVER_FIELD = "Server URL"
 CONTINUE = "Continue"
-# The account's calendars are chosen on its row, and saved from the form. The
+# The account's calendars are chosen from its row's More menu, and saved from
+# the form. The row's one button browses files; the menu holds the rest. The
 # conformance suite's seed gives Ada a calendar named this (servers.sh).
+ACCOUNT_MORE = "More for Nextcloud"
 CONNECT_CALENDARS = "Connect calendars"
 SAVE = "Save account"
 SEEDED_CALENDAR = "Personal"
@@ -384,7 +386,10 @@ def connect_account(story, one, server: str, user: str, password: str,
         return
     # The calendars she keeps on the server are read from it and chosen here:
     # a new account has none kept until the person confirms the choice.
-    press_settled(one, CONNECT_CALENDARS, "the account's Connect calendars")
+    press_settled(one, ACCOUNT_MORE, "the account row's More menu")
+    until("the account's menu open", lambda: one.target(CONNECT_CALENDARS), 15, 0.2)
+    story.note("account-menu", one.names()[:60])
+    press_settled(one, CONNECT_CALENDARS, "the account menu's Connect calendars")
 
     def choosing():
         if one.target(SEEDED_CALENDAR) and one.target(SAVE):
