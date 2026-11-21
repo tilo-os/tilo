@@ -3754,38 +3754,93 @@ impl Widget for MailApp {
         dyn ui::undo::LocalUndo
     );
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        #[cfg(any(test, not(feature = "live")))]
-        self.pump_host_mail();
         let (state, path) = ui::doc::document_ref(state, path);
         self.follow_document();
-        self.process_intents();
         self.background_poll_deadline.set(None);
-        self.adopt_person_accounts();
-        self.take_released_secrets();
-        self.tell_compose_the_accounts();
-        self.adopt_sender_pictures();
-        self.open_kept_mail();
-        {
-            // The folders show the active account's mail, whichever way it
-            // became active.
-            let mut st = self.shared.borrow_mut();
-            let shown = if st.all_inboxes {
-                AccountConfig::default()
-            } else {
-                st.accounts.active_config()
-            };
-            if st.mailbox.account.email != shown.email {
-                st.mailbox.set_account(shown);
+        // A proof that a pass at rest owes nothing runs the tree's sync alone:
+        // the work this window takes in — a worker's reply, a queued intent,
+        // the clock, the list asking for the older page it painted — is what a
+        // frame runs beside the tree, and taking it in again would change the
+        // tree the proof measures.
+        if !ui::component_inputs::is_proving() {
+            #[cfg(any(test, not(feature = "live")))]
+            self.pump_host_mail();
+            self.process_intents();
+            self.adopt_person_accounts();
+            self.take_released_secrets();
+            self.tell_compose_the_accounts();
+            self.adopt_sender_pictures();
+            self.open_kept_mail();
+            {
+                // The folders show the active account's mail, whichever way it
+                // became active.
+                let mut st = self.shared.borrow_mut();
+                let shown = if st.all_inboxes {
+                    AccountConfig::default()
+                } else {
+                    st.accounts.active_config()
+                };
+                if st.mailbox.account.email != shown.email {
+                    st.mailbox.set_account(shown);
+                }
             }
+            if self.first_run.take_action() {
+                self.open_account_settings();
+            }
+            // The host Save dialog runs off-thread; its outcome is applied here
+            // so attachment export never blocks the frame loop or claims success
+            // before the chosen file is actually written.
+            self.drain_compose_attachment();
+            self.state().post_server_search();
+            self.show_status();
+            self.read_outbox(state);
+
+            let mem_seeded = self.shared.borrow().seeded;
+            if !mem_seeded {
+                let has_accounts = !self.shared.borrow().accounts.is_empty();
+                if self.state().engine.is_some()
+                    && has_accounts
+                    && !self.connect_requested
+                    && !self.awaits_active_secret()
+                {
+                    let cfg = self.shared.borrow().accounts.active_config();
+                    {
+                        let mut st = self.shared.borrow_mut();
+                        let nothing_kept = st.mailbox.of_account(&cfg.email).next().is_none();
+                        st.first_fetch = nothing_kept.then(first_fetch);
+                    }
+                    self.state()
+                        .post_engine(EngineRequest::connect(cfg.clone()));
+                    self.state()
+                        .post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
+                    self.state().fetch_other_inboxes();
+                    self.state().watch_inboxes();
+                    self.connect_requested = true;
+                }
+                self.shared.borrow_mut().seeded = true;
+            }
+            // Live app: advance the wall clock (relative timestamps + the periodic
+            // refresh cadence read it) and fire a periodic refresh when due. The
+            // sample/`--shots` path pins `now_min`, so this only runs live.
+            if self.state().engine.is_some() {
+                self.shared.borrow_mut().now_min = mail_engine::model::now_minutes();
+                self.state().maybe_auto_refresh();
+            } else if self.state().checks.asks {
+                // The devices that hold the accounts keep them current; this
+                // window asks each to check once as it opens, and reads the
+                // clock for the times it shows.
+                self.shared.borrow_mut().now_min = mail_engine::model::now_minutes();
+                self.seed_checks();
+            }
+            let wants_older = self.shared.borrow().wants_older.take();
+            if wants_older && self.state().engine.is_some() {
+                self.load_older();
+            }
+            self.persist_active_account_if_changed();
+            self.sync_preferences();
+            self.shared.borrow_mut().sync_trusted_senders();
+            self.declare_window_toolbar();
         }
-        if self.first_run.take_action() {
-            self.open_account_settings();
-        }
-        // The host Save dialog runs off-thread; its outcome is applied here
-        // so attachment export never blocks the frame loop or claims success
-        // before the chosen file is actually written.
-        self.drain_compose_attachment();
-        self.state().post_server_search();
         if self.compose.wants_address_book() {
             let book = {
                 let st = self.shared.borrow();
@@ -3800,54 +3855,6 @@ impl Widget for MailApp {
             self.compose.set_address_book(book);
         }
         self.compose.sync(state, path);
-        self.show_status();
-        self.read_outbox(state);
-
-        let mem_seeded = self.shared.borrow().seeded;
-        if !mem_seeded {
-            let has_accounts = !self.shared.borrow().accounts.is_empty();
-            if self.state().engine.is_some()
-                && has_accounts
-                && !self.connect_requested
-                && !self.awaits_active_secret()
-            {
-                let cfg = self.shared.borrow().accounts.active_config();
-                {
-                    let mut st = self.shared.borrow_mut();
-                    let nothing_kept = st.mailbox.of_account(&cfg.email).next().is_none();
-                    st.first_fetch = nothing_kept.then(first_fetch);
-                }
-                self.state()
-                    .post_engine(EngineRequest::connect(cfg.clone()));
-                self.state()
-                    .post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
-                self.state().fetch_other_inboxes();
-                self.state().watch_inboxes();
-                self.connect_requested = true;
-            }
-            self.shared.borrow_mut().seeded = true;
-        }
-        // Live app: advance the wall clock (relative timestamps + the periodic
-        // refresh cadence read it) and fire a periodic refresh when due. The
-        // sample/`--shots` path pins `now_min`, so this only runs live.
-        if self.state().engine.is_some() {
-            self.shared.borrow_mut().now_min = mail_engine::model::now_minutes();
-            self.state().maybe_auto_refresh();
-        } else if self.state().checks.asks {
-            // The devices that hold the accounts keep them current; this
-            // window asks each to check once as it opens, and reads the
-            // clock for the times it shows.
-            self.shared.borrow_mut().now_min = mail_engine::model::now_minutes();
-            self.seed_checks();
-        }
-        let wants_older = self.shared.borrow().wants_older.take();
-        if wants_older && self.state().engine.is_some() {
-            self.load_older();
-        }
-        self.persist_active_account_if_changed();
-        self.sync_preferences();
-        self.shared.borrow_mut().sync_trusted_senders();
-        self.declare_window_toolbar();
         self.nav.sync(state, path);
         self.state().composing = self.compose.open;
     }
