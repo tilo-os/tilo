@@ -1482,6 +1482,9 @@ impl Core {
                 let Some(row) = beside else {
                     return Ok(None);
                 };
+                // A row of another branch, as a list that groups its items shows, steps the item
+                // over that branch's own at its own level.
+                let row = self.beside(ctx, read, &row.0, &row.1, ours)?;
                 let parent = self.parent_of(ctx, read, &row.0, &row.1)?;
                 let at = if mode == 4 {
                     PlaceAt::Before(row.0)

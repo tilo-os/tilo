@@ -872,3 +872,116 @@ fn note_parent(r: &Replica, note: &ResourceRef) -> Option<String> {
         other => panic!("a parent: {other:?}"),
     }
 }
+
+/// A note of the notebook titled `title`, made where the notebook keeps it.
+fn note_called(r: &mut Replica, notebook: &ResourceRef, title: &str) -> ResourceRef {
+    let note = target(&call(
+        r,
+        "ada",
+        NOTES_APP,
+        "new_note",
+        vec![Value::resource(notebook)],
+    ));
+    call(
+        r,
+        "ada",
+        NOTES_APP,
+        "retitle",
+        vec![Value::resource(&note), Value::text(title)],
+    );
+    r.commit();
+    note
+}
+
+/// A note inside `under`, titled `title`.
+fn note_under(r: &mut Replica, notebook: &ResourceRef, under: &ResourceRef, title: &str) -> ResourceRef {
+    let note = target(&call(
+        r,
+        "ada",
+        NOTES_APP,
+        "new_child",
+        vec![Value::resource(notebook), Value::resource(under)],
+    ));
+    call(
+        r,
+        "ada",
+        NOTES_APP,
+        "retitle",
+        vec![Value::resource(&note), Value::text(title)],
+    );
+    r.commit();
+    note
+}
+
+/// A note moved by one of the tree's verbs — indented under the note over it, over the note
+/// beside it — is one step of the person's: each undoes on its own, and the notes under it go
+/// with it.
+#[test]
+fn a_note_moved_by_a_tree_verb_comes_back_in_one_undo() {
+    let (mut ada, _ben) = workspace();
+    let (notebook, plan, meeting) = planned_notebook(&mut ada);
+    let groceries = note_called(&mut ada, &notebook, "Interviews");
+    let _ = (&plan, &meeting);
+    let id = |note: &ResourceRef| note.id_string();
+    assert_eq!(
+        note_titles(&ada, &notebook),
+        ["Q3 plan", "Monday", "Groceries", "Interviews"]
+    );
+
+    // Indent: Interviews goes under the branch the row over it is in — the branch's own, not the
+    // deeper note the view draws — at the end of it, and one undo puts it back at the top.
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "indent",
+        vec![
+            Value::resource(&groceries),
+            Value::some(Value::resource(&meeting)),
+        ],
+    );
+    ada.commit();
+    assert_eq!(
+        note_parent(&ada, &groceries).as_deref(),
+        Some(id(&plan).as_str()),
+        "it stands under the branch the row over it is in"
+    );
+    undo(&mut ada);
+    assert_eq!(
+        note_parent(&ada, &groceries),
+        None,
+        "one undo takes the indent back"
+    );
+    assert_eq!(
+        note_titles(&ada, &notebook),
+        ["Q3 plan", "Monday", "Groceries", "Interviews"],
+        "and stands at the top again, where it was"
+    );
+
+    // Move up: Groceries goes over the branch as a whole, the note under it after it, and one
+    // undo puts it back beside the branch.
+    let milk = note_under(&mut ada, &notebook, &groceries, "Milk");
+    call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "move_up",
+        vec![
+            Value::resource(&groceries),
+            Value::some(Value::resource(&meeting)),
+        ],
+    );
+    ada.commit();
+    assert_eq!(
+        note_titles(&ada, &notebook),
+        ["Interviews", "Milk", "Q3 plan", "Monday", "Groceries"],
+        "the note moved goes over the branch with the note under it"
+    );
+    undo(&mut ada);
+    assert_eq!(
+        note_titles(&ada, &notebook),
+        ["Q3 plan", "Monday", "Groceries", "Interviews", "Milk"],
+        "one undo puts the note and its own back"
+    );
+    assert_eq!(note_parent(&ada, &milk), Some(id(&groceries)) as Option<String>);
+}
