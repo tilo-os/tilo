@@ -90,6 +90,8 @@ impl RemoteAccountKind {
 pub enum RemoteAccountHealth {
     Disabled,
     NeverChecked,
+    /// The person just signed in, and the folder has not synced yet.
+    SignedIn,
     Syncing,
     Healthy,
     Offline,
@@ -102,6 +104,7 @@ impl RemoteAccountHealth {
         match self {
             Self::Disabled => "Disabled",
             Self::NeverChecked => "Not checked yet",
+            Self::SignedIn => "Signed in",
             Self::Syncing => "Syncing",
             Self::Healthy => "Up to date",
             Self::Offline => "Offline",
@@ -119,6 +122,7 @@ impl RemoteAccountHealth {
             Self::NeedsAuthentication => "Sign in again in Settings to keep this folder in sync",
             Self::Error => "This account needs attention in Settings",
             Self::NeverChecked => "The account has not been checked yet",
+            Self::SignedIn => "Signed in: the folder fills in as it syncs",
             Self::Syncing => "This folder is syncing",
             Self::Healthy => "This folder is up to date",
         }
@@ -131,7 +135,7 @@ impl RemoteAccountHealth {
             Self::Offline => Some("Offline"),
             Self::NeedsAuthentication => Some("Sign in"),
             Self::Error => Some("Attention"),
-            Self::NeverChecked | Self::Syncing => Some("Syncing"),
+            Self::NeverChecked | Self::SignedIn | Self::Syncing => Some("Syncing"),
         }
     }
 }
@@ -258,8 +262,8 @@ fn from_account(account: &Account) -> Option<RemoteAccount> {
     } else {
         account.display_name.as_str()
     });
-    // How its folder's sync stands is the cloud service's to say, and nothing it says reaches
-    // Files yet: an enabled account reads as not checked.
+    // How its folder's sync stands is the cloud service's to say: an enabled account reads as
+    // not checked until the window hears from it (`files_app::cloud_status`).
     let health = if account.enabled {
         RemoteAccountHealth::NeverChecked
     } else {
@@ -277,12 +281,12 @@ fn from_account(account: &Account) -> Option<RemoteAccount> {
 }
 
 /// The host (and port) an account's server is named by, when it is one Files may show: one the
-/// cloud service mounts ([`cloud_source::is_secure_endpoint`]: HTTPS, or plain HTTP to this
+/// cloud service mounts ([`accounts::is_secure_endpoint`]: HTTPS, or plain HTTP to this
 /// machine), naming no credential, query or fragment.
 fn server_host(raw: &str) -> Option<String> {
     let rest = raw.strip_prefix("https://").or_else(|| {
         raw.strip_prefix("http://")
-            .filter(|_| cloud_source::is_secure_endpoint(raw))
+            .filter(|_| accounts::is_secure_endpoint(raw))
     })?;
     if rest.is_empty() || rest.contains(['@', '?', '#', '\\']) {
         return None;

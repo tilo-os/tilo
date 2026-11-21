@@ -706,6 +706,7 @@ fn account_actions_include_sync_now_for_mounted_accounts() {
         health: Some(MountHealth::Healthy),
         paused,
         capabilities: CloudCapabilities::default(),
+        signed_in: false,
     };
     for paused in [false, true] {
         let (_scratch, root) = scratch_root();

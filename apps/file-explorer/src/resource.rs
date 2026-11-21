@@ -1187,6 +1187,7 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
         files.tell_window_shows(shows);
     }
     if cx.mode().is_live() {
+        files.follow_cloud_status();
         if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
             files.follow_person_accounts(accounts);
         } else {

@@ -174,6 +174,10 @@ pub struct CloudMount {
     /// Background sync and uploads are paused.
     pub paused: bool,
     pub capabilities: CloudCapabilities,
+    /// The person signed in to the account and nothing has synced since, as the account status
+    /// store every app reads says: a sign-in proves the account works before its first sync.
+    #[serde(default)]
+    pub signed_in: bool,
 }
 
 /// An operation on one file of a mounted account. `path` is relative to
@@ -449,6 +453,7 @@ mod tests {
                         revisions: true,
                         share_links: false,
                     },
+                    signed_in: false,
                 }];
                 CLOUD_FRAMING
                     .write_value(&mut service, &CloudResponse::Mounts(mounts))

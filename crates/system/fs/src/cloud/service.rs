@@ -29,8 +29,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use accounts::{
-    AccountId, AccountStore, AccountSyncReporter, CredentialRefresher, HandoffCredentialSource,
-    HandoffStore,
+    AccountId, AccountStore, AccountSyncReporter, AccountSyncStatusStore, CredentialRefresher,
+    HandoffCredentialSource, HandoffStore,
 };
 use cloud_source::{Credential, CredentialSource as _};
 use runtime_fs::cloud::{
@@ -455,6 +455,12 @@ impl CloudService {
     }
 
     fn mount_list(&self) -> Vec<CloudMount> {
+        // What the account status store says of each account: the one every app reads, where a
+        // sign-in is recorded until the account's first sync reports.
+        let statuses = match &self.config.config_root {
+            Some(root) => AccountSyncStatusStore::load_in(root),
+            None => AccountSyncStatusStore::load(),
+        };
         let mut mounts: Vec<CloudMount> = self
             .mounts
             .iter()
@@ -464,6 +470,9 @@ impl CloudService {
                 health: mounted.health,
                 paused: self.paused.contains(id),
                 capabilities: mounted.running.capabilities(),
+                signed_in: statuses
+                    .get(&AccountId::from(id.as_str()))
+                    .is_some_and(|status| status.signed_in_unix.is_some()),
             })
             .collect();
         mounts.sort_by(|a, b| a.account.cmp(&b.account));

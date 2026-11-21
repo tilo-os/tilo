@@ -39,6 +39,7 @@ use vello::peniko::ImageData as PenikoImage;
 mod applications;
 mod clipboard_client;
 mod cloud_browse;
+mod cloud_status;
 mod drives;
 mod entry_rows;
 mod live_row_status;
@@ -543,6 +544,10 @@ pub struct FilesState {
         ui::framework::PersonResource<accounts::person::PersonAccounts>,
         Option<u64>,
     )>,
+    /// The cloud service's reports of how each synced account stands, followed while live.
+    cloud_status: Option<cloud_status::CloudStatus>,
+    /// The cloud service's last report, applied to the accounts the record holds.
+    cloud_mounts: Vec<tilo_cloud_files::cloud::CloudMount>,
     accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
     cloud: cloud_browse::CloudView,
     #[cfg(test)]
@@ -885,6 +890,8 @@ impl FileExplorerWidget {
             effect_reply: None,
             local_clipboard: clipboard_client::Client::new(),
             person_accounts: None,
+            cloud_status: None,
+            cloud_mounts: Vec::new(),
             accounts_cache: Vec::new(),
             cloud: cloud_browse::CloudView::default(),
             #[cfg(test)]
@@ -1650,6 +1657,27 @@ impl FilesState {
         self.refresh_external_search_catalogs();
     }
 
+    /// Show each synced account as the cloud service says it stands, as it changes.
+    pub(crate) fn follow_cloud_status(&mut self) {
+        self.cloud_status = cloud_status::CloudStatus::follow(ui::WakeHandle::new());
+    }
+
+    /// Take the cloud service's newest report, if one arrived; whether the accounts changed.
+    fn adopt_cloud_status(&mut self) -> bool {
+        let Some(mounts) = self
+            .cloud_status
+            .as_ref()
+            .and_then(cloud_status::CloudStatus::take)
+        else {
+            return false;
+        };
+        self.cloud_mounts = mounts;
+        if let Some((_, seen)) = &mut self.person_accounts {
+            *seen = None;
+        }
+        self.adopt_person_accounts()
+    }
+
     /// Read the accounts record again when it changed since it was last read; whether it had.
     fn adopt_person_accounts(&mut self) -> bool {
         let Some((record, seen)) = &mut self.person_accounts else {
@@ -1660,7 +1688,9 @@ impl FilesState {
             return false;
         }
         *seen = Some(revision);
-        let adopted = crate::remote_accounts::from_record(&record.get(), self.home_path.as_deref());
+        let mut adopted =
+            crate::remote_accounts::from_record(&record.get(), self.home_path.as_deref());
+        cloud_status::with_status(&mut adopted, &self.cloud_mounts);
         if adopted == self.accounts_cache {
             return false;
         }
@@ -7407,6 +7437,7 @@ impl FilesState {
             | counted
             | listed
             | self.adopt_person_accounts()
+            | self.adopt_cloud_status()
             | self.poll_cloud()
             | self.poll_mounted_cloud()
             | self.poll_drives()
