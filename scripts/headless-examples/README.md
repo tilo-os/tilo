@@ -14,13 +14,14 @@ These proofs start headless sessions of their own, on scratch homes, and read
 every claim back off those sessions rather than off the thing that asked for
 it. `tools/ci/session-proofs.sh PROOF` runs one on the session build
 `dist/dev/nested-session-build.sh` made; t runs each as the check `e2e/PROOF`
-(`t test e2e/two-people`, `t test 'e2e/*'` for all four), and
+(`t test e2e/two-people`, `t test 'e2e/*'` for all five), and
 `t outputs e2e/PROOF --to DIR` fetches its verdict, screenshots and logs.
 
 | Proof | What it asserts |
 |---|---|
 | `tilolang-e2e.py` (`e2e/tilolang`) | The tilolang apps installed and run as real apps: their registry entries, sandboxes, hosts, windows, actions and routes. |
 | `hosted-names-proof.py` (`e2e/two-people`) | Two people in one workspace, in two sessions, read each other by name in tilolang Chat: "Ada is typing…", her message under her name, and her own window naming her. |
+| `mail-two-members-proof.py` (`e2e/mail-two-members`) | Two members of one workspace, in two sessions, both list a message brought into the workspace's mailbox in Mail, and each opens it and presses Reply to a composer answering its sender under "Re:" its subject. |
 | `agent-sessions-proof.py` (`e2e/agent-sessions`) | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the shell's Stop ending one of their connections alone. |
 | `session-lock-proof.py` (`e2e/session-lock`) | The shell's own lock action locks the session, the lock screen's own frame covers the shell, a password that is not the person's is refused, and the person's own password brings the shell back. |
 

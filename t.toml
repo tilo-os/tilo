@@ -6270,7 +6270,7 @@ outputs = ["/target/e2e/{proof}/**"]
 timeout_secs = 2400
 on = ["dispatch", "idle"]
 [check.matrix]
-proof = ["tilolang", "two-people", "agent-sessions", "session-lock"]
+proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "session-lock"]
 
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks
