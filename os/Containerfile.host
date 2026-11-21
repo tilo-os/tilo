@@ -147,6 +147,12 @@ COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
 COPY os/usr/lib/systemd/system-generators/tilo-rollback-unlock-generator \
      os/usr/lib/systemd/system-generators/tilo-root-generator \
      /usr/lib/systemd/system-generators/
+# Nothing else mounts the ESP on an installed server: the generator mounts the
+# one the boot loader started from at /boot (or /boot/efi beside a separate
+# /boot), where boot-entry maintenance, the ESP writer and systemd-bless-boot
+# look for it.
+COPY os/usr/lib/systemd/system-generators/tilo-esp-generator \
+     /usr/lib/systemd/system-generators/
 COPY os/usr/lib/dracut/modules.d/91tilo-rollback /usr/lib/dracut/modules.d/91tilo-rollback
 # The public half of the key that signs a generation's PCR prediction: what a
 # TPM keyslot is sealed to, and what early boot verifies the prediction against.
@@ -183,6 +189,7 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-root-discover \
         /usr/lib/systemd/system-generators/tilo-rollback-unlock-generator \
         /usr/lib/systemd/system-generators/tilo-root-generator \
+        /usr/lib/systemd/system-generators/tilo-esp-generator \
         /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh
 
 # ---- Units ------------------------------------------------------------------

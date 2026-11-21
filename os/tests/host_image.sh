@@ -49,7 +49,7 @@ for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo-default-start \
   usr/libexec/tilo-server-device-config \
   usr/libexec/tilo-image-trust-staged \
-  usr/libexec/tilo-esp-mount; do
+  usr/libexec/tilo-esp-mount usr/lib/systemd/system-generators/tilo-esp-generator; do
   [[ -x $root/$bin ]] || die "no executable /$bin"
 done
 # The program the API server starts a task's tilolang programs in lies beside it, where the
