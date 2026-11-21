@@ -154,7 +154,7 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
         .map(|item| (text(&item[0]), format!("{:?}", item[1])))
         .collect();
     assert_eq!(
-        watched.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>().len(),
+        watched.len(),
         2,
         "the two videos watched, and not the one taken out of the history: {watched:?}"
     );
