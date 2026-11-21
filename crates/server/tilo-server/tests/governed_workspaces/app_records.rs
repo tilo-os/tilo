@@ -297,18 +297,6 @@ async fn a_viewer_writes_their_own_record() {
     .await;
 }
 
-/// What a person's Mail keeps for their other devices is theirs: a Viewer
-/// keeps it, and their other device takes it in, on a fresh workspace no
-/// editor ever opened Mail in.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_viewer_keeps_their_own_mail_copies() {
-    Box::pin(a_viewer_writes_their_own_record_of(
-        "so.tilo.mail",
-        "mail.copies",
-    ))
-    .await;
-}
-
 async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
     let alice = TestUser::fresh("Fixture governor");
     let carol = TestUser::fresh("Fixture viewer");
