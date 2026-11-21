@@ -6,41 +6,158 @@ fn test_cx() -> crate::sections::Sections {
     crate::sections::Sections::default()
 }
 
-#[derive(Default)]
-struct RecordingRebooter {
-    calls: Mutex<u32>,
-}
-impl Rebooter for RecordingRebooter {
-    fn reboot(&self) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        *self.calls.lock().unwrap() += 1;
-        Ok(())
+/// One deployment of the system, as the session's reading names it.
+fn deployment(version: &str, digest: &str) -> Deployment {
+    Deployment {
+        image: Some("registry.tilo.so/tilo/tilo:stable".into()),
+        digest: Some(digest.into()),
+        version: Some(version.into()),
+        built: Some("2026-06-02T09:00:00Z".into()),
     }
 }
 
-fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesModel {
-    let status = UpdateStatus {
-        current_version: "Tilo 2026.06".into(),
-        staged_version: staged.map(std::string::ToString::to_string),
-        staged_error: None,
-        staged_digest: None,
-        live: None,
-    };
-    let requeried = UpdateStatus {
-        current_version: "Tilo 2026.06".into(),
-        staged_version: Some("Tilo 2026.07".into()),
-        staged_error: None,
-        staged_digest: None,
-        live: None,
-    };
-    UpdatesModel::with_parts(
+/// What the session reads of a machine that runs one version and keeps the one before.
+fn reading() -> Update {
+    Update {
+        booted: Some(deployment("Tilo 2026.06", "sha256:06")),
+        rollback: Some(deployment("Tilo 2026.05", "sha256:05")),
+        ..Update::default()
+    }
+}
+
+/// The same machine with the next version staged, which a restart of the computer finishes.
+fn staged() -> Update {
+    Update {
+        staged: Some(deployment("Tilo 2026.07", "sha256:07")),
+        restart_needed: true,
+        ..reading()
+    }
+}
+
+/// A pane reading `update` from the session, asking the session `host`, driving `control`.
+fn pane_reading(
+    update: &Update,
+    host: &Arc<SessionHost>,
+    control: Arc<dyn UpdateControl>,
+) -> (UpdatesModel, Arc<HeldReading>) {
+    let feed = HeldReading::of(update);
+    let pane = UpdatesModel::with_parts(
         test_cx(),
-        status,
         UpdatePrefs::default(),
-        Arc::new(move || requeried.clone()),
+        Arc::clone(&feed) as Arc<dyn UpdateFeed>,
+        Box::new(SessionActions::new(host.remote())),
         Arc::new(|| "CHECKED-NOW".to_string()),
-        rebooter,
+        control,
+    );
+    (pane, feed)
+}
+
+fn pane() -> UpdatesModel {
+    pane_reading(
+        &reading(),
+        &Arc::new(SessionHost::default()),
+        Arc::new(UnavailableControl),
     )
+    .0
+}
+
+/// The session as the pane's actions reach it: what it was asked, with the person's
+/// confirmation, and a refusal where it gives one.
+#[derive(Default)]
+struct SessionHost {
+    asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+    refusal: Mutex<Option<String>>,
+}
+
+impl SessionHost {
+    fn remote(self: &Arc<Self>) -> ui::RemoteActions {
+        ui::RemoteActions::with_provider(
+            Arc::clone(self) as Arc<dyn ui::tilo_actions::remote::ActionProvider + Send + Sync>,
+            ui::tilo_actions::remote::Caller::local_person("owner"),
+        )
+    }
+
+    /// What was asked: the resource, the action and whether the person confirmed it.
+    fn asked(&self) -> Vec<(String, String, bool)> {
+        self.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| {
+                assert_eq!(
+                    request.target.provider,
+                    ui::tilo_actions::remote::session_actions::PROVIDER
+                );
+                (
+                    request.target.address.resource.clone(),
+                    request.target.address.action.clone(),
+                    request.confirmation == Some(ui::tilo_actions::remote::Confirmation::Confirmed),
+                )
+            })
+            .collect()
+    }
+
+    fn refuse(&self, reason: &str) {
+        *self.refusal.lock().unwrap() = Some(reason.to_owned());
+    }
+}
+
+impl ui::tilo_actions::remote::ActionProvider for SessionHost {
+    fn query(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: ui::tilo_actions::remote::CatalogueQuery,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionCallError>,
+    > {
+        ui::tilo_actions::remote::Pending::ready(Err(
+            ui::tilo_actions::remote::ActionCallError::NotPermitted,
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        request: ui::tilo_actions::remote::InvokeRequest,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<
+            ui::tilo_actions::remote::InvocationReceipt,
+            ui::tilo_actions::remote::ActionCallError,
+        >,
+    > {
+        use ui::tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
+        let invocation = request.invocation.clone();
+        self.asked.lock().unwrap().push(request);
+        let status = match self.refusal.lock().unwrap().clone() {
+            Some(reason) => ReceiptStatus::Rejected {
+                error: ActionCallError::Unavailable { reason },
+            },
+            None => ReceiptStatus::Completed {
+                output: ui::tilo_actions::ActionOutput {
+                    value: None,
+                    resources: Vec::new(),
+                },
+            },
+        };
+        ui::tilo_actions::remote::Pending::ready(Ok(InvocationReceipt { invocation, status }))
+    }
+
+    fn observe(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> Option<ui::tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionCallError>>
+    {
+        ui::tilo_actions::remote::Pending::ready(Ok(()))
+    }
 }
 
 fn codec_pane(
@@ -49,7 +166,7 @@ fn codec_pane(
     outcome: Result<(), String>,
 ) -> UpdatesModel {
     let reader = Arc::clone(&status);
-    pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
+    pane().with_codec_pack(
             Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
             Arc::new(move |action| {
                 runs.lock().unwrap().push(action);
@@ -206,7 +323,7 @@ tilo_test_env::scenario! {
     {
         let (release, hold) = channel::channel::<()>();
         let hold = Mutex::new(hold);
-        let mut pane = pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
+        let mut pane = pane().with_codec_pack(
             Arc::new(CodecPackStatus::default),
             Arc::new(move |_| {
                 let _ = hold.lock().unwrap().recv();
@@ -281,7 +398,7 @@ fn windows_pane(
     after: WindowsReadiness,
 ) -> UpdatesModel {
     let reader = Arc::clone(&readiness);
-    let mut pane = pane_with(None, Arc::new(RecordingRebooter::default()));
+    let mut pane = pane();
     pane.windows_support = (reader.lock().unwrap()).clone();
     pane.windows_support_provider = Arc::new(move || (reader.lock().unwrap()).clone());
     pane.windows_support_runner = Arc::new(move |action| {
@@ -449,197 +566,378 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn update_status_parsers_accept_only_trusted_shapes() {
-    {
-        let staged = r#"{"status":{"staged":{"version":"Tilo 2026.07"},"booted":{"version":"Tilo 2026.06"}}}"#;
-        assert_eq!(parse_bootc_staged(staged).as_deref(), Some("Tilo 2026.07"));
+fn the_update_history_keeps_its_printable_lines() {
+    let history = parse_update_history("2026-01-01 update complete\nline\u{0007} two\n");
+    assert_eq!(history, ["2026-01-01 update complete", "line two"]);
+    assert!(parse_update_history("-- No entries --\n").is_empty());
+}
 
-        let none = r#"{"status":{"staged":null,"booted":{"version":"Tilo 2026.06"}}}"#;
-        assert_eq!(parse_bootc_staged(none), None);
+/// The Updates page of a Settings window whose pane reads `update` from the session.
+fn page_reading(update: &Update) -> String {
+    page_of(|sections| pane_reading_in(sections, HeldReading::of(update)))
+}
 
-        let image =
-            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/tilo/tilo:latest"}}}}}"#;
-        assert_eq!(
-            parse_bootc_staged(image).as_deref(),
-            Some("quay.io/tilo/tilo:latest")
-        );
+fn pane_reading_in(sections: crate::sections::Sections, feed: Arc<HeldReading>) -> UpdatesModel {
+    UpdatesModel::with_parts(
+        sections,
+        UpdatePrefs::default(),
+        feed,
+        Box::new(SessionActions::new(
+            Arc::new(SessionHost::default()).remote(),
+        )),
+        Arc::new(|| "CHECKED-NOW".to_string()),
+        Arc::new(FakeControl::new(Some(true))),
+    )
+}
+
+/// The Updates page of a Settings window whose pane `pane` makes.
+fn page_of(pane: impl FnOnce(crate::sections::Sections) -> UpdatesModel) -> String {
+    let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
+        *crate::panes::updates::area(settings)
+            .unwrap()
+            .model()
+            .borrow_mut() = pane(settings.sections().clone());
+    })
+    .expect("the Settings window is mounted");
+    crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
+    app.settle();
+    app.harness().inspection_json().unwrap()
+}
+
+fn shows(frame: &str, shown: &[String], not: &[String]) {
+    for claim in shown {
+        assert!(frame.contains(claim.as_str()), "shows {claim:?}: {frame}");
     }
-
-    {
-        let has = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:gen41"}}}}}"#;
-        assert_eq!(parse_bootc_rollback(has).as_deref(), Some("tilo:gen41"));
-        let dated = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:stable"},
-                "version":"2026.10.18","timestamp":"2026-10-18T04:12:00Z"}}}}"#;
-        assert_eq!(
-            parse_bootc_rollback(dated).as_deref(),
-            Some("2026.10.18, built 2026-10-18")
+    for claim in not {
+        assert!(
+            !frame.contains(claim.as_str()),
+            "does not show {claim:?}: {frame}"
         );
-        let none = r#"{"status":{"rollback":null}}"#;
-        assert_eq!(parse_bootc_rollback(none), None);
-        let bare = r#"{"status":{"rollback":{}}}"#;
-        assert_eq!(
-            parse_bootc_rollback(bare).as_deref(),
-            Some("the previous image"),
-            "a rollback deployment bootc describes in a shape we do not know \
-             still exists, and hiding it would hide the way back"
-        );
-    }
-
-    {
-        let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.example.test/releases/42"}}}}}"#;
-        assert_eq!(
-            parse_bootc_release_notes(json).as_deref(),
-            Some("https://updates.example.test/releases/42")
-        );
-        let unsafe_url = r#"{"releaseNotes":"file:///etc/shadow"}"#;
-        assert_eq!(parse_bootc_release_notes(unsafe_url), None);
-    }
-
-    {
-        let history = parse_update_history("2026-01-01 update complete\nline\u{0007} two\n");
-        assert_eq!(history, ["2026-01-01 update complete", "line two"]);
     }
 }
 
 tilo_test_env::scenario! {
-    fn updates_are_checked_applied_and_scheduled_through_their_controls;
+    fn the_page_says_what_the_system_update_needs;
 
-    phase update_checks_run_promptly_and_stamp_only_on_completion;
+    phase nothing_to_do_offers_a_check_and_says_what_runs;
     {
-        // Check for updates re-queries the system and stamps a real
-        // last-checked time — proving the button acts, not no-ops.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let reb = Arc::new(RecordingRebooter::default());
-            let mut pane = pane_with(None, reb);
-            pane.poll();
-            assert_eq!(pane.prefs().last_checked, "Never");
-            assert_eq!(pane.status().staged_version, None);
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            pane.poll();
-            settle(&mut pane, |pane| pane.check_pending);
-            assert_eq!(
-                pane.prefs().last_checked,
-                "CHECKED-NOW",
-                "timestamp updated"
-            );
-            assert_eq!(
-                pane.status().staged_version.as_deref(),
-                Some("Tilo 2026.07"),
-                "the re-query result landed"
-            );
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(None, None));
-            let release = control.hold_checks();
-            let mut pane = pane_with_control(Arc::clone(&control));
-            pane.poll();
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            // The check is held until released below: were `sync` to wait for
-            // it, this call would only return once the hold timed out.
-            pane.poll();
-            assert!(pane.check_pending, "the check runs off the UI thread");
-            assert_eq!(pane.prefs().last_checked, "Never");
-            release.send(()).unwrap();
-            settle(&mut pane, |pane| pane.check_pending);
-            assert!(
-                !control.hold_timed_out(),
-                "sync blocked on the update check"
-            );
-            assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
-            assert!(pane.notice().is_none());
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(None, None).failing_check());
-            let mut pane = pane_with_control(control);
-            pane.poll();
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            settle(&mut pane, |pane| pane.check_pending);
-            assert_eq!(pane.prefs().last_checked, "Never");
-            assert!(
-                pane.notice()
-                    .is_some_and(|message| message.contains("could not be checked"))
-            );
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(None, None));
-            let release = control.hold_refreshes();
-            let mut pane = pane_with_control(Arc::clone(&control));
-            pane.poll();
-            pane.run(UpdatesEffect::RefreshFirmware, None);
-            pane.poll();
-            assert!(pane.firmware_refresh_pending);
-            release.send(()).unwrap();
-            settle(&mut pane, |pane| pane.firmware_refresh_pending);
-            assert!(
-                !control.hold_timed_out(),
-                "sync blocked on the firmware refresh"
-            );
-            assert_eq!(pane.firmware_updates, Ok(Vec::new()));
-
-            control.set_refresh_fails(true);
-            pane.run(UpdatesEffect::RefreshFirmware, None);
-            pane.poll();
-            assert!(pane.firmware_refresh_pending);
-            release.send(()).unwrap();
-            settle(&mut pane, |pane| pane.firmware_refresh_pending);
-            assert!(pane.firmware_updates.is_err());
-            // The pane's own failure sentence, with the reason: the copy comes
-            // from the catalogue, so a reworded notice still reads here.
-            let expected = t_args(
-                "upd-notice-fw-refresh",
-                &[("error", "firmware refresh failed".into())],
-            );
-            assert_eq!(pane.notice(), Some(expected.as_str()), "with the reason");
-        }
-
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(None, None));
-            let release = control.hold_checks();
-            let mut pane = pane_with_control(Arc::clone(&control));
-            pane.poll();
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            pane.poll();
-            assert!(pane.check_pending);
-            // A second press while the first check is provably still running.
-            pane.run(UpdatesEffect::CheckForUpdates, None);
-            pane.poll();
-            release.send(()).unwrap();
-            settle(&mut pane, |pane| pane.check_pending);
-            assert_eq!(*control.check_calls.lock().unwrap(), 1);
-        }
+        let frame = page_reading(&reading());
+        shows(
+            &frame,
+            &[
+                t("upd-up-to-date"),
+                t("upd-check"),
+                t_args(
+                    "upd-image-built",
+                    &[("image", "Tilo 2026.06".into()), ("date", "2026-06-02".into())],
+                ),
+                t_args(
+                    "upd-previous-image",
+                    &[(
+                        "image",
+                        t_args(
+                            "upd-image-built",
+                            &[("image", "Tilo 2026.05".into()), ("date", "2026-06-02".into())],
+                        )
+                        .into(),
+                    )],
+                ),
+            ],
+            &[t("upd-restart-update"), t("upd-finish-now"), t("upd-checking")],
+        );
     }
 
-    phase restart_and_rollback_are_confirmed_and_reported;
+    phase the_firmware_line_never_shows_what_the_firmware_tool_said;
     {
-        {
-            let reb = Arc::new(RecordingRebooter::default());
-            let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
-            pane.poll();
-            pane.run(UpdatesEffect::RestartToUpdate, None);
-            pane.poll();
-            // A second stray press must not reboot again.
-            pane.run(UpdatesEffect::RestartToUpdate, None);
-            pane.poll();
-            settle(&mut pane, UpdatesModel::working);
-            assert_eq!(*reb.calls.lock().unwrap(), 1);
-        }
+        // The pane's firmware reader fails with fwupd's own words; the page says firmware cannot
+        // be checked here and offers to ask again.
+        let frame = page_reading(&reading());
+        shows(
+            &frame,
+            &[t("upd-fw-query-failed"), t("upd-try-again")],
+            &["fwupd is unavailable in this test".into()],
+        );
+    }
 
+    phase checking_says_so_and_offers_nothing_else;
+    {
+        let frame = page_reading(&Update {
+            updating: true,
+            pending: vec!["update-now".into()],
+            ..reading()
+        });
+        shows(&frame, &[t("upd-checking")], &[t("upd-check"), t("upd-up-to-date")]);
+    }
+
+    phase only_the_desktop_half_offers_a_desktop_restart_that_keeps_the_apps;
+    {
+        let frame = page_reading(&Update {
+            desktop_pending: true,
+            restart_needed: false,
+            ..staged()
+        });
+        shows(
+            &frame,
+            &[t("upd-live-ready"), t("upd-finishes-now"), t("upd-finish-now")],
+            &[t("upd-restart-update")],
+        );
+    }
+
+    phase a_restart_of_the_computer_names_the_version_it_finishes;
+    {
+        let frame = page_reading(&staged());
+        shows(
+            &frame,
+            &[
+                t_args("upd-ready", &[("version", "Tilo 2026.07".into())]),
+                t("upd-restart-apply"),
+                t("upd-restart-update"),
+            ],
+            &[t("upd-finish-now"), t("upd-up-to-date")],
+        );
+    }
+
+    phase a_live_update_that_failed_says_what_to_do_and_not_why;
+    {
+        let frame = page_reading(&Update {
+            failed: Some("tilo-session exited with status 1".into()),
+            ..staged()
+        });
+        shows(
+            &frame,
+            &[t("upd-live-failed-title"), t("upd-live-failed"), t("upd-restart-update")],
+            &[t("upd-finish-now"), "exited with status 1".into()],
+        );
+    }
+
+    phase the_desktop_restarting_says_the_apps_stay_open;
+    {
+        let frame = page_reading(&Update {
+            desktop_pending: true,
+            restart_needed: false,
+            pending: vec!["restart-desktop".into()],
+            ..staged()
+        });
+        shows(&frame, &[t("upd-finishing")], &[t("upd-finish-now")]);
+    }
+
+    phase an_update_applied_in_full_is_done;
+    {
+        let frame = page_reading(&Update {
+            applied: true,
+            restart_needed: false,
+            ..staged()
+        });
+        shows(
+            &frame,
+            &[t("upd-up-to-date"), t("upd-done"), t("upd-check")],
+            &[t("upd-restart-update"), t("upd-finish-now")],
+        );
+    }
+
+    phase a_member_who_may_not_see_the_deployments_is_told_so;
+    {
+        let frame = page_reading(&Update {
+            booted: None,
+            rollback: None,
+            ..Update::default()
+        });
+        shows(
+            &frame,
+            &[t("upd-admins-only"), t("upd-up-to-date")],
+            &[t("upd-no-previous")],
+        );
+    }
+
+    phase a_session_without_the_update_says_so_and_claims_nothing;
+    {
+        let frame = page_of(|sections| {
+            let feed = Arc::new(HeldReading::default());
+            feed.fail("no service publishes system-update");
+            pane_reading_in(sections, feed)
+        });
+        shows(
+            &frame,
+            &[t("upd-unreachable")],
+            &[t("upd-up-to-date"), t("upd-no-previous"), "no service publishes".into()],
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn the_pane_follows_the_session_and_asks_it_for_its_actions;
+
+    phase each_reading_moves_the_page_to_its_state;
+    {
+        let (mut pane, feed) =
+            pane_reading(&reading(), &Arc::new(SessionHost::default()), Arc::new(UnavailableControl));
+        assert_eq!(pane.update_state(), UpdateState::UpToDate);
+        for (update, state) in [
+            (
+                Update { desktop_pending: true, restart_needed: false, ..staged() },
+                UpdateState::DesktopRestart,
+            ),
+            (
+                Update { failed: Some("exit 1".into()), ..staged() },
+                UpdateState::Failed,
+            ),
+            (staged(), UpdateState::Restart),
+            (Update { applied: true, restart_needed: false, ..staged() }, UpdateState::Done),
+        ] {
+            feed.set(&update);
+            assert!(pane.poll(), "a reading redraws the page");
+            assert_eq!(pane.update_state(), state, "{update:?}");
+        }
+        assert!(!pane.poll(), "nothing new, nothing to draw");
+    }
+
+    phase a_check_is_the_sessions_and_stamps_when_it_ends_well;
+    {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let host = Arc::new(SessionHost::default());
+        let (mut pane, feed) = pane_reading(&reading(), &host, Arc::new(UnavailableControl));
+        pane.run(UpdatesEffect::CheckForUpdates, None);
+        assert_eq!(pane.update_state(), UpdateState::Checking, "said at once");
+        // A second press while the first is unanswered asks nothing more.
+        pane.run(UpdatesEffect::CheckForUpdates, None);
+        settle(&mut pane, |pane| !pane.asked.is_empty());
+        assert_eq!(host.asked(), [("system-update".into(), "update-now".into(), false)]);
+        assert_eq!(pane.prefs().last_checked, "Never", "taken is not checked");
+
+        feed.set(&Update { updating: true, pending: vec!["update-now".into()], ..reading() });
+        pane.poll();
+        assert_eq!(pane.update_state(), UpdateState::Checking);
+        feed.set(&staged());
+        pane.poll();
+        assert_eq!(pane.update_state(), UpdateState::Restart);
+        assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
+        assert!(pane.notice().is_none());
+
+        // A check that did not finish is said plainly, without the unit's words, and is no check.
+        let (mut pane, feed) = pane_reading(&reading(), &host, Arc::new(UnavailableControl));
+        pane.run(UpdatesEffect::CheckForUpdates, None);
+        settle(&mut pane, |pane| !pane.asked.is_empty());
+        feed.set(&Update { updating: true, pending: vec!["update-now".into()], ..reading() });
+        pane.poll();
+        feed.set(&Update {
+            problem: Some("tilo-deployment-update.service failed".into()),
+            ..reading()
+        });
+        pane.poll();
+        assert_eq!(pane.notice(), Some(t("upd-notice-check").as_str()));
+        assert_eq!(pane.prefs().last_checked, "Never");
+    }
+
+    phase the_restarts_ask_the_session_with_the_persons_confirmation;
+    {
+        let host = Arc::new(SessionHost::default());
+        let desktop = Update { desktop_pending: true, restart_needed: false, ..staged() };
+        let (mut pane, _) = pane_reading(&desktop, &host, Arc::new(UnavailableControl));
+        pane.run(UpdatesEffect::RestartDesktop, None);
+        assert_eq!(pane.update_state(), UpdateState::Finishing, "said at once");
+        settle(&mut pane, |pane| !pane.asked.is_empty());
+
+        let (mut pane, _) = pane_reading(&staged(), &host, Arc::new(UnavailableControl));
+        pane.run(UpdatesEffect::RestartToUpdate, None);
+        settle(&mut pane, |pane| !pane.asked.is_empty());
+
+        // Firmware that waits for a restart takes the computer's own.
+        let (mut pane, _) = pane_reading(&reading(), &host, Arc::new(UnavailableControl));
+        pane.run(UpdatesEffect::RestartToUpdate, None);
+        settle(&mut pane, |pane| !pane.asked.is_empty());
+
+        assert_eq!(
+            host.asked(),
+            [
+                ("system-update".into(), "restart-desktop".into(), false),
+                ("system-update".into(), "restart-to-update".into(), true),
+                ("power".into(), "restart".into(), true),
+            ]
+        );
+        assert!(pane.notice().is_none());
+    }
+
+    phase a_refusal_says_what_to_do_and_keeps_the_sessions_words_to_the_log;
+    {
+        let host = Arc::new(SessionHost::default());
+        host.refuse("No part of the update waits for the desktop");
+        let desktop = Update { desktop_pending: true, restart_needed: false, ..staged() };
+        let (mut pane, _) = pane_reading(&desktop, &host, Arc::new(UnavailableControl));
+        pane.run(UpdatesEffect::RestartDesktop, None);
+        settle(&mut pane, |pane| !pane.asked.is_empty());
+        assert_eq!(pane.notice(), Some(t("upd-notice-desktop-failed").as_str()));
+        assert_eq!(pane.update_state(), UpdateState::DesktopRestart, "it can be asked again");
+    }
+
+    phase a_desktop_restart_that_did_not_finish_is_said_once_it_ends;
+    {
+        let host = Arc::new(SessionHost::default());
+        let desktop = Update { desktop_pending: true, restart_needed: false, ..staged() };
+        let (mut pane, feed) = pane_reading(&desktop, &host, Arc::new(UnavailableControl));
+        pane.run(UpdatesEffect::RestartDesktop, None);
+        settle(&mut pane, |pane| !pane.asked.is_empty());
+        feed.set(&Update { pending: vec!["restart-desktop".into()], ..desktop.clone() });
+        pane.poll();
+        assert!(pane.notice().is_none(), "it still runs");
+        feed.set(&Update { problem: Some("tilo-live-update-session.service failed".into()), ..desktop });
+        pane.poll();
+        assert_eq!(pane.notice(), Some(t("upd-notice-desktop-failed").as_str()));
+    }
+}
+
+tilo_test_env::scenario! {
+    fn updates_are_applied_and_scheduled_through_their_controls;
+
+    phase firmware_refreshes_run_promptly_and_say_plainly_when_they_fail;
+    {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let control = Arc::new(FakeControl::new(None));
+        let release = control.hold_refreshes();
+        let mut pane = pane_with_control(Arc::clone(&control));
+        pane.poll();
+        pane.run(UpdatesEffect::RefreshFirmware, None);
+        pane.poll();
+        assert!(pane.firmware_refresh_pending);
+        release.send(()).unwrap();
+        settle(&mut pane, |pane| pane.firmware_refresh_pending);
+        assert!(
+            !control.hold_timed_out(),
+            "sync blocked on the firmware refresh"
+        );
+        assert_eq!(pane.firmware_updates, Ok(Vec::new()));
+
+        control.set_refresh_fails(true);
+        pane.run(UpdatesEffect::RefreshFirmware, None);
+        pane.poll();
+        assert!(pane.firmware_refresh_pending);
+        release.send(()).unwrap();
+        settle(&mut pane, |pane| pane.firmware_refresh_pending);
+        assert!(pane.firmware_updates.is_err());
+        assert_eq!(
+            pane.notice(),
+            Some(t("upd-notice-fw-refresh").as_str()),
+            "fwupd's words are for the log"
+        );
+    }
+
+    phase rollback_is_confirmed_and_reported;
+    {
         // Rolling back takes two clicks, and the first one only shows what a
         // rollback does not undo.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
+            let control = Arc::new(FakeControl::new(Some(true)));
             let mut pane = pane_with_control(control.clone());
             pane.poll();
-            assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
+            assert_eq!(
+                pane.rollback_target(),
+                Ok(Some(t_args(
+                    "upd-image-built",
+                    &[("image", "Tilo 2026.05".into()), ("date", "2026-06-02".into())],
+                ))),
+                "what the session reads it can go back to"
+            );
 
             pane.run(UpdatesEffect::ReviewRollback, None);
             pane.poll();
@@ -673,7 +971,7 @@ tilo_test_env::scenario! {
         // A failed rollback says so where the person is looking.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
+            let control = Arc::new(FakeControl::new(Some(true)).failing_rollback());
             let mut pane = pane_with_control(control);
             pane.poll();
             pane.run(UpdatesEffect::RollBack, None);
@@ -690,7 +988,7 @@ tilo_test_env::scenario! {
         // — assert on what the pane renders, not on a comment.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
+            let pane = pane_with_control(Arc::new(FakeControl::new(Some(true))));
             let help = pane.help_lines().join("\n");
             assert!(
                 !help.contains("you can roll back to the previous image at boot"),
@@ -714,7 +1012,11 @@ tilo_test_env::scenario! {
         // button that would fail.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), None)));
+            let (pane, _) = pane_reading(
+                &Update { rollback: None, ..reading() },
+                &Arc::new(SessionHost::default()),
+                Arc::new(FakeControl::new(Some(true))),
+            );
             let shown = pane.rollback_card_lines().join("\n");
             assert!(
                 shown.contains("no previous image on this machine yet"),
@@ -730,30 +1032,16 @@ tilo_test_env::scenario! {
         // disagree.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), None));
-            let pane = UpdatesModel::with_parts_and_control(
+            let pane = UpdatesModel::with_parts(
                 test_cx(),
-                UpdateStatus {
-                    current_version: "Tilo".into(),
-                    staged_version: None,
-                    staged_error: None,
-                    staged_digest: None,
-                    live: None,
-                },
                 UpdatePrefs {
                     auto: false,
                     ..UpdatePrefs::default()
                 },
-                Arc::new(|| UpdateStatus {
-                    current_version: "Tilo".into(),
-                    staged_version: None,
-                    staged_error: None,
-                    staged_digest: None,
-                    live: None,
-                }),
+                HeldReading::of(&reading()),
+                Box::new(NoActions::default()),
                 Arc::new(|| "now".to_string()),
-                Arc::new(RecordingRebooter::default()),
-                control,
+                Arc::new(FakeControl::new(Some(true))),
             );
             assert!(
                 pane.prefs().auto,
@@ -765,7 +1053,7 @@ tilo_test_env::scenario! {
 
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), None));
+            let control = Arc::new(FakeControl::new(Some(true)));
             let mut pane = pane_with_control(control.clone());
             pane.poll();
 
@@ -795,7 +1083,7 @@ tilo_test_env::scenario! {
         // failing silently.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
+            let control = Arc::new(FakeControl::new(Some(true)).failing_set());
             let mut pane = pane_with_control(control.clone());
             pane.poll();
 
@@ -826,10 +1114,8 @@ tilo_test_env::scenario! {
         // for a timer that could not be read is the same class of lie.
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let pane = pane_with_control(Arc::new(FakeControl::new(None, None)));
+            let pane = pane_with_control(Arc::new(FakeControl::new(None)));
             assert_eq!(pane.timer_enabled(), None);
-            // And the stub used by the older constructor answers the same way, so
-            // a test written before this existed cannot get a confident `false`.
             assert_eq!(UnavailableControl.timer_enabled(), None);
             assert!(UnavailableControl.set_timer(true).is_err());
             assert!(UnavailableControl.roll_back().is_err());
@@ -858,35 +1144,25 @@ struct FakeControl {
     timer: Mutex<Option<bool>>,
     set_calls: Mutex<Vec<bool>>,
     rollbacks: Mutex<u32>,
-    target: Mutex<Option<String>>,
     set_fails: bool,
     rollback_fails: bool,
-    check_hold: Mutex<Option<channel::Receiver<()>>>,
-    check_fails: bool,
     refresh_hold: Mutex<Option<channel::Receiver<()>>>,
     refresh_fails: Mutex<bool>,
-    check_calls: Mutex<u32>,
-    desktop_restarts: Mutex<u32>,
     hold_timed_out: std::sync::atomic::AtomicBool,
 }
 
 const HOLD_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl FakeControl {
-    fn new(timer: Option<bool>, target: Option<&str>) -> Self {
+    fn new(timer: Option<bool>) -> Self {
         Self {
             timer: Mutex::new(timer),
             set_calls: Mutex::new(Vec::new()),
             rollbacks: Mutex::new(0),
-            target: Mutex::new(target.map(str::to_string)),
             set_fails: false,
             rollback_fails: false,
-            check_hold: Mutex::new(None),
-            check_fails: false,
             refresh_hold: Mutex::new(None),
             refresh_fails: Mutex::new(false),
-            check_calls: Mutex::new(0),
-            desktop_restarts: Mutex::new(0),
             hold_timed_out: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -897,16 +1173,6 @@ impl FakeControl {
     fn failing_rollback(mut self) -> Self {
         self.rollback_fails = true;
         self
-    }
-    fn failing_check(mut self) -> Self {
-        self.check_fails = true;
-        self
-    }
-    /// Hold every update check until the returned sender releases it.
-    fn hold_checks(&self) -> channel::Sender<()> {
-        let (release, hold) = channel::channel();
-        *self.check_hold.lock().unwrap() = Some(hold);
-        release
     }
     /// Hold every firmware refresh until the returned sender releases it.
     fn hold_refreshes(&self) -> channel::Sender<()> {
@@ -945,34 +1211,12 @@ impl UpdateControl for FakeControl {
         *self.timer.lock().unwrap() = Some(on);
         Ok(())
     }
-    fn rollback_target(&self) -> Result<Option<String>, String> {
-        crate::device_read::off_ui_thread();
-        Ok(self.target.lock().unwrap().clone())
-    }
     fn roll_back(&self) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         *self.rollbacks.lock().unwrap() += 1;
         if self.rollback_fails {
             return Err("the boot loader would not take it".into());
         }
-        *self.target.lock().unwrap() = None;
-        Ok(())
-    }
-
-    fn check_now(&self) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        *self.check_calls.lock().unwrap() += 1;
-        self.wait_at(&self.check_hold);
-        if self.check_fails {
-            Err("update check failed".into())
-        } else {
-            Ok(())
-        }
-    }
-
-    fn restart_desktop(&self) -> Result<(), String> {
-        crate::device_read::off_ui_thread();
-        *self.desktop_restarts.lock().unwrap() += 1;
         Ok(())
     }
 
@@ -995,62 +1239,8 @@ impl UpdateControl for FakeControl {
     }
 }
 
-#[test]
-fn an_unreadable_bootc_status_is_not_reported_as_up_to_date() {
-    let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    app.with_widget::<crate::window::Inspected, _>(|settings| {
-        let status = UpdateStatus {
-            current_version: "Tilo 2026.06".into(),
-            staged_version: None,
-            staged_error: Some("error: This command requires root privileges".into()),
-            staged_digest: None,
-            live: None,
-        };
-        let requeried = status.clone();
-        *crate::panes::updates::area(settings)
-            .unwrap()
-            .model()
-            .borrow_mut() = UpdatesModel::with_parts_and_control(
-            settings.sections().clone(),
-            status,
-            UpdatePrefs::default(),
-            Arc::new(move || requeried.clone()),
-            Arc::new(|| "CHECKED-NOW".to_string()),
-            Arc::new(RecordingRebooter::default()),
-            Arc::new(FakeControl::new(Some(true), None)),
-        );
-    })
-    .expect("the Settings window is mounted");
-    crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
-    app.settle();
-    let frame = app.harness().inspection_json().unwrap();
-    assert!(
-        frame.contains("Can't check for updates: error: This command requires root privileges"),
-        "{frame}"
-    );
-    for claim in [t("upd-up-to-date"), t("upd-os-current")] {
-        assert!(!frame.contains(&claim), "claims {claim:?}: {frame}");
-    }
-}
-
 fn pane_with_control(control: Arc<FakeControl>) -> UpdatesModel {
-    let status = UpdateStatus {
-        current_version: "Tilo 2026.06".into(),
-        staged_version: None,
-        staged_error: None,
-        staged_digest: None,
-        live: None,
-    };
-    let requeried = status.clone();
-    UpdatesModel::with_parts_and_control(
-        test_cx(),
-        status,
-        UpdatePrefs::default(),
-        Arc::new(move || requeried.clone()),
-        Arc::new(|| "CHECKED-NOW".to_string()),
-        Arc::new(RecordingRebooter::default()),
-        control,
-    )
+    pane_reading(&reading(), &Arc::new(SessionHost::default()), control).0
 }
 
 #[test]
@@ -1060,31 +1250,24 @@ fn a_check_and_the_timer_are_kept_in_the_update_preferences() {
     use ui::prelude::TestApp;
 
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    app.with_widget::<crate::window::Inspected, _>(|settings| {
-        let status = UpdateStatus {
-            current_version: "Tilo 2026.06".into(),
-            staged_version: None,
-            staged_error: None,
-            staged_digest: None,
-            live: None,
-        };
-        let requeried = status.clone();
-        *crate::panes::updates::area(settings)
-            .unwrap()
-            .model()
-            .borrow_mut() = UpdatesModel::with_parts_and_control(
-            settings.sections().clone(),
-            status,
-            UpdatePrefs::default(),
-            Arc::new(move || requeried.clone()),
-            Arc::new(|| "CHECKED-NOW".to_string()),
-            Arc::new(RecordingRebooter::default()),
-            Arc::new(FakeControl::new(Some(true), None)),
-        );
-    })
-    .expect("the Settings window is mounted");
+    let feed = HeldReading::of(&reading());
+    let model = app
+        .with_widget::<crate::window::Inspected, _>(|settings| {
+            let shared = std::rc::Rc::clone(crate::panes::updates::area(settings).unwrap().model());
+            *shared.borrow_mut() = pane_reading_in(settings.sections().clone(), Arc::clone(&feed));
+            shared
+        })
+        .expect("the Settings window is mounted");
     app.effect(&SettingsEffect::from(UpdatesEffect::CheckForUpdates))
-        .expect("the check finishes");
+        .expect("the session takes the check");
+    feed.set(&Update {
+        updating: true,
+        pending: vec!["update-now".into()],
+        ..reading()
+    });
+    model.borrow_mut().poll();
+    feed.set(&reading());
+    model.borrow_mut().poll();
     app.effect(&SettingsEffect::from(UpdatesEffect::SetAutomaticUpdates {
         on: false,
     }))
@@ -1102,8 +1285,13 @@ fn effects_reach_the_model_and_report_how_they_end() {
     use ui::prelude::TestApp;
 
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    app.effect(&SettingsEffect::from(UpdatesEffect::CheckForUpdates))
-        .expect("the check reads the sample image");
+    let refused = app
+        .effect(&SettingsEffect::from(UpdatesEffect::CheckForUpdates))
+        .unwrap_err();
+    assert!(
+        format!("{refused:?}").contains(&t("upd-notice-check")),
+        "a capture asks the session nothing: {refused:?}"
+    );
     let refused = app
         .effect_confirmed(&SettingsEffect::from(UpdatesEffect::RollBack))
         .unwrap_err();
@@ -1127,7 +1315,6 @@ fn effects_reach_the_model_and_report_how_they_end() {
 struct HeldControl {
     hold: Arc<crate::stall::Stall>,
     timer: Mutex<Option<bool>>,
-    target: Mutex<Option<String>>,
     set_calls: Mutex<Vec<bool>>,
     rollbacks: Mutex<u32>,
 }
@@ -1150,14 +1337,9 @@ impl UpdateControl for HeldControl {
         *self.timer.lock().unwrap() = Some(on);
         Ok(())
     }
-    fn rollback_target(&self) -> Result<Option<String>, String> {
-        self.pass();
-        Ok(self.target.lock().unwrap().clone())
-    }
     fn roll_back(&self) -> Result<(), String> {
         self.pass();
         *self.rollbacks.lock().unwrap() += 1;
-        *self.target.lock().unwrap() = None;
         Ok(())
     }
 }
@@ -1177,24 +1359,12 @@ fn a_stalled_update_control_never_holds_the_window() {
     let control = Arc::new(HeldControl {
         hold: Arc::clone(&hold),
         timer: Mutex::new(Some(true)),
-        target: Mutex::new(Some("tilo:gen41".into())),
         set_calls: Mutex::new(Vec::new()),
         rollbacks: Mutex::new(0),
     });
     let readers = DeviceReaders {
-        status: Arc::new(|| {
-            crate::device_read::off_ui_thread();
-            UpdateStatus {
-                current_version: "Tilo 2026.06".into(),
-                staged_version: None,
-                staged_error: None,
-                staged_digest: None,
-                live: None,
-            }
-        }),
-        details: Arc::new(|_| UpdateDetails::default()),
+        details: Arc::new(UpdateDetails::default),
         control: Arc::clone(&control) as Arc<dyn UpdateControl>,
-        rebooter: Arc::new(RecordingRebooter::default()),
         firmware: Arc::new(|| -> FirmwareReading {
             crate::device_read::off_ui_thread();
             (Ok(Vec::new()), Ok(Vec::new()))
@@ -1205,8 +1375,10 @@ fn a_stalled_update_control_never_holds_the_window() {
     let model = app
         .with_widget::<crate::window::Inspected, _>(move |settings| {
             let shared = std::rc::Rc::clone(crate::panes::updates::area(settings).unwrap().model());
-            *shared.borrow_mut() =
+            let mut model =
                 UpdatesModel::reading(settings.storage(), settings.sections().clone(), readers);
+            model.feed = Some(HeldReading::of(&reading()));
+            *shared.borrow_mut() = model;
             shared
         })
         .expect("the Settings window is mounted");
@@ -1244,6 +1416,7 @@ fn a_stalled_update_control_never_holds_the_window() {
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(30), |harness| {
+                model.borrow_mut().poll();
                 model.borrow().timer_enabled() == Some(false)
                     && harness
                         .inspection_json()
@@ -1265,7 +1438,6 @@ fn a_stalled_update_control_never_holds_the_window() {
         "the rollback button waited {answered:?} on the rollback"
     );
     assert_eq!(model.borrow().notice(), None);
-    assert_eq!(model.borrow().rollback_target(), Some("tilo:gen41"));
 
     hold.release();
     assert!(
@@ -1277,7 +1449,6 @@ fn a_stalled_update_control_never_holds_the_window() {
         "the rollback's outcome is shown"
     );
     assert_eq!(*control.rollbacks.lock().unwrap(), 1);
-    assert_eq!(model.borrow().rollback_target(), None);
 }
 
 /// What the window publishes for `id`: search and agents read the offer from this.
@@ -1403,190 +1574,4 @@ fn asking_for_windows_support_opens_its_card() {
         .with_widget::<crate::window::Inspected, _>(|window| window.selected())
         .expect("the Settings window is mounted");
     assert_eq!(shown, crate::categories::Category::Updates);
-}
-/// An update the live update applied and left for the desktop.
-fn staged_live(desktop_pending: bool, reboot_required: bool, failed: bool) -> UpdateStatus {
-    UpdateStatus {
-        current_version: "Tilo 2026.06".into(),
-        staged_version: Some("Tilo 2026.07".into()),
-        staged_digest: Some("sha256:aa".into()),
-        staged_error: None,
-        live: Some(LiveUpdate {
-            desktop_pending,
-            reboot_required,
-            failed,
-        }),
-    }
-}
-
-#[test]
-fn a_live_state_only_speaks_for_the_staged_image_it_names() {
-    let live = LiveUpdate {
-        desktop_pending: true,
-        ..LiveUpdate::default()
-    };
-    assert_eq!(
-        live_state_for(Some("sha256:aa"), Some(("sha256:aa".into(), live.clone()))),
-        Some(live.clone())
-    );
-    assert_eq!(
-        live_state_for(Some("sha256:bb"), Some(("sha256:aa".into(), live))),
-        None,
-        "a state a previous update left says nothing about this deployment"
-    );
-    assert_eq!(live_state_for(None, None), None);
-    assert_eq!(
-        live_state_for(Some("sha256:aa"), None),
-        None,
-        "no live update is on this machine"
-    );
-}
-
-#[test]
-fn the_live_state_reads_back_what_the_update_recorded() {
-    let parsed = LiveUpdate::parse(
-        r#"{"schema":1,"image":"sha256:aa","applied":"session","desktop_pending":true,"reboot_required":false,"failed":false}"#,
-    )
-    .unwrap();
-    assert_eq!(
-        parsed,
-        LiveUpdate {
-            desktop_pending: true,
-            reboot_required: false,
-            failed: false
-        }
-    );
-    assert!(parsed.finishes_without_restart());
-    assert!(
-        LiveUpdate::parse(r#"{"failed":true,"reboot_required":true}"#)
-            .unwrap()
-            .failed
-    );
-    assert!(LiveUpdate::parse("not json").is_none());
-    let complete = LiveUpdate::default();
-    assert!(complete.applied_without_restart());
-    assert!(
-        !complete.finishes_without_restart(),
-        "nothing waits for the desktop"
-    );
-}
-
-#[test]
-fn the_live_update_offers_a_desktop_restart_and_keeps_open_apps() {
-    let control = Arc::new(FakeControl::new(Some(true), None));
-    let status = staged_live(true, false, false);
-    let mut pane = UpdatesModel::with_parts_and_control(
-        test_cx(),
-        status.clone(),
-        UpdatePrefs::default(),
-        Arc::new(move || status.clone()),
-        Arc::new(|| "CHECKED-NOW".to_string()),
-        Arc::new(RecordingRebooter::default()),
-        Arc::clone(&control) as Arc<dyn UpdateControl>,
-    );
-    pane.poll();
-    pane.finish_without_restart();
-    pane.poll();
-    settle(&mut pane, UpdatesModel::working);
-    assert_eq!(*control.desktop_restarts.lock().unwrap(), 1);
-    assert_eq!(
-        *control.rollbacks.lock().unwrap(),
-        0,
-        "finishing an update live restarts nothing else"
-    );
-    let notice = pane.notice().expect("the person is told what happens");
-    assert!(
-        notice.contains("stay open"),
-        "the notice says the apps stay open, got: {notice}"
-    );
-}
-
-#[test]
-fn the_update_card_says_a_live_update_stays_open_and_a_reboot_does_not() {
-    for (live, expected, absent) in [
-        (
-            Some(LiveUpdate {
-                desktop_pending: true,
-                ..LiveUpdate::default()
-            }),
-            vec![
-                t("upd-live-ready"),
-                t("upd-finishes-now"),
-                t("upd-finish-now"),
-            ],
-            vec![t("upd-os-staged"), t("upd-restart-update")],
-        ),
-        (
-            Some(LiveUpdate {
-                reboot_required: true,
-                ..LiveUpdate::default()
-            }),
-            vec![t("upd-os-staged"), t("upd-restart-update")],
-            vec![t("upd-finish-now"), t("upd-os-live")],
-        ),
-        (
-            None,
-            vec![t("upd-os-staged"), t("upd-restart-update")],
-            vec![t("upd-finish-now")],
-        ),
-    ] {
-        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-        let status = UpdateStatus {
-            live,
-            ..staged_live(false, false, false)
-        };
-        app.with_widget::<crate::window::Inspected, _>(|settings| {
-            let requeried = status.clone();
-            *crate::panes::updates::area(settings)
-                .unwrap()
-                .model()
-                .borrow_mut() = UpdatesModel::with_parts_and_control(
-                settings.sections().clone(),
-                status.clone(),
-                UpdatePrefs::default(),
-                Arc::new(move || requeried.clone()),
-                Arc::new(|| "CHECKED-NOW".to_string()),
-                Arc::new(RecordingRebooter::default()),
-                Arc::new(FakeControl::new(Some(true), None)),
-            );
-        })
-        .expect("the Settings window is mounted");
-        crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
-        app.settle();
-        let frame = app.harness().inspection_json().unwrap();
-        for claim in expected {
-            assert!(frame.contains(&claim), "shows {claim:?}: {frame}");
-        }
-        for claim in absent {
-            assert!(!frame.contains(&claim), "does not claim {claim:?}: {frame}");
-        }
-    }
-}
-
-#[test]
-fn a_live_update_that_could_not_finish_says_a_restart_completes_it() {
-    let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    let status = staged_live(false, true, true);
-    app.with_widget::<crate::window::Inspected, _>(|settings| {
-        let requeried = status.clone();
-        *crate::panes::updates::area(settings)
-            .unwrap()
-            .model()
-            .borrow_mut() = UpdatesModel::with_parts_and_control(
-            settings.sections().clone(),
-            status.clone(),
-            UpdatePrefs::default(),
-            Arc::new(move || requeried.clone()),
-            Arc::new(|| "CHECKED-NOW".to_string()),
-            Arc::new(RecordingRebooter::default()),
-            Arc::new(FakeControl::new(Some(true), None)),
-        );
-    })
-    .expect("the Settings window is mounted");
-    crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
-    app.settle();
-    let frame = app.harness().inspection_json().unwrap();
-    assert!(frame.contains(&t("upd-live-failed")), "{frame}");
-    assert!(frame.contains(&t("upd-restart-update")), "{frame}");
-    assert!(!frame.contains(&t("upd-finish-now")), "{frame}");
 }

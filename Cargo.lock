@@ -15904,6 +15904,7 @@ dependencies = [
  "tilo-process",
  "tilo-rt",
  "tilo-server-protocol",
+ "tilo-system-service",
  "tilo-test-env",
  "tilo-vello",
  "tilo-wallpapers",
