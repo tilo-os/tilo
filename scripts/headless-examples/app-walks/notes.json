@@ -165,7 +165,7 @@
         ],
         "tl": [
           {
-            "click_any": [
+            "press_any": [
               "File"
             ]
           },
@@ -177,7 +177,7 @@
             }
           },
           {
-            "click_any": [
+            "press_any": [
               {
                 "menuitem": "New sub-note"
               }
@@ -330,7 +330,7 @@
             }
           },
           {
-            "click_any": [
+            "press_any": [
               "File"
             ]
           },
@@ -342,7 +342,7 @@
             }
           },
           {
-            "click_any": [
+            "press_any": [
               {
                 "menuitem": "Import Markdown…"
               }
