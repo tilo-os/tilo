@@ -644,7 +644,7 @@ impl Worker {
         route: &DocumentRoute,
         state: &super::WorkspaceState,
     ) -> Result<(), InvocationReceipt> {
-        use tilo_actions::remote::{ActionCallError, Confirmation, ReceiptStatus};
+        use tilo_actions::remote::{ActionCallError, ReceiptStatus};
         if self.acts_for_owner(caller) {
             return Ok(());
         }
@@ -709,50 +709,75 @@ impl Worker {
             Err(_) => Err(refused(ActionCallError::NotPermitted)),
             Ok(ui::permissions::policy::Admission::Runs) => Ok(()),
             Ok(ui::permissions::policy::Admission::AsksFirst) => {
-                let approval = self
-                    .log()
-                    .entries
-                    .get(&invocation)
-                    .and_then(|entry| entry.approval.clone())
-                    .map(Confirmation::Approved);
-                let given = approval.as_ref().or(request.confirmation.as_ref());
-                let binding = super::bounded::ApprovalBinding::of(workspace_id, caller, request);
-                if super::bounded::approved(&self.shared.approvals, given, &binding) {
-                    return Ok(());
-                }
-                // A key for this workspace alone, whose person let it run
-                // commands unattended, runs this one as if they allowed it.
-                if self
-                    .shared
-                    .link
-                    .get()
-                    .is_some_and(|link| link.runs_unattended(workspace_id, caller))
-                {
-                    return Ok(());
-                }
-                let arguments = super::invoke_arguments(&request.argument);
-                // A command is an action of its own. One that carried its resource's other
-                // actions would be asked about as it stands: no name is looked up here.
-                let carries = super::carried::read(&descriptor, &arguments, |_| None);
-                let about = self.about(workspace_id, route, &descriptor, arguments, carries);
-                // An agent working inside a turn is decided as every action of its is: what its
-                // person let stand goes ahead, and otherwise they are asked in the conversation,
-                // whose answer the server carries out and tells the agent about. A question on
-                // their devices would outlive the turn that waits for it.
-                if let Some(permissions) = self.stands_for(workspace_id, caller, request, &about) {
-                    if let Some(link) = self.shared.link.get() {
-                        for permission in &permissions {
-                            link.permission_used(workspace_id, caller, permission);
-                        }
-                    }
-                    return Ok(());
-                }
-                Err(self
-                    .ask_in_conversation(workspace_id, caller, request, &about)
-                    .or_else(|| self.ask_person(workspace_id, caller, request, &about))
-                    .unwrap_or_else(|| refused(ActionCallError::confirmation_required())))
+                self.terminal_asked(workspace_id, caller, request, route, &descriptor)
             }
         }
+    }
+
+    /// An admitted Terminal request whose action asks first: it runs when its person already
+    /// approved it, when a key of this workspace alone may run commands unattended, or when what
+    /// its person let stand covers it; otherwise its person is asked, and `Err` is the receipt
+    /// that answers it meanwhile (or refuses it when there is nobody to ask).
+    #[allow(
+        clippy::result_large_err,
+        reason = "the refusal is the receipt the invocation is answered with"
+    )]
+    fn terminal_asked(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        route: &DocumentRoute,
+        descriptor: &tilo_actions::ActionDescriptor,
+    ) -> Result<(), InvocationReceipt> {
+        use tilo_actions::remote::{ActionCallError, Confirmation, ReceiptStatus};
+        let invocation = request.invocation;
+        let refused = |error| InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Rejected { error },
+        };
+        let approval = self
+            .log()
+            .entries
+            .get(&invocation)
+            .and_then(|entry| entry.approval.clone())
+            .map(Confirmation::Approved);
+        let given = approval.as_ref().or(request.confirmation.as_ref());
+        let binding = super::bounded::ApprovalBinding::of(workspace_id, caller, request);
+        if super::bounded::approved(&self.shared.approvals, given, &binding) {
+            return Ok(());
+        }
+        // A key for this workspace alone, whose person let it run
+        // commands unattended, runs this one as if they allowed it.
+        if self
+            .shared
+            .link
+            .get()
+            .is_some_and(|link| link.runs_unattended(workspace_id, caller))
+        {
+            return Ok(());
+        }
+        let arguments = super::invoke_arguments(&request.argument);
+        // A command is an action of its own. One that carried its resource's other
+        // actions would be asked about as it stands: no name is looked up here.
+        let carries = super::carried::read(descriptor, &arguments, |_| None);
+        let about = self.about(workspace_id, route, descriptor, arguments, carries);
+        // An agent working inside a turn is decided as every action of its is: what its
+        // person let stand goes ahead, and otherwise they are asked in the conversation,
+        // whose answer the server carries out and tells the agent about. A question on
+        // their devices would outlive the turn that waits for it.
+        if let Some(permissions) = self.stands_for(workspace_id, caller, request, &about) {
+            if let Some(link) = self.shared.link.get() {
+                for permission in &permissions {
+                    link.permission_used(workspace_id, caller, permission);
+                }
+            }
+            return Ok(());
+        }
+        Err(self
+            .ask_in_conversation(workspace_id, caller, request, &about)
+            .or_else(|| self.ask_person(workspace_id, caller, request, &about))
+            .unwrap_or_else(|| refused(ActionCallError::confirmation_required())))
     }
 
     /// A Terminal `run` or `open-terminal` request starts, or the commands it stops, answered
