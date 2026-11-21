@@ -3411,7 +3411,10 @@ name = "mirror-base"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/base-mirror.sh"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-on = ["main", "dispatch"]
+# Main's runs only, its dispatches included: they are the runs t gives a registry token. A dispatch
+# of another branch leaves this optional need out and resolves on the base main mirrored, rather
+# than being refused the token and skipping every check built on the RPM snapshot.
+on = ["main"]
 id_token = ["registry.tilo.so"]
 
 # This architecture's frozen RPM snapshot, resolved and verified: the published set where there is
