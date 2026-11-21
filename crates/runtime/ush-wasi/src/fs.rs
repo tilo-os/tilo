@@ -439,8 +439,8 @@ fn fd_readdir(
             break;
         }
     }
-    let room = usize::try_from(len).map_err(|_| EINVAL)?;
-    out.truncate(room);
+    let capacity = usize::try_from(len).map_err(|_| EINVAL)?;
+    out.truncate(capacity);
     write_bytes(c, buf, &out)?;
     write_u32(c, used, u32::try_from(out.len()).map_err(|_| EINVAL)?)
 }
@@ -669,12 +669,12 @@ pub(crate) fn link(linker: &mut Linker<State>) -> Result<(), wasmi::Error> {
                 }) => name.clone(),
                 _ => return EBADF,
             };
-            let room = usize::try_from(len).unwrap_or(0);
+            let capacity = usize::try_from(len).unwrap_or(0);
             errno(write_bytes(
                 &mut c,
                 at,
                 name.as_bytes()
-                    .get(..name.len().min(room))
+                    .get(..name.len().min(capacity))
                     .unwrap_or_default(),
             ))
         },

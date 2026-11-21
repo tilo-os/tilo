@@ -313,8 +313,8 @@ fn strings(
 ) -> Result<(), i32> {
     let mut at = buffer;
     for (index, item) in list.iter().enumerate() {
-        let slot = offset(pointers, index, 4)?;
-        write_u32(caller, slot, u32::try_from(at).map_err(|_| EFAULT)?)?;
+        let pointer = offset(pointers, index, 4)?;
+        write_u32(caller, pointer, u32::try_from(at).map_err(|_| EFAULT)?)?;
         write_bytes(caller, at, item)?;
         at = at
             .checked_add(i32::try_from(item.len()).map_err(|_| E2BIG)?)
