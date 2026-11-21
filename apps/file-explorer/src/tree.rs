@@ -95,9 +95,10 @@ impl ResourceApp for FilesTreeShell {
 /// lacks is what asks the workspace for it.
 type Reads = Rc<dyn Fn(&str) -> Option<Vec<u8>>>;
 
-/// The apps that open a kind of file, as the window asks the session for them: each app's
-/// manifest says which kinds it claims, and that is the only answer to which app opens a file.
-/// A test stands a catalogue of its own in.
+/// The apps that open a kind of file, as a window on a computer asks the session for them: each
+/// app's manifest says which kinds it claims, and that is the only answer to which app opens a
+/// file. A test stands a catalogue of its own in.
+#[cfg(feature = "desktop")]
 type Opens = Rc<dyn Fn(&str) -> Result<Vec<runtime_portal::tools::DocumentApp>, String>>;
 
 /// A file the person asked to open, waiting for the bytes that say which app
@@ -453,13 +454,14 @@ fn listing<'a>(tree: Option<&'a Tree>, folder: &str) -> Listing<'a> {
     }
 }
 
-/// The app that opens the file `name`, whose first bytes are `head`.
+/// The app that opens the file `name`, whose first bytes are `head`, on a computer.
 ///
 /// What kind of file it is comes from the bytes, as it does wherever a workspace lands a file in an
 /// app: a picture called `.txt` is a picture. Which app opens that kind is what the installed apps'
 /// manifests say, as it is wherever a person opens a file — one path for every app, Rust or
 /// tilolang, and never a table of app names here. A file handed over by its content opens in a
 /// Tilo app alone: one of the machine's own apps reads the path it has not got.
+#[cfg(feature = "desktop")]
 fn opening_app(
     head: &[u8],
     name: &str,
@@ -474,6 +476,17 @@ fn opening_app(
         .into_iter()
         .find(|app| app.source == Some(runtime_portal::tools::AppKind::Tilo))
         .map(|app| app.id)
+}
+
+/// The app that opens the file `name`, whose first bytes are `head`, in a page.
+///
+/// A page's Files is the workspace's tree over its session, and no computer beside it answers
+/// which apps that device installed: what its bytes and its name make of it decides, as a
+/// workspace landing a file in an app does, and the kind of file is the app that opens it.
+#[cfg(not(feature = "desktop"))]
+fn opening_app(head: &[u8], name: &str) -> Option<String> {
+    let landing = ui::content::landing(head, name)?;
+    Some(format!("so.tilo.{}", landing.app))
 }
 
 /// The window: the folder it shows and the entries in it.
@@ -513,7 +526,9 @@ pub struct TreeBrowser {
     actions: Actions<FilesWindow>,
     read: Option<Reads>,
     /// The apps that open a kind of file, asked of the session: what a file's bytes and its name
-    /// make of it, and the installed apps' own manifests decide which of them opens it.
+    /// make of it, and the installed apps' own manifests decide which of them opens it. A page
+    /// has no device beside it to ask, and opens the tree with the platform's table.
+    #[cfg(feature = "desktop")]
     opens: Opens,
     /// Where the window keeps the content of files put into the workspace from here.
     content: Option<ui::content::ContentStore>,
@@ -573,6 +588,7 @@ impl TreeBrowser {
             dispatch: cx.dispatcher(),
             actions: cx.actions(),
             read,
+            #[cfg(feature = "desktop")]
             opens: Rc::new(runtime_portal::tools::list_document_apps),
             content: cx.content(),
             body: Column::new(),
@@ -1357,12 +1373,25 @@ impl TreeBrowser {
         *self.asked.borrow_mut() = waiting;
     }
 
+    /// The app that opens the file `name`, whose first bytes are `head`: on a computer the
+    /// installed apps' own manifests say, in a page the platform's table does.
+    fn app_opening(&self, head: &[u8], name: &str) -> Option<String> {
+        #[cfg(feature = "desktop")]
+        {
+            opening_app(head, name, &*self.opens)
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            opening_app(head, name)
+        }
+    }
+
     /// Hand the file `ask` names to the app that opens what its bytes are.
     fn hand_off(&self, ask: &Asked, bytes: &[u8]) {
         let head = bytes
             .get(..bytes.len().min(ui::content::HEAD_BYTES))
             .unwrap_or(bytes);
-        let Some(app) = opening_app(head, &ask.name, &*self.opens) else {
+        let Some(app) = self.app_opening(head, &ask.name) else {
             // Said plainly, with the file to take instead: nothing opening is never silent.
             *self.unopened.borrow_mut() = Some(Notice {
                 title: t_args("files-tree-no-app", &[arg("name", ask.name.clone())]),
@@ -1614,6 +1643,7 @@ mod tests {
 
     /// The apps this device has, each an id and the kinds of file it claims: what the session
     /// answers for a kind with, a Tilo app first as its own resolution puts one.
+    #[cfg(feature = "desktop")]
     fn advertised<'a>(
         apps: &'a [(&'a str, &'a str, Option<runtime_portal::tools::AppKind>)],
     ) -> impl Fn(&str) -> Result<Vec<runtime_portal::tools::DocumentApp>, String> + 'a {
@@ -1637,6 +1667,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "desktop")]
     #[test]
     fn a_files_bytes_say_which_kind_it_is_and_the_installed_apps_which_opens_it() {
         use runtime_portal::tools::AppKind;
@@ -2041,6 +2072,7 @@ mod window_tests {
             Some(WORKSPACE.into()),
         );
         // The apps this device has, as the manifest of each declares the kinds it opens.
+        #[cfg(feature = "desktop")]
         app.with_widget::<TreeBrowser, _>(|browser| {
             browser.opens = Rc::new(|_: &str| {
                 Ok(vec![runtime_portal::tools::DocumentApp {
@@ -2107,10 +2139,16 @@ mod window_tests {
         );
         let asked = session.take_asked();
         assert_eq!(asked.len(), 1, "the session is asked to open one app");
+        // A computer asks which app claims text; a page lands it where the platform says text
+        // goes.
+        #[cfg(feature = "desktop")]
+        let opening = "so.tilo.lang.notes";
+        #[cfg(not(feature = "desktop"))]
+        let opening = "so.tilo.notes";
         assert_eq!(
             asked[0].target,
-            ui::tilo_actions::remote::application_open_target(WORKSPACE, "so.tilo.lang.notes"),
-            "the new file is handed to the app whose manifest claims text"
+            ui::tilo_actions::remote::application_open_target(WORKSPACE, opening),
+            "the new file is handed to the app that opens text"
         );
         assert_eq!(
             ui::tilo_actions::remote::ApplicationLaunch::opened_content(&asked[0].argument)
