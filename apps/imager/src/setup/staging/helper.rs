@@ -448,16 +448,20 @@ fn disk_identities(disk: &Disk) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// Whether `rule` names the disk `disk`, by the identities the kernel keeps
-/// for it.
+/// Whether `rule` names the disk `disk`: by the identity a staging onto a
+/// named disk recorded as its handle (`serial:…`, `wwid:…`, which the helper
+/// resolves again), else by the identities the kernel keeps for its device.
 ///
 /// # Errors
 ///
 /// The disk's hardware identities cannot be read.
-fn rule_names_disk(
+pub(crate) fn rule_names_disk(
     rule: &install_profile_model::plan::DiskRule,
     disk: &Disk,
 ) -> Result<bool, String> {
+    if let Ok(named) = super::TargetDisk::parse(&disk.id) {
+        return Ok(named.kind == rule.kind && rule_names(rule, &[named.identity]));
+    }
     Ok(rule_names(rule, &disk_identities(disk)?))
 }
 
