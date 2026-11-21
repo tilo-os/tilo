@@ -1743,10 +1743,6 @@ by = "os/tests/test_tls_registry_fixture.py"
 # or deleted, never listed here.
 
 [[unrequired]]
-suite = "scripts/test-cloud-rystic.py"
-reason = "the manual entry point of the licensed integration: it needs an installed, authenticated rystic CLI and starts metered local twins itself. The suites it compiles are the ones cloud-rystic runs on a token-holding node; this path is for a trusted host by hand, and --contracts additionally exposes documented vendor fidelity failures"
-
-[[unrequired]]
 suite = "tools/ci/test_airdrop_sender.py"
 reason = "needs the unmodified GPL-3.0 OpenDrop checkout at the exact revision it names (11fe7ba7), its Python dependencies, system libarchive/OpenSSL and loopback TLS sockets. The pinned upstream is gone: github.com/spieglt/OpenDrop answers 404, so no job can fetch the oracle; run it where that checkout is kept"
 
@@ -2061,10 +2057,6 @@ check = "os-acceptance-{arch}"
 suite = "os/tests/installed_material_audit.py"
 check = "installed-material-audit"
 reason = "needs squashfs-tools, absent from the ci-fast image; installed-material-audit installs it when dispatched"
-
-[[unrequired]]
-suite = "os/tests/installer-render-smoke.sh"
-reason = "drives the installer with `--shots --step --viewport`, an interface the guided setup no longer has; no binary in the tree accepts `--step`, so the script needs bringing to the current CLI before a check can render it"
 
 [[unrequired]]
 suite = "os/tests/installed-admin-actions.sh"
