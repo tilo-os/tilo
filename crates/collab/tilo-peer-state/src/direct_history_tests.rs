@@ -159,7 +159,7 @@ fn join(parts: usize) -> (Duration, u64, usize) {
             })
         })
         .count();
-    (took, generation(&owner) - before, held)
+    (took, generation(&owner).saturating_sub(before), held)
 }
 
 #[test]

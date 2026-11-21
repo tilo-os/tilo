@@ -3006,7 +3006,7 @@ impl Author {
     /// of issues in one write.
     fn texts(&mut self, from: usize, count: usize, body: &str) -> Vec<u8> {
         let heads = self.0.get_heads();
-        for at in from..from + count {
+        for at in from..from.saturating_add(count) {
             let text = self
                 .0
                 .put_object(ROOT, format!("issue-{at}"), automerge::ObjType::Text)
