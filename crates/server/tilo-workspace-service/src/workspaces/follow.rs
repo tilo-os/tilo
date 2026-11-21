@@ -578,6 +578,7 @@ impl Workspaces {
             self.landed(&governed, &message);
             self.keep_soon(&mut governed);
         }
+        drop(governed);
         None
     }
 }

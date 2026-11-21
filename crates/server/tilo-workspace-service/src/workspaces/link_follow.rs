@@ -353,19 +353,8 @@ impl Workspaces {
         let mut written = std::collections::BTreeSet::new();
         for retained in retained {
             let own = retained.author == self.inner.host.cert.device_public_key;
-            let message = match neighbour_wire::NeighbourMsg::decode(&retained.body) {
-                Ok(message) => message,
-                // Not all the server's device retains under its key is a
-                // write to a document.
-                Err(_) if own => continue,
-                Err(error) => {
-                    tracing::warn!(
-                        author = %hex::encode(retained.author),
-                        %error,
-                        "a retained write does not decode; it is not replayed"
-                    );
-                    continue;
-                }
+            let Some(message) = retained_message(&retained, own) else {
+                continue;
             };
             // What the server's device wrote is retained under its key, the
             // governor's own commits and its sessions' writes alike. The
@@ -571,4 +560,25 @@ fn written_by_a_session(message: &neighbour_wire::NeighbourMsg) -> bool {
         neighbour_wire::NeighbourMsg::AppDocument { document_id, envelope, .. }
             if !envelope.is_whole_resource() || collab_types::is_store_document(document_id)
     )
+}
+
+/// The write `retained` holds, decoded; `None` for one that is not a write to
+/// replay. Not all the server's device retains under its key (`own`) is a
+/// write to a document; anyone else's that does not decode is reported.
+fn retained_message(
+    retained: &crate::workspace_documents::RetainedBody,
+    own: bool,
+) -> Option<neighbour_wire::NeighbourMsg> {
+    match neighbour_wire::NeighbourMsg::decode(&retained.body) {
+        Ok(message) => Some(message),
+        Err(_) if own => None,
+        Err(error) => {
+            tracing::warn!(
+                author = %hex::encode(retained.author),
+                %error,
+                "a retained write does not decode; it is not replayed"
+            );
+            None
+        }
+    }
 }
