@@ -451,10 +451,12 @@ fn a_file_the_server_kept_reaches_a_device_that_joins_after_its_writer_left() {
     run(server.shutdown());
 }
 
-/// A member that was away longer than the server keeps content nothing names
-/// comes back with a file whose bytes the server let go of in the meantime:
-/// the server asks the writer for them again, as for any content a record
-/// names and the server lacks, and keeps them once more.
+/// A member that comes back to a server lacking the bytes of a file its
+/// tree names, ones the server let go of while the member was away (a store
+/// put back from an older copy, content collected while nothing named it
+/// yet), gives them to the server again: the server asks the writer for
+/// them, as for any content a record names and the server lacks, and keeps
+/// them once more.
 #[test]
 fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     let _ = tracing_subscriber::fmt()
@@ -498,55 +500,43 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     let member_folder = member
         .joined_files_folder(&workspace)
         .expect("the member holds the joined workspace's files");
-    // The member goes away.
-    drop(member);
 
-    // The server held the bytes of the member's draft, which no record named
-    // yet; the member is away for longer than the server keeps such content,
-    // and the server lets go of it.
+    // The member saves a draft, large enough to be kept as chunks, and the
+    // server keeps its bytes.
     let draft = content(21, 300_000);
-    let (manifest, _) = tilo_fs::content::build(&draft, None);
-    let store = server.content().get(&workspace).unwrap();
-    let id = store.put(&manifest.encode()).unwrap();
-    let chunks: Vec<String> = (0..manifest.chunks().len())
-        .map(|index| {
-            let range = manifest.chunk_range(index).unwrap();
-            let range = usize::try_from(range.start).unwrap()..usize::try_from(range.end).unwrap();
-            store.put(&draft[range]).unwrap()
-        })
-        .collect();
-    let past_the_grace = std::time::SystemTime::now() + Duration::from_secs(60);
-    let collected = run(tilo_server::content::collection::collect(
-        workspaces,
-        &server.content(),
-        &workspace,
-        past_the_grace,
-    ))
-    .expect("every record of the workspace reads whole");
-    assert!(
-        collected.hashes.contains(&id),
-        "nothing named the draft, so the server let go of it: {collected:?}"
-    );
-    assert!(!store.has(&id));
-
-    // Away, the member saved the draft into the workspace's files; it comes
-    // back, and its tree names the draft.
     std::fs::write(member_folder.join("draft.txt"), &draft).unwrap();
-    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let kept = state
+        .join("state")
+        .join(tilo_server::content::DIRECTORY)
+        .join(&workspace);
+    let length = u64::try_from(draft.len()).unwrap();
+    wait_for_kept(&kept, length, "the draft the member wrote, on the server");
 
-    // The server asks the writer for the draft and keeps it again.
-    let started = std::time::Instant::now();
-    let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
-    while !(store.has(&id) && chunks.iter().all(|chunk| store.has(chunk))) {
-        assert!(
-            started.elapsed() <= bound,
-            "the server never took the draft back from its writer: manifest kept {}, {} of {} chunks",
-            store.has(&id),
-            chunks.iter().filter(|chunk| store.has(chunk)).count(),
-            chunks.len(),
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // The member goes away, and the server lets go of the draft's bytes.
+    drop(member);
+    let past_the_grace = std::time::SystemTime::now() + Duration::from_secs(60);
+    let collected = server
+        .content()
+        .collect(
+            &workspace,
+            &std::collections::BTreeSet::new(),
+            past_the_grace,
+        )
+        .unwrap();
+    assert!(
+        !collected.hashes.is_empty() && bytes_under(&kept) < length,
+        "the server let go of the draft: {collected:?}, {} bytes kept",
+        bytes_under(&kept),
+    );
+
+    // The member comes back; the server asks it for the draft its tree names
+    // and keeps it again.
+    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    wait_for_kept(
+        &kept,
+        length,
+        "the draft the server let go of, taken back from its writer",
+    );
     drop(member);
     run(server.shutdown());
 }
