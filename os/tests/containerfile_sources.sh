@@ -49,7 +49,6 @@ for spec in "os/Containerfile:$REPO" \
             "os/Containerfile.fex-payload:$REPO" \
             "os/Containerfile.kernel-buildroot:$REPO" \
             "os/Containerfile.installer:$REPO/os" \
-            "os/Containerfile.test:$REPO/os" \
             "os/Containerfile.host:$REPO" \
             "os/Containerfile.host-base:$REPO" \
             "os/Containerfile.dev:$REPO" \

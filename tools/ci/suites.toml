@@ -2259,14 +2259,6 @@ suite = "os/tests/windows_vm_schema.sh"
 check = "windows-vm-schema"
 
 [[unrequired]]
-suite = "os/usr/bin/fs-test.sh"
-reason = "runs as a boot service inside the Containerfile.test image os/verify-test.sh builds, which no check boots; the service's result is read from its journal on a machine someone started by hand"
-
-[[unrequired]]
-suite = "os/verify-test.sh"
-reason = "builds the Containerfile.test image and disk with Podman and prints how to boot the result by hand; it asserts nothing about the boot, so no check can make it pass or fail"
-
-[[unrequired]]
 suite = "scripts/two-host-sync-test.sh"
 reason = "manual smoke test across two hosts on a LAN"
 

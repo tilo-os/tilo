@@ -23,11 +23,10 @@ set -euo pipefail
 #
 # Two layouts are supported:
 #   1. From the source tree — files live under "$OS_DIR/usr/...".
-#   2. From inside the test image — files live at "/usr/..." (the
+#   2. From an assembled rootfs — files live at "/usr/..." (the
 #      script bundle landed at /usr/libexec/tilo/, so the
 #      relative ../../ walk would yank us to / and miss the files).
-#      Set OS_ROOT=/ in that case (the Containerfile.test build step
-#      does so) and the assertions resolve at /usr/...
+#      Set OS_ROOT=/ in that case and the assertions resolve at /usr/...
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS_ROOT="${OS_ROOT:-$(cd "$TEST_DIR/.." && pwd)}"
 
@@ -129,8 +128,7 @@ fi
 
 # The source tree contains the preference file even when the production image
 # does not. Assert its exact rootfs mapping whenever this check runs from the
-# source layout; Containerfile.test independently runs this script against the
-# assembled rootfs with OS_ROOT=/.
+# source layout; from an assembled rootfs, OS_ROOT=/ asserts the same mapping.
 if [[ -f "$CONTAINERFILE" ]]; then
     # shellcheck source=lib/containerfile.sh
     . "$OS_ROOT/tests/lib/containerfile.sh"

@@ -503,12 +503,11 @@ seals, so `bootc install` refuses it, correctly. Rebuilding the UKI inside the
 derived image is not a way out either: the kernel and initramfs are no longer in the
 rootfs to build one from, they are sections of the UKI it inherited.
 
-`os/Containerfile.test` and `os/Containerfile.installer` both do
-`FROM localhost/tilo:latest`, so both have to be rebuilt from the unsealed rootfs
-(`podman build --target rootfs`) and sealed themselves. Until they are, their
-container builds still succeed and the *disk* step fails at the digest check with
-the message `os/dev/disk-image.sh` prints — a legible failure rather than an image
-that boots wrong, but outstanding work either way.
+`os/Containerfile.installer` does `FROM localhost/tilo:latest`, so it has to be
+rebuilt from the unsealed rootfs (`podman build --target rootfs`) and sealed
+itself. Until it is, its container build still succeeds and the *disk* step fails
+at the digest check with the message `os/dev/disk-image.sh` prints — a legible
+failure rather than an image that boots wrong, but outstanding work either way.
 
 **bootupd had to go.** A sealed image may not offer its install path, and this was
 listed above as a real conflict because `tilo-secureboot` was built around
