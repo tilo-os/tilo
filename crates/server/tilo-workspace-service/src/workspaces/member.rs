@@ -1938,7 +1938,14 @@ impl Workspaces {
                 let governance = frame.message.governance_workspace().is_some();
                 if (governance || (frame.fresh && frame.report.is_ok()))
                     && let Err(error) = workspaces
-                        .keep_member_write(&name, frame.author, &frame.message, &body, frame.retained)
+                        .keep_member_write(
+                            &name,
+                            frame.author,
+                            &frame.message,
+                            &body,
+                            frame.retained,
+                            frame.landed,
+                        )
                         .await
                 {
                     tracing::warn!(%name, %error, "a member copy did not keep what the serving device sent");
@@ -1975,7 +1982,9 @@ impl Workspaces {
     /// copy, into
     /// it: a resource write into the copy's documents and the apps following
     /// it, group governance into this device's key service. `history` says
-    /// the frame came from the serving device's retained history.
+    /// the frame came from the serving device's retained history, and `landed`
+    /// that the link took it into the copy's replica before its reader heard
+    /// it.
     async fn keep_member_write(
         &self,
         workspace: &str,
@@ -1983,6 +1992,7 @@ impl Workspaces {
         message: &NeighbourMsg,
         body: &[u8],
         history: bool,
+        landed: bool,
     ) -> Result<(), String> {
         if message.governance_workspace().is_some() {
             if let Some(sink) = self
@@ -2013,7 +2023,12 @@ impl Workspaces {
         // copy is behind; that is taken as the serving device kept it.
         let taken = governed.take_served(author, message)
             || governed.follow_kept(author, message.clone()).await.changed;
-        if taken {
+        // The link admits a frame into the copy's replica before its reader
+        // hears it, so a write it landed changed the copy without `taken`
+        // seeing it. Whoever follows the copy's records is told either way:
+        // otherwise a folder's sync hears of the serving device's edits only
+        // when it next reads every record.
+        if taken || landed {
             self.tell_followers(
                 &governed,
                 author,
@@ -2022,7 +2037,9 @@ impl Workspaces {
                 history,
             )
             .await;
-            self.keep_soon(&mut governed);
+            if taken {
+                self.keep_soon(&mut governed);
+            }
         } else {
             // A write the copy cannot take in yet (a sealed record whose keys have not reached the
             // service) is still the apps' to show, which may hold its keys.

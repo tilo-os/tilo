@@ -667,6 +667,82 @@ async fn a_member_copy_says_when_it_caught_up_with_its_serving_device() {
     member.shutdown().await;
 }
 
+/// A write the device serving a member copy makes is told to whoever follows the copy's
+/// records, naming its app and document: what a folder's sync wakes on instead of reading every
+/// record again to notice the serving device's edits.
+#[tokio::test]
+async fn a_serving_devices_write_reaches_a_member_copys_followers() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Followed", 45).await;
+    let workspace = created.workspace.clone();
+    // The record is one the copy joins with, so the serving device's later change of it is a
+    // write the copy takes in as it comes.
+    serving_writes(
+        &serving,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "as-the-copy-joined"),
+    )
+    .await;
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let mut writes = copies.document_writes();
+    let change = change_of(
+        serving.workspaces(),
+        &workspace,
+        ("test.app", "record"),
+        ("value", "from-the-serving-device"),
+    )
+    .await;
+    serving
+        .workspaces()
+        .own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &change,
+            false,
+            false,
+            None,
+        )
+        .await
+        .expect("the serving device changes the record");
+    let told = tilo_test_env::within(
+        "the serving device's write is told to the copy's followers",
+        async {
+            loop {
+                match writes.recv().await {
+                    Ok(write) => {
+                        if write.workspace == workspace
+                            && write.app == "test.app"
+                            && write.record == "record"
+                        {
+                            return write;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        panic!("the copy's followers fell {missed} writes behind");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("the copy stopped telling its followers");
+                    }
+                }
+            }
+        },
+    )
+    .await;
+    assert_eq!(told.app, "test.app");
+    assert_eq!(told.record, "record");
+    drop(copies);
+    member.shutdown().await;
+}
+
 /// The front `workspace`'s layout stands on, as its member copy reads it now.
 #[cfg(feature = "apps")]
 async fn front(copies: &super::Workspaces, workspace: &str) -> Option<String> {
