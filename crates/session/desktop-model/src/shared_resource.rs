@@ -458,25 +458,13 @@ pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<Sh
         Some(heads) => crate::desktop_doc::held_at(doc, heads),
         None => crate::desktop_doc::holds(doc),
     };
-    let mut desktop = if layout {
+    let desktop = if layout {
         layout_of(doc, heads)?
     } else {
         Parts::of(held(doc, heads)).assemble()?
     };
-    for (_, record) in &mut desktop.records {
-        if record == LEGACY_PRIMARY_RECORD {
-            // The same record as the primary's route, which is empty: one
-            // window has one record, so its route is what the layout holds.
-            record.clear();
-        }
-    }
     Some(desktop)
 }
-
-/// The ownership key of a package's primary record, as a page that predates
-/// routes wrote it where a window's route belongs: not a route, so a layout
-/// holding it holds the primary under a spelling that names nothing.
-const LEGACY_PRIMARY_RECORD: &str = "@tilo:package-primary";
 
 /// The layout the layout's own document ([`crate::desktop_doc`]) holds at
 /// `heads`, as [`read`] gives a record: read with the document's own reader,

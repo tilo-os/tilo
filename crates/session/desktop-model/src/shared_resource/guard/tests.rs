@@ -394,34 +394,6 @@ tilo_test_env::scenario! {
         );
         assert_eq!(windows(&guard), vec![1], "the refused write left nothing");
     }
-
-    phase a_device_holding_the_primarys_ownership_key_reads_and_heals_to_its_route;
-    // A layout written before pages named records by their route holds the package
-    // primary's ownership key for it. It reads as the primary's route, so the page
-    // that writes the layout next restates the same record instead of rebinding it.
-    {
-        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
-        let mut layout = desktop(&[(1, 100, ADA)]);
-        layout.records = vec![(1, "@tilo:package-primary".into())];
-        shared_resource::write(&mut doc, &layout).unwrap();
-        doc.commit();
-        let mut guard = DesktopGuard::new(doc);
-        let mut ada = Page::of(&guard, 1);
-        let adopted = shared_resource::read(guard.doc(), None).unwrap();
-        assert_eq!(
-            adopted.records,
-            vec![(1, String::new())],
-            "the ownership key reads as the primary's route"
-        );
-        let heals = ada.write(&adopted);
-        guard
-            .decide(&heals, &writer(ADA, None, &moderates(ADA)))
-            .unwrap();
-        assert_eq!(
-            shared_resource::read(guard.doc(), None).unwrap().records,
-            vec![(1, String::new())]
-        );
-    }
 }
 
 /// A window `id` opened in `strip`'s first group, as a member's page adds it.
