@@ -236,24 +236,27 @@ def steps(story: Story) -> None:
             return all(any(text.lower() in name.lower() for name in names)
                        for text in changes.values()) and names
 
-        def history_shown():
-            # Activity opens on what is new; its History lists every change. A row's own view
-            # replaces the list, so the list is reached through Back first.
-            for control in ("Back", "History"):
-                found = next((t for t in ada.targets()
-                              if t.get("name") == control and inside(t, window)), None)
-                if found:
-                    x, y, width, height = found["rect"]
-                    ada.session.click_at(x + width / 2, y + height / 2)
-                    time.sleep(0.3)
-            return listed()
-
+        # The action opens Activity on History. Where its window is narrow, Activity shows one
+        # pane at a time; if it shows its places instead of the list, a person picks History.
+        seen = {}
         try:
-            names = until("History listing the agent's file, issue, note and message",
-                          lambda: listed() or history_shown(), 30, 0.5)
+            try:
+                names = until("History listing the agent's file, issue, note and message",
+                              listed, 20, 0.25)
+            except Failed:
+                seen["first"] = rows()
+                row = next((t for t in ada.targets()
+                            if t.get("name") == "History" and inside(t, window)), None)
+                if row is None:
+                    raise
+                x, y, width, height = row["rect"]
+                ada.session.click_at(x + width / 2, y + height / 2)
+                names = until("History listing the agent's file, issue, note and message, "
+                              "after Ada picks History", listed, 20, 0.25)
         finally:
+            seen["last"] = rows()
             story.note("history-window", window)
-            story.note("history-controls", rows())
+            story.note("history-controls", seen)
         # Each row names who made it: the agent, by its own name, on the row or right beside it.
         unnamed = []
         for what, text in changes.items():

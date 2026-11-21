@@ -347,7 +347,10 @@ class Story:
         made = subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
              "-i", str(one.frames / "frames.txt"),
-             "-vf", "fps=10,scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libvpx", "-b:v", "800k",
+             # Snapshots carry an alpha channel, which libvpx refuses to encode beside its
+             # default alternate reference frames: the video is opaque, as the screen is.
+             "-vf", "fps=10,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+             "-c:v", "libvpx", "-b:v", "800k",
              "-deadline", "realtime", "-cpu-used", "8", str(self.out / file)],
             capture_output=True, text=True)
         if made.returncode != 0:

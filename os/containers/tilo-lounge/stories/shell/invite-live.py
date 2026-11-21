@@ -92,6 +92,20 @@ def holds(one: Person, text: str) -> bool:
                for path in one.state.rglob("*.automerge") if NOTES in str(path))
 
 
+def notes_listed(one: Person) -> int:
+    """How many notes this person's Notes window lists: rows inside the window named as notes
+    are, besides its New note buttons (each a fresh note is named "New note" until it has a
+    title, so the rows are counted by where they stand: the window's list column)."""
+    window = next((w for w in one.session.windows() if w.get("app_id") == NOTES), None)
+    if window is None:
+        return 0
+    left, top, _, _ = window["rect"]
+    # The list column holds the rows; the sidebar's own New note is the square button at its top.
+    return sum(1 for t in one.targets()
+               if t.get("name") == "New note" and t.get("rect")
+               and t["rect"][2] > 120 and t["rect"][0] < left + 300)
+
+
 def name_self(one: Person, name: str) -> None:
     """Give `one` the name `name` as a person does: their own face in the top bar opens their
     profile card, whose field asks for the name. Read back off the top bar and the identity record
@@ -258,10 +272,21 @@ def steps(story: Story) -> None:
 
     story.step("Grace follows Ada", grace_follows)
 
+    words = f"Seeds for spring {int(time.time()) % 100000:05d}"
+    typed = {}
+
     def ada_starts_note():
         ada.session.launch("notes")
         ada.session.answering("notes", deadline=120)
         ada.press("New note", "Notes' New note on Ada's shell", deadline=30)
+        # The press makes a note, which Notes opens: its title and its first block.
+        try:
+            until("the note Ada's press of New note makes, open in her Notes",
+                  lambda: ada.target("Block text"), 10, 0.2)
+        except Failed:
+            raise Failed("Ada pressed New note and Notes made no note: it still shows "
+                         f"{[n for n in ada.names() if n in ('New note', 'Start your first note')]}")
+        typed["notes"] = notes_listed(ada)
         # Following Ada, Grace is shown what Ada works in: Notes, as her people list says Ada is.
         workspace = shared["id"]
         own, _ = peers(ada, workspace)
@@ -282,8 +307,6 @@ def steps(story: Story) -> None:
 
     story.step("Ada opens Notes and starts a note", ada_starts_note)
 
-    words = f"Seeds for spring {int(time.time()) % 100000:05d}"
-    typed = {}
 
     def ada_types():
         # She clicks into the note's body, where it asks her to write, and types.
@@ -292,7 +315,15 @@ def steps(story: Story) -> None:
             ada.session.type(ch)
             time.sleep(0.08)
         typed["last"] = time.monotonic()
-        until("Ada's words in Ada's note", lambda: holds(ada, words), 15, 0.1)
+        try:
+            until("Ada's words in Ada's note", lambda: holds(ada, words), 15, 0.1)
+        except Failed:
+            made = notes_listed(ada) - typed["notes"]
+            story.note("ada-controls-after-typing", ada.targets())
+            if made > 0:
+                raise Failed(f"Ada's keys never reached her note, and her typing made {made} more "
+                             "notes instead") from None
+            raise
 
     story.step("Ada types a line in the note", ada_types, people=[ada])
 
