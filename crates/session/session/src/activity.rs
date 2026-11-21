@@ -55,6 +55,9 @@ impl tilo_desktop_surface::activity::GovernanceReader for GovernanceValues {
     }
 }
 use crate::device_state::DeviceState;
+#[cfg(target_os = "linux")]
+use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
+
 use crate::platform::Store;
 use crate::platform::apps::Apps;
 use crate::platform::authors::{People, Writers};
@@ -68,6 +71,10 @@ use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 use crate::platform::fabric::SharedLink;
 #[cfg(target_os = "linux")]
 use crate::unlock_history::UnlockHistory;
+
+/// The session's action broker and the generation of its published actions History last learned.
+#[cfg(target_os = "linux")]
+type LearnedBroker = (Arc<AppBrokerState>, Cell<Option<u64>>);
 
 /// The package this device's view of the activity is kept under: the session's.
 const VIEW_PACKAGE: &str = "so.tilo.session.activity";
@@ -177,12 +184,7 @@ struct Inner {
     /// The session's action broker, whose apps' published actions say in their own words what
     /// each of their changes did, and the generation of them History last learned.
     #[cfg(target_os = "linux")]
-    broker: RefCell<
-        Option<(
-            Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>,
-            Cell<Option<u64>>,
-        )>,
-    >,
+    broker: RefCell<Option<LearnedBroker>>,
     #[cfg(target_os = "linux")]
     undos: crate::task_undo::Undos,
     /// The records each workspace holds, read on a worker of its own, told by the change stream
@@ -247,7 +249,9 @@ impl Inner {
         }
         learned.set(Some(generation));
         // The workspace's agents are a record the session holds, published by no app's surface.
-        ui::history_source::sentence::learn_declared::<tilo_app::tilo_workspace_agent::WorkspaceAgents>();
+        ui::history_source::sentence::learn_declared::<
+            tilo_app::tilo_workspace_agent::WorkspaceAgents,
+        >();
         // A live surface is listed before the one kept from before its app closed: learned last,
         // its words are the ones kept.
         for surface in broker.published_surfaces().iter().rev() {
@@ -522,10 +526,7 @@ impl Activity {
     /// Word the apps' changes by what `broker` says they publish: each action's label and what
     /// the app says it did, as the apps publish them now.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_broker(
-        &self,
-        broker: Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>,
-    ) {
+    pub(crate) fn attach_broker(&self, broker: Arc<AppBrokerState>) {
         *self.0.broker.borrow_mut() = Some((broker, Cell::new(None)));
     }
 

@@ -682,13 +682,14 @@ mod tests {
     /// Landlock ABI is below the ABI 5 floor.
     #[test]
     fn application_ruleset_enforces_read_only_in_forked_child() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
         let abi = kernel_abi();
         if abi < FS_ABI as i32 {
             eprintln!("skipped: kernel Landlock ABI {abi} is below the ABI 5 floor");
             return;
         }
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
 
         let base = tempfile::tempdir().unwrap();
         let ro_dir = base.path().join("ro");

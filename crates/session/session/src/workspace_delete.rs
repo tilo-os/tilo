@@ -141,9 +141,7 @@ impl Shared {
     /// shell is never left with none: where it was the only one, a new empty workspace takes its
     /// place first, as it does when the person deletes their last workspace here.
     fn take_off_shell(&self, workspace: WorkspaceId) -> bool {
-        let only = |tree: &tilo_desktop_model::Layout| {
-            tree.workspaces.len() == 1 && tree.workspaces[0].id() == workspace
-        };
+        let only = |tree: &tilo_desktop_model::Layout| matches!(tree.workspaces.as_slice(), [only] if only.id() == workspace);
         if self.handle.read(only)
             && let Err(error) = self.ask_of_shell("new-workspace", &Map::new())
         {
