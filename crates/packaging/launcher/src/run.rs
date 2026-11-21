@@ -2477,8 +2477,12 @@ fn spawn_and_wait(
         // that fails inside itself. A terminal is never handed to the sandbox, though: one on
         // the app's streams would let it push input into the shell that started it.
         cmd.stdin(std::process::Stdio::null())
-            .stdout(app_stream(std::io::IsTerminal::is_terminal(&std::io::stdout())))
-            .stderr(app_stream(std::io::IsTerminal::is_terminal(&std::io::stderr())));
+            .stdout(app_stream(std::io::IsTerminal::is_terminal(
+                &std::io::stdout(),
+            )))
+            .stderr(app_stream(std::io::IsTerminal::is_terminal(
+                &std::io::stderr(),
+            )));
         if let Some((path, _)) = &debug_output {
             tracing::warn!(
                 path = %path.display(),
