@@ -1,6 +1,8 @@
 app so.tilo.lang.tasks "Tasks" (
     icon: .list_checks,
     category: .office,
+    tagline: "Issues of the workspace, on a list and a board",
+    keywords: ["tasks", "issues", "issue tracker", "kanban", "board", "to-do", "todo", "tickets", "projects", "agent tasks"],
     previously: so.tilo.lang.todo,
 )
 

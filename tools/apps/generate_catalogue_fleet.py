@@ -18,6 +18,14 @@ manifest:
 * `apps/<app>/src/**/*.rs`: whether each window of the app shows a document of
   its own, as the app declares it (`const WINDOW_RESOURCE: bool = true;`).
 
+A tilolang package under `apps/tl/` that declares an app contributes the same
+facts, read from the package itself by `tilolang describe --fleet`: its
+metadata (id, name, category, tag line, other-language names, keywords, the
+kinds of record it declares and the actions it offers while closed) and the
+`surface.toml` generated from it, so a tilolang app replacing a Rust one is
+known as fully while it is not installed. That needs a built `tilolang`
+(`--tilolang PATH`, else `$TILOLANG`, else `target/debug/tilolang`).
+
 It also carries each app's whole `surface.toml`, so a server that runs no app
 of its own (the API server, serving a hosted workspace's programs) still
 compiles a program against the app's real declarations.
@@ -29,6 +37,8 @@ it fails when that file is out of date instead.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import pathlib
 import re
 import subprocess
@@ -164,7 +174,7 @@ def offers(manifest: dict) -> list[dict]:
     ]
 
 
-def fleet(root: pathlib.Path) -> list[dict]:
+def native_apps(root: pathlib.Path) -> list[dict]:
     apps = []
     for manifest_path in sorted((root / "apps").glob("*/tilo-app.toml")):
         app_dir = manifest_path.parent
@@ -192,28 +202,59 @@ def fleet(root: pathlib.Path) -> list[dict]:
                 window_documents=window_documents(app_dir),
                 surface=((app_dir / "surface.toml").read_text(encoding="utf-8")
                          if (app_dir / "surface.toml").is_file() else ""),
+                previously=list(package.get("previously", [])),
             )
         )
     return apps
 
 
-def own_table(root: pathlib.Path) -> list[tuple[str, str]]:
-    """`(app, kind)` of every kind a package's manifest declares each member's own: a service's
-    (the on-screen keyboard's learned words) as well as an app's."""
-    table = []
-    for manifest_path in sorted((root / "apps").glob("*/tilo-app.toml")):
-        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-        package = manifest.get("package", {})
-        if "id" in package:
-            table.extend((package["id"], kind) for kind in own_kinds(manifest))
-    # A tilolang package declares its records each member's own in its header
-    # (`app <id> "<name>" (resources: .own)`): its record kind is `tl.<id>`.
-    for header_path in sorted((root / "apps" / "tl").glob("*/app.tl")):
-        header = header_path.read_text(encoding="utf-8").splitlines()[0]
-        found = re.match(r'app\s+(\S+)\s+"[^"]*"\s*\((.*)\)', header)
-        if found and re.search(r"\bresources:\s*\.own\b", found.group(2)):
-            table.append((found.group(1), f"tl.{found.group(1)}"))
-    return table
+def tilolang_apps(root: pathlib.Path, tilolang: pathlib.Path) -> list[dict]:
+    """Every `apps/tl/` package that declares an app, as `tilolang describe --fleet` reads it."""
+    if not tilolang.is_file():
+        raise SystemExit(
+            f"{tilolang}: no tilolang binary; build it with "
+            "`cargo build --locked -p tilolang-cli --bin tilolang` or pass --tilolang"
+        )
+    apps = []
+    for app_dir in sorted(p for p in (root / "apps" / "tl").iterdir() if p.is_dir()):
+        if not (app_dir / "app.tl").is_file():
+            continue
+        found = subprocess.run(
+            [str(tilolang), "describe", "--fleet", str(app_dir)],
+            capture_output=True,
+            text=True,
+        )
+        if found.returncode != 0:
+            raise SystemExit(
+                f"{tilolang} describe --fleet {app_dir}: {found.stderr.strip()}"
+            )
+        entry = json.loads(found.stdout)
+        if entry is None:
+            # A package of views the app it belongs to compiles in: it declares no app.
+            continue
+        entry["platforms"] = list(DEFAULT_PLATFORMS)
+        entry["actions"] = entry.pop("offers")
+        apps.append(entry)
+    return apps
+
+
+def claims(app: dict) -> list[str]:
+    """Every id `app` answers by: its own and the ones it was published under before."""
+    return [app["id"], *app["previously"]]
+
+
+def fleet(root: pathlib.Path, tilolang: pathlib.Path) -> list[dict]:
+    apps = native_apps(root)
+    apps.extend(tilolang_apps(root, tilolang))
+    claimed: dict[str, str] = {}
+    for app in apps:
+        for app_id in claims(app):
+            if app_id in claimed:
+                raise SystemExit(
+                    f"{app_id} is claimed by {claimed[app_id]} and {app['id']}: one app per id"
+                )
+            claimed[app_id] = app["id"]
+    return apps
 
 
 def text(value: str) -> str:
@@ -231,17 +272,22 @@ def strings(items: list[str]) -> str:
     return "&[" + ", ".join(text(item) for item in items) + "]"
 
 
-def render(apps: list[dict], own: list[tuple[str, str]]) -> str:
+def render(apps: list[dict]) -> str:
     lines = [
         "//! @generated by `tools/apps/generate_catalogue_fleet.py` from `apps/*/tilo-app.toml`,",
-        "//! `apps/*/surface.toml`, `apps/*/search/*.ftl`, `apps/*/src` and `apps/tl/*/app.tl`.",
-        "//! Do not edit; change the sources and run the generator.",
+        "//! `apps/*/surface.toml`, `apps/*/search/*.ftl`, `apps/*/src`, and `tilolang describe",
+        "//! --fleet` for `apps/tl/*`. Do not edit; change the sources and run the generator.",
         "",
         "use super::FleetApp;",
         "",
+        "/// `(an id an app answers by besides its own, the app it names)`.",
+        "pub(super) const PREVIOUS: &[(&str, &str)] = &[",
+        *(f"    ({text(old)}, {text(app['id'])})," for app in apps for old in app["previously"]),
+        "];",
+        "",
         "/// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).",
         "pub(super) const OWN_KINDS: &[(&str, &str)] = &[",
-        *(f"    ({text(app)}, {text(kind)})," for app, kind in own),
+        *(f"    ({text(app['id'])}, {text(kind)})," for app in apps for kind in app["own"]),
         "];",
         "",
         "/// The apps a window of which is the person's own (`WINDOWS_ARE_PERSONAL`).",
@@ -293,11 +339,18 @@ def render(apps: list[dict], own: list[tuple[str, str]]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="fail when the generated file is stale")
+    parser.add_argument(
+        "--tilolang",
+        type=pathlib.Path,
+        default=pathlib.Path(os.environ.get("TILOLANG", ROOT / "target" / "debug" / "tilolang")),
+        help="the `tilolang` binary the tl packages are read with, as `tilolang describe --fleet` "
+        "(default: $TILOLANG, else target/debug/tilolang)",
+    )
     args = parser.parse_args()
     # Formatted as `cargo fmt` would, so the format check and `--check` agree.
     rendered = subprocess.run(
         ["rustfmt", "--edition", "2024", "--emit", "stdout"],
-        input=render(fleet(ROOT), own_table(ROOT)),
+        input=render(fleet(ROOT, args.tilolang)),
         capture_output=True,
         text=True,
         check=True,

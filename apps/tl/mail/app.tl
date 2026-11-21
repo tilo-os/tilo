@@ -1,4 +1,9 @@
-app so.tilo.lang.mail "Mail" (icon: .mail, category: .office)
+app so.tilo.lang.mail "Mail" (
+    icon: .mail,
+    category: .office,
+    tagline: "Email over IMAP and SMTP",
+    keywords: ["email", "e-mail", "mail", "inbox", "mailbox", "gmail", "imap", "smtp", "apple mail", "evolution", "geary", "kmail", "kontact"],
+)
 
 /// What the server of one of the workspace's mail accounts holds. The account itself, its
 /// address, servers and signature, is the workspace settings', and its credentials stay in

@@ -169,12 +169,18 @@ pub enum Scope {
     Member,
 }
 
-/// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one.
+/// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one,
+/// and an id an app was published under before names that app.
 fn canonical(package_id: &str) -> std::borrow::Cow<'_, str> {
-    package_id.strip_prefix("dev.tilo.").map_or_else(
-        || std::borrow::Cow::Borrowed(package_id),
-        |name| std::borrow::Cow::Owned(format!("so.tilo.{name}")),
-    )
+    let canonical = package_id
+        .strip_prefix("dev.tilo.")
+        .map_or_else(|| package_id.to_owned(), |name| format!("so.tilo.{name}"));
+    let previous = generated::PREVIOUS
+        .iter()
+        .find(|(old, _)| old.eq_ignore_ascii_case(&canonical));
+    previous.map_or(std::borrow::Cow::Owned(canonical), |(_, app)| {
+        std::borrow::Cow::Borrowed(*app)
+    })
 }
 
 #[cfg(test)]
@@ -218,5 +224,35 @@ mod tests {
                 .actions()
                 .any(|action| action.action == "show-tasks")
         );
+    }
+
+    #[test]
+    fn a_tilolang_app_is_known_as_fully_as_a_native_one() {
+        let notes = metadata("so.tilo.lang.notes").expect("Notes is in the fleet");
+        assert_eq!(notes.name, "Notes");
+        assert_eq!(notes.category, "Office");
+        assert!(notes.tagline.contains("together"));
+        assert!(notes.keywords.contains(&"memo"));
+        assert!(notes.names.contains(&"Notizen"));
+        assert!(
+            notes
+                .resource_types
+                .contains(&("tl.so.tilo.lang.notes.Notebook", "Notebook"))
+        );
+        assert_eq!(
+            notes.actions().next().map(|action| action.action),
+            Some("new_note")
+        );
+        assert!(windows_are_own("so.tilo.shell"));
+        // An id the app was published under before names it.
+        assert_eq!(
+            metadata("so.tilo.lang.todo").map(|app| app.id),
+            Some("so.tilo.lang.tasks")
+        );
+        // The tilolang package's surface is generated from the same metadata, so a program a
+        // server compiles for a workspace with no app installed reads Notes' records there.
+        let surface = surface("so.tilo.lang.notes").expect("Notes ships its surface");
+        assert!(surface.contains("tl.so.tilo.lang.notes.Notebook"));
+        assert!(surface.contains("tl.so.tilo.lang.notes.Note"));
     }
 }

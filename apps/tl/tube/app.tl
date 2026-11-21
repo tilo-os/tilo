@@ -1,4 +1,9 @@
-app so.tilo.lang.tube "YouTube" (icon: .film, category: .multimedia)
+app so.tilo.lang.tube "YouTube" (
+    icon: .film,
+    category: .multimedia,
+    tagline: "Browses and plays YouTube videos",
+    keywords: ["youtube", "video", "videos", "streaming", "watch", "channel", "channels", "subscriptions", "creators", "trending"],
+)
 
 /// A channel someone publishes videos on. The service writes what it says (its name, handle and
 /// numbers); the person's own relation to it is a `Subscription`, so subscribing never depends on

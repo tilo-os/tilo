@@ -1,4 +1,9 @@
-app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
+app so.tilo.lang.chat "Chat" (
+    icon: .message_circle,
+    category: .network,
+    tagline: "Workspaces for messages, calls and shared work",
+    keywords: ["messenger", "instant messaging", "conversation"],
+)
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people.

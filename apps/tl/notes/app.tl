@@ -1,4 +1,9 @@
-app so.tilo.lang.notes "Notes" (icon: .file_text, category: .office)
+app so.tilo.lang.notes "Notes" (
+    icon: .file_text,
+    category: .office,
+    tagline: "Notes you write alone or together",
+    keywords: ["note", "memo", "memos", "notebook", "journal", "markdown", "notepad", "textedit", "apple notes", "google keep", "onenote", "obsidian"],
+)
 
 use so.tilo.lang.discussion as discussion
 
