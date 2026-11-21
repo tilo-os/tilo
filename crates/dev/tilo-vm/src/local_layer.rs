@@ -101,7 +101,27 @@ fn allowed(path: &Path, files: &[String], directory: bool) -> bool {
     })
 }
 
-fn unpack(archive: &mut File, tree: &Path, files: &[String]) -> Result<(), CliError> {
+/// Whether a symbolic link entry at `path` is one the manifest declares there, with exactly its
+/// target: the one kind of link a component's layer may carry.
+fn declared_link(
+    entry: &tar::Entry<'_, &mut File>,
+    path: &Path,
+    links: &[(String, String)],
+) -> bool {
+    let Ok(Some(target)) = entry.link_name() else {
+        return false;
+    };
+    links.iter().any(|(to, link)| {
+        Path::new(to.trim_start_matches('/')) == path && Path::new(link) == target.as_ref()
+    })
+}
+
+fn unpack(
+    archive: &mut File,
+    tree: &Path,
+    files: &[String],
+    links: &[(String, String)],
+) -> Result<(), CliError> {
     let mut reader = tar::Archive::new(archive);
     reader.set_preserve_permissions(true);
     let mut seen = HashSet::new();
@@ -115,9 +135,10 @@ fn unpack(archive: &mut File, tree: &Path, files: &[String]) -> Result<(), CliEr
             .map_err(CliError::io("read component path"))?
             .into_owned();
         let kind = entry.header().entry_type();
+        let link = kind.is_symlink() && declared_link(&entry, &path, links);
         if seen.len() >= MAX_ENTRIES
             || !seen.insert(path.clone())
-            || (!kind.is_file() && !kind.is_dir())
+            || (!kind.is_file() && !kind.is_dir() && !link)
             || !allowed(&path, files, kind.is_dir())
             || entry
                 .header()
@@ -141,6 +162,9 @@ fn unpack(archive: &mut File, tree: &Path, files: &[String]) -> Result<(), CliEr
         let path = tree.join(file.trim_start_matches('/'));
         let present = if file.ends_with('/') {
             path.is_dir()
+        } else if links.iter().any(|(to, _)| to == file) {
+            path.symlink_metadata()
+                .is_ok_and(|meta| meta.file_type().is_symlink())
         } else {
             path.is_file()
         };
@@ -201,7 +225,12 @@ pub(crate) fn prepare(request: &LocalLayerImport) -> Result<Prepared, CliError> 
     }
     let mut archive = freeze(request)?;
     let tree = tempfile::tempdir().map_err(CliError::io("stage local component"))?;
-    unpack(archive.as_file_mut(), tree.path(), &component.paths)?;
+    unpack(
+        archive.as_file_mut(),
+        tree.path(),
+        &component.paths,
+        &component.links,
+    )?;
     let layer_hash =
         layer_hash::tree_hash(tree.path()).map_err(CliError::io("hash local component"))?;
     archive

@@ -97,6 +97,56 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase a_declared_link_is_taken_and_any_other_link_refused;
+    {
+        let linked = |target: &str, at: &str| {
+            let (dir, mut request) = fixture(&[("usr/libexec/tilo/tilo-launcher", 0o755)]);
+            std::fs::write(
+                &request.manifest,
+                r#"
+[[component]]
+name = "launcher"
+kind = "userspace"
+scope = "session"
+packages = ["launcher"]
+bins = ["tilo-launcher"]
+files = [
+  { from = "tilo-launcher", to = "/usr/libexec/tilo/tilo-launcher", mode = "0755" },
+  { link = "../libexec/tilo/tilo-launcher", to = "/usr/bin/tilo-launcher" },
+]
+"#,
+            )
+            .unwrap();
+            let mut builder = tar::Builder::new(File::create(&request.archive).unwrap());
+            let body = b"qualified producer fixture";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "usr/libexec/tilo/tilo-launcher", body.as_slice())
+                .unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o777);
+            builder.append_link(&mut header, at, target).unwrap();
+            builder.finish().unwrap();
+            drop(builder);
+            request.archive_sha256 = crate::build::sha256_hex(&std::fs::read(&request.archive).unwrap());
+            (dir, request)
+        };
+        let (_dir, request) = linked("../libexec/tilo/tilo-launcher", "usr/bin/tilo-launcher");
+        prepare(&request).unwrap();
+        for (target, at) in [
+            ("/etc/shadow", "usr/bin/tilo-launcher"),
+            ("../libexec/tilo/tilo-launcher", "usr/bin/unrelated"),
+        ] {
+            let (_dir, request) = linked(target, at);
+            assert!(prepare(&request).is_err(), "unexpectedly accepted {at} -> {target}");
+        }
+    }
+
     phase local_inputs_cannot_claim_ci_or_another_component;
     {
         for (authority, component) in [("ci", "launcher"), ("local", "shell")] {

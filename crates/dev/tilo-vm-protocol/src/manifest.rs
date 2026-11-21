@@ -119,6 +119,9 @@ pub struct Component {
     /// Absolute install paths (`to`) of the component's files; a trailing `/` marks a whole
     /// directory tree. What a CI layer extracts.
     pub paths: Vec<String>,
+    /// The symbolic links among `paths` (`link = "..."` entries): each install path with the
+    /// target the manifest gives it, the only link a layer of the component may carry there.
+    pub links: Vec<(String, String)>,
     /// `layer = "direct"`: the image build writes these files itself (the signed runtime bundle,
     /// the thin-app store), so no cargo build of `packages` alone produces them.
     pub image_assembled: bool,
@@ -341,6 +344,7 @@ fn component(name: &str, entry: &toml::Table) -> Component {
         dev_features: strings(entry, "dev_features"),
         profile: text("profile").unwrap_or_else(|| "release".into()),
         paths: file_paths(entry),
+        links: file_links(entry),
         image_assembled: text("layer").as_deref() == Some("direct"),
     }
 }
@@ -354,6 +358,21 @@ fn file_paths(entry: &toml::Table) -> Vec<String> {
         .filter_map(Value::as_table)
         .filter_map(|file| file.get("to").and_then(Value::as_str))
         .map(str::to_owned)
+        .collect()
+}
+
+fn file_links(entry: &toml::Table) -> Vec<(String, String)> {
+    let Some(Value::Array(files)) = entry.get("files") else {
+        return Vec::new();
+    };
+    files
+        .iter()
+        .filter_map(Value::as_table)
+        .filter_map(|file| {
+            let to = file.get("to").and_then(Value::as_str)?;
+            let link = file.get("link").and_then(Value::as_str)?;
+            Some((to.to_owned(), link.to_owned()))
+        })
         .collect()
 }
 
