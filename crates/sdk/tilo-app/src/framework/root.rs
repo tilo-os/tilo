@@ -501,15 +501,19 @@ impl ResourceRoot {
     }
 
     /// A root over `content`, the view built in `cx`, whose handles the root
-    /// keeps; `alive` is the scope `cx`'s bindings are tied to. Only this
-    /// constructor knows `R`.
+    /// keeps; `named` is the window's title, icon and live label, `alive` the
+    /// scope `cx`'s bindings are tied to and `share` the client carried while
+    /// `cx` built the view. Only this constructor knows `R`.
     pub(crate) fn new<R: Resource>(
-        title: &'static str,
-        icon: IconDescriptor,
-        label_of: fn(&dyn std::any::Any) -> String,
+        named: (
+            &'static str,
+            IconDescriptor,
+            fn(&dyn std::any::Any) -> String,
+        ),
         cx: ViewCx<R>,
         alive: Rc<()>,
         content: Element,
+        share: super::share_link::ShareLinks,
     ) -> Self {
         let native_presentation = crate::runner::Presentation::new(&cx);
         let ViewCx {
@@ -530,7 +534,7 @@ impl ResourceRoot {
             effects: env.effects,
         };
         Self::assemble(
-            (title, icon, label_of),
+            named,
             ResourceType::of::<R>(),
             Box::new(typed),
             action_bindings.table(),
@@ -545,6 +549,7 @@ impl ResourceRoot {
                 storage: env.storage,
                 content,
                 native_presentation,
+                share,
             },
         )
     }
@@ -572,6 +577,7 @@ impl ResourceRoot {
             storage,
             content,
             native_presentation,
+            share,
         } = parts;
         Self {
             title,
@@ -612,7 +618,7 @@ impl ResourceRoot {
             history: true,
             ground: true,
             native_presentation,
-            share: super::share_link::ShareLinks::default(),
+            share,
             overlay: std::cell::RefCell::new(None),
         }
     }
@@ -977,6 +983,11 @@ struct Parts {
     storage: Rc<super::settings::ViewStorage>,
     content: Element,
     native_presentation: crate::runner::Presentation,
+    /// The window's client for the session's action API. It is made, and carried, before any of
+    /// the app's code runs: a client the view makes while it is built (at once, in a window whose
+    /// workspace is readable at launch) asks over the connection the root drains. One made before
+    /// it would keep its requests in an outbox nothing sends.
+    share: super::share_link::ShareLinks,
 }
 
 /// `widget`'s hosted surface, when it is one of the resource type

@@ -912,6 +912,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     hosted: super::settings::Hosted,
 ) -> ResourceRoot {
     let app = hooks::<A>();
+    let share = super::share_link::ShareLinks::default();
     // History names this app's fields by their titles.
     if let Some(shape) = <A::Resource as Resource>::shape() {
         ui_core::history_source::sentence::learn_field_titles(&shape);
@@ -996,7 +997,13 @@ pub(crate) fn build_root<A: ResourceApp>(
         _ => A::view(&mut cx),
     };
     let live = permissions.is_some();
-    let mut root = ResourceRoot::new(app.title(), icon(app), live_label::<A>, cx, alive, content)
+    let mut root = ResourceRoot::new(
+        (app.title(), icon(app), live_label::<A>),
+        cx,
+        alive,
+        content,
+        share,
+    )
         .following(permissions, scope)
         .with_presentation((app.local_operations)())
         .opening_links(open_link);
