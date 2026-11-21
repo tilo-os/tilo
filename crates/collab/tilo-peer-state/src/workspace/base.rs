@@ -772,7 +772,7 @@ mod tests {
             held.delete(&leases_here, "update").unwrap();
             held.put(&leases_here, "backup", "nas").unwrap();
             held.commit();
-            let mut base = rebase(&shared, maker.clone()).unwrap();
+            let mut base = rebase(&shared, maker).unwrap();
             base.put(ROOT, "name", "Our servers").unwrap();
             base.commit();
 
@@ -801,10 +801,10 @@ mod tests {
             let mut doc = AutoCommit::new().with_actor(holder.clone());
             doc.put(ROOT, "name", "Team").unwrap();
             doc.commit();
-            let base = rebase(&doc, ActorId::random()).unwrap();
+            let mut base = rebase(&doc, ActorId::random()).unwrap();
             let mut adopted = base.clone();
             assert!(!carried(&doc, &mut adopted, &holder).unwrap());
-            assert_eq!(adopted.get_heads(), base.clone().get_heads());
+            assert_eq!(adopted.get_heads(), base.get_heads());
         }
     }
 }
