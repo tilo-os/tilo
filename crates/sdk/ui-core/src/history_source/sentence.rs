@@ -502,6 +502,33 @@ mod tests {
         assert!(!bare.is_empty());
     }
 
+    /// A row says what was done apart from the thing it was done to, which it links, whether its
+    /// sentence names the thing as it is or quoted.
+    #[test]
+    fn a_step_target_is_found_quoted_or_not() {
+        let entry = ActionContext::for_resource("notes.pages", "notes.pages", "Notes")
+            .with_app("so.tilo.notes", "Notes")
+            .with_described(
+                tilo_actions::Described::new(Did::verb(
+                    ActionKey::new("so.tilo.notes", "notes.pages", "append-to-note"),
+                    [],
+                ))
+                .on("n1", "Spring plans"),
+            );
+        for (summary, action) in [
+            ("Added to the note “Spring plans”", "Added to the note"),
+            ("Added to the note: „Spring plans“", "Added to the note"),
+            ("Ran “Pin” on Spring plans", "Ran “Pin” on"),
+        ] {
+            let target = super::step_target(&entry, summary).expect(summary);
+            assert_eq!(
+                (target.action.as_str(), target.label.as_str(), target.id.as_str()),
+                (action, "Spring plans", "n1")
+            );
+        }
+        assert!(super::step_target(&entry, "Renamed Spring plans to Summer").is_none());
+    }
+
     #[test]
     fn a_step_title_names_the_action_and_never_what_it_carried() {
         let posted = ActionContext {
