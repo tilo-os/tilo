@@ -32,12 +32,12 @@
 //! once, here, so a call gives the same result on every engine, and the same before and after
 //! a module moves to compiled code.
 
-#[cfg(all(test, feature = "wasmtime"))]
+#[cfg(all(test, all(feature = "wasmtime", not(target_arch = "wasm32"))))]
 mod tests;
-#[cfg(feature = "wasmtime")]
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 mod tiering;
 mod wasmi_backend;
-#[cfg(feature = "wasmtime")]
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 mod wasmtime_backend;
 
 use std::cell::{Cell, Ref, RefCell};
@@ -181,7 +181,7 @@ pub enum EngineKind {
 impl Default for EngineKind {
     /// Tiered when the build has wasmtime, else wasmi.
     fn default() -> Self {
-        if cfg!(feature = "wasmtime") {
+        if cfg!(all(feature = "wasmtime", not(target_arch = "wasm32"))) {
             Self::Tiered
         } else {
             Self::Wasmi
@@ -215,7 +215,7 @@ impl EngineKind {
     pub const fn built_in(self) -> bool {
         match self {
             Self::Wasmi => true,
-            Self::Tiered | Self::Cranelift | Self::Winch => cfg!(feature = "wasmtime"),
+            Self::Tiered | Self::Cranelift | Self::Winch => cfg!(all(feature = "wasmtime", not(target_arch = "wasm32"))),
         }
     }
 }
@@ -236,7 +236,7 @@ pub const ENGINE_VARIABLE: &str = "TILOLANG_ENGINE";
 impl EngineConfig {
     /// The configuration [`ENGINE_VARIABLE`] asks for, or why it names none.
     fn from_environment() -> Result<Self, String> {
-        if !cfg!(feature = "wasmtime") {
+        if !cfg!(all(feature = "wasmtime", not(target_arch = "wasm32"))) {
             return Ok(Self::default());
         }
         let Ok(name) = std::env::var(ENGINE_VARIABLE) else {
@@ -283,9 +283,9 @@ pub fn configured() -> EngineConfig {
 pub fn forget_compiled() {
     match shared() {
         Ok(Shared::Wasmi(p)) => p.forget(),
-        #[cfg(feature = "wasmtime")]
+        #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
         Ok(Shared::Wasmtime(p)) => p.forget(),
-        #[cfg(feature = "wasmtime")]
+        #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
         Ok(Shared::Tiered(t)) => {
             t.base.forget();
             t.top.forget();
@@ -305,7 +305,7 @@ pub fn forget_compiled() {
 /// could not be made.
 pub fn keep_compiled_in(dir: PathBuf) -> Result<(), String> {
     match shared()? {
-        #[cfg(feature = "wasmtime")]
+        #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
         Shared::Tiered(t) => t.top.keep_in(dir),
         _ => {
             drop(dir);
@@ -507,7 +507,7 @@ impl<B: Backend> Compiler<B> {
             .clear();
     }
 
-    #[cfg(feature = "wasmtime")]
+    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
     fn drop_module(&self, hash: &ModuleHash) {
         self.modules
             .lock()
@@ -518,20 +518,20 @@ impl<B: Backend> Compiler<B> {
 
 enum Shared {
     Wasmi(Compiler<wasmi_backend::Wasmi>),
-    #[cfg(feature = "wasmtime")]
+    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
     Wasmtime(Compiler<wasmtime_backend::Wasmtime>),
-    #[cfg(feature = "wasmtime")]
+    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
     Tiered(Box<Tiers>),
 }
 
 /// The tiered engine's two tiers: wasmi, which runs a module at once, and Cranelift.
-#[cfg(feature = "wasmtime")]
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 struct Tiers {
     base: Compiler<wasmi_backend::Wasmi>,
     top: tiering::Tiering,
 }
 
-#[cfg(feature = "wasmtime")]
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 impl Tiers {
     fn new(translation: Translation) -> Result<Self, String> {
         Ok(Self {
@@ -553,16 +553,16 @@ impl Process {
             EngineKind::Wasmi => Ok(Shared::Wasmi(Compiler::new(wasmi_backend::Wasmi::new(
                 config.translation,
             )))),
-            #[cfg(feature = "wasmtime")]
+            #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             EngineKind::Cranelift | EngineKind::Winch => {
                 wasmtime_backend::Wasmtime::new(config.kind)
                     .map(|backend| Shared::Wasmtime(Compiler::new(backend)))
             }
-            #[cfg(feature = "wasmtime")]
+            #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             EngineKind::Tiered => Tiers::new(config.translation)
                 .map(Box::new)
                 .map(Shared::Tiered),
-            #[cfg(not(feature = "wasmtime"))]
+            #[cfg(not(all(feature = "wasmtime", not(target_arch = "wasm32"))))]
             EngineKind::Tiered | EngineKind::Cranelift | EngineKind::Winch => Err(format!(
                 "this build has no {} engine (build with the `wasmtime` feature)",
                 config.kind.name()
@@ -719,7 +719,7 @@ impl<B: Backend> Pools<B> {
 
     /// Drop the module and its idle instances; one still running is dropped when its call
     /// ends.
-    #[cfg(feature = "wasmtime")]
+    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
     fn remove(&self, hash: &ModuleHash) {
         self.modules.borrow_mut().remove(hash);
     }
@@ -784,7 +784,7 @@ impl<B: Backend> Pools<B> {
 
 /// One runtime's instances on the tiered engine: each module's on wasmi until its compiled
 /// module is ready, then on Cranelift.
-#[cfg(feature = "wasmtime")]
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 struct TieredPools {
     tiering: &'static tiering::Tiering,
     base: Pools<wasmi_backend::Wasmi>,
@@ -794,7 +794,7 @@ struct TieredPools {
     sets: RefCell<HashMap<ModuleHash, Vec<ModuleHash>>>,
 }
 
-#[cfg(feature = "wasmtime")]
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 impl TieredPools {
     fn new(tiers: &'static Tiers) -> Result<Self, String> {
         Ok(Self {
@@ -921,9 +921,9 @@ impl TieredPools {
 
 enum Pooled {
     Wasmi(Pools<wasmi_backend::Wasmi>),
-    #[cfg(feature = "wasmtime")]
+    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
     Wasmtime(Pools<wasmtime_backend::Wasmtime>),
-    #[cfg(feature = "wasmtime")]
+    #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
     Tiered(Box<TieredPools>),
 }
 
@@ -933,9 +933,9 @@ macro_rules! on_engine {
     ($pooled:expr, $pools:ident => $body:expr) => {
         match $pooled {
             Pooled::Wasmi($pools) => $body,
-            #[cfg(feature = "wasmtime")]
+            #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             Pooled::Wasmtime($pools) => $body,
-            #[cfg(feature = "wasmtime")]
+            #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             Pooled::Tiered($pools) => $body,
         }
     };
@@ -966,9 +966,9 @@ impl Engine {
     fn on(shared: &'static Shared, kind: EngineKind, limits: EngineLimits) -> Result<Self, String> {
         let pooled = match shared {
             Shared::Wasmi(compiler) => Pooled::Wasmi(Pools::new(compiler)?),
-            #[cfg(feature = "wasmtime")]
+            #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             Shared::Wasmtime(compiler) => Pooled::Wasmtime(Pools::new(compiler)?),
-            #[cfg(feature = "wasmtime")]
+            #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             Shared::Tiered(tiers) => Pooled::Tiered(Box::new(TieredPools::new(tiers)?)),
         };
         Ok(Self {
@@ -992,7 +992,7 @@ impl Engine {
     #[must_use]
     pub fn tier(&self, module: &ModuleHash) -> Option<EngineKind> {
         match &self.pooled {
-            #[cfg(feature = "wasmtime")]
+            #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             Pooled::Tiered(pools) => pools.tier(module),
             _ => on_engine!(&self.pooled, pools => pools.has(module)).then_some(self.kind),
         }
@@ -1003,13 +1003,13 @@ impl Engine {
     /// The compile thread ends the wait when it finishes the module, either way. Returns at
     /// once on another engine or for a module not being compiled.
     pub fn settle_compile(&self, module: &ModuleHash) {
-        #[cfg(feature = "wasmtime")]
+        #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
         if let Pooled::Tiered(pools) = &self.pooled {
             for part in pools.parts(module) {
                 pools.tiering.settle(&part);
             }
         }
-        #[cfg(not(feature = "wasmtime"))]
+        #[cfg(not(all(feature = "wasmtime", not(target_arch = "wasm32"))))]
         let _ = module;
     }
 
@@ -1018,7 +1018,7 @@ impl Engine {
     #[must_use]
     pub fn compile_failure(&self, module: &ModuleHash) -> Option<String> {
         match &self.pooled {
-            #[cfg(feature = "wasmtime")]
+            #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
             Pooled::Tiered(pools) => pools.tiering.failure(module).or_else(|| {
                 pools
                     .parts(module)

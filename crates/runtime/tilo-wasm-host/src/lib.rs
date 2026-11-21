@@ -22,7 +22,7 @@
 
 mod failure;
 pub mod wasmi;
-#[cfg(feature = "wasmtime")]
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 pub mod wasmtime;
 
 pub use failure::{DEADLINE_EXCEEDED, Deadline, Failure, GROWTH_LIMITED, OUT_OF_FUEL};
@@ -70,5 +70,5 @@ pub fn reusable<T, E>(outcome: &Result<T, E>) -> bool {
 
 #[cfg(test)]
 mod tests;
-#[cfg(all(test, feature = "wasmtime"))]
+#[cfg(all(test, all(feature = "wasmtime", not(target_arch = "wasm32"))))]
 mod wasmtime_tests;

@@ -14,6 +14,9 @@ thiserror.workspace = true
 # other crates a run links (the model service turns it on). Named, the shared engine can turn
 # relaxed SIMD off on every target.
 wasmi = { version = "1.1", default-features = false, features = ["simd", "std"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native targets only: wasmtime maps executable memory, which no browser has.
 # The compiled tier a native runtime executes beside the interpreter. Off unless a host asks for
 # it, so the browser build stays wasmi only.
 wasmtime = { version = "50.0.0", optional = true, default-features = false, features = [
@@ -22,8 +25,6 @@ wasmtime = { version = "50.0.0", optional = true, default-features = false, feat
     "std",
     "winch",
 ] }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

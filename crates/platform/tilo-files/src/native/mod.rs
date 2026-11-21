@@ -27,6 +27,7 @@ mod watched;
 pub use watched::Watched;
 pub mod bounded;
 pub mod checked;
+#[cfg(unix)]
 pub mod guardian;
 pub mod held;
 pub mod identity;

@@ -54,15 +54,6 @@ regex.workspace = true
 thiserror.workspace = true
 # The interpreter. `engine.rs` is the only module that names it.
 wasmi = { version = "1.1", default-features = false, features = ["std"] }
-# The compiled tier: apps start on wasmi while Cranelift compiles their modules, then run
-# compiled (`engine/tiering.rs`). Winch is there to compare engines (`tilolang bench --engine`,
-# docs/tilolang-engines.md).
-wasmtime = { version = "50.0.0", optional = true, default-features = false, features = [
-    "cranelift",
-    "runtime",
-    "std",
-    "winch",
-] }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Engine construction, the call's limits, the refuel and the one text of a failure: shared with
@@ -78,6 +69,16 @@ tilo-files = { path = "../../platform/tilo-files" }
 tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native targets only: wasmtime maps executable memory, which no browser has.
+# The compiled tier: apps start on wasmi while Cranelift compiles their modules, then run
+# compiled (`engine/tiering.rs`). Winch is there to compare engines (`tilolang bench --engine`,
+# docs/tilolang-engines.md).
+wasmtime = { version = "50.0.0", optional = true, default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+    "winch",
+] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
