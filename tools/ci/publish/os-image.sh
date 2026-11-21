@@ -91,20 +91,24 @@ save_image() {
 # placeholder; the digest is computed from its layers, written out as they will be pushed; the
 # second build changes only the UKI, its rootfs layers are the first's from the layer cache.
 build_board() {
-  local board=$1 base=$2 image=$3 work=$scratch/board-$1 tool_base helper cfs
+  local board=$1 base=$2 image=$3 work=$scratch/board-$1 tool_base helper cfs context
   tool_base=$(. os/base-snapshot.env && printf '%s' "${BASE_REF:-}")
   [[ $tool_base =~ ^registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]] \
     || die 'os/base-snapshot.env must pin the Fedora tooling base by digest'
   helper=$(bootc_helper)
   rm -rf "$work"
   mkdir -p "$work/cfs-source" "$work/cfs"
+  # The files its Containerfile copies, not the checkout (os/dev/build-context.py).
+  context=$(python3 -I os/dev/build-context.py os/Containerfile.board \
+    --epoch "${SOURCE_DATE_EPOCH:-0}") \
+    || die "could not stage the build context of os/Containerfile.board"
   local common=(--jobs 2 --security-opt label=disable -f os/Containerfile.board
     --build-context "board-firmware=os/hardware/firmware/$board"
     --build-arg "BASE_IMAGE=$base" --build-arg "BASE_REF=$tool_base" --build-arg "RPMS_REF=$RPMS_REF"
     --build-arg "TILO_HARDWARE_PROFILE=$board" --build-arg "TILO_TARGET_IMGREF=$image"
     --label "org.opencontainers.image.version=${image##*:}")
   podman build "${common[@]}" --build-arg "TILO_CFS_DIGEST=$(printf '0%.0s' $(seq 128))" \
-    -t localhost/tilo-board:unsealed .
+    -t localhost/tilo-board:unsealed "$context"
   phase board-cfs-source
   podman push --compression-format zstd --compression-level 3 localhost/tilo-board:unsealed \
     "oci-archive:$work/cfs-source/image.oci.tar"
@@ -112,12 +116,12 @@ build_board() {
   podman build "${common[@]}" --target cfs-digest-out --build-arg "BOOTC_HELPER_IMAGE=$helper" \
     --build-context "cfs-source=$work/cfs-source" \
     --build-arg TILO_CFS_SOURCE=oci-archive:/run/tilo-cfs-source/image.oci.tar \
-    --output "type=local,dest=$work/cfs" .
+    --output "type=local,dest=$work/cfs" "$context"
   cfs=$(tr -d '[:space:]' < "$work/cfs/digest")
   [[ $cfs =~ ^[0-9a-f]{128}$ ]] || die "$board: no composefs digest computed"
   printf '%s: composefs digest %s\n' "$board" "$cfs"
   phase board-sealed
-  podman build "${common[@]}" --build-arg "TILO_CFS_DIGEST=$cfs" -t localhost/tilo-board:ci .
+  podman build "${common[@]}" --build-arg "TILO_CFS_DIGEST=$cfs" -t localhost/tilo-board:ci "$context"
   # Only the UKI may differ: the digest was computed from the first build's rootfs layers.
   local unsealed sealed
   unsealed=$(podman image inspect --format '{{json .RootFS.Layers}}' localhost/tilo-board:unsealed)
@@ -284,11 +288,14 @@ case ${1:-} in
     [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the layers below carry no clock but '$epoch'"
     rpms_snapshot "$arch"
     phase build
-    # The flags os/dev/build-dev-image.sh builds the rest of the dev image with (os/dev/_common.sh).
+    # The flags os/dev/build-dev-image.sh builds the rest of the dev image with (os/dev/_common.sh),
+    # over the files os/Containerfile.dev copies (os/dev/build-context.py).
+    dev_context=$(python3 -I os/dev/build-context.py os/Containerfile.dev --epoch "$epoch") \
+      || die 'could not stage the build context of os/Containerfile.dev'
     podman build --jobs 4 --security-opt label=disable -f os/Containerfile.dev --target dev-packages \
       --build-arg DEV_PACKAGES_BASE=localhost/tilo-below:ci --build-arg "RPMS_REF=$RPMS_REF" \
       --build-arg "SOURCE_DATE_EPOCH=$epoch" --source-date-epoch "$epoch" --rewrite-timestamp \
-      --tag localhost/tilo-dev-packages:ci "$repo_root" 2>&1 | stamped
+      --tag localhost/tilo-dev-packages:ci "$dev_context" 2>&1 | stamped
     phase push
     built=$scratch/dev-packages-built
     python3 -I tools/ci/os/oci_layers.py export localhost/tilo-dev-packages:ci "$below/oci" "$built"

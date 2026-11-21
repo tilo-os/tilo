@@ -14,9 +14,9 @@
 #      tree compiled without it.
 #   2. rootless `podman build` of the bootc container image from os/Containerfile
 #      (os/image/'s pieces in one file), given the compiled tree as the `compiled`
-#      build context: no image build compiles. The build context is the REPO ROOT;
-#      .containerignore trims target/, os/output and .git. TILO_BUILD_CONTEXT=<dir>
-#      names another, holding only what the Containerfile reads (a layer action's).
+#      build context: no image build compiles. The build context holds only what
+#      the Containerfile reads (os/dev/build-context.py), at the build's clock;
+#      TILO_BUILD_CONTEXT=<dir> names one made already (a layer action's).
 #      With TILO_LAYER_TARGET=<stage> and TILO_CONTAINERFILE=<one piece's
 #      Containerfile>, it builds that stage alone, with TILO_LAYER_ARGS (the
 #      layers below given as images), tags it TILO_IMAGE and stops: one layer
@@ -589,6 +589,20 @@ build_image() {
       (( TILO_RAW_LAYER_EPOCH <= 253402300799 )) || die "invalid raw layer epoch"
     layer_epoch="$TILO_RAW_LAYER_EPOCH"
   fi
+  # The context of the Containerfile's own files (os/dev/build-context.py), staged once for the
+  # run: given the whole checkout, every tracked file was an input of this build, and a change to
+  # any of them — a test script, a document — built the image again. A caller that made its own
+  # (TILO_BUILD_CONTEXT, os/image/build-layer.sh) names it.
+  local context="${TILO_BUILD_CONTEXT:-}"
+  if [ -z "$context" ]; then
+    if [ -z "${_tilo_context:-}" ] || [ "$_tilo_context_epoch" != "$layer_epoch" ]; then
+      _tilo_context="$(python3 -I "$TILO_OS_DIR/dev/build-context.py" \
+        "${TILO_CONTAINERFILE:-$TILO_OS_DIR/Containerfile}" --repo "$TILO_REPO" --epoch "$layer_epoch")" \
+        || die "could not stage the build context of ${TILO_CONTAINERFILE:-$TILO_OS_DIR/Containerfile}"
+      _tilo_context_epoch=$layer_epoch
+    fi
+    context=$_tilo_context
+  fi
   podman "${_tilo_podman_args[@]}" build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "${TILO_CONTAINERFILE:-$TILO_OS_DIR/Containerfile}" "${tag_args[@]}" \
     "${_tilo_compiled_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
@@ -620,7 +634,7 @@ build_image() {
     --build-arg "TILO_CFS_DIGEST=$seal_digest" \
     --source-date-epoch "$layer_epoch" --rewrite-timestamp \
     "$@" \
-    "${TILO_BUILD_CONTEXT:-$TILO_REPO}"
+    "$context"
 }
 
 _tilo_native_builder_args=()

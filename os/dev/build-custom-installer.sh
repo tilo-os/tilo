@@ -167,8 +167,13 @@ else
     | sha256sum | cut -c1-16)"
   alongside_bootc_ref="localhost/tilo-bootc-alongside-helper:${alongside_bootc_key}"
   if ! podman image exists "$alongside_bootc_ref"; then
+    # Only the patches and the mirror script its Containerfile copies, not the whole checkout
+    # (os/dev/build-context.py): nothing else can change the bootc it builds.
+    alongside_bootc_context="$(python3 -I "$TILO_OS_DIR/dev/build-context.py" \
+      "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" --repo "$TILO_REPO" --epoch "$SOURCE_DATE_EPOCH")" \
+      || die "could not stage the build context of Containerfile.bootc-alongside-helper"
     podman build "${build_network_args[@]}" -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
-      -t "$alongside_bootc_ref" "$TILO_REPO"
+      -t "$alongside_bootc_ref" "$alongside_bootc_context"
   fi
   (
     alongside_bootc_container="$(podman create "$alongside_bootc_ref" /bootc)"

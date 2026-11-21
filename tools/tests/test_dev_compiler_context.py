@@ -23,6 +23,8 @@ class DevCompilerContextTests(unittest.TestCase):
             msg() { :; }
             podman() { printf '%s\n' "$*" >>"$LOG"; }
             cargo_build_jobs() { printf '4\n'; }
+            # The build context is os/dev/build-context.py's (its own test covers the staging).
+            stage_context() { printf '%s\n' "$CONTEXT"; }
             TILO_PODMAN_BUILD_FLAGS=(--jobs 4 --security-opt label=disable)
             _extra_build_args=(--label sh.tilo.dev.base-trust=integration)
             TILO_OS_DIR=/fixture/os
@@ -37,7 +39,8 @@ class DevCompilerContextTests(unittest.TestCase):
             """ + build
             output = Path(directory) / "output"
             env = {"PATH": os.environ["PATH"], "LOG": str(log), "TILO_COMPILED_DEV": str(compiled),
-                   "TILO_OUTPUT": str(output), **(overrides or {})}
+                   "CONTEXT": str(Path(directory) / "context"), "TILO_OUTPUT": str(output),
+                   **(overrides or {})}
             result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True)
             return result, log.read_text().splitlines() if log.exists() else [], compiled, output
 
@@ -46,6 +49,8 @@ class DevCompilerContextTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(calls), 1, calls)
         build = calls[0]
+        # The build's context is what its Containerfile copies, staged rather than the checkout.
+        self.assertEqual(build.split()[-1], str(compiled.parent / "context"), build)
         # No runtime given: an empty one, so the build fails unless the base ships one.
         self.assertIn(f"--build-context dev-env-runtime={output}/no-env-runtime", build)
         # No model catalog given: an empty one, so the base's stays.

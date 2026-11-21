@@ -222,6 +222,17 @@ fi
 dev_compile_base="$(. "$TILO_OS_DIR/base-snapshot.env" && printf '%s' "${BASE_REF:-}")"
 [ -n "$dev_compile_base" ] || die "os/base-snapshot.env pins no BASE_REF"
 
+# Each build's context holds the files its Containerfile copies and nothing else
+# (os/dev/build-context.py), dated by the build's clock: this checkout's other files — the VM
+# acceptance harness, CI scripts, the cards and docs — cannot change what the image holds, so a
+# change to one builds neither the builder nor the image again.
+stage_context() {
+  local context
+  context="$(python3 -I "$TILO_OS_DIR/dev/build-context.py" "$1" --repo "$TILO_REPO" --epoch "$SOURCE_DATE_EPOCH")" \
+    || die "could not stage the build context of $1"
+  printf '%s\n' "$context"
+}
+
 # The dev components, compiled outside the image build: os/image/compile.sh --dev in the OS
 # builder image, rootless, with cargo's home, the build directory and sccache kept under
 # os/output, so a rebuild compiles only what changed. TILO_COMPILED_DEV names a tree compiled
@@ -230,9 +241,10 @@ if [ -z "${TILO_COMPILED_DEV:-}" ]; then
   builder=localhost/tilo-os-builder:latest cache="$TILO_OUTPUT/compile-cache"
   mkdir -p "$cache/cargo-home" "$cache/dev-target" "$cache/sccache" "$TILO_OUTPUT/compiled-dev"
   "$TILO_OS_DIR/dev/cache-github-assets.sh" >/dev/null
+  builder_context=$(stage_context "$TILO_OS_DIR/Containerfile")
   podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" --target builder-base -t "$builder" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
-    --build-arg "BASE_REF=$dev_compile_base" --build-arg "RPMS_REF=$rpms_ref" "$TILO_REPO"
+    --build-arg "BASE_REF=$dev_compile_base" --build-arg "RPMS_REF=$rpms_ref" "$builder_context"
   podman run --rm --security-opt label=disable $(keep_id_args) -v "$TILO_REPO:/src" -w /src \
     -v "$cache/cargo-home:/cargo-home" -v "$cache/dev-target:/build-target" -v "$cache/sccache:/sccache" \
     -v "$TILO_OUTPUT/compiled-dev:/compiled-dev" \
@@ -276,6 +288,7 @@ fi
 
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
+dev_context=$(stage_context "$TILO_OS_DIR/Containerfile.dev")
 podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
   --build-arg "BASE_IMAGE=$base" \
   --build-arg "DEV_PACKAGES_BASE=$base" \
@@ -290,7 +303,7 @@ podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev"
   --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \
-  "$TILO_REPO"
+  "$dev_context"
 msg "built $dev_image in $(( SECONDS - dev_started ))s${base_seconds:+ (base: ${base_seconds}s)}"
 
 disk_command="TILO_IMAGE=$dev_image TILO_SKIP_BUILD=1 TILO_OUTPUT=$TILO_OUTPUT $TILO_OS_DIR/dev/build-image.sh"

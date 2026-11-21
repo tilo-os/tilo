@@ -318,33 +318,14 @@ PY
 }
 
 # The build context of NAME's Containerfile (given GIVEN), in DIR: the files it reads from the
-# tree (pieces.py inputs) and .containerignore, at their paths, and nothing else. t keys a step by
-# every file it reads, and podman given the whole checkout as its context reads more of it than
-# the pieces copy, so a change anywhere in the tree built every layer again, to the same bytes.
-# Every file is dated by the build's clock: a COPY keeps a file's time where it is older than the
-# clock, and the times t's checkout gives a file differ from one checkout to the next, so a copied
-# file would make its layer differ between builds of the same tree.
+# tree (pieces.py inputs), at their paths, and nothing else (os/dev/build-context.py). t keys a
+# step by every file it reads, and podman given the whole checkout as its context reads more of
+# it than the pieces copy, so a change anywhere in the tree built every layer again, to the same
+# bytes.
 build_context() {
   local globs
   mapfile -t globs < <(python3 -I tools/ci/os/pieces.py inputs "$1" --given "$2")
-  python3 -I - "$SOURCE_DATE_EPOCH" "$3" .containerignore "${globs[@]}" <<'PY'
-import glob, os, shutil, sys
-clock, dest = int(sys.argv[1]), sys.argv[2]
-shutil.rmtree(dest, ignore_errors=True)
-os.makedirs(dest)
-for pattern in sys.argv[3:]:
-    for path in glob.glob(pattern, recursive=True, include_hidden=True):
-        target = os.path.join(dest, path)
-        if os.path.isdir(path) and not os.path.islink(path):
-            os.makedirs(target, exist_ok=True)
-        else:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copy2(path, target, follow_symlinks=False)
-for root, dirs, files in os.walk(dest):
-    for entry in dirs + files:
-        os.utime(os.path.join(root, entry), (clock, clock), follow_symlinks=False)
-os.utime(dest, (clock, clock))
-PY
+  python3 -I os/dev/build-context.py --glob "${globs[@]}" --epoch "$SOURCE_DATE_EPOCH" --dest "$3"
 }
 
 # Build TARGET of NAME's Containerfile through build-image.sh, given GIVEN (stage names) as

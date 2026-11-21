@@ -161,7 +161,12 @@ bootc_helper() {
   ref=registry.tilo.so/tilo/bootc-install-helper:$key-$(uname -m)
   if ! podman pull -q "$ref" >/dev/null 2>&1; then
     printf 'no published %s; building it\n' "$ref" >&2
-    podman build -q -f os/Containerfile.bootc-helper -t "$ref" . >/dev/null
+    # The patches and the mirror script its Containerfile copies (os/dev/build-context.py), not
+    # the whole checkout: nothing else can change the bootc it builds.
+    context=$(python3 -I os/dev/build-context.py os/Containerfile.bootc-helper \
+      --epoch "${SOURCE_DATE_EPOCH:-0}") \
+      || die 'could not stage the build context of os/Containerfile.bootc-helper'
+    podman build -q -f os/Containerfile.bootc-helper -t "$ref" "$context" >/dev/null
   fi
   printf '%s' "$ref"
 }
