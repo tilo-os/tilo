@@ -528,54 +528,11 @@ impl StatePeer {
         if received != self.core.workspace {
             return Err("workspace topic mismatch".into());
         }
-        // The owner's devices write governance on their certificate alone:
-        // the device this replica was joined through supplies the first
-        // governance before any roster exists.
-        let member = self
-            .certificate(&source, now)
-            .map_err(|error| error.to_string())
-            .and_then(|cert| {
-                let person = cert.user_public_key;
-                let foreign = backend::member::foreign(cert, &self.core.origin);
-                if person != self.core.owner {
-                    self.role(&source, now).map_err(|error| error.to_string())?;
-                }
-                Ok(workspace::SenderAccess::Member { person, foreign })
-            });
-        // A device that is no member writes here only as one of the
-        // workspace's holders, by the address it signed.
-        let access = match member {
-            Ok(access) => access,
-            Err(error) => self
-                .holder_certificate(&source)
-                .map(|cert| workspace::SenderAccess::Holder {
-                    person: cert.user_public_key,
-                })
-                .ok_or(error)?,
-        };
+        let access = self.workspace_writer(source, now)?;
         let owner = self.core.owner;
         let administrators = self.administrator_roots();
         let from = hex::encode(source);
-        // A copy that knows its device, a member's that may write here, keeps
-        // the work delegations it holds where a base lacks them.
-        let keeper = self.own_device.filter(|device| {
-            self.certificate(device, now).is_ok_and(|cert| {
-                let access = workspace::SenderAccess::Member {
-                    person: cert.user_public_key,
-                    foreign: backend::member::foreign(cert, &self.core.origin),
-                };
-                workspace::writes_workspace(
-                    self.core.workspace_doc.as_deref(),
-                    &self.core.workspace,
-                    &workspace::Writer {
-                        key: &hex::encode(device),
-                        access,
-                    },
-                    &owner,
-                    now_ns(now),
-                )
-            })
-        });
+        let keeper = self.workspace_keeper(now);
         // The one workspace admission the shell's workspace tree runs too.
         let workspace::AdmittedWorkspace {
             mut candidate,
@@ -593,24 +550,10 @@ impl StatePeer {
             },
             workspace_changes,
         )?;
-        // What this copy's device wrote against the history the base replaced,
-        // and the base does not hold, it writes again on the base.
         if rebased
-            && let Some(device) = self.own_device
             && let Some(before) = self.core.workspace_doc.as_deref()
         {
-            let actor = self.workspace_actor_for(&device);
-            workspace::base::carried(before, &mut candidate, &actor).map_err(err)?;
-        }
-        // The copy keeps what it saw: the forms the base lacks go back into
-        // their rows as its device's own change, before anything reads the
-        // adopted document.
-        if rebased
-            && let Some(device) = keeper
-            && let Some(before) = self.core.workspace_doc.as_deref()
-        {
-            let actor = self.workspace_actor_for(&device);
-            super::work_delegations::carried(before, &mut candidate, &actor)?;
+            self.carry_over_base(before, keeper, &mut candidate)?;
         }
         // The workspace's owner is the person its governance names, not the
         // person of the device this replica was joined through: a member's
@@ -671,6 +614,85 @@ impl StatePeer {
         report.incomplete = self.incomplete_reason();
         Ok(report)
     }
+    /// What this copy's device wrote against the history the base replaced,
+    /// and the base does not hold, it writes again on the base; and the copy
+    /// keeps what it saw, the forms the base lacks going back into their rows
+    /// as the keeper's own change, before anything reads the adopted document.
+    fn carry_over_base(
+        &self,
+        before: &automerge::AutoCommit,
+        keeper: Option<[u8; 32]>,
+        candidate: &mut automerge::AutoCommit,
+    ) -> Result<(), AdmissionError> {
+        if let Some(device) = self.own_device {
+            let actor = self.workspace_actor_for(&device);
+            workspace::base::carried(before, candidate, &actor).map_err(err)?;
+        }
+        if let Some(device) = keeper {
+            let actor = self.workspace_actor_for(&device);
+            super::work_delegations::carried(before, candidate, &actor)?;
+        }
+        Ok(())
+    }
+
+    /// Who writes the workspace's changes as `source`'s device: the member it
+    /// is, else one of the workspace's holders by the address it signed.
+    ///
+    /// The owner's devices write governance on their certificate alone: the
+    /// device this replica was joined through supplies the first governance
+    /// before any roster exists.
+    fn workspace_writer(
+        &self,
+        source: [u8; 32],
+        now: SystemTime,
+    ) -> Result<workspace::SenderAccess, String> {
+        let member = self
+            .certificate(&source, now)
+            .map_err(|error| error.to_string())
+            .and_then(|cert| {
+                let person = cert.user_public_key;
+                let foreign = backend::member::foreign(cert, &self.core.origin);
+                if person != self.core.owner {
+                    self.role(&source, now).map_err(|error| error.to_string())?;
+                }
+                Ok(workspace::SenderAccess::Member { person, foreign })
+            });
+        match member {
+            Ok(access) => Ok(access),
+            Err(error) => self
+                .holder_certificate(&source)
+                .map(|cert| workspace::SenderAccess::Holder {
+                    person: cert.user_public_key,
+                })
+                .ok_or(error),
+        }
+    }
+
+    /// This copy's own device, when it knows it and it is a member whose work
+    /// writes here: such a copy keeps the work delegations it holds where a
+    /// base lacks them.
+    fn workspace_keeper(&self, now: SystemTime) -> Option<[u8; 32]> {
+        let owner = self.core.owner;
+        self.own_device.filter(|device| {
+            self.certificate(device, now).is_ok_and(|cert| {
+                let access = workspace::SenderAccess::Member {
+                    person: cert.user_public_key,
+                    foreign: backend::member::foreign(cert, &self.core.origin),
+                };
+                workspace::writes_workspace(
+                    self.core.workspace_doc.as_deref(),
+                    &self.core.workspace,
+                    &workspace::Writer {
+                        key: &hex::encode(device),
+                        access,
+                    },
+                    &owner,
+                    now_ns(now),
+                )
+            })
+        })
+    }
+
     pub(super) fn receive_document(
         &mut self,
         source: [u8; 32],
