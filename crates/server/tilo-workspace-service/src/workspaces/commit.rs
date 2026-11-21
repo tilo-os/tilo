@@ -52,6 +52,47 @@ pub(super) fn durable_messages(
         .durable_mutation_messages(peer, key, now, generation)
 }
 
+/// The records `candidate`, a change built from `peer`, changes: what its
+/// durable messages publish of a record. A base the workspace starts over
+/// from publishes these again, and keeps every other record's checkpoint.
+pub(super) fn changed_records(
+    candidate: &StatePeer,
+    peer: &StatePeer,
+    signing: (&SigningKey, SystemTime),
+    generation: u64,
+) -> Result<std::collections::BTreeSet<(String, String)>, String> {
+    Ok(
+        durable_messages(&mut candidate.clone(), peer, signing, generation)?
+            .into_iter()
+            .filter_map(|message| match message {
+                neighbour_wire::NeighbourMsg::AppDocument {
+                    app_id,
+                    document_id,
+                    ..
+                } => Some((app_id, document_id)),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Fold `record` of `app`, as a write in `candidate` left it, into the
+/// governor's checkpoint of it.
+pub(super) fn fold_into_checkpoint(
+    candidate: &mut StatePeer,
+    (app, record): (&str, &str),
+    key: &SigningKey,
+    now: SystemTime,
+) -> Result<(), String> {
+    let written = candidate
+        .document(app, record)
+        .ok_or("created record missing")?;
+    candidate
+        .publication_mut()
+        .publish_document(app, record, written, key, now)
+        .map(drop)
+}
+
 pub(super) fn publication(
     message: &neighbour_wire::NeighbourMsg,
     checkpoint: bool,

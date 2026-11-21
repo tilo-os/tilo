@@ -346,6 +346,7 @@ impl Workspaces {
         retained: Vec<crate::workspace_documents::RetainedBody>,
     ) {
         let (mut changed, mut again) = (false, false);
+        let mut windows = Vec::new();
         for retained in retained {
             let own = retained.author == self.inner.host.cert.device_public_key;
             let message = match neighbour_wire::NeighbourMsg::decode(&retained.body) {
@@ -385,6 +386,21 @@ impl Workspaces {
             // joins it, this start's replay included: a device that joins now
             // reads the history the workspace was founded with.
             self.carry_to_links(workspace.workspace(), retained.author, &message);
+            if let neighbour_wire::NeighbourMsg::SyncResp {
+                workspace: named,
+                changes,
+            } = &message
+            {
+                if named == workspace.workspace()
+                    && !super::unbuildable_windows::holds_all(
+                        workspace.peer().admitted_workspace(),
+                        changes,
+                    )
+                {
+                    windows.push((retained.author, message));
+                }
+                continue;
+            }
             let Followed {
                 changed: took,
                 replay_wanted,
@@ -407,11 +423,44 @@ impl Workspaces {
         if changed {
             workspace.keep_followed();
         }
+        self.recall_windows(workspace, windows).await;
         // What a write let go waited for landed in this replay: the server's
         // copy is read again, with what reached it since this one was read.
         // Each further replay needs something new to land, so it ends.
         if again {
             self.replay_soon(workspace.workspace().to_owned());
+        }
+    }
+
+    /// Take `windows`, members' changes to the workspace's own state the
+    /// server retains and the governor's copy lacks, into it, in the order
+    /// they were retained: a member's change the link admitted that the
+    /// server stopped before committing. The member's device holds it as the
+    /// workspace's, and builds every later change on it, never sending it
+    /// again; without it each of those is refused for history the workspace
+    /// lost, for as long as the member keeps publishing.
+    async fn recall_windows(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        windows: Vec<([u8; 32], NeighbourMsg)>,
+    ) {
+        let mut gone = std::collections::BTreeSet::new();
+        let mut taken = 0_usize;
+        for (author, message) in windows {
+            match self.take_topology(workspace, author, message, &mut gone).await {
+                Ok(true) => taken = taken.saturating_add(1),
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::debug!(workspace = %workspace.workspace(), %error, "a retained change of a member's was not taken in");
+                }
+            }
+        }
+        if taken > 0 {
+            tracing::info!(workspace = %workspace.workspace(), taken, "the governor took in members' changes it kept but had not committed");
+        }
+        if !gone.is_empty() {
+            let (workspaces, identity) = (self.clone(), workspace.workspace().to_owned());
+            tokio::spawn(async move { workspaces.retire_kept_agents(&identity, &gone).await });
         }
     }
 

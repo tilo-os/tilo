@@ -46,6 +46,17 @@ pub(super) fn missing_history(
         .count())
 }
 
+/// Whether `workspace`, the workspace's document, holds every change of
+/// `changes`. A change that does not decode is one it does not hold.
+pub(super) fn holds_all(workspace: Option<&automerge::AutoCommit>, changes: &[Vec<u8>]) -> bool {
+    workspace.is_some_and(|doc| {
+        changes.iter().all(|bytes| {
+            automerge::Change::from_bytes(bytes.clone())
+                .is_ok_and(|change| doc.has_change(&change.hash()))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use automerge::transaction::Transactable as _;

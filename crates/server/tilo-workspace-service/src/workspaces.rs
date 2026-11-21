@@ -780,18 +780,7 @@ impl GovernedWorkspace {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
-            let changed_documents =
-                durable_messages(&mut candidate.clone(), replica, (key, now), generation)?
-                    .into_iter()
-                    .filter_map(|message| match message {
-                        neighbour_wire::NeighbourMsg::AppDocument {
-                            app_id,
-                            document_id,
-                            ..
-                        } => Some((app_id, document_id)),
-                        _ => None,
-                    })
-                    .collect::<std::collections::BTreeSet<_>>();
+            let changed_documents = changed_records(&candidate, replica, (key, now), generation)?;
             // The workspace's document starts over from a base holding its
             // state as it stands, with none of the history that led there.
             if adopted {
@@ -899,7 +888,10 @@ impl GovernedWorkspace {
     }
 }
 
-use commit::{durable_messages, prepare_governance, publication, select_exact_admission};
+use commit::{
+    changed_records, durable_messages, fold_into_checkpoint, prepare_governance, publication,
+    select_exact_admission,
+};
 
 /// The extension of the marker beside a workspace file this host released.
 const RELEASED: &str = "released";
@@ -2301,11 +2293,9 @@ impl Workspaces {
         let whole = envelope.is_whole_resource();
         // A record that needs keys of its own is founded under them: even its
         // empty base is not written in the clear.
-        let founding_keys = if !whole
-            && workspace
-                .peer()
-                .requires_document_keys(&app_id, &document_id, now)?
-        {
+        let needs_keys = !whole
+            && workspace.peer().requires_document_keys(&app_id, &document_id, now)?;
+        let founding_keys = if needs_keys {
             self.sealing_keys(&workspace, &app_id, &document_id).await?
         } else {
             None
@@ -2334,16 +2324,7 @@ impl Workspaces {
                 // A sealed write stays in the record's sealed history; a
                 // readable one is folded into the governor's checkpoint.
                 if !sealed {
-                    let written = candidate
-                        .document(&app_id, &document_id)
-                        .ok_or("created record missing")?;
-                    candidate.publication_mut().publish_document(
-                        &app_id,
-                        &document_id,
-                        written,
-                        &host.key,
-                        now,
-                    )?;
+                    fold_into_checkpoint(candidate, (&app_id, &document_id), &host.key, now)?;
                 }
                 Ok(((), true))
             },
@@ -2457,6 +2438,13 @@ impl Workspaces {
             }
         }
         let now = tilo_clock::wall();
+        // What the workspace's link admitted is in the replica before it comes
+        // here, and is on disk only once the governor commits it: a change
+        // already taken in that no commit carries yet is committed now. Left
+        // for whichever change came next, a restart before that dropped it,
+        // and every later change of its member built on a change the
+        // workspace no longer had.
+        let uncommitted = workspace.peer().workspace_heads() != workspace.published_heads;
         let removed = std::cell::RefCell::new(std::collections::BTreeSet::new());
         let mut author_person = None;
         let changed = workspace.change_held(
@@ -2466,7 +2454,7 @@ impl Workspaces {
                 let outcome = candidate
                     .receive_from(TransportOrigin::RetainedServerDelta(author), message, now)
                     .map_err(|error| error.to_string())?;
-                if !outcome.changed {
+                if !outcome.changed && !uncommitted {
                     return Ok((false, false));
                 }
                 // A member removed takes every way in the workspace handed them
