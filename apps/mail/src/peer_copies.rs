@@ -5,7 +5,35 @@
 use ui::framework::WorkspaceResource;
 
 use super::MailApp;
+use crate::copies::Converted;
 use crate::model::Message;
+
+/// How long a window first waits before it looks again at earlier records still arriving; each
+/// look after doubles it, up to [`EARLIER_AT_MOST`].
+const EARLIER_AGAIN: ui::time::Duration = ui::time::Duration::from_secs(5);
+const EARLIER_AT_MOST: ui::time::Duration = ui::time::Duration::from_secs(300);
+
+/// What a window took of a member's earlier saved mail and trusted senders, from before the
+/// workspace kept one of each for all its members.
+#[derive(Debug, Default)]
+pub(crate) struct Earlier {
+    copies: Option<Converted>,
+    trust: Option<Converted>,
+    /// When to look again at what is still arriving, and how long after that the next look is.
+    again: Option<(ui::time::Instant, ui::time::Duration)>,
+}
+
+impl Earlier {
+    fn pending(state: Option<Converted>) -> bool {
+        matches!(state, None | Some(Converted::Later))
+    }
+
+    /// Look again at the next pass, as the wait running out does.
+    #[cfg(test)]
+    pub(crate) fn look_again(&mut self) {
+        self.again = None;
+    }
+}
 
 impl MailApp {
     pub(crate) fn open_peer_copies(&mut self) {
@@ -18,6 +46,37 @@ impl MailApp {
         {
             self.share_copies(record, content);
         }
+    }
+
+    /// Take the member's earlier saved mail and trusted senders into the workspace's records as
+    /// the window opens: what one person's devices kept is the workspace's now. Looked at again
+    /// while some of it is still arriving; a member the workspace does not let change them leaves
+    /// theirs for nobody, and their window reads the workspace's.
+    pub(crate) fn convert_earlier_records(&mut self) {
+        let earlier = &mut self.earlier;
+        if !Earlier::pending(earlier.copies) && !Earlier::pending(earlier.trust) {
+            return;
+        }
+        let now = ui::time::now();
+        if earlier.again.is_some_and(|(again, _)| now < again) {
+            return;
+        }
+        if Earlier::pending(earlier.copies)
+            && let Some(opener) = &self.copies_opener
+        {
+            earlier.copies = Some(crate::copies::convert_earlier(opener));
+        }
+        let trust = self.shared.borrow().sender_trust.clone();
+        if Earlier::pending(earlier.trust)
+            && let Some(opener) = &trust
+        {
+            earlier.trust = Some(crate::trusted_senders::convert_earlier(opener));
+            self.shared.borrow_mut().sync_trusted_senders();
+        }
+        let wait = earlier
+            .again
+            .map_or(EARLIER_AGAIN, |(_, wait)| (wait * 2).min(EARLIER_AT_MOST));
+        earlier.again = Some((now + wait, wait));
     }
 
     pub(crate) fn share_copies(
@@ -165,7 +224,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
     }
 
     #[test]
-    fn importing_saved_mail_reads_the_previous_record_and_reseals_its_content() {
+    fn a_window_takes_earlier_saved_mail_into_the_workspace_and_reseals_its_content() {
         use crate::copies::{DOCUMENT, MailCopies, NewCopy, kept};
 
         let person = "a9".repeat(32);
@@ -193,10 +252,17 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             }))
             .unwrap();
 
-        let import = crate::actions::MailEffect::ImportSavedCopies;
-        let first = host.effect_confirmed(&import).unwrap().value.unwrap();
-        assert_eq!(first["imported"], 1);
+        // The window looks as it opens, and again while what it looks for
+        // is still arriving: the earlier record came after it opened.
+        assert!(current.get().copies.is_empty());
+        let look_again = |host: &mut ui::framework::testing::TestApp<crate::MailShell>| {
+            host.with_widget::<MailApp, _>(|mail| mail.earlier.look_again())
+                .unwrap();
+            host.settle();
+        };
+        look_again(&mut host);
         let state = current.get();
+        assert_eq!(state.copies.len(), 1, "the earlier copy is the workspace's");
         let copy = state.copy(account, message.id).unwrap();
         assert!(tilo_content::is_sealed(&copy.content));
         assert_ne!(copy.content, reference);
@@ -215,9 +281,14 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             current.record().content().unwrap().read(&copy.content),
             Some(bytes)
         );
+        // Looked at again, the earlier record adds nothing: it is only read,
+        // and what the workspace holds is not taken twice.
+        look_again(&mut host);
+        assert_eq!(current.get().copies.len(), 1);
         assert_eq!(
-            host.effect_confirmed(&import).unwrap().value.unwrap()["imported"],
-            0
+            previous.get().copies.len(),
+            1,
+            "the earlier record is left as it was"
         );
     }
 
@@ -252,7 +323,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             Grantee::person(person.as_str()),
         ));
         second_host.set_permissions(ui::permissions::PermissionContext::from_access(
-            MemberAccess::person(policy, reader.as_str()),
+            MemberAccess::person(policy.clone(), reader.as_str()),
         ));
         let first_resource = first_host
             .shared_resource::<crate::copies::MailCopies>(ui::apps::MAIL, crate::copies::DOCUMENT)
@@ -446,7 +517,22 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
                 ..
             }
         ));
-        second_host.set_role(ui::permissions::Role::Viewer);
+        // The owner closes the fetched mail to the reader, with a grant
+        // that denies it: a role alone reads the workspace's mail.
+        let mut closed = policy.clone();
+        closed.grants.push(Grant::new(
+            "close-fetched-mail",
+            Grantee::person(reader.as_str()),
+            TreePath::workspace(workspace)
+                .app(ui::apps::MAIL)
+                .resource(crate::copies::DOCUMENT),
+            KindSet::READ,
+            Answer::Deny,
+            Grantee::person(person.as_str()),
+        ));
+        second_host.set_permissions(ui::permissions::PermissionContext::from_access(
+            MemberAccess::person(closed, reader.as_str()),
+        ));
         assert!(!second.shared.borrow().may_read_message(old.id));
         second.take_peer_copies();
         assert!(second.shared.borrow().mailbox.get(old.id).is_none());

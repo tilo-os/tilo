@@ -229,68 +229,97 @@ impl MailCopies {
     }
 }
 
-/// Transfer copies from the current member's previous record through the
-/// workspace content store, which seals them for the workspace route.
-pub(crate) fn import_legacy(
-    opener: &ui::framework::ResourceOpener<MailCopies>,
-) -> Result<serde_json::Value, String> {
-    let workspace = opener.open(DOCUMENT).ok_or("workspace mail is arriving")?;
-    if !workspace.may_read() || !workspace.may("import-copies") {
-        return Err("the workspace must grant permission to import saved mail".into());
-    }
-    let Some((_, legacy, source)) = opener.legacy_member_content()? else {
-        return Ok(serde_json::json!({ "imported": 0, "waiting": 0 }));
+/// How far a member's earlier record has been taken into the workspace's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Converted {
+    /// Everything it held is in the workspace's record, or it held nothing.
+    Done,
+    /// The workspace's record, or content the earlier one names, is still
+    /// arriving: looked at again later.
+    Later,
+    /// The workspace does not let this member change its record: whoever
+    /// may takes their own in.
+    NotGranted,
+}
+
+/// Take the mail a member's devices kept before Mail kept it for the workspace into the
+/// workspace's copies, through the workspace content store, which seals it for the workspace
+/// route. The earlier record is only read; a message the workspace holds or its server removed
+/// is not taken again.
+pub(crate) fn convert_earlier(opener: &ui::framework::ResourceOpener<MailCopies>) -> Converted {
+    let Some(workspace) = opener.open(DOCUMENT) else {
+        return Converted::Later;
     };
-    let content = workspace
-        .record()
-        .content()
-        .ok_or("the workspace has no mail content store")?;
+    if !workspace.may_read() || !workspace.may("import-copies") {
+        return Converted::NotGranted;
+    }
+    let (legacy, source) = match opener.legacy_member_content() {
+        Ok(Some((_, legacy, source))) => (legacy, source),
+        // None on this device, or not here yet: a device that kept none
+        // looks again now and then, as it costs a look in its store.
+        Ok(None) => return Converted::Later,
+        Err(error) => {
+            tracing::warn!(%error, "mail: the earlier saved mail does not read");
+            return Converted::Done;
+        }
+    };
+    let Some(content) = workspace.record().content() else {
+        return Converted::Later;
+    };
     let current = workspace.get();
     let mut copies = Vec::new();
-    let mut waiting = 0;
-    let mut unavailable = 0;
+    let mut waiting = false;
+    let mut asked = 0;
     for (key, copy) in legacy.copies.iter() {
         let Some(id) = message_id(key) else {
-            unavailable += 1;
             continue;
         };
         let key = copy_key(&copy.account, &id.to_string());
         if current.copies.contains(&key) || current.removed.contains(&key.to_string()) {
             continue;
         }
-        if waiting >= MAX_ASKED || copies.len() >= MAX_ASKED {
-            waiting += 1;
-            continue;
+        if copies.len() >= MAX_ASKED || asked >= MAX_ASKED {
+            waiting = true;
+            break;
         }
         let Some(bytes) = source.read(&copy.content) else {
-            if source.state(&copy.content) == ContentState::Unavailable {
-                unavailable += 1;
-            } else {
-                waiting += 1;
+            if source.state(&copy.content) != ContentState::Unavailable {
+                asked += 1;
+                waiting = true;
             }
             continue;
         };
         if bytes.len() > MAX_COPY_BYTES || copy.message(id, &bytes).is_none() {
-            unavailable += 1;
             continue;
         }
-        copies.push(NewCopy {
-            id: id.to_string(),
-            account: copy.account.clone(),
-            content: content.put(&bytes).map_err(|error| error.to_string())?,
-            minutes: copy.minutes,
-            folder: copy.folder,
-            uid: copy.uid,
-            uid_validity: copy.uid_validity,
-        });
+        match content.put(&bytes) {
+            Ok(reference) => copies.push(NewCopy {
+                id: id.to_string(),
+                account: copy.account.clone(),
+                content: reference,
+                minutes: copy.minutes,
+                folder: copy.folder,
+                uid: copy.uid,
+                uid_validity: copy.uid_validity,
+            }),
+            Err(error) => {
+                tracing::warn!(%error, "mail: an earlier saved message could not be sealed");
+                waiting = true;
+            }
+        }
     }
-    let imported = copies.len();
-    if imported != 0 {
-        workspace
-            .invoke(&MailCopies::IMPORT_COPIES.with(kept::ImportCopies { copies }))
-            .map_err(|error| error.to_string())?;
+    if !copies.is_empty()
+        && let Err(error) =
+            workspace.invoke(&MailCopies::IMPORT_COPIES.with(kept::ImportCopies { copies }))
+    {
+        tracing::warn!(%error, "mail: the earlier saved mail could not be taken in");
+        return Converted::Later;
     }
-    Ok(serde_json::json!({ "imported": imported, "waiting": waiting, "unavailable": unavailable }))
+    if waiting {
+        Converted::Later
+    } else {
+        Converted::Done
+    }
 }
 
 /// A window's connection to fetched copies in the workspace.

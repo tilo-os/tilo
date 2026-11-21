@@ -156,17 +156,6 @@ kind = "read"
 operation = "view"
 [[offers]]
 resource = "mail.mailbox"
-action = "import-sender-trust"
-label = "Import previous sender trust into this workspace"
-confirm = true
-[[offers]]
-resource = "mail.mailbox"
-action = "import-saved-copies"
-label = "Import saved mail"
-kind = "outside"
-confirm = true
-[[offers]]
-resource = "mail.mailbox"
 action = "import-mailbox"
 label = "Import previous mailbox"
 kind = "outside"

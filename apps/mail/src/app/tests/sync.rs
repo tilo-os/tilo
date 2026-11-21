@@ -436,7 +436,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase previous_sender_trust_is_imported_into_the_workspace;
+    phase earlier_sender_trust_becomes_the_workspaces_as_mail_opens;
     {
         use crate::trusted_senders::{DOCUMENT, TrustedSenders};
 
@@ -446,19 +446,30 @@ tilo_test_env::scenario! {
         legacy
             .invoke(&TrustedSenders::TRUST.with("lena@fischer.example".to_owned()))
             .unwrap();
+        legacy
+            .invoke(&TrustedSenders::TRUST.with("max@fischer.example".to_owned()))
+            .unwrap();
+        record.invoke(&TrustedSenders::DISTRUST.with("max@fischer.example".to_owned())).unwrap();
         assert!(record.get().addresses().is_empty());
-        host.effect_confirmed(&crate::actions::MailEffect::ImportSenderTrust).unwrap();
+        let look_again = |host: &mut ui::framework::testing::TestApp<crate::resource::MailShell>| {
+            host.with_widget::<MailApp, _>(|mail| mail.earlier.look_again()).unwrap();
+            host.settle();
+        };
+        look_again(&mut host);
         assert!(
-            host.with_widget::<MailApp, _>(|mail| mail.shared.borrow().sender_trusted("lena@fischer.example")).unwrap()
+            host.with_widget::<MailApp, _>(|mail| mail.shared.borrow().sender_trusted("lena@fischer.example")).unwrap(),
+            "a sender trusted before is trusted in the workspace's list"
+        );
+        assert_eq!(
+            record.get().addresses(),
+            ["lena@fischer.example".to_owned()].into(),
+            "one the workspace distrusted since stays distrusted"
         );
 
         record.invoke(&TrustedSenders::DISTRUST.with("lena@fischer.example".to_owned())).unwrap();
-        host.effect_confirmed(&crate::actions::MailEffect::ImportSenderTrust).unwrap();
-        assert!(record.get().addresses().is_empty());
-        assert!(legacy.get().addresses().contains("lena@fischer.example"));
-        host.set_role(ui::permissions::Role::Viewer);
-        assert!(!record.may_read());
-        assert!(host.effect_confirmed(&crate::actions::MailEffect::ImportSenderTrust).is_err());
+        look_again(&mut host);
+        assert!(record.get().addresses().is_empty(), "the workspace's decision stands");
+        assert!(legacy.get().addresses().contains("lena@fischer.example"), "the earlier list is only read");
     }
 }
 #[cfg(feature = "live")]

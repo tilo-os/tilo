@@ -188,23 +188,6 @@ pub enum MailEffect {
     /// later. Changes sender trust for the workspace.
     #[effect(kind = "undoable", row, on = MessageItem)]
     AlwaysLoadRemoteContent { message: String },
-    /// Import sender trust from the member's previous Mail preferences.
-    #[effect(
-        kind = "undoable",
-        attended,
-        privileged,
-        label = "mail-import-sender-trust"
-    )]
-    ImportSenderTrust,
-    /// Import saved mail from the member's previous Mail storage.
-    #[effect(
-        kind = "outside",
-        attended,
-        privileged,
-        returns,
-        label = "mail-import-saved-copies"
-    )]
-    ImportSavedCopies,
     /// Import folders, drafts and unsent messages from the previous mailbox.
     #[effect(
         kind = "outside",

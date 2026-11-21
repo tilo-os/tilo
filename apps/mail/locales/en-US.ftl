@@ -194,7 +194,6 @@ mail-status-deleted = { $count ->
    *[other] Deleted { $count } messages
 }
 mail-status-trusted-senders-not-saved = Couldn’t save workspace sender trust: { $error }
-mail-import-sender-trust = Import previous sender trust into this workspace
 mail-trusted-senders-import-legacy = Import previous sender trust
 mail-status-account-not-saved = Selected account, but could not save that preference: { $error }
 mail-status-purged = { $count ->
@@ -371,7 +370,6 @@ mail-attachment-unknown-message = That message is no longer in this mailbox
 mail-attachment-not-loaded = That attachment is no longer in this mailbox
 mail-attachment-not-kept = { $file } is no longer kept on this device
 mail-attachment-changed = That attachment changed since it was downloaded
-mail-import-saved-copies = Import saved mail
 mail-import-mailbox = Import previous mailbox
 mail-mailbox-import-mailbox-entries = Import previous mailbox
 mail-workspace-access-denied = Your role does not grant access to this workspace’s mail

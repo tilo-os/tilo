@@ -267,6 +267,9 @@ pub struct MailApp {
     kept_loaded: std::collections::HashSet<String>,
     copies: Option<crate::copies::Copies>,
     copies_opener: Option<ui::framework::ResourceOpener<crate::copies::MailCopies>>,
+    /// How far this window took the member's earlier saved mail and trusted
+    /// senders into the workspace's records.
+    earlier: peer_copies::Earlier,
     activations: Arc<std::sync::Mutex<Vec<String>>>,
     notifier: Option<Arc<dyn ui::notify::Notifier>>,
 
@@ -646,6 +649,7 @@ impl MailApp {
             kept_registered: true,
             copies: None,
             copies_opener: None,
+            earlier: peer_copies::Earlier::default(),
             kept_loaded: std::collections::HashSet::new(),
             activations: Arc::default(),
             notifier: None,
@@ -3858,6 +3862,7 @@ impl Widget for MailApp {
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
         self.open_peer_copies();
+        self.convert_earlier_records();
         self.take_peer_copies();
         let opens = std::mem::take(&mut *self.opens.borrow_mut());
         for target in opens {
@@ -4551,12 +4556,6 @@ impl Mailroom {
                 Err("messages are imported in a live workspace".into())
             }
             MailEffect::ImportMailbox => Err("a mailbox is imported in a live workspace".into()),
-            MailEffect::ImportSavedCopies => {
-                Err("saved mail is imported in a live workspace".into())
-            }
-            MailEffect::ImportSenderTrust => {
-                Err("sender trust is imported in a live workspace".into())
-            }
             effect @ (MailEffect::LoadRemoteContent { .. }
             | MailEffect::AlwaysLoadRemoteContent { .. }
             | MailEffect::OpenLink { .. }) => self.reader_effect(effect).map(|()| done),

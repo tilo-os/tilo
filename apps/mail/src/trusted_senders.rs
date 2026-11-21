@@ -3,6 +3,8 @@
 use std::collections::BTreeSet;
 
 use ui::framework::ResourceOpener;
+
+use crate::copies::Converted;
 use ui::prelude::{Model, resource, tilo_resource};
 use ui::tilo_resource::Set;
 
@@ -73,21 +75,40 @@ impl TrustedSenders {
     }
 }
 
-/// Import reads the old member record only when the member asks to share its list.
-pub(crate) fn import_legacy(opener: &ResourceOpener<TrustedSenders>) -> Result<(), String> {
-    let target = opener
-        .open(DOCUMENT)
-        .filter(|record| record.may_read() && record.may("import-legacy"))
-        .ok_or("the workspace does not grant sender trust changes")?;
-    if let Some(legacy) = opener.legacy_member_state()? {
-        target
-            .invoke(
-                &TrustedSenders::IMPORT_LEGACY
-                    .with(legacy.addresses().into_iter().collect::<Vec<_>>()),
-            )
-            .map_err(|error| error.to_string())?;
+/// Take the senders a member trusted before Mail kept one list for the workspace into the
+/// workspace's list, keeping what the workspace decided since: a sender distrusted there stays
+/// distrusted. The earlier list is only read, and taking it again adds nothing.
+pub(crate) fn convert_earlier(opener: &ResourceOpener<TrustedSenders>) -> Converted {
+    let Some(target) = opener.open(DOCUMENT) else {
+        return Converted::Later;
+    };
+    if !target.may_read() || !target.may("import-legacy") {
+        return Converted::NotGranted;
     }
-    Ok(())
+    let earlier = match opener.legacy_member_state() {
+        Ok(Some(earlier)) => earlier,
+        Ok(None) => return Converted::Later,
+        Err(error) => {
+            tracing::warn!(%error, "mail: the earlier trusted senders do not read");
+            return Converted::Done;
+        }
+    };
+    let senders: Vec<String> = earlier
+        .addresses()
+        .into_iter()
+        .filter(|sender| {
+            target
+                .try_get()
+                .is_none_or(|now| !now.senders.contains(sender) && !now.distrusted.contains(sender))
+        })
+        .collect();
+    if !senders.is_empty()
+        && let Err(error) = target.invoke(&TrustedSenders::IMPORT_LEGACY.with(senders))
+    {
+        tracing::warn!(%error, "mail: the earlier trusted senders could not be taken in");
+        return Converted::Later;
+    }
+    Converted::Done
 }
 
 #[cfg(test)]

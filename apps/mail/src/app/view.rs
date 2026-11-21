@@ -179,20 +179,6 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
             .is_some_and(ui::resource::DocumentId::is_package_primary);
         let import_chain = cx.chain::<MessageStates>();
         cx.effects(move |effect: MailEffect, cx| {
-            if matches!(effect, MailEffect::ImportSenderTrust) {
-                if !import {
-                    return Err("sender trust is imported in a live workspace".into());
-                }
-                crate::trusted_senders::import_legacy(&trust)?;
-                return Ok(Effected::done());
-            }
-            if matches!(effect, MailEffect::ImportSavedCopies) {
-                if !import {
-                    return Err("saved mail is imported in a live workspace".into());
-                }
-                let result = crate::copies::import_legacy(&saved_copies)?;
-                return Ok(Effected::value(result));
-            }
             if matches!(effect, MailEffect::ImportMailbox) {
                 if !import || !workspace_mailbox {
                     return Err("a mailbox is imported from its workspace mailbox window".into());

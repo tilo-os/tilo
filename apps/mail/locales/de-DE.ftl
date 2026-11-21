@@ -191,7 +191,6 @@ mail-status-deleted = { $count ->
    *[other] { $count } Nachrichten gelöscht
 }
 mail-status-trusted-senders-not-saved = Die vertrauenswürdigen Absender des Arbeitsbereichs ließen sich nicht speichern: { $error }
-mail-import-sender-trust = Bisherige vertrauenswürdige Absender in diesen Arbeitsbereich importieren
 mail-trusted-senders-import-legacy = Bisherige vertrauenswürdige Absender importieren
 mail-status-account-not-saved = Konto ausgewählt, aber die Einstellung ließ sich nicht speichern: { $error }
 mail-status-purged = { $count ->
@@ -368,7 +367,6 @@ mail-attachment-unknown-message = Diese Nachricht ist nicht mehr in diesem Postf
 mail-attachment-not-loaded = Dieser Anhang ist nicht mehr in diesem Postfach
 mail-attachment-not-kept = { $file } wird auf diesem Gerät nicht mehr aufbewahrt
 mail-attachment-changed = Dieser Anhang hat sich seit dem Herunterladen geändert
-mail-import-saved-copies = Gespeicherte E-Mails importieren
 mail-import-mailbox = Früheres Postfach importieren
 mail-mailbox-import-mailbox-entries = Früheres Postfach importieren
 mail-workspace-access-denied = Deine Rolle erlaubt keinen Zugriff auf die E-Mails dieses Arbeitsbereichs
