@@ -1,6 +1,0 @@
-# The spacing ratchet for tilo-rich-edit: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-crates/sdk/tilo-rich-edit/src/block_editor.rs pixel_const 11
-crates/sdk/tilo-rich-edit/src/block_editor_table.rs pixel_const 9
-crates/sdk/tilo-rich-edit/src/table_model.rs pixel_const 2

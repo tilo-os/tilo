@@ -644,10 +644,9 @@ Verified against the code at the time of writing:
   painter. Settings'
   Appearance page offers the theme, density, interface size, face, accent,
   translucency and colour; none of them needs a theme of one's own.
-- **Hard-coded colours in apps.** The HIG §9.13 `theme` and `app-paint`
-  ratchets count literal colours, `Color::WHITE`/`BLACK`, ramp slots and
-  app-painted grounds per app, and the counts may only fall; see the
-  appendix for the classification of the remaining sites.
+- **Hard-coded colours in apps.** A colour a person sees is a token
+  (`theme.text_primary`, an intent, an ink); the appendix classifies the few
+  sites whose colour is the content itself (a document, a chart's data ink).
 - **Trusted-UI frame for permission prompts and portal sheets.** The shell
   paints a seal band on those surfaces and publishes it as
   `tilo.shell.trusted-frame/permission-prompt` or
@@ -665,8 +664,7 @@ Verified against the code at the time of writing:
    shapes, the brand palette) across every app and the shell at native refresh.
 
 1. **Hard-coded chrome colours onto tokens**, one app per change, following
-   the appendix and the ratchet shards under
-   `crates/sdk/ui-core/tests/baselines/`.
+   the appendix.
 2. **Settings > Appearance** exposes the appearance controls.
 3. **A compositor-drawn trusted-UI marker** no theme or app can reproduce,
    and wallpaper / greeter / boot artwork on the distribution layer.

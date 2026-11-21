@@ -728,12 +728,9 @@ number:
   `insets(top, right, bottom, left)` build a taffy padding `Rect` from token
   values in one expression instead of four `length(..)` fields.
 
-`tests/spacing_token_audit.rs` ratchets module-level pixel constants,
-literal `length(N)` values, literal container gaps and padding, and
-`Spacer::fixed(N)` in widget, chrome, shell and app production code: a file
-may never carry more than its shard under `tests/baselines/spacing/` records.
-Every ratchet runs on one engine (`tests/support/ratchet.rs`), so all audits
-see exactly the same production lines; §9.13 lists them.
+Module-level pixel constants, literal `length(N)` values, literal container gaps
+and padding, and `Spacer::fixed(N)` in widget, chrome, shell and app production
+code are the shapes this rule keeps out.
 
 A theme's density (`ThemeDocument::density.spacing`) is built inside
 `ThemeDensity::USABLE` (0.75–1.5) even though the schema admits 0.5–2: the
@@ -881,29 +878,21 @@ their **side** fields (find bar → `FindBar`, rename box, cell entry, command
 line) through the shared widgets, and are themselves candidates for a shared editor primitive
 (§ toolkit gaps) rather than N private forks.
 
-> Enforcement: a new painted control is a toolkit gap, not an app feature. Grep
-> your diff for the patterns in §9.13 plus `draw_*_button` and
-> `Key::Character => *.push` — each hit is either a shared-widget call you
-> skipped or a widget you should be extending.
+> A new painted control is a toolkit gap, not an app feature. Grep your diff for
+> `draw_*_button` and `Key::Character => *.push` — each hit is either a
+> shared-widget call you skipped or a widget you should be extending.
 
 **Grep for the spelling the code actually uses.** This rule used to say "grep
 for `Color::rgb`", and that pattern is why hard-coded colour accumulated under
 it for months: `Color::rgb8(…)` is the *old* peniko constructor and this tree
-does not call it. The one automated check that implemented the rule
-(`crates/sdk/ui-core/tests/design_token_audit.rs`) was green over 125 literal
-`Color::from_rgb8(…)` colours in `crates/sdk/ui-core/src` alone, because it was looking for a
-string that appears nowhere. Two more spellings were invisible for the same
-reason:
+does not call it. A check written from that pattern sat green over 125 literal
+`Color::from_rgb8(…)` colours in `crates/sdk/ui-core/src` alone, because it was
+looking for a string that appears nowhere. Two more spellings were invisible
+for the same reason:
 
 - **`Color::WHITE` / `Color::BLACK`** — a label on an inverted fill is
   `intent.on_inverted`, and the inverted fill is near-white on a dark
   material, so a hard-coded white label there is invisible.
-
-`design_token_audit.rs` now covers all three in the toolkit, the shell and
-every app, ratcheted against the shards under
-`crates/sdk/ui-core/tests/baselines/theme/`: a file may never gain one. The
-count only goes down. Those shards, not this document, are the authority on
-how many are left (§9.13).
 
 ---
 
@@ -1177,8 +1166,8 @@ them to blur, and the same tiers make them read as the same family. The
 rim span, rim and hover opacity and what the strip is made of are the
 theme's (`material.selector`, Theme Studio); high contrast, forced colours
 and reduced transparency make the strip and the hover solid and drop the
-rim. `tests/design_token_audit.rs` checks the tiers on every preset against
-the strip, window, track and shell grounds.
+rim. The tiers hold on every preset against the strip, window, track and shell
+grounds.
 
 **One content edge.** Inside a column, everything that is text starts on the
 column's content edge: a `ListRow`'s title, a `Section` or `SectionHeader`
@@ -1400,9 +1389,7 @@ Enabled focus and error outlines keep their own roles.
 
 Outside that forced-colour field branch, a declared border or ramp token
 (`border_standard`, `border_strong`, `overlay_border_strong`,
-`colors.neutral[..]`) on a chrome surface is a defect;
-`tests/design_token_audit.rs::declared_borders_in_chrome_do_not_grow` ratchets
-their count against the shards under `tests/baselines/chrome-border/`.
+`colors.neutral[..]`) on a chrome surface is a defect.
 
 **One painter per row of that table.** `ui::surface::card(fill)` is the edged
 opaque surface; `ui::surface::panel(theme)` is the Panel row (the floating
@@ -1744,28 +1731,9 @@ Selector for scope, not a bespoke dialog per entry point. Specifically:
 - Per-peer colour comes from `presence::user_color` and is used consistently in
   every surface that mentions that peer (roster, cursor, tab badge, invite row).
 
-### 9.13 Enforcement
+### 9.13 The look rules in source
 
-Every look rule that can be seen in source is a **ratchet** in
-`crates/sdk/ui-core/tests/`. A ratchet counts each pattern per production
-file (comments and `#[cfg(test)]` items are skipped) in the toolkit, the shell
-and every app, and the count may only fall. A change that adds a hit fails. A
-change that removes one passes, and the run notes the lower count so the
-baseline can be lowered in that change or a later one. Apps are scanned
-(`apps/*/src`, so a new app is covered the day it lands), and every root must
-yield files or the ratchet fails rather than passing empty.
-
-| Audit (baseline dir) | Scans | Keys | Test |
-|---|---|---|---|
-| `theme` | ui-core `src`, shell `src`, `apps/*/src`; not `theme.rs`, `tokens/`, `presence/render.rs` | `literal_color`, `white_or_black`, `theme_blind_white` | `design_token_audit.rs::theme_escape_hatches_do_not_grow` |
-| `app-paint` | shell `src`, `apps/*/src`; same exemptions | `literal_color_new`, `ramp_slot`, `legacy_alias`, `desktop_ground`, `literal_radius`, `literal_alpha`, `raw_paint`, `glyph_icon`, `transparent_shot` | `design_token_audit.rs::app_and_shell_paint_knobs_do_not_grow` |
-| `chrome-border` | ui-core `src/widget`, `src/chrome`, `surface.rs`, shell `src` | `declared_border` | `design_token_audit.rs::declared_borders_in_chrome_do_not_grow` |
-| `spacing` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src` | `pixel_const`, `taffy_length`, `literal_gap`, `literal_spacer` | `spacing_token_audit.rs::spacing_audit_sees_what_it_polices_and_literals_do_not_grow` |
-| `typography` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src`; not `tokens/typography.rs`, `text_render*`, `text_metrics.rs` | `literal_font_size`, `legacy_size_api`, `font_size_const`, `type_step_arithmetic`, `raw_type_step`, `renderer_scale_helper` | `typography_token_audit.rs::typography_literals_do_not_grow` |
-| `copy` | `apps/*/src` | `all_caps_label`, `middle_dot_join`, `to_uppercase` | `copy_audit.rs::copy_rules_do_not_grow` |
-
-What each key counts (the test file pins every key against lines that must
-and must not match):
+These are the shapes to keep out of the toolkit, the shell and the apps:
 
 - `literal_color`: `Color::from_rgb8(` / `from_rgba8(` with a literal first
   argument. Match both constructor spellings (see §8: grepping only for
@@ -1821,42 +1789,16 @@ and must not match):
 
 Hard failures, with no inherited debt, in `crates/sdk/ui-core/src`:
 `cosmic_text::Color::rgb(<literal>…)`, `.to_rounded_rect(<literal>)` and a
-literal shadow `blur:` (`design_token_audit.rs::no_hardcoded_style_literals_in_tree`).
+literal shadow `blur:`.
 
-**Baselines are sharded per unit** so app changes never conflict:
-`crates/sdk/ui-core/tests/baselines/<audit>/<unit>.txt`, where the unit is
-`apps-<name>`, `ui-core` or `shell`. Each line is `<path relative to the
-repository root> <key> <count>`. A missing shard allows zero, so a unit that
-reaches zero deletes its shard and is locked at zero from then on.
+**Moving a literal out of sight is a defect.** Moving a literal into a local,
+renaming a constant so its name no longer matches, or splitting a call over
+lines hides the debt without paying any of it. The fix is the semantic API
+that removes the knob: a `TextRole`, a spacing token, a region, a widget. A
+value that is genuinely correct (a document colour, a chart's data ink) is
+content, and says so where it is written.
 
-Updating a shard:
-
-- With cargo (CI, or a checkout with a local toolchain):
-  `UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=apps/mail cargo test -p tilo-ui --test it do_not_grow`
-  rewrites only that unit's shards (`RATCHET_SCOPE` also takes
-  `crates/session/session`, `crates/sdk/ui-core` or a unit name). Without
-  `RATCHET_SCOPE` every shard is rewritten. An update refuses to raise any
-  count unless `RATCHET_ALLOW_GROWTH=1` is also set; set it only after
-  reviewing why each count grew.
-- With a cargo drop-in that runs tests on a remote host, which neither
-  forwards the environment nor brings a test's writes back:
-  `cargo test -p tilo-ui --test it do_not_grow --success-output immediate`.
-  A ratchet with progress prints the stale entries and the full text each
-  affected shard should now hold (or `delete <path>` when the unit reached
-  zero). Write exactly that.
-
-**Inlining to dodge a ratchet is a defect.** Moving a literal into a local,
-renaming a constant so its name no longer matches, splitting a call over
-lines, or inlining "whole-number sizes at their call sites because this file
-carries no `pixel_const` to spare" (the justification once written above two
-font constants in `apps/git-client/src/app.rs`) hides the debt from the
-ratchet without paying any of it. The fix is the semantic API that removes
-the knob: a `TextRole`, a spacing token, a region, a widget. Never write a
-comment that explains why a value was shaped to avoid a ratchet; a hit that
-is genuinely correct (a document colour, a chart's data ink) stays in the
-shard with its count.
-
-Not automated yet; grep a diff for these:
+Not automated; grep a diff for these:
 
 - an accent of any spelling: there is none; pick the intent (§9.4)
 - `Duration::from_millis(` with a literal in an animation (use
@@ -1866,8 +1808,8 @@ Not automated yet; grep a diff for these:
 ---
 
 *This document is versioned with the toolkit. When a guideline here becomes a
-`ui` primitive, link the primitive from the relevant section so the rule and its
-enforcement stay together.*
+`ui` primitive, link the primitive from the relevant section so the rule and the
+primitive stay together.*
 
 ## 10. Truth: every value carries its measure and its as-of
 

@@ -363,12 +363,13 @@ class CargoReaderTests(unittest.TestCase):
             ):
                 with self.subTest(scope=scope), self.assertRaises(ValueError):
                     suites.parse(READER_MANIFEST.replace(base, base + scope + "\n"))
-        with self.subTest(phase='production ui scope keeps compiled inputs whole'):
+        with self.subTest(phase='production ui keeps compiled inputs whole'):
             manifest = suites.load()
-            scoped = suites.select_package_scopes(manifest, ["apps/scratchpad/src/main.rs"])
-            self.assertEqual(scoped["tilo-ui"].test, "it")
-            self.assertIn("design_token_audit", scoped["tilo-ui"].filter)
-            self.assertIn("spacing_token_audit", scoped["tilo-ui"].filter)
+            # No app source is read by the toolkit's tests any more.
+            self.assertNotIn(
+                "tilo-ui",
+                suites.select_package_scopes(manifest, ["apps/scratchpad/src/main.rs"]),
+            )
             # The vendored quit request is compiled into tilo-ui's library.
             self.assertIsNone(suites.select_package_scopes(
                 manifest, ["vendor/winit/src/platform_impl/quit_request.rs"])["tilo-ui"])

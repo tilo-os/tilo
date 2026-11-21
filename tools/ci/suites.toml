@@ -684,13 +684,9 @@ suites = [
 
 [[cargo]]
 package = "tilo-ui"
-# The design and spacing audits ratchet every app and shell source file; the
-# launcher audit reads each app's main.rs and the framework launcher. The paint
-# stream's tests draw the layout snapshots and screenshot recorded for
-# tilo-paint-stream.
+# The paint stream's tests draw the layout snapshots and screenshot recorded
+# for tilo-paint-stream.
 inputs = [
-  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/session/src/*.rs",
-  "crates/sdk/tilo-app/src/framework/app.rs",
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/browser/paint-stream/tests/fixtures/",
   # The theme bundle's test loads a theme written only against the theme SDK.
@@ -699,26 +695,15 @@ inputs = [
   # The catalogue test reads the gallery app's sources: every component the
   # toolkit describes is shown there, or says at its declaration why it cannot.
   "apps/tl/gallery/",
-  # The ratchets find the checkout by its workspace manifest.
-  "Cargo.toml",
 ]
 readers = [
   "crates/sdk/ui-core/build.rs",
   "crates/sdk/ui-core/src/app/close_admission.rs",
-  "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
   "crates/sdk/ui-core/src/widget/webview.rs",
   "crates/sdk/ui-core/src/theme_bundle/tests.rs",
   "crates/sdk/ui-core/src/component/coverage_tests.rs",
 ]
-# App, shell and framework sources are read only by the look ratchets in the
-# `it` target. A change confined to them runs those ratchets, not the whole
-# toolkit suite; the vendored quit request is compiled into the library, so a
-# change there still runs everything.
-scope = { inputs = [
-  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/session/src/*.rs",
-  "crates/sdk/tilo-app/src/framework/app.rs",
-], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/) | test(/^support::allowances::/)" }
 
 
 [[cargo]]

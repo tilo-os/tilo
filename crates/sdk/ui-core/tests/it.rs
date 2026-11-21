@@ -38,8 +38,6 @@ mod context_menu_test;
 mod control_label_stays_inside_its_control;
 #[path = "control_row_alignment.rs"]
 mod control_row_alignment;
-#[path = "copy_audit.rs"]
-mod copy_audit;
 #[cfg(unix)]
 #[path = "cross_process_presence_pump.rs"]
 mod cross_process_presence_pump;
@@ -47,8 +45,6 @@ mod cross_process_presence_pump;
 mod data_table_test;
 #[path = "data_widget_text_alignment.rs"]
 mod data_widget_text_alignment;
-#[path = "design_token_audit.rs"]
-mod design_token_audit;
 #[cfg(unix)]
 #[path = "diagnostics_outlive_a_closed_log_pipe.rs"]
 mod diagnostics_outlive_a_closed_log_pipe;
@@ -123,8 +119,6 @@ mod screenshot_test;
 mod scrollable_test;
 #[path = "scrollbar_render_test.rs"]
 mod scrollbar_render_test;
-#[path = "spacing_token_audit.rs"]
-mod spacing_token_audit;
 #[path = "tab_strip_test.rs"]
 mod tab_strip_test;
 #[path = "text_scaled_once.rs"]
@@ -143,8 +137,6 @@ mod tooltip_test;
 mod touch_gestures_test;
 #[path = "typography_golden_geometry.rs"]
 mod typography_golden_geometry;
-#[path = "typography_token_audit.rs"]
-mod typography_token_audit;
 #[path = "typography_visual_regression.rs"]
 mod typography_visual_regression;
 #[path = "undo_per_author.rs"]

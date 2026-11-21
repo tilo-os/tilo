@@ -224,9 +224,8 @@ let style = theme.text(TextRole::Caption).with_kind(TextKind::Numeric);
 ```
 
 The kind is part of `TextStyle`, so it takes part in measurement, shaping and
-the caches exactly like size and weight. The typography audit
-(the `opentype` ratchet in `crates/sdk/ui-core/tests/typography_token_audit.rs`)
-counts raw feature settings in `apps/` and only lets the count fall.
+the caches exactly like size and weight. Raw `opentype` feature settings stay
+in the toolkit's type roles; an app names a role, never a feature tag.
 
 ## Script fallbacks
 

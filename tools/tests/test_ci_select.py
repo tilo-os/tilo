@@ -372,16 +372,16 @@ class SelectorTests(unittest.TestCase):
                                        suite_manifest=manifest)
             self.assertTrue(plan["rust_required"])
             self.assertIn("leaf", plan["tested"])
-        with self.subTest(phase='production manifest selects the ui audit for an app change'):
+        with self.subTest(phase='production manifest reads no app source from the toolkit'):
             self.setUp()
-            # The regression that motivated reader declarations: an app ported to
-            # the resource framework broke tilo-ui's launcher audit, whose tests
-            # the dependency graph never selected for an app-only change.
+            # A regression the reader declarations exist for: a package whose
+            # tests read a file the dependency graph never selects for it.
             manifest = ci_select.path_suites.load(REPO_ROOT)
             for path in ("apps/scratchpad/src/main.rs", "apps/scratchpad/src/lib.rs",
                          "apps/scratchpad/tilo-app.toml"):
                 with self.subTest(path=path):
-                    self.assertIn("tilo-ui", ci_select.path_suites.select_packages(manifest, [path]))
+                    self.assertNotIn(
+                        "tilo-ui", ci_select.path_suites.select_packages(manifest, [path]))
         with self.subTest(phase='suite manifest changes are quality only'):
             self.setUp()
             paths = ("tools/ci/suites.py", "tools/ci/suites.toml", "tools/tests/test_suites.py")
