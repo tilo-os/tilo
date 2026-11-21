@@ -259,24 +259,46 @@ pub fn apply_setup_handoff(
         if profile.user.username.trim().is_empty() {
             return Err("Choose the account name before enrolling this device.".into());
         }
-        let workspaces = tilo_identity::provisioning::personal_workspaces_export_path()
-            .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/peers/personal-workspaces.json"));
-        tilo_identity::provisioning::enroll_from_local_identity(
-            &tilo_identity::provisioning::JoinedDeviceLayout {
-                target_root: root,
-                username: profile.user.username.trim(),
-                local_identity_dir: local.identity_dir,
-                local_system: local.system,
-                local_home_peers: local.home_peers,
-                local_workspaces: &workspaces,
-            },
-            &profile.user.full_name,
-            label,
-            ui::time::unix_now_ns(),
-        )
-        .map_err(|error| error.to_string())?;
+        enroll_local_identity(root, profile, local, label)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn enroll_local_identity(
+    root: &Path,
+    profile: &InstallProfile,
+    local: &LocalIdentity<'_>,
+    label: &str,
+) -> Result<(), String> {
+    let workspaces = tilo_paths::xdg::state_home().map_or_else(
+        || PathBuf::from("/var/lib/tilo/peers/personal-workspaces.json"),
+        |state| state.join("tilo/personal-workspaces.json"),
+    );
+    tilo_enrollment::install::install_from_local_identity(
+        &tilo_enrollment::install::OfflineInstall {
+            target_root: root,
+            username: profile.user.username.trim(),
+            local_identity_dir: local.identity_dir,
+            local_system: local.system,
+            local_home_peers: local.home_peers,
+            local_workspaces: &workspaces,
+        },
+        &profile.user.full_name,
+        label,
+    )
+    .map_err(|error| format!("{error:#}"))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn enroll_local_identity(
+    _root: &Path,
+    _profile: &InstallProfile,
+    _local: &LocalIdentity<'_>,
+    _label: &str,
+) -> Result<(), String> {
+    Err("local identity enrollment is unavailable on this machine".into())
 }
 
 fn write_install_purpose(root: &Path, profile: &InstallProfile) -> Result<(), String> {
@@ -636,7 +658,12 @@ fn dirs_fallback() -> PathBuf {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one handoff checks the relocated identity and both ends of the enrollment"
+    )]
     fn handoff_writes_wifi_and_a_certified_device_without_the_root_secret() {
         let local_dir = tempfile::tempdir().unwrap();
         let identity_dir = local_dir.path().join("identity");
@@ -650,6 +677,21 @@ mod tests {
         .unwrap();
         let local_cert =
             tilo_device_identity::persist::read_device_cert(&local_system.device_cert).unwrap();
+        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
+        tilo_identity::store::update_identity_presentation(
+            &identity_dir,
+            "primary",
+            "Source name",
+            [3, 4, 5],
+            Some(photo.clone()),
+        )
+        .unwrap();
+        let state = local_dir.path().join("state");
+        fs::create_dir_all(state.join("tilo")).unwrap();
+        let workspaces = br#"["11111111-1111-4111-8111-111111111111"]"#;
+        fs::write(state.join("tilo/personal-workspaces.json"), workspaces).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_STATE_HOME", &state);
         let identity_id = hex::encode(local_cert.user_public_key);
         let home_peers = local_dir.path().join("home-peers.json");
         let peer = tilo_server_protocol::HomePeerRegistration {
@@ -673,18 +715,42 @@ mod tests {
             home_peers: &home_peers,
         };
         let dir = tempfile::tempdir().unwrap();
-        let profile = InstallProfile {
+        env.set("TMPDIR", dir.path());
+        let mut profile = InstallProfile {
             wifi_ssid: "studio".into(),
             device_label: "orange-pi".into(),
-            enroll_local_identity: true,
             ..InstallProfile::default()
         };
+        profile.user.full_name = "Ada".into();
+        let access = stage_setup_handoff(&profile, "correct-horse", &local)
+            .unwrap()
+            .unwrap();
+        assert!(!access.path().join("var").exists());
+        fs::remove_dir_all(access.path()).unwrap();
 
-        apply_setup_handoff(dir.path(), &profile, "correct-horse", &local).unwrap();
+        profile.enroll_local_identity = true;
+        let staged = stage_setup_handoff(&profile, "correct-horse", &local)
+            .unwrap()
+            .unwrap();
+        let paths = tilo_device_identity::IdentityPaths::under(staged.path().join("var/lib/tilo"));
+        let first_key = fs::read(&paths.device_privkey).unwrap();
+        let retry = InstallProfile {
+            wifi_ssid: String::new(),
+            ..profile.clone()
+        };
+        let error = apply_setup_handoff(staged.path(), &retry, "", &local).unwrap_err();
+        assert!(
+            error.contains("reserve a fresh target identity tree"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&paths.device_privkey).unwrap(), first_key);
+
+        // A staged image is read from a different filesystem path after transfer.
+        let installed = dir.path().join("installed");
+        fs::rename(staged.path(), &installed).unwrap();
 
         let connection = fs::read_to_string(
-            dir.path()
-                .join("etc/NetworkManager/system-connections/tilo-setup.nmconnection"),
+            installed.join("etc/NetworkManager/system-connections/tilo-setup.nmconnection"),
         )
         .unwrap();
         assert!(connection.contains("\nssid=studio\n"));
@@ -697,21 +763,16 @@ mod tests {
         let media = String::from_utf8(profile.to_media_profile_json().unwrap()).unwrap();
         assert!(!media.contains("correct-horse"));
         assert!(media.contains("\"device_label\":\"orange-pi\""));
-        let paths = tilo_device_identity::IdentityPaths::under(dir.path().join("var/lib/tilo"));
+        let paths = tilo_device_identity::IdentityPaths::under(installed.join("var/lib/tilo"));
         assert!(
             tilo_device_identity::joined_device_is_ready(&paths, ui::time::unix_now_ns()).unwrap()
         );
-        assert!(
-            !dir.path()
-                .join("var/home")
-                .read_dir()
-                .unwrap()
-                .any(|home| home
-                    .unwrap()
-                    .path()
-                    .join(".config/tilo/identity/secrets")
-                    .exists())
-        );
+        assert!(!installed.join("var/home").read_dir().unwrap().any(|home| {
+            home.unwrap()
+                .path()
+                .join(".config/tilo/identity/secrets")
+                .exists()
+        }));
         let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         assert_ne!(
             cert.device_public_key, local_cert.device_public_key,
@@ -719,9 +780,12 @@ mod tests {
         );
         assert_eq!(cert.user_public_key, local_cert.user_public_key);
         assert!(cert.capabilities.can_own_workspaces);
+        assert_eq!(cert.device_label, "orange-pi");
+        assert!(!installed.join("var/lib/tilo/enrollment-commits").exists());
+        assert!(!installed.join("var/lib/tilo/enrollment-staging").exists());
         let copied: Vec<tilo_server_protocol::HomePeerRegistration> = serde_json::from_slice(
             &fs::read(tilo_server_protocol::home_peer_registry_path(
-                &dir.path().join("var/lib/tilo"),
+                &installed.join("var/lib/tilo"),
             ))
             .unwrap(),
         )
@@ -729,17 +793,41 @@ mod tests {
         assert_eq!(copied, vec![peer]);
         let direct: Vec<String> = serde_json::from_slice(
             &fs::read(
-                tilo_server_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                tilo_server_protocol::home_peer_registry_path(&installed.join("var/lib/tilo"))
                     .with_file_name("personal-device-peers.json"),
             )
             .unwrap(),
         )
         .unwrap();
         assert_eq!(direct, vec![hex::encode(local_cert.device_public_key)]);
-        let target_identity = dir.path().join(format!(
+        let target_identity = installed.join(format!(
             "var/home/{}/.config/tilo/identity",
             profile.user.username.trim()
         ));
+        let target_record =
+            tilo_identity_client::resolve_active_identity(&target_identity).unwrap();
+        let presentation = tilo_identity_client::load_metadata_from_path(&target_record).unwrap();
+        assert_eq!(presentation.display_name, "Ada");
+        assert_eq!(presentation.avatar_color, [3, 4, 5]);
+        assert_eq!(presentation.profile_photo, Some(photo));
+        assert_eq!(presentation.group_public_key, local_cert.user_public_key);
+        assert!(!target_identity.join("registry.json").exists());
+        let registry = tilo_identity::registry::IdentityRegistryStore::at(&target_identity)
+            .load_reconciled()
+            .unwrap();
+        assert_eq!(registry.identities[&identity_id].record_path, target_record);
+        let copied_workspaces: Vec<String> = serde_json::from_slice(
+            &fs::read(
+                tilo_server_protocol::home_peer_registry_path(&installed.join("var/lib/tilo"))
+                    .with_file_name("personal-workspaces.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            copied_workspaces,
+            vec!["11111111-1111-4111-8111-111111111111"]
+        );
         let target_fleet =
             tilo_identity::device_fleet::DeviceFleetStore::at(&target_identity, paths)
                 .load(&identity_id)
@@ -757,7 +845,7 @@ mod tests {
                 .any(|item| item.device_public_key == local_cert.device_public_key)
         );
         let local_fleet =
-            tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, local_system)
+            tilo_identity::device_fleet::DeviceFleetStore::at(&identity_dir, local_system.clone())
                 .load(&identity_id)
                 .unwrap();
         assert!(
@@ -765,6 +853,32 @@ mod tests {
                 .certificates
                 .iter()
                 .any(|item| item.device_public_key == cert.device_public_key)
+        );
+        let local_direct: Vec<String> = serde_json::from_slice(
+            &fs::read(home_peers.with_file_name("personal-device-peers.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
+
+        let other_identity = local_dir.path().join("other-identity");
+        let other_paths =
+            tilo_device_identity::IdentityPaths::under(local_dir.path().join("other-system"));
+        tilo_identity::provisioning::ensure_collaboration_identity(
+            &other_identity,
+            &other_paths,
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        let mismatched = LocalIdentity {
+            identity_dir: &other_identity,
+            ..local
+        };
+        let error = stage_setup_handoff(&profile, "correct-horse", &mismatched).unwrap_err();
+        assert!(error.contains("belongs to a different person"), "{error}");
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "failed handoff was removed"
         );
     }
 

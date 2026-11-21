@@ -14,6 +14,11 @@ use crate::{
     remember_personal_devices, restore_owner_from_parent, share_directory_like_parent,
 };
 
+#[cfg(unix)]
+mod offline;
+#[cfg(unix)]
+pub use offline::{OfflineInstall, install_from_local_identity};
+
 /// A native personal enrollment's device layout and account. The roots are
 /// chosen by the local caller. When acting for another account, supply its
 /// uid explicitly so writes into the person's directory run as that account.
@@ -21,6 +26,9 @@ pub struct PersonalInstall<'a> {
     identity_root: &'a Path,
     identity_dir: &'a Path,
     person_uid: Option<u32>,
+    // An image is a private staging tree which will be moved onto a fresh
+    // system. Its selector is portable, but its live registry paths are not.
+    image_source: Option<[u8; 32]>,
 }
 
 impl<'a> PersonalInstall<'a> {
@@ -30,6 +38,7 @@ impl<'a> PersonalInstall<'a> {
             identity_root,
             identity_dir,
             person_uid,
+            image_source: None,
         }
     }
 
@@ -59,15 +68,38 @@ impl<'a> PersonalInstall<'a> {
         confirm: impl FnOnce() -> anyhow::Result<()>,
         checkpoint: impl FnMut(PersonalCommitCheckpoint) -> anyhow::Result<()>,
     ) -> anyhow::Result<PathBuf> {
+        self.install_projection(
+            &PersonalProjection {
+                cert: &payload.cert,
+                identity: payload
+                    .public_identity_json
+                    .as_deref()
+                    .context("approval omitted the public identity")?,
+                fleet: payload
+                    .fleet_json
+                    .as_deref()
+                    .context("approval omitted the fleet")?,
+                peers: payload
+                    .home_peers_json
+                    .as_deref()
+                    .context("approval omitted home peers")?,
+            },
+            requester_lease,
+            confirm,
+            checkpoint,
+        )
+    }
+
+    fn install_projection(
+        &self,
+        projection: &PersonalProjection<'_>,
+        requester_lease: Option<ProcessLease>,
+        confirm: impl FnOnce() -> anyhow::Result<()>,
+        checkpoint: impl FnMut(PersonalCommitCheckpoint) -> anyhow::Result<()>,
+    ) -> anyhow::Result<PathBuf> {
         let paths = IdentityPaths::under(self.identity_root);
         paths.ensure_directories()?;
-        let (marker_path, marker) = stage_personal_enrollment(
-            self.identity_root,
-            self.identity_dir,
-            self.person_uid,
-            payload,
-            requester_lease,
-        )?;
+        let (marker_path, marker) = stage_personal_enrollment(self, projection, requester_lease)?;
         confirm()?;
         // A successful confirmation and the original live requester make
         // this transaction eligible for recovery, even after that lease ends.
@@ -155,7 +187,7 @@ impl<'a> PersonalInstall<'a> {
             tilo_files::native::atomic::write_with_mode(&record, &record_json, 0o600)
         })?;
         before_publish(PersonalCommitCheckpoint::Fleet)?;
-        let fleet = install_staged_fleet(self.identity_root, marker, &stage_dir, self.person_uid)?;
+        let fleet = self.install_staged_fleet(marker, &stage_dir)?;
         before_publish(PersonalCommitCheckpoint::HomePeers)?;
         let staged_peers = tilo_server_protocol::checked_home_peers(&std::fs::read(
             stage_dir.join("home-peers.json"),
@@ -166,14 +198,16 @@ impl<'a> PersonalInstall<'a> {
             &staged_peers,
         )?;
         before_publish(PersonalCommitCheckpoint::Registry)?;
-        let registry_json = std::fs::read(stage_dir.join("registry.json"))?;
-        as_person(self.person_uid, self.identity_dir, || {
-            tilo_files::native::atomic::write_with_mode(
-                &self.identity_dir.join("registry.json"),
-                &registry_json,
-                0o600,
-            )
-        })?;
+        if self.image_source.is_none() {
+            let registry_json = std::fs::read(stage_dir.join("registry.json"))?;
+            as_person(self.person_uid, self.identity_dir, || {
+                tilo_files::native::atomic::write_with_mode(
+                    &self.identity_dir.join("registry.json"),
+                    &registry_json,
+                    0o600,
+                )
+            })?;
+        }
         before_publish(PersonalCommitCheckpoint::UserPublicKey)?;
         // The public key and certificates are public, whatever the umask this
         // commit runs under: the session reads them to verify the device, and
@@ -203,13 +237,17 @@ impl<'a> PersonalInstall<'a> {
         // home peer, reached through that registry, not one of the person's
         // personal devices.
         before_publish(PersonalCommitCheckpoint::PersonalPeers)?;
-        let personal_devices = personal_devices_of(
-            marker.device_public_key,
-            marker.user_public_key,
-            &fleet,
-            &staged_peers,
-            now_ns()?,
-        );
+        let personal_devices = match self.image_source {
+            // The imager pairs the target directly with the setup machine.
+            Some(source) => vec![source],
+            None => personal_devices_of(
+                marker.device_public_key,
+                marker.user_public_key,
+                &fleet,
+                &staged_peers,
+                now_ns()?,
+            ),
+        };
         let personal_peers = remember_personal_devices(self.identity_root, &personal_devices)?;
         // Publish this last: every projection file has been durably installed.
         before_publish(PersonalCommitCheckpoint::DefaultCert)?;
@@ -382,11 +420,11 @@ fn private_stage_dir(identity_root: &Path, stage_name: &str) -> anyhow::Result<P
     Ok(stage_dir)
 }
 
-struct CheckedPersonalProjection {
-    identity: Vec<u8>,
-    fleet: Vec<u8>,
-    peers: Vec<u8>,
-    registry: Vec<u8>,
+struct PersonalProjection<'a> {
+    cert: &'a DeviceCert,
+    identity: &'a [u8],
+    fleet: &'a [u8],
+    peers: &'a [u8],
 }
 
 fn identity_record_path(identity_dir: &Path, user: [u8; 32]) -> PathBuf {
@@ -412,32 +450,17 @@ fn validate_public_identity(bytes: &[u8], user: [u8; 32]) -> anyhow::Result<()> 
 }
 
 fn checked_personal_projection(
-    identity_root: &Path,
-    identity_dir: &Path,
-    person_uid: Option<u32>,
-    payload: &ResponsePayload,
-) -> anyhow::Result<CheckedPersonalProjection> {
-    let identity = payload
-        .public_identity_json
-        .as_ref()
-        .context("approval omitted the public identity")?;
-    let fleet = payload
-        .fleet_json
-        .as_ref()
-        .context("approval omitted the fleet")?;
-    let transferred_peers = payload
-        .home_peers_json
-        .as_ref()
-        .context("approval omitted home peers")?;
-    let user = payload.cert.user_public_key;
+    install: &PersonalInstall<'_>,
+    projection: &PersonalProjection<'_>,
+) -> anyhow::Result<(DeviceFleet, Vec<tilo_server_protocol::HomePeerRegistration>)> {
+    let user = projection.cert.user_public_key;
     let identity_id = hex::encode(user);
-
-    let fleet = fleet_store(identity_root, identity_dir, person_uid)
-        .accept_transferred(&identity_id, fleet, payload.cert.device_public_key)
+    let fleet = install
+        .checked_fleet(projection.fleet, user, projection.cert.device_public_key)
         .context("approval returned an invalid device fleet")?;
-    validate_public_identity(identity, user)?;
+    validate_public_identity(projection.identity, user)?;
 
-    let incoming = tilo_server_protocol::checked_home_peers(transferred_peers)
+    let incoming = tilo_server_protocol::checked_home_peers(projection.peers)
         .context("the approval's home peers are not a registry this build accepts")?;
     if incoming
         .iter()
@@ -446,6 +469,28 @@ fn checked_personal_projection(
         bail!("approval returned an invalid home-peer registry");
     }
 
+    let mut existing = tilo_server_protocol::read_home_peers(
+        &tilo_server_protocol::home_peer_registry_path(install.identity_root),
+    )
+    .context("the existing home-peer registry is not one this build accepts")?;
+
+    // A response projects routes for one identity. Do not use it as a global
+    // snapshot and erase other identities' independently verified routes.
+    existing.retain(|entry| entry.user_public_key != identity_id);
+    existing.extend(incoming);
+    if existing.len() > 128 {
+        bail!("merged home-peer registry is full");
+    }
+    existing.sort_by(|left, right| {
+        left.user_public_key
+            .cmp(&right.user_public_key)
+            .then_with(|| left.device_node_id.cmp(&right.device_node_id))
+    });
+    Ok((fleet, existing))
+}
+
+fn projected_registry(identity_dir: &Path, user: [u8; 32]) -> anyhow::Result<Vec<u8>> {
+    let identity_id = hex::encode(user);
     let registry_path = identity_dir.join("registry.json");
     let mut registry: serde_json::Value =
         read_bounded_json(&registry_path, "existing identity registry")?.unwrap_or_else(|| {
@@ -492,71 +537,60 @@ fn checked_personal_projection(
             }),
         );
 
-    let mut existing = tilo_server_protocol::read_home_peers(
-        &tilo_server_protocol::home_peer_registry_path(identity_root),
-    )
-    .context("the existing home-peer registry is not one this build accepts")?;
-
-    // A response projects routes for one identity. Do not use it as a global
-    // snapshot and erase other identities' independently verified routes.
-    existing.retain(|entry| entry.user_public_key != identity_id);
-    existing.extend(incoming);
-    if existing.len() > 128 {
-        bail!("merged home-peer registry is full");
-    }
-    existing.sort_by(|left, right| {
-        left.user_public_key
-            .cmp(&right.user_public_key)
-            .then_with(|| left.device_node_id.cmp(&right.device_node_id))
-    });
-
-    Ok(CheckedPersonalProjection {
-        identity: identity.clone(),
-        fleet: serde_json::to_vec_pretty(&fleet)?,
-        peers: serde_json::to_vec_pretty(&existing)?,
-        registry: serde_json::to_vec_pretty(&registry)?,
-    })
+    Ok(serde_json::to_vec_pretty(&registry)?)
 }
 
 fn stage_personal_enrollment(
-    identity_root: &Path,
-    identity_dir: &Path,
-    person_uid: Option<u32>,
-    payload: &ResponsePayload,
+    install: &PersonalInstall<'_>,
+    projection: &PersonalProjection<'_>,
     requester_lease: Option<ProcessLease>,
 ) -> anyhow::Result<(PathBuf, PersonalEnrollmentMarker)> {
-    let projection = checked_personal_projection(identity_root, identity_dir, person_uid, payload)?;
+    let (fleet, peers) = checked_personal_projection(install, projection)?;
+    let registry = if install.image_source.is_none() {
+        Some(projected_registry(
+            install.identity_dir,
+            projection.cert.user_public_key,
+        )?)
+    } else {
+        None
+    };
+    let identity_root = install.identity_root;
     let (stage_name, stage_dir) = create_stage_dir(identity_root, random_stage_name)?;
-    let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
+    let cert = tilo_user_identity::canonical::canonical_bytes(projection.cert)?;
     tilo_files::native::atomic::write_with_mode(
         &stage_dir.join("record.json"),
-        &projection.identity,
+        projection.identity,
         0o600,
     )?;
-    tilo_files::native::atomic::write_with_mode(
-        &stage_dir.join("registry.json"),
-        &projection.registry,
-        0o600,
+    if let Some(registry) = registry {
+        tilo_files::native::atomic::write_with_mode(
+            &stage_dir.join("registry.json"),
+            &registry,
+            0o600,
+        )?;
+    }
+    tilo_files::native::atomic::write(
+        &stage_dir.join("fleet.json"),
+        &serde_json::to_vec_pretty(&fleet)?,
     )?;
-    tilo_files::native::atomic::write(&stage_dir.join("fleet.json"), &projection.fleet)?;
     tilo_files::native::atomic::write_with_mode(
         &stage_dir.join("home-peers.json"),
-        &projection.peers,
+        &serde_json::to_vec_pretty(&peers)?,
         0o644,
     )?;
     tilo_files::native::atomic::write(
         &stage_dir.join("user-pubkey.bin"),
-        &payload.cert.user_public_key,
+        &projection.cert.user_public_key,
     )?;
     tilo_files::native::atomic::write(&stage_dir.join("per-user-cert.bin"), &cert)?;
     tilo_files::native::atomic::write(&stage_dir.join("default-cert.bin"), &cert)?;
     let marker_path = personal_marker_path(identity_root, &stage_name);
     let marker = PersonalEnrollmentMarker {
         schema_version: PERSONAL_ENROLLMENT_SCHEMA,
-        identity_dir: identity_dir.to_path_buf(),
+        identity_dir: install.identity_dir.to_path_buf(),
         stage_name,
-        user_public_key: payload.cert.user_public_key,
-        device_public_key: payload.cert.device_public_key,
+        user_public_key: projection.cert.user_public_key,
+        device_public_key: projection.cert.device_public_key,
         requester_lease,
         commit_ready: false,
     };
@@ -583,27 +617,62 @@ fn authorize_personal_commit(
     Ok(marker)
 }
 
-/// Install the device fleet an approval staged for this device: the document
-/// the approving device handed over, checked, then adopted as this device's
-/// own record of the identity's devices.
-fn install_staged_fleet(
-    identity_root: &Path,
-    marker: &PersonalEnrollmentMarker,
-    stage_dir: &Path,
-    person_uid: Option<u32>,
-) -> anyhow::Result<DeviceFleet> {
-    let store = fleet_store(identity_root, &marker.identity_dir, person_uid);
-    let fleet = store
-        .accept_transferred(
-            &hex::encode(marker.user_public_key),
-            &std::fs::read(stage_dir.join("fleet.json"))?,
-            marker.device_public_key,
-        )
-        .context("staged device fleet")?;
-    store
-        .adopt_transferred(&fleet)
-        .context("install the joined identity's device fleet")?;
-    Ok(fleet)
+impl PersonalInstall<'_> {
+    fn checked_fleet(
+        &self,
+        bytes: &[u8],
+        user: [u8; 32],
+        device: [u8; 32],
+    ) -> anyhow::Result<DeviceFleet> {
+        let identity_id = hex::encode(user);
+        if self.image_source.is_none() {
+            return Ok(
+                fleet_store(self.identity_root, self.identity_dir, self.person_uid)
+                    .accept_transferred(&identity_id, bytes, device)?,
+            );
+        }
+
+        // A fresh image's fleet came from the local canonical store, not a
+        // packet. Keep its full contents even if they exceed the wire limit.
+        // The store verifies the document when adopting it below.
+        let fleet: DeviceFleet = serde_json::from_slice(bytes)?;
+        if fleet.identity_id != identity_id
+            || fleet
+                .certificates
+                .iter()
+                .any(|cert| cert.user_public_key != user)
+            || fleet
+                .revocations
+                .iter()
+                .any(|entry| entry.user_public_key != user)
+            || !fleet
+                .certificates
+                .iter()
+                .any(|cert| cert.device_public_key == device)
+        {
+            bail!("the local fleet does not match the enrolled identity");
+        }
+        Ok(fleet)
+    }
+
+    /// Adopt the approved fleet as this device's own record of the person's devices.
+    fn install_staged_fleet(
+        &self,
+        marker: &PersonalEnrollmentMarker,
+        stage_dir: &Path,
+    ) -> anyhow::Result<DeviceFleet> {
+        let fleet = self
+            .checked_fleet(
+                &std::fs::read(stage_dir.join("fleet.json"))?,
+                marker.user_public_key,
+                marker.device_public_key,
+            )
+            .context("staged device fleet")?;
+        fleet_store(self.identity_root, self.identity_dir, self.person_uid)
+            .adopt_transferred(&fleet)
+            .context("install the joined identity's device fleet")?;
+        Ok(fleet)
+    }
 }
 
 #[cfg(all(test, unix))]

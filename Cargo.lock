@@ -7945,6 +7945,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-desktop-model",
  "tilo-device-identity",
+ "tilo-enrollment",
  "tilo-files",
  "tilo-fs",
  "tilo-fs-client",

@@ -141,6 +141,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../crates/collab/tilo-dev
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
+tilo-enrollment = { path = "../../crates/collab/tilo-enrollment" }
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 

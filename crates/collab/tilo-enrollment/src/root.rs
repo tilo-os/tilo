@@ -20,6 +20,12 @@ impl RootSigner for tilo_identity::store::SigningIdentity {}
 /// No identity directory is named, it holds no active identity, or that
 /// identity cannot sign alone here.
 pub fn load_root(identity_dir: Option<&std::path::Path>) -> anyhow::Result<Box<dyn RootSigner>> {
+    Ok(Box::new(load_signing_identity(identity_dir)?))
+}
+
+pub(crate) fn load_signing_identity(
+    identity_dir: Option<&std::path::Path>,
+) -> anyhow::Result<tilo_identity::store::SigningIdentity> {
     const MISSING_ROOT: &str =
         "this device does not hold the identity root needed to approve enrollment";
     let identity_dir = identity_dir
@@ -43,5 +49,5 @@ pub fn load_root(identity_dir: Option<&std::path::Path>) -> anyhow::Result<Box<d
             tilo_identity::certification_ceremony::cannot_sign_alone()
         );
     }
-    Ok(Box::new(identity))
+    Ok(identity)
 }
