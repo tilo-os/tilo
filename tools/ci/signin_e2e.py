@@ -601,9 +601,12 @@ class Run:
         _, log = sh.run("tail -n 40 /run/e2e/unattended.log; rm -f /run/e2e/recipe.json", 30, quiet=True)
         self.save("unattended.log", log)
         self.facts["install_seconds"] = round(time.monotonic() - started)
-        # The installer's per-phase wall clock: stable phase names and seconds, no secret.
-        _, timing = sh.run("grep '^TILO_INSTALL_TIMING ' /run/e2e/unattended.log || true", 30, quiet=True)
-        timing = [line.strip() for line in timing.splitlines() if line.startswith("TILO_INSTALL_TIMING ")]
+        # The installer's per-phase wall clock, and bootc's own lines stamped with their seconds
+        # into its phase: stable names and seconds, no secret.
+        _, timing = sh.run("grep -E '^(TILO_INSTALL_TIMING|bootc \\[\\+)' /run/e2e/unattended.log || true",
+                           30, quiet=True)
+        timing = [SECRETS.redact(line.strip()) for line in timing.splitlines()
+                  if line.startswith(("TILO_INSTALL_TIMING ", "bootc [+"))]
         self.save("install-timing.log", "\n".join(timing) + "\n")
         for line in timing:
             say(line)
