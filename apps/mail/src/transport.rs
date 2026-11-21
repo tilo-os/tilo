@@ -141,11 +141,46 @@ pub fn build_mime_from(
         builder = builder.attachment(
             "text/calendar; method=REQUEST",
             "invitation.ics",
-            calendar_ics.as_bytes().to_vec(),
+            with_organizer(calendar_ics, from).into_bytes(),
         );
     }
 
     builder.write_to_vec().map_err(|error| error.to_string())
+}
+
+/// The invitation with `from` named as the organizer of every event that names none: the
+/// people invited answer the account the invitation went from, and mail servers deliver an
+/// invitation that says who asked. An organizer the invitation already names is its own.
+fn with_organizer(ics: &str, from: &Addr) -> String {
+    let name: String = from
+        .display()
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
+        .collect();
+    let organizer = if name.trim().is_empty() || name == from.email {
+        format!("ORGANIZER:mailto:{}\r\n", from.email)
+    } else {
+        format!("ORGANIZER;CN=\"{name}\":mailto:{}\r\n", from.email)
+    };
+    let mut out = String::with_capacity(ics.len() + organizer.len());
+    let mut in_event = false;
+    let mut named = false;
+    for line in ics.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\r', '\n']);
+        if bare.eq_ignore_ascii_case("BEGIN:VEVENT") {
+            in_event = true;
+            named = false;
+        } else if in_event && bare.to_ascii_uppercase().starts_with("ORGANIZER") {
+            named = true;
+        } else if in_event && bare.eq_ignore_ascii_case("END:VEVENT") {
+            if !named {
+                out.push_str(&organizer);
+            }
+            in_event = false;
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 fn addr_tuples(addrs: &[Addr]) -> Vec<(String, String)> {
@@ -680,5 +715,61 @@ mod tests {
                 assert_eq!(msg.folder, Folder::Sent);
             }
         }
+    }
+
+    /// The people invited answer whoever the invitation names as organizer, and a mail server
+    /// delivers an invitation that says who asked: one prepared by Calendar for an event with
+    /// no organizer goes out naming the account it is sent from.
+    #[test]
+    fn a_sent_invitation_names_the_account_it_goes_from_as_its_organizer() {
+        let content = tilo_content::ContentStore::memory();
+        let from = Addr::new("Ada Lovelace", "ada@example.test");
+        let draft = Draft {
+            to: "guest@example.com".into(),
+            subject: "Invitation: Plan".into(),
+            body: "You’re invited.".into(),
+            calendar_ics: Some(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Tilo//Calendar//EN\r\n\
+                 CALSCALE:GREGORIAN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+                 UID:plan@tilo\r\nSUMMARY:Plan\r\nDTSTART:20261120T090000Z\r\n\
+                 END:VEVENT\r\nEND:VCALENDAR\r\n"
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        let bytes = build_mime(&content, &from, &draft).unwrap();
+        let parsed = MessageParser::default().parse(&bytes).unwrap();
+        let part = parsed
+            .attachments()
+            .find(|part| part.attachment_name() == Some("invitation.ics"))
+            .expect("the invitation goes as its own part");
+        let sent = String::from_utf8(part.contents().to_vec()).expect("iCalendar text");
+        assert!(
+            sent.contains("ORGANIZER;CN=\"Ada Lovelace\":mailto:ada@example.test\r\n"),
+            "{sent}"
+        );
+
+        // An organizer the invitation already names is the event's own.
+        let draft = Draft {
+            calendar_ics: Some(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+                 UID:plan@tilo\r\nORGANIZER;CN=Bo:mailto:bo@example.test\r\n\
+                 END:VEVENT\r\nEND:VCALENDAR\r\n"
+                    .into(),
+            ),
+            ..draft
+        };
+        let bytes = build_mime(&content, &from, &draft).unwrap();
+        let parsed = MessageParser::default().parse(&bytes).unwrap();
+        let part = parsed
+            .attachments()
+            .find(|part| part.attachment_name() == Some("invitation.ics"))
+            .expect("the invitation goes as its own part");
+        let sent = String::from_utf8(part.contents().to_vec()).expect("iCalendar text");
+        assert!(
+            sent.contains("ORGANIZER;CN=Bo:mailto:bo@example.test\r\n")
+                && !sent.contains("ada@example.test"),
+            "{sent}"
+        );
     }
 }
