@@ -152,6 +152,53 @@ fn hand_over(dir: &File, uid: u32, gid: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Let the service's group reach every socket made in `dir`, whatever ids Firecracker makes it with.
+///
+/// On a host, the API and vsock sockets Firecracker binds in the VM's directory come out its own
+/// group's (`srwxrwx--- vm:vm`), not the service's the handed-over directory is set for, and the
+/// service cannot connect to them. A default access control list is applied by the kernel to each
+/// file created in the directory, names only the service's group, and so reaches the sockets
+/// whatever ids they are made with: the VM's uid gains nothing it did not have.
+fn share_with_group(dir: &File, gid: u32) -> io::Result<()> {
+    // The kernel's `posix_acl_xattr` format: a version, then entries the kernel checks are in
+    // this order, each a tag, its permissions and an id (undefined for the entries that are the
+    // directory's own user, group and other).
+    const VERSION: u32 = 2;
+    const USER_OBJ: u16 = 0x01;
+    const GROUP_OBJ: u16 = 0x04;
+    const GROUP: u16 = 0x08;
+    const MASK: u16 = 0x10;
+    const OTHER: u16 = 0x20;
+    const UNDEFINED: u32 = u32::MAX;
+    // Reading and writing is what connecting to a socket asks for. The mask is what the newly
+    // made file's group bits allow, and the helper's umask (007, set for Firecracker) leaves a
+    // socket's whole, so the service's group keeps its write.
+    let mut acl = VERSION.to_le_bytes().to_vec();
+    for (tag, perm, id) in [
+        (USER_OBJ, 0o7_u16, UNDEFINED),
+        (GROUP_OBJ, 0o7, UNDEFINED),
+        (GROUP, 0o6, gid),
+        (MASK, 0o7, UNDEFINED),
+        (OTHER, 0o0, UNDEFINED),
+    ] {
+        acl.extend_from_slice(&tag.to_le_bytes());
+        acl.extend_from_slice(&perm.to_le_bytes());
+        acl.extend_from_slice(&id.to_le_bytes());
+    }
+    rustix::fs::fsetxattr(
+        dir,
+        "system.posix_acl_default",
+        &acl,
+        rustix::fs::XattrFlags::empty(),
+    )
+    .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("sharing a directory with the service's group: {error}"),
+        )
+    })
+}
+
 fn fresh_dir(path: &Path, mode: u32, owner: Option<u32>) -> io::Result<()> {
     match std::fs::remove_dir_all(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
@@ -210,6 +257,7 @@ fn prepare(config: &JailConfig, start: &Start) -> io::Result<std::process::Comma
     let guest = passed_dir(GUEST_FD, &[], "guest kernel's")?;
     hand_over(&vmm, vm, service_gid).step("handing the VM its state")?;
     hand_over(&sockets, vm, service_gid).step("handing the VM its sockets")?;
+    share_with_group(&sockets, service_gid).step("sharing the VM's sockets with the service")?;
 
     let jail = config.jail_dir(slot);
     std::fs::DirBuilder::new()
@@ -829,4 +877,68 @@ pub fn release(config: &JailConfig, slot: u32) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::net::UnixListener;
+
+    use super::*;
+
+    /// `system.posix_acl_access`'s entries, as (tag, permissions, id).
+    fn entries(acl: &[u8]) -> Vec<(u16, u16, u32)> {
+        assert_eq!(acl[..4], 2_u32.to_le_bytes(), "the list's version");
+        acl[4..]
+            .chunks_exact(8)
+            .map(|entry| {
+                let [tag0, tag1, perm0, perm1, id0, id1, id2, id3] =
+                    <[u8; 8]>::try_from(entry).expect("eight bytes");
+                (
+                    u16::from_le_bytes([tag0, tag1]),
+                    u16::from_le_bytes([perm0, perm1]),
+                    u32::from_le_bytes([id0, id1, id2, id3]),
+                )
+            })
+            .collect()
+    }
+
+    /// A socket Firecracker binds in the handed-over directory must reach the service's group even
+    /// though Firecracker makes it as the VM's own uid:gid: the kernel copies the directory's
+    /// default list onto whatever is created there.
+    #[test]
+    fn a_socket_the_vm_makes_reaches_the_services_group() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o2770)).unwrap();
+        let sockets = File::open(dir.path()).unwrap();
+        share_with_group(&sockets, 4242).unwrap();
+
+        // As the helper leaves the umask for Firecracker, so the socket's group bits stay whole
+        // and the list's mask keeps the service's write.
+        // SAFETY: `umask` has no preconditions; the previous value is put back at once.
+        let previous = unsafe { libc::umask(0o007) };
+        let bound = UnixListener::bind(dir.path().join("v.sock"));
+        // SAFETY: as above.
+        unsafe { libc::umask(previous) };
+        bound.unwrap();
+
+        let socket = dir.path().join("v.sock");
+        let mut buffer = [0_u8; 128];
+        let len = rustix::fs::getxattr(&socket, "system.posix_acl_access", &mut buffer).unwrap();
+        let entries = entries(&buffer[..len]);
+        let find = |tag: u16| {
+            entries
+                .iter()
+                .find(|(found, _, _)| *found == tag)
+                .copied()
+                .expect("an entry")
+        };
+        let (_, perm, id) = find(0x08);
+        assert_eq!(id, 4242, "the service's group");
+        assert_eq!(perm & 0o6, 0o6, "which may read and write the socket");
+        let (_, mask, _) = find(0x10);
+        assert_eq!(mask & 0o6, 0o6, "and the mask allows it");
+        let (_, other, _) = find(0x20);
+        assert_eq!(other, 0, "and nobody else reaches it");
+    }
 }

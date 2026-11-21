@@ -401,9 +401,11 @@ that workspace environment's own, never in a guest sharing the host's kernel
   service's group, holds `cap_setuid,cap_setgid` to become root, refuses any
   caller but the service, reads only a root-owned configuration
   (`/etc/tilo/hosted-jail.json`), and takes the VM's directories as
-  descriptors the service opened. Releasing a slot hands every file back to
-  the service and removes the jail, so the next VM in the slot inherits
-  nothing.
+  descriptors the service opened. The sockets Firecracker makes are reachable
+  by the service's group through a default access control list on their
+  directory, whichever ids Firecracker makes them with. Releasing a slot hands
+  every file back to the service and removes the jail, so the next VM in the
+  slot inherits nothing.
 - **Network:** the public internet, nothing of the host's. In the VM's
   network namespace (owned, through a user namespace, by the slot's network
   uid) Firecracker's tap and `pasta`'s are bridged, and a bridge filter drops
