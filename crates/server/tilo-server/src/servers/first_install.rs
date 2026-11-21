@@ -130,12 +130,12 @@ fn name(node: &serde_json::Value, field: &str) -> String {
 /// configuration its entry asks of its own machine, and say it finished in the
 /// entry. `drives` are the ones it really has ([`real_drives`], or a test's).
 ///
-/// It waits at its entry while one of the person's devices has not answered a
-/// choice the plan left open: this machine never fills one in itself.
+/// It waits for its entry while the workspace's document is still reaching it, and at its entry
+/// while one of the person's devices has not answered a choice the plan left open: this machine
+/// never fills one in itself.
 ///
 /// # Errors
-/// No planned machine answers that token, the entry names a plan this build
-/// cannot read, the root helper refused the configuration, or the entry could
+/// The entry names a plan this build cannot read, the root helper refused the configuration, or the entry could
 /// not be read or written.
 pub async fn install(
     workspaces: &Workspaces,
@@ -145,12 +145,23 @@ pub async fn install(
     requests: &super::applied::Requests,
 ) -> Result<(), String> {
     tracing::info!(%nonce, "this machine installs from its plan");
+    let mut told_arriving = false;
     loop {
         let servers = read(workspaces).await?;
-        let (id, entry) = servers
+        // Holding the workspace comes before its document has all reached this machine: the
+        // entry its plan wrote is on its way, and the machine waits for it as it waits for an
+        // answer.
+        let Some((id, entry)) = servers
             .planned_by_nonce(nonce)
             .map(|(id, entry)| (id.clone(), entry.clone()))
-            .ok_or("no planned machine answers that token")?;
+        else {
+            if !told_arriving {
+                tracing::info!("this machine waits for its plan to reach it");
+                told_arriving = true;
+            }
+            wait_for_entry().await;
+            continue;
+        };
         // What this machine has is its own report: the entry is told once,
         // and again only when the machine's drives are not the ones it keeps.
         if entry.plan.drives.is_empty() {
