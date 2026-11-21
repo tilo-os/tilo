@@ -471,7 +471,6 @@ members = [
     "crates/runtime/engines/emoji",
     "crates/runtime/engines/fuse",
     "crates/runtime/engines/highlight",
-    "crates/runtime/engines/mail",
     "crates/runtime/engines/archive",
     "crates/runtime/engines/paint",
     "crates/runtime/engines/pdf",

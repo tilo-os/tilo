@@ -905,13 +905,11 @@ jobs:
           for probe in "canvas libtilo_paint_engine.so --probe-paint-engine" \
                        "music libtilo_youtube_engine.so --probe-youtube-engine" \
                        "tube libtilo_youtube_engine.so --probe-youtube-engine" \
-                       "mail libtilo_accounts_engine.so --probe-accounts-engine" \
                        "settings libtilo_settings_engine.so" \
                        "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
                        "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
                        "calendar libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                        "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
-                       "mail libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                        "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                        "sheets libtilo_spreadsheet_engine.so --probe-spreadsheet-engine" \
                        "agent libtilo_agent_web_engine.so --probe-agent-web-engine"; do

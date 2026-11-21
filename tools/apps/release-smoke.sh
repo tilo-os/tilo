@@ -214,15 +214,12 @@ engines() (
   for probe in "canvas libtilo_paint_engine.so --probe-paint-engine" \
                "music libtilo_youtube_engine.so --probe-youtube-engine" \
                "tube libtilo_youtube_engine.so --probe-youtube-engine" \
-               "mail libtilo_accounts_engine.so --probe-accounts-engine" \
                "settings libtilo_accounts_engine.so via:libtilo_settings_engine.so" \
                "settings libtilo_settings_engine.so" \
                "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
                "calendar libtilo_accounts_engine.so" \
                "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
                "contacts libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
-               "mail libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
-               "mail libtilo_mail_engine.so" \
                "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "pdf-viewer libtilo_pdf_engine.so" \
                "sheets libtilo_spreadsheet_engine.so --probe-spreadsheet-engine" \

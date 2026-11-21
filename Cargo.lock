@@ -20332,17 +20332,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-mail-engine"
-version = "0.1.0"
-dependencies = [
- "lettre",
- "mail-builder",
- "mail-parser",
- "runtime-dylib",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-mail-parts"
 version = "0.1.0"
 dependencies = [

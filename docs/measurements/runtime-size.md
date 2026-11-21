@@ -68,10 +68,10 @@ simulation and subject mattes: `libtilo_paint_engine.so` for Canvas; the
 YouTube client, rustypipe with its QuickJS: `libtilo_youtube_engine.so` for
 Music and Tube; account credentials with its OAuth client and cloud-storage
 providers, the IMAP client, and the WebDAV/CalDAV client whose calendar sign-in
-reaches ownership: `libtilo_accounts_engine.so` for Mail, Settings, Calendar,
+reaches ownership: `libtilo_accounts_engine.so` for Settings, Calendar,
 Imager and the Spotify engine; the time-zone database, jiff-tzdb:
 `libtilo_timezone_engine.so` for Calendar and Clocks; the contact directory:
-`libtilo_contact_directory_engine.so` for Contacts, Mail and Messages; Tilo's
+`libtilo_contact_directory_engine.so` for Contacts and Messages; Tilo's
 PDF engine, tilo-pdf with the hayro rasteriser, the pdfium helper's client and
 PDF export: `libtilo_pdf_engine.so` for PDF Viewer, Files and Print Centre, which hand its first-page rasteriser to the thumbnailer every app
 shares; the workspace filesystem's FUSE presentation, runtime-fs-fuse with
@@ -81,9 +81,7 @@ it reads Chromium's and Firefox's databases with:
 `libtilo_browser_import_engine.so` for Browser, with the
 website-session codec check; the app process's client, with
 its control wire, and the catalogue Store browses:
-`libtilo_app_process_engine.so` for Store; Mail's message codecs and SMTP
-client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
-Mail; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
+`libtilo_app_process_engine.so` for Store; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
 `libtilo_archive_engine.so` for Files; Settings itself, its library with
 every pane, and the libraries only Settings uses, the settings sections, the
 model-provider administration panel, the NTFS mount protocol, the wallpaper
@@ -322,7 +320,7 @@ panes are written against, 3.1 MB (`tilo_app` 0.58 -> 1.38 MB, `tilo_resource`
 (`zbus` 0.18, `zvariant` 0.11, `tilo-audio-service` 0.16, `tilo-power-mgmt`
 0.14, `tilo-account-probe` 0.10, `tilo-service` 0.09, `tilo-session-power`
 0.07, and the mail stack the sign-in probe asks: `mail-parser` 0.15, `lettre`
-0.10, `mail-builder` 0.05, which `libtilo_mail_engine.so` also carries); and
+0.10, `mail-builder` 0.05); and
 Settings' own panes, 0.31 MB.
 
 That engine also carried libraries twice. The account probe carried the mail
