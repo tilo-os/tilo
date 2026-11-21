@@ -75,6 +75,10 @@ pub struct ShareServer {
     read_only: bool,
     nodes: HashMap<u64, PathBuf>,
     by_path: HashMap<PathBuf, u64>,
+    /// How many lookups the kernel holds of each node, and so how many it
+    /// may still drop: a path's lookup, a create, a link. The node goes
+    /// when the last one is dropped, never before.
+    lookups: HashMap<u64, u64>,
     next_node: u64,
     handles: HashMap<u64, File>,
     next_handle: u64,
@@ -99,6 +103,7 @@ impl ShareServer {
             read_only: share.read_only,
             nodes,
             by_path,
+            lookups: HashMap::new(),
             next_node: ROOT_NODE + 1,
             handles: HashMap::new(),
             next_handle: 1,
@@ -123,14 +128,10 @@ impl ShareServer {
             FsRequest::Hello { .. } => return Err(io::Error::from_raw_os_error(libc::EPROTO)),
             FsRequest::Lookup { parent, name } => {
                 let path = self.child(parent, &name)?;
-                FsReply::Attr(self.attr_of(&path)?)
+                FsReply::Attr(self.introduce(&path)?)
             }
-            FsRequest::Forget { node } => {
-                if node != ROOT_NODE
-                    && let Some(path) = self.nodes.remove(&node)
-                {
-                    self.by_path.remove(&path);
-                }
+            FsRequest::Forget { node, count } => {
+                self.forget(node, count);
                 FsReply::Ok
             }
             FsRequest::GetAttr { node } => {
@@ -211,7 +212,7 @@ impl ShareServer {
                     flags |= OFlags::TRUNC;
                 }
                 let file = self.open_file(&path, flags, Mode::from_raw_mode(mode & 0o7777))?;
-                let attr = self.attr_of(&path)?;
+                let attr = self.introduce(&path)?;
                 FsReply::Created {
                     attr,
                     handle: self.keep(file)?,
@@ -221,7 +222,7 @@ impl ShareServer {
                 let (dir, name) = self.parent_dir(parent, &name)?;
                 rustix::fs::mkdirat(&dir, name, Mode::from_raw_mode(mode & 0o7777))
                     .map_err(from_rustix)?;
-                FsReply::Attr(self.attr_of(&self.child(parent, name.as_bytes())?)?)
+                FsReply::Attr(self.introduce(&self.child(parent, name.as_bytes())?)?)
             }
             FsRequest::Unlink { parent, name } => {
                 let (dir, name) = self.parent_dir(parent, &name)?;
@@ -266,7 +267,7 @@ impl ShareServer {
                 let (dir, link) = self.parent_dir(parent, &name)?;
                 rustix::fs::symlinkat(OsStr::from_bytes(&target), &dir, link)
                     .map_err(from_rustix)?;
-                FsReply::Attr(self.attr_of(&self.child(parent, &name)?)?)
+                FsReply::Attr(self.introduce(&self.child(parent, &name)?)?)
             }
             FsRequest::ReadLink { node } => {
                 let path = self.path(node)?;
@@ -284,7 +285,7 @@ impl ShareServer {
                 let (to_dir, to) = self.parent_dir(new_parent, &new_name)?;
                 rustix::fs::linkat(&from_dir, from, &to_dir, to, AtFlags::empty())
                     .map_err(from_rustix)?;
-                FsReply::Attr(self.attr_of(&self.child(new_parent, &new_name)?)?)
+                FsReply::Attr(self.introduce(&self.child(new_parent, &new_name)?)?)
             }
             FsRequest::StatFs => {
                 let vfs = rustix::fs::fstatvfs(&self.root).map_err(from_rustix)?;
@@ -325,6 +326,40 @@ impl ShareServer {
         self.nodes.insert(node, path.to_path_buf());
         self.by_path.insert(path.to_path_buf(), node);
         node
+    }
+
+    /// The node for `path`, as an entry reply hands it to the kernel: the
+    /// kernel now holds one lookup of it, which it drops with a
+    /// [`FsRequest::Forget`].
+    fn introduce(&mut self, path: &Path) -> io::Result<Attr> {
+        let attr = self.attr_of(path)?;
+        let lookups = self.lookups.entry(attr.node).or_insert(0);
+        *lookups = lookups.saturating_add(1);
+        Ok(attr)
+    }
+
+    /// Drop `count` of the lookups the kernel held of `node`. A replaced
+    /// file's node keeps its old path while it is still open, so removing a
+    /// path entry here only removes the one that still names this node; the
+    /// path may already name the file that replaced it.
+    fn forget(&mut self, node: u64, count: u64) {
+        if node == ROOT_NODE {
+            return;
+        }
+        let Some(lookups) = self.lookups.get_mut(&node) else {
+            return;
+        };
+        *lookups = lookups.saturating_sub(count);
+        if *lookups > 0 {
+            return;
+        }
+        self.lookups.remove(&node);
+        let Some(path) = self.nodes.remove(&node) else {
+            return;
+        };
+        if self.by_path.get(&path) == Some(&node) {
+            self.by_path.remove(&path);
+        }
     }
 
     /// A rename moves the nodes under the old path with it.
@@ -613,6 +648,28 @@ mod tests {
                 other => panic!("lookup {name}: {other:?}"),
             }
         }
+
+        fn open(&mut self, node: u64) -> u64 {
+            match self.ask(R::Open {
+                node,
+                write: false,
+                truncate: false,
+            }) {
+                FsReply::Opened { handle } => handle,
+                other => panic!("open {node}: {other:?}"),
+            }
+        }
+
+        fn read_all(&mut self, handle: u64) -> Vec<u8> {
+            match self.ask(R::Read {
+                handle,
+                offset: 0,
+                size: 4096,
+            }) {
+                FsReply::Data(data) => data,
+                other => panic!("read {handle}: {other:?}"),
+            }
+        }
     }
 
     fn connect(shares: Vec<Served>, path: &Path) -> (Guest, std::thread::JoinHandle<()>) {
@@ -861,5 +918,110 @@ mod tests {
                 b"fn main() {}\n"
             );
         }
+    }
+
+    /// The guest's kernel keeps the file a path named until the lookups it
+    /// holds of it are forgotten, and a file renamed over that path while it
+    /// is still open keeps those lookups longer than the path's new owner.
+    /// Dropping the replaced file must not take the path with it.
+    #[test]
+    fn a_replaced_file_keeps_the_path_and_the_old_file_keeps_its_readers() {
+        let share = tempfile::tempdir().unwrap();
+        let root = share.path().to_path_buf();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/config"), b"old").unwrap();
+        let (mut guest, server) = connect(
+            vec![Served {
+                path: root.clone(),
+                read_only: false,
+            }],
+            &root,
+        );
+
+        let git = guest.node(ROOT_NODE, ".git");
+        let replaced = guest.node(git, "config");
+        let reader_a = guest.open(replaced);
+        let reader_b = guest.open(replaced);
+
+        let FsReply::Created {
+            attr: replacement,
+            handle,
+        } = guest.ask(R::Create {
+            parent: git,
+            name: b"config.lock".to_vec(),
+            mode: 0o644,
+            exclusive: true,
+            truncate: false,
+        })
+        else {
+            panic!("create the replacement");
+        };
+        assert_eq!(
+            guest.ask(R::Write {
+                handle,
+                offset: 0,
+                data: b"new".to_vec(),
+            }),
+            FsReply::Written(3)
+        );
+        assert_eq!(guest.ask(R::Release { handle }), FsReply::Ok);
+        assert_eq!(
+            guest.ask(R::Rename {
+                parent: git,
+                name: b"config.lock".to_vec(),
+                new_parent: git,
+                new_name: b"config".to_vec(),
+                no_replace: false,
+            }),
+            FsReply::Ok
+        );
+
+        let current = guest.node(git, "config");
+        assert_eq!(current, replacement.node, "the path names the replacement");
+        assert_ne!(current, replaced);
+
+        // The kernel drops the replaced inode once nothing names it.
+        assert_eq!(
+            guest.ask(R::Forget {
+                node: replaced,
+                count: 1,
+            }),
+            FsReply::Ok
+        );
+
+        let looked_up = guest.node(git, "config");
+        assert_eq!(looked_up, current, "the path still names the replacement");
+        assert!(matches!(
+            guest.ask(R::GetAttr { node: looked_up }),
+            FsReply::Attr(_)
+        ));
+        let replacement_reader = guest.open(looked_up);
+        assert_eq!(guest.read_all(replacement_reader), b"new".to_vec());
+        for reader in [reader_a, reader_b] {
+            assert_eq!(
+                guest.read_all(reader),
+                b"old".to_vec(),
+                "a reader of the replaced file still reads it"
+            );
+        }
+
+        // The replacement's own lookups are what hold the path now: the one
+        // the create handed out and the two lookups since.
+        assert_eq!(
+            guest.ask(R::Forget {
+                node: current,
+                count: 3,
+            }),
+            FsReply::Ok
+        );
+        let fresh = guest.node(git, "config");
+        assert_ne!(fresh, current, "nothing holds the old node any more");
+        assert!(matches!(
+            guest.ask(R::GetAttr { node: fresh }),
+            FsReply::Attr(_)
+        ));
+
+        drop(guest);
+        server.join().unwrap();
     }
 }

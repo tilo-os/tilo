@@ -94,8 +94,11 @@ pub enum FsRequest {
         parent: u64,
         name: Vec<u8>,
     },
+    /// The kernel no longer holds `count` of the lookups it was given of
+    /// `node`; the node is gone once the last one is dropped.
     Forget {
         node: u64,
+        count: u64,
     },
     GetAttr {
         node: u64,
