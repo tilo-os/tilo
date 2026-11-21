@@ -1055,7 +1055,7 @@ fn serve_relay_limited(
                 let proxy = Arc::clone(&proxy);
                 async move {
                     let Ok(mut unix) =
-                        tilo_files::native::socket::connect(&*proxy).and_then(|socket| {
+                        tilo_files::native::socket::connect(&proxy).and_then(|socket| {
                             socket.set_nonblocking(true)?;
                             tokio::net::UnixStream::from_std(socket)
                         })
