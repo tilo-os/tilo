@@ -639,9 +639,8 @@ fn module_name(id: &str) -> String {
 
 /// Each app's module in the SDK, by its id: its last id segment (`notes`), and for an app whose
 /// last segment another app's id also ends with, the segments before it that tell them apart
-/// (`so.tilo.notes` is `lang_notes` while `so.tilo.notes` is `notes`). Two modules of one
-/// name would be one file, so the app that has been there longest — the shorter id — keeps the
-/// plain name; when the tilolang Notes takes that id, it takes the name too.
+/// (`so.tilo.lang.notes` would be `lang_notes` beside `so.tilo.notes`, which stays `notes`). Two
+/// modules of one name would be one file, so the shorter id keeps the plain name.
 fn module_names(apps: &[App]) -> BTreeMap<String, String> {
     let mut order: Vec<&App> = apps.iter().collect();
     // The shorter id first, so it keeps the plain name; the id breaks a tie, so every run writes
@@ -2106,19 +2105,18 @@ mod tests {
         }
 
         phase two_apps_of_one_name_get_a_module_each;
-        // The native Notes and the tilolang one both exist while the migration runs: each app
-        // keeps its own module, and the one that had the id keeps the plain name until the
-        // tilolang Notes takes that id.
+        // Two apps whose ids end in the same word would write one module file: the shorter id
+        // keeps the plain name, the longer one takes the segment before it, and either alone has
+        // the plain name.
         {
-            let native = app("so.tilo.notes");
-            let tilolang = app("so.tilo.notes");
-            let names = module_names(&[native.clone(), tilolang.clone()]);
-            assert_eq!(names[&native.id], "notes");
-            assert_eq!(names[&tilolang.id], "lang_notes");
-            let mut switched = tilolang;
-            switched.id = "so.tilo.notes".to_owned();
-            let names = module_names(std::slice::from_ref(&switched));
-            assert_eq!(names[&switched.id], "notes");
+            let short = app("so.tilo.notes");
+            let mut long = short.clone();
+            long.id = "so.tilo.lang.notes".to_owned();
+            let names = module_names(&[long.clone(), short.clone()]);
+            assert_eq!(names[&short.id], "notes");
+            assert_eq!(names[&long.id], "lang_notes");
+            let names = module_names(std::slice::from_ref(&long));
+            assert_eq!(names[&long.id], "notes");
         }
     }
 }
