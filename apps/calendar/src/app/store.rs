@@ -376,6 +376,13 @@ fn import_ics(me: &Shared, cx: &mut EffectCx<Calendar>) -> Effected {
     })
 }
 
+/// The app whose action prepares an invitation's message: Mail.
+pub(crate) const MAIL_APP: &str = "so.tilo.mail";
+/// The workspace mailbox, whose action it is.
+pub(crate) const MAIL_ROOT: &str = "tl.so.tilo.mail.Mail";
+/// Mail's action that starts the message inviting one guest, by name.
+pub(crate) const MAIL_INVITATION: &str = "prepare_calendar_invitation";
+
 /// The arguments of Mail's invitation draft for one attendee of an event
 /// of `calendar`: a reviewable draft, never a claim that anything was sent.
 fn invitation(
@@ -409,8 +416,9 @@ fn invitation(
     Ok(serde_json::json!({
         "delivery": "not_sent",
         "target": {
-            "resource": "mail.mailbox",
-            "action": "prepare-calendar-invitation"
+            "app": MAIL_APP,
+            "resource": MAIL_ROOT,
+            "action": MAIL_INVITATION
         },
         "arguments": {
             "to": attendee.email,

@@ -1685,15 +1685,46 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
             .expect("Calendar answers its invitation effect");
         let value = output.value.expect("typed handoff result");
         assert_eq!(value["delivery"], "not_sent");
-        assert_eq!(value["target"]["resource"], "mail.mailbox");
-        assert_eq!(value["target"]["action"], "prepare-calendar-invitation");
-        let arguments = value["arguments"].as_object().unwrap();
-        assert_eq!(arguments["to"], attendee_email);
+        assert_eq!(value["target"]["app"], super::store::MAIL_APP);
+        assert_eq!(value["target"]["resource"], super::store::MAIL_ROOT);
+        assert_eq!(value["target"]["action"], super::store::MAIL_INVITATION);
+        let arguments = value["arguments"].as_object().unwrap().clone();
+        assert_eq!(arguments["to"], attendee_email.as_str());
         assert!(
             arguments["calendar_ics"]
                 .as_str()
-                .is_some_and(|ics| ics.contains("METHOD:REQUEST"))
+                .is_some_and(|ics| ics.contains("METHOD:REQUEST")),
+            "{arguments:?}"
         );
+
+        // The action Calendar names is the one Mail's signed surface offers on its mailbox, and
+        // it takes exactly the arguments Calendar hands it, each of them.
+        let surface: toml::Table = app_fleet::surface(super::store::MAIL_APP)
+            .expect("Mail ships a surface")
+            .parse()
+            .expect("Mail's surface reads");
+        let mailbox = surface["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["kind"].as_str() == Some(super::store::MAIL_ROOT))
+            .expect("Mail publishes its mailbox");
+        let verb = mailbox["verbs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|verb| verb.get("name").and_then(toml::Value::as_str) == Some(super::store::MAIL_INVITATION))
+            .expect("Mail's mailbox offers the invitation");
+        let mut taken: Vec<&str> = verb["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|param| param["name"].as_str().unwrap())
+            .collect();
+        taken.sort_unstable();
+        let mut handed: Vec<&str> = arguments.keys().map(String::as_str).collect();
+        handed.sort_unstable();
+        assert_eq!(taken, handed, "Mail takes what Calendar hands it");
     }
     {
         use ui::widget::Widget;
