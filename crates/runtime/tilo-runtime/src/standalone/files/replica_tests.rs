@@ -741,6 +741,21 @@ const MEMBER_INVITATION: &str = "TILO_REPLICA_TEST_MEMBER_INVITATION";
 /// host moved to a new disk finds it: its profile, with every workspace it
 /// held, and its home, with every folder. What is left is its identity and the
 /// device settings that name the relay the test reaches.
+/// Whether a FUSE mount is still up at `at`.
+fn mounted_at(at: &Path) -> bool {
+    let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
+        return false;
+    };
+    let escaped = at.to_string_lossy().replace(' ', "\\040");
+    mounts.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        let _source = fields.next();
+        let point = fields.next();
+        let kind = fields.next();
+        point == Some(escaped.as_str()) && kind.is_some_and(|kind| kind.starts_with("fuse"))
+    })
+}
+
 fn wipe_all_but_identity(root: &Path) {
     let environment = root.join("environment");
     for gone in [
@@ -915,6 +930,18 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
     let _ = first.kill();
     let _ = first.wait();
     eprintln!("the server kept the tree after {:?}", started.elapsed());
+
+    // A member killed the hard way leaves its mount to the guardian: wait for it to go before
+    // wiping, since a folder still mounted there cannot be removed (ENOTCONN).
+    let cleared = std::time::Instant::now();
+    while mounted_at(&folder) {
+        assert!(
+            cleared.elapsed() <= Duration::from_secs(30),
+            "the stopped member's mount at {} never went",
+            folder.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     // The member's disk is wiped; it starts again with its identity alone and
     // takes part in the workspace again.

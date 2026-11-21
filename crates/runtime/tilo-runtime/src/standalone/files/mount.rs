@@ -19,6 +19,8 @@ pub(super) fn available_in(dev_fuse: &Path, path: Option<&OsStr>) -> bool {
 
 /// A mounted workspace; unmounted when dropped.
 pub(super) struct Mount {
+    /// Unmounts the mount when this process ends, however it ends.
+    _guardian: tilo_files::native::guardian::Guardian,
     session: Option<fuser::BackgroundSession>,
     at: std::path::PathBuf,
     stop: Option<mpsc::Sender<()>>,
@@ -40,6 +42,9 @@ impl Mount {
         // then refuses every other user.
         config.acl = fuser::SessionACL::Owner;
         let session = fuser::spawn_mount(fs, at, &config)?;
+        // A member stopped the hard way (`SIGKILL`, a crash) never drops this, so the mount is
+        // watched from outside: it goes when this process does, and the next start mounts there.
+        let guardian = tilo_files::native::guardian::Guardian::new(at)?;
         let (stop, stopped) = mpsc::channel::<()>();
         let persist = std::thread::Builder::new()
             .name("tilo-workspace-persist".into())
@@ -51,6 +56,7 @@ impl Mount {
             })?;
         Ok(Self {
             session: Some(session),
+            _guardian: guardian,
             at: at.to_path_buf(),
             stop: Some(stop),
             persist: Some(persist),
