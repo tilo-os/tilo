@@ -1405,8 +1405,7 @@ impl Workspaces {
             }
             (HOST_ACTIONS_PROVIDER, _) => {
                 let certificate = Self::host_actions_certificate(caller, certificate)?;
-                self.account_invoke(workspace_id, caller, certificate, request, None)
-                    .await
+                Box::pin(self.account_invoke(workspace_id, caller, certificate, request, None)).await
             }
             (mcp_server::PROVIDER, _) => self.mcp_stop(caller, certificate, request),
             // A request that names its secret by reference carries none, so
@@ -2646,8 +2645,7 @@ impl ActionProvider for InWorkspace {
             let asking = std::sync::Arc::new(tokio::sync::Notify::new());
             let told = std::sync::Arc::clone(&asking);
             let mut work = runtime.spawn(agents::ASKING.scope(told, async move {
-                workspaces
-                    .invoke(workspace_id, &caller, certificate.as_ref(), &request)
+                Box::pin(workspaces.invoke(workspace_id, &caller, certificate.as_ref(), &request))
                     .await
             }));
             let ran = match answered_within(&mut work, wait, &asking).await {

@@ -45,10 +45,82 @@ struct Carried {
 }
 
 /// Found this device's person's Servers workspace again under this device,
-/// when the copy here is one founded in the person's name and this device is
-/// the one to do it, or finish doing so; hand the new copy to the holders the
-/// old one named that have not taken it yet. Whether it did anything.
-///
+/// Found the Servers workspace again under `own` when this device is the one to do it: its
+/// governance names the person its founder is, and no earlier holder founds it first. Keeps what
+/// the old copy holds in `kept`, and discards it. Whether it founded it.
+async fn found_again(
+    workspaces: &Workspaces,
+    kept: &std::path::Path,
+    own: &tilo_user_identity::DeviceCert,
+    admin: &str,
+) -> Result<bool, String> {
+    if kept.exists() {
+        return Ok(false);
+    }
+    let Some(state) = workspaces.state(admin).await else {
+        return Ok(false);
+    };
+    let governance = state.governance();
+    if governance.founder() != Some(own.user_public_key) {
+        return Ok(false);
+    }
+    let keepers = governance.keeping_devices();
+    let first = keepers
+        .iter()
+        .filter(|hint| {
+            hint.host.user_public_key == own.user_public_key
+                && tilo_peer_state::holder_role(hint) == CopyRole::KeyHolder
+        })
+        .map(|hint| hint.host.device_public_key)
+        .min();
+    if first != Some(own.device_public_key) {
+        // Another holder founds it again, and hands this device the new
+        // copy.
+        return Ok(false);
+    }
+    let mut carried = Carried::default();
+    for (app, record) in workspaces
+        .workspace_document_routes(admin)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if collab_types::is_store_document(&record) {
+            continue;
+        }
+        if let Some(bytes) = workspaces
+            .resource_document(admin, &app, &record)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            carried.records.push((app, record, bytes));
+        }
+    }
+    for hint in &keepers {
+        if hint.host.device_public_key == own.device_public_key
+            || hint.host.user_public_key != own.user_public_key
+        {
+            continue;
+        }
+        let Some(address) = tilo_failure::ignored!(
+            "an address another build signed is not one this one dials",
+            WorkspaceDeviceHintV1::from_transport_hint(hint).ok()
+        ) else {
+            continue;
+        };
+        carried.holders.push((
+            hint.host.device_public_key,
+            address.endpoint_addr,
+            address.holds_keys,
+        ));
+    }
+    write(kept, &carried)?;
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(admin)
+        .ok_or("the Servers workspace's id is not a workspace id")?;
+    workspaces.discard(admin, workspace_id).await?;
+    tracing::info!(%admin, records = carried.records.len(), holders = carried.holders.len(), "founding the Servers workspace again under this device");
+    Ok(true)
+}
+
 /// # Errors
 /// What the old copy holds could not be kept, the workspace could not be
 /// founded again, or a record could not be written back.
@@ -56,68 +128,8 @@ pub(super) async fn refound(workspaces: &Workspaces) -> Result<bool, String> {
     let own = workspaces.serving_certificate().clone();
     let admin = admin_workspace_id(&own.user_public_key);
     let kept = kept_at(workspaces, &admin);
-    if !kept.exists() {
-        let Some(state) = workspaces.state(&admin).await else {
-            return Ok(false);
-        };
-        let governance = state.governance();
-        if governance.founder() != Some(own.user_public_key) {
-            return Ok(false);
-        }
-        let keepers = governance.keeping_devices();
-        let first = keepers
-            .iter()
-            .filter(|hint| {
-                hint.host.user_public_key == own.user_public_key
-                    && tilo_peer_state::holder_role(hint) == CopyRole::KeyHolder
-            })
-            .map(|hint| hint.host.device_public_key)
-            .min();
-        if first != Some(own.device_public_key) {
-            // Another holder founds it again, and hands this device the new
-            // copy.
-            return Ok(false);
-        }
-        let mut carried = Carried::default();
-        for (app, record) in workspaces
-            .workspace_document_routes(&admin)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            if collab_types::is_store_document(&record) {
-                continue;
-            }
-            if let Some(bytes) = workspaces
-                .resource_document(&admin, &app, &record)
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                carried.records.push((app, record, bytes));
-            }
-        }
-        for hint in &keepers {
-            if hint.host.device_public_key == own.device_public_key
-                || hint.host.user_public_key != own.user_public_key
-            {
-                continue;
-            }
-            let Some(address) = tilo_failure::ignored!(
-                "an address another build signed is not one this one dials",
-                WorkspaceDeviceHintV1::from_transport_hint(hint).ok()
-            ) else {
-                continue;
-            };
-            carried.holders.push((
-                hint.host.device_public_key,
-                address.endpoint_addr,
-                address.holds_keys,
-            ));
-        }
-        write(&kept, &carried)?;
-        let workspace_id = tilo_server_protocol::WorkspaceId::parse(&admin)
-            .ok_or("the Servers workspace's id is not a workspace id")?;
-        workspaces.discard(&admin, workspace_id).await?;
-        tracing::info!(%admin, records = carried.records.len(), holders = carried.holders.len(), "founding the Servers workspace again under this device");
+    if !found_again(workspaces, &kept, &own, &admin).await? {
+        return Ok(false);
     }
     let mut carried: Carried = postcard::from_bytes(
         &std::fs::read(&kept).map_err(|error| error.to_string())?,

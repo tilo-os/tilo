@@ -110,8 +110,7 @@ impl WorkspaceService {
             arguments,
         );
         let entered: EnteredWorkspace = answer(
-            self.workspaces()
-                .enter_here(caller, &request)
+            Box::pin(self.workspaces().enter_here(caller, &request))
                 .await
                 .map_err(|error| error.to_string())?,
         )?;

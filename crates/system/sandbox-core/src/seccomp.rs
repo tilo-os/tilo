@@ -415,6 +415,13 @@ pub fn baseline_program_with(
 /// lets this one i386 call through. Jumps are relative and only go forward, so the rules
 /// after the check keep their meaning.
 #[cfg(target_os = "linux")]
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the check the exception replaces is x86_64's; another architecture hands the program back whole, and the caller keeps one shape"
+    )
+)]
 fn allow_i386_set_thread_area(program: BpfProgram) -> Result<BpfProgram, SeccompError> {
     #[cfg(target_arch = "x86_64")]
     {

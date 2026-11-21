@@ -306,10 +306,6 @@ impl Workspaces {
     ///
     /// The request does not hold up, the caller is not the holder whose
     /// address it carries, or the workspace could not be kept here.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked while the changes a hand-over brings are merged into its copy"
-    )]
     pub(crate) async fn hold(
         &self,
         caller: &DeviceCert,

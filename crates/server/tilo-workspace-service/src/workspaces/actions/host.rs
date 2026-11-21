@@ -658,7 +658,7 @@ impl Workspaces {
                 })
             }
             ServiceOperation::HostWorkspace | ServiceOperation::UnhostWorkspace => {
-                self.serving_invoke(device, operation, &args, now).await
+                Box::pin(self.serving_invoke(device, operation, &args, now)).await
             }
             ServiceOperation::PlanMachine
             | ServiceOperation::ListMachines
@@ -686,8 +686,7 @@ impl Workspaces {
             return Err(ActionCallError::UnknownAction);
         }
         let caller = crate::service::local_caller(device);
-        self.account_invoke(None, &caller, device, request, Some(address))
-            .await
+        Box::pin(self.account_invoke(None, &caller, device, request, Some(address))).await
     }
 
     /// The operation `request` names, which `device` may carry out.
@@ -1308,11 +1307,10 @@ impl Workspaces {
                     ))
                     .map_err(|_| invalid("`role` is `key_holder` or `store`"))?,
                 };
-                self.kept_for(device, &request, now)
+                Box::pin(self.kept_for(device, &request, now))
                     .await
                     .map_err(|error| refused(&error))?;
-                let hint = self
-                    .hold(device, &request)
+                let hint = Box::pin(self.hold(device, &request))
                     .await
                     .map_err(|error| refused(&error))?;
                 answer(&HostedWorkspace {
