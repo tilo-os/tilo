@@ -396,8 +396,6 @@ class CommitHookTests(unittest.TestCase):
                          ".githooks/merge-generated whole %O %A %B %P %L")
         self.assertEqual(self.git("config", "--get", "merge.generated-blocks.driver").stdout.strip(),
                          ".githooks/merge-generated blocks %O %A %B %P %L")
-        self.assertEqual(self.git("config", "--get", "merge.generated-counts.driver").stdout.strip(),
-                         ".githooks/merge-generated counts %O %A %B %P %L")
         self.assertIn("verified", self.run_installer().stdout)
         self.git("config", "--local", "core.hooksPath", "custom-hooks")
         custom = self.root / "custom-hooks"

@@ -26,13 +26,6 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 """
 
-COUNTS = """# Uses of each word, while it is being renamed
-# (tools/policy/check_glossary_words.py). Counts only go down.
-alpha 5
-beta 10
-gamma 2
-"""
-
 BLOCKS = """# hand-written
 [[check]]
 name = "a"
@@ -54,14 +47,12 @@ class MergeGeneratedTest(unittest.TestCase):
             self.git("config", key, value)
         (self.root / ".githooks").mkdir()
         shutil.copy2(DRIVER, self.root / ".githooks" / "merge-generated")
-        for driver, mode in (("generated", "whole"), ("generated-blocks", "blocks"),
-                             ("generated-counts", "counts")):
+        for driver, mode in (("generated", "whole"), ("generated-blocks", "blocks")):
             self.git("config", f"merge.{driver}.driver", f".githooks/merge-generated {mode} %O %A %B %P %L")
         (self.root / ".gitattributes").write_text(
-            "/Cargo.lock merge=generated\n/blocks.toml merge=generated-blocks\n/counts.txt merge=generated-counts\n")
+            "/Cargo.lock merge=generated\n/blocks.toml merge=generated-blocks\n")
         self.write("Cargo.lock", LOCK)
         self.write("blocks.toml", BLOCKS)
-        self.write("counts.txt", COUNTS)
         self.commit("base")
 
     def git(self, *args, check=True):
@@ -110,44 +101,6 @@ class MergeGeneratedTest(unittest.TestCase):
         rebased = self.branches("Cargo.lock", main, change)
         self.assertEqual(rebased.returncode, 0, rebased.stderr)
         self.assertEqual(self.read("Cargo.lock"), main)
-
-    def test_counts_lowerings_of_different_words_keep_both(self):
-        main = COUNTS.replace("alpha 5", "alpha 3")
-        change = COUNTS.replace("beta 10", "beta 8")
-        rebased = self.branches("counts.txt", main, change)
-        self.assertEqual(rebased.returncode, 0, rebased.stderr)
-        merged = self.read("counts.txt")
-        self.assertIn("alpha 3\n", merged)
-        self.assertIn("beta 8\n", merged)
-        self.assertIn("gamma 2\n", merged)
-
-    def test_counts_lowered_on_both_sides_keeps_the_lower(self):
-        # Both sides lower the same count; taking main's would raise it above the commit's.
-        main = COUNTS.replace("alpha 5", "alpha 4")
-        change = COUNTS.replace("alpha 5", "alpha 3")
-        rebased = self.branches("counts.txt", main, change)
-        self.assertEqual(rebased.returncode, 0, rebased.stderr)
-        merged = self.read("counts.txt")
-        self.assertIn("alpha 3\n", merged)
-        self.assertNotIn("<<<<<<<", merged)
-
-    def test_counts_a_word_one_side_lowers_to_none_keeps_none(self):
-        main = COUNTS.replace("beta 10\n", "").replace("alpha 5", "alpha 4")
-        change = COUNTS.replace("alpha 5", "alpha 3")
-        rebased = self.branches("counts.txt", main, change)
-        self.assertEqual(rebased.returncode, 0, rebased.stderr)
-        merged = self.read("counts.txt")
-        self.assertIn("alpha 3\n", merged)
-        self.assertNotIn("beta", merged)
-
-    def test_counts_a_word_new_to_one_side_keeps_its_count(self):
-        main = COUNTS.replace("alpha 5", "alpha 4")
-        change = COUNTS.replace("alpha 5", "alpha 3").replace("gamma 2", "gamma 2\ndelta 4")
-        rebased = self.branches("counts.txt", main, change)
-        self.assertEqual(rebased.returncode, 0, rebased.stderr)
-        merged = self.read("counts.txt")
-        self.assertIn("alpha 3\n", merged)
-        self.assertIn("delta 4\n", merged)
 
     def test_blocks_conflict_in_a_generated_block_takes_main(self):
         rebased = self.branches("blocks.toml", BLOCKS.replace('["a"]', '["a", "main"]'),

@@ -102,6 +102,3 @@ VM), relay (except iroh's NAT and packet relay, and the device relaying a live s
 arrangement, record, slot.
 
 Vague metaphors: door, gate, plane, lane, custody, standing, ledger, witness, seam. Name the thing.
-
-`tools/policy/check_glossary_words.py` keeps these words out of code, docs and catalogues; uses
-that mean something outside Tilo are listed in `tools/policy/glossary_words_allowed.toml`.

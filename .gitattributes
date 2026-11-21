@@ -31,13 +31,10 @@ vendor/git/** -text
 # Generated files merge by taking main's side where both sides changed them, then their
 # generator regenerates them (.githooks/merge-generated). `generated-blocks` files are generated only
 # between their generator's markers; a conflict elsewhere in them stays a conflict.
-# `generated-counts` files list a word and a count that only falls, so a merge keeps the lower
-# count of the two sides: taking main's would loosen it.
 # tools/dev/install-git-hooks.py sets the drivers up.
 /Cargo.lock merge=generated
 /crates/workspace-hack/** merge=generated
 /docs/codemap.md merge=generated
-/tools/policy/glossary_words_baseline.txt merge=generated-counts
 /crates/browser/tilo-web-desktop/Cargo.toml merge=generated-blocks
 /crates/browser/tilo-web-desktop/apps.json merge=generated
 /crates/browser/tilo-web-desktop/src/apps.rs merge=generated

@@ -14,7 +14,6 @@ import sys
 MERGE_DRIVERS = {
     "generated": ("whole", "generated file: take main's side, then regenerate"),
     "generated-blocks": ("blocks", "generated file: take main's side, then regenerate"),
-    "generated-counts": ("counts", "generated counts: each word keeps the lower of the two sides' counts"),
 }
 
 

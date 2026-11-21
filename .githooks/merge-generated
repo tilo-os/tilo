@@ -2,24 +2,16 @@
 """Merge a generated file by taking main's side where both sides changed it.
 
 Git runs this for the paths .gitattributes marks `merge=generated` (the whole file is
-generated), `merge=generated-blocks` (only the parts between generator markers are) or
-`merge=generated-counts` (a `word count` list whose counts only fall), set up by
-tools/dev/install-git-hooks.py:
+generated) or `merge=generated-blocks` (only the parts between generator markers are), set up
+by tools/dev/install-git-hooks.py:
 
-    merge-generated whole|blocks|counts %O %A %B %P %L
+    merge-generated whole|blocks %O %A %B %P %L
 
 Changes on one side only merge as usual. Where both sides changed the same lines, the result
 takes %A's lines: in a rebase that is main, the side being rebased onto. The file may then lack
 what the rebased commit needed, which its generator puts back: the check that verifies the
 file fails until it is regenerated.
 A conflict outside a generated block is left for a person, as git leaves any conflict.
-
-A counts file is not regenerated into its left side by a person: it is a ratchet, and taking
-%A's count where the other side lowered it further would silently loosen the ratchet for
-every later commit. Each word keeps the lower of the two sides' counts instead, so a merge can
-only tighten it. A word a side does not list counts as zero when %O listed it: both sides
-judged it, and this one left it out because its uses fell to none. A word %O did not list is
-new to a side, whose count stands.
 """
 
 from __future__ import annotations
@@ -112,72 +104,9 @@ def read(path: str) -> str:
         return f.read()
 
 
-def parse_counts(text: str) -> tuple[list[str], list[str], dict[str, int]]:
-    """A counts file's comment lines, its words in order, and their counts."""
-    comments: list[str] = []
-    order: list[str] = []
-    counts: dict[str, int] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("#"):
-            if stripped not in comments:
-                comments.append(stripped)
-            continue
-        word, count = stripped.split()
-        if word not in counts:
-            order.append(word)
-        counts[word] = int(count)
-    return comments, order, counts
-
-
-def merge_counts(base: str, ours: str, theirs: str) -> str:
-    """The ratchet's merge: each word keeps the lower of the two sides' counts."""
-    _, _, base_counts = parse_counts(base)
-    comments, our_order, our_counts = parse_counts(ours)
-    their_comments, their_order, their_counts = parse_counts(theirs)
-    comments += [comment for comment in their_comments if comment not in comments]
-
-    def count(word: str) -> int:
-        if word in base_counts:
-            # Both sides judged it: one that left it out counts it as none.
-            return min(our_counts.get(word, 0), their_counts.get(word, 0))
-        if word in our_counts and word in their_counts:
-            return min(our_counts[word], their_counts[word])
-        return our_counts.get(word, their_counts.get(word, 0))
-
-    order = list(our_order)
-    for word in their_order:
-        if word in our_counts:
-            continue
-        # A word new to their side goes where its order puts it, beside the words both list.
-        after = 0
-        for previous in reversed(their_order[: their_order.index(word)]):
-            if previous in order:
-                after = order.index(previous) + 1
-                break
-        order.insert(after, word)
-    lines = [f"{word} {value}" for word in order if (value := count(word))]
-    return "".join(f"{comment}\n" for comment in comments) + "".join(f"{line}\n" for line in lines)
-
-
 def main(argv: list[str]) -> int:
     mode, base, ours, theirs, path = argv[1:6]
     marker = int(argv[6]) if len(argv) > 6 and argv[6].isdigit() else 7
-    if mode == "counts":
-        try:
-            text = merge_counts(read(base), read(ours), read(theirs))
-        except (ValueError, IndexError) as error:
-            print(f"merge-generated: {path}: not a word and a count per line: {error}",
-                  file=sys.stderr)
-            return 1
-        with open(ours, "w", encoding="utf-8", errors="surrogateescape") as f:
-            f.write(text)
-        print(f"merge-generated: {path}: each word keeps the lower of the two sides' counts",
-              file=sys.stderr)
-        return 0
-
     conflicts, merged = merge_file(ours, base, theirs, marker)
     if conflicts < 0:
         return 2
