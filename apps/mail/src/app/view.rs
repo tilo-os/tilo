@@ -153,7 +153,7 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         window.follow_preferences(cx.settings::<crate::resource::MailPreferences>());
         {
             let mut state = window.shared.borrow_mut();
-            state.sender_trust = Some(trust.clone());
+            state.sender_trust = Some(trust);
             state.sync_trusted_senders();
         }
         window.state().contact_directory =
@@ -164,7 +164,7 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         if let Some(accounts) = cx.shared_person::<PersonAccounts>() {
             window.follow_person_accounts(accounts);
         }
-        window.copies_opener = Some(saved_copies.clone());
+        window.copies_opener = Some(saved_copies);
         window.open_peer_copies();
     }
     carry_server_updates(cx, &mut window);
