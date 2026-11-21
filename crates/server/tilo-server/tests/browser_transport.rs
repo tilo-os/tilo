@@ -144,7 +144,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         ..
     } = received
     else {
-        panic!("expected authenticated retained checkpoint");
+        panic!("expected authenticated retained checkpoint, got {received:?}");
     };
     assert_eq!(author_device_public_key, a.device_pubkey());
     let Some(tilo_server::CoeditPayload::Checkpoint { body, .. }) =
