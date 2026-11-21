@@ -3,23 +3,20 @@
 use crate::i18n::{widget_format, widget_text};
 use crate::num::f64_of_usize;
 use crate::time::SystemTime;
-use crate::widget::{ChipLead, ModelPath};
+use crate::widget::ChipLead;
 use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
-use taffy::{NodeId, TaffyTree};
+use taffy::NodeId;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time,
 };
