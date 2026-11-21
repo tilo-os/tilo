@@ -162,6 +162,14 @@ impl MemberAccess {
         }
     }
 
+    /// What this access decides from ([`crate::Effective`]): two accesses with
+    /// equal ones may do the same, so a host holding a view made under one keeps
+    /// it under the other.
+    #[must_use]
+    pub fn effective(&self) -> crate::Effective {
+        self.authority().effective()
+    }
+
     #[must_use]
     pub fn verdict(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Verdict<'_> {
         self.authority().decide(node, kind, cx)

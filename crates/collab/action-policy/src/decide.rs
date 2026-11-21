@@ -305,7 +305,67 @@ impl<'g> Party<'g> {
                 basis: Basis::Grant(deny),
             };
         }
-        decide(self.grants.iter().copied(), &self.grantees, node, kind, cx)
+        decide(self.deciding(cx), &self.grantees, node, kind, cx)
+    }
+
+    /// The grants that can decide for this party: those naming one of its grantees
+    /// ([`names`]). Every decision it makes reads these and no other.
+    fn deciding<'s>(&'s self, cx: &'s Context<'_>) -> impl Iterator<Item = &'g Grant> + 's {
+        self.grants
+            .iter()
+            .copied()
+            .filter(move |grant| names(grant, &self.grantees, cx))
+    }
+
+    /// What this party decides from, as owned data ([`Effective`]).
+    fn effective(&self) -> EffectiveParty {
+        // Which grants name a grantee does not depend on when or where it is decided.
+        let cx = Context::at(0);
+        EffectiveParty {
+            grantees: self.grantees.clone(),
+            grants: self.deciding(&cx).cloned().collect(),
+            owns: self.owns.clone(),
+            held_off: self.held_off.iter().copied().cloned().collect(),
+            cap: self.cap,
+        }
+    }
+}
+
+/// Everything an [`Authority`] decides from, as owned data: two authorities with
+/// equal ones answer every action alike at any one time, node and context. What
+/// tells them apart is only what changes a decision: a role or custom role the
+/// person holds, a grant naming them or a delegation bounding them, a ban or
+/// restriction of them, owning the workspace, a cap, the app and what it
+/// declares. Another member's admission, role or grants change none of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Effective {
+    parties: Vec<EffectiveParty>,
+    people: usize,
+    app: Option<AppId>,
+    app_kinds: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EffectiveParty {
+    grantees: Vec<Grantee>,
+    grants: Vec<Grant>,
+    owns: Vec<TreePath>,
+    held_off: Vec<Grant>,
+    cap: Option<Cap>,
+}
+
+impl Effective {
+    /// Whether a grant it decides by stops being live after `from_ms` and by
+    /// `to_ms` (Unix milliseconds): the one way time alone changes its answers.
+    #[must_use]
+    pub fn lapses_between(&self, from_ms: u64, to_ms: u64) -> bool {
+        self.parties
+            .iter()
+            .flat_map(|party| party.grants.iter().chain(&party.held_off))
+            .any(|grant| match grant.lifetime {
+                Lifetime::Until(at) => from_ms < at && at <= to_ms,
+                _ => false,
+            })
     }
 }
 
@@ -356,6 +416,21 @@ impl<'g> Authority<'g> {
     pub fn bounded_by(mut self, bound: Party<'g>) -> Self {
         self.bounds.push(bound);
         self
+    }
+
+    /// What this authority decides from ([`Effective`]): compare two to know
+    /// whether anything they may do differs.
+    #[must_use]
+    pub fn effective(&self) -> Effective {
+        Effective {
+            parties: std::iter::once(&self.person)
+                .chain(&self.bounds)
+                .map(Party::effective)
+                .collect(),
+            people: self.people,
+            app: self.app.cloned(),
+            app_kinds: self.app_kinds.map(<[String]>::to_vec),
+        }
     }
 
     /// `min(decide(person), decide(each delegation))`: a delegation never does
@@ -411,7 +486,7 @@ impl Authority<'_> {
         allows(node)
             || std::iter::once(&self.person)
                 .chain(&self.bounds)
-                .flat_map(|party| party.grants.iter().copied())
+                .flat_map(|party| party.deciding(cx))
                 .filter(|grant| grant.answer == Answer::Allow && grant.is_live(cx))
                 .filter_map(|grant| node.toward(&grant.node))
                 .any(|at| allows(&at))

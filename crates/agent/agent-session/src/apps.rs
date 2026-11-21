@@ -330,10 +330,12 @@ pub struct Replica {
     held_access: Option<HeldAccess>,
 }
 
-/// A member's access as a replica's permissions were made from it, at `unix_time`.
+/// A member's access as a replica's permissions were made from it, at `unix_time`:
+/// who acts, and what the permission model decides their actions from.
 #[derive(Clone)]
 struct HeldAccess {
-    access: policy::MemberAccess,
+    acting: policy::Acting,
+    effective: policy::Effective,
     sandbox: Vec<collab_types::caps::CapOverride>,
     unix_time: u64,
 }
@@ -347,7 +349,8 @@ impl HeldAccess {
                 unix_time,
                 ..
             } => Some(Self {
-                access: access.clone(),
+                acting: access.acting.clone(),
+                effective: access.effective(),
                 sandbox: sandbox.clone(),
                 unix_time: *unix_time,
             }),
@@ -355,25 +358,18 @@ impl HeldAccess {
         }
     }
 
-    /// Whether the same access read again at `later` decides as it did: nothing it holds
-    /// changed, and no grant of it lapsed in between, which is the one thing time changes.
+    /// Whether the access read again at `later` decides as it did: the same acting, with
+    /// nothing it decides by changed (another member admitted or given a role changes
+    /// none of it), and no grant of it lapsed in between, which is the one thing time
+    /// changes.
     fn decides_alike(&self, later: &Self) -> bool {
-        let (from, to) = (
-            self.unix_time.saturating_mul(1000),
-            later.unix_time.saturating_mul(1000),
-        );
-        self.access == later.access
+        self.acting == later.acting
+            && self.effective == later.effective
             && self.sandbox == later.sandbox
-            && !self
-                .access
-                .policy
-                .grants
-                .iter()
-                .chain(&self.access.granted)
-                .any(|grant| match grant.lifetime {
-                    policy::Lifetime::Until(at) => from < at && at <= to,
-                    _ => false,
-                })
+            && !self.effective.lapses_between(
+                self.unix_time.saturating_mul(1000),
+                later.unix_time.saturating_mul(1000),
+            )
     }
 }
 
