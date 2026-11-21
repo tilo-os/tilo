@@ -865,6 +865,10 @@ for _ in $(seq 1 90); do
   sleep 5
 done
 refuse 'the signed disk boots again as it was' 'systemctl is-active --quiet multi-user.target'
+# The server probe runs when a boot is judged, and the boot loader counts only an
+# update's boots, so nothing has run it on this one. The rollback below breaks only
+# the staged deployment, and needs the probe to have said this one is good first.
+refuse 'the server probe judges the signed disk good' 'systemctl start tilo-server-health.service'
 
 say 'stage the update and break it on the staged deployment only'
 as_root 'mkdir -p /mnt/update && mount /dev/vdb /mnt/update && skopeo copy --quiet \
