@@ -473,10 +473,6 @@ RATCHETS = {
         "new closure-run button of a toolkit composite (a row's, a property's or a card's "
         "action); bind it to a resource action or publish it",
     ),
-    "bespoke_command_entry": (
-        re.compile(r"\bCommandEntry\s*::\s*new\s*\("),
-        "new private command-palette entry; publish and invoke an ActionSpec instead",
-    ),
     "private_palette_argument": (
         re.compile(r"\.open_argument\s*\("),
         "private command-palette argument route; use open_action_argument with a published ActionSpec",

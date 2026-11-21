@@ -1302,7 +1302,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             ("closure_control", "apps/sample/src/up.rs"): 4,
             ("closure_control", "apps/sample/src/new.rs"): 5,
             ("closure_control", "apps/other/src/lib.rs"): 0,
-            ("bespoke_command_entry", "apps/sample/src/lib.rs"): 2,
+            ("private_palette_argument", "apps/sample/src/lib.rs"): 2,
         }
         current = contract.load_ratchet_baseline(root)
         contract.write_baseline(root, counts, current, set())
@@ -1311,10 +1311,10 @@ class AppResourceActionContractTests(unittest.TestCase):
             (baseline / "sample.toml").read_text(encoding="utf-8"),
             '[ratchets.closure_control]\n"apps/sample/src/lib.rs" = 2\n"apps/sample/src/up.rs" = 1\n',
         )
-        contract.write_baseline(root, counts, {}, {"bespoke_command_entry"})
+        contract.write_baseline(root, counts, {}, {"private_palette_argument"})
         self.assertEqual(
             (baseline / "sample.toml").read_text(encoding="utf-8"),
-            '[ratchets.bespoke_command_entry]\n"apps/sample/src/lib.rs" = 2\n',
+            '[ratchets.private_palette_argument]\n"apps/sample/src/lib.rs" = 2\n',
         )
 
     def test_every_closure_taking_toolkit_callback_is_classified(self):
