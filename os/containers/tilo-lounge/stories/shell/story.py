@@ -558,9 +558,84 @@ class Story:
         return file
 
 
+# The account a story's people use the machine as, when the story is walked by root (a check's
+# VM): a session runs as the person signed in, never as root, as it does on a Tilo device.
+PERSON_ACCOUNT = "tilo-person"
+
+
+def become_person(out: Path) -> None:
+    """Walk the rest of the story as an ordinary account, when it was started as root.
+
+    Everything a person does (their session, the tools they run, the files they make) is that
+    account's, so their programs run as they would on a person's computer: a web engine refuses
+    to run as root with its sandbox, and the session answers only its own account's programs.
+    The story keeps the means to act as the machine (`machine()`) for what stands in for the world
+    around the person (a provider's names and certificate)."""
+    if os.geteuid() != 0:
+        return
+    import pwd
+
+    try:
+        account = pwd.getpwnam(PERSON_ACCOUNT)
+    except KeyError:
+        subprocess.run(["useradd", "--create-home", "--user-group", PERSON_ACCOUNT], check=True)
+        account = pwd.getpwnam(PERSON_ACCOUNT)
+    # What this run made for whoever uses the machine is the person's: the story's own folder,
+    # the test environment's fresh home, temporary and runtime directories, and the run's
+    # audio endpoint (its socket and cookie).
+    owned = [Path(out)]
+    for name in ("TILO_TEST_ENVIRONMENT", "PULSE_RUNTIME_PATH", "PULSE_STATE_PATH",
+                 "PULSE_COOKIE"):
+        if os.environ.get(name):
+            owned.append(Path(os.environ[name]))
+    for top in owned:
+        if not top.exists():
+            continue
+        for path in [top, *(top.rglob("*") if top.is_dir() else [])]:
+            os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
+    os.initgroups(PERSON_ACCOUNT, account.pw_gid)
+    # Root stays the saved id, so `machine()` can take it back; what this starts runs as the
+    # person alone, since a program started keeps only the id it runs as.
+    os.setresgid(account.pw_gid, account.pw_gid, 0)
+    os.setresuid(account.pw_uid, account.pw_uid, 0)
+    os.environ.update(USER=PERSON_ACCOUNT, LOGNAME=PERSON_ACCOUNT)
+    if not os.environ.get("TILO_TEST_ENVIRONMENT"):
+        # Outside a test environment, root's home and login runtime are not the person's: theirs
+        # is their own home, and the session picks its own runtime directory.
+        os.environ["HOME"] = account.pw_dir
+        if os.environ.get("XDG_RUNTIME_DIR", "").rstrip("/") in ("/run/user/0", ""):
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+
+
+def can_act_as_machine() -> bool:
+    """Whether the story may act as the machine, to stand in for the world around its people."""
+    return os.geteuid() == 0 or os.getresuid()[2] == 0
+
+
+@contextlib.contextmanager
+def machine():
+    """Act as the machine (root) for a moment, for what stands in for the world around the
+    story's people, then as the person again. Nothing a person does runs inside it."""
+    if os.geteuid() == 0:
+        yield
+        return
+    if not can_act_as_machine():
+        raise Failed("the story acts as this machine for the world around its people, which "
+                     "takes root")
+    uid, gid = os.geteuid(), os.getegid()
+    os.seteuid(0)
+    os.setegid(0)
+    try:
+        yield
+    finally:
+        os.setegid(gid)
+        os.seteuid(uid)
+
+
 def walk(story_id: str, out: Path, steps: Callable[[Story], None]) -> int:
     """Walk a story: `steps` takes its steps; the story is written whatever happens. Exits 0
     when every step finished within its budget."""
+    become_person(Path(out))
     story = Story(story_id, out)
     error = None
     try:

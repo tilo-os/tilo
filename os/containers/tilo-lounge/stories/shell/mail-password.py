@@ -29,6 +29,7 @@ provider is reached by the session, at the names the account gives.
 
 from __future__ import annotations
 
+import contextlib
 import imaplib
 import json
 import os
@@ -41,7 +42,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from story import Failed, Person, Story, until, walk  # noqa: E402
+from story import (  # noqa: E402
+    Failed, Person, Story, can_act_as_machine, machine, until, walk,
+)
 
 # What both windows need: Mail, and Settings, where the person's accounts are kept.
 APPS = "settings mail"
@@ -195,12 +198,14 @@ class StandIn:
 
     def prepare(self) -> None:
         """Name the provider's servers here, start it, and trust it."""
-        if os.geteuid() != 0:
+        if not can_act_as_machine():
             raise Failed("the story rehearses a mail provider on this machine, which takes root "
-                         "(/etc/hosts and the CA bundle)")
-        self.name_itself()
-        self.start()
-        self.trust()
+                         "(/etc/hosts, the CA bundle and the mail ports)")
+        # The provider is the world around Ada, so the machine stages it; Ada uses it as herself.
+        with machine():
+            self.name_itself()
+            self.start()
+            self.trust()
 
     def name_itself(self) -> None:
         """Name the provider and its servers in `/etc/hosts`, so the names Mail works out from
@@ -301,6 +306,11 @@ class StandIn:
                 pass
 
     def stop(self) -> None:
+        # Only the machine could have staged it; a walk that could not stages nothing to undo.
+        with machine() if can_act_as_machine() else contextlib.nullcontext():
+            self.unstage()
+
+    def unstage(self) -> None:
         if self.proc is not None and self.proc.poll() is None:
             try:
                 os.killpg(self.proc.pid, signal.SIGTERM)
