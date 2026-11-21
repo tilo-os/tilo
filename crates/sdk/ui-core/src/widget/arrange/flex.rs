@@ -93,6 +93,24 @@ impl Layout for FlexLayout {
             Axis::Inline => part.fit.width.fill,
             Axis::Block => part.fit.height.fill,
         };
+        // A leaf part in a row — words, an icon, a control that paints its own face — is never
+        // laid out narrower than its own content: a label breaks between words, never inside
+        // one, and a row that wraps moves the whole part on to the next line instead. A part that
+        // holds other things keeps the zero minimum it had, so it can be given less room than
+        // what it holds and scroll, clip or elide it; and a text that elides asks for no minimum
+        // of its own.
+        let leaf = {
+            let mut holds = false;
+            part.element.for_each_child(&mut |_| holds = true);
+            !holds
+        };
+        if self.axis == Axis::Inline
+            && leaf
+            && !along.is_some_and(|weight| weight > 0.0)
+            && part.fit.width.min.is_none()
+        {
+            style.min_size.width = taffy::Dimension::auto();
+        }
         // A row that wraps flows its items at their own width: one that fills breaks onto a
         // line of its own when its own width does not fit beside what comes before it, and
         // then takes the width left on its line. From a zero basis it would never break, and

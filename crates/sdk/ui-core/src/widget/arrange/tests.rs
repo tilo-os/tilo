@@ -827,6 +827,99 @@ tilo_test_env::scenario! {
         assert!(r[5].y0 > 100.0, "the rest flow below");
     }
 
+    phase a_fact_keeps_its_words_whole_and_a_short_line_moves_it_down;
+    // The facts a page says of itself under its title — when it was made, when it was written,
+    // how many words it holds — each a label and its value in a row, the facts in a row that
+    // wraps. No fact is squeezed below the words it holds: a label breaks between words, never
+    // inside one, and a fact that does not fit the line moves down to the next whole.
+    {
+        use crate::tokens::TextRole;
+        use crate::widget::Text;
+        use taffy::{AvailableSpace, Size};
+
+        let theme = Theme::dark();
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let mut word = |words: &str| {
+            let mut probe = Text::new(words).with_role(TextRole::Caption);
+            probe.measure(
+                Size {
+                    width: None,
+                    height: None,
+                },
+                Size {
+                    width: AvailableSpace::MinContent,
+                    height: AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            )
+            .width
+        };
+        let caption = |words: &str| {
+            Box::new(Text::new(words).with_role(TextRole::Caption)) as crate::widget::Element
+        };
+        let facts: [(&str, &str); 3] = [("Created", "just now"), ("Edited", "just now"), ("4", "words")];
+        let fact = |(label, value): (&str, &str)| {
+            Box::new(
+                Row::row()
+                    .gap(Rhythm::Tight)
+                    .push(caption(label))
+                    .push(caption(value)),
+            ) as crate::widget::Element
+        };
+        let mut row = Row::row()
+            .gap(Rhythm::Related)
+            .wrap()
+            .align(Align::Center);
+        for pair in facts {
+            row = row.push(fact(pair));
+        }
+        solve(&mut row, &theme, 200.0);
+        // A fact that does not fit the line stands whole on the next.
+        let lines = rects(&row);
+        assert!(
+            lines[0].y0.abs() < 0.5 && lines[2].y0 >= lines[0].y1 - 0.5,
+            "the third fact flows whole onto the next line: {lines:?}"
+        );
+        // Each label and its value keep the width of their words.
+        for (index, pair) in facts.into_iter().enumerate() {
+            let held = row.children()[index]
+                .children()
+                .iter()
+                .map(|part| part.get_rect().width())
+                .collect::<Vec<_>>();
+            for (width, words) in held.iter().zip([pair.0, pair.1]) {
+                assert!(
+                    *width + 1.5 >= f64::from(word(words)),
+                    "fact {index}: {words:?} stands {width} wide, less than its word {}",
+                    word(words)
+                );
+            }
+        }
+
+        // The same facts in a row that does not wrap: the facts share the line it has, and a
+        // fact squeezed narrower than its words still breaks between them, never inside one.
+        let mut shared = Row::row().gap(Rhythm::Related).fill_width();
+        for pair in facts {
+            shared = shared.push_fit(fact(pair), Fit::fill(1.0));
+        }
+        solve(&mut shared, &theme, 200.0);
+        for (index, pair) in facts.into_iter().enumerate() {
+            let held = shared.children()[index]
+                .children()
+                .iter()
+                .map(|part| part.get_rect().width())
+                .collect::<Vec<_>>();
+            for (width, words) in held.iter().zip([pair.0, pair.1]) {
+                assert!(
+                    *width + 1.5 >= f64::from(word(words)),
+                    "shared line, fact {index}: {words:?} stands {width} wide, less than its \
+                     word {}",
+                    word(words)
+                );
+            }
+        }
+    }
+
     phase every_text_field_in_a_wrapping_row_stands_at_least_its_own_width;
     // A text field has no width of its own content; where a row that wraps lays it out at its own
     // width it stands at the theme's least width for a field, never 0 — hugging or filling, with
