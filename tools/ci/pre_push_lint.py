@@ -14,15 +14,15 @@ features the workspace's unified build gives each package (so code behind a
 feature that no default build enables is compiled). Those features are the same
 whichever packages are selected, so one push's build stays warm for the next.
 
-`--wide` adds what a push leaves out, and `t`'s lint-head check runs it on every
-commit of main, so a commit that breaks one of them is named there: the packages
-whose own source names something the commits changed (a rename, a removed item
-or a field added to a struct breaks the crates that use it, not the crate that
-declares it), the packages CI also checks as they ship, and Clippy for
-`wasm32-unknown-unknown` on the ones that build for the page, under the page's
-own Clippy configuration (std's clocks are banned there). A push used to run
-them too; with main moving every minute, their minutes of rebuilding lost the
-race to the next commit, again on each retry.
+`--wide` adds what a push leaves out, and the pull request workflow runs it over a merge onto main
+before it lands: the packages whose own source names something the commits changed (a rename, a
+removed item or a field added to a struct breaks the crates that use it, not the crate that
+declares it), the packages CI also checks as they ship, and Clippy for `wasm32-unknown-unknown` on
+the ones that build for the page, under the page's own Clippy configuration (std's clocks are
+banned there). A push used to run them too; with main moving every minute, their minutes of
+rebuilding lost the race to the next commit, again on each retry. t's `clippy`,
+`clippy-{arch}`, `clippy-shipped` and `clippy-page` families cover them on every change instead:
+each is keyed by what it reads, dependents included, and a miss is named on the head it broke.
 
 The Clippy runs start together, so a one-crate push costs about one build. A run
 that passed is not repeated while everything it reads is unchanged
@@ -31,8 +31,8 @@ commits does not lint again. Commits that passed are not linted again either
 when they are pushed once more as they were, rebased onto a newer main, within
 REBASE_WINDOW: main takes a commit every minute or two and a lint takes minutes,
 so a push that relints after every rebase loses to the next commit each time and
-never lands. What the commits main gained in between do to them is what `t`'s
-lint-head says on main. Cargo compiles wherever `$CARGO` points when it is
+never lands. What the commits main gained in between do to them is what t's
+families say on main. Cargo compiles wherever `$CARGO` points when it is
 set - any cargo drop-in, which may build on another machine - and otherwise the
 `cargo` on PATH. Formatting is always checked by the `cargo` and `rustfmt` on
 PATH: they compile nothing, so they need no other machine.
@@ -788,10 +788,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("remote", nargs="?", default="origin", help="the remote being pushed to")
     parser.add_argument("--plan", action="store_true", help="print what the push would lint, and lint nothing")
     parser.add_argument("--range", metavar="BASE..HEAD",
-                        help="lint what that range changes, for a run outside a push (CI, t)")
+                        help="lint what that range changes, for a run outside a push (CI)")
     parser.add_argument("--wide", action="store_true",
                         help="also lint the dependents that name what changed, the packages as they "
-                             "ship, and the page (what t's lint-head runs on every commit of main)")
+                             "ship, and the page (what a pull request's merge is linted as)")
     parser.add_argument("--own-build-dirs", action="store_true",
                         help="build the lints as packages ship and for the page in build directories "
                              "of their own, so all three start together")
@@ -827,7 +827,7 @@ def main(argv: list[str]) -> int:
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "
             "on disk: check it out and push again")
         return 1
-    # Only a push asks this: `--range` and `--wide` are how main itself is linted, and they read
+    # Only a push asks this: `--range` and `--wide` lint a commit outside a push, and they read
     # every commit on the tree it landed on.
     passes = Passes(root)
     change = None

@@ -1,13 +1,13 @@
 name: CI / pre-merge lint
 
 # A pull request is linted as it merges onto main's current tip, with the wide
-# selection t's lint-head runs on main (tools/ci/pre_push_lint.py --wide): the
+# selection (tools/ci/pre_push_lint.py --wide): the
 # packages the change touches and the packages whose own source names something
 # it changed, natively, as they ship and for the page. A merge the forge makes is a commit no contributor's
 # pre-push hook ever saw, so without this the first lint of the merged tree runs
 # after it is already main.
 #
-# t's lint-head check reads a main push. This one reads the merge before it
+# t's own families lint every change of main; this one reads the merge before it
 # lands, and lints the crates a merge can break that neither side's own run
 # named.
 on:

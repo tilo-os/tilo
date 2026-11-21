@@ -84,18 +84,24 @@ release is cut (it requires signed commits), and it is the only ref
 publications build from.
 
 - `t` runs the checks for every head of `main`: its default checks (the test,
-  clippy, check, suite, policy, `lint-head` and `workspace-service-features`
-  families) run on each new head in `t.toml`, keyed by the inputs they read, and
+  clippy, check, suite, policy and `workspace-service-features` families) run
+  on each new head in `t.toml`, keyed by the inputs they read, and
   `t main` names every failing item with the commit that broke it. Checks that
   cost a lot name `on = ["dispatch", "idle"]` instead: main's newest head runs
   them when a node is idle.
-- `t`'s `lint-head` check runs the wide lint of every commit on `main`
-  (`tools/ci/pre_push_lint.py --wide`): the changed packages, the packages that
-  name what they changed, and the page's wasm32 target, so a break only the web
-  build sees is named on the head that introduced it. A push's own hook refuses
-  that lint before it leaves.
-- `changes` and `lint-head` read the commits a push added, and the whole-tree
-  checks (`fmt`, `hakari`, `lockfile`, `deny`, `machete`, `policy/{step}`) run
+- The clippy families cover what a push leaves to them: every package for the
+  host with the features the workspace's whole build gives it (`clippy`,
+  `clippy-{arch}`, `clippy-idle`), the packages CI also checks as they ship
+  (`clippy-shipped`), and the page's crates for `wasm32-unknown-unknown` under
+  the page's own Clippy configuration (`clippy-page`), so a break only the web
+  build sees is named on the head that introduced it. A push's own hook lints
+  what it changes.
+- A pull request's merge is linted before it lands by the `pre-merge-lint`
+  workflow, over the wide selection (`tools/ci/pre_push_lint.py --wide`: the
+  changed packages, the packages that name what they changed, as shipped, and
+  the page), which `t`'s families otherwise cover on every change.
+- `changes` reads the commits a push added, and the whole-tree checks (`fmt`,
+  `hakari`, `lockfile`, `deny`, `machete`, `policy/{step}`) run
   on the same head, so no push's run stands in for another's.
 - Release and artifact workflows (`release-*.yml`) trigger on a push to
   `stable` or on a version tag, never on `main`. The whole-tree coverage

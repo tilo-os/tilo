@@ -3,11 +3,12 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from ci import package_sets  # noqa: E402
+from ci import package_features, package_sets  # noqa: E402
 
 
 class PackageSetsTests(unittest.TestCase):
@@ -144,6 +145,20 @@ class PackageSetsTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn("usage: package_sets.py android|browser", result.stderr)
+
+    def test_the_families_t_lints_name_the_sets_derived_here(self):
+        # A crate that starts building for the page, or a package that starts shipping without
+        # the features its tests get, moves the set: the family has to move with it, or the shape
+        # it names goes unlinted.
+        families = {family["name"]: family for family in
+                    tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))["cargo"]}
+        sys.path.insert(0, str(ROOT / "tools/ci"))
+        import workspace_graph
+        packages = {p["name"]: p for p in workspace_graph.cargo_metadata(ROOT)["packages"]}
+        self.assertEqual(sorted(families["clippy-page"]["packages"]),
+                         sorted(package_sets.wasm_crates(packages) | {package_sets.PAGE_ENTRY}))
+        self.assertEqual(sorted(families["clippy-shipped"]["packages"]),
+                         sorted(package_features.DEFAULT_BUILDS_ALSO_CHECKED))
 
 
 if __name__ == "__main__":

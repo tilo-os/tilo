@@ -236,7 +236,7 @@ class PrePushLintTests(unittest.TestCase):
              also=(), **environment):
         """Run the hook as Git would, with the ref lines it writes for a push.
 
-        `wide` runs the lint t's lint-head runs on main instead, over the same refs. `also`
+        `wide` runs the wide lint a pull request's merge gets instead, over the same refs. `also`
         names more refs the same push sends the head to.
         """
         self.log.unlink(missing_ok=True)
@@ -397,7 +397,7 @@ class PrePushLintTests(unittest.TestCase):
 
     def test_a_push_leaves_dependents_and_the_page_to_the_wide_lint(self):
         # Their rebuilds took minutes, and main moved on before they finished: a push lints
-        # what it changes, and lint-head lints the rest on every commit of main.
+        # what it changes, and t's families lint the rest on every change.
         self.page_entry = True
         self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
         self.write("native/src/lib.rs", "pub fn solution() -> u32 {\n    42\n}\n")
@@ -653,7 +653,7 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
 
     def test_mains_own_lint_reads_every_commit_on_the_tree_it_landed_on(self):
-        # The push went unlinted on the strength of an earlier pass; lint-head on main is what
+        # The push went unlinted on the strength of an earlier pass; the wide lint is what
         # says what main's other commits did to it, so it never takes that pass for its own.
         self.write("docs/answer.txt", "42\n")
         self.commit("docs: the answer")

@@ -310,6 +310,46 @@ packages = [
 ]
 matrix = { arch = ["x86_64", "aarch64"] }
 
+# The page's lints: the crates that build for wasm32-unknown-unknown, under the page's own Clippy
+# configuration, whose banned methods include std's clocks, which panic in a browser page and which
+# the root clippy.toml cannot ban for every target (tools/ci/wasm_clippy_conf.py says why).
+# tools/ci/page-clippy.sh, this family's wrapper, writes that configuration and exports it, so
+# every build here is linted under it. The crates are `python3 -I tools/ci/package_sets.py wasm`
+# and the page's entry, and tools/tests/test_package_sets.py fails while this list and the set
+# derived there disagree. No `unify`: workspace-unify is a host crate that builds nothing for
+# wasm32, no native family shares a unit with these, and the page's own build compiles each of
+# them with the features cargo resolves for it.
+[[cargo]]
+name = "clippy-page"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+tool = "clippy"
+args = ["--locked", "--target", "wasm32-unknown-unknown"]
+wrapper = ["bash", "tools/ci/page-clippy.sh"]
+trailing = ["-D", "warnings"]
+packages = [
+    "key-group", "tilo-browser-compute", "tilo-browser-runtime", "tilo-capture",
+    "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
+    "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
+    "tilo-secrets", "tilo-session-client", "tilo-workspace-service", "tilolang-app",
+]
+
+# The packages CI also checks as they ship (tools/ci/package_features.py): their default build,
+# the feature set that ships, beside the union of features workspace-unify gives them in every
+# other clippy family. A lint that only saw the unified shape never compiles code the default
+# build leaves out. `default-builds-{arch}` compiles their tests when dispatched; this lints them
+# on every change. No `unify`: the default feature set is the point, and
+# tools/tests/test_package_sets.py fails while this list and that table disagree.
+[[cargo]]
+name = "clippy-shipped"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+tool = "clippy"
+args = ["--locked", "--all-targets"]
+trailing = ["-D", "warnings"]
+packages = [
+    "collaboration", "imager", "imager-backend", "tilo-crypto", "tilo-model-gateway", "tilo-net",
+    "tilo-test-env",
+]
+
 # `cargo check` alone, when someone wants a package's errors without clippy's lints or a build.
 # Its members are `clippy`'s: `clippy-idle` and the per-architecture families cover what both
 # leave out, and the shared libraries keep one unit per crate across the two selections. It
@@ -332,27 +372,6 @@ exclude = [
     "windows-vm", "workspace-unify",
 ]
 default = false
-
-# What the push check lints and more, on every new head of a followed branch: the
-# packages the head changes and the packages whose own source names something it
-# changed, natively, as they ship and for the page (tools/ci/pre_push_lint.py
-# --wide). A push lints only the packages it changes, for the host, so it lands
-# before main moves on; this check is where a commit that broke a dependent or
-# the page is named, and a head that reached main without the hook - a merge the
-# forge made, a branch pushed from a clone without it - has a verdict within minutes, where the whole-tree `clippy` family reaches the same
-# crates only after everything a merge widens its selection to.
-#
-# It is not `heavy`: it is the check that says a head is red while whoever
-# pushed it is still around to fix it forward.
-[[check]]
-name = "lint-head"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-# It reads the commit's own diff, so it needs the Git view and reruns on every
-# commit (the lint's own pass cache is what keeps it cheap). A merge's diff is
-# taken from where its parents met, so a merge of main into integration that main
-# fast-forwards to is linted for what integration brings, not only main's side.
-git = true
-run = "set -eu\nrustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true\nbase=$(git merge-base --octopus $(git rev-parse HEAD^@))\npython3 -I tools/ci/pre_push_lint.py --wide --range \"$base..$(git rev-parse HEAD)\"\n"
 
 # The visual goldens: tilo-ui and ebook, whose baselines are pixels, under the filter
 # `.config/nextest-filters.toml` keeps (`golden`), on the project's builder image. That is the

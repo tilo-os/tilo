@@ -4,9 +4,10 @@
 # targets with the features the workspace's whole build gives each package. A
 # push to any other branch is not linted. The rest of what
 # a push can break - the crates that use something it renamed or removed, the
-# packages as they ship, the page's wasm32 build - is linted by t's lint-head on
-# every commit of main (`t main` names the one that broke it): run here, those
-# rebuilds took minutes and lost the race to main's next commit on every retry.
+# packages as they ship, the page's wasm32 build - is t's own families
+# (`clippy`, `clippy-{arch}`, `clippy-shipped`, `clippy-page`) on every change
+# (`t main` names the one that broke it): run here, those rebuilds took minutes
+# and lost the race to main's next commit on every retry.
 # tools/ci/pre_push_lint.py selects the packages and runs the lint; a run that
 # passed is not repeated while nothing it reads has changed, so a push retried
 # after a rebase onto unrelated commits does not lint again.
