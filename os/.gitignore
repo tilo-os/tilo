@@ -20,12 +20,12 @@
 /output/
 /output-*/
 
-# QEMU + first-boot artifacts of test-image boots (./verify-test.sh)
+# QEMU + first-boot artifacts of image boots
 /qemu-*.log
 /test-boot*.log
 /test-results.log
 *.log
 
-# Captured VM journals (verify-test.sh dumps these to /vm-logs* on the host)
+# Captured VM journals
 /vm-logs/
 /vm-logs-*/

@@ -3484,11 +3484,11 @@ RUN --mount=type=tmpfs,target=/tmp \
 # either: the kernel and initramfs are no longer in the rootfs to build one from,
 # they are sections of the UKI it inherited.
 #
-# So `os/Containerfile.test` and `os/Containerfile.installer`, which both do
-# `FROM localhost/tilo:latest`, have to be built from the UNSEALED rootfs and sealed
-# themselves — `podman build --target rootfs` gives them that. Until they are, the
-# disk step for those two images fails at the digest check with the message
-# os/dev/disk-image.sh prints, rather than producing something that boots wrong.
+# So `os/Containerfile.installer`, which does `FROM localhost/tilo:latest`, has to
+# be built from the UNSEALED rootfs and sealed itself — `podman build --target
+# rootfs` gives it that. Until it is, the disk step for that image fails at the
+# digest check with the message os/dev/disk-image.sh prints, rather than producing
+# something that boots wrong.
 FROM split AS final
 COPY --from=uki /out/*.efi /boot/EFI/Linux/
 # Which Rust LTO the binaries in this image were linked with (TILO_RUST_LTO in
