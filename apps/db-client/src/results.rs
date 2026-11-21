@@ -316,11 +316,11 @@ impl ui::widget::Decorator for ResultsTable {
         let room = (height - self.header).max(0.0);
         let rows = self.result.as_ref().map_or(0, |result| result.rows.len());
         let content = self.header * rows as f64;
-        #[allow(clippy::cast_possible_truncation, reason = "a screen height")]
+        #[allow(clippy::cast_possible_truncation, reason = "a screen's height in points")]
         let body = room.min(content) as f32;
         if body > 0.0 && (body - self.body).abs() > 0.5 {
             self.body = body;
-            #[allow(clippy::cast_possible_truncation, reason = "a row height")]
+            #[allow(clippy::cast_possible_truncation, reason = "a row's height in points")]
             self.table.set_viewport(body, self.header as f32);
         }
         Widget::apply_layout(&mut self.table, taffy, node, origin);
