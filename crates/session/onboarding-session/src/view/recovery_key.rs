@@ -19,25 +19,17 @@ pub(super) fn import_recovery_words(
     identity_paths: &tilo_device_identity::IdentityPaths,
     words: &str,
 ) -> Result<MintedIdentity, String> {
-    let store = tilo_identity::registry::IdentityRegistryStore::at(import_dir);
-    // The words carry no display name; like native minting, an unnamed
-    // identity is shown by its fingerprint until the person names it.
-    let profile = store.import_recovery_words(words, "").map_err(|error| {
+    let profile = tilo_enrollment::install::restore_from_recovery_words(
+        import_dir,
+        identity_paths,
+        words,
+        None,
+        crate::firstboot::IDENTITY_STORAGE,
+    )
+    .map_err(|error| {
         tilo_identity::store::recovery_words_error(&error)
             .map_or_else(|| error.to_string(), words_problem)
     })?;
-    let runtime_id = profile
-        .record_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| "restored identity has no valid runtime id".to_string())?;
-    tilo_identity::store::set_active_identity(import_dir, runtime_id)
-        .map_err(|error| error.to_string())?;
-    crate::firstboot::ensure_collaboration_identity(import_dir, identity_paths)
-        .map_err(|error| error.to_string())?;
-    tilo_identity::device_fleet::DeviceFleetStore::at(import_dir, identity_paths.clone())
-        .register_current_device(&profile.id)
-        .map_err(|error| error.to_string())?;
     Ok(MintedIdentity {
         fingerprint: profile.id,
         path: profile.record_path,

@@ -8,6 +8,48 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 #[cfg(target_os = "linux")]
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
+#[cfg(unix)]
+#[test]
+fn recovery_words_restore_the_person_on_a_headless_device() -> anyhow::Result<()> {
+    use tilo_device_identity::persist::read_device_cert;
+    use tilo_identity::{provisioning, store};
+
+    let source = tempfile::tempdir()?;
+    let identity = source.path().join("identity");
+    let source_paths = IdentityPaths::under(source.path().join("device"));
+    let storage = provisioning::IdentityStorage::Files;
+    let user = provisioning::create_person(&identity, &source_paths, "Ada", "Original", storage)?;
+    let words = store::recovery_words(identity.join(provisioning::PRIMARY_IDENTITY_FILE))?;
+    let original = read_device_cert(&source_paths.device_cert)?;
+
+    let target = tempfile::tempdir()?;
+    let identity = target.path().join("identity");
+    let target_paths = IdentityPaths::under(target.path().join("device"));
+    let profile =
+        restore_from_recovery_words(&identity, &target_paths, &words, Some("Headless"), storage)?;
+    let cert = read_device_cert(&target_paths.device_cert)?;
+    assert_eq!(profile.user_public_key, user);
+    assert_eq!(cert.user_public_key, user);
+    assert_eq!(cert.device_label, "Headless");
+    assert_ne!(cert.device_public_key, original.device_public_key);
+    provisioning::verify_collaboration_identity(&identity, &target_paths, now_ns()?)?;
+
+    let repeated = restore_from_recovery_words(&identity, &target_paths, &words, None, storage)?;
+    assert_eq!(repeated, profile);
+    assert_eq!(read_device_cert(&target_paths.device_cert)?, cert);
+    let wrong = restore_from_recovery_words(
+        source.path().join("identity").as_path(),
+        &source_paths,
+        "not a valid recovery key",
+        None,
+        storage,
+    )
+    .expect_err("invalid words");
+    assert!(store::recovery_words_error(&wrong).is_some());
+    assert_eq!(read_device_cert(&source_paths.device_cert)?, original);
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn personal_payload(
     root: &ed25519_dalek::SigningKey,

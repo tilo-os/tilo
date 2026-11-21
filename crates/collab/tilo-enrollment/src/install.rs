@@ -19,6 +19,49 @@ mod offline;
 #[cfg(unix)]
 pub use offline::{OfflineInstall, install_from_local_identity};
 
+/// Restore the person encoded in their recovery words and certify this device.
+/// The recovery key supplies the root alone. Any presentation already kept
+/// for that identity stays with the record.
+///
+/// # Errors
+/// Invalid words, words for a different active identity, or a failure to
+/// restore the record or certify the device.
+#[cfg(unix)]
+pub fn restore_from_recovery_words(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    words: &str,
+    label: Option<&str>,
+    storage: tilo_identity::provisioning::IdentityStorage,
+) -> std::io::Result<tilo_identity::registry::IdentityProfile> {
+    use tilo_identity::{
+        device_fleet::DeviceFleetStore, provisioning, registry::IdentityRegistryStore, store,
+    };
+
+    let profile =
+        IdentityRegistryStore::at(identity_dir).import_recovery_words(words, "", storage)?;
+    let runtime_id = profile
+        .record_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid identity id")
+        })?;
+    store::set_active_identity(identity_dir, runtime_id)?;
+    if let Some(label) = label {
+        provisioning::ensure_collaboration_identity_with_device_label(
+            identity_dir,
+            paths,
+            storage,
+            label,
+        )?;
+    } else {
+        provisioning::ensure_collaboration_identity(identity_dir, paths, storage)?;
+    }
+    DeviceFleetStore::at(identity_dir, paths.clone()).register_current_device(&profile.id)?;
+    Ok(profile)
+}
+
 /// A native personal enrollment's device layout and account. The roots are
 /// chosen by the local caller. When acting for another account, supply its
 /// uid explicitly so writes into the person's directory run as that account.

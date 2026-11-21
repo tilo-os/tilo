@@ -476,12 +476,6 @@ fn single_device_seed(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
     Ok(seed)
 }
 
-/// The root `phrase` restores, read as [`recovery_words_public_key`] reads
-/// it.
-pub(crate) fn recovery_words_root(phrase: &str) -> Result<SigningKey, RecoveryWordsError> {
-    decode_seed(phrase).map(|seed| SigningKey::from_bytes(&seed))
-}
-
 fn decode_seed(phrase: &str) -> Result<Zeroizing<[u8; 32]>, RecoveryWordsError> {
     let normalized = normalize(phrase);
     let found = normalized.split_whitespace().count();

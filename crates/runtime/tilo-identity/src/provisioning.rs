@@ -1242,68 +1242,7 @@ pub fn create_person(
         ));
     }
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-    keep_person(
-        identity_dir,
-        paths,
-        &root,
-        display_name,
-        device_label,
-        storage,
-    )
-}
-
-/// Become the person whose 24-word recovery key `words` is, on an account
-/// that holds no identity yet: their root kept as this account's identity in
-/// `identity_dir` and this device certified by it as `device_label` in
-/// `paths`, as [`create_person`] keeps a new one. What a new device's
-/// "Enter your recovery key" does, for `tilo login --recovery-key`. An
-/// account that is this person already keeps its identity, and this device is
-/// certified by it if it was not. Answers the person's user public key.
-///
-/// # Errors
-///
-/// The words are not a recovery key, or this account is another person (a
-/// [`crate::store::RecoveryWordsError`] inside the error), or as
-/// [`create_person`].
-pub fn restore_person(
-    identity_dir: &Path,
-    paths: &IdentityPaths,
-    words: &str,
-    device_label: &str,
-    storage: IdentityStorage,
-) -> io::Result<[u8; 32]> {
-    let root = crate::store::recovery_words_root(words)?;
-    let user = root.verifying_key().to_bytes();
-    let held = crate::store::list_identities(identity_dir)?;
-    if let Some(active) = held.iter().find(|summary| summary.active) {
-        if active.public_key != user {
-            return Err(crate::store::RecoveryWordsError::DifferentIdentity {
-                expected: active.public_key,
-                found: user,
-            }
-            .into());
-        }
-        ensure_collaboration_identity_with_device_label(
-            identity_dir,
-            paths,
-            storage,
-            device_label,
-        )?;
-        return Ok(user);
-    }
-    // The words carry no name: the person keeps the one their workspaces know them by.
-    keep_person(identity_dir, paths, &root, "", device_label, storage)
-}
-
-fn keep_person(
-    identity_dir: &Path,
-    paths: &IdentityPaths,
-    root: &ed25519_dalek::SigningKey,
-    display_name: &str,
-    device_label: &str,
-    storage: IdentityStorage,
-) -> io::Result<[u8; 32]> {
-    import_single_device_root(identity_dir, root, display_name, storage)?;
+    import_single_device_root(identity_dir, &root, display_name, storage)?;
     ensure_collaboration_identity_with_device_label(identity_dir, paths, storage, device_label)?;
     Ok(root.verifying_key().to_bytes())
 }

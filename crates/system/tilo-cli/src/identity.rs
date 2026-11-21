@@ -203,11 +203,11 @@ pub fn restore(words: &str) -> Result<Person> {
             );
         }
     }
-    tilo_identity::provisioning::restore_person(
+    tilo_enrollment::install::restore_from_recovery_words(
         &dir,
         &paths(),
         words,
-        &login::label("tilo", &login::hostname()),
+        Some(&login::label("tilo", &login::hostname())),
         IdentityStorage::for_session(),
     )
     .map_err(
@@ -591,7 +591,10 @@ mod tests {
         // No new person is made beside her: the refusal names her.
         let refused = ensure(Some("Someone")).err().expect("a second person");
         assert!(refused.to_string().contains(&ada.user()), "{refused:#}");
-        assert!(refused.to_string().contains("--recovery-key"), "{refused:#}");
+        assert!(
+            refused.to_string().contains("--recovery-key"),
+            "{refused:#}"
+        );
         // Someone else's words are refused too, naming her.
         let refused = restore(&bea_words).err().expect("another person's words");
         assert!(refused.to_string().contains(&ada.user()), "{refused:#}");

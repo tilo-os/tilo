@@ -10,6 +10,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use tilo_user_identity::DeviceCert;
 
 use super::{IdentityProfile, IdentityRegistry, REGISTRY_SCHEMA_VERSION, short_fingerprint};
+use crate::provisioning::IdentityStorage;
 
 const REGISTRY_FILE: &str = "registry.json";
 const MAX_IMPORTED_IDENTITY_BYTES: u64 = 1024 * 1024;
@@ -515,6 +516,7 @@ impl IdentityRegistryStore {
         &self,
         words: &str,
         display_name: &str,
+        storage: IdentityStorage,
     ) -> io::Result<IdentityProfile> {
         let public_key = crate::store::recovery_words_public_key(words)?;
         let id = hex::encode(public_key);
@@ -522,12 +524,24 @@ impl IdentityRegistryStore {
         // Runtime ids are capped at 64 characters and must start with a
         // letter. The full fingerprint remains the registry's stable id.
         let runtime_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
-        let destination = crate::store::import_recovery_words(
-            &self.identity_dir,
-            &runtime_id,
-            words,
-            display_name,
-        )?;
+        let destination = match storage {
+            IdentityStorage::Files => {
+                let provider = crate::store::BrokerFileProvider::new(&self.identity_dir);
+                crate::store::import_recovery_words_with_provider(
+                    &self.identity_dir,
+                    &runtime_id,
+                    words,
+                    display_name,
+                    &provider,
+                )
+            }
+            IdentityStorage::Platform => crate::store::import_recovery_words(
+                &self.identity_dir,
+                &runtime_id,
+                words,
+                display_name,
+            ),
+        }?;
         let profile = registry.register_record(&destination)?.clone();
         self.save(&registry)?;
         Ok(profile)
@@ -860,7 +874,7 @@ mod tests {
             let store = IdentityRegistryStore::at(fresh.path().join("identity"));
             assert_eq!(store.recovery_expected_identity().expect("none yet"), None);
             let profile = store
-                .import_recovery_words(&written, "Ada again")
+                .import_recovery_words(&written, "Ada again", IdentityStorage::Files)
                 .expect("restore");
             assert_eq!(profile.id, hex::encode(minted.group_public_key()));
             assert_eq!(profile.display_name, "Ada again");
@@ -884,7 +898,9 @@ mod tests {
                 minted.sign(b"same person").unwrap()
             );
             assert_eq!(
-                store.import_recovery_words(&words, "").expect("again"),
+                store
+                    .import_recovery_words(&words, "", IdentityStorage::Files)
+                    .expect("again"),
                 profile
             );
 
@@ -907,7 +923,7 @@ mod tests {
             let other_words =
                 crate::store::recovery_words(other.path().join("primary.json")).expect("words");
             let refused = store
-                .import_recovery_words(&other_words, "Eve")
+                .import_recovery_words(&other_words, "Eve", IdentityStorage::Files)
                 .expect_err("another identity");
             assert!(matches!(
                 crate::store::recovery_words_error(&refused),

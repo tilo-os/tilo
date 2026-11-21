@@ -25,9 +25,9 @@ pub use tilo_identity::provisioning::{
 /// Where this session keeps a newly provisioned identity: the platform store,
 /// except in this crate's unit tests, which keep it in private files.
 #[cfg(not(test))]
-const IDENTITY_STORAGE: IdentityStorage = IdentityStorage::Platform;
+pub(crate) const IDENTITY_STORAGE: IdentityStorage = IdentityStorage::Platform;
 #[cfg(test)]
-const IDENTITY_STORAGE: IdentityStorage = IdentityStorage::Files;
+pub(crate) const IDENTITY_STORAGE: IdentityStorage = IdentityStorage::Files;
 
 /// [`tilo_identity::provisioning::ensure_primary_identity`] in this
 /// session's identity storage.
