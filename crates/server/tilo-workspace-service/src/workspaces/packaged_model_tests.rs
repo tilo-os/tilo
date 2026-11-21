@@ -169,6 +169,126 @@ pub(super) fn create_area(name: &str) -> serde_json::Map<String, serde_json::Val
     arguments
 }
 
+/// What the installed app's action wrote, read with the app's own model code built natively here,
+/// and the history entry its change keeps: the action in the bytes its own type writes, the app
+/// and the person. Answers the document and the change's head.
+fn what_the_action_wrote(after: &[u8]) -> (automerge::AutoCommit, automerge::ChangeHash) {
+    let document = automerge::AutoCommit::load(after).unwrap();
+    let tracker = tasks_model::Tracker::read(&document).unwrap();
+    assert!(
+        tracker
+            .areas
+            .iter()
+            .any(|(_, area)| area.name.as_str() == "Ship it"),
+        "the tracker holds the project the action made"
+    );
+    let mut written = automerge::AutoCommit::load(after).unwrap();
+    let head = written.get_heads()[0];
+    let entry = tilo_actions::entry_of(written.committed_document(), head)
+        .expect("the change has an entry");
+    let recorded = entry.action.as_ref().expect("the entry holds the action");
+    assert_eq!(recorded.type_id, TRACKER);
+    assert!(
+        String::from_utf8_lossy(&recorded.payload).contains("\"create-area\""),
+        "the recorded action is the verb applied"
+    );
+    assert_eq!(
+        entry.app.as_ref().map(|app| app.id.as_str()),
+        Some(TASKS),
+        "the entry names the app the package is"
+    );
+    assert!(entry.invoker.is_some(), "the entry names who acted");
+    (written, head)
+}
+
+/// Another holder of the resource replays the invocation `envelope` with the module read from
+/// `package` itself, at the invocation's base heads, and makes the server's change byte for byte.
+fn a_holder_replays_it(
+    package: &[u8],
+    base: &[u8],
+    envelope: serde_json::Value,
+    written: &mut automerge::AutoCommit,
+) {
+    // The packs ship the module split, so what applied the action was the app's code linked
+    // after the model runtime.
+    let module = packaged_model(package);
+    assert!(
+        tilo_model_engine::linked_runtime(&module)
+            .unwrap()
+            .is_some(),
+        "the package carries the app's module split from the model runtime"
+    );
+    let model = Model::compile(&module).unwrap();
+    let envelope: tilo_actions::ActionEnvelope = serde_json::from_value(envelope).unwrap();
+    let replayed = model.replay(TRACKER, base, &envelope).unwrap();
+    let mut replayed_document = automerge::AutoCommit::load(base).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut replayed_document, &replayed).unwrap();
+    assert_eq!(
+        replayed_document.get_heads(),
+        written.get_heads(),
+        "the holder's replay of the invocation makes the server's change"
+    );
+}
+
+/// An argument the signed surface does not take is refused before the module builds anything,
+/// and the workspace's document stays `after`.
+async fn a_wrong_argument_writes_nothing(
+    workspaces: &super::Workspaces,
+    workspace: &str,
+    cert: &tilo_user_identity::DeviceCert,
+    package: &[u8],
+    after: &[u8],
+) {
+    let mut wrong = serde_json::Map::new();
+    wrong.insert("name".into(), serde_json::Value::from(5));
+    let member = tilo_actions::MemberId::person(hex::encode(cert.user_public_key));
+    let refused = workspaces
+        .apply_packaged_action(
+            workspace,
+            cert,
+            PackagedAction {
+                app: TASKS,
+                kind: TRACKER,
+                document: "",
+                package,
+                action: "create-area",
+                arguments: wrong,
+                member: member.clone(),
+                acting: tilo_actions::Acting::member(member),
+                now_ms: NOW_MS + 1,
+            },
+        )
+        .await;
+    assert!(refused.is_err(), "the device refuses a wrong argument");
+    assert_eq!(
+        workspaces
+            .resource_document(workspace, TASKS, "")
+            .await
+            .unwrap()
+            .expect("the document still exists"),
+        after,
+        "a refused action writes nothing"
+    );
+}
+
+/// Taking the step at `head` back is history's own revert, on the device: nothing of it reaches
+/// the module.
+fn the_revert_takes_it_back(written: &mut automerge::AutoCommit, head: &automerge::ChangeHash) {
+    let authors = ui::history_source::authors::AuthorDirectory::new();
+    let outcome =
+        ui::history_source::revert::revert_step(written, head, None, &authors).unwrap();
+    assert!(outcome.wrote, "the revert writes the step's inverse");
+    written.commit();
+    assert!(
+        !tasks_model::Tracker::read(written)
+            .unwrap()
+            .areas
+            .iter()
+            .any(|(_, area)| area.name.as_str() == "Ship it"),
+        "the reverted step's area is gone"
+    );
+}
+
 #[tokio::test]
 #[ignore = "reads the model module the app-models check built (t test test-packaged-model)"]
 async fn a_server_applies_an_installed_apps_action_from_its_package() {
@@ -219,107 +339,13 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
         .await
         .unwrap()
         .expect("the document still exists");
-    // Read with the app's own model code, built natively here: the module
-    // wrote what the app means.
-    let document = automerge::AutoCommit::load(&after).unwrap();
-    let tracker = tasks_model::Tracker::read(&document).unwrap();
-    assert!(
-        tracker
-            .areas
-            .iter()
-            .any(|(_, area)| area.name.as_str() == "Ship it"),
-        "the tracker holds the project the action made"
-    );
-    // History keeps what was done, as the device wrote it: the action, in
-    // the bytes its own type writes, the app and the person.
-    let mut written = automerge::AutoCommit::load(&after).unwrap();
-    let head = written.get_heads()[0];
-    let entry = tilo_actions::entry_of(written.committed_document(), head)
-        .expect("the change has an entry");
-    let recorded = entry.action.as_ref().expect("the entry holds the action");
-    assert_eq!(recorded.type_id, TRACKER);
-    assert!(
-        String::from_utf8_lossy(&recorded.payload).contains("\"create-area\""),
-        "the recorded action is the verb applied"
-    );
-    assert_eq!(
-        entry.app.as_ref().map(|app| app.id.as_str()),
-        Some(TASKS),
-        "the entry names the app the package is"
-    );
-    assert!(entry.invoker.is_some(), "the entry names who acted");
+    let (mut written, head) = what_the_action_wrote(&after);
 
-    // Another holder of the resource replays the invocation with the same
-    // module, read from the package itself, at the invocation's base heads:
-    // it makes the server's change, byte for byte. The packs ship it split,
-    // so what applied the action above was the app's code linked after the
-    // model runtime.
-    let module = packaged_model(&package);
-    assert!(
-        tilo_model_engine::linked_runtime(&module)
-            .unwrap()
-            .is_some(),
-        "the package carries the app's module split from the model runtime"
-    );
-    let model = Model::compile(&module).unwrap();
-    let envelope: tilo_actions::ActionEnvelope = serde_json::from_value(envelope).unwrap();
-    let replayed = model.replay(TRACKER, &base, &envelope).unwrap();
-    let mut replayed_document = automerge::AutoCommit::load(&base).unwrap();
-    tilo_automerge::ApplyIncoming::load_incoming(&mut replayed_document, &replayed).unwrap();
-    assert_eq!(
-        replayed_document.get_heads(),
-        written.get_heads(),
-        "the holder's replay of the invocation makes the server's change"
-    );
+    a_holder_replays_it(&package, &base, envelope, &mut written);
 
-    // An argument the signed surface does not take is refused before the
-    // module builds anything, and the workspace's document is untouched.
-    let mut wrong = serde_json::Map::new();
-    wrong.insert("name".into(), serde_json::Value::from(5));
-    let member = tilo_actions::MemberId::person(hex::encode(cert.user_public_key));
-    let refused = workspaces
-        .apply_packaged_action(
-            &created.workspace,
-            &cert,
-            PackagedAction {
-                app: TASKS,
-                kind: TRACKER,
-                document: "",
-                package: &package,
-                action: "create-area",
-                arguments: wrong,
-                member: member.clone(),
-                acting: tilo_actions::Acting::member(member),
-                now_ms: NOW_MS + 1,
-            },
-        )
-        .await;
-    assert!(refused.is_err(), "the device refuses a wrong argument");
-    assert_eq!(
-        workspaces
-            .resource_document(&created.workspace, TASKS, "")
-            .await
-            .unwrap()
-            .expect("the document still exists"),
-        after,
-        "a refused action writes nothing"
-    );
+    a_wrong_argument_writes_nothing(workspaces, &created.workspace, &cert, &package, &after).await;
 
-    // Taking the step back is history's own revert, on the device: nothing of
-    // it reaches the module.
-    let authors = ui::history_source::authors::AuthorDirectory::new();
-    let outcome =
-        ui::history_source::revert::revert_step(&mut written, &head, None, &authors).unwrap();
-    assert!(outcome.wrote, "the revert writes the step's inverse");
-    written.commit();
-    assert!(
-        !tasks_model::Tracker::read(&written)
-            .unwrap()
-            .areas
-            .iter()
-            .any(|(_, area)| area.name.as_str() == "Ship it"),
-        "the reverted step's area is gone"
-    );
+    the_revert_takes_it_back(&mut written, &head);
     server.shutdown().await;
 }
 
