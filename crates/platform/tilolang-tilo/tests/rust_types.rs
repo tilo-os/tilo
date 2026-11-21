@@ -138,7 +138,7 @@ fn a_rust_types_channel_says_what_it_is_from_its_declaration() {
 #[test]
 fn a_rust_apps_channel_is_found_by_youtube_videos_of_its_name() {
     tilo_resource::words::name_app("Tube", "tube.library");
-    // The registry's words for Tube (apps/tube/search/en.ftl): search names
+    // The words a video app registers for its search: search names
     // the app by them as by its title.
     let keywords = ["youtube", "video", "videos", "channel", "channels"];
     let channel = published(tilo_resource::publish::<Channel>(
