@@ -1250,7 +1250,7 @@ fn someone_elses_card_says_who_they_are_and_offers_writing_and_following() {
 }
 
 #[test]
-fn your_own_card_shows_your_id_and_your_pictures_buttons() {
+fn your_own_card_shows_picture_buttons_and_omits_the_id() {
     let mut own = model();
     own.key = Some(ADA_KEY.into());
     for id in [SET_PHOTO, RESET_PHOTO] {
@@ -1265,7 +1265,7 @@ fn your_own_card_shows_your_id_and_your_pictures_buttons() {
     let said = says(&mut frame);
     assert!(said.contains("Change picture"), "{said}");
     assert!(said.contains("Remove picture"), "{said}");
-    assert!(said.contains("Copy ID"), "{said}");
+    assert!(!said.contains("Copy ID"), "{said}");
     click(&mut frame, "profile-action-set-photo");
     assert_eq!(
         frame.take_choice(),

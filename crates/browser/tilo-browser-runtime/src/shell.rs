@@ -1099,13 +1099,6 @@ impl BrowserShell {
                             "settings.section:devices_access".into(),
                         )));
                 }
-                // How an agent connects, asked of the card: the page shows the
-                // setup its own first screen does.
-                tilo_session::people::PeopleAsk::ConnectAgent => {
-                    self.requests
-                        .borrow_mut()
-                        .push(HostRequest::Action("connect-agent".into()));
-                }
                 // What the host offers about who they are, which their own card lists: performed
                 // as a host action, as search's rows and a banner's buttons are.
                 tilo_session::people::PeopleAsk::HostAction(id) => {
@@ -1645,7 +1638,6 @@ impl BrowserShell {
                 .unwrap_or_default()
                 .to_owned(),
             control_hints: Some(self.top.hints().enabled()),
-            key: self.chrome.here.borrow().own_user().map(str::to_owned),
             // Status, colour and what people see are the desktop's to keep;
             // a page shows the person as their host names them.
             ..ProfileModel::default()

@@ -63,12 +63,7 @@ impl Shared {
                 people::PeopleAsk::Settings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
-                // How an agent or a computer of theirs connects: Console's Connect place, which
-                // the app opens (or comes forward with) in the workspace in front.
                 people::PeopleAsk::PairDevice => self.open_pair_device(),
-                people::PeopleAsk::ConnectAgent => {
-                    self.invoke_app_action(LaunchpadAppAction::connect_agent());
-                }
                 // The person's own card offers what the ask on their avatar asks: choosing it there
                 // answers that ask, which goes as it does when they answer it on the avatar.
                 people::PeopleAsk::HostAction(id) => {
@@ -539,9 +534,10 @@ impl Shared {
             SESSION_RESTART => self.power_effect(PowerEffect::Restart),
             SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
             REPORT_PROBLEM => self.report_problem(),
-            // How an agent or a computer connects as the person, asked of the shell by an app
-            // (Settings' Devices and access): what their own card's entry opens.
-            people::CONNECT_AGENT => self.invoke_app_action(LaunchpadAppAction::connect_agent()),
+            // Settings' Devices and access opens Console's Connect page.
+            tilo_actions::remote::session_actions::CONNECT_AGENT => {
+                self.invoke_app_action(LaunchpadAppAction::connect_agent());
+            }
             choice => {
                 // A machine that asked to join over the internet is answered here: the
                 // notification's own buttons admit it or turn it away.

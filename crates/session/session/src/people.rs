@@ -56,11 +56,8 @@ pub enum PeopleAsk {
     Availability(ui::Availability),
     /// The presence colour they chose, by its id.
     Colour(String),
-    /// Open the Settings page a card action names, such as their identities or an identity backup.
+    /// Open the Settings page the person chose.
     Settings(String),
-    /// Show how an agent or a computer of theirs connects: Console's Connect place, where the
-    /// commands that add Tilo to an agent are.
-    ConnectAgent,
     /// Add another of their own devices: the session's sheet with the link its camera reads.
     PairDevice,
     /// Do the host action this person's own card offers, as the palette and a banner hand theirs
@@ -136,12 +133,6 @@ pub(crate) fn own_face(
 /// The card of this person themselves, where the roster lists someone else's: marked in
 /// [`Shown::card_open`] while it stands there.
 const SELF_CARD: &str = "";
-
-/// The own card's action that shows how an agent, or a computer running Tilo, connects. A page
-/// answers it with the setup its first screen shows (a `tilo login` prompt and Tilo's MCP
-/// address); a desktop has no login code to hand out, so it shows Console's Connect place, where
-/// the commands that add Tilo to an agent are and the agents already let in are listed.
-pub const CONNECT_AGENT: &str = tilo_actions::remote::session_actions::CONNECT_AGENT;
 
 /// The own card's action that opens Settings' "Devices and access": everything that acts as the
 /// person, and taking any of it back.
@@ -891,9 +882,7 @@ impl Panel {
         })
     }
 
-    /// This person's own card: who they are here, as the bar names them, what they say of
-    /// themselves, the devices they are here on, and what they can do about their identity. The
-    /// same card as anyone else's, with the rows only their own host offers.
+    /// This person's own card: the name and status people here see, and what they can change.
     fn own_model(&self) -> ProfileModel {
         let networked = self.sync.as_ref();
         let own = networked.map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
@@ -904,14 +893,6 @@ impl Panel {
             ui::local_identity::load().map(|identity| identity.display_name),
         )
         .unwrap_or_default();
-        let devices = self.sync.as_ref().map_or_else(Vec::new, |sync| {
-            let here = sync.here();
-            let here = here.borrow();
-            here.devices_of(&sync.publisher().to_string())
-        });
-        // The identity's key is the person's on every device: the card shows it short, with Copy,
-        // and the roster looks every face up by it.
-        let key = own.user.clone();
         let (red, green, blue) = own_live_rgb(self.sync.as_deref(), &identity);
         ProfileModel {
             name: ui::presence::person_label(&name),
@@ -931,16 +912,11 @@ impl Panel {
                 .map(|status| status.text.clone())
                 .unwrap_or_default(),
             offers_presence: true,
-            key,
-            devices,
             ..ProfileModel::default()
         }
     }
 
-    /// What the session offers this person about who they are: what the host offers about their
-    /// identity while it still offers it — keeping their name and work on this device, the choice the
-    /// ask on their avatar waits for — and the pages where their identities are kept and backed up,
-    /// and where another of their devices is paired.
+    /// The host's current requests, Settings, and the ways to add and manage devices.
     fn own_actions(&self) -> Vec<ProfileAction> {
         let mut actions: Vec<ProfileAction> = self
             .handle
@@ -967,30 +943,10 @@ impl Panel {
         );
         actions.extend([
             ProfileAction {
-                id: "identities".to_owned(),
-                title: crate::i18n::t("profile-action-identities"),
-                group: ProfileGroup::Identity,
-                icon: ui::icons::Icon::Fingerprint,
-            },
-            ProfileAction {
-                id: "identity-backup".to_owned(),
-                title: crate::i18n::t("profile-action-backup"),
-                group: ProfileGroup::Identity,
-                icon: ui::icons::Icon::Download,
-            },
-            ProfileAction {
                 id: "pair-device".to_owned(),
                 title: crate::i18n::t("profile-action-pair-device"),
                 group: ProfileGroup::Devices,
                 icon: ui::icons::Icon::MonitorSmartphone,
-            },
-            // An agent, or a computer running Tilo, becomes a device of the person by signing in
-            // there once (`tilo login`), so the one entry covers both.
-            ProfileAction {
-                id: CONNECT_AGENT.to_owned(),
-                title: crate::i18n::t("profile-action-connect-agent"),
-                group: ProfileGroup::Devices,
-                icon: ui::icons::Icon::Bot,
             },
             // Everything that acts as the person, and taking any of it back.
             ProfileAction {
@@ -1007,8 +963,6 @@ impl Panel {
     fn own_settings_link(id: &str) -> Option<&'static str> {
         match id {
             OPEN_SETTINGS => Some("settings://"),
-            "identities" => Some("settings://users"),
-            "identity-backup" => Some("settings://about"),
             DEVICES_ACCESS => Some("settings://devices_access"),
             _ => None,
         }
@@ -1107,8 +1061,6 @@ impl Panel {
                         self.asks
                             .borrow_mut()
                             .push(PeopleAsk::Settings(link.to_owned()));
-                    } else if id == CONNECT_AGENT {
-                        self.asks.borrow_mut().push(PeopleAsk::ConnectAgent);
                     } else if self
                         .handle
                         .host_actions()

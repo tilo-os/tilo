@@ -377,10 +377,7 @@ window-move-reason-no-start = the app did not start there
 window-move-bringing-edits = The window comes back with what was written after it moved.
 
 ## The person's own card in the top bar: what it offers about who they are.
-profile-action-identities = Your identities
-profile-action-backup = Back up your identity
-profile-action-pair-device = Pair another device
-profile-action-connect-agent = Connect an agent or computer
+profile-action-pair-device = Add a device
 profile-action-settings = Settings
 profile-action-devices-access = Devices and access
 profile-name-not-saved = Your name was not saved

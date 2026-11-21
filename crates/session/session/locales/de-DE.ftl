@@ -383,10 +383,7 @@ window-move-reason-no-start = die App ist dort nicht gestartet
 window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Verschieben geschrieben wurde.
 
 ## The person's own card in the top bar: what it offers about who they are.
-profile-action-identities = Deine Identitäten
-profile-action-backup = Deine Identität sichern
-profile-action-pair-device = Ein weiteres Gerät koppeln
-profile-action-connect-agent = Agent oder Rechner verbinden
+profile-action-pair-device = Gerät hinzufügen
 profile-action-settings = Einstellungen
 profile-action-devices-access = Geräte und Zugriff
 profile-name-not-saved = Dein Name wurde nicht gespeichert

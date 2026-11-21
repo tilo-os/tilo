@@ -157,11 +157,9 @@ pub struct ProfileModel {
     pub offers_presence: bool,
     /// Whether the desktop's control hints show; `None` where the host has none to offer.
     pub control_hints: Option<bool>,
-    /// The person's root key (hex): the id that stays theirs on every device and never changes,
-    /// shown short with Copy.
+    /// The other person's root key (hex).
     pub key: Option<String>,
-    /// The devices the person is here on, each as it calls itself and as it said it was: which of
-    /// their machines are here.
+    /// The devices the other person is here on.
     pub devices: Vec<crate::here::PersonDevice>,
     /// The card is about someone else: what they say they are doing and what this person can do
     /// with them. `None` for the person's own card.
@@ -786,14 +784,12 @@ impl ProfileCard {
             .on_submit_view(move |_| asked.set(true))
     }
 
-    /// The person's stable id, short, with a button that copies it whole. Their own card keeps it
-    /// quiet, under their identity: it says who they are, it is not what they came to change.
-    fn key_row(key: &str, quiet: bool) -> Box<dyn Widget> {
+    /// The other person's stable id, short, with a button that copies it whole.
+    fn key_row(key: &str) -> Box<dyn Widget> {
         let copy = key.to_owned();
         let shown = Text::new(&short_key(key))
             .with_id("profile-key")
             .with_role(TextRole::Code);
-        let shown = if quiet { shown.dimmed() } else { shown };
         Box::new(
             Row::new()
                 .no_wrap()
@@ -875,7 +871,7 @@ impl ProfileCard {
         if let Some(key) = &model.key {
             body = body
                 .push(Box::new(Divider::horizontal()))
-                .push(Self::key_row(key, false));
+                .push(Self::key_row(key));
         }
         if let Some(actions) = self.other_actions(model, other) {
             body = body
@@ -1262,7 +1258,7 @@ impl ProfileCard {
         for (group, heading) in [
             (ProfileGroup::Together, None),
             (ProfileGroup::Identity, Some("profile-section-identity")),
-            (ProfileGroup::Devices, Some("profile-section-devices")),
+            (ProfileGroup::Devices, None),
         ] {
             let actions: Vec<&ProfileAction> = model
                 .actions
@@ -1278,16 +1274,7 @@ impl ProfileCard {
                     usize::MAX
                 })
                 .collect();
-            // The devices this person is here on are listed once, under the heading their pairing
-            // action shares.
-            let devices = (group == ProfileGroup::Devices && !model.devices.is_empty())
-                .then_some(model.devices.as_slice());
-            // Their own id, kept quiet under their identity: it says who they are, not what they
-            // came here to change.
-            let key = (group == ProfileGroup::Identity)
-                .then_some(model.key.as_deref())
-                .flatten();
-            if actions.is_empty() && devices.is_none() && key.is_none() {
+            if actions.is_empty() {
                 continue;
             }
             body = body.push(Box::new(Divider::horizontal()));
@@ -1296,14 +1283,8 @@ impl ProfileCard {
                     Text::new(&t(heading)).with_role(TextRole::Caption).dimmed(),
                 ));
             }
-            for row in devices.map_or_else(Vec::new, Self::device_rows) {
-                body = body.push(row);
-            }
             for action in actions {
                 body = body.push(Box::new(self.action_button(action)));
-            }
-            if let Some(key) = key {
-                body = body.push(Self::key_row(key, true));
             }
         }
         if !model.linked.is_empty() {

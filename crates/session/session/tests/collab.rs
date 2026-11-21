@@ -920,24 +920,48 @@ fn a_persons_card_offers_everyone_here() {
     );
 }
 
-/// Your own avatar opens your card, from the surface another person's does: your name and picture
-/// as everyone here sees them, and your identity, its backup and pairing another device, each in
-/// one place.
+/// Your avatar opens a card with the name others see and ways to add or manage devices.
 #[test]
 fn your_own_avatar_opens_your_card() {
     let _settled = ui::motion::testing::settled();
+    own_card(ui::headless::fixture_runner_inputs, "own-card");
+    own_card(
+        || ui::application::ComponentRunnerInputs {
+            theme: ui::Theme::light(),
+            ..ui::headless::fixture_runner_inputs()
+        },
+        "own-card-light",
+    );
+}
+
+fn own_card(presentation: fn() -> ui::application::ComponentRunnerInputs, capture: &str) {
     let mine = OwnPresence {
         label: "Quinten".to_owned(),
         user: Some(person(QUINTEN)),
         ..OwnPresence::default()
     };
     let sync = Rc::new(Client::untethered(device(0xf0), mine));
-    let mut session = session_over(&sync, None);
+    let mut session = Session::headless(
+        Options {
+            sync: Some(sync),
+            presentation,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("a session");
+    session.handle().replace_tree(shell());
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
     // The pointer comes up to the bar, as the person's does to press it.
     session
         .compositor()
         .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
         .expect("the pointer");
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
     let mut avatar = None;
     let mut named = None;
     until(&mut session, "the bar shows whose it is", |session| {
@@ -963,37 +987,29 @@ fn your_own_avatar_opens_your_card() {
     let labels = session.accessible_labels();
     for said in [
         "How everyone here sees you",
-        "Your identities",
-        "Back up your identity",
-        "Pair another device",
-        // The device the card is drawn on is named by which one it is, and its key is kept for the
-        // copy affordance beside it.
-        "This computer",
-        "this device",
-        "Copy this device’s key",
+        "Settings",
+        "Add a device",
+        "Devices and access",
     ] {
         assert!(
             labels.iter().any(|label| label == said),
             "your own card says {said:?}: {labels:?}"
         );
     }
-    assert!(
-        !labels.iter().any(|label| label == "Message"),
-        "your own card has nothing to message: {labels:?}"
-    );
-    // Their id says who they are, so it sits quiet under their identity; the card opens on what
-    // they came to change.
-    let at = |said: &str| labels.iter().position(|label| label == said);
-    let (identity, key, devices) = (
-        at("Your identities").expect("the identity actions"),
-        at("Person ID").expect("the person's own id"),
-        at("Devices").expect("the devices they are here on"),
-    );
-    assert!(
-        identity < key && key < devices,
-        "the id sits under your identity, not at the top of the card: {labels:?}"
-    );
-    shot(&mut session, "own-card");
+    for removed in [
+        "Message",
+        "Person ID",
+        "Copy this device’s key",
+        "Your identities",
+        "Back up your identity",
+        "Connect an agent or computer",
+    ] {
+        assert!(
+            !labels.iter().any(|label| label == removed),
+            "your own card leaves {removed:?} elsewhere: {labels:?}"
+        );
+    }
+    shot(&mut session, capture);
 
     assert!(
         control(&session, &["profile-card", "Your profile"]).is_some(),
