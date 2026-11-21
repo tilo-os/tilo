@@ -366,7 +366,7 @@ impl Connection {
         frame.push(b'\n');
         let mut writer = self.writer.lock_recover();
         if let Err(error) = writer.write_all(&frame).and_then(|()| writer.flush()) {
-            tracing::debug!(app = %self.app, %error, "an app stopped reading its chooser");
+            tracing::info!(app = %self.app, %error, "an app stopped reading its chooser");
         }
     }
 

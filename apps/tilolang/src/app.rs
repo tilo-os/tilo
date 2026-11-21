@@ -179,8 +179,11 @@ fn in_process(
     // workspace by id, as a session does, so the app's access to the workspace covers its
     // document; a profile naming it by a plain name (`personal`) gets one derived, so the same
     // window kept twice is one document.
-    let workspace_id = uuid::Uuid::parse_str(workspace)
-        .unwrap_or_else(|_| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes()));
+    let workspace_id = tilo_failure::ignored!(
+        "a workspace named by a plain name rather than its id gets one derived from that name",
+        uuid::Uuid::parse_str(workspace).ok()
+    )
+    .unwrap_or_else(|| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes()));
     let storage = match files.paths().data().native_path() {
         Ok(data) => Some(data.join("tilolang")),
         Err(error) => {

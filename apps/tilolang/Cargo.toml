@@ -31,6 +31,7 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
+tilo-failure = { path = "../../crates/platform/tilo-failure" }
 # The app window's half of the window, and the patch protocol between it and the instance.
 tilo-app-window = { path = "../../crates/platform/tilo-app-window" }
 tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
