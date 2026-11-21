@@ -985,23 +985,34 @@ impl ContentStore {
     ///
     /// The lookup is bounded and fail-closed: it never returns paths or other records' metadata, and an
     /// unavailable or malformed manifest prevents a partial authorization result.
+    ///
+    /// Its roots are read here, before the future is made: a namespace counts its nodes in a
+    /// `Cell`, so it is not `Sync`, and a future holding it could not be sent between threads.
     #[cfg(feature = "filesystem")]
-    pub async fn live_document_ids_for_blob(
-        &self,
+    pub fn live_document_ids_for_blob<'a>(
+        &'a self,
         namespace: &Namespace,
         requested: Hash,
         limits: BlobDocumentLookupLimits,
-    ) -> std::result::Result<Vec<fs_protocol::FileDocumentId>, BlobDocumentLookupError> {
-        if limits.max_manifest_bytes == 0
+    ) -> impl std::future::Future<
+        Output = std::result::Result<Vec<fs_protocol::FileDocumentId>, BlobDocumentLookupError>,
+    > + Send
+           + 'a {
+        let roots = if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_document == 0
             || limits.max_chunks_per_document > MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD
         {
-            return Err(BlobDocumentLookupError::InvalidLimits);
+            Err(BlobDocumentLookupError::InvalidLimits)
+        } else {
+            namespace
+                .live_document_blob_roots(limits.max_live_documents)
+                .map_err(BlobDocumentLookupError::from)
+        };
+        async move {
+            self.live_document_ids_for_blob_roots(roots?, requested, limits)
+                .await
         }
-        let roots = namespace.live_document_blob_roots(limits.max_live_documents)?;
-        self.live_document_ids_for_blob_roots(roots, requested, limits)
-            .await
     }
 
     #[cfg(feature = "filesystem")]
