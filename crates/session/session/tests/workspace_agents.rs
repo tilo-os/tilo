@@ -86,7 +86,7 @@ fn wait_for_chat_holding(device: &Device, wanted: &[&str]) {
         let answer = device.ask(&json!({
             "op": "resource_read",
             "app": "so.tilo.chat",
-            "records": ["", ui::resource::DocumentId::derived("messages", &ui::resource::DocumentId::workspace_default()).part(0).to_string()],
+            "records": ["", chat::parts::part(0).to_string()],
             "wait_ms": 0,
         }));
         let held = answer["answer"]["records"].to_string();

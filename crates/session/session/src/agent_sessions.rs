@@ -32,6 +32,9 @@ struct Inner {
     /// What the turns' agents spent since the last pass, in millionths of the currency, by
     /// workspace and agent: the pass charges it to their day.
     spent: BTreeMap<(String, String), u64>,
+    /// The turns whose answer ended without one, by session: the pass records each on the message
+    /// it answered.
+    failed: BTreeMap<String, (tilo_action_policy::turn::Turn, u32, String)>,
 }
 
 /// The session an agent answers a conversation's turns in, while one of them goes.
@@ -132,6 +135,21 @@ impl AgentSessions {
         std::mem::take(&mut self.inner.lock_recover().spent)
             .into_iter()
             .map(|((workspace, agent), cost)| (workspace, agent, cost))
+            .collect()
+    }
+
+    /// The turns whose answer ended without one since the last pass: the agent that answered, the
+    /// turn, the time it was asked and why its answer ended.
+    pub(crate) fn take_failed(&self) -> Vec<(String, tilo_action_policy::turn::Turn, u32, String)> {
+        let mut inner = self.inner.lock_recover();
+        std::mem::take(&mut inner.failed)
+            .into_iter()
+            .filter_map(|(session, (turn, attempt, reason))| {
+                inner
+                    .answering
+                    .get(&session)
+                    .map(|answering| (answering.agent.clone(), turn, attempt, reason))
+            })
             .collect()
     }
 
@@ -534,16 +552,27 @@ impl tilo_broker_core::services::AgentSessions for AgentSessions {
         }
     }
 
-    /// A turn's answer that ended without one: no conversation held here keeps a record of a
-    /// turn's work, so it is only told in the log.
+    /// Kept for the pass, which records it on the turn's message where Chat's record is open.
     fn turn_failed(
         &self,
         session: &str,
-        _turn: &tilo_action_policy::turn::Turn,
+        turn: &tilo_action_policy::turn::Turn,
         attempt: u32,
         reason: &str,
     ) {
-        tracing::warn!(session, attempt, reason, "an agent's turn ended without an answer");
+        {
+            let mut inner = self.inner.lock_recover();
+            if !inner.answering.contains_key(session) {
+                return;
+            }
+            inner.failed.insert(
+                session.to_owned(),
+                (turn.clone(), attempt, reason.to_owned()),
+            );
+        }
+        if let Some(wake) = self.wake.get() {
+            wake();
+        }
     }
 }
 
@@ -976,6 +1005,37 @@ mod tests {
             sessions.take_spent(),
             Vec::new(),
             "a turn this session does not hold is not charged"
+        );
+    }
+
+    /// A turn whose answer ended without one reaches the pass once, naming the agent that owes the
+    /// person an answer on its message.
+    #[test]
+    fn a_failed_turn_is_handed_to_the_pass() {
+        use tilo_broker_core::services::AgentSessions as _;
+        let sessions = AgentSessions::new();
+        let turn = asked("agent-session:t1", "scribe");
+        sessions.asked(vec![("w1".to_owned(), vec![turn.clone()])]);
+        sessions.turn_failed(&turn.session, &turn.turn, turn.attempt, "it stopped");
+        assert_eq!(
+            sessions.take_failed(),
+            vec![(
+                "scribe".to_owned(),
+                turn.turn.clone(),
+                turn.attempt,
+                "it stopped".to_owned()
+            )]
+        );
+        assert_eq!(
+            sessions.take_failed(),
+            Vec::new(),
+            "a failure is handed to the pass once"
+        );
+        sessions.turn_failed("agent-session:other", &turn.turn, 0, "it stopped");
+        assert_eq!(
+            sessions.take_failed(),
+            Vec::new(),
+            "no turn goes in that session, so no message waits on it"
         );
     }
 }

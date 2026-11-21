@@ -25,6 +25,7 @@ browser-model-wasm = { path = "../../../apps/browser-model-wasm" }
 calculator-model-wasm = { path = "../../../apps/calculator-model-wasm" }
 calendar-model-wasm = { path = "../../../apps/calendar-model-wasm" }
 camera-model-wasm = { path = "../../../apps/camera-model-wasm" }
+chat-model-wasm = { path = "../../../apps/chat-model-wasm" }
 clocks-model-wasm = { path = "../../../apps/clocks-model-wasm" }
 console-model-wasm = { path = "../../../apps/console-model-wasm" }
 contacts-model-wasm = { path = "../../../apps/contacts-model-wasm" }
