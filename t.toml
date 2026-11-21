@@ -6136,6 +6136,9 @@ name = "publish-windows-compat-{arch}"
 egress = { to = ["code.tilo.so:443"] }
 run = "bash tools/ci/publish/windows-compat-sysext.sh publish {arch} /target/os/{arch}/windows-compat"
 needs = ["os-windows-compat-{arch}"]
+# The OS assembler image: it carries debugfs, which reads the image's labels back before it is
+# offered. The step reaches the package registry alone and can install nothing while it publishes.
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["disk-100g"]
 git = true
 cache = false

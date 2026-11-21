@@ -89,7 +89,7 @@ print(d["size"], d["sha256"], d["file"])' "$descriptor") || die "$descriptor is 
 # the next start stops in systemd-tmpfiles-setup. The build checks its image; this
 # re-reads the bytes about to be offered and refuses them instead of trusting it.
 command -v debugfs >/dev/null \
-  || dnf install -y --setopt=install_weak_deps=False e2fsprogs >/dev/null
+  || die "no debugfs to read $file back with: the check publishes from the OS assembler image, which carries it"
 python3 -I "$repo_root/os/dev/sysext-image.py" check "$raw" \
   || die "$file would change /usr when merged (os/dev/sysext-image.py names what)"
 
