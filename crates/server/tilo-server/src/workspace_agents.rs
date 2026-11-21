@@ -30,12 +30,12 @@
 //! device handing its session to the agent on that turn: everything it does is held to what the
 //! person may do here now, capped as every agent is and narrowed by the bound its record keeps, and
 //! an action that asks first is put to the person on their own devices. Its changes are its own in
-//! history, for the person. Its model is its keeper's own: the one they linked for the work an
-//! agent does for them, asked with their own key ([`Workspaces::person_model`]), and never
-//! another once they linked any. A keeper who linked none is answered by the host's model where
+//! history, for the person. Its model is the workspace's: the one the workspace linked for the
+//! work its agents do, asked with the workspace's key ([`Workspaces::workspace_model`]), and never
+//! another once it linked any. A workspace that linked none is answered by the host's model where
 //! its operator runs one ([`ModelChoice`]), and told what to link where it runs none. What each
-//! turn costs is counted on the agent's record, and an agent whose keeper's daily limit is
-//! reached stops and says so.
+//! turn costs is counted on the agent's record, and an agent whose daily limit is reached stops
+//! and says so.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1336,17 +1336,8 @@ impl ServerAgents {
         else {
             return Ok(BTreeMap::new());
         };
-        // An agent acts for its keeper: one whose keeper is no longer a member works
-        // here no more, whatever the workspace's list of its agents still says, and is
-        // ended where the workspace is governed
-        // ([`crate::workspaces::Workspaces::remove_member`]). The server's own person keeps
-        // theirs: a listing leaves the server's own account out, and its agents work all
-        // the same.
-        let kept = self
-            .workspaces
-            .kept_people(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
+        // An agent is the workspace's: it works here for whichever member asks it, whoever
+        // made it, and each turn is held to what the person who asked may do now.
         Ok(agents
             .agents
             .iter()
@@ -1356,7 +1347,6 @@ impl ServerAgents {
                 agent.is_active()
                     && agent.on_host
                     && agent.mcp_client.is_none()
-                    && kept.contains(&agent.keeper)
                     && (sub_agents::worked_here(agent) || self.codes(agent))
             })
             .map(|agent| (agent.id.0.clone(), agent.clone()))
@@ -1759,10 +1749,10 @@ impl ServerAgents {
 
     /// The model `turn` is worked with, or why none works on it, in words its person reads.
     ///
-    /// The agent's keeper pays, so their own model answers: the one they linked for work an agent
-    /// does for them. Once they linked a provider their settings decide alone, and a choice that
-    /// cannot be used is said, never replaced by a model somebody else pays for. Only a keeper who
-    /// linked nothing is answered by the host's own model, where its operator runs one.
+    /// The workspace pays, so its own model answers: the one it linked for work its agents do.
+    /// Once it linked a provider its settings decide alone, and a choice that cannot be used is
+    /// said, never replaced by a model somebody else pays for. Only a workspace that linked
+    /// nothing is answered by the host's own model, where its operator runs one.
     async fn model_for(
         &self,
         place: (&str, WorkspaceId),
@@ -1772,8 +1762,8 @@ impl ServerAgents {
         self.model_for_turn(place, turn, day, Arc::default()).await
     }
 
-    /// [`Self::model_for`], for a turn its person may stop: a call of the keeper's model that is
-    /// under way ends once `stop` is set.
+    /// [`Self::model_for`], for a turn its person may stop: a call of the workspace's model that
+    /// is under way ends once `stop` is set.
     async fn model_for_turn(
         &self,
         (workspace, workspace_id): (&str, WorkspaceId),
@@ -1781,10 +1771,7 @@ impl ServerAgents {
         day: &str,
         stop: Arc<AtomicBool>,
     ) -> Result<Model, String> {
-        let theirs = tilo_action_policy::PersonId::parse(&turn.agent.keeper)
-            .ok()
-            .and_then(|keeper| keeper.root())
-            .map(|_| {
+        let theirs = {
                 // Every call is counted on the agent's day as it is answered, so turns of
                 // one agent going at once cannot each spend the day's whole limit.
                 let named_model = turn.agent.model.as_deref().or_else(|| {
@@ -1797,7 +1784,7 @@ impl ServerAgents {
                 let theirs = self
                     .workspaces
                     .workspace_model(workspace_id, sub_agents::kind_of(&turn.agent))
-                    // The model the agent itself names answers where its keeper linked it on
+                    // The model the agent itself names answers where the workspace linked it on
                     // this server: a sub-agent's is its skill's, or the one its starter named.
                     .naming(named_model)
                     .spending_as(Spender {
@@ -1821,22 +1808,15 @@ impl ServerAgents {
                     Some(look_round) => theirs.spending_as(look_round),
                     None => theirs,
                 }
-            });
-        let linked = match theirs {
-            Some(theirs) => {
-                let asked = theirs.clone();
-                tokio::task::spawn_blocking(move || asked.linked())
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .map(|linked| (theirs, linked.model.id))
-            }
-            None => Err(ModelRefusal::NoModelLinked {
-                kind: sub_agents::kind_of(&turn.agent),
-            }),
-        };
+            };
+        let asked = theirs.clone();
+        let linked = tokio::task::spawn_blocking(move || asked.linked())
+            .await
+            .map_err(|error| error.to_string())?
+            .map(|linked| (theirs, linked.model.id));
         match linked {
             Ok((theirs, name)) => Ok(Arc::new(move || {
-                Some(Box::new(KeeperTurns {
+                Some(Box::new(WorkspaceTurns {
                     model: theirs.clone(),
                     name: name.clone(),
                     stop: Arc::clone(&stop),
@@ -1907,8 +1887,8 @@ pub(crate) async fn count_spend(
         .map_err(|error| error.to_string())
 }
 
-/// A turn's model calls, asked of the model its agent's keeper linked, with their own key.
-struct KeeperTurns {
+/// A turn's model calls, asked of the model the workspace linked, with its own key.
+struct WorkspaceTurns {
     model: PersonModel,
     /// The model's name, for the usage log.
     name: String,
@@ -1918,7 +1898,7 @@ struct KeeperTurns {
     answered: Option<ModelAnswered>,
 }
 
-impl PlanTurns for KeeperTurns {
+impl PlanTurns for WorkspaceTurns {
     fn turn(
         &mut self,
         request: &ModelRequest,
