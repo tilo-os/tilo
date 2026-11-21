@@ -222,12 +222,14 @@ impl CompactSwatchPalette {
         let clear_h = ButtonFace::height(ControlSize::Small, theme);
         let width = grid_w + 2.0 * pad;
         let height = pad + title_h + gap + grid_h + gap + clear_h + pad;
-        let x = anchor
-            .x
-            .clamp(parent.x0 + gap, (parent.x1 - width - gap).max(parent.x0 + gap));
-        let y = anchor
-            .y
-            .clamp(parent.y0 + gap, (parent.y1 - height - gap).max(parent.y0 + gap));
+        let x = anchor.x.clamp(
+            parent.x0 + gap,
+            (parent.x1 - width - gap).max(parent.x0 + gap),
+        );
+        let y = anchor.y.clamp(
+            parent.y0 + gap,
+            (parent.y1 - height - gap).max(parent.y0 + gap),
+        );
         self.rect = Rect::new(x, y, x + width, y + height);
         picker.apply_layout(&taffy, node, Point::new(x + pad, y + pad + title_h + gap));
         let clear_y = self.rect.y1 - pad - clear_h;

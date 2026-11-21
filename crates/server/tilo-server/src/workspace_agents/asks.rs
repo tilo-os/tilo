@@ -47,7 +47,8 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::Agent;
 
 use super::{
-    Ask, CHAT, ServerAgents as Agents, Turn, WRITE_WAIT, WorkspaceActionProvider, invoke_named, later,
+    Ask, CHAT, ServerAgents as Agents, Turn, WRITE_WAIT, WorkspaceActionProvider, invoke_named,
+    later,
 };
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_asking::Allowing;

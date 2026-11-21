@@ -635,8 +635,12 @@ async fn a_fresh_device_that_founds_the_servers_workspace_again_replaces_no_serv
     // It hands its history to the holder, which refuses it: that history
     // names another founder than the one the holder's document was founded
     // with.
-    let handed =
-        servers::take_in(fresh.host.workspaces(), &laptop.cert, &holder.host.node_addr()).await;
+    let handed = servers::take_in(
+        fresh.host.workspaces(),
+        &laptop.cert,
+        &holder.host.node_addr(),
+    )
+    .await;
     assert_eq!(
         named_servers(&holder).await,
         ["laptop", "tablet"],

@@ -447,7 +447,10 @@ impl Workspaces {
         let mut gone = std::collections::BTreeSet::new();
         let mut taken = 0_usize;
         for (author, message) in windows {
-            match self.take_topology(workspace, author, message, &mut gone).await {
+            match self
+                .take_topology(workspace, author, message, &mut gone)
+                .await
+            {
                 Ok(true) => taken = taken.saturating_add(1),
                 Ok(false) => {}
                 Err(error) => {

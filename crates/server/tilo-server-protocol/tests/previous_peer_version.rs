@@ -291,7 +291,10 @@ fn a_document_write_reads_across_the_versions() {
         panic!("the previous version's `document-write` frame is a document write");
     };
     assert_eq!(*readers, None);
-    assert!(own.is_some(), "the write keeps the fields the previous version wrote");
+    assert!(
+        own.is_some(),
+        "the write keeps the fields the previous version wrote"
+    );
     let today = encode(&message);
     assert_eq!(
         today.split_at(kept.len()),

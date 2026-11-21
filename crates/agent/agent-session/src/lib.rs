@@ -44,12 +44,12 @@ pub mod apps;
 pub mod bot;
 pub mod control;
 pub mod facts;
-pub mod service;
 pub mod member;
 pub mod model;
 pub mod profile;
 pub mod render;
 pub mod search;
+pub mod service;
 mod web_apps;
 pub mod worker;
 pub mod workspace_actions;
@@ -63,10 +63,10 @@ pub use control::{
     AdmissionDone, AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone,
     GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot,
 };
-pub use service::{AgentService, CatalogueFactory, ServerEndpoint};
 pub use member::actions::{RESOURCE_PROVIDER, resource_provider};
 pub use member::{AgentMember, MemberConfig, Next, Pumped};
 pub use model::{ApiKey, CLOUD_MODEL, MakeTurns, ModelChoice};
+pub use service::{AgentService, CatalogueFactory, ServerEndpoint};
 pub use worker::{ConfinedReplica, PageAction};
 pub use workspace_actions::{
     FeedbackReviewer, HostActions, WorkspaceActions, WorkspaceDocumentsLink,

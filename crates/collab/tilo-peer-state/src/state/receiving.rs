@@ -550,9 +550,7 @@ impl StatePeer {
             },
             workspace_changes,
         )?;
-        if rebased
-            && let Some(before) = self.core.workspace_doc.as_deref()
-        {
+        if rebased && let Some(before) = self.core.workspace_doc.as_deref() {
             self.carry_over_base(before, keeper, &mut candidate)?;
         }
         // The workspace's owner is the person its governance names, not the
@@ -715,7 +713,10 @@ impl StatePeer {
 
 /// The owner `document`'s governance names now, as their root key: the
 /// founding owner, or whom the last transfer it replays handed it to.
-pub(super) fn governed_owner(document: &super::CachedDocument, workspace: &str) -> Option<[u8; 32]> {
+pub(super) fn governed_owner(
+    document: &super::CachedDocument,
+    workspace: &str,
+) -> Option<[u8; 32]> {
     let owner = document.workspace_policy(workspace).owner()?;
     let mut key = [0; 32];
     hex::decode_to_slice(owner, &mut key).ok()?;

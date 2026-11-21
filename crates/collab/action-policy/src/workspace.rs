@@ -1038,7 +1038,9 @@ impl WorkspacePolicy {
             return;
         };
         self.members.insert(previous.clone(), Role::Editor);
-        self.joined.entry(previous.clone()).or_insert(cx.now_unix_ms);
+        self.joined
+            .entry(previous.clone())
+            .or_insert(cx.now_unix_ms);
         let by = Grantee::person(previous.clone());
         for grant in [
             roles::administrator_grant(&self.workspace, &previous, by.clone()),

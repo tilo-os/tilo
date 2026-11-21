@@ -505,7 +505,8 @@ pub struct RealUpdateControl;
 impl UpdateControl for RealUpdateControl {
     fn timer_enabled(&self) -> Option<bool> {
         crate::device_read::off_ui_thread();
-        let out = command_output("systemctl", &["is-enabled", UPDATE_TIMER], STATUS_TIMEOUT).ok()?;
+        let out =
+            command_output("systemctl", &["is-enabled", UPDATE_TIMER], STATUS_TIMEOUT).ok()?;
         // `is-enabled` exits non-zero for "disabled", so the exit status is not
         // the answer — the word on stdout is. An unparseable word is `None`,
         // not `false`: "masked", "static" and "not-found" all mean something

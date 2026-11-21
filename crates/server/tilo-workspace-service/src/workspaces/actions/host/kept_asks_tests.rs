@@ -188,7 +188,9 @@ async fn an_answer_whose_claim_is_given_back_is_claimed_again_once() {
         .keep_ask(&ADA, asking("w", 0))
         .unwrap()
         .expect("kept");
-    let claimed = workspaces.claim_ask(&answered.ask).expect("the first reader");
+    let claimed = workspaces
+        .claim_ask(&answered.ask)
+        .expect("the first reader");
     workspaces.release_ask(&claimed).expect("given back");
     let again = workspaces
         .claim_ask(&answered.ask)

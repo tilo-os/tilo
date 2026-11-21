@@ -385,7 +385,11 @@ fn write_lines(nodes: &mut Vec<OutlineNode>, depth: usize, out: &mut String) -> 
             break;
         }
         write_line(node, depth, out);
-        cut = cut.saturating_add(write_lines(&mut node.children, depth.saturating_add(1), out));
+        cut = cut.saturating_add(write_lines(
+            &mut node.children,
+            depth.saturating_add(1),
+            out,
+        ));
         wrote = wrote.saturating_add(1);
     }
     let left = nodes.get(wrote..).unwrap_or_default();
@@ -502,7 +506,9 @@ mod tests {
             "the tree's last line is in the text: {last}"
         );
         assert!(
-            outline.text.ends_with(&format!("… {} more nodes", outline.omitted)),
+            outline
+                .text
+                .ends_with(&format!("… {} more nodes", outline.omitted)),
             "the text counts what it left out"
         );
     }

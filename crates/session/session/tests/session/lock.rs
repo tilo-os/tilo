@@ -300,7 +300,11 @@ pub(super) fn until_back(
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
         let now = pictures(session, displays);
-        let distances: Vec<f64> = now.iter().zip(was).map(|(now, was)| apart(now, was)).collect();
+        let distances: Vec<f64> = now
+            .iter()
+            .zip(was)
+            .map(|(now, was)| apart(now, was))
+            .collect();
         let back = distances.iter().all(|distance| *distance < 24.0);
         if back && settled.as_ref() == Some(&now) {
             return now;

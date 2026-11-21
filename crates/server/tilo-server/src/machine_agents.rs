@@ -270,7 +270,9 @@ impl MachineAgentsServer {
                 ConfirmationAnswer::Deny
                 | ConfirmationAnswer::Reply(_)
                 | ConfirmationAnswer::Secret(_) => {
-                    return Err(format!("the person did not let {name} work in the workspace"));
+                    return Err(format!(
+                        "the person did not let {name} work in the workspace"
+                    ));
                 }
             }
         }
@@ -338,9 +340,8 @@ impl MachineAgentsServer {
             ],
             risk: "privileged".to_owned(),
             workspace,
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(
-                u64::try_from(ANSWER_WAIT.as_nanos()).unwrap_or(u64::MAX),
-            ),
+            expires_at_ns: tilo_clock::unix_now_ns()
+                .saturating_add(u64::try_from(ANSWER_WAIT.as_nanos()).unwrap_or(u64::MAX)),
             allow_always: true,
             ..PendingConfirmation::default()
         };
@@ -396,7 +397,11 @@ impl MachineAgents for MachineAgentsServer {
             let server = self.admit(bound, &from, &held, (hello, connected));
             match &server {
                 Ok(server) => {
-                    *admitted.lock_recover() = server.execution_caller().acting().agent_id().map(str::to_owned);
+                    *admitted.lock_recover() = server
+                        .execution_caller()
+                        .acting()
+                        .agent_id()
+                        .map(str::to_owned);
                 }
                 Err(reason) => {
                     tracing::info!(workspace = %from.workspace, environment = %from.environment, %reason, "a program in the workspace's machine was not let in");
@@ -404,14 +409,14 @@ impl MachineAgents for MachineAgentsServer {
             }
             server
         });
-        if let Some(agent) = admitted.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
-            self.running
-                .lock_recover()
-                .remove(&(from.workspace, agent));
+        if let Some(agent) = admitted
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            self.running.lock_recover().remove(&(from.workspace, agent));
         }
         if let Err(error) = served {
             tracing::debug!(%error, "a machine's agent connection ended");
         }
     }
 }
-

@@ -514,7 +514,10 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     );
     assert_eq!(entry.app.as_ref().map(|app| app.id.as_str()), Some(TASKS));
     assert_eq!(
-        entry.invoker.as_ref().and_then(|invoker| invoker.acting.agent_id()),
+        entry
+            .invoker
+            .as_ref()
+            .and_then(|invoker| invoker.acting.agent_id()),
         Some("assistant")
     );
 
@@ -551,7 +554,11 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     );
     let entry = recorded_entry(&clicked_after);
     let invoker = entry.invoker.as_ref().expect("the entry names who acted");
-    assert_eq!(invoker.acting.agent_id(), None, "the person acted, no agent");
+    assert_eq!(
+        invoker.acting.agent_id(),
+        None,
+        "the person acted, no agent"
+    );
     assert_eq!(invoker.acting.person_id(), Some(person.as_str()));
     assert!(
         entry.action.is_some(),

@@ -284,9 +284,7 @@ impl DeviceWrites for HeldDocuments {
             let (envelope, own) = ((**envelope).clone(), own.clone());
             drop(snapshot);
             replica
-                .write(|peer| {
-                    peer.admit_new_local_document(&app, &document, envelope.clone(), now)
-                })
+                .write(|peer| peer.admit_new_local_document(&app, &document, envelope.clone(), now))
                 .map_err(|refused| WriteRefusal::Refused(refused.to_string()))?;
             Ok(AppWrite {
                 peer: neighbour_wire::peer_handle(&device),
@@ -310,7 +308,7 @@ mod tests {
     use std::sync::Arc;
 
     use automerge::transaction::{CommitOptions, Transactable as _};
-    use automerge::{AutoCommit, ReadDoc as _, ROOT, Value};
+    use automerge::{AutoCommit, ROOT, ReadDoc as _, Value};
     use ed25519_dalek::SigningKey;
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
     use tilo_peer_state::workspace_documents::{
@@ -374,7 +372,12 @@ mod tests {
     }
 
     /// `change` as device `key`'s signed write of the shared desktop.
-    fn write_message(key: &SigningKey, change: &[u8], sequence: u64, now: SystemTime) -> (neighbour_wire::NeighbourMsg, [u8; 32]) {
+    fn write_message(
+        key: &SigningKey,
+        change: &[u8],
+        sequence: u64,
+        now: SystemTime,
+    ) -> (neighbour_wire::NeighbourMsg, [u8; 32]) {
         let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(change.to_vec())
@@ -425,7 +428,7 @@ mod tests {
         peer.install_seed(
             SeedState {
                 workspace_changes: seed_workspace(WORKSPACE, &cert, &[cert.clone(), other])
-                .expect("the workspace's governance"),
+                    .expect("the workspace's governance"),
                 documents: vec![SeedDocument {
                     app_id: DESKTOP_APP.into(),
                     document_id: DESKTOP_DOCUMENT.into(),
@@ -495,7 +498,10 @@ mod tests {
         assert!(
             written.is_ok(),
             "the device's own write is taken: {}",
-            written.err().map(|refused| refused.to_string()).unwrap_or_default()
+            written
+                .err()
+                .map(|refused| refused.to_string())
+                .unwrap_or_default()
         );
 
         let DocumentRead::Whole { bytes, .. } = holder

@@ -386,10 +386,7 @@ pub fn asked(resources: &[Served], bytes: &[u8]) -> Result<Answer, String> {
             None
         }
     };
-    Ok(Answer {
-        bound,
-        error: None,
-    })
+    Ok(Answer { bound, error: None })
 }
 
 /// The document the device's request is about.

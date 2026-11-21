@@ -82,7 +82,6 @@ impl DocumentKeys {
                 .map_err(|error| error.to_string())
         }
     }
-
 }
 
 pub(crate) async fn read_document_keys(

@@ -180,7 +180,9 @@ fn pump_frames<S: Duplex>(
                 connection,
                 program,
             } => match agents {
-                Some(agents) => carry(connection, AgentCaller { program }, agents, writer, carried)?,
+                Some(agents) => {
+                    carry(connection, AgentCaller { program }, agents, writer, carried)?
+                }
                 None => {
                     let _ = send(
                         &mut *writer.lock().map_err(|_| ProtocolError::Closed)?,

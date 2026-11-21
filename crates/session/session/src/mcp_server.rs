@@ -956,7 +956,6 @@ fn same_program(remembered: &str, running: &str) -> bool {
     }
 }
 
-
 /// Bind `path` for this account alone: 0600 in a 0700 directory, staged and renamed into place so
 /// nothing sees a socket it cannot connect to. A path that is something else, or that a live
 /// session answers on, is refused.

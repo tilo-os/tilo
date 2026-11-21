@@ -657,13 +657,7 @@ enum Input {
     Terminal(std::fs::File),
 }
 
-fn host_input<S: Duplex>(
-    mut stream: S,
-    input: Input,
-    pid: u32,
-    windowed: bool,
-    carried: &Carried,
-) {
+fn host_input<S: Duplex>(mut stream: S, input: Input, pid: u32, windowed: bool, carried: &Carried) {
     let carried = carried.clone();
     std::thread::spawn(move || {
         let mut input = input;

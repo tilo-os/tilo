@@ -2326,7 +2326,9 @@ impl Workspaces {
         // A record that needs keys of its own is founded under them: even its
         // empty base is not written in the clear.
         let needs_keys = !whole
-            && workspace.peer().requires_document_keys(&app_id, &document_id, now)?;
+            && workspace
+                .peer()
+                .requires_document_keys(&app_id, &document_id, now)?;
         let founding_keys = if needs_keys {
             self.sealing_keys(&workspace, &app_id, &document_id).await?
         } else {

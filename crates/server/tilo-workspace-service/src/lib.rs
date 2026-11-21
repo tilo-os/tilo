@@ -46,12 +46,12 @@ mod connections;
 pub mod content_queue;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod content_work;
-/// Holding one workspace's documents: what a device reads of them and the writes it authors,
-/// over the replica and keys whichever holder keeps them.
-pub mod documents;
 /// A device's own documents, as its workspace service holds them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;
+/// Holding one workspace's documents: what a device reads of them and the writes it authors,
+/// over the replica and keys whichever holder keeps them.
+pub mod documents;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod environment;

@@ -375,7 +375,11 @@ impl Model {
 
     /// Call the module with `request` about `document`, answering the
     /// document as the module left it and what it answered.
-    fn call(&self, request: &Request, document: AutoCommit) -> (AutoCommit, Result<Said, ModelError>) {
+    fn call(
+        &self,
+        request: &Request,
+        document: AutoCommit,
+    ) -> (AutoCommit, Result<Said, ModelError>) {
         let request = match serde_json::to_vec(request) {
             Ok(bytes) => bytes,
             Err(error) => return (document, Err(ModelError::Answer(error.to_string()))),
@@ -725,7 +729,12 @@ mod history_is_the_devices {
     use automerge::{AutoCommit, Prop, ROOT, ReadDoc as _, ScalarValue};
 
     /// `call` on `handle`, followed by `rest`, as a module writes it.
-    fn call(documents: &mut Documents, call: u8, handle: u32, rest: impl Fn(&mut Writer)) -> Vec<u8> {
+    fn call(
+        documents: &mut Documents,
+        call: u8,
+        handle: u32,
+        rest: impl Fn(&mut Writer),
+    ) -> Vec<u8> {
         let mut w = Writer::new();
         w.byte(call);
         w.put(&handle);
@@ -734,8 +743,10 @@ mod history_is_the_devices {
     }
 
     fn commit(w: &mut Writer) {
-        w.put(&Some("tilo.ctx/1 a history entry of the module's own".to_owned()))
-            .put(&Some(7_i64));
+        w.put(&Some(
+            "tilo.ctx/1 a history entry of the module's own".to_owned(),
+        ))
+        .put(&Some(7_i64));
     }
 
     #[test]
@@ -748,7 +759,9 @@ mod history_is_the_devices {
 
         // Content is the module's to write.
         let wrote = call(&mut documents, op::PUT, 0, |w| {
-            w.put(&ROOT).put(&Prop::Map("title".into())).put(&ScalarValue::from("verb"));
+            w.put(&ROOT)
+                .put(&Prop::Map("title".into()))
+                .put(&ScalarValue::from("verb"));
         });
         assert_eq!(wrote.first(), Some(&ANSWERED), "a write is answered");
 
@@ -763,7 +776,9 @@ mod history_is_the_devices {
             call(&mut documents, op::SET_ACTOR, 0, |w| {
                 w.put(&automerge::ActorId::from(&b"someone else"[..]));
             }),
-            call(&mut documents, op::LOAD_INCREMENTAL, 0, |w| w.bytes(&forged)),
+            call(&mut documents, op::LOAD_INCREMENTAL, 0, |w| {
+                w.bytes(&forged)
+            }),
             call(&mut documents, op::MERGE, 0, |w| {
                 w.put(&0_u32);
             }),
@@ -787,7 +802,10 @@ mod history_is_the_devices {
         // What the device keeps is the module's write, still uncommitted, on
         // the history it had: the device commits it under its own envelope.
         let kept = documents.into_document();
-        assert!(kept.pending_ops() > 0, "the write waits for the device's commit");
+        assert!(
+            kept.pending_ops() > 0,
+            "the write waits for the device's commit"
+        );
         assert_eq!(kept.committed_heads(), heads);
         assert!(kept.get(ROOT, "forged").unwrap().is_none());
     }

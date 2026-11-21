@@ -27,8 +27,8 @@ use tilo_peer_state::{KeptDocument, PeerDocumentReadError, StatePeer};
 #[cfg(feature = "apps")]
 use tilo_peer_state::PeerDocumentCapture;
 
-use tilo_lock::MutexRecover as _;
 use sealed::DocumentKeys;
+use tilo_lock::MutexRecover as _;
 use web_time::SystemTime;
 
 /// The device a document was opened as, and the epoch of the keys that opened it, `None` for one
@@ -130,10 +130,12 @@ where
     if tokio::runtime::Handle::try_current().is_err() {
         return futures::executor::block_on(future);
     }
-    std::thread::scope(|scope| match scope.spawn(|| futures::executor::block_on(future)).join() {
-        Ok(output) => output,
-        Err(panic) => std::panic::resume_unwind(panic),
-    })
+    std::thread::scope(
+        |scope| match scope.spawn(|| futures::executor::block_on(future)).join() {
+            Ok(output) => output,
+            Err(panic) => std::panic::resume_unwind(panic),
+        },
+    )
 }
 
 /// Wait for `future` with this thread: a page drives no runtime beside it.
@@ -299,7 +301,9 @@ pub(crate) fn listing(peer: &StatePeer) -> Vec<(String, String)> {
 }
 
 /// The members' own records `peer` knows, by app and route, each with whose it is.
-pub(crate) fn own_records(peer: &StatePeer) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
+pub(crate) fn own_records(
+    peer: &StatePeer,
+) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
     peer.own_resources()
 }
 
@@ -496,8 +500,8 @@ pub(crate) async fn content_keys(
     };
     let scoped = peer.publication().has_document_keys(app, resource);
     if scoped || neighbour_wire::KeyScope::has_named_readers(resource) {
-        let keys = sealed::read_document_keys(device, workspace, (app, resource), scoped, false)
-            .await;
+        let keys =
+            sealed::read_document_keys(device, workspace, (app, resource), scoped, false).await;
         return match keys {
             Ok(keys)
                 if peer

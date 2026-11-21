@@ -234,7 +234,8 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     // the bytes its own type writes, the app and the person.
     let mut written = automerge::AutoCommit::load(&after).unwrap();
     let head = written.get_heads()[0];
-    let entry = tilo_actions::entry_of(written.committed_document(), head).expect("the change has an entry");
+    let entry = tilo_actions::entry_of(written.committed_document(), head)
+        .expect("the change has an entry");
     let recorded = entry.action.as_ref().expect("the entry holds the action");
     assert_eq!(recorded.type_id, TRACKER);
     assert!(

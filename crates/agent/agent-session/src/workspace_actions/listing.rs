@@ -208,7 +208,11 @@ impl Worker {
             self.mount(route, state)?;
             let holder = self.holder_of(route);
             match self.listed_from(
-                (workspace_id, &super::Writer::Mounted(holder.clone()), &holder),
+                (
+                    workspace_id,
+                    &super::Writer::Mounted(holder.clone()),
+                    &holder,
+                ),
                 state,
                 query,
                 window,

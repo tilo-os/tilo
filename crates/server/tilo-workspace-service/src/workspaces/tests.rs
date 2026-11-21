@@ -18,8 +18,8 @@ pub(crate) mod admission_cost;
 pub(crate) mod bots;
 mod host_address;
 mod invitation_read;
-mod link_windows;
 pub(crate) mod large_document;
+mod link_windows;
 #[cfg(feature = "agents")]
 mod lookup;
 mod restart_parts;

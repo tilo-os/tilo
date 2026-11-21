@@ -6,8 +6,8 @@
 
 #![cfg(target_os = "linux")]
 
-use tilo_compositor::backend::headless::warm_display;
 use tilo_compositor::StackPolicy;
+use tilo_compositor::backend::headless::warm_display;
 
 use crate::harness::headless;
 

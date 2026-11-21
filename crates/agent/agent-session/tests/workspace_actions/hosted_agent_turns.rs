@@ -7,7 +7,7 @@ use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
 use tilo_server::{
-    workspace_agents::{ServerAgents, Model},
+    workspace_agents::{Model, ServerAgents},
     workspace_bots::events::PersonEvents,
 };
 use ui::tilo_resource::{Id, Resource as _};

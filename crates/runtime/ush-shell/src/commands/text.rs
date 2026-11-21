@@ -851,7 +851,10 @@ fn tee(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     let mut status = 0;
     let mut files = Vec::new();
     for operand in &operands {
-        match ctx.host.open_write(&ctx.resolve(operand), mode, ctx.command) {
+        match ctx
+            .host
+            .open_write(&ctx.resolve(operand), mode, ctx.command)
+        {
             Ok(w) => files.push((operand.clone(), Some(w))),
             Err(e) => {
                 ctx.io_error(operand, &e);

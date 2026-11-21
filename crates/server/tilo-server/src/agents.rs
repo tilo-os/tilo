@@ -36,8 +36,8 @@ use tilo_agent_session::workspace_actions::{
     HostDevice, PackagedCall, ShellRan, Watching, WorkspaceShell,
 };
 use tilo_agent_session::{
-    AdmissionDone, AgentService, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
-    FeedbackReviewer, HostActions, ServerEndpoint, MakeTurns, SupervisorHost, WorkspaceActions,
+    AdmissionDone, AgentHostLink, AgentService, AppCatalogue, ApprovalDone, CatalogueFactory,
+    FeedbackReviewer, HostActions, MakeTurns, ServerEndpoint, SupervisorHost, WorkspaceActions,
     WorkspaceDocumentsLink,
 };
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};

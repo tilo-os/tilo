@@ -826,8 +826,7 @@ impl Task {
                 behind.asked > 0
                     && !behind.refused_since
                     && route.workspace_id().ok() == Some(workspace_id)
-                    && neighbour_wire::app_document_group(&route.app_id, &route.document)
-                        == digest
+                    && neighbour_wire::app_document_group(&route.app_id, &route.document) == digest
             })
             .map(|(route, _)| route.clone())
             .collect();

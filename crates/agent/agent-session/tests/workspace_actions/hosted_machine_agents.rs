@@ -15,13 +15,13 @@ use super::api_on_server::api_on_server_shelled;
 use super::api_unattended::{Key, Person, Sheet, asked, backend, beside, waiting, workspace};
 use super::*;
 use serde_json::{Value, json};
+use std::future::Future;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
-use std::future::Future;
 use std::sync::Arc;
 use tilo_server::machine_agents::{AgentConnection, MachineAgents as _, MachineAgentsServer};
-use tilo_server_client::{CertifyError, MemberApprover};
 use tilo_server_client::questions::{MemberQuestions, answer_questions};
+use tilo_server_client::{CertifyError, MemberApprover};
 use tilo_server_protocol::certify::ConfirmationAnswer;
 use tokio::sync::mpsc;
 
@@ -82,7 +82,11 @@ impl Client {
 
     /// Wait, beside the page, for the answer to request `id`; `None` once the server closed
     /// the connection.
-    async fn answer(&mut self, page: &mut Page<'_, impl Future<Output = CertifyError>>, id: u64) -> Option<Value> {
+    async fn answer(
+        &mut self,
+        page: &mut Page<'_, impl Future<Output = CertifyError>>,
+        id: u64,
+    ) -> Option<Value> {
         let mut lines = self.lines.take().unwrap();
         let (lines, answer) = beside(
             page,
@@ -139,8 +143,13 @@ async fn terminal_actors(key: &Key<'_>, workspace: &str) -> Vec<(String, String)
         .flatten()
         .filter_map(|version| {
             Some((
-                version["actor"]["by"]["member"]["agent"].as_str()?.to_owned(),
-                version["actor"]["name"].as_str().unwrap_or_default().to_owned(),
+                version["actor"]["by"]["member"]["agent"]
+                    .as_str()?
+                    .to_owned(),
+                version["actor"]["name"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
             ))
         })
         .collect()
@@ -225,7 +234,10 @@ async fn works_as_its_own_agent() {
     asked(&mut page, &person, asked_so_far).await;
     let question = person.last();
     assert_eq!(question.agent_id, "claude-code@dev#1", "{question:?}");
-    assert_eq!(question.agent_label, "Claude Code in dev #1", "{question:?}");
+    assert_eq!(
+        question.agent_label, "Claude Code in dev #1",
+        "{question:?}"
+    );
     assert_eq!(question.workspace, "Studio", "{question:?}");
     assert!(question.allow_always, "{question:?}");
     assert!(
@@ -243,7 +255,10 @@ async fn works_as_its_own_agent() {
             .into_iter()
             .map(|running| (running.agent, running.name))
             .collect::<Vec<_>>(),
-        [("claude-code@dev#1".to_owned(), "Claude Code in dev #1".to_owned())]
+        [(
+            "claude-code@dev#1".to_owned(),
+            "Claude Code in dev #1".to_owned()
+        )]
     );
 
     // What it does is its own: its command is asked about as the agent's, and History keeps it
@@ -257,7 +272,12 @@ async fn works_as_its_own_agent() {
         .unwrap();
     asked_so_far += 1;
     asked(&mut page, &person, asked_so_far).await;
-    assert_eq!(person.last().agent_id, "claude-code@dev#1", "{:?}", person.last());
+    assert_eq!(
+        person.last().agent_id,
+        "claude-code@dev#1",
+        "{:?}",
+        person.last()
+    );
     person.answer(ConfirmationAnswer::AllowOnce);
     let called = first.answer(&mut page, call).await.expect("an answer");
     assert_ne!(called["result"]["isError"], true, "{called}");
@@ -290,7 +310,10 @@ async fn works_as_its_own_agent() {
     // Stop ends the first alone.
     assert!(agents.stop(&ws, "claude-code@dev#1"));
     assert!(
-        first.say(&mut page, "tools/list", &json!({})).await.is_none(),
+        first
+            .say(&mut page, "tools/list", &json!({}))
+            .await
+            .is_none(),
         "the stopped agent's connection ended"
     );
     let listed = second
@@ -327,7 +350,10 @@ async fn works_as_its_own_agent() {
     asked(&mut page, &person, asked_so_far).await;
     assert_eq!(person.last().agent_id, "claude-code@site#4");
     person.answer(ConfirmationAnswer::Deny);
-    let refused = elsewhere.answer(&mut page, opening).await.expect("an answer");
+    let refused = elsewhere
+        .answer(&mut page, opening)
+        .await
+        .expect("an answer");
     assert!(
         refused["error"]["message"]
             .as_str()

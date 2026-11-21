@@ -913,7 +913,8 @@ impl Task {
 
     /// The heads of the record `entry`, ownership's compaction of `route`, holds.
     fn compaction_heads(&self, route: &DocumentRoute, entry: &[u8]) -> Option<Vec<[u8; 32]>> {
-        let message: neighbour_wire::NeighbourMsg = neighbour_wire::NeighbourMsg::decode(entry).ok()?;
+        let message: neighbour_wire::NeighbourMsg =
+            neighbour_wire::NeighbourMsg::decode(entry).ok()?;
         let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
             return None;
         };

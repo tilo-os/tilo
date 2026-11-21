@@ -325,7 +325,11 @@ fn a_page_reaching_past_the_parts_a_host_holds_asks_for_the_one_before() {
     let whole = (0, 1_000_000);
     let (every, arriving) = listed_ids(&writer, whole);
     assert!(!arriving, "the writer holds every part");
-    assert!(every.len() > filled, "both parts are listed: {}", every.len());
+    assert!(
+        every.len() > filled,
+        "both parts are listed: {}",
+        every.len()
+    );
     let saved = |id: &ui::resource::DocumentId| {
         writer
             .read_resource(id, |doc| doc.clone().save())
@@ -353,7 +357,11 @@ fn a_page_reaching_past_the_parts_a_host_holds_asks_for_the_one_before() {
     // A first page the newest part fills is answered from it.
     let (first, arriving) = listed_ids(&fresh, (0, 20));
     assert!(!arriving, "a page the newest part fills reads nothing more");
-    assert_eq!(first, listed_ids(&writer, (0, 20)).0, "the first page is the chat's");
+    assert_eq!(
+        first,
+        listed_ids(&writer, (0, 20)).0,
+        "the first page is the chat's"
+    );
     // A page reaching past it reads the part before, which it asks for.
     let (short, arriving) = listed_ids(&fresh, whole);
     assert!(
@@ -373,5 +381,8 @@ fn a_page_reaching_past_the_parts_a_host_holds_asks_for_the_one_before() {
         .unwrap();
     let (after, arriving) = listed_ids(&fresh, whole);
     assert!(!arriving, "every part is here");
-    assert_eq!(after, every, "the page lists both parts, as the writer's does");
+    assert_eq!(
+        after, every,
+        "the page lists both parts, as the writer's does"
+    );
 }

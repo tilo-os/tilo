@@ -190,7 +190,9 @@ fn copy_personal_workspaces(source: &Path, dest: &Path) -> anyhow::Result<()> {
     if ids.len() > 256 || ids.iter().any(|id| !valid_workspace_id(id)) {
         return Ok(());
     }
-    let parent = dest.parent().context("the workspace list has no directory")?;
+    let parent = dest
+        .parent()
+        .context("the workspace list has no directory")?;
     fs::create_dir_all(parent).context("prepare the target's workspace list directory")?;
     tilo_files::native::atomic::write(dest, &serde_json::to_vec_pretty(&ids)?)
         .context("copy the setup device's workspace list")?;

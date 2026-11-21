@@ -39,7 +39,9 @@ pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge:
     };
     let mut covered = std::collections::BTreeMap::<String, u64>::new();
     for change in doc.clone().get_changes(&[]) {
-        let seq = covered.entry(change.actor_id().to_hex_string()).or_default();
+        let seq = covered
+            .entry(change.actor_id().to_hex_string())
+            .or_default();
         *seq = (*seq).max(change.seq());
     }
     let mut base = AutoCommit::new().with_actor(actor);
@@ -117,9 +119,7 @@ pub fn carried(
         .collect();
     let with: Vec<&automerge::Change> = changes
         .iter()
-        .filter(|change| {
-            !excluded.contains(&change.hash()) || uncovered.contains(&change.hash())
-        })
+        .filter(|change| !excluded.contains(&change.hash()) || uncovered.contains(&change.hash()))
         .collect();
     let state_at = |doc: &mut AutoCommit, at: &[&automerge::Change]| {
         let heads = heads_of(at);

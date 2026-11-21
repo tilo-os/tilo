@@ -26,7 +26,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
 
-use super::{CHAT, ServerAgents, Reply, Turn, invoke_named, later};
+use super::{CHAT, Reply, ServerAgents, Turn, invoke_named, later};
 use crate::workspaces::person_model::{Interaction, ModelRefusal, Spender};
 
 /// The chat action that keeps a conversation's summary.

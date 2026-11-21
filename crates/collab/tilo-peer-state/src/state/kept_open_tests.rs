@@ -576,7 +576,13 @@ fn a_long_history_read_in_turns_opens_a_few_writes_a_turn_and_reads_as_a_whole_r
         );
         admit(&mut f.replica, signer, message, f.now);
     }
-    let at_once = read_in_turn(&f.replica, reader, &keys, &mut KeptDocument::default(), None);
+    let at_once = read_in_turn(
+        &f.replica,
+        reader,
+        &keys,
+        &mut KeptDocument::default(),
+        None,
+    );
     assert_eq!(
         at_once.opened, WRITES,
         "outside a turn, one read opens every write"

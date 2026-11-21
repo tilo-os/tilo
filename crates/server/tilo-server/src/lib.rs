@@ -90,6 +90,8 @@ pub mod hosted_browser;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod kept_content;
 #[cfg(feature = "agents")]
+pub mod machine_agents;
+#[cfg(feature = "agents")]
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod offload;
@@ -97,8 +99,6 @@ pub mod offload;
 mod offload_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_media;
-#[cfg(feature = "agents")]
-pub mod machine_agents;
 #[cfg(feature = "agents")]
 pub mod placed_browsers;
 #[cfg(feature = "agents")]

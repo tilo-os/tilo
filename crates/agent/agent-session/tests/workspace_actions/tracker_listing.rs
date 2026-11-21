@@ -54,7 +54,12 @@ impl V1<'_> {
         ])
     }
 
-    pub(super) async fn send(&self, method: hyper::Method, path: &str, body: &[u8]) -> (u16, Value) {
+    pub(super) async fn send(
+        &self,
+        method: hyper::Method,
+        path: &str,
+        body: &[u8],
+    ) -> (u16, Value) {
         let (path, query) = path.split_once('?').unwrap_or((path, ""));
         let reply = Box::pin(
             self.api
@@ -68,7 +73,13 @@ impl V1<'_> {
         self.send(hyper::Method::GET, path, b"").await
     }
 
-    pub(super) async fn act(&self, base: &str, resource: &str, action: &str, args: &Value) -> Value {
+    pub(super) async fn act(
+        &self,
+        base: &str,
+        resource: &str,
+        action: &str,
+        args: &Value,
+    ) -> Value {
         let (mut status, mut reply) = self
             .send(
                 hyper::Method::POST,
@@ -143,7 +154,11 @@ pub(super) fn quantile(took: &[Duration], quantile: f64) -> Duration {
 
 /// Every row the listing at `path` holds, a page at a time as the cursor each
 /// page answers leads on, and how long each page took.
-pub(super) async fn every_page(agent: &V1<'_>, base: &str, limit: usize) -> (Vec<Value>, Vec<Duration>) {
+pub(super) async fn every_page(
+    agent: &V1<'_>,
+    base: &str,
+    limit: usize,
+) -> (Vec<Value>, Vec<Duration>) {
     let mut rows = Vec::new();
     let mut took = Vec::new();
     let mut cursor: Option<String> = None;

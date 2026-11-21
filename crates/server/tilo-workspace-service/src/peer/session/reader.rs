@@ -762,7 +762,9 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
                     reply,
                     replaying: true,
                 };
-                let handed = self.inbound.hand_off_beside(batch, &mut running, &mut ready, cx);
+                let handed = self
+                    .inbound
+                    .hand_off_beside(batch, &mut running, &mut ready, cx);
                 if let Err(error) = handed.await {
                     break Err(error);
                 }

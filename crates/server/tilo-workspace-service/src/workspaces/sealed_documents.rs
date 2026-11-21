@@ -37,8 +37,10 @@ use super::{CollaborationError, GovernedWorkspace, SystemTime, Workspaces};
 )]
 const COMPACTION_RETRY: usize = 256;
 
-pub(crate) use crate::documents::sealed::{DocumentKeys, read_document_keys, read_document_keys_for};
 use crate::documents::device_keys::{DeviceKeys, GroupKeysAnswer};
+pub(crate) use crate::documents::sealed::{
+    DocumentKeys, read_document_keys, read_document_keys_for,
+};
 
 impl DocumentKeys {
     pub(super) fn same_write_key(&self, keys: &ContentKeys) -> bool {

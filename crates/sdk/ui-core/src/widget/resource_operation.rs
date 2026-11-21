@@ -52,7 +52,10 @@ pub fn host_lays_out_first() -> bool {
 /// out before the operation reads it ([`host_lays_out_first`]).
 #[must_use]
 pub fn lay_out_first() -> Refusal {
-    Refusal::coded(LAY_OUT_FIRST, "the view lays out what it shows before it is read")
+    Refusal::coded(
+        LAY_OUT_FIRST,
+        "the view lays out what it shows before it is read",
+    )
 }
 
 /// Whether `error` is the refusal [`lay_out_first`] answers with.

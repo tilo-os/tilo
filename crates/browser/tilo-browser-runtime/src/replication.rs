@@ -42,8 +42,8 @@ use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, WriteOp};
 use neighbour_wire::content::ContentWants;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
+use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::engine::{Engine, ResourceReading};
 use tilo_session_client::{DocumentAnswer, Events, Link};
 use tilo_workspace_service::documents::{
@@ -122,7 +122,10 @@ impl GroupKeys for EngineKeys {
         workspace: collab_types::WorkspaceId,
         document: &str,
     ) -> Option<String> {
-        self.0.named_document_readers(workspace, document).ok().flatten()
+        self.0
+            .named_document_readers(workspace, document)
+            .ok()
+            .flatten()
     }
 
     fn group_keys<'a>(
@@ -465,7 +468,9 @@ impl Joined {
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
     replica_of(id).is_some_and(|replica| {
         let joined = replica.borrow();
-        joined.open_resources().any(|(a, r)| a == app && r == record)
+        joined
+            .open_resources()
+            .any(|(a, r)| a == app && r == record)
             || joined
                 .documents()
                 .is_some_and(|documents| documents.holds(&joined.uuid, app, record))
@@ -539,9 +544,7 @@ pub(crate) fn resource_document(id: u32, app: &str, wire: &str) -> Option<AutoCo
     let joined = replica_of(id)?;
     let joined = joined.borrow();
     let documents = joined.documents()?;
-    let DocumentRead::Whole { bytes, .. } = documents
-        .read(&joined.uuid, app, wire, None)
-        .ok()?
+    let DocumentRead::Whole { bytes, .. } = documents.read(&joined.uuid, app, wire, None).ok()?
     else {
         return None;
     };
@@ -1539,9 +1542,7 @@ impl Joined {
         let kept = self.kept_heads(route);
         let (read, stopped) = tilo_peer_state::opening::in_turns(
             move || js_sys::Date::now() >= due,
-            || {
-                tilo_automerge_isolate::away::deferring(|| self.read(route, kept.as_deref()))
-            },
+            || tilo_automerge_isolate::away::deferring(|| self.read(route, kept.as_deref())),
         );
         if stopped {
             self.unfinished.routes.insert(route.clone());
@@ -2135,7 +2136,11 @@ impl Joined {
         let document = tilo_desktop_model::person_view::resource_of(&person);
         let Some(bytes) = self
             .documents()
-            .and_then(|documents| documents.read(&self.uuid, DESKTOP_APP, &document, None).ok())
+            .and_then(|documents| {
+                documents
+                    .read(&self.uuid, DESKTOP_APP, &document, None)
+                    .ok()
+            })
             .and_then(|read| match read {
                 DocumentRead::Whole { bytes, .. } => Some(bytes),
                 _ => None,

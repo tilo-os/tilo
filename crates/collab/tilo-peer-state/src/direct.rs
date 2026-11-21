@@ -1901,7 +1901,9 @@ impl DirectSync {
         for (claimed, message) in frames {
             let author = store::author_of(&message).unwrap_or(claimed);
             if carried_governance(&message) {
-                lacks_history |= self.admit_batch(admission, std::mem::take(&mut batch)).await;
+                lacks_history |= self
+                    .admit_batch(admission, std::mem::take(&mut batch))
+                    .await;
                 self.carry_governance(author, message, true);
                 continue;
             }
@@ -1913,7 +1915,11 @@ impl DirectSync {
     /// Take `batch`, frames of retained history with their authors, into this
     /// device's owner in one commit, keep its verdicts on them, and settle each
     /// as [`Self::admit`] does. Whether any of them waits for history.
-    async fn admit_batch(&self, admission: &Admission, batch: Vec<([u8; 32], NeighbourMsg)>) -> bool {
+    async fn admit_batch(
+        &self,
+        admission: &Admission,
+        batch: Vec<([u8; 32], NeighbourMsg)>,
+    ) -> bool {
         if batch.is_empty() {
             return false;
         }

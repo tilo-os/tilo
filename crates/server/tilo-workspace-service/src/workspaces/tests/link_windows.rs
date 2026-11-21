@@ -26,9 +26,10 @@ async fn linked(
     let member = tilo_peer_state::direct::DirectSync::new(host.read(Clone::clone), key);
     let mut caught_up = member.caught_up();
     let linked = member.clone();
-    let pairing = tokio::spawn(async move {
-        tilo_peer_state::direct::DirectSync::pair(&linked, &host).await
-    });
+    let pairing =
+        tokio::spawn(
+            async move { tilo_peer_state::direct::DirectSync::pair(&linked, &host).await },
+        );
     tokio::time::timeout(WAIT, caught_up.wait_for(|caught_up| *caught_up))
         .await
         .expect("the member catches up with the server")
@@ -45,8 +46,7 @@ async fn committed_with(workspaces: &Workspaces, workspace: &str, titles: usize)
             {
                 let governed = state.lock().await;
                 let held = titles_in(governed.peer().admitted_workspace().unwrap()).len();
-                if held == titles && governed.peer().workspace_heads() == governed.published_heads
-                {
+                if held == titles && governed.peer().workspace_heads() == governed.published_heads {
                     return;
                 }
             }

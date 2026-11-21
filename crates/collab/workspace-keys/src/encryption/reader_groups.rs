@@ -270,7 +270,10 @@ impl KeyDirectory for Directory {
     /// had no device that would found its group, and no member ever held its keys.
     fn founds(&self, workspace: WorkspaceId) -> bool {
         self.groups.contains_key(&workspace)
-            || matches!(self.document_scope(workspace), Some(KeyScope::Document { .. }))
+            || matches!(
+                self.document_scope(workspace),
+                Some(KeyScope::Document { .. })
+            )
             || self.workspaces.founds(self.carrier(workspace))
     }
 }

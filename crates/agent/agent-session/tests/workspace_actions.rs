@@ -76,9 +76,6 @@ mod api_runs;
 #[path = "workspace_actions/api_unattended.rs"]
 mod api_unattended;
 #[cfg(test)]
-#[path = "workspace_actions/hosted_machine_agents.rs"]
-mod hosted_machine_agents;
-#[cfg(test)]
 #[path = "workspace_actions/api_v1.rs"]
 mod api_v1;
 #[cfg(test)]
@@ -93,6 +90,9 @@ mod computer_agent;
 #[cfg(test)]
 #[path = "workspace_actions/computer_restart.rs"]
 mod computer_restart;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_machine_agents.rs"]
+mod hosted_machine_agents;
 
 #[cfg(test)]
 #[path = "workspace_actions/bulk_import.rs"]

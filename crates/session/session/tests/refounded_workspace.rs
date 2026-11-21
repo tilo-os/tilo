@@ -26,7 +26,10 @@ fn wait_for_issues(device: &Device, wanted: &[&str]) {
     loop {
         let (list, revision) = tracker(device, after.as_deref());
         let held = titles(&list);
-        if wanted.iter().all(|title| held.iter().any(|held| held == title)) {
+        if wanted
+            .iter()
+            .all(|title| held.iter().any(|held| held == title))
+        {
             return;
         }
         assert!(
@@ -106,7 +109,10 @@ fn an_unenrolled_device_of_the_owner_making_the_hosted_workspace_leaves_it_whole
     // What the laptop writes next still lands with every issue before it, at the site and on
     // the laptop: the workspace is the one it was.
     make_issue(&laptop, "Buy the tickets");
-    wait_for_issues(&laptop, &["Book the ferry", "Pack the tent", "Buy the tickets"]);
+    wait_for_issues(
+        &laptop,
+        &["Book the ferry", "Pack the tent", "Buy the tickets"],
+    );
     let after = held_at(&site);
     for record in &before.0 {
         assert!(
@@ -114,7 +120,10 @@ fn an_unenrolled_device_of_the_owner_making_the_hosted_workspace_leaves_it_whole
             "the site still holds {record:?}: before {before:?}, after {after:?}"
         );
     }
-    assert_eq!(after.1, before.1, "the site's governance names who it named");
+    assert_eq!(
+        after.1, before.1,
+        "the site's governance names who it named"
+    );
     for device in [&mut laptop, &mut restored] {
         device.stop();
     }

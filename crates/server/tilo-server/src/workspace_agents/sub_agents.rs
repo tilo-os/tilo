@@ -34,7 +34,7 @@ use tilo_resource::{Id, Resource as _};
 use tilo_workspace_agent::{Agent, Stands, WorkspaceAgents, sub};
 
 use super::{
-    Ask, Asks, CHAT, ServerAgents, Outcome, Turn, WorkspaceActionProvider, WorkspaceId, going,
+    Ask, Asks, CHAT, Outcome, ServerAgents, Turn, WorkspaceActionProvider, WorkspaceId, going,
     invoke_named,
 };
 use crate::workspaces::person_model::Interaction;

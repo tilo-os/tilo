@@ -45,7 +45,10 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
             Some(metadata),
             now,
         ));
-        if let Err(error) = f.replica.receive_from_report(origin(&owner), checkpoint, now) {
+        if let Err(error) = f
+            .replica
+            .receive_from_report(origin(&owner), checkpoint, now)
+        {
             break error.to_string();
         }
     };
