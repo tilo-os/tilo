@@ -2346,14 +2346,16 @@ impl Widget for ChatApp {
         // it is drawn, and no stop for the keyboard. Its status (what is
         // wrong, else how it is connected) is read with it, and the run time
         // the title bar draws beside the names is its value, as the shell's
-        // call card reads it.
-        if self.call.active
-            && let Some((title_bar, _)) = self
+        // call card reads it. A stage opened whole has no title bar to hang
+        // it on, and a call that could not join still says so: read it over
+        // the host tile then.
+        if self.call.active {
+            let bounds = self
                 .hits
                 .iter()
                 .find(|(_, hit)| matches!(hit, Hit::CallDragHandle))
-        {
-            children.push(self.call_reading(*title_bar));
+                .map_or_else(|| self.call_video_rect(), |(title_bar, _)| *title_bar);
+            children.push(self.call_reading(bounds));
         }
         children.extend(self.emoji_notice_accessibility());
         if let Some(menu) = self.menu.as_ref()

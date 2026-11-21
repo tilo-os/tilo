@@ -807,9 +807,19 @@ mod agent_conversation_tests;
 mod tests;
 
 // A long thread publishes thousands of actions (each message offers its
-// own), so every share asks its part of them.
+// own), so every share asks its part of them. Each share drives every
+// scenario and takes its slice of the actions, so the shares are small
+// enough to stay well inside one test's time limit on a loaded builder.
 ui::reach_tests!(
     ChatShell,
-    shares: [share_0, share_1, share_2, share_3, share_4, share_5],
-    long: ["long-thread", "agent-long-thread"],
+    shares: [
+        share_0, share_1, share_2, share_3, share_4, share_5, share_6, share_7, share_8, share_9,
+        share_10, share_11, share_12, share_13, share_14, share_15, share_16, share_17, share_18,
+        share_19, share_20, share_21, share_22, share_23,
+    ],
+    // A failed or reasoned agent answer publishes a row's actions per event,
+    // as the long threads do; every share takes its part of each. A thread
+    // of 7,663 actions split twelve ways still costs each share more than a
+    // minute on a loaded builder, so the shares stay small.
+    long: ["agent-failed", "agent-reasoning", "long-thread", "agent-long-thread"],
 );

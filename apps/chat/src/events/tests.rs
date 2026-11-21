@@ -765,7 +765,7 @@ tilo_test_env::scenario! {
         app.land(&mut doc);
         app.reload(&doc);
         service_streams(&mut app, "c_huddle", 3);
-        app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
+        // Joining a voice channel opens the stage whole already.
         assert!(app.call.active && app.call.expanded);
 
         for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
@@ -2455,6 +2455,10 @@ tilo_test_env::scenario! {
         app.reload(&doc);
         service_streams(&mut app, "c_huddle", 3);
         let before = doc.save();
+        // Joining a voice channel opens the call's stage whole; the control
+        // toggles it. Close it and open it again: expanding is what this
+        // phase checks, and the history it must leave alone.
+        app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
         app.on_hit(Hit::CallExpand, &mut ui::widget::Edits::lend(&mut doc));
         assert!(app.call.expanded);
         assert_eq!(app.voice_in("c_huddle").len(), 3);
