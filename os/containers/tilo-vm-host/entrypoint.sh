@@ -55,6 +55,15 @@ say() { printf 'tilo-vm-host: %s\n' "$*" >&2; }
 # 0. the jail helper
 setcap cap_setuid,cap_setgid+ep /usr/libexec/tilo/tilo-hosted-jail
 
+# 0b. the run directory, where the service's socket and each VM's sockets are,
+# on a tmpfs of its own as on the server OS: a set-group-id directory there gives
+# every socket Firecracker makes the service's group. A container's own root is an
+# overlay, and through FUSE (a rootful podman on some hosts) it gives them
+# Firecracker's group, so the service could not reach any VM's agent.
+mkdir -p "$run"
+mountpoint -q "$run" || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$run" \
+  || { say "could not mount a tmpfs at $run"; exit 1; }
+
 # 1. cgroups: this pod's cgroup namespace is its root, and a cgroup that runs a
 # process hands its controllers to no children. The start moves itself into a
 # leaf, and tilo-hosted-prepare (step 2) hands the controllers to the VMs' cgroup
