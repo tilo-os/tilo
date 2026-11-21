@@ -144,7 +144,7 @@ impl Sources {
             }
             self.laid = Some((key.finalize(), painted.into()));
         }
-        #[allow(clippy::expect_used, reason = "set just above when absent")]
+        #[allow(clippy::expect_used, reason = "the branch above sets `laid` when it is absent")]
         let (key, painted) = self.laid.as_ref().expect("marks laid");
         (*key, Arc::clone(painted))
     }
@@ -753,7 +753,10 @@ impl Renderer {
             let image = crate::picture::image_of(field.shade(lit), width, height);
             self.ground = Some((key, field, image));
         }
-        #[allow(clippy::expect_used, reason = "set just above when absent")]
+        #[allow(
+            clippy::expect_used,
+            reason = "the branch above sets `ground` when it is stale or absent"
+        )]
         self.ground.as_ref().expect("ground built")
     }
 

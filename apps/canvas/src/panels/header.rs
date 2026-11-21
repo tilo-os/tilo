@@ -283,9 +283,9 @@ fn strip(
         groups.push(align_commands(tools));
     }
     let count: usize = groups.iter().map(Vec::len).sum();
-    #[allow(clippy::cast_precision_loss, reason = "a handful of buttons")]
+    #[allow(clippy::cast_precision_loss, reason = "a toolbar's buttons fit f32")]
     let rules = groups.len().saturating_sub(1) as f32 * (2.0 * spacing.s1 + 1.0);
-    #[allow(clippy::cast_precision_loss, reason = "a handful of buttons")]
+    #[allow(clippy::cast_precision_loss, reason = "a toolbar's buttons fit f32")]
     let icons = count as f32 * slot + rules;
     // Painting a mask is said where the painting happens, with the way
     // back to the layer's own paint, said in full when there is room.

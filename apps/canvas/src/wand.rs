@@ -214,7 +214,7 @@ fn apart(a: &Lab, b: &Lab) -> f32 {
 fn srgb_to_linear() -> [f32; 256] {
     let mut table = [0.0; 256];
     for (byte, slot) in table.iter_mut().enumerate() {
-        #[allow(clippy::cast_precision_loss, reason = "a byte is exact in an f32")]
+        #[allow(clippy::cast_precision_loss, reason = "an index below 256")]
         let value = byte as f32 / 255.0;
         *slot = if value <= 0.040_45 {
             value / 12.92
