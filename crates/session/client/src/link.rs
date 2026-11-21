@@ -571,6 +571,21 @@ impl Held {
     pub fn contains(&self, route: &DocumentRoute) -> bool {
         self.lock().contains_key(route)
     }
+
+    /// Hold `mutation` for `route` and say it to `outbox`, whose session drafts and admits it: the
+    /// one way a write of this device is taken up, whichever handle of the session makes it.
+    pub(crate) fn hold(
+        &self,
+        route: DocumentRoute,
+        mutation: &collab_types::DocumentMutation,
+        outbox: &dyn Outbox,
+    ) -> Result<(), String> {
+        self.lock()
+            .entry(route.clone())
+            .or_default()
+            .push(mutation.clone());
+        Ok(outbox.send(Cmd::Write(route))?)
+    }
 }
 
 impl Link {
@@ -605,7 +620,8 @@ impl Link {
     }
 
     /// Where this link says what it says, for a task that must be `Send` where the link is not
-    /// (a page's, whose engine stays on its thread): it carries the commands that touch no replica.
+    /// (a page's, whose engine stays on its thread): it carries the commands that touch no replica,
+    /// and the writes it holds for their record's keys, which the session drafts and admits.
     #[must_use]
     pub fn outbox(&self) -> &Arc<dyn Outbox + Send + Sync> {
         &self.outbox
@@ -868,12 +884,7 @@ impl Outbox for Link {
         route: DocumentRoute,
         mutation: &collab_types::DocumentMutation,
     ) -> Result<(), String> {
-        self.held
-            .lock()
-            .entry(route.clone())
-            .or_default()
-            .push(mutation.clone());
-        Ok(self.outbox.send(Cmd::Write(route))?)
+        self.held.hold(route, mutation, self.outbox.as_ref())
     }
 }
 

@@ -407,7 +407,7 @@ fn session_task(
         admitted_here: BTreeSet::new(),
     };
     // The link's own queue is there before the session says anything.
-    let link = Link::new(Arc::new(Commands(commands)), engine, held, reports);
+    let link = Link::new(Arc::new(Commands::holding(commands, held.clone())), engine, held, reports);
     (task, link, receiver)
 }
 
@@ -431,7 +431,12 @@ fn session_engine(
 }
 
 /// The session's own sender: what its links say the client's commands through.
-struct Commands(mpsc::UnboundedSender<Command>);
+struct Commands {
+    commands: mpsc::UnboundedSender<Command>,
+    /// The writes it holds for their record's keys, shared with the link: the same ones the
+    /// session drafts and admits.
+    held: Held,
+}
 
 impl std::fmt::Debug for Commands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -439,11 +444,30 @@ impl std::fmt::Debug for Commands {
     }
 }
 
+impl Commands {
+    /// The transport of a session whose queue is `commands`, holding the writes `held` keeps for
+    /// their record's keys.
+    fn holding(commands: mpsc::UnboundedSender<Command>, held: Held) -> Self {
+        Self { commands, held }
+    }
+}
+
 /// The session carries the client's commands: what a member says to its workspaces goes
-/// through the server session it keeps with its host.
+/// through the server session it keeps with its host, and a write it holds for its record's
+/// keys is drafted and admitted by the session whichever handle of it made the write.
 impl Outbox for Commands {
     fn send(&self, command: Cmd) -> Result<(), Closed> {
-        self.0.send(Command::Client(command)).map_err(|_| Closed)
+        self.commands
+            .send(Command::Client(command))
+            .map_err(|_| Closed)
+    }
+
+    fn write(
+        &self,
+        route: DocumentRoute,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<(), String> {
+        self.held.hold(route, mutation, self)
     }
 }
 
