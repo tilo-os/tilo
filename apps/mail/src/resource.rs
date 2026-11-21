@@ -426,9 +426,17 @@ impl Mail {
         &mut self,
         #[param("The message as written")] message: DraftData,
         #[param("The draft, by id; the composer's own draft when omitted")] draft: Option<String>,
+        #[param("Id of the message it answers; what the draft answered when omitted")]
+        in_reply_to: Option<String>,
     ) -> Result<(), Refusal> {
         let draft = self.draft_mut(draft.as_deref())?;
         *draft = draft.saved(&message.to_draft());
+        if let Some(answered) = in_reply_to
+            .map(|answered| bounded_text(&answered, MAX_MESSAGE_ID_CHARS, false))
+            .filter(|answered| !answered.is_empty())
+        {
+            draft.in_reply_to = Some(answered);
+        }
         Ok(())
     }
 
@@ -1312,6 +1320,7 @@ impl TestMail {
             Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
                 message: DraftData::from_draft(draft),
                 draft: None,
+                in_reply_to: draft.in_reply_to.map(|id| id.to_string()),
             }),
         );
     }

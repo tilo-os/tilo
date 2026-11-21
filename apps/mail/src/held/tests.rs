@@ -781,3 +781,96 @@ fn opening_a_film_kept_apart_in_a_page_plays_it_from_the_server() {
         Some(crate::app::PageOpening::Here)
     );
 }
+
+/// One message, from `from` to `to`, copied to `cc`.
+fn addressed(from: crate::model::Addr, to: &[&str], cc: &[&str]) -> crate::model::Message {
+    crate::model::Message {
+        id: uuid::Uuid::new_v4(),
+        rfc_message_id: Some("plan@example.test".into()),
+        in_reply_to: None,
+        from,
+        to: to
+            .iter()
+            .map(|&email| crate::model::Addr::bare(email))
+            .collect(),
+        cc: cc
+            .iter()
+            .map(|&email| crate::model::Addr::bare(email))
+            .collect(),
+        subject: "Fwd: The plan".into(),
+        body: "What do you think?".into(),
+        html_body: None,
+        attachments: Vec::new(),
+        timestamp_min: 1_000,
+        read: false,
+        starred: false,
+        folder: crate::model::Folder::Inbox,
+        labels: Vec::new(),
+        account: "ada@work.example".into(),
+        server: None,
+    }
+}
+
+#[test]
+fn a_reply_goes_to_the_other_people_and_never_to_the_persons_own_addresses() {
+    use crate::held::{Drafted, reply_recipients, reply_subject};
+    use crate::model::Addr;
+
+    // Ada sends as her work account, the alias that account sends as, and her
+    // home account: all three are hers.
+    let own: std::collections::BTreeSet<String> =
+        ["ada@work.example", "ada@alias.example", "ada@home.example"]
+            .map(str::to_owned)
+            .into();
+    let to_her = addressed(
+        Addr::new("Bo", "bo@example.test"),
+        &["ADA@alias.example", "cy@example.test"],
+        &[
+            "ada@home.example",
+            "bo@example.test",
+            "Cy@Example.test",
+            "di@example.test",
+        ],
+    );
+    assert_eq!(
+        reply_recipients(&to_her, false, &own),
+        ("Bo <bo@example.test>".to_owned(), String::new()),
+        "a reply goes to the sender"
+    );
+    assert_eq!(
+        reply_recipients(&to_her, true, &own),
+        (
+            "Bo <bo@example.test>".to_owned(),
+            "cy@example.test, di@example.test".to_owned()
+        ),
+        "a reply to all copies everyone else once, and none of her own addresses"
+    );
+
+    // What she sent herself is answered to the people she sent it to.
+    let hers = addressed(
+        Addr::new("Ada", "ada@work.example"),
+        &["bo@example.test"],
+        &["cy@example.test", "ada@home.example"],
+    );
+    assert_eq!(
+        reply_recipients(&hers, true, &own),
+        ("bo@example.test".to_owned(), "cy@example.test".to_owned())
+    );
+    let note = addressed(Addr::bare("ada@work.example"), &["ada@home.example"], &[]);
+    assert_eq!(
+        reply_recipients(&note, false, &own).0,
+        "ada@work.example",
+        "a note to herself goes back to her"
+    );
+
+    // An agent's draft answers the same people as the window's Reply all,
+    // under a subject that says "Re:" once.
+    let drafted = Drafted::reply(&to_her, "Yes.", true, &own);
+    assert_eq!(
+        (drafted.to.as_str(), drafted.cc.as_str()),
+        ("Bo <bo@example.test>", "cy@example.test, di@example.test")
+    );
+    assert_eq!(drafted.subject, "Re: Fwd: The plan");
+    assert_eq!(reply_subject("RE: The plan"), "RE: The plan");
+    assert_eq!(drafted.in_reply_to, Some(to_her.id.to_string()));
+}

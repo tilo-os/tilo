@@ -1073,12 +1073,20 @@ impl ComposeWindow {
         true
     }
 
-    pub fn send_from(&mut self, address: String) {
-        self.sending_from = Some(address);
+    /// Send what is written from `sender`: the account the message it answers came to, kept
+    /// with the draft so a saved reply goes out from it too.
+    pub fn send_as(&mut self, sender: crate::model::DraftSender) {
+        self.sending_from = Some(sender.email.clone());
+        self.sender = Some(sender);
     }
 
     pub fn sending_from(&self) -> Option<&str> {
         self.sending_from.as_deref()
+    }
+
+    /// The account the draft being written names to send from.
+    pub fn sender(&self) -> Option<&crate::model::DraftSender> {
+        self.sender.as_ref()
     }
 
     #[cfg(test)]

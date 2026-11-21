@@ -285,6 +285,51 @@ tilo_test_env::scenario! {
         assert_eq!(app.sending_account().email, second);
     }
 
+    phase a_saved_reply_keeps_what_it_answers_and_goes_out_from_its_account;
+    {
+        let (mut app, mut doc) = app();
+        let (first, second, second_account) = {
+            let st = app.shared.borrow();
+            (
+                st.accounts.accounts[0].config.email.clone(),
+                st.accounts.accounts[1].config.email.clone(),
+                st.accounts.accounts[1].id.clone(),
+            )
+        };
+        let to_second = fetched(&second, 3, 1, 300);
+        let answered = to_second.id;
+        app.shared.borrow_mut().mailbox.insert(to_second);
+        assert_eq!(app.sending_account().email, first, "the sidebar shows the first account");
+
+        // A reply to the second account's message, put away as a draft: the
+        // draft says what it answers and which account it goes out from.
+        app.open_reply(answered);
+        app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
+        let saved = crate::resource::TestMail::load_draft(&doc);
+        assert_eq!(saved.in_reply_to, Some(answered), "{saved:?}");
+        assert_eq!(
+            saved.sender.as_ref().map(|sender| (sender.account.as_str(), sender.email.as_str())),
+            Some((second_account.as_str(), second.as_str()))
+        );
+
+        // Opened again, here or on another device, it is sent from that
+        // account and as the answer it is, whatever the sidebar shows.
+        app.compose.open_with_draft(&saved);
+        app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        assert_eq!(app.sending_account().email, second);
+        app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+        let outbox = crate::resource::TestMail::outbox(&doc);
+        let [(outgoing, None)] = outbox.as_slice() else {
+            panic!("the reply waits in the outbox: {outbox:?}");
+        };
+        assert_eq!(outgoing.account, second);
+        assert_eq!(outgoing.in_reply_to, Some(answered.to_string()));
+
+        // An account the draft names that is gone sends nothing from another.
+        app.shared.borrow_mut().accounts.accounts.retain(|account| account.config.email != second);
+        assert!(!app.contact_sender_matches(&saved));
+    }
+
     phase a_search_asks_the_servers_and_keeps_what_they_find;
     {
         let (mut app, mut doc) = app();

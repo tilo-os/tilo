@@ -768,6 +768,7 @@ impl MailState {
             Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
                 message: crate::actions::DraftData::from_draft(draft),
                 draft: id.map(str::to_owned),
+                in_reply_to: draft.in_reply_to.map(|id| id.to_string()),
             }),
         );
     }
@@ -968,6 +969,27 @@ impl MailState {
         }
         self.push_intent(Intent::ShowOverview);
         self.dirty = true;
+    }
+
+    /// Every address the person sends as, lowercased: each of the mailbox's accounts and the
+    /// other names they send as.
+    pub(crate) fn own_addresses(&self) -> std::collections::BTreeSet<String> {
+        self.accounts
+            .accounts
+            .iter()
+            .flat_map(|account| {
+                std::iter::once(account.config.email.clone()).chain(
+                    account
+                        .config
+                        .identities
+                        .iter()
+                        .flat_map(|identity| crate::transport::parse_addr_list(identity))
+                        .map(|addr| addr.email),
+                )
+            })
+            .map(|email| email.trim().to_ascii_lowercase())
+            .filter(|email| !email.is_empty())
+            .collect()
     }
 
     pub fn account_of(&self, id: MessageId) -> Option<AccountConfig> {

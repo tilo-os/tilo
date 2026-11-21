@@ -213,16 +213,17 @@ impl Mailroom {
 }
 
 impl MailApp {
+    /// Whether the account a draft names to send from is still one of the mailbox's, with the
+    /// address it was chosen with: a draft goes out from that account whichever one the sidebar
+    /// shows, and never from another one standing in for it.
     pub(crate) fn contact_sender_matches(&self, draft: &Draft) -> bool {
         draft.sender.as_ref().is_none_or(|sender| {
-            let state = self.shared.borrow();
-            state
+            self.shared
+                .borrow()
                 .accounts
                 .accounts
-                .get(state.accounts.active)
-                .is_some_and(|account| {
-                    account.id == sender.account && account.config.email == sender.email
-                })
+                .iter()
+                .any(|account| account.id == sender.account && account.config.email == sender.email)
         })
     }
 }
@@ -415,12 +416,37 @@ mod tests {
         assert_sender_guard(&mut mail, &draft);
     }
 
+    /// The draft goes out from the account it was chosen with, whichever one the sidebar shows;
+    /// once that account no longer sends from the address it was chosen with, Send refuses
+    /// rather than send from another.
     fn assert_sender_guard(mail: &mut TestApp<crate::MailShell>, draft: &Draft) {
+        let sender = draft
+            .sender
+            .clone()
+            .expect("a contact's draft names its account");
         mail.surface_mut::<MailApp>()
             .shared
             .borrow_mut()
             .accounts
             .set_active(0);
+        assert!(mail.surface_mut::<MailApp>().contact_sender_matches(draft));
+        mail.surface_mut::<MailApp>().compose.open_with_draft(draft);
+        assert_eq!(
+            mail.surface_mut::<MailApp>().sending_account().email,
+            sender.email,
+            "the draft's account, not the one the sidebar shows"
+        );
+        for account in &mut mail
+            .surface_mut::<MailApp>()
+            .shared
+            .borrow_mut()
+            .accounts
+            .accounts
+        {
+            if account.id == sender.account {
+                account.config.email = "moved@example.test".into();
+            }
+        }
         assert!(!mail.surface_mut::<MailApp>().contact_sender_matches(draft));
         let mut delivery_doc = mail.peer_document();
         mail.surface_mut::<MailApp>()
@@ -437,12 +463,6 @@ mod tests {
                 .as_deref(),
             Some(crate::i18n::t("mail-contact-sender-changed").as_str())
         );
-        mail.surface_mut::<MailApp>()
-            .shared
-            .borrow_mut()
-            .accounts
-            .set_active(1);
-        assert!(mail.surface_mut::<MailApp>().contact_sender_matches(draft));
     }
 
     #[test]
@@ -484,7 +504,11 @@ mod tests {
             1
         );
         app.shared.borrow_mut().accounts.set_active(1);
-        assert!(!app.contact_sender_matches(&draft));
+        assert!(
+            app.contact_sender_matches(&draft),
+            "the reopened draft still names an account of the mailbox"
+        );
+        assert_eq!(app.sending_account().email, draft.sender.unwrap().email);
     }
 
     #[test]

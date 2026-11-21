@@ -1382,36 +1382,74 @@ pub(crate) struct Drafted {
     pub notes: String,
 }
 
+/// The subject of a reply to a message called `subject`: "Re:" before it, once.
+pub(crate) fn reply_subject(subject: &str) -> String {
+    let subject = subject.trim();
+    if subject
+        .get(..3)
+        .is_some_and(|head| head.eq_ignore_ascii_case("re:"))
+    {
+        subject.to_owned()
+    } else {
+        format!("Re: {subject}")
+    }
+}
+
+/// Who a reply to `message` goes to and, with `all`, who it is copied to, each as written for a
+/// header. It goes to the sender; a message one of the person's `own` addresses sent goes to the
+/// people it was sent to instead, as answering what you wrote yourself continues that
+/// conversation. A reply to all copies everyone else the message named, once each by address,
+/// and never one of the person's own addresses. `own` holds them lowercased.
+pub(crate) fn reply_recipients(
+    message: &Message,
+    all: bool,
+    own: &std::collections::BTreeSet<String>,
+) -> (String, String) {
+    let address = |addr: &Addr| addr.email.trim().to_ascii_lowercase();
+    let mine = |addr: &Addr| own.contains(&address(addr));
+    let mut named = std::collections::BTreeSet::new();
+    let mut take = |addrs: &mut dyn Iterator<Item = &Addr>| {
+        addrs
+            .filter(|addr| !address(addr).is_empty() && !mine(addr))
+            .filter(|addr| named.insert(address(addr)))
+            .map(Addr::rfc5322)
+            .collect::<Vec<_>>()
+    };
+    let from_me = mine(&message.from);
+    let mut to = if from_me {
+        take(&mut message.to.iter())
+    } else {
+        take(&mut std::iter::once(&message.from))
+    };
+    if to.is_empty() {
+        // A note to oneself, or a sender with no address: it goes back where it came from.
+        to.push(message.from.rfc5322());
+    }
+    let cc = if !all {
+        Vec::new()
+    } else if from_me {
+        take(&mut message.cc.iter())
+    } else {
+        take(&mut message.to.iter().chain(&message.cc))
+    };
+    (to.join(", "), cc.join(", "))
+}
+
 impl Drafted {
-    /// A reply to `message` saying `body` above the original, quoted;
-    pub(crate) fn reply(message: &Message, body: &str, all: bool, me: &str) -> Self {
-        let subject = message.subject.trim();
-        let subject = if normalize_subject(subject) == subject {
-            format!("Re: {subject}")
-        } else {
-            subject.to_owned()
-        };
-        let cc = if all {
-            let sender = message.from.email.to_ascii_lowercase();
-            let me = me.to_ascii_lowercase();
-            message
-                .to
-                .iter()
-                .chain(&message.cc)
-                .filter(|addr| {
-                    let email = addr.email.to_ascii_lowercase();
-                    email != sender && email != me
-                })
-                .map(Addr::rfc5322)
-                .collect::<Vec<_>>()
-                .join(", ")
-        } else {
-            String::new()
-        };
+    /// A reply to `message` saying `body` above the original, quoted, from the person whose
+    /// addresses are `own` ([`reply_recipients`]).
+    pub(crate) fn reply(
+        message: &Message,
+        body: &str,
+        all: bool,
+        own: &std::collections::BTreeSet<String>,
+    ) -> Self {
+        let subject = reply_subject(&message.subject);
+        let (to, cc) = reply_recipients(message, all, own);
         let date = mail_parser::DateTime::from_timestamp(message.timestamp_min.saturating_mul(60))
             .to_rfc3339();
         Self {
-            to: message.from.rfc5322(),
+            to,
             cc,
             subject,
             body: format!(

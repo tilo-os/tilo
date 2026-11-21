@@ -631,6 +631,7 @@ fn save(mail: &mut Replica<Mail>, draft: &Draft) {
         mail,
         Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
             draft: None,
+            in_reply_to: None,
             message: DraftData::from_draft(draft),
         }),
     )
@@ -1122,6 +1123,7 @@ ui::action_contract_tests! {
     replay: [
         save_draft => |_| encoded(&Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
             draft: None,
+            in_reply_to: None,
             message: DraftData::from_draft(&Draft {
                 to: "grace@example.test".into(),
                 subject: "Replayed".into(),

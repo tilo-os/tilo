@@ -442,7 +442,8 @@ fn draft_reply(
     let answered = mailroom
         .synced_message(&messages, message)
         .ok_or_else(|| no_such_message(message))?;
-    let mut drafted = crate::held::Drafted::reply(&answered, body, all, &answered.account);
+    let own = mailroom.shared.borrow().own_addresses();
+    let mut drafted = crate::held::Drafted::reply(&answered, body, all, &own);
     notes.unwrap_or("").clone_into(&mut drafted.notes);
     drafted.sender = mailroom.sender_for(&answered.account);
     let id = uuid::Uuid::new_v4().to_string();

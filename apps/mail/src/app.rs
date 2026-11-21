@@ -1616,11 +1616,7 @@ irrelevant"
     }
 
     fn reply_subject(msg: &Message) -> String {
-        if msg.subject.to_ascii_lowercase().starts_with("re:") {
-            msg.subject.clone()
-        } else {
-            format!("Re: {}", msg.subject)
-        }
+        crate::held::reply_subject(&msg.subject)
     }
 
     fn reply_quote(msg: &Message) -> String {
@@ -1646,23 +1642,34 @@ irrelevant"
 
     fn answer_from_its_account(&mut self, id: MessageId) {
         let owner = self.shared.borrow().account_of(id);
-        if let Some(account) = owner {
-            self.compose.send_from(account.email);
+        let sender = owner.and_then(|account| self.state().sender_for(&account.email));
+        if let Some(sender) = sender {
+            self.compose.send_as(sender);
         }
     }
 
+    /// The account what is being written goes out from: the one its draft names (a reply's,
+    /// the message it answers came to; a contact's, the one chosen with them), else the one it
+    /// was started from, else the one the sidebar shows.
     fn sending_account(&self) -> AccountConfig {
         let st = self.shared.borrow();
-        self.compose
-            .sending_from()
-            .and_then(|address| {
+        let named = self.compose.sender().and_then(|sender| {
+            st.accounts.accounts.iter().find(|account| {
+                account.id == sender.account && account.config.email == sender.email
+            })
+        });
+        named
+            .or_else(|| {
+                let address = self.compose.sending_from()?;
                 st.accounts
                     .accounts
                     .iter()
                     .find(|account| account.config.email == address)
-                    .map(|account| account.config.clone())
             })
-            .unwrap_or_else(|| st.accounts.active_config())
+            .map_or_else(
+                || st.accounts.active_config(),
+                |account| account.config.clone(),
+            )
     }
 
     fn keep_compose_headers(&mut self, doc: &mut ui::widget::Edits<'_>) {
@@ -1730,7 +1737,9 @@ irrelevant"
         self.editing_draft = None;
         let subj = Self::reply_subject(&msg);
         let quote = Self::reply_quote(&msg);
-        self.compose.open_reply(&msg.from.rfc5322(), &subj, &quote);
+        let own = self.shared.borrow().own_addresses();
+        let (to, _) = crate::held::reply_recipients(&msg, false, &own);
+        self.compose.open_reply(&to, &subj, &quote);
         self.compose.reply_to(id);
         self.answer_from_its_account(id);
         self.close_menu();
@@ -1738,38 +1747,15 @@ irrelevant"
     }
 
     fn open_reply_all(&mut self, id: MessageId) {
-        let (msg, my_email) = {
-            let st = self.shared.borrow();
-            let mine = st
-                .account_of(id)
-                .unwrap_or_else(|| st.accounts.active_config())
-                .email
-                .to_ascii_lowercase();
-            match st.mailbox.get(id).cloned() {
-                Some(m) => (m, mine),
-                None => return,
-            }
+        let Some(msg) = self.shared.borrow().mailbox.get(id).cloned() else {
+            return;
         };
         self.editing_draft = None;
         let subj = Self::reply_subject(&msg);
         let quote = Self::reply_quote(&msg);
-        let sender = msg.from.email.to_ascii_lowercase();
-        let mut cc: Vec<String> = Vec::new();
-        for a in msg.to.iter().chain(msg.cc.iter()) {
-            let e = a.email.to_ascii_lowercase();
-            if e == my_email || e == sender || e.is_empty() {
-                continue;
-            }
-            if cc
-                .iter()
-                .any(|existing| existing.eq_ignore_ascii_case(&a.rfc5322()))
-            {
-                continue;
-            }
-            cc.push(a.rfc5322());
-        }
-        self.compose
-            .open_reply_all(&msg.from.rfc5322(), &cc.join(", "), &subj, &quote);
+        let own = self.shared.borrow().own_addresses();
+        let (to, cc) = crate::held::reply_recipients(&msg, true, &own);
+        self.compose.open_reply_all(&to, &cc, &subj, &quote);
         self.compose.reply_to(id);
         self.answer_from_its_account(id);
         self.close_menu();
