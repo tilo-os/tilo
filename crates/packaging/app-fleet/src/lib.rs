@@ -202,7 +202,10 @@ mod tests {
         );
         assert_eq!(scope("so.tilo.mail", "tilo.rich-text"), Scope::Workspace);
         assert_eq!(scope("so.tilo.sheets", "sheets.workbook"), Scope::Workspace);
-        assert!(!windows_are_own("so.tilo.mail") && !windows_are_own("dev.tilo.settings"));
+        // Settings shows what the person keeps for themselves, so its windows are theirs;
+        // Mail's show the workspace's accounts, so they are the workspace's.
+        assert!(windows_are_own("dev.tilo.settings"));
+        assert!(!windows_are_own("so.tilo.mail"));
         assert_eq!(scope("so.tilo.mail", "mail.copies"), Scope::Workspace);
         assert!(!windows_are_own("so.tilo.chat"));
         assert!(windows_hold_documents("so.tilo.sheets"));
