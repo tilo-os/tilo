@@ -38,6 +38,13 @@ keep() {
     (cd "$from" && find . -maxdepth 3 -type f \
         \( -name '*.json' -o -name '*.png' -o -name '*.log' -o -name '*.md' \) \
         -size -20M -exec cp --parents -t "$out" {} +)
+    # Each session's own log says what an app did, and why one did not open: the walk's logs
+    # are only the launcher's word for the session, which ends with it.
+    local log
+    for log in "$run"/states/*/logs/*.log; do
+        [[ -f $log ]] || continue
+        cp "$log" "$out/session-$(basename "$(dirname "$(dirname "$log")")").log"
+    done
     rm -rf -- "$run"
 }
 trap keep EXIT
