@@ -605,15 +605,34 @@ async fn a_put_file_makes_no_app_record_where_opening_it_in_an_app_does() {
     );
 
     // Opened in the app itself, the same bytes do make its record: Files is
-    // where a file goes, an app's record is what the person opens it in.
+    // where a file goes, an app's record is what the person opens it in. One
+    // record, however long the app takes to take the file in: a busy machine
+    // makes the app's worker slow to answer, and an open that took the record
+    // it made up again from the start made another each time.
     let content = content_in(&put(&server, &form_pdf("Opened form")).await);
+    let slowed = tilo_agent_session::workspace_actions::slowed::Slowed::new(
+        WORKSPACE,
+        "so.tilo.pdf-viewer",
+        Duration::from_millis(300),
+    );
     let opened = tool(
         &server,
         "tilo_do",
         json!({"path": "pdf-viewer#open", "args": {"content": content, "name": "opened.pdf"}}),
     )
     .await;
+    drop(slowed);
     assert!(opened.contains("opened in pdf-viewer"), "{opened}");
+    let records = workspaces.records(WORKSPACE).await.unwrap_or_default();
+    // The app's own resource in the workspace (named by no id) is no record of a file.
+    let viewers = records
+        .iter()
+        .filter(|(app, record)| app == "so.tilo.pdf-viewer" && !record.is_empty())
+        .count();
+    assert_eq!(
+        viewers, 1,
+        "one open makes one PDF Viewer record: {records:?}"
+    );
 }
 
 /// A file put into a workspace whose tree a computer of the person's wrote

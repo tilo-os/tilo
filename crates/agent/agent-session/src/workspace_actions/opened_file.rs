@@ -258,10 +258,11 @@ impl Worker {
             appearance: None,
             ..request.clone()
         };
-        let performed = self.perform(workspace_id, caller, &import);
         // What it imports into was made by this request: applied again, the request would make
-        // another, so the import does not wait off the thread for a part, and its refusal says
-        // to ask again.
+        // another. So the import asks the app's worker here, never handing a slow call off the
+        // thread to be taken up again (which made a record each time it was), and it does not
+        // wait off the thread for a part; its refusal says to ask again.
+        let performed = self.asking_here(|worker| worker.perform(workspace_id, caller, &import));
         self.part_waits.release();
         let (output, left_at) = performed?;
         let mut value = opened.value.unwrap_or_else(|| json!({}));

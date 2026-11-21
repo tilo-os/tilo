@@ -325,8 +325,13 @@ impl Worker {
     ) -> Invoked {
         let shared = Arc::clone(&self.shared);
         let answered = move || answered(&shared, workspace_id);
-        if let Some(answer) =
-            app.invoke_handed(invocation, CALL_GRACE, answered, descriptor, operation)
+        // A request asking every call here ([`Self::asking_here`]) waits for this one too.
+        let grace = if self.call_waits.here {
+            Duration::MAX
+        } else {
+            CALL_GRACE
+        };
+        if let Some(answer) = app.invoke_handed(invocation, grace, answered, descriptor, operation)
         {
             return answer;
         }
