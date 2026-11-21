@@ -57,6 +57,9 @@ release = true
 # publish; an image build leaves it out (`extension`).
 name = "windows-compat"
 targets = ["windows-compat-sysext"]
+# Its build reads the image's packages: on x86 a capsule starts Proton on the image's own
+# libraries, and the build fails when one Proton loads is in neither.
+given = ["packages:packages"]
 extension = true
 
 # The layers, bottom first, over the pinned base. `piece` is

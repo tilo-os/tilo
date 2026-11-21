@@ -6093,7 +6093,7 @@ name = "os-windows-compat-x86_64"
 # Pulls the Windows guest and FEX inputs from registries no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/build-layer.sh image windows-compat x86_64 /target/os/x86_64/windows-compat"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64"]
+needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -6106,7 +6106,7 @@ name = "os-windows-compat-aarch64"
 # Pulls the Windows guest and FEX inputs from registries no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/build-layer.sh image windows-compat aarch64 /target/os/aarch64/windows-compat"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64"]
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"

@@ -243,10 +243,12 @@ COPY os/dev/windows_provider.py os/dev/proton_libraries.py os/dev/build-windows-
 # The native FEX binaries are checked against the hashes the provider record
 # pinned, and their dynamic-linker closure against the base plus this payload.
 # On x86 a capsule starts Proton on the system's libraries, so every library it
-# needs or loads by name must be in the base or this payload.
+# needs or loads by name must be in the image's packages (the `packages` layer,
+# mounted at /os: the base alone has no desktop libraries) or this payload.
 # /out is made first: the shell opens the descriptor before the packer runs.
-RUN --network=none python3 /tilo/windows_provider.py host --manifest /provider.json --root /tree \
-    && python3 /tilo/proton_libraries.py /tree/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4 --tree /tree \
+RUN --network=none --mount=type=bind,from=packages,source=/,target=/os,ro \
+    python3 /tilo/windows_provider.py host --manifest /provider.json --root /tree \
+    && python3 /tilo/proton_libraries.py /tree/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4 --tree /tree --base /os \
     && mkdir -p /out \
     && /tilo/build-windows-compat-sysext.sh /tree /out/tilo-windows-compat.raw > /out/descriptor.json
 
