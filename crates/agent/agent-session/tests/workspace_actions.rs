@@ -116,9 +116,6 @@ mod chat_after_join;
 #[path = "workspace_actions/chat_group.rs"]
 mod chat_group;
 #[cfg(test)]
-#[path = "workspace_actions/chat_post.rs"]
-mod chat_post;
-#[cfg(test)]
 #[path = "workspace_actions/chat_restart.rs"]
 mod chat_restart;
 #[cfg(test)]
