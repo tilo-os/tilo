@@ -120,6 +120,19 @@ windows and outside effects (sending a mail, calling an API, declared by the
 action and carried out by the system under the workspace's grants) are the
 system's. An app is its kinds, its actions' code and its views.
 
+### Agents
+
+An agent is a collaborator acting for a person, with a subset of that
+person's permissions, by default the largest one. Granting it less works the
+way granting a person less does. It acts on undoable things without asking,
+which is most of what happens in a workspace. It runs on the person's
+devices, like everything else, and does whatever it or its person starts it
+on.
+
+An agent sandbox on tilo.sh is one workspace. Whether that workspace also
+has a machine for terminal commands, Browser tabs, or Linux and Windows apps
+is what the customer pays for.
+
 ### Calls
 
 A call is an address, a typed input and who acts. It is admitted the same
