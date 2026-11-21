@@ -266,7 +266,7 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
             }
             let dialog = session
                 .portal()
-                .and_then(|sheet| sheet.dialog())
+                .and_then(tilo_sheets::portal::PortalState::dialog)
                 .expect("the sheet asks");
             let tilo_sheets::portal::Body::Secret(prompt) = &dialog.body else {
                 panic!(

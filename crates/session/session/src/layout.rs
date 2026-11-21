@@ -376,14 +376,9 @@ impl Save {
         // The layout is written against the record it was laid out from, and what reached the record
         // since is merged in after: what another member changed meanwhile, which this session does not
         // show yet, is theirs, and this write carries only what changed here.
-        let mut candidate = match laid_at
-            .filter(|at| !at.is_empty() && at.iter().all(|head| base.has_change(head)))
-        {
-            Some(at) => match base.fork_at(&at) {
-                Ok(fork) => fork,
-                Err(error) => return Laid::Failed(error.to_string(), Some(Box::new(base))),
-            },
-            None => base.clone(),
+        let mut candidate = match laid_on(&mut base, laid_at.as_deref()) {
+            Ok(candidate) => candidate,
+            Err(error) => return Laid::Failed(error, Some(Box::new(base))),
         };
         let laid_out = laid_into(&candidate, workspace, closed);
         // The windows this device's write holds that this session shows: one of the person's own
@@ -469,6 +464,21 @@ impl Save {
             took,
         }))
     }
+}
+
+/// The document this write is made on: the record as it was laid out from, when this session still
+/// holds that history, else the record as it stands. What reached the record since is merged in
+/// after, so the write carries only what changed here.
+fn laid_on(
+    base: &mut automerge::AutoCommit,
+    laid_at: Option<&[ChangeHash]>,
+) -> Result<automerge::AutoCommit, String> {
+    let Some(at) = laid_at
+        .filter(|at| !at.is_empty() && at.iter().all(|head| base.has_change(head)))
+    else {
+        return Ok(base.clone());
+    };
+    base.fork_at(at).map_err(|error| error.to_string())
 }
 
 /// What every change of a workspace's layout is written with.

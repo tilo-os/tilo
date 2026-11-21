@@ -53,6 +53,22 @@ fn join_client(
 /// in it from then on.
 /// The workspace's state arrives as the host's answer: a person who joins late reads the whole
 /// history, not only what is recorded from now on.
+/// Renew this device's certificate before it is presented: a device that slept past the end of its
+/// certificate joins with the renewal, reissued here or signed by the person's devices, and a join
+/// that cannot renew says why rather than presenting what the host refuses.
+async fn renew_before_joining(
+    renewal: Option<std::sync::Arc<crate::renewal::FleetRenewal>>,
+) -> Result<(), tilo_session_client::EnrollFailure> {
+    let before =
+        tokio::task::spawn_blocking(move || crate::renewal::before_presenting(renewal.as_deref()))
+            .await;
+    match before {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.into()),
+        Err(error) => Err(format!("the renewal before this join did not finish: {error}").into()),
+    }
+}
+
 pub(super) async fn redeem(
     endpoint: iroh::Endpoint,
     identity: DeviceIdentity,
@@ -63,20 +79,7 @@ pub(super) async fn redeem(
     own_service: Option<&OwnService>,
 ) -> Result<(), tilo_session_client::EnrollFailure> {
     let topic = request.workspace_id;
-    // Renewal precedes presentation: a device that slept past the end of its certificate joins with
-    // the renewal, reissued here or signed by the person's devices, and a join that cannot renew
-    // says why rather than presenting what the host refuses.
-    let renewal = request.renewal.clone();
-    let before =
-        tokio::task::spawn_blocking(move || crate::renewal::before_presenting(renewal.as_deref()))
-            .await;
-    match before {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error.into()),
-        Err(error) => {
-            return Err(format!("the renewal before this join did not finish: {error}").into());
-        }
-    }
+    renew_before_joining(request.renewal.clone()).await?;
     // The workspace is joined as this computer's person: the device's own certificate signs the
     // enrollment, so there is nothing to pick here.
     identity.current_material(topic)?;

@@ -1120,6 +1120,38 @@ fn loop_answer(
 }
 
 /// The answer to what `op` asks of the session and its hosted surfaces, when it asks of them.
+/// The windows a tool reads: where each is drawn, how many frames it drew, and the resource it
+/// shows. Nothing shows a window while the screen is locked, to anyone but the developer.
+fn windows_answer(ctx: &Context, compositor: &Compositor, session: &Session<'_>) -> Json {
+    let rows = if ctx.who != Audience::Dev && session.locked {
+        Vec::new()
+    } else {
+        // Where each window is drawn, read off the frame's own layout: a row says what a tool
+        // aiming at that window aims at. How many frames it drew is read off the compositor, where
+        // the client's commits arrive. The resource it shows is the one the shell's own views read
+        // of its place: what the window's bar carries.
+        let rect_of = |id: u64| compositor.window_rect(id);
+        let frames_of = |id: u64| compositor.window_frames(id);
+        let places = session.layout.borrow().reading().places;
+        let resource_of = |tab: u64| {
+            places
+                .iter()
+                .find(|place| place.key == tab.to_string())
+                .map(|place| place.resource.clone())
+                .filter(|resource| !resource.is_empty())
+        };
+        match &ctx.scope {
+            None => session
+                .handle
+                .read(|tree| window_rows(tree, rect_of, frames_of, resource_of)),
+            Some(scope) => session
+                .handle
+                .read(|tree| window_rows(&within(tree, scope), rect_of, frames_of, resource_of)),
+        }
+    };
+    json!({"answer": {"windows": rows}})
+}
+
 fn asked_of_shell(
     ctx: &Context,
     op: Op,
@@ -1218,36 +1250,7 @@ fn asked_of_shell(
         Op::KeepingDevices => session
             .handle
             .read(|tree| state::keeping_devices(tree, session, ctx)),
-        Op::Windows => {
-            // Nothing shows a window while the screen is locked.
-            let rows = if ctx.who != Audience::Dev && session.locked {
-                Vec::new()
-            } else {
-                // Where each window is drawn, read off the frame's own layout: a row says what a
-                // tool aiming at that window aims at. How many frames it drew is read off the
-                // compositor, where the client's commits arrive. The resource it shows is the one
-                // the shell's own views read of its place: what the window's bar carries.
-                let rect_of = |id: u64| compositor.window_rect(id);
-                let frames_of = |id: u64| compositor.window_frames(id);
-                let places = session.layout.borrow().reading().places;
-                let resource_of = |tab: u64| {
-                    places
-                        .iter()
-                        .find(|place| place.key == tab.to_string())
-                        .map(|place| place.resource.clone())
-                        .filter(|resource| !resource.is_empty())
-                };
-                match &ctx.scope {
-                    None => session
-                        .handle
-                        .read(|tree| window_rows(tree, rect_of, frames_of, resource_of)),
-                    Some(scope) => session.handle.read(|tree| {
-                        window_rows(&within(tree, scope), rect_of, frames_of, resource_of)
-                    }),
-                }
-            };
-            json!({"answer": {"windows": rows}})
-        }
+        Op::Windows => windows_answer(ctx, compositor, session),
         _ => return None,
     })
 }

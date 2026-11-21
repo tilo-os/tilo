@@ -60,8 +60,7 @@ fn make_issue(device: &Device, title: &str) {
 fn held_at(site: &Site) -> (Vec<(String, String)>, String) {
     let summary = site
         .runtime_summary()
-        .map(|summary| format!("{summary:?}"))
-        .unwrap_or_else(|error| error);
+        .map_or_else(|error| error, |summary| format!("{summary:?}"));
     (site.records(), summary)
 }
 

@@ -864,6 +864,110 @@ mod tests {
         );
     }
 
+    /// Discovery answers the person's phone, and what was looked for is recorded: the device and
+    /// the service it answers as.
+    fn discovered_device(
+        invoke: &impl Fn(
+            &tilo_broker_core::actor::BrokerActor,
+            &str,
+            serde_json::Value,
+        ) -> Result<Pending<tilo_broker_core::steps::HostStepOutcome>, String>,
+        wait: &impl Fn(
+            Pending<tilo_broker_core::steps::HostStepOutcome>,
+        ) -> tilo_broker_core::steps::HostStepOutcome,
+        owner: &tilo_broker_core::actor::BrokerActor,
+        discovered: &std::sync::mpsc::Receiver<tilo_enrollment::protocol::EnrollmentKind>,
+    ) -> (String, String) {
+        let device = "aa".repeat(32);
+        let service = "bb".repeat(32);
+        let found = wait(invoke(owner, DISCOVER, discovered_role()).expect("discovery"))
+            .expect("candidate")
+            .value;
+        assert_eq!(
+            found,
+            Some(serde_json::json!({
+                "role": "personal-device",
+                "device": device,
+                "service": service,
+                "label": "Phone",
+                "verification_code": phone(EnrollmentKind::PersonalDevice).verification_code,
+            }))
+        );
+        assert_eq!(
+            discovered.try_recv().unwrap(),
+            EnrollmentKind::PersonalDevice
+        );
+        (device, service)
+    }
+
+    /// What a caller asks discovery with: this person's device.
+    fn discovered_role() -> serde_json::Value {
+        serde_json::json!({ "role": "personal-device" })
+    }
+
+    /// A caller who may not administer is refused discovery, and no device is looked for.
+    fn refused_discovery(
+        invoke: &impl Fn(
+            &tilo_broker_core::actor::BrokerActor,
+            &str,
+            serde_json::Value,
+        ) -> Result<Pending<tilo_broker_core::steps::HostStepOutcome>, String>,
+        discovered: &std::sync::mpsc::Receiver<tilo_enrollment::protocol::EnrollmentKind>,
+    ) {
+        use tilo_broker_core::actor::BrokerActor;
+        for (actor, reason) in [
+            (BrokerActor::agent("agent"), "only a person"),
+            (BrokerActor::person("bob"), "may not administer"),
+        ] {
+            let refused = invoke(&actor, DISCOVER, discovered_role())
+                .err()
+                .expect("denied");
+            assert!(refused.contains(reason), "{refused}");
+        }
+        assert!(
+            discovered.try_recv().is_err(),
+            "denied callers reached discovery"
+        );
+    }
+
+    /// An approval naming something the person did not see is refused, and starts nothing: not an
+    /// approval not explicitly confirmed, nor one of a device or service discovery did not find, nor
+    /// a home server where only a personal device was offered.
+    fn refused_approvals(
+        invoke: &impl Fn(
+            &tilo_broker_core::actor::BrokerActor,
+            &str,
+            serde_json::Value,
+        ) -> Result<Pending<tilo_broker_core::steps::HostStepOutcome>, String>,
+        owner: &tilo_broker_core::actor::BrokerActor,
+        device: &str,
+        service: &str,
+    ) {
+        let approval = |role: &str, device: &str, service: &str, confirm: bool| {
+            serde_json::json!({
+                "role": role, "device": device, "service": service, "confirm": confirm,
+            })
+        };
+        for (args, reason) in [
+            (
+                approval("personal-device", device, service, false),
+                "explicit confirmation",
+            ),
+            (
+                approval("personal-device", &"cc".repeat(32), service, true),
+                "discover it first",
+            ),
+            (
+                approval("personal-device", device, &"cc".repeat(32), true),
+                "not the device",
+            ),
+            (approval("home-peer", device, service, true), "not the device"),
+        ] {
+            let refused = invoke(owner, APPROVE, args).err().expect("denied");
+            assert!(refused.contains(reason), "{refused}");
+        }
+    }
+
     #[test]
     fn nearby_pairing_actions_authorize_bind_approve_and_cancel() {
         use std::sync::mpsc;
@@ -910,18 +1014,7 @@ mod tests {
                 group: None,
             })
         };
-        let discover = || serde_json::json!({ "role": "personal-device" });
-        for (actor, reason) in [
-            (BrokerActor::agent("agent"), "only a person"),
-            (BrokerActor::person("bob"), "may not administer"),
-        ] {
-            let refused = invoke(&actor, DISCOVER, discover()).err().expect("denied");
-            assert!(refused.contains(reason), "{refused}");
-        }
-        assert!(
-            discovered.try_recv().is_err(),
-            "denied callers reached discovery"
-        );
+        refused_discovery(&invoke, &discovered);
         let wait = |answer: Pending<tilo_broker_core::steps::HostStepOutcome>| {
             answer
                 .wait_timeout(tilo_test_env::hang_bound())
@@ -930,58 +1023,17 @@ mod tests {
                 .expect("the action answers")
         };
 
-        let device = "aa".repeat(32);
-        let service = "bb".repeat(32);
-        let found = wait(invoke(&owner, DISCOVER, discover()).expect("discovery"))
-            .expect("candidate")
-            .value;
-        assert_eq!(
-            found,
-            Some(serde_json::json!({
-                "role": "personal-device",
-                "device": device,
-                "service": service,
-                "label": "Phone",
-                "verification_code": phone(EnrollmentKind::PersonalDevice).verification_code,
-            }))
-        );
-        assert_eq!(
-            discovered.try_recv().unwrap(),
-            EnrollmentKind::PersonalDevice
-        );
+        let (device, service) = discovered_device(&invoke, &wait, &owner, &discovered);
 
-        let approval = |role: &str, device: &str, service: &str, confirm: bool| {
-            serde_json::json!({
-                "role": role, "device": device, "service": service, "confirm": confirm,
-            })
-        };
-        for (args, reason) in [
-            (
-                approval("personal-device", &device, &service, false),
-                "explicit confirmation",
-            ),
-            (
-                approval("personal-device", &"cc".repeat(32), &service, true),
-                "discover it first",
-            ),
-            (
-                approval("personal-device", &device, &"cc".repeat(32), true),
-                "not the device",
-            ),
-            (
-                approval("home-peer", &device, &service, true),
-                "not the device",
-            ),
-        ] {
-            let refused = invoke(&owner, APPROVE, args).err().expect("denied");
-            assert!(refused.contains(reason), "{refused}");
-        }
+        refused_approvals(&invoke, &owner, &device, &service);
         assert!(
             recorded.try_recv().is_err(),
             "discovery and refusals ran no process"
         );
 
-        let approval = approval("personal-device", &device, &service, true);
+        let approval = serde_json::json!({
+            "role": "personal-device", "device": device, "service": service, "confirm": true,
+        });
         let approving = invoke(&owner, APPROVE, approval.clone()).expect("approval starts");
         let command = tilo_test_env::recv("the approval command", &recorded);
         assert_personal_approval_command(&command, &paths, &device, &service);

@@ -148,6 +148,24 @@ impl crate::Session {
     /// lock at all; keep what it shows current, carry out what it asks, check the passwords it was
     /// given off the loop, and lift the lock for one that unlocks. Nothing but an accepted password
     /// lifts a lock. A suspend the idle timers asked for goes to the system.
+    /// Show the lock while the session is locked, by its lock screen: a screen that will not stay
+    /// up is not one the session can lean on, so after a few starts it draws the lock itself,
+    /// rather than leave it with nothing able to unlock it.
+    fn start_lock_screen_once(&mut self, unlocking: bool) {
+        if self.compositor.session_locked()
+            && !unlocking
+            && self.lock_shown == LockShown::App
+            && let Some(name) = self.lock_screen().map(|surface| surface.name.clone())
+            && !self.surfaces.running(&name)
+        {
+            if self.lock_starts >= LOCK_SCREEN_TRIES {
+                self.show_lock_view("the lock screen would not stay up");
+            } else {
+                self.start_lock_screen();
+            }
+        }
+    }
+
     pub(crate) fn follow_lock(&mut self) -> Result<(), Error> {
         let lock = self.shared.lock.clone();
         self.follow_session_transitions(&lock);
@@ -168,21 +186,7 @@ impl crate::Session {
         // client's, and ends with it.
         let locked = self.compositor.locked();
         self.shared.published.locked(locked);
-        if self.compositor.session_locked()
-            && !lock.shown().unlocking
-            && self.lock_shown == LockShown::App
-            && let Some(name) = self.lock_screen().map(|surface| surface.name.clone())
-            && !self.surfaces.running(&name)
-        {
-            // A screen that will not stay up is not one the session can lean on: after a few starts
-            // the session draws the lock itself, rather than leave it with nothing able to unlock
-            // it.
-            if self.lock_starts >= LOCK_SCREEN_TRIES {
-                self.show_lock_view("the lock screen would not stay up");
-            } else {
-                self.start_lock_screen();
-            }
-        }
+        self.start_lock_screen_once(lock.shown().unlocking);
         // Whose session it is, as their own avatar on the bar names them: read while the lock is up,
         // since it is shown nowhere else.
         let (person, hue) = if locked {
