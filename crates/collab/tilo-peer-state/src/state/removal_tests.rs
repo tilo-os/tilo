@@ -562,7 +562,7 @@ tilo_test_env::scenario! {
         let (owner, phone, now) = (fx.owner.clone(), fx.other.clone(), fx.now);
         // What a device that joins later holds: the governance and the
         // document's base, and nothing of its sealed history.
-        let joining = fx.host;
+        let joining = fx.replica;
         let mut governor = joining.clone();
         let mut author = sealing::Author::new(&governor);
         for field in ["first", "second"] {

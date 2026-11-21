@@ -21,7 +21,7 @@ fn three_writes(
     f: &Fixture,
     keys: &ContentKeys,
 ) -> (StatePeer, StatePeer, Vec<NeighbourMsg>, Author) {
-    let before = f.host.clone();
+    let before = f.replica.clone();
     let mut author = Author::new(&before);
     let mut holder = before.clone();
     let writes = ["1", "2", "3"]

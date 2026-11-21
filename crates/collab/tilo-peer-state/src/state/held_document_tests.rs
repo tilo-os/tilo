@@ -79,7 +79,7 @@ fn heads(bytes: &[u8]) -> Vec<automerge::ChangeHash> {
 fn a_document_read_over_its_last_read_reads_as_its_whole_history_does() {
     let f = fixture();
     let keys = f.keys();
-    let mut peer = f.host.clone();
+    let mut peer = f.replica.clone();
     for at in 0..3 {
         written(
             &mut peer,
@@ -137,7 +137,7 @@ fn a_document_read_over_its_last_read_reads_as_its_whole_history_does() {
 fn a_read_of_another_document_state_is_not_continued() {
     let f = fixture();
     let keys = f.keys();
-    let mut peer = f.host.clone();
+    let mut peer = f.replica.clone();
     let mut other = peer.clone();
     written(&mut peer, &keys, &f.owner, ("one", "a"), f.now);
     let (_, _, prior) = read(&peer, &keys, None);

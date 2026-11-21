@@ -12,7 +12,7 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
     let mut f = fixture();
     let keys = f.keys();
     let (now, owner, editor) = (f.now, f.owner.clone(), f.editor.clone());
-    let mut author = Author::new(&f.host);
+    let mut author = Author::new(&f.replica);
     let mut state = 0x2545_F491_4F6C_DD1D_u64;
     let mut written = 0;
     let refused = loop {
@@ -25,8 +25,8 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
             })
             .collect();
         let edit = author.edit_bytes(&format!("value-{written}"), value);
-        let sealed = write(&f.host, &editor, &keys, &edit, now);
-        if let Err(error) = f.host.receive_from_report(origin(&editor), sealed, now) {
+        let sealed = write(&f.replica, &editor, &keys, &edit, now);
+        if let Err(error) = f.replica.receive_from_report(origin(&editor), sealed, now) {
             break error.to_string();
         }
         written += 1;
@@ -39,13 +39,13 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
             .unwrap();
         let checkpoint = message(signed(
             &owner,
-            next_seq(&f.host, &owner),
+            next_seq(&f.replica, &owner),
             OpKind::Change,
             ciphertext,
             Some(metadata),
             now,
         ));
-        if let Err(error) = f.host.receive_from_report(origin(&owner), checkpoint, now) {
+        if let Err(error) = f.replica.receive_from_report(origin(&owner), checkpoint, now) {
             break error.to_string();
         }
     };
@@ -57,15 +57,15 @@ fn checkpoints_written_as_changes_fill_a_sealed_history_with_copies_of_the_recor
     );
     // The key holder's compaction names what it covers, so the replica drops it all for one
     // copy, and the record goes on.
-    let mut holder = f.host.clone();
+    let mut holder = f.replica.clone();
     let pieces = mint_pieces(&mut holder, &keys, &owner, now).unwrap();
     for piece in pieces.iter().skip(1) {
-        f.host
+        f.replica
             .receive_from_report(origin(&owner), piece.clone(), now)
             .unwrap();
     }
-    admit(&mut f.host, &owner, pieces[0].clone(), now);
-    assert_eq!(held(&f.host).len(), pieces.len());
-    let sealed = write(&f.host, &editor, &keys, &author.edit("value", "on"), now);
-    admit(&mut f.host, &editor, sealed, now);
+    admit(&mut f.replica, &owner, pieces[0].clone(), now);
+    assert_eq!(held(&f.replica).len(), pieces.len());
+    let sealed = write(&f.replica, &editor, &keys, &author.edit("value", "on"), now);
+    admit(&mut f.replica, &editor, sealed, now);
 }

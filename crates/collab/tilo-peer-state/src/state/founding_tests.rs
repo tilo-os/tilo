@@ -9,7 +9,7 @@ use super::*;
 #[test]
 fn a_replica_founding_a_sealed_document_from_a_compaction_numbers_its_next_write_past_the_fold() {
     let Fixture {
-        host: mut server,
+        replica: mut server,
         owner,
         other,
         authority,

@@ -147,62 +147,62 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let reader = f.authority.device_public_key;
         // Three writers editing at once, each from what it last saw.
-        let mut first = Author::new(&f.host);
-        let mut second = Author::new(&f.host);
-        let mut third = Author::new(&f.host);
+        let mut first = Author::new(&f.replica);
+        let mut second = Author::new(&f.replica);
+        let mut third = Author::new(&f.replica);
         let mut kept = KeptDocument::default();
-        let message = write(&f.host, &f.owner, &keys, &first.edit("value", "one"), f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
-        let (mut replica, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        let message = write(&f.replica, &f.owner, &keys, &first.edit("value", "one"), f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+        let (mut replica, opened) = read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
         assert_eq!(opened, 1);
         for round in 0..4 {
             // What a reader that merged the last read holds.
             let held = sorted_heads(&mut replica);
             let message = write(
-                &f.host,
+                &f.replica,
                 &f.other,
                 &keys,
                 &second.edit("value", &format!("second {round}")),
                 f.now,
             );
-            admit(&mut f.host, &f.other, message, f.now);
+            admit(&mut f.replica, &f.other, message, f.now);
             let message = write(
-                &f.host,
+                &f.replica,
                 &f.editor,
                 &keys,
                 &third.edit(&format!("third {round}"), "x"),
                 f.now,
             );
-            admit(&mut f.host, &f.editor, message, f.now);
+            admit(&mut f.replica, &f.editor, message, f.now);
             let message = write(
-                &f.host,
+                &f.replica,
                 &f.owner,
                 &keys,
                 &first.edit("value", &format!("first {round}")),
                 f.now,
             );
-            admit(&mut f.host, &f.owner, message, f.now);
-            let (mut document, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+            admit(&mut f.replica, &f.owner, message, f.now);
+            let (mut document, opened) = read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
             assert_eq!(opened, 3, "round {round} opens only its own writes");
-            let mut whole = read_whole(&f.host, reader, &[&keys]);
+            let mut whole = read_whole(&f.replica, reader, &[&keys]);
             same(&mut document, &mut whole);
             // A capture of what is kept extends the last one, and loads as the whole read does.
             let captured = kept.capture(1024 * 1024).unwrap().unwrap();
             same(&mut AutoCommit::load(&captured).unwrap(), &mut whole);
             // The changes after what the reader held complete it to the same.
-            let changes = changes_after(&f.host, reader, &keys, &mut kept, &held)
+            let changes = changes_after(&f.replica, reader, &keys, &mut kept, &held)
                 .expect("the record holds the reader's heads");
             replica.load_incoming(&changes).unwrap();
             assert!(replica.get_missing_deps(&[]).is_empty());
             same(&mut replica, &mut whole);
             assert!(
-                changes_after(&f.host, reader, &keys, &mut kept, &sorted_heads(&mut whole))
+                changes_after(&f.replica, reader, &keys, &mut kept, &sorted_heads(&mut whole))
                     .is_none_or(|changes| changes.is_empty()),
                 "nothing follows the current heads"
             );
         }
         // Nothing admitted: nothing opened.
-        let (_, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        let (_, opened) = read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
         assert_eq!(opened, 0);
     }
 
@@ -211,31 +211,31 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let keys = f.keys();
         let reader = f.authority.device_public_key;
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let mut kept = KeptDocument::default();
         for value in ["one", "two"] {
             let message = write(
-                &f.host,
+                &f.replica,
                 &f.owner,
                 &keys,
                 &author.edit("value", value),
                 f.now,
             );
-            admit(&mut f.host, &f.owner, message, f.now);
+            admit(&mut f.replica, &f.owner, message, f.now);
         }
-        read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
-        mint(&mut f.host, &keys, &f.owner, f.now).unwrap();
+        read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
+        mint(&mut f.replica, &keys, &f.owner, f.now).unwrap();
         let message = write(
-            &f.host,
+            &f.replica,
             &f.owner,
             &keys,
             &author.edit("value", "three"),
             f.now,
         );
-        admit(&mut f.host, &f.owner, message, f.now);
-        let (mut document, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        admit(&mut f.replica, &f.owner, message, f.now);
+        let (mut document, opened) = read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
         assert_eq!(opened, 2, "the compaction and the write after it, whole");
-        same(&mut document, &mut read_whole(&f.host, reader, &[&keys]));
+        same(&mut document, &mut read_whole(&f.replica, reader, &[&keys]));
         assert_eq!(
             document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("three")
@@ -247,38 +247,38 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let before = f.keys();
         let reader = f.authority.device_public_key;
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let message = write(
-            &f.host,
+            &f.replica,
             &f.owner,
             &before,
             &author.edit("value", "before"),
             f.now,
         );
-        admit(&mut f.host, &f.owner, message, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
         let mut kept = KeptDocument::default();
-        read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
+        read_kept(&f.replica, reader, &[&before], &mut kept).unwrap();
         let after = f.rotate();
         let message = write(
-            &f.host,
+            &f.replica,
             &f.owner,
             &after,
             &author.edit("value", SECRET),
             f.now,
         );
-        admit(&mut f.host, &f.owner, message, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
         // Keys from before the rotation open nothing new, and hide nothing read before.
-        let (document, _) = read_kept(&f.host, reader, &[&before], &mut kept).unwrap();
+        let (document, _) = read_kept(&f.replica, reader, &[&before], &mut kept).unwrap();
         assert_eq!(
             document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("before")
         );
         // The rotated keys open the new write alone, and read as a whole read.
-        let (mut document, opened) = read_kept(&f.host, reader, &[&before, &after], &mut kept).unwrap();
+        let (mut document, opened) = read_kept(&f.replica, reader, &[&before, &after], &mut kept).unwrap();
         assert_eq!(opened, 1);
         same(
             &mut document,
-            &mut read_whole(&f.host, reader, &[&before, &after]),
+            &mut read_whole(&f.replica, reader, &[&before, &after]),
         );
         assert_eq!(
             document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
@@ -291,36 +291,36 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let keys = f.keys();
         let (_, editor) = device(110, 111);
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let message = write(
-            &f.host,
+            &f.replica,
             &f.owner,
             &keys,
             &author.edit("value", "seen"),
             f.now,
         );
-        admit(&mut f.host, &f.owner, message, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
         let mut kept = KeptDocument::default();
-        read_kept(&f.host, editor.device_public_key, &[&keys], &mut kept).unwrap();
+        read_kept(&f.replica, editor.device_public_key, &[&keys], &mut kept).unwrap();
         assert!(kept.is_open());
         assert!(
-            f.host
+            f.replica
                 .governance_mut()
                 .remove_member(editor.user_public_key, &f.owner, f.now)
                 .unwrap()
         );
         let message = write(
-            &f.host,
+            &f.replica,
             &f.owner,
             &keys,
             &author.edit("value", SECRET),
             f.now,
         );
-        admit(&mut f.host, &f.owner, message, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
         // Even holding keys that would open the new write, the removed member's
         // read is refused before anything is opened, and what it kept is gone.
         let opened = Cell::new(0_usize);
-        let refused = f.host.open_document(
+        let refused = f.replica.open_document(
             editor.device_public_key,
             (APP, RECORD),
             f.now,
@@ -345,7 +345,7 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let reader = f.authority.device_public_key;
         let Fixture {
-            host: mut peer,
+            replica: mut peer,
             owner,
             now,
             ..
@@ -379,11 +379,11 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let keys = f.keys();
         let reader = f.authority.device_public_key;
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let mut kept = KeptDocument::default();
-        let message = write(&f.host, &f.owner, &keys, &author.edit("value", "one"), f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
-        read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        let message = write(&f.replica, &f.owner, &keys, &author.edit("value", "one"), f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+        read_kept(&f.replica, reader, &[&keys], &mut kept).unwrap();
         // A file larger than one frame goes out as segments, each a sealed write of its own.
         let mut noise = 0x9e37_79b9_u32;
         let file = (0..collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES * 3 / 2)
@@ -400,10 +400,10 @@ tilo_test_env::scenario! {
             .unwrap();
         assert!(frames.len() > 1, "the write goes out as segments");
         let (first, rest) = frames.split_first().unwrap();
-        let message = write(&f.host, &f.owner, &keys, first, f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
+        let message = write(&f.replica, &f.owner, &keys, first, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
         // The record reads as it did before the write began to arrive.
-        let (read, opened) = read_large(&f.host, reader, &keys, &mut kept);
+        let (read, opened) = read_large(&f.replica, reader, &keys, &mut kept);
         let document = read.unwrap();
         assert!(document.get(ROOT, "file").unwrap().is_none());
         assert_eq!(
@@ -413,14 +413,14 @@ tilo_test_env::scenario! {
         assert_eq!(opened, 1, "the first segment alone");
         assert!(kept.is_open(), "what opened before the segments stays kept");
         // Read again while the rest has not come: nothing is opened again.
-        let (read, opened) = read_large(&f.host, reader, &keys, &mut kept);
+        let (read, opened) = read_large(&f.replica, reader, &keys, &mut kept);
         assert!(read.is_ok());
         assert_eq!(opened, 0, "a read while segments arrive opens nothing twice");
         for frame in rest {
-            let message = write(&f.host, &f.owner, &keys, frame, f.now);
-            admit(&mut f.host, &f.owner, message, f.now);
+            let message = write(&f.replica, &f.owner, &keys, frame, f.now);
+            admit(&mut f.replica, &f.owner, message, f.now);
         }
-        let (read, opened) = read_large(&f.host, reader, &keys, &mut kept);
+        let (read, opened) = read_large(&f.replica, reader, &keys, &mut kept);
         let document = read.unwrap();
         assert_eq!(opened, rest.len(), "only the segments that came since");
         assert_eq!(
@@ -438,9 +438,9 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let keys = f.keys();
         let reader = f.authority.device_public_key;
-        let mut author = Author::new(&f.host);
-        let message = write(&f.host, &f.owner, &keys, &author.edit("value", "one"), f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
+        let mut author = Author::new(&f.replica);
+        let message = write(&f.replica, &f.owner, &keys, &author.edit("value", "one"), f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
         // The record as the workspace holds it, which the writer reads when it starts again.
         let mut again = Author(author.0.fork());
         // A file larger than one frame, of which only the first segment ever reached the
@@ -451,8 +451,8 @@ tilo_test_env::scenario! {
             .encode_frames()
             .unwrap();
         assert!(frames.len() > 1, "the write goes out as segments");
-        let message = write(&f.host, &f.owner, &keys, &frames[0], f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
+        let message = write(&f.replica, &f.owner, &keys, &frames[0], f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
         let compacted = |peer: &StatePeer| {
             super::super::sealed_compaction::merge_sealed(
                 &peer.core.documents[&route()],
@@ -460,19 +460,19 @@ tilo_test_env::scenario! {
             )
         };
         assert!(
-            compacted(&f.host).is_err(),
+            compacted(&f.replica).is_err(),
             "while the rest may still come, a compaction does not leave the write out"
         );
         // The writer, started again, writes on: the rest of the file never comes.
-        let message = write(&f.host, &f.owner, &keys, &again.edit("value", "two"), f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
-        let whole = AutoCommit::load(&compacted(&f.host).unwrap()).unwrap();
+        let message = write(&f.replica, &f.owner, &keys, &again.edit("value", "two"), f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+        let whole = AutoCommit::load(&compacted(&f.replica).unwrap()).unwrap();
         assert_eq!(
             whole.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("two")
         );
         for kept in [&mut KeptDocument::default(), &mut KeptDocument::default()] {
-            let (read, _) = read_large(&f.host, reader, &keys, kept);
+            let (read, _) = read_large(&f.replica, reader, &keys, kept);
             let document = read.expect("the record reads without the write that was stopped");
             assert_eq!(
                 document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
@@ -559,8 +559,8 @@ fn a_long_history_read_in_turns_opens_a_few_writes_a_turn_and_reads_as_a_whole_r
     let keys = f.keys();
     let reader = f.authority.device_public_key;
     // Two writers, each writing on from what it wrote.
-    let mut first = Author::new(&f.host);
-    let mut second = Author::new(&f.host);
+    let mut first = Author::new(&f.replica);
+    let mut second = Author::new(&f.replica);
     for n in 0..WRITES {
         let (author, signer) = if n % 3 == 0 {
             (&mut second, &f.other)
@@ -568,15 +568,15 @@ fn a_long_history_read_in_turns_opens_a_few_writes_a_turn_and_reads_as_a_whole_r
             (&mut first, &f.owner)
         };
         let message = write(
-            &f.host,
+            &f.replica,
             signer,
             &keys,
             &author.edit(&format!("issue {n}"), &format!("written {n}")),
             f.now,
         );
-        admit(&mut f.host, signer, message, f.now);
+        admit(&mut f.replica, signer, message, f.now);
     }
-    let at_once = read_in_turn(&f.host, reader, &keys, &mut KeptDocument::default(), None);
+    let at_once = read_in_turn(&f.replica, reader, &keys, &mut KeptDocument::default(), None);
     assert_eq!(
         at_once.opened, WRITES,
         "outside a turn, one read opens every write"
@@ -589,7 +589,7 @@ fn a_long_history_read_in_turns_opens_a_few_writes_a_turn_and_reads_as_a_whole_r
     let mut turns = 0_usize;
     let mut document = loop {
         turns += 1;
-        let turn = read_in_turn(&f.host, reader, &keys, &mut kept, Some(|_| true));
+        let turn = read_in_turn(&f.replica, reader, &keys, &mut kept, Some(|_| true));
         assert!(
             turn.opened <= look,
             "turn {turns} opened {} writes",
@@ -618,7 +618,7 @@ fn a_long_history_read_in_turns_opens_a_few_writes_a_turn_and_reads_as_a_whole_r
     let mut document = loop {
         turns += 1;
         let turn = read_in_turn(
-            &f.host,
+            &f.replica,
             reader,
             &keys,
             &mut kept,

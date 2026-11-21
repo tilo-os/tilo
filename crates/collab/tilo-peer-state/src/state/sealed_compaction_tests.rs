@@ -15,7 +15,7 @@ const SECRET: &str = "a sentence only key holders may read";
 
 pub(super) struct Fixture {
     /// A durable replica holding the seeded record and no channel key.
-    pub(super) host: StatePeer,
+    pub(super) replica: StatePeer,
     /// The workspace's governing device, which holds the owner role.
     pub(super) owner: SigningKey,
     /// The owner's second device.
@@ -95,7 +95,7 @@ pub(super) fn fixture() -> Fixture {
             now,
         )
         .unwrap();
-    let mut host = StatePeer::new(
+    let mut replica = StatePeer::new(
         WORKSPACE,
         authority.clone(),
         roster,
@@ -103,17 +103,17 @@ pub(super) fn fixture() -> Fixture {
         now,
     )
     .unwrap();
-    host.select_exact_admissions().unwrap();
+    replica.select_exact_admissions().unwrap();
     for message in native
         .publication_mut()
         .bootstrap_messages(&owner, now)
         .unwrap()
     {
-        host.receive_from(origin(&owner), message, now).unwrap();
+        replica.receive_from(origin(&owner), message, now).unwrap();
     }
-    let group = KeyGroup::create(channel(), MemberKey::generate("owner").unwrap()).unwrap();
+    let group = KeyGroup::create(group(), MemberKey::generate("owner").unwrap()).unwrap();
     Fixture {
-        host,
+        replica,
         owner,
         other,
         editor,
@@ -148,7 +148,7 @@ impl Fixture {
     }
 }
 
-fn channel() -> collab_types::WorkspaceId {
+fn group() -> collab_types::WorkspaceId {
     collab_types::WorkspaceId::parse(WORKSPACE).unwrap()
 }
 
@@ -438,33 +438,33 @@ tilo_test_env::scenario! {
     {
         let mut f = fixture();
         let now = f.now;
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let before_rotation = f.keys();
         let first = write(
-            &f.host,
+            &f.replica,
             &f.other,
             &before_rotation,
             &author.edit("first", SECRET),
             now,
         );
-        admit(&mut f.host, &f.other, first, now);
+        admit(&mut f.replica, &f.other, first, now);
         let current = f.rotate();
         assert!(current.epoch() > before_rotation.epoch());
         let second = write(
-            &f.host,
+            &f.replica,
             &f.owner,
             &current,
             &author.edit("second", "2"),
             now,
         );
-        admit(&mut f.host, &f.owner, second, now);
-        let base = f.host.document(APP, RECORD).unwrap();
-        let mut replica = f.host.clone();
+        admit(&mut f.replica, &f.owner, second, now);
+        let base = f.replica.document(APP, RECORD).unwrap();
+        let mut replica = f.replica.clone();
 
-        let minted = mint(&mut f.host, &current, &f.owner, now).unwrap();
+        let minted = mint(&mut f.replica, &current, &f.owner, now).unwrap();
         let compaction = envelope_of(&minted);
         assert_eq!(
-            held(&f.host),
+            held(&f.replica),
             vec![compaction.clone()],
             "history superseded"
         );
@@ -492,19 +492,19 @@ tilo_test_env::scenario! {
         }
 
         admit(&mut replica, &f.owner, minted, now);
-        assert_eq!(held(&replica), held(&f.host), "another replica supersedes");
+        assert_eq!(held(&replica), held(&f.replica), "another replica supersedes");
         assert_eq!(
-            f.host.document(APP, RECORD).unwrap(),
+            f.replica.document(APP, RECORD).unwrap(),
             base,
             "nothing is merged where no key is held"
         );
-        let durable = f.host.durable().unwrap();
+        let durable = f.replica.durable().unwrap();
         assert!(
             !contains(&durable, SECRET.as_bytes()),
             "no plaintext is kept"
         );
         let restored = f.restore(&durable).unwrap();
-        assert_eq!(held(&restored), held(&f.host), "survives restart");
+        assert_eq!(held(&restored), held(&f.replica), "survives restart");
     }
 
     phase minting_aborts_without_a_trace_when_any_write_cannot_be_compacted;
@@ -512,12 +512,12 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         for value in ["1", "2"] {
-            let write = write(&f.host, &f.other, &keys, &author.edit("value", value), now);
-            admit(&mut f.host, &f.other, write, now);
+            let write = write(&f.replica, &f.other, &keys, &author.edit("value", value), now);
+            admit(&mut f.replica, &f.other, write, now);
         }
-        let before = f.host.durable().unwrap();
+        let before = f.replica.durable().unwrap();
         let keys = &keys;
         let sealer = |artifact, retention| {
             move |plaintext: &[u8]| {
@@ -560,7 +560,7 @@ tilo_test_env::scenario! {
         ];
         for (why, mut open, mut seal) in attempts {
             assert!(
-                f.host
+                f.replica
                     .publication()
                     .draft_sealed_compaction(
                         (APP, RECORD),
@@ -575,7 +575,7 @@ tilo_test_env::scenario! {
                 "{why} is compacted"
             );
             assert_eq!(
-                f.host.durable().unwrap(),
+                f.replica.durable().unwrap(),
                 before,
                 "{why} changed the record"
             );
@@ -587,13 +587,13 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let (first, second) = (author.edit("value", "1"), author.edit("value", "2"));
-        let late = write(&f.host, &f.other, &keys, &second, now);
-        admit(&mut f.host, &f.other, late, now);
-        let early = write(&f.host, &f.owner, &keys, &first, now);
-        admit(&mut f.host, &f.owner, early, now);
-        let minted = envelope_of(&mint(&mut f.host, &keys, &f.owner, now).unwrap());
+        let late = write(&f.replica, &f.other, &keys, &second, now);
+        admit(&mut f.replica, &f.other, late, now);
+        let early = write(&f.replica, &f.owner, &keys, &first, now);
+        admit(&mut f.replica, &f.owner, early, now);
+        let minted = envelope_of(&mint(&mut f.replica, &keys, &f.owner, now).unwrap());
         let DocumentMutation::Snapshot(bytes) =
             DocumentMutation::decode(&open(&keys, &minted).unwrap()).unwrap()
         else {
@@ -615,33 +615,33 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         for value in ["1", "2"] {
-            let write = write(&f.host, &f.other, &keys, &author.edit("value", value), now);
-            admit(&mut f.host, &f.other, write, now);
+            let write = write(&f.replica, &f.other, &keys, &author.edit("value", value), now);
+            admit(&mut f.replica, &f.other, write, now);
         }
-        let mut replica = f.host.clone();
+        let mut replica = f.replica.clone();
         // The workspace's editor is one of the record's writers.
         let editor = f.editor.clone();
-        let compaction = mint(&mut f.host, &keys, &editor, now).unwrap();
+        let compaction = mint(&mut f.replica, &keys, &editor, now).unwrap();
         assert_eq!(
-            held(&f.host),
+            held(&f.replica),
             vec![envelope_of(&compaction)],
             "the writer folded the history it holds"
         );
         admit(&mut replica, &editor, compaction, now);
         assert_eq!(
             held(&replica),
-            held(&f.host),
+            held(&f.replica),
             "a replica without the keys takes the checkpoint in"
         );
 
         // The record goes on: the writer's next write builds on the checkpoint,
         // and the replica follows it.
-        let later = write(&f.host, &f.other, &keys, &author.edit("value", "3"), now);
-        admit(&mut f.host, &f.other, later.clone(), now);
+        let later = write(&f.replica, &f.other, &keys, &author.edit("value", "3"), now);
+        admit(&mut f.replica, &f.other, later.clone(), now);
         admit(&mut replica, &f.other, later, now);
-        assert_eq!(held(&replica), held(&f.host), "the write after it joins");
+        assert_eq!(held(&replica), held(&f.replica), "the write after it joins");
         assert_eq!(
             held(&replica).len(),
             2,
@@ -673,12 +673,12 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let editor = f.editor.clone();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let mut written = 0;
-        while held(&f.host).len() < MAX_SEALED_OPS {
+        while held(&f.replica).len() < MAX_SEALED_OPS {
             let value = written.to_string();
-            let sealed = write(&f.host, &editor, &keys, &author.edit("value", &value), now);
-            match f.host.receive_from_report(origin(&editor), sealed, now) {
+            let sealed = write(&f.replica, &editor, &keys, &author.edit("value", &value), now);
+            match f.replica.receive_from_report(origin(&editor), sealed, now) {
                 Ok(report) => {
                     assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
                     written += 1;
@@ -697,33 +697,33 @@ tilo_test_env::scenario! {
             "the bound refuses the write past it"
         );
         assert!(
-            !f.host.publication().sealed_to_compact().is_empty(),
+            !f.replica.publication().sealed_to_compact().is_empty(),
             "a full record is due for its writer's checkpoint"
         );
 
-        let checkpoint = mint(&mut f.host, &keys, &editor, now).unwrap();
-        assert_eq!(held(&f.host), vec![envelope_of(&checkpoint)]);
+        let checkpoint = mint(&mut f.replica, &keys, &editor, now).unwrap();
+        assert_eq!(held(&f.replica), vec![envelope_of(&checkpoint)]);
 
         // The record goes on past the bound it refused at.
         for value in MAX_SEALED_OPS..MAX_SEALED_OPS + 8 {
             let sealed = write(
-                &f.host,
+                &f.replica,
                 &editor,
                 &keys,
                 &author.edit("value", &value.to_string()),
                 now,
             );
-            admit(&mut f.host, &editor, sealed, now);
+            admit(&mut f.replica, &editor, sealed, now);
         }
         assert_eq!(
-            held(&f.host).len(),
+            held(&f.replica).len(),
             9,
             "the checkpoint and the writes after it"
         );
-        assert!(f.host.publication().sealed_to_compact().is_empty());
+        assert!(f.replica.publication().sealed_to_compact().is_empty());
         let mut read_write = |op: &SignedOp| open(&keys, op);
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut read_write)
             .unwrap()
@@ -746,27 +746,27 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         for index in 0..6 {
             let message = write(
-                &f.host,
+                &f.replica,
                 &f.owner,
                 &keys,
                 &author.edit("value", &format!("own-{index}")),
                 now,
             );
-            admit(&mut f.host, &f.owner, message, now);
+            admit(&mut f.replica, &f.owner, message, now);
         }
         let plain = write(
-            &f.host,
+            &f.replica,
             &f.other,
             &keys,
             &author.edit("value", "a member's"),
             now,
         );
-        admit(&mut f.host, &f.other, plain, now);
-        let last = floor(&f.host, &f.owner);
-        let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        admit(&mut f.replica, &f.other, plain, now);
+        let last = floor(&f.replica, &f.owner);
+        let compaction = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
         assert_eq!(
             envelope_of(&compaction).seq,
             last,
@@ -785,18 +785,18 @@ tilo_test_env::scenario! {
         .unwrap();
         fresh.select_exact_admissions().unwrap();
         fresh
-            .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
             .unwrap();
         admit(&mut fresh, &f.owner, compaction, now);
         assert_eq!(floor(&fresh, &f.owner), last);
         let next = write(
-            &f.host,
+            &f.replica,
             &f.owner,
             &keys,
             &author.edit("value", "after the fold"),
             now,
         );
-        admit(&mut f.host, &f.owner, next.clone(), now);
+        admit(&mut f.replica, &f.owner, next.clone(), now);
         admit(&mut fresh, &f.owner, next, now);
     }
 
@@ -809,7 +809,7 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let mut first = None;
         let mut sizes = Vec::new();
         for round in 0..3 {
@@ -820,17 +820,17 @@ tilo_test_env::scenario! {
                     f.editor.clone()
                 };
                 let next = write(
-                    &f.host,
+                    &f.replica,
                     &key,
                     &keys,
                     &author.edit("value", &format!("{round}.{index}")),
                     now,
                 );
                 first.get_or_insert_with(|| next.clone());
-                admit(&mut f.host, &key, next, now);
+                admit(&mut f.replica, &key, next, now);
             }
-            mint(&mut f.host, &keys, &f.owner, now).unwrap();
-            sizes.push(f.host.core.exact_admissions.len());
+            mint(&mut f.replica, &keys, &f.owner, now).unwrap();
+            sizes.push(f.replica.core.exact_admissions.len());
         }
         // A compaction is numbered as a write it folds, so its evidence is the
         // mark of that fold, never an entry: what stays is the owner's seeded
@@ -840,7 +840,7 @@ tilo_test_env::scenario! {
             vec![1, 1, 1],
             "a fold adds marks, and the index does not grow"
         );
-        let index = &f.host.core.exact_admissions;
+        let index = &f.replica.core.exact_admissions;
         for writer in [&f.other, &f.editor] {
             let mark = index
                 .marks()
@@ -848,7 +848,7 @@ tilo_test_env::scenario! {
                 .map(|(_, mark)| mark);
             assert_eq!(
                 mark,
-                Some(floor(&f.host, writer)),
+                Some(floor(&f.replica, writer)),
                 "a writer's mark is its last folded write"
             );
         }
@@ -857,7 +857,7 @@ tilo_test_env::scenario! {
         // are in the snapshot already, so both are ignored.
         let first = first.unwrap();
         let report = f
-            .host
+            .replica
             .receive_from_report(origin(&f.other), first.clone(), now)
             .unwrap();
         assert!(matches!(report.primary(), InputDisposition::Duplicate(_)));
@@ -865,30 +865,30 @@ tilo_test_env::scenario! {
         rewritten.timestamp += Duration::from_secs(1);
         collab_types::sign_op(&mut rewritten, &f.other).unwrap();
         let report = f
-            .host
+            .replica
             .receive_from_report(origin(&f.other), message(rewritten), now)
             .unwrap();
         assert!(matches!(report.primary(), InputDisposition::Duplicate(_)));
-        assert_eq!(held(&f.host).len(), 1, "nothing folded comes back");
+        assert_eq!(held(&f.replica).len(), 1, "nothing folded comes back");
 
         // Above the mark the evidence is exact again.
-        let above = write(&f.host, &f.other, &keys, &author.edit("value", "late"), now);
-        admit(&mut f.host, &f.other, above.clone(), now);
+        let above = write(&f.replica, &f.other, &keys, &author.edit("value", "late"), now);
+        admit(&mut f.replica, &f.other, above.clone(), now);
         let mut conflicting = envelope_of(&above);
         conflicting.timestamp += Duration::from_secs(1);
         collab_types::sign_op(&mut conflicting, &f.other).unwrap();
         assert!(
-            f.host
+            f.replica
                 .receive_from_report(origin(&f.other), message(conflicting), now)
                 .is_err(),
             "a second write at an unfolded sequence conflicts"
         );
 
         // The marks are part of the durable state.
-        let restored = f.restore(&f.host.durable().unwrap()).unwrap();
+        let restored = f.restore(&f.replica.durable().unwrap()).unwrap();
         assert_eq!(
             restored.core.exact_admissions.encode().unwrap(),
-            f.host.core.exact_admissions.encode().unwrap()
+            f.replica.core.exact_admissions.encode().unwrap()
         );
     }
 }
@@ -904,25 +904,25 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let (first, second) = (author.edit("first", "1"), author.edit("second", "2"));
         let unreadable = author.edit("third", "3");
         // `second` builds on `first`, which this replica never got and which
         // `second`'s own writer never sent: it reads as stuck behind that change.
         // Another device bringing it after all (below) still completes the record.
         // The write after it does not open with the keys this key holder has.
-        let late = write(&f.host, &f.other, &keys, &second, now);
-        admit(&mut f.host, &f.other, late, now);
-        let foreign = KeyGroup::create(channel(), MemberKey::generate("other").unwrap())
+        let late = write(&f.replica, &f.other, &keys, &second, now);
+        admit(&mut f.replica, &f.other, late, now);
+        let foreign = KeyGroup::create(group(), MemberKey::generate("other").unwrap())
             .unwrap()
             .content_keys()
             .unwrap();
-        let sealed_apart = write(&f.host, &f.other, &foreign, &unreadable, now);
-        admit(&mut f.host, &f.other, sealed_apart, now);
+        let sealed_apart = write(&f.replica, &f.other, &foreign, &unreadable, now);
+        admit(&mut f.replica, &f.other, sealed_apart, now);
         let mut read_write = |op: &SignedOp| open(&keys, op);
 
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut read_write)
             .unwrap()
@@ -946,14 +946,14 @@ tilo_test_env::scenario! {
             "{:?}",
             opened.unmerged
         );
-        assert_eq!(held(&f.host).len(), 2, "every write is kept");
+        assert_eq!(held(&f.replica).len(), 2, "every write is kept");
         assert!(
-            mint(&mut f.host, &keys, &f.owner, now).is_err(),
+            mint(&mut f.replica, &keys, &f.owner, now).is_err(),
             "a history that leaves a write out is never compacted"
         );
         // A restart keeps them too.
-        let mut restored = f.restore(&f.host.durable().unwrap()).unwrap();
-        assert_eq!(held(&restored), held(&f.host));
+        let mut restored = f.restore(&f.replica.durable().unwrap()).unwrap();
+        assert_eq!(held(&restored), held(&f.replica));
 
         // Once what it waits for arrives, the write is in the record.
         let early = write(&restored, &f.owner, &keys, &first, now);
@@ -986,33 +986,33 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut first = Author::new(&f.host);
-        let mut conflicting = Author::new(&f.host);
+        let mut first = Author::new(&f.replica);
+        let mut conflicting = Author::new(&f.replica);
         // Two writers of one shell used one actor: each wrote the next sequence of
         // the same writer without seeing the other's change.
         let actor = automerge::ActorId::from(vec![0x42]);
         first.0.set_actor(actor.clone());
         conflicting.0.set_actor(actor);
         let one = write(
-            &f.host,
+            &f.replica,
             &f.owner,
             &keys,
             &first.edit("value", "canonical"),
             now,
         );
         let two = write(
-            &f.host,
+            &f.replica,
             &f.other,
             &keys,
             &conflicting.edit("value", "conflicting"),
             now,
         );
-        admit(&mut f.host, &f.owner, one, now);
-        admit(&mut f.host, &f.other, two, now);
+        admit(&mut f.replica, &f.owner, one, now);
+        admit(&mut f.replica, &f.other, two, now);
         let mut read_write = |op: &SignedOp| open(&keys, op);
 
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut read_write)
             .unwrap()
@@ -1037,16 +1037,16 @@ tilo_test_env::scenario! {
             opened.unmerged
         );
         assert_eq!(
-            held(&f.host).len(),
+            held(&f.replica).len(),
             2,
             "the write the record cannot hold is kept"
         );
 
         // A compaction replaces the history, so it folds the write whose sequence
         // the record already holds: no reader can ever carry both changes.
-        mint(&mut f.host, &keys, &f.owner, now).expect("a fork does not block the compaction");
+        mint(&mut f.replica, &keys, &f.owner, now).expect("a fork does not block the compaction");
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut read_write)
             .unwrap()
@@ -1165,54 +1165,54 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
-        let write = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.host, &f.other, write, now);
-        let history = held(&f.host);
-        let valid = wrapper(&f.host, &keys, &history);
+        let mut author = Author::new(&f.replica);
+        let write = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.replica, &f.other, write, now);
+        let history = held(&f.replica);
+        let valid = wrapper(&f.replica, &keys, &history);
 
-        let mut tampered = envelope_of(&forged(&f.host, &f.owner, &valid, now));
+        let mut tampered = envelope_of(&forged(&f.replica, &f.owner, &valid, now));
         let mut altered = valid.0.clone();
         altered.ciphertext[0] ^= 1;
         tampered.payload = altered.encode().unwrap();
-        refused(&mut f.host, &f.owner, message(tampered), now);
+        refused(&mut f.replica, &f.owner, message(tampered), now);
 
         let stranger = SigningKey::from_bytes(&[77; 32]);
-        let mut impostor = envelope_of(&forged(&f.host, &stranger, &valid, now));
+        let mut impostor = envelope_of(&forged(&f.replica, &stranger, &valid, now));
         impostor.author = Ed25519PublicKey::from_bytes(f.owner.verifying_key().to_bytes());
-        impostor.seq = next_seq(&f.host, &f.owner);
-        refused(&mut f.host, &f.owner, message(impostor), now);
+        impostor.seq = next_seq(&f.replica, &f.owner);
+        refused(&mut f.replica, &f.owner, message(impostor), now);
 
-        let mut other_document = envelope_of(&forged(&f.host, &f.owner, &valid, now));
+        let mut other_document = envelope_of(&forged(&f.replica, &f.owner, &valid, now));
         other_document.artifact = collab_types::document_artifact_id(APP, WORKSPACE, "tab:2");
         collab_types::sign_op(&mut other_document, &f.owner).unwrap();
-        refused(&mut f.host, &f.owner, message(other_document), now);
+        refused(&mut f.replica, &f.owner, message(other_document), now);
 
         let mut delta = valid.1;
         delta.scheme = collab_types::EncryptionScheme::ContentKey {
             retention: ContentRetention::Delta,
         };
-        let forgery = forged(&f.host, &f.owner, &(valid.0, delta), now);
-        refused(&mut f.host, &f.owner, forgery, now);
+        let forgery = forged(&f.replica, &f.owner, &(valid.0, delta), now);
+        refused(&mut f.replica, &f.owner, forgery, now);
 
         let cleartext = signed(
             &f.owner,
-            next_seq(&f.host, &f.owner),
+            next_seq(&f.replica, &f.owner),
             OpKind::Compaction,
-            DocumentMutation::Snapshot(f.host.document(APP, RECORD).unwrap())
+            DocumentMutation::Snapshot(f.replica.document(APP, RECORD).unwrap())
                 .encode()
                 .unwrap(),
             None,
             now,
         );
         refused_with(
-            &mut f.host,
+            &mut f.replica,
             &f.owner,
             message(cleartext),
             now,
             "only ever sealed",
         );
-        assert_eq!(held(&f.host), history);
+        assert_eq!(held(&f.replica), history);
     }
 
     phase a_compaction_under_a_stale_epoch_is_refused;
@@ -1221,13 +1221,13 @@ tilo_test_env::scenario! {
         let now = f.now;
         let stale = f.keys();
         let current = f.rotate();
-        let mut author = Author::new(&f.host);
-        let write = write(&f.host, &f.other, &current, &author.edit("value", "1"), now);
-        admit(&mut f.host, &f.other, write, now);
-        let compaction = wrapper(&f.host, &stale, &held(&f.host));
+        let mut author = Author::new(&f.replica);
+        let write = write(&f.replica, &f.other, &current, &author.edit("value", "1"), now);
+        admit(&mut f.replica, &f.other, write, now);
+        let compaction = wrapper(&f.replica, &stale, &held(&f.replica));
         let owner = f.owner.clone();
-        let forgery = forged(&f.host, &owner, &compaction, now);
-        refused_with(&mut f.host, &owner, forgery, now, "stale epoch");
+        let forgery = forged(&f.replica, &owner, &compaction, now);
+        refused_with(&mut f.replica, &owner, forgery, now, "stale epoch");
     }
 
     phase a_document_moving_to_its_own_group_is_compacted_under_it_whatever_epoch_the_workspace_reached;
@@ -1237,10 +1237,10 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let workspace_keys = f.rotate();
-        let mut author = Author::new(&f.host);
-        let earlier = write(&f.host, &f.other, &workspace_keys, &author.edit("first", SECRET), now);
-        admit(&mut f.host, &f.other, earlier, now);
-        let scope = neighbour_wire::KeyScope::document(channel(), APP, RECORD, None).unwrap();
+        let mut author = Author::new(&f.replica);
+        let earlier = write(&f.replica, &f.other, &workspace_keys, &author.edit("first", SECRET), now);
+        admit(&mut f.replica, &f.other, earlier, now);
+        let scope = neighbour_wire::KeyScope::document(group(), APP, RECORD, None).unwrap();
         let mut document_group =
             KeyGroup::create(scope.group(), MemberKey::generate("owner").unwrap()).unwrap();
         let document_keys = document_group
@@ -1248,12 +1248,12 @@ tilo_test_env::scenario! {
             .unwrap()
             .with_workspace_history(workspace_keys.clone());
         assert!(document_keys.epoch() < workspace_keys.epoch());
-        let mut replica = f.host.clone();
+        let mut replica = f.replica.clone();
 
-        let minted = mint(&mut f.host, &document_keys, &f.owner, now)
+        let minted = mint(&mut f.replica, &document_keys, &f.owner, now)
             .expect("the document's own group seals its compaction");
         let compaction = envelope_of(&minted);
-        assert_eq!(held(&f.host), vec![compaction.clone()], "history superseded");
+        assert_eq!(held(&f.replica), vec![compaction.clone()], "history superseded");
         let metadata = compaction.encryption.unwrap();
         assert!(matches!(
             metadata.scheme,
@@ -1267,7 +1267,7 @@ tilo_test_env::scenario! {
         assert_eq!(merged.get(ROOT, "first").unwrap().unwrap().0.as_str(), Some(SECRET));
         // A replica without the keys takes it from its author as the history it holds.
         admit(&mut replica, &f.owner, minted, now);
-        assert_eq!(held(&replica), held(&f.host), "another replica supersedes");
+        assert_eq!(held(&replica), held(&f.replica), "another replica supersedes");
 
         // Within the document's own group an earlier epoch is still stale.
         let stale = document_group.content_keys().unwrap();
@@ -1276,11 +1276,11 @@ tilo_test_env::scenario! {
             .unwrap();
         let current = document_group.content_keys().unwrap();
         assert!(current.epoch() > stale.epoch());
-        let later = write(&f.host, &f.other, &current, &author.edit("second", "2"), now);
-        admit(&mut f.host, &f.other, later, now);
-        let forgery = forged(&f.host, &f.owner, &wrapper(&f.host, &stale, &held(&f.host)), now);
+        let later = write(&f.replica, &f.other, &current, &author.edit("second", "2"), now);
+        admit(&mut f.replica, &f.other, later, now);
+        let forgery = forged(&f.replica, &f.owner, &wrapper(&f.replica, &stale, &held(&f.replica)), now);
         let owner = f.owner.clone();
-        refused_with(&mut f.host, &owner, forgery, now, "stale epoch");
+        refused_with(&mut f.replica, &owner, forgery, now, "stale epoch");
     }
 
     phase a_compaction_founds_a_route_a_replica_holds_none_of;
@@ -1288,10 +1288,10 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
-        let message = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.host, &f.other, message, now);
-        let compaction = mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        let mut author = Author::new(&f.replica);
+        let message = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.replica, &f.other, message, now);
+        let compaction = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
 
         let mut fresh = StatePeer::new(
             WORKSPACE,
@@ -1303,7 +1303,7 @@ tilo_test_env::scenario! {
         .unwrap();
         fresh.select_exact_admissions().unwrap();
         fresh
-            .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
             .unwrap();
         assert!(
             fresh.document(APP, RECORD).is_none(),
@@ -1318,12 +1318,12 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
-        let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.host, &f.other, first, now);
-        let later = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
-        admit(&mut f.host, &f.other, later.clone(), now);
-        let saved = checkpoint(&f.host, &keys, &f.owner, now);
+        let mut author = Author::new(&f.replica);
+        let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.replica, &f.other, first, now);
+        let later = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
+        admit(&mut f.replica, &f.other, later.clone(), now);
+        let saved = checkpoint(&f.replica, &keys, &f.owner, now);
 
         let mut fresh = StatePeer::new(
             WORKSPACE,
@@ -1335,7 +1335,7 @@ tilo_test_env::scenario! {
         .unwrap();
         fresh.select_exact_admissions().unwrap();
         fresh
-            .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
             .unwrap();
         // A change whose checkpoint this replica never saw waits for one.
         let waited = fresh
@@ -1365,29 +1365,29 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
-        let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.host, &f.other, first, now);
-        let mut replica = f.host.clone();
-        let mut lagging = f.host.clone();
-        let older = mint(&mut f.host, &keys, &f.owner, now).unwrap();
-        let after = f.host.durable().unwrap();
+        let mut author = Author::new(&f.replica);
+        let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.replica, &f.other, first, now);
+        let mut replica = f.replica.clone();
+        let mut lagging = f.replica.clone();
+        let older = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
+        let after = f.replica.durable().unwrap();
         let replay = f
-            .host
+            .replica
             .receive_from_report(origin(&f.owner), older.clone(), now)
             .unwrap();
         assert!(!matches!(replay.primary(), InputDisposition::Accepted(_)));
-        assert_eq!(f.host.durable().unwrap(), after, "a replay changes nothing");
+        assert_eq!(f.replica.durable().unwrap(), after, "a replay changes nothing");
 
-        let second = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
-        admit(&mut f.host, &f.other, second.clone(), now);
-        let newer = mint(&mut f.host, &keys, &f.owner, now).unwrap();
-        assert_eq!(held(&f.host), vec![envelope_of(&newer)]);
+        let second = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
+        admit(&mut f.replica, &f.other, second.clone(), now);
+        let newer = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
+        assert_eq!(held(&f.replica), vec![envelope_of(&newer)]);
 
         admit(&mut replica, &f.owner, older.clone(), now);
         admit(&mut replica, &f.other, second.clone(), now);
         admit(&mut replica, &f.owner, newer.clone(), now);
-        assert_eq!(held(&replica), held(&f.host));
+        assert_eq!(held(&replica), held(&f.replica));
         let settled = replica.durable().unwrap();
         replica
             .receive_from_report(origin(&f.owner), older, now)
@@ -1416,8 +1416,8 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
-        let mut holder = f.host.clone();
+        let mut author = Author::new(&f.replica);
+        let mut holder = f.replica.clone();
         let writes: Vec<NeighbourMsg> = ["1", "2", "3"]
             .iter()
             .map(|value| {
@@ -1429,43 +1429,43 @@ tilo_test_env::scenario! {
         let all = held(&holder);
         let owner = f.owner.clone();
 
-        admit(&mut f.host, &f.other, writes[0].clone(), now);
-        let forgery = forged(&f.host, &owner, &wrapper(&f.host, &keys, &all), now);
-        refused_with(&mut f.host, &owner, forgery, now, "has not admitted");
+        admit(&mut f.replica, &f.other, writes[0].clone(), now);
+        let forgery = forged(&f.replica, &owner, &wrapper(&f.replica, &keys, &all), now);
+        refused_with(&mut f.replica, &owner, forgery, now, "has not admitted");
 
-        let mut gap = f.host.clone();
+        let mut gap = f.replica.clone();
         admit(&mut gap, &f.other, writes[2].clone(), now);
         let forgery = forged(&gap, &owner, &wrapper(&gap, &keys, &all), now);
         refused_with(&mut gap, &owner, forgery, now, "partial");
 
-        admit(&mut f.host, &f.other, writes[1].clone(), now);
-        let (mut other_set, metadata) = wrapper(&f.host, &keys, &all[..2]);
+        admit(&mut f.replica, &f.other, writes[1].clone(), now);
+        let (mut other_set, metadata) = wrapper(&f.replica, &keys, &all[..2]);
         other_set.prefix_hash = collab_types::hash_sealed_prefix(&all[..1]).unwrap();
-        let forgery = forged(&f.host, &owner, &(other_set, metadata), now);
-        refused_with(&mut f.host, &owner, forgery, now, "partial");
+        let forgery = forged(&f.replica, &owner, &(other_set, metadata), now);
+        refused_with(&mut f.replica, &owner, forgery, now, "partial");
 
-        let (mut nothing, metadata) = wrapper(&f.host, &keys, &all[..1]);
+        let (mut nothing, metadata) = wrapper(&f.replica, &keys, &all[..1]);
         nothing.covers = vec![(
             Ed25519PublicKey::from_bytes(owner.verifying_key().to_bytes()),
-            floor(&f.host, &owner),
+            floor(&f.replica, &owner),
         )];
         nothing.prefix_hash = collab_types::hash_sealed_prefix(std::iter::empty()).unwrap();
-        let forgery = forged(&f.host, &owner, &(nothing, metadata), now);
-        refused_with(&mut f.host, &owner, forgery, now, "supersedes nothing");
+        let forgery = forged(&f.replica, &owner, &(nothing, metadata), now);
+        refused_with(&mut f.replica, &owner, forgery, now, "supersedes nothing");
 
-        let first = mint(&mut f.host, &keys, &owner, now).unwrap();
-        let third = write(&f.host, &f.other, &keys, &author.edit("value", "4"), now);
-        admit(&mut f.host, &f.other, third, now);
-        let history = held(&f.host);
+        let first = mint(&mut f.replica, &keys, &owner, now).unwrap();
+        let third = write(&f.replica, &f.other, &keys, &author.edit("value", "4"), now);
+        admit(&mut f.replica, &f.other, third, now);
+        let history = held(&f.replica);
         assert_eq!(history[0], envelope_of(&first));
         let forgery = forged(
-            &f.host,
+            &f.replica,
             &owner,
-            &wrapper(&f.host, &keys, &history[1..]),
+            &wrapper(&f.replica, &keys, &history[1..]),
             now,
         );
         refused_with(
-            &mut f.host,
+            &mut f.replica,
             &owner,
             forgery,
             now,
@@ -1478,15 +1478,15 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
-        let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.host, &f.other, first, now);
-        let one = held(&f.host).remove(0);
-        f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS].into();
-        let more = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
+        let mut author = Author::new(&f.replica);
+        let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.replica, &f.other, first, now);
+        let one = held(&f.replica).remove(0);
+        f.replica.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS].into();
+        let more = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
         let other = f.other.clone();
         refused_with(
-            &mut f.host,
+            &mut f.replica,
             &other,
             more.clone(),
             now,
@@ -1494,16 +1494,16 @@ tilo_test_env::scenario! {
         );
 
         let compaction = forged(
-            &f.host,
+            &f.replica,
             &f.owner,
-            &wrapper(&f.host, &keys, &held(&f.host)),
+            &wrapper(&f.replica, &keys, &held(&f.replica)),
             now,
         );
-        admit(&mut f.host, &f.owner, compaction.clone(), now);
-        assert_eq!(held(&f.host), vec![envelope_of(&compaction)]);
-        admit(&mut f.host, &f.other, more.clone(), now);
+        admit(&mut f.replica, &f.owner, compaction.clone(), now);
+        assert_eq!(held(&f.replica), vec![envelope_of(&compaction)]);
+        admit(&mut f.replica, &f.other, more.clone(), now);
         assert_eq!(
-            held(&f.host),
+            held(&f.replica),
             vec![envelope_of(&compaction), envelope_of(&more)]
         );
     }
@@ -1513,14 +1513,14 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
-        let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.host, &f.other, first.clone(), now);
-        mint(&mut f.host, &keys, &f.owner, now).unwrap();
-        let second = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
-        admit(&mut f.host, &f.other, second, now);
-        let bytes = f.host.durable().unwrap();
-        assert_eq!(held(&f.restore(&bytes).unwrap()), held(&f.host));
+        let mut author = Author::new(&f.replica);
+        let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.replica, &f.other, first.clone(), now);
+        mint(&mut f.replica, &keys, &f.owner, now).unwrap();
+        let second = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
+        admit(&mut f.replica, &f.other, second, now);
+        let bytes = f.replica.durable().unwrap();
+        assert_eq!(held(&f.restore(&bytes).unwrap()), held(&f.replica));
 
         let rewrite = |change: &dyn Fn(&mut Vec<SignedOp>)| {
             let mut value: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
@@ -1567,18 +1567,18 @@ tilo_test_env::scenario! {
     {
         let mut f = fixture();
         let (now, keys) = (f.now, f.keys());
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         for value in ["1", "2", "3"] {
-            let sealed = write(&f.host, &f.editor, &keys, &author.edit("value", value), now);
-            admit(&mut f.host, &f.editor, sealed, now);
+            let sealed = write(&f.replica, &f.editor, &keys, &author.edit("value", value), now);
+            admit(&mut f.replica, &f.editor, sealed, now);
         }
-        assert_eq!(f.host.kept_encoded_bytes(), 0, "no record is encoded beside the replica");
-        let hashed = f.host.durable_hash().unwrap();
-        assert_eq!(f.host.kept_encoded_bytes(), 0, "hashing keeps no part");
-        assert_eq!(hashed, f.host.durable_hash().unwrap(), "one state has one digest");
+        assert_eq!(f.replica.kept_encoded_bytes(), 0, "no record is encoded beside the replica");
+        let hashed = f.replica.durable_hash().unwrap();
+        assert_eq!(f.replica.kept_encoded_bytes(), 0, "hashing keeps no part");
+        assert_eq!(hashed, f.replica.durable_hash().unwrap(), "one state has one digest");
         assert_eq!(
             hashed,
-            f.host.durable_hash_of_kept_parts().unwrap(),
+            f.replica.durable_hash_of_kept_parts().unwrap(),
             "the digest is the one the stored encoding has"
         );
     }
@@ -1593,15 +1593,15 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
-        let first = write(&f.host, &f.editor, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.host, &f.editor, first, now);
-        assert!(f.host.publication().sealed_to_compact().is_empty());
-        let one = held(&f.host).remove(0);
-        f.host.core.documents.get_mut(&route()).unwrap().sealed =
+        let mut author = Author::new(&f.replica);
+        let first = write(&f.replica, &f.editor, &keys, &author.edit("value", "1"), now);
+        admit(&mut f.replica, &f.editor, first, now);
+        assert!(f.replica.publication().sealed_to_compact().is_empty());
+        let one = held(&f.replica).remove(0);
+        f.replica.core.documents.get_mut(&route()).unwrap().sealed =
             vec![one; MAX_SEALED_OPS / 4 * 3].into();
         assert_eq!(
-            f.host.publication().sealed_to_compact(),
+            f.replica.publication().sealed_to_compact(),
             vec![(APP.to_owned(), RECORD.to_owned())]
         );
     }
@@ -1614,22 +1614,22 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         for index in 0..super::sealed_compaction::PRESSED_HISTORY {
             let next = write(
-                &f.host,
+                &f.replica,
                 &f.other,
                 &keys,
                 &author.edit("value", &index.to_string()),
                 now,
             );
-            admit(&mut f.host, &f.other, next, now);
+            admit(&mut f.replica, &f.other, next, now);
         }
-        assert!(f.host.publication().sealed_to_compact().is_empty());
+        assert!(f.replica.publication().sealed_to_compact().is_empty());
         let mut sequence = 0;
-        while !f.host.core.exact_admissions.pressed() {
+        while !f.replica.core.exact_admissions.pressed() {
             sequence += 1;
-            f.host
+            f.replica
                 .core
                 .exact_admissions
                 .insert(&crate::admission::DocumentAdmission {
@@ -1645,13 +1645,13 @@ tilo_test_env::scenario! {
                 .unwrap();
         }
         assert_eq!(
-            f.host.publication().sealed_to_compact(),
+            f.replica.publication().sealed_to_compact(),
             vec![(APP.to_owned(), RECORD.to_owned())]
         );
-        let before = f.host.core.exact_admissions.len();
-        mint(&mut f.host, &keys, &f.owner, now).unwrap();
+        let before = f.replica.core.exact_admissions.len();
+        mint(&mut f.replica, &keys, &f.owner, now).unwrap();
         assert!(
-            f.host.core.exact_admissions.len() < before,
+            f.replica.core.exact_admissions.len() < before,
             "the compaction folded the record's evidence"
         );
     }
@@ -1661,7 +1661,7 @@ tilo_test_env::scenario! {
         let f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut host = f.host.clone();
+        let mut host = f.replica.clone();
         let mut author = Author::new(&host);
         for value in ["1", "2", "3"] {
             let sealed = write(&host, &f.editor, &keys, &author.edit("value", value), now);
@@ -1724,7 +1724,7 @@ tilo_test_env::scenario! {
         let f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut host = f.host.clone();
+        let mut host = f.replica.clone();
         let before = host.clone();
         let mut author = Author::new(&host);
         let sealed = write(&host, &f.editor, &keys, &author.edit("value", "1"), now);
@@ -1778,17 +1778,17 @@ tilo_test_env::scenario! {
     {
         let mut f = fixture();
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let actor = automerge::ActorId::from(vec![0x31]);
         author.0.set_actor(actor.clone());
         let first = author.edit("value", "first");
         let second = author.edit("value", "second");
-        let first = write(&f.host, &f.owner, &keys, &first, f.now);
-        let second = write(&f.host, &f.other, &keys, &second, f.now);
+        let first = write(&f.replica, &f.owner, &keys, &first, f.now);
+        let second = write(&f.replica, &f.other, &keys, &second, f.now);
         // A keyless replica admits the later causal mutation first.
-        admit(&mut f.host, &f.other, second, f.now);
-        admit(&mut f.host, &f.owner, first, f.now);
-        let before = f.host.durable().unwrap();
+        admit(&mut f.replica, &f.other, second, f.now);
+        admit(&mut f.replica, &f.owner, first, f.now);
+        let before = f.replica.durable().unwrap();
         let restored_peer = f.restore(&before).unwrap();
         let capture = restored_peer
             .capture_document(
@@ -1835,7 +1835,7 @@ tilo_test_env::scenario! {
             "third"
         );
         assert_eq!(
-            f.host.durable().unwrap(),
+            f.replica.durable().unwrap(),
             before,
             "reading never changes durable admission"
         );
@@ -1845,18 +1845,18 @@ tilo_test_env::scenario! {
     {
         let mut f = fixture();
         let keys = f.keys();
-        let mut first = Author::new(&f.host);
-        let mut conflicting = Author::new(&f.host);
+        let mut first = Author::new(&f.replica);
+        let mut conflicting = Author::new(&f.replica);
         let actor = automerge::ActorId::from(vec![0x41]);
         first.0.set_actor(actor.clone());
         conflicting.0.set_actor(actor);
         let first = first.edit("value", "canonical");
         let conflicting = conflicting.edit("value", "conflicting");
-        let one = write(&f.host, &f.owner, &keys, &first, f.now);
-        let two = write(&f.host, &f.other, &keys, &conflicting, f.now);
-        admit(&mut f.host, &f.owner, one, f.now);
-        admit(&mut f.host, &f.other, two, f.now);
-        let before = f.host.durable().unwrap();
+        let one = write(&f.replica, &f.owner, &keys, &first, f.now);
+        let two = write(&f.replica, &f.other, &keys, &conflicting, f.now);
+        admit(&mut f.replica, &f.owner, one, f.now);
+        admit(&mut f.replica, &f.other, two, f.now);
+        let before = f.replica.durable().unwrap();
         let restored_peer = f.restore(&before).unwrap();
         let capture = restored_peer
             .capture_document(
@@ -1878,7 +1878,7 @@ tilo_test_env::scenario! {
         restored.put(ROOT, "value", "next").unwrap();
         restored.commit();
         assert_eq!(restored.get_changes(&heads)[0].seq(), 2);
-        assert_eq!(f.host.durable().unwrap(), before);
+        assert_eq!(f.replica.durable().unwrap(), before);
     }
 
     phase a_late_joiner_reads_a_sealed_history_past_one_capture;
@@ -1896,7 +1896,7 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let keys = f.keys();
         let now = f.now;
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let mut state = 0x9E37_79B9_7F4A_7C15_u64;
         let mut value = vec![0_u8; WRITE];
         for byte in &mut value {
@@ -1909,10 +1909,10 @@ tilo_test_env::scenario! {
             let mut plaintext = value.clone();
             plaintext[0] = u8::try_from(round).unwrap();
             let edit = author.edit_bytes(&format!("value-{round}"), plaintext);
-            let message = write(&f.host, &f.owner, &keys, &edit, now);
-            admit(&mut f.host, &f.owner, message, now);
+            let message = write(&f.replica, &f.owner, &keys, &edit, now);
+            admit(&mut f.replica, &f.owner, message, now);
         }
-        let joiner = f.restore(&f.host.durable().unwrap()).unwrap();
+        let joiner = f.restore(&f.replica.durable().unwrap()).unwrap();
         let read = |maximum: usize| {
             let mut kept = KeptDocument::default();
             joiner
@@ -1939,11 +1939,11 @@ tilo_test_env::scenario! {
     {
         let mut f = fixture();
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let plaintext = author.edit("value", SECRET);
-        let op = write(&f.host, &f.owner, &keys, &plaintext, f.now);
-        admit(&mut f.host, &f.owner, op, f.now);
-        let before = f.host.durable().unwrap();
+        let op = write(&f.replica, &f.owner, &keys, &plaintext, f.now);
+        admit(&mut f.replica, &f.owner, op, f.now);
+        let before = f.replica.durable().unwrap();
         for corruption in 0..4 {
             let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
             match corruption {
@@ -1964,20 +1964,20 @@ tilo_test_env::scenario! {
                 "full restore corruption {corruption}"
             );
         }
-        assert_eq!(f.host.durable().unwrap(), before);
+        assert_eq!(f.replica.durable().unwrap(), before);
     }
 
     phase captured_history_missing_admitted_write_is_refused_before_opening;
     {
         let mut f = fixture();
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         for value in ["first", "second"] {
             let plaintext = author.edit("value", value);
-            let message = write(&f.host, &f.owner, &keys, &plaintext, f.now);
-            admit(&mut f.host, &f.owner, message, f.now);
+            let message = write(&f.replica, &f.owner, &keys, &plaintext, f.now);
+            admit(&mut f.replica, &f.owner, message, f.now);
         }
-        let before = f.host.durable().unwrap();
+        let before = f.replica.durable().unwrap();
         let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
         wire.sealed[0].1.remove(0);
         let incomplete = postcard::to_allocvec(&wire).unwrap();
@@ -1998,18 +1998,18 @@ tilo_test_env::scenario! {
             Err(crate::PeerDocumentReadError::Incomplete)
         ));
         assert_eq!(opened, 0, "incomplete coverage is not decrypted");
-        assert_eq!(f.host.durable().unwrap(), before);
+        assert_eq!(f.replica.durable().unwrap(), before);
     }
 
     phase captured_history_denial_and_capacity_precede_opening_and_missing_keys_refuse;
     {
         let mut f = fixture();
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let plaintext = author.edit("value", SECRET);
-        let message = write(&f.host, &f.owner, &keys, &plaintext, f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
-        let before = f.host.durable().unwrap();
+        let message = write(&f.replica, &f.owner, &keys, &plaintext, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+        let before = f.replica.durable().unwrap();
         let restored_peer = f.restore(&before).unwrap();
         let mut opened = 0;
         let result = restored_peer.capture_document(
@@ -2057,23 +2057,23 @@ tilo_test_env::scenario! {
             result,
             Err(crate::PeerDocumentReadError::Opening(_))
         ));
-        assert_eq!(f.host.durable().unwrap(), before);
+        assert_eq!(f.replica.durable().unwrap(), before);
     }
 
     phase captured_history_replays_compaction_and_waits_for_epochs_not_held;
     {
         let mut f = fixture();
         let old_keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let plaintext = author.edit("value", "before rotation");
-        let message = write(&f.host, &f.owner, &old_keys, &plaintext, f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
-        mint(&mut f.host, &old_keys, &f.owner, f.now).unwrap();
+        let message = write(&f.replica, &f.owner, &old_keys, &plaintext, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+        mint(&mut f.replica, &old_keys, &f.owner, f.now).unwrap();
         let new_keys = f.rotate();
         let plaintext = author.edit("value", "after rotation");
-        let message = write(&f.host, &f.owner, &new_keys, &plaintext, f.now);
-        admit(&mut f.host, &f.owner, message, f.now);
-        let before = f.host.durable().unwrap();
+        let message = write(&f.replica, &f.owner, &new_keys, &plaintext, f.now);
+        admit(&mut f.replica, &f.owner, message, f.now);
+        let before = f.replica.durable().unwrap();
         let restored_peer = f.restore(&before).unwrap();
         let capture = restored_peer
             .capture_document(
@@ -2125,7 +2125,7 @@ tilo_test_env::scenario! {
             f.restore(&misplaced).is_err(),
             "a compaction is first, never a later write"
         );
-        assert_eq!(f.host.durable().unwrap(), before);
+        assert_eq!(f.replica.durable().unwrap(), before);
     }
 }
 
@@ -2148,7 +2148,7 @@ tilo_test_env::scenario! {
     {
         let f = fixture();
         let keys = f.keys();
-        let mut sealing = f.host.clone();
+        let mut sealing = f.replica.clone();
         assert!(!sealing.publication().is_sealed_document(APP, RECORD));
         let mut document = AutoCommit::load(&sealing.document(APP, RECORD).unwrap()).unwrap();
         let heads = document.get_heads();
@@ -2188,7 +2188,7 @@ tilo_test_env::scenario! {
                 .is_err()
         );
 
-        let mut keyless = f.host.clone();
+        let mut keyless = f.replica.clone();
         admit(&mut keyless, &f.owner, message, f.now);
         assert!(keyless.publication().is_sealed_document(APP, RECORD));
     }
@@ -2208,7 +2208,7 @@ tilo_test_env::scenario! {
         let mut genesis = AutoCommit::new();
         genesis.put(ROOT, "value", "born sealed").unwrap();
         genesis.commit_edit("fixture", "value");
-        let mut host = f.host.clone();
+        let mut host = f.replica.clone();
         host.publication_mut()
             .publish_document(APP, record, AutoCommit::new().save(), &f.owner, f.now)
             .unwrap();
@@ -2262,7 +2262,7 @@ tilo_test_env::scenario! {
     phase a_record_its_key_holder_seals_is_never_published_in_the_clear_again;
     {
         let f = fixture();
-        let mut host = f.host.clone();
+        let mut host = f.replica.clone();
         assert!(host.seal_document(APP, RECORD));
         assert!(host.publication().is_sealed_document(APP, RECORD));
         assert!(
@@ -2291,7 +2291,7 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         // A write in the clear names its action, as a device's executor signs it.
         let mut named = |key: &str, value: &str| {
             let heads = author.0.get_heads();
@@ -2301,7 +2301,7 @@ tilo_test_env::scenario! {
                 .encode()
                 .unwrap()
         };
-        let seq = next_seq(&f.host, &f.owner);
+        let seq = next_seq(&f.replica, &f.owner);
         let first = message(signed(
             &f.owner,
             seq,
@@ -2319,22 +2319,22 @@ tilo_test_env::scenario! {
             now,
         ));
         let sealed = named("sealed", "yes");
-        let seal = write(&f.host, &f.other, &keys, &sealed, now);
+        let seal = write(&f.replica, &f.other, &keys, &sealed, now);
         // `second` waits for `first`, which arrives after the seal.
         let report = f
-            .host
+            .replica
             .receive_from_report(origin(&f.owner), second, now)
             .unwrap();
         assert!(matches!(report.primary(), InputDisposition::RetryLater(_)));
-        f.host
+        f.replica
             .receive_from_report(origin(&f.other), seal, now)
             .unwrap();
-        f.host
+        f.replica
             .receive_from_report(origin(&f.owner), first, now)
             .expect("a cleartext write before the seal is the record's base");
-        assert!(f.host.publication().is_sealed_document(APP, RECORD));
+        assert!(f.replica.publication().is_sealed_document(APP, RECORD));
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut |op| open(&keys, op))
             .unwrap()
@@ -2359,20 +2359,20 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut author = Author::new(&f.host);
+        let mut author = Author::new(&f.replica);
         let mut changes = Vec::new();
         for n in 0..=held::MAX_HELD_INPUTS {
             let change = write(
-                &f.host,
+                &f.replica,
                 &f.other,
                 &keys,
                 &author.edit("value", &n.to_string()),
                 now,
             );
-            admit(&mut f.host, &f.other, change.clone(), now);
+            admit(&mut f.replica, &f.other, change.clone(), now);
             changes.push(change);
         }
-        let saved = checkpoint(&f.host, &keys, &f.owner, now);
+        let saved = checkpoint(&f.replica, &keys, &f.owner, now);
 
         let mut fresh = StatePeer::new(
             WORKSPACE,
@@ -2384,7 +2384,7 @@ tilo_test_env::scenario! {
         .unwrap();
         fresh.select_exact_admissions().unwrap();
         fresh
-            .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
             .unwrap();
         let mut let_go = 0;
         for change in changes {
@@ -2420,30 +2420,30 @@ fn a_record_larger_than_one_op_compacts_in_segments_and_stays_writable() {
     let mut f = fixture();
     let keys = f.keys();
     let (now, owner, editor) = (f.now, f.owner.clone(), f.editor.clone());
-    let mut author = Author::new(&f.host);
+    let mut author = Author::new(&f.replica);
     let mut written = 0usize;
     let mut compactions = Vec::new();
     for index in 0..BASE {
         let edit = author.edit_bytes(&format!("part-{index}"), noise(PART, index as u64));
-        let sealed = write(&f.host, &editor, &keys, &edit, now);
+        let sealed = write(&f.replica, &editor, &keys, &edit, now);
         written += envelope_of(&sealed).payload.len();
-        admit(&mut f.host, &editor, sealed, now);
+        admit(&mut f.replica, &editor, sealed, now);
     }
     for index in 0..64u64 {
-        if !f.host.publication().sealed_to_compact().is_empty() {
-            let mut holder = f.host.clone();
+        if !f.replica.publication().sealed_to_compact().is_empty() {
+            let mut holder = f.replica.clone();
             let pieces = mint_pieces(&mut holder, &keys, &owner, now).unwrap();
             assert!(pieces.len() > 3, "a snapshot of 10 MiB spans several ops");
             // The segments alone change nothing; the set is taken whole.
-            let before = held(&f.host);
+            let before = held(&f.replica);
             for piece in pieces.iter().skip(1) {
-                f.host
+                f.replica
                     .receive_from_report(origin(&owner), piece.clone(), now)
                     .unwrap();
-                assert_eq!(held(&f.host), before, "a segment alone is taken");
+                assert_eq!(held(&f.replica), before, "a segment alone is taken");
             }
-            admit(&mut f.host, &owner, pieces[0].clone(), now);
-            let history = held(&f.host);
+            admit(&mut f.replica, &owner, pieces[0].clone(), now);
+            let history = held(&f.replica);
             assert_eq!(
                 history.len(),
                 pieces.len(),
@@ -2453,11 +2453,11 @@ fn a_record_larger_than_one_op_compacts_in_segments_and_stays_writable() {
             compactions.push(pieces);
         }
         let edit = author.edit_bytes("edit", noise(EDIT, 1000 + index));
-        let sealed = write(&f.host, &editor, &keys, &edit, now);
+        let sealed = write(&f.replica, &editor, &keys, &edit, now);
         written += envelope_of(&sealed).payload.len();
-        admit(&mut f.host, &editor, sealed, now);
+        admit(&mut f.replica, &editor, sealed, now);
         assert!(
-            f.host.core.documents[&route()].sealed.within_bounds(),
+            f.replica.core.documents[&route()].sealed.within_bounds(),
             "the keyless history stays within its bound"
         );
     }
@@ -2471,8 +2471,8 @@ fn a_record_larger_than_one_op_compacts_in_segments_and_stays_writable() {
     );
 
     // A replica that persisted the set restores it.
-    let restored = f.restore(&f.host.durable().unwrap()).unwrap();
-    assert_eq!(held(&restored), held(&f.host));
+    let restored = f.restore(&f.replica.durable().unwrap()).unwrap();
+    assert_eq!(held(&restored), held(&f.replica));
 
     joins_late(&f, compactions.last().unwrap(), &mut author.0);
 }
@@ -2481,14 +2481,14 @@ fn a_record_larger_than_one_op_compacts_in_segments_and_stays_writable() {
 /// first: the payload bytes of the set.
 fn compact_set(f: &mut Fixture, keys: &ContentKeys, now: SystemTime) -> usize {
     let owner = f.owner.clone();
-    let mut holder = f.host.clone();
+    let mut holder = f.replica.clone();
     let pieces = mint_pieces(&mut holder, keys, &owner, now).unwrap();
     for piece in pieces.iter().skip(1) {
-        f.host
+        f.replica
             .receive_from_report(origin(&owner), piece.clone(), now)
             .unwrap();
     }
-    admit(&mut f.host, &owner, pieces[0].clone(), now);
+    admit(&mut f.replica, &owner, pieces[0].clone(), now);
     pieces
         .iter()
         .map(|piece| envelope_of(piece).payload.len())
@@ -2509,14 +2509,14 @@ fn a_record_twice_the_bound_of_its_writes_compacts_only_for_its_new_writes() {
     let mut f = fixture();
     let keys = f.keys();
     let (now, editor) = (f.now, f.editor.clone());
-    let mut author = Author::new(&f.host);
+    let mut author = Author::new(&f.replica);
     for index in 0..PARTS {
-        if !f.host.publication().sealed_to_compact().is_empty() {
+        if !f.replica.publication().sealed_to_compact().is_empty() {
             compact_set(&mut f, &keys, now);
         }
         let edit = author.edit_bytes(&format!("part-{index}"), noise(PART, index as u64));
-        let sealed = write(&f.host, &editor, &keys, &edit, now);
-        admit(&mut f.host, &editor, sealed, now);
+        let sealed = write(&f.replica, &editor, &keys, &edit, now);
+        admit(&mut f.replica, &editor, sealed, now);
     }
     let set = compact_set(&mut f, &keys, now);
     assert!(
@@ -2526,14 +2526,14 @@ fn a_record_twice_the_bound_of_its_writes_compacts_only_for_its_new_writes() {
 
     let (mut compactions, mut compacted) = (0usize, 0usize);
     for index in 0..WRITES {
-        if !f.host.publication().sealed_to_compact().is_empty() {
+        if !f.replica.publication().sealed_to_compact().is_empty() {
             compactions += 1;
             compacted += compact_set(&mut f, &keys, now);
         }
         let edit = author.edit_bytes("edit", noise(EDIT, 5000 + index as u64));
-        let sealed = write(&f.host, &editor, &keys, &edit, now);
-        admit(&mut f.host, &editor, sealed, now);
-        assert!(f.host.core.documents[&route()].sealed.within_bounds());
+        let sealed = write(&f.replica, &editor, &keys, &edit, now);
+        admit(&mut f.replica, &editor, sealed, now);
+        assert!(f.replica.core.documents[&route()].sealed.within_bounds());
     }
     eprintln!(
         "{WRITES} writes of {EDIT} bytes to a record of {set} bytes: {compactions} compactions, \
@@ -2547,25 +2547,25 @@ fn a_record_twice_the_bound_of_its_writes_compacts_only_for_its_new_writes() {
     );
 
     // Writes past the bound since the last compaction are refused, the set held as it was.
-    let head = held(&f.host)[0].clone();
+    let head = held(&f.replica)[0].clone();
     let mut index = 0u64;
     let error = loop {
         let edit = author.edit_bytes("more", noise(PART, 9000 + index));
-        let sealed = write(&f.host, &editor, &keys, &edit, now);
-        if let Err(error) = f.host.receive_from_report(origin(&editor), sealed, now) {
+        let sealed = write(&f.replica, &editor, &keys, &edit, now);
+        if let Err(error) = f.replica.receive_from_report(origin(&editor), sealed, now) {
             break error.to_string();
         }
         index += 1;
         assert!(index < 64, "writes past the bound are refused");
     };
     assert!(error.contains("sealed record history is full"), "{error}");
-    let sealed = &f.host.core.documents[&route()].sealed;
+    let sealed = &f.replica.core.documents[&route()].sealed;
     let (_, since) = sealed.writes();
     assert!(
         since <= MAX_SEALED_BYTES && since + 2 * PART > MAX_SEALED_BYTES,
         "refused after {since} bytes of writes since the compaction"
     );
-    assert_eq!(held(&f.host)[0], head, "the compaction set stays");
+    assert_eq!(held(&f.replica)[0], head, "the compaction set stays");
 }
 
 /// A keyless replica refuses a compaction set larger than one document transfer: its pieces
@@ -2576,10 +2576,10 @@ fn a_keyless_replica_refuses_a_compaction_set_past_its_bound() {
     let mut f = fixture();
     let keys = f.keys();
     let (now, owner, editor) = (f.now, f.owner.clone(), f.editor.clone());
-    let mut author = Author::new(&f.host);
-    let sealed = write(&f.host, &editor, &keys, &author.edit("title", "x"), now);
-    admit(&mut f.host, &editor, sealed, now);
-    let before = held(&f.host);
+    let mut author = Author::new(&f.replica);
+    let sealed = write(&f.replica, &editor, &keys, &author.edit("title", "x"), now);
+    admit(&mut f.replica, &editor, sealed, now);
+    let before = held(&f.replica);
 
     // A set of `count` segments of the key holder, over `before`: a keyless replica cannot
     // open them.
@@ -2605,7 +2605,7 @@ fn a_keyless_replica_refuses_a_compaction_set_past_its_bound() {
             .iter()
             .map(|(_, payload)| payload.clone())
             .collect();
-        let (wrapper, metadata) = wrapper(&f.host, &keys, &before);
+        let (wrapper, metadata) = wrapper(&f.replica, &keys, &before);
         // Numbered as the last write of its author the set folds: the history
         // is the editor's, so none of it is the owner's.
         let seq = wrapper
@@ -2646,18 +2646,18 @@ fn a_keyless_replica_refuses_a_compaction_set_past_its_bound() {
         set.iter().map(|op| op.payload.len()).sum::<usize>()
             > collab_types::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES + SEGMENT
     );
-    let mut taking = f.host.clone();
+    let mut taking = f.replica.clone();
     deliver(&mut taking, &set);
     assert_eq!(held(&taking), before, "the set is not taken");
     let sealed = write(&taking, &editor, &keys, &author.edit("title", "y"), now);
     admit(&mut taking, &editor, sealed, now);
     // The same set within its bound is taken.
     let within = forge(3);
-    let mut taken = f.host.clone();
+    let mut taken = f.replica.clone();
     deliver(&mut taken, &within);
     assert_eq!(held(&taken), within, "a set within its bound is taken");
 
-    let error = f.host.clone().restore_sealed(&route(), set).unwrap_err();
+    let error = f.replica.clone().restore_sealed(&route(), set).unwrap_err();
     assert!(error.contains("outside its bounds"), "{error}");
 }
 
@@ -2676,7 +2676,7 @@ fn joins_late(f: &Fixture, last: &[NeighbourMsg], whole: &mut AutoCommit) {
     .unwrap();
     fresh.select_exact_admissions().unwrap();
     fresh
-        .receive_from(origin(&f.owner), f.host.workspace_message(), now)
+        .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
         .unwrap();
     for piece in last {
         fresh
@@ -2688,7 +2688,7 @@ fn joins_late(f: &Fixture, last: &[NeighbourMsg], whole: &mut AutoCommit) {
         last.len(),
         "the late joiner took the whole set"
     );
-    for op in held(&f.host).into_iter().skip(last.len()) {
+    for op in held(&f.replica).into_iter().skip(last.len()) {
         let key = if op.author.as_bytes() == &f.owner.verifying_key().to_bytes() {
             &f.owner
         } else {
@@ -2696,7 +2696,7 @@ fn joins_late(f: &Fixture, last: &[NeighbourMsg], whole: &mut AutoCommit) {
         };
         admit(&mut fresh, key, message(op), now);
     }
-    assert_eq!(held(&fresh), held(&f.host));
+    assert_eq!(held(&fresh), held(&f.replica));
     let opened = fresh
         .publication()
         .opened_document(APP, RECORD, &mut |op| open(&keys, op))
@@ -2771,22 +2771,22 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut page = Author::new(&f.host);
+        let mut page = Author::new(&f.replica);
         let _let_go = page.edit("early-1", "first");
         let built_on = page.edit("early-2", "second");
-        let stuck = write(&f.host, &f.other, &keys, &built_on, now);
-        admit(&mut f.host, &f.other, stuck, now);
-        let mut member = Author::new(&f.host);
-        let later = write(&f.host, &f.owner, &keys, &member.edit("later", "kept"), now);
-        admit(&mut f.host, &f.owner, later, now);
+        let stuck = write(&f.replica, &f.other, &keys, &built_on, now);
+        admit(&mut f.replica, &f.other, stuck, now);
+        let mut member = Author::new(&f.replica);
+        let later = write(&f.replica, &f.owner, &keys, &member.edit("later", "kept"), now);
+        admit(&mut f.replica, &f.owner, later, now);
 
-        let read = captured(&f, &f.host, &keys).expect("the record reads");
+        let read = captured(&f, &f.replica, &keys).expect("the record reads");
         assert_eq!(text(&read, "value").as_deref(), Some("base"));
         assert_eq!(text(&read, "later").as_deref(), Some("kept"));
         assert_eq!(text(&read, "early-2"), None);
         let other = f.other.verifying_key().to_bytes();
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut |op| open(&keys, op))
             .unwrap()
@@ -2801,7 +2801,7 @@ tilo_test_env::scenario! {
             opened.unmerged
         );
         assert!(
-            mint(&mut f.host, &keys, &f.owner, now).is_err(),
+            mint(&mut f.replica, &keys, &f.owner, now).is_err(),
             "only the workspace's store folds a write away"
         );
     }
@@ -2813,12 +2813,12 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut page = Author::new(&f.host);
+        let mut page = Author::new(&f.replica);
         let (first, second) = (
             page.edit("early-1", "first"),
             page.edit("early-2", "second"),
         );
-        let on_its_way = write(&f.host, &f.other, &keys, &first, now);
+        let on_its_way = write(&f.replica, &f.other, &keys, &first, now);
         let (metadata, payload) = keys
             .seal_content(artifact(), ContentRetention::Delta, &second)
             .unwrap();
@@ -2830,14 +2830,14 @@ tilo_test_env::scenario! {
             Some(metadata),
             now,
         ));
-        admit(&mut f.host, &f.other, after, now);
+        admit(&mut f.replica, &f.other, after, now);
 
         assert!(matches!(
-            captured(&f, &f.host, &keys),
+            captured(&f, &f.replica, &keys),
             Err(crate::PeerDocumentReadError::Incomplete)
         ));
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut |op| open(&keys, op))
             .unwrap()
@@ -2866,18 +2866,18 @@ tilo_test_env::scenario! {
         let mut f = fixture();
         let now = f.now;
         let keys = f.keys();
-        let mut page = Author::new(&f.host);
+        let mut page = Author::new(&f.replica);
         let (first, second) = (
             page.edit("early-1", "first"),
             page.edit("early-2", "second"),
         );
-        let stuck = write(&f.host, &f.other, &keys, &second, now);
-        admit(&mut f.host, &f.other, stuck, now);
+        let stuck = write(&f.replica, &f.other, &keys, &second, now);
+        admit(&mut f.replica, &f.other, stuck, now);
         let mut kept = KeptDocument::default();
         let reader = f.authority.device_public_key;
         let mut opener = |op: &SignedOp| open(&keys, op);
         let read = f
-            .host
+            .replica
             .open_document(
                 reader,
                 (APP, RECORD),
@@ -2893,10 +2893,10 @@ tilo_test_env::scenario! {
             None
         );
 
-        let brought = write(&f.host, &f.owner, &keys, &first, now);
-        admit(&mut f.host, &f.owner, brought, now);
+        let brought = write(&f.replica, &f.owner, &keys, &first, now);
+        admit(&mut f.replica, &f.owner, brought, now);
         let read = f
-            .host
+            .replica
             .open_document(
                 reader,
                 (APP, RECORD),
@@ -2924,26 +2924,26 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let actor = automerge::ActorId::from(b"one device, every load".as_slice());
-        let base = f.host.document(APP, RECORD).unwrap();
+        let base = f.replica.document(APP, RECORD).unwrap();
         let mut page = Author(AutoCommit::load(&base).unwrap().with_actor(actor.clone()));
         let _let_go = page.edit("early-1", "first");
         let stuck = write(
-            &f.host,
+            &f.replica,
             &f.other,
             &keys,
             &page.edit("early-2", "second"),
             now,
         );
-        admit(&mut f.host, &f.other, stuck, now);
+        admit(&mut f.replica, &f.other, stuck, now);
 
         let mut reloaded = Author(AutoCommit::load(&base).unwrap().with_actor(actor));
-        let again = write(&f.host, &f.other, &keys, &reloaded.edit("again", "1"), now);
-        admit(&mut f.host, &f.other, again, now);
-        let read = captured(&f, &f.host, &keys).expect("the record reads after one write");
+        let again = write(&f.replica, &f.other, &keys, &reloaded.edit("again", "1"), now);
+        admit(&mut f.replica, &f.other, again, now);
+        let read = captured(&f, &f.replica, &keys).expect("the record reads after one write");
         assert_eq!(text(&read, "again").as_deref(), Some("1"));
         assert_eq!(text(&read, "early-2"), None);
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut |op| open(&keys, op))
             .unwrap()
@@ -2961,13 +2961,13 @@ tilo_test_env::scenario! {
             opened.unmerged
         );
 
-        let more = write(&f.host, &f.other, &keys, &reloaded.edit("again", "2"), now);
-        admit(&mut f.host, &f.other, more, now);
-        let read = captured(&f, &f.host, &keys).expect("the record reads after two writes");
+        let more = write(&f.replica, &f.other, &keys, &reloaded.edit("again", "2"), now);
+        admit(&mut f.replica, &f.other, more, now);
+        let read = captured(&f, &f.replica, &keys).expect("the record reads after two writes");
         assert_eq!(text(&read, "again").as_deref(), Some("2"));
         assert_eq!(text(&read, "early-2"), None);
         let opened = f
-            .host
+            .replica
             .publication()
             .opened_document(APP, RECORD, &mut |op| open(&keys, op))
             .unwrap()
