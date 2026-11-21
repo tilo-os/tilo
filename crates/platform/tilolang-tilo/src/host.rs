@@ -1561,6 +1561,28 @@ impl Host {
                 .store
                 .upgrade_plain_text(&package.meta.app, &package.meta.module_hash);
         }
+        // A package that takes over what a native app of its id kept carries it into its root
+        // on this start: the root is made for it (not marked migrated, since what it starts as
+        // is what that app left), and its migrations run on it below.
+        for package in self.packages() {
+            if !self.inner.runtime.has_earlier(&package.meta.app) {
+                continue;
+            }
+            for migration in package.meta.migrations() {
+                let Some(ty) = migration
+                    .params
+                    .first()
+                    .and_then(|target| package.meta.type_named(&target.ty))
+                else {
+                    continue;
+                };
+                if package.root_type(&ty.name).is_some()
+                    && let Err(error) = self.root_resource(&package.meta.app, &ty.id)
+                {
+                    tracing::warn!(app = package.meta.app, %error, "the root to migrate into could not be made");
+                }
+            }
+        }
         let mut ran: usize = 0;
         for package in self.packages() {
             for migration in package.meta.migrations() {
@@ -1598,6 +1620,12 @@ impl Host {
                     .migrated(doc, &migration.id)
                     .unwrap_or(true)
             {
+                continue;
+            }
+            // A migration that carries what a native app of the package's id kept waits until
+            // this device holds some of it: finding nothing proves only that nothing has arrived
+            // yet, so it stays to run on a start that reads what the documents brought.
+            if migration.carries && !self.inner.runtime.has_earlier(&package.meta.app) {
                 continue;
             }
             let at = Value::resource(&ResourceRef::root(doc, ty.to_owned()));

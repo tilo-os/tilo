@@ -437,6 +437,9 @@ pub struct Instance {
     /// Whether this replica is the workspace's origin, the one place the package's migrations run
     /// ([`Self::set_origin`]).
     origin: bool,
+    /// The documents a native app of the package's id kept in the workspace, which its
+    /// migrations carry over ([`Self::set_earlier`]).
+    earlier: Vec<(String, tilo_resource::Doc)>,
     /// The later build this instance runs, 0 for the installed one.
     generation: u64,
     follows: bool,
@@ -540,6 +543,7 @@ impl Instance {
             moved: false,
             migrated: false,
             origin: false,
+            earlier: Vec::new(),
             generation: 0,
             follows: false,
             taken_build: None,
@@ -856,6 +860,17 @@ impl Instance {
         self.origin = origin;
     }
 
+    /// Hand the instance the documents a native app of the package's id kept in the workspace,
+    /// each by the key it is stored under: what the package's migrations read with
+    /// `earlier(r)` and carry into its own resources once, at the origin
+    /// (`tilolang_runtime::earlier`). They are read, never written.
+    pub fn set_earlier(&mut self, documents: Vec<(String, tilo_resource::Doc)>) {
+        if let Some(host) = self.host.borrow().as_ref() {
+            host.runtime().set_earlier(&self.app, &documents);
+        }
+        self.earlier = documents;
+    }
+
     fn level(&self, level: Level) -> Option<&Shown> {
         match level {
             Level::Root => self.root.as_ref(),
@@ -963,6 +978,7 @@ impl Instance {
                 rest: sink,
             });
         }
+        host.runtime().set_earlier(&self.app, &self.earlier);
         self.generation = self.platform.load(&host);
         if let Some(builds) = self.platform.builds()
             && self.mode != Mode::Past

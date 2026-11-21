@@ -134,6 +134,53 @@ impl Spec {
     }
 }
 
+/// The documents a native app of `record`'s app id kept in its workspace on this device, when
+/// this device governs the workspace (none elsewhere), each by the key it is stored under: its records, which the package now under that id carries over once
+/// with a migration of its own. Read here, never written. While one of them does not read, or
+/// the store cannot list them, none are handed over: carrying some of them would leave the rest
+/// behind for good, so the carrying waits for a start that reads them all.
+fn earlier_documents(
+    documents: &Rc<dyn durable_store::DurableStore>,
+    record: &InstanceDocument,
+) -> Vec<(String, automerge::AutoCommit)> {
+    if !record.governs() {
+        return Vec::new();
+    }
+    let route = record.route();
+    let (app, workspace) = (route.app_id.as_str(), route.cluster_id.to_string());
+    let workspace = workspace.as_str();
+    let keys = match documents.documents(app, workspace) {
+        Ok(keys) => keys,
+        Err(error) => {
+            tracing::warn!(app, %error, "what a native app kept is not listed; carrying it waits");
+            return Vec::new();
+        }
+    };
+    let mut read = Vec::with_capacity(keys.len());
+    for key in keys {
+        let loaded =
+            collaboration::document::save::resource_document(documents, app, workspace, &key)
+                .map_err(|error| error.to_string())
+                .and_then(|mut store| store.load().map_err(|error| error.to_string()));
+        match loaded {
+            Ok(Some(doc)) => read.push((key, doc)),
+            Ok(None) => {
+                tracing::warn!(
+                    app,
+                    key,
+                    "a document a native app kept has not arrived; carrying it waits"
+                );
+                return Vec::new();
+            }
+            Err(error) => {
+                tracing::warn!(app, key, %error, "a document a native app kept does not read; carrying it waits");
+                return Vec::new();
+            }
+        }
+    }
+    read
+}
+
 /// The words the window of `spec` reads in: the language the session named for the person, or,
 /// where it named none, the one this host's process runs in, against the languages `bundle`'s
 /// package ships (`tilo_history::window_language`). Every word the window paints — its app's own
@@ -933,8 +980,9 @@ impl Hosted {
             window,
         );
         // The device that governs the workspace is its documents' origin: the package's migrations
-        // run there, once.
+        // run there, once, over what a native app of the package's id kept there too.
         instance.set_origin(record.governs());
+        instance.set_earlier(earlier_documents(&kept.documents, &record));
         // What its runtime offers and invokes is decided by the person's access as the session
         // says it, read at each decision.
         let access = Rc::new(RefCell::new(spec.access.clone()));
