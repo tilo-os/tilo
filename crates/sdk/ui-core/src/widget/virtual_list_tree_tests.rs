@@ -1577,3 +1577,136 @@ fn a_tree_a_frame_keeps_rows_of_composes_each_row_once() {
         }
     }
 }
+
+/// [`Nested`] whose first row is still on its way until `ready` says it arrived.
+struct ArrivingNested {
+    rows: Nested,
+    ready: Rc<Cell<bool>>,
+}
+
+impl ListModel for ArrivingNested {
+    type Key = u64;
+
+    fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<u64> {
+        self.rows.key_at(index)
+    }
+
+    fn index_of(&self, key: &u64) -> Option<usize> {
+        self.rows.index_of(key)
+    }
+
+    fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
+        self.rows.tree_at(index)
+    }
+
+    fn row_state(&self, index: usize) -> Arrival<(), &str> {
+        if index == 0 && !self.ready.get() {
+            Arrival::Pending {
+                from: crate::arriving::Source::Remote,
+            }
+        } else {
+            Arrival::Ready(())
+        }
+    }
+}
+
+/// A branch row still on its way is its placeholder alone: it offers no disclosure to a page or a
+/// reader and holds none of the rows under it, which stand after it until it arrives; then it
+/// holds them under the disclosure it offers.
+#[test]
+fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
+    use crate::arriving::{GRACE, MIN_SHOWN};
+    use crate::headless::FrameHarness;
+    use crate::time::testing::with_monotonic_time;
+    use crate::widget::ListRow;
+
+    let t0 = crate::time::now();
+    let ready = Rc::new(Cell::new(false));
+    let model = ArrivingNested {
+        rows: Nested {
+            keys: vec![0, 1, 2],
+            parents: HashMap::from([(1, 0), (2, 1)]),
+            groups: HashMap::new(),
+        },
+        ready: Rc::clone(&ready),
+    };
+    let list = VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(ListRow::new(format!("note-{key}"), format!("Note {key}"))) as Element
+    })
+    .with_viewport_height(200.0)
+    .with_tree(Rc::new(TreeMarks::default()))
+    .with_semantic_key(|key| format!("row:{key}"));
+    let mut harness = with_monotonic_time(t0, || {
+        let mut harness =
+            FrameHarness::for_root(crate::State::new(), list, (400, 500), Theme::dark());
+        harness.relayout();
+        harness
+    });
+    let composition = with_monotonic_time(t0 + GRACE, || {
+        harness.relayout();
+        harness.composition()
+    });
+    let list_node = composed_at(&composition.root, "VirtualList")
+        .into_iter()
+        .next()
+        .expect("the list composes");
+    let folds_first = |node: &crate::composition::Composed| {
+        composed_at(node, "RowDisclosure").into_iter().any(|part| {
+            part.semantics
+                .as_ref()
+                .and_then(|node| node.action_target.as_deref())
+                == Some("fold:row:0")
+        })
+    };
+    assert!(
+        !folds_first(list_node),
+        "a placeholder offers nothing to fold: {list_node:?}"
+    );
+    let placeholder = composed_at(list_node, "RowReserve")
+        .into_iter()
+        .next()
+        .expect("the row on its way holds its place");
+    assert!(
+        placeholder.children.is_empty(),
+        "and holds no notes: {placeholder:?}"
+    );
+    let first = row_named(&composition.root, "Note 1").expect("the row under it is shown");
+    assert!(
+        list_node.children.iter().any(|row| row.path == first.path),
+        "the row under the placeholder stands in the list, after it: {list_node:?}"
+    );
+    let disclosures = |harness: &mut FrameHarness| {
+        let mut found = 0;
+        let list = harness.root_mut::<VirtualList<ArrivingNested>>();
+        let mut nodes = vec![Widget::accessibility(&*list).expect("the list is read")];
+        while let Some(node) = nodes.pop() {
+            if node.action_target.as_deref() == Some("fold:row:0") {
+                found += 1;
+            }
+            nodes.extend(node.children);
+        }
+        found
+    };
+    assert_eq!(disclosures(&mut harness), 0, "nor does a reader hear one");
+
+    ready.set(true);
+    let composition = with_monotonic_time(t0 + GRACE + MIN_SHOWN, || {
+        harness.relayout();
+        harness.composition()
+    });
+    let branch = row_named(&composition.root, "Note 0").expect("the row arrived");
+    assert!(
+        folds_first(branch),
+        "the arrived branch offers its disclosure: {branch:?}"
+    );
+    let under = row_named(&composition.root, "Note 1").expect("the row under it");
+    assert!(
+        holds(branch, &under.path),
+        "and holds the rows under it: {branch:?}"
+    );
+    assert_eq!(disclosures(&mut harness), 1, "and a reader hears it");
+}

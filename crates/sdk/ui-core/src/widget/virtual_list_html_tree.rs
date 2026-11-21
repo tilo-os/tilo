@@ -102,12 +102,16 @@ impl VirtualRows {
         }
         let mut rows = paired
             .into_iter()
-            .map(|(depth, _, row)| (depth, row))
+            .map(|(depth, key, row)| Nesting {
+                depth,
+                holds: self.row_arrived(&key),
+                row,
+            })
             .peekable();
-        let base = rows.peek().map_or(0, |(depth, _)| *depth);
+        let base = rows.peek().map_or(0, |row| row.depth);
         let mut nested = nest_rows(&mut rows, base);
         // A row the mounted window does not reach stands as it composed, after the tree.
-        nested.extend(rows.map(|(_, row)| row));
+        nested.extend(rows.map(|nesting| nesting.row));
         nested.extend(loose);
         nested
     }
@@ -158,23 +162,37 @@ impl VirtualRows {
     }
 }
 
-/// The rows as elements, each row's notes nested in a `<ul>` of their own inside it: `depth` is
-/// the level the rows at this call stand at.
-fn nest_rows(
-    rows: &mut Peekable<impl Iterator<Item = (u32, Composed)>>,
+/// A composed row at the level the tree gives it, and whether it holds the rows under it: a row
+/// still on its way is a placeholder, which holds nothing until it arrives.
+struct Nesting {
     depth: u32,
-) -> Vec<Composed> {
+    holds: bool,
+    row: Composed,
+}
+
+/// The rows as elements, each row's notes nested in a `<ul>` of their own inside it: `depth` is
+/// the level the rows at this call stand at. The notes of a row that holds nothing yet stand
+/// after it, at its level.
+fn nest_rows(rows: &mut Peekable<impl Iterator<Item = Nesting>>, depth: u32) -> Vec<Composed> {
     let mut out = Vec::new();
-    while rows.peek().is_some_and(|(at, _)| *at == depth) {
-        let Some((_, mut row)) = rows.next() else {
+    while rows.peek().is_some_and(|next| next.depth == depth) {
+        let Some(Nesting { holds, mut row, .. }) = rows.next() else {
             break;
         };
-        if let Some(deeper) = rows.peek().map(|(at, _)| *at).filter(|at| *at > depth) {
-            let children = nest_rows(rows, deeper);
-            let notes = group(&row.path, row.rect, children);
-            row.children.push(notes);
+        let deeper = rows.peek().map(|next| next.depth).filter(|at| *at > depth);
+        match deeper {
+            Some(deeper) if holds => {
+                let children = nest_rows(rows, deeper);
+                let notes = group(&row.path, row.rect, children);
+                row.children.push(notes);
+                out.push(row);
+            }
+            Some(deeper) => {
+                out.push(row);
+                out.extend(nest_rows(rows, deeper));
+            }
+            None => out.push(row),
         }
-        out.push(row);
     }
     out
 }

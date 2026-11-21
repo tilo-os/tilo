@@ -260,9 +260,21 @@ impl VirtualRows {
         self.row_box(self.model.index_of(key)?)
     }
 
+    /// Whether the row of `key` has arrived, or is not mounted: a row still on its way holds a
+    /// placeholder, which offers nothing to open or fold until the row is there.
+    pub(super) fn row_arrived(&self, key: &ListKey) -> bool {
+        !self
+            .mounted
+            .iter()
+            .any(|row| row.key == *key && row.state != super::MountedRowState::Ready)
+    }
+
     #[must_use]
     pub fn disclosure_rect(&self, key: &ListKey) -> Option<Rect> {
         let marks = self.tree.as_ref()?;
+        if !self.row_arrived(key) {
+            return None;
+        }
         let row = self.line_box(key, self.row_rect(key)?);
         let gutter = self.chevrons().gutter(marks, key)?;
         let side = self.disclosure;

@@ -210,6 +210,7 @@ impl VirtualRows {
         // row without opening the row itself.
         if let Some(marks) = &self.tree
             && marks.is_branch(&row.key)
+            && row.state == MountedRowState::Ready
             && let Some(encode) = &self.semantic_key
         {
             let folded = marks.is_folded(&row.key);

@@ -263,8 +263,12 @@ impl VirtualRows {
                     );
                 }
                 let folded = marks.is_folded(&row.key) || open.as_ref() == Some(&row.key);
-                chevrons.paint(marks, scene, transform, theme, &row.key, line, folded);
-                if let Some(rect) = chevrons.rect(marks, theme, &row.key, line, folded) {
+                // A row on its way shows its placeholder alone: nothing to open or fold yet.
+                let arrived = row.state == super::MountedRowState::Ready;
+                if arrived {
+                    chevrons.paint(marks, scene, transform, theme, &row.key, line, folded);
+                }
+                if arrived && let Some(rect) = chevrons.rect(marks, theme, &row.key, line, folded) {
                     self.painted_chevrons
                         .push(crate::widget::virtual_list::RowChevron { rect: rect.0, line });
                 }
