@@ -134,6 +134,27 @@ impl ChatApp {
         actions
     }
 
+    /// What the window is called outside it (the shell's tab, the switcher, History): its
+    /// location as Chat writes it, a channel with its "#" ("#design-crit"), which the bar draws
+    /// as an icon beside the bare name.
+    pub(crate) fn window_name(&self) -> String {
+        let name = self.location_name();
+        let shown = if self.call.active && self.call.expanded {
+            &self.call.channel
+        } else {
+            &self.active_channel
+        };
+        let channel = !self.thread_is_page()
+            && self
+                .channel(shown)
+                .is_some_and(|channel| !channel.direct && channel.name == name);
+        if channel && !name.is_empty() && !name.starts_with('#') {
+            format!("#{name}")
+        } else {
+            name
+        }
+    }
+
     /// What the window shows, as it is named: the thread that fills it, the call's stage, or the
     /// conversation in the sidebar.
     pub(crate) fn location_name(&self) -> String {

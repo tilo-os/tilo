@@ -1311,6 +1311,11 @@ fn an_opened_message_shows_once_the_window_has_taken_its_part_in() {
         "design-crit",
         "the window is named by the conversation it shows"
     );
+    assert_eq!(
+        app.window_name(),
+        "#design-crit",
+        "outside it, a channel's window is named as Chat writes a channel"
+    );
     assert_eq!(app.revealed_message.as_deref(), Some(message.as_str()));
 }
 

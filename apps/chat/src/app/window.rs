@@ -64,7 +64,7 @@ impl ChatWindow {
 
     /// Take what the chat shows as the title this window is named by.
     fn refresh_title(&mut self) {
-        let title = self.chat.borrow().location_name();
+        let title = self.chat.borrow().window_name();
         if title != self.title {
             self.title = title;
         }
