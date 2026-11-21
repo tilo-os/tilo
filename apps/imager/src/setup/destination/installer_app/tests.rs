@@ -404,6 +404,7 @@ tilo_test_env::scenario! {
         let mut app = InstallerApp::with_disks(sample());
         app.accounts_initialized = true;
         app.step = Step::Accounts;
+        app.accounts_form.mail.set(true);
         app.accounts_form.submit(false).unwrap();
         app.go_back();
         assert_eq!(app.step, Step::Network);

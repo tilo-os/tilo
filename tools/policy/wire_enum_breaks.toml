@@ -609,3 +609,8 @@ reason = "sent between a person's devices as it happens and never kept; every de
 file = "crates/server/tilo-server-protocol/src/login_code.rs"
 enum = "ClaimRefused"
 reason = "the reason beside a 403 is read by the `tilo login` that asked a moment before, both from one build, and never kept: the one that meant 'may not admit devices' is 'not a device of the person' now"
+
+[[break]]
+file = "crates/platform/imager-backend/src/account_sources/mod.rs"
+enum = "Provider"
+reason = "the installer's private discovery, review and handoff values live in one running install and are never read by another build: the deferred journal is bound to the install plan it was written for and every account is re-discovered before it is imported, so no bytes are kept"

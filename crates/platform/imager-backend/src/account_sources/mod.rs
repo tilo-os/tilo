@@ -42,7 +42,6 @@ pub struct SourceRoots {
 pub enum Provider {
     Google,
     Microsoft,
-    Dropbox,
     Nextcloud,
     WebDav,
     Spotify,
@@ -400,7 +399,6 @@ fn gnome(text: &str, path: &Path, inventory: &mut Inventory) {
             Some("ms_graph" | "windows_live" | "microsoft") => Provider::Microsoft,
             Some("owncloud" | "nextcloud") => Provider::Nextcloud,
             Some("webdav") => Provider::WebDav,
-            Some("dropbox") => Provider::Dropbox,
             _ => continue,
         };
         let identity = config
@@ -478,33 +476,9 @@ pub fn rclone(text: &str, path: &Path, inventory: &mut Inventory) {
     }
     for (label, config) in sections(
         text,
-        &[
-            "type",
-            "url",
-            "user",
-            "vendor",
-            "client_id",
-            "auth_url",
-            "token_url",
-            "client_credentials",
-            "service_account_file",
-            "service_account_credentials",
-            "impersonate",
-            "tenant_url",
-            "team_member",
-            "resource_key",
-            "region",
-            "tenant",
-            "root_folder_id",
-            "team_drive",
-            "drive_id",
-            "scope",
-        ],
+        &["type", "url", "user", "vendor"],
     ) {
         let provider = match config.get("type").map(String::as_str) {
-            Some("drive") => Provider::Google,
-            Some("onedrive") => Provider::Microsoft,
-            Some("dropbox") => Provider::Dropbox,
             Some("webdav") if config.get("vendor").is_some_and(|s| s == "nextcloud") => {
                 Provider::Nextcloud
             }
@@ -520,51 +494,7 @@ pub fn rclone(text: &str, path: &Path, inventory: &mut Inventory) {
             config.get("url").and_then(|s| safe_server(s)),
             path,
         );
-        #[cfg(unix)]
-        if matches!(
-            provider,
-            Provider::Google | Provider::Microsoft | Provider::Dropbox
-        ) {
-            let Some(candidate) = inventory.candidates.last_mut() else {
-                continue;
-            };
-            use sha2::{Digest, Sha256};
-            let definition = serde_json::to_vec(&config).unwrap_or_default();
-            let mut digest = Sha256::new();
-            digest.update(label.as_bytes());
-            digest.update(&definition);
-            candidate.id = format!("rclone-oauth-source-{}", hex::encode(digest.finalize()));
-            candidate.can_import_credentials = cfg!(unix) && rclone_supported(&config);
-        }
     }
-}
-
-pub fn rclone_supported(values: &BTreeMap<String, String>) -> bool {
-    let empty = |key| values.get(key).is_none_or(String::is_empty);
-    [
-        "auth_url",
-        "token_url",
-        "service_account_file",
-        "service_account_credentials",
-        "impersonate",
-        "tenant_url",
-        "team_member",
-        "resource_key",
-    ]
-    .into_iter()
-    .all(empty)
-        && values
-            .get("client_credentials")
-            .is_none_or(|s| s.is_empty() || s == "false")
-        && values
-            .get("region")
-            .is_none_or(|s| s.is_empty() || s == "global")
-        && values
-            .get("tenant")
-            .is_none_or(|s| s.is_empty() || s == "common")
-        && values
-            .get("scope")
-            .is_none_or(|s| s.is_empty() || matches!(s.as_str(), "drive" | "drive.readonly"))
 }
 
 #[cfg(test)]

@@ -89,7 +89,6 @@ pub mod capture;
 pub mod folders;
 pub mod home_admission;
 pub mod home_transfer;
-pub mod icloud_setup;
 pub mod imager_model;
 #[cfg(target_os = "linux")]
 pub mod inode_changes;

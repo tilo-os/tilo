@@ -93,13 +93,13 @@ tilo_test_env::scenario! {
                 .iter()
                 .all(|candidate| { candidate.provider == account_transfer::Provider::Nextcloud })
         );
-        let mut dropbox = preview.belongings.accounts.candidates[0].clone();
-        dropbox.provider = account_transfer::Provider::Dropbox;
-        dropbox.label = "Private source name".into();
-        preview.belongings.accounts.candidates.push(dropbox);
+        let mut webdav = preview.belongings.accounts.candidates[0].clone();
+        webdav.provider = account_transfer::Provider::WebDav;
+        webdav.label = "Private source name".into();
+        preview.belongings.accounts.candidates.push(webdav);
         let expected = [
-            ("installer-accounts-dropbox", 1_i64),
             ("installer-accounts-nextcloud", 2_i64),
+            ("installer-accounts-webdav", 1_i64),
         ]
         .map(|(provider, count)| {
             t_args(

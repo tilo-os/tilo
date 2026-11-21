@@ -636,7 +636,7 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
             paint_app(
                 &mut app,
                 "installer-account-providers",
-                &["installer.account.provider.google-drive", "installer.back"],
+                &["installer.account.provider.nextcloud", "installer.back"],
                 viewport,
                 tag,
             );

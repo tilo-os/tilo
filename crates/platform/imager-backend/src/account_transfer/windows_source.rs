@@ -1,7 +1,5 @@
 //! Private Windows account suggestions matched to explicitly granted roots.
-use super::{Candidate, Inventory, Origin, Provider};
 pub use crate::windows_accounts::{WindowsProfile, native_windows_profiles};
-use crate::windows_inventory::{Inventory as WindowsInventory, RootRole};
 
 /// Suggestions are not credentials and never prove cloud synchronization.
 /// Registry paths must match a separately granted OneDrive root exactly.
@@ -28,36 +26,10 @@ pub fn private_windows_hints(
         .collect()
 }
 
-/// Derive account rows only from an already granted Windows inventory. No
-/// environment/registry/profile probing and no credential extraction occurs.
-pub fn discover_windows_sources(sources: &WindowsInventory) -> Inventory {
-    let mut inventory = Inventory::default();
-    for root in &sources.roots {
-        if root.role != RootRole::OneDrive {
-            continue;
-        }
-        inventory.candidates.push(Candidate {
-            id: format!("windows-onedrive-{}", root.source_id),
-            provider: Provider::Microsoft,
-            origin: Origin::Application,
-            label: "OneDrive (sync and sign-in unverified)".into(),
-            identity: None,
-            server: None,
-            profile: root.path.clone(),
-            needs_sign_in: true,
-            can_import_credentials: false,
-            services: Vec::new(),
-        });
-        if !root.gaps.is_empty() {
-            inventory.unreadable_sources.push("OneDrive local data");
-        }
-    }
-    inventory
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::windows_inventory::RootRole;
     use crate::windows_accounts::parse_profiles;
 
     tilo_test_env::scenario! {

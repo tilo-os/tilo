@@ -25,7 +25,7 @@ pub fn fingerprint(account: &Account) -> Result<[u8; 32], ConnectionError> {
 fn supported(account: &Account) -> bool {
     matches!(
         account.type_id.as_str(),
-        "google-drive" | "onedrive" | "dropbox" | "icloud-drive" | "nextcloud" | "webdav"
+        "nextcloud" | "webdav"
     ) || (account.type_id.as_str() == "spotify"
         && matches!(
             account.id.as_str(),

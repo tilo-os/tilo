@@ -61,11 +61,9 @@ pub fn import_selected(
         let mut pending = false;
         for service in &wanted.services {
             let (touched, needs_sign_in) = match service {
-                Service::Files | Service::Contacts => {
-                    files_or_contacts(&mut store, &vault, wanted, *service)
-                }
                 Service::Mail => mail(&mut store, &vault, wanted)?,
                 Service::Calendar => calendar(&mut store, &vault, wanted),
+                Service::Files | Service::Contacts => (false, false),
             };
             changed |= touched;
             pending |= needs_sign_in;
@@ -113,6 +111,10 @@ fn validate_selection(selected: &SelectedAccount) -> Result<(), ConnectionError>
     let unique: BTreeSet<_> = selected.services.iter().collect();
     if unique.len() != selected.services.len()
         || !matches!(selected.provider, Provider::Google | Provider::Microsoft)
+        || !selected
+            .services
+            .iter()
+            .all(|service| matches!(service, Service::Mail | Service::Calendar))
     {
         return Err(ConnectionError::InvalidConfiguration);
     }
@@ -171,58 +173,6 @@ fn account_identity(account: &Account) -> Option<&str> {
 
 fn same_identity(account: &Account, identity: &str) -> bool {
     account_identity(account).is_some_and(|value| value.eq_ignore_ascii_case(identity))
-}
-
-fn provider_type(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Google => accounts::cloud_types::GOOGLE_DRIVE,
-        Provider::Microsoft => accounts::cloud_types::ONEDRIVE,
-        _ => accounts::cloud_types::WEBDAV,
-    }
-}
-
-fn files_or_contacts(
-    store: &mut AccountStore,
-    vault: &SecretVault,
-    selected: &SelectedAccount,
-    service: Service,
-) -> (bool, bool) {
-    if let Some(existing) = store.all().iter().find(|account| {
-        account.owner.is_none()
-            && matches!(
-                account.type_id.as_str(),
-                accounts::cloud_types::GOOGLE_DRIVE | accounts::cloud_types::ONEDRIVE
-            )
-            && same_identity(account, &selected.identity)
-    }) {
-        let usable_files = existing
-            .config
-            .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
-            .is_some_and(serde_json::Value::is_object)
-            && has_credential(vault, &existing.id);
-        let pending =
-            existing.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true));
-        return (
-            false,
-            !pending && (!matches!(service, Service::Files) || !usable_files),
-        );
-    }
-    let id = AccountId::new(format!("migrated-goa-{}", selected.source_id));
-    let mut account = Account::new(id, provider_type(selected.provider));
-    account.display_name.clone_from(&selected.label);
-    let mut config = serde_json::json!({
-        "provider": provider_type(selected.provider),
-        "source_goa_identity": selected.identity,
-        "pending_reconnect": true,
-        "use_files": selected.services.contains(&Service::Files),
-        "use_contacts": selected.services.contains(&Service::Contacts),
-    });
-    if let Some(config) = config.as_object_mut() {
-        config.retain(|_, value| value != &serde_json::Value::Bool(false));
-    }
-    account.config = config;
-    store.upsert(account);
-    (true, true)
 }
 
 fn mail(
@@ -362,7 +312,7 @@ mod tests {
             assert_eq!(receipts.len(), 1);
             assert_eq!(
                 receipts[0].services,
-                vec![Service::Files, Service::Mail, Service::Calendar]
+                vec![Service::Mail, Service::Calendar]
             );
             assert!(receipts[0].pending);
             assert!(
@@ -379,10 +329,6 @@ mod tests {
             assert!(store.all().iter().any(|account| {
                 account.type_id.as_str() == CALDAV_TYPE
                     && account.config["username"] == "person@example.test"
-            }));
-            assert!(store.all().iter().any(|account| {
-                account.type_id.as_str() == accounts::cloud_types::GOOGLE_DRIVE
-                    && account.config["use_files"] == true
             }));
             assert!(
                 store

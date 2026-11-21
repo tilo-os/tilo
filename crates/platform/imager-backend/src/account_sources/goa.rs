@@ -1,6 +1,5 @@
 //! GOA metadata definitions shared by review and selected capture.
 use super::{Candidate, Inventory, Origin, Provider, Service};
-use account_credentials::OAuthCloud;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
 use tilo_secrets::owner_migration::GoaProvider;
@@ -28,12 +27,6 @@ pub struct Definition {
     pub fields: BTreeMap<String, String>,
 }
 impl Definition {
-    pub fn cloud(&self) -> OAuthCloud {
-        match self.provider {
-            GoaProvider::Google => OAuthCloud::GoogleDrive,
-            GoaProvider::Microsoft => OAuthCloud::OneDrive,
-        }
-    }
     pub fn source_id(&self) -> String {
         let mut hash = Sha256::new();
         // Secrets never enter a public fingerprint; registration overrides and
@@ -48,13 +41,9 @@ impl Definition {
             self.fields
                 .get("OAuth2AuthorizationUri")
                 .map_or("", String::as_str),
-            self.fields.get("FilesEnabled").map_or("", String::as_str),
             self.fields.get("MailEnabled").map_or("", String::as_str),
             self.fields
                 .get("CalendarEnabled")
-                .map_or("", String::as_str),
-            self.fields
-                .get("ContactsEnabled")
                 .map_or("", String::as_str),
         ] {
             hash.update(value.len().to_le_bytes());
@@ -62,17 +51,8 @@ impl Definition {
         }
         format!("goa-source-{}", hex::encode(hash.finalize()))
     }
-    pub fn files_enabled(&self) -> bool {
-        self.fields
-            .get("FilesEnabled")
-            .is_some_and(|value| value == "true")
-    }
-
     pub fn services(&self) -> Vec<Service> {
         let mut services = Vec::new();
-        if self.files_enabled() {
-            services.push(Service::Files);
-        }
         if self
             .fields
             .get("MailEnabled")
@@ -87,35 +67,7 @@ impl Definition {
         {
             services.push(Service::Calendar);
         }
-        if self
-            .fields
-            .get("ContactsEnabled")
-            .is_some_and(|value| value == "true")
-        {
-            services.push(Service::Contacts);
-        }
         services
-    }
-
-    pub fn supported(&self) -> bool {
-        let endpoint = match self.provider {
-            GoaProvider::Google => "https://oauth2.googleapis.com/token",
-            GoaProvider::Microsoft => "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-        };
-        let authorization = match self.provider {
-            GoaProvider::Google => "https://accounts.google.com/o/oauth2/v2/auth",
-            GoaProvider::Microsoft => {
-                "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-            }
-        };
-        self.fields
-            .get("OAuth2TokenUri")
-            .is_none_or(|value| value == endpoint)
-            && self
-                .fields
-                .get("OAuth2AuthorizationUri")
-                .is_none_or(|value| value == authorization)
-            && self.files_enabled()
     }
     pub fn candidate(&self, path: &Path) -> Candidate {
         Candidate {
@@ -130,7 +82,7 @@ impl Definition {
             server: None,
             profile: path.to_owned(),
             needs_sign_in: true,
-            can_import_credentials: self.supported(),
+            can_import_credentials: false,
             services: self.services(),
         }
     }
@@ -150,10 +102,8 @@ pub fn definitions(text: &str, private: bool) -> Vec<Definition> {
         "OAuth2ClientId",
         "OAuth2TokenUri",
         "OAuth2AuthorizationUri",
-        "FilesEnabled",
         "MailEnabled",
         "CalendarEnabled",
-        "ContactsEnabled",
     ];
     if private {
         allowed.push("OAuth2ClientSecret");

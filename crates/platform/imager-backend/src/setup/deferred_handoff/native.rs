@@ -1296,10 +1296,7 @@ user_pref("mail.identity.id1.fullName", "Personal");
             assert_eq!(receipt.accounts.len(), 1);
             assert_eq!(
                 receipt.accounts[0].services,
-                vec![
-                    account_sources::Service::Files,
-                    account_sources::Service::Mail
-                ]
+                vec![account_sources::Service::Mail]
             );
             assert!(receipt.accounts[0].pending);
             let serialized = serde_json::to_string(&receipt).unwrap();

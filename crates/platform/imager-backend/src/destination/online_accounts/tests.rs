@@ -55,15 +55,48 @@ fn setup(
         closes: AtomicUsize::new(0),
     });
     let provider = server.provider();
+    let profile = gmail_profile_endpoint();
     let controller = AccountsController::fixture(directory.path(), opener.clone(), |ownership| {
-        ownership.with_provider(
-            OAuthCloud::GoogleDrive,
-            provider,
-            account_credentials::Registration::public("installer-fixture"),
-        )
+        ownership
+            .with_provider(
+                OAuthCloud::GoogleDrive,
+                provider,
+                account_credentials::Registration::public("installer-fixture"),
+            )
+            .with_issuer_endpoints(OAuthIssuer::Google, server.provider())
+            .with_gmail_profile_endpoint(profile)
     })
     .unwrap();
     (directory, server, opener, urls, controller)
+}
+
+/// One profile endpoint answers every authorizing test in this binary.
+pub(super) fn gmail_profile_endpoint() -> String {
+    use std::io::{Read, Write};
+    static ENDPOINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ENDPOINT
+        .get_or_init(|| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else {
+                        continue;
+                    };
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request);
+                    let body = r#"{"emailAddress":"personal@example.org"}"#;
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.flush();
+                }
+            });
+            format!("http://{address}/profile")
+        })
+        .clone()
 }
 
 pub fn mail_fixture() -> (
@@ -114,42 +147,46 @@ pub fn assert_adopted_projection(controller: &mut AccountsController) {
 fn projection_follows_selected_canonical_services_without_merging_identities_or_providers() {
     let (_directory, _server, _opener, _urls, mut controller) = setup(false);
     let mut store = AccountStore::load_in(&controller.root);
-    for (kind, identity) in [
-        ("google-drive", "personal@example.org"),
-        ("email", "personal@example.org"),
-        ("google-drive", "work@example.org"),
-        ("onedrive", "personal@example.org"),
-    ] {
-        let mut account = new_account(kind);
+    for identity in ["personal@example.org", "work@example.org"] {
+        let mut account = new_account("email");
         account.config = serde_json::json!({
             "connected_identity": identity,
-            "mount": {},
             "imap_host": "imap.gmail.com",
             "email": identity,
-            "use_calendar": true,
-            "calendar": {"calendars": []}
         });
         controller.selected.push(account.id.clone());
         store.upsert(account);
     }
-    let mut foreign = new_account("dropbox");
-    foreign.config = serde_json::json!({"mount": {}, "connected_identity": "foreign@example.org"});
-    store.upsert(foreign);
+    let mut nextcloud = new_account("nextcloud");
+    nextcloud.config = serde_json::json!({
+        "server_url": "https://cloud.example.org",
+        "username": "ada",
+        "use_files": true,
+    });
+    controller.selected.push(nextcloud.id.clone());
+    store.upsert(nextcloud);
     store.save_in(&controller.root).unwrap();
     let connected = controller.connected();
     assert_eq!(connected.len(), 3);
     assert_eq!(connected[0].provider, Provider::Google);
-    assert!(connected[0].files && connected[0].mail && !connected[0].calendar);
-    assert!(connected[1].identity == "work@example.org" && !connected[1].mail);
-    assert_eq!(connected[2].provider, Provider::Microsoft);
+    assert!(connected[0].mail && !connected[0].files && !connected[0].calendar);
+    assert!(connected[1].identity == "work@example.org" && connected[1].mail);
+    assert_eq!(connected[2].provider, Provider::Nextcloud);
+    assert!(connected[2].files);
     assert!(!accounts::vault_dir_in(&controller.root).exists());
     // A later canonical change must be observed, not a cached request snapshot.
-    let first = controller.selected[0].clone();
-    let mut account = store.get(&first).unwrap().clone();
-    account.config.as_object_mut().unwrap().remove("mount");
+    let last = controller.selected[2].clone();
+    let mut account = store.get(&last).unwrap().clone();
+    account.config.as_object_mut().unwrap().remove("use_files");
     store.upsert(account);
     store.save_in(&controller.root).unwrap();
-    assert!(!controller.connected()[0].files);
+    let after = controller.connected();
+    assert_eq!(after.len(), 2);
+    assert!(
+        after
+            .iter()
+            .all(|account| account.provider == Provider::Google && account.mail)
+    );
     controller.selected.clear();
     assert!(controller.connected().is_empty());
 }
@@ -159,8 +196,8 @@ fn request() -> AccountRequest {
         provider: Provider::Google,
         email: String::new(),
         server: String::new(),
-        files: true,
-        mail: false,
+        files: false,
+        mail: true,
         calendar: false,
     }
 }

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use account_credentials::{Authorization, CredentialError, CredentialStore, OAuthCloud};
+use account_credentials::{Authorization, CredentialError, CredentialStore};
 use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
 use zeroize::Zeroizing;
 
@@ -21,22 +21,16 @@ pub struct Connector {
     pub(super) credential_store: CredentialStore,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) spotify_api: Option<String>,
-    #[cfg(test)]
-    #[cfg(target_os = "linux")]
-    pub(super) goa_api: Option<String>,
 }
 
 impl Connector {
     pub fn new(root: PathBuf) -> Self {
-        let credential_store = CredentialStore::for_root(Some(root.clone())).with_apple_icloud();
+        let credential_store = CredentialStore::for_root(Some(root.clone()));
         Self {
             root,
             credential_store,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
-            #[cfg(test)]
-            #[cfg(target_os = "linux")]
-            goa_api: None,
         }
     }
 
@@ -46,63 +40,7 @@ impl Connector {
             credential_store,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
-            #[cfg(test)]
-            #[cfg(target_os = "linux")]
-            goa_api: None,
         }
-    }
-
-    pub fn cloud_available(&self, cloud: OAuthCloud) -> bool {
-        self.credential_store.is_configured(cloud.oauth_use())
-    }
-
-    /// Only after explicit connection consent. The caller opens the URL through the shared host URI
-    /// opener; no app is launched here. Keep the handle out of CRDT, actions and status.
-    pub fn begin_oauth(
-        &self,
-        cloud: OAuthCloud,
-        identity: Option<&str>,
-    ) -> Result<Authorization, ConnectionError> {
-        self.credential_store
-            .begin_sign_in(cloud, identity)
-            .map_err(credential_error)
-    }
-
-    /// Runs on a worker after the person approves the browser sign-in; PKCE, state validation and
-    /// grant ownership are the platform's existing ones.
-    pub fn finish_oauth(
-        &self,
-        cloud: OAuthCloud,
-        label: &str,
-        authorization: Authorization,
-    ) -> Result<AccountId, ConnectionError> {
-        let tokens = CredentialStore::finish_sign_in(authorization).map_err(credential_error)?;
-        self.persist_cloud_tokens(cloud, label, tokens)
-    }
-
-    pub fn finish_oauth_with_code(
-        &self,
-        cloud: OAuthCloud,
-        label: &str,
-        authorization: Authorization,
-        code: Zeroizing<String>,
-    ) -> Result<AccountId, ConnectionError> {
-        let tokens = CredentialStore::finish_sign_in_with_code(authorization, &code)
-            .map_err(credential_error)?;
-        self.persist_cloud_tokens(cloud, label, tokens)
-    }
-
-    fn persist_cloud_tokens(
-        &self,
-        cloud: OAuthCloud,
-        label: &str,
-        tokens: account_credentials::TokenSet,
-    ) -> Result<AccountId, ConnectionError> {
-        let (account, secret) = self
-            .credential_store
-            .cloud_account(cloud, label, &tokens)
-            .map_err(credential_error)?;
-        self.persist(account, secret)
     }
 
     /// Uses the exact grant slot Tilo Music consumes; streaming stays a separate consent.
@@ -168,49 +106,6 @@ impl Connector {
             return Err(ConnectionError::SignInFailed);
         }
         self.persist_verified_spotify(id, tokens, true)
-    }
-
-    /// Password, challenge and code stay private on the worker and never enter the install profile.
-    pub fn icloud_available(&self) -> bool {
-        self.credential_store.icloud().is_available()
-    }
-
-    pub fn icloud_sign_out(&self, session: &account_credentials::icloud::ICloudSessionState) {
-        self.credential_store.icloud().sign_out(session);
-    }
-
-    pub fn icloud_sign_in(
-        &self,
-        apple_id: &str,
-        password: Zeroizing<String>,
-    ) -> Result<
-        account_credentials::icloud::ICloudSignIn,
-        account_credentials::icloud::ICloudAuthError,
-    > {
-        self.credential_store.icloud().sign_in(apple_id, &password)
-    }
-
-    pub fn icloud_verify(
-        &self,
-        challenge: &account_credentials::icloud::ICloudChallenge,
-        code: Zeroizing<String>,
-    ) -> Result<
-        account_credentials::icloud::ICloudSessionState,
-        account_credentials::icloud::ICloudAuthError,
-    > {
-        self.credential_store.icloud().verify_code(challenge, &code)
-    }
-
-    pub fn finish_icloud(
-        &self,
-        apple_id: &str,
-        session: account_credentials::icloud::ICloudSessionState,
-    ) -> Result<AccountId, ConnectionError> {
-        let (account, secret) = self
-            .credential_store
-            .icloud_account(apple_id, &session)
-            .map_err(|_| ConnectionError::InvalidConfiguration)?;
-        self.persist(account, secret)
     }
 
     /// The person's ordinary password never enters the installer; this is the device's revocable app
@@ -447,13 +342,6 @@ impl Connector {
         roots: &super::SourceRoots,
         selected: &super::Candidate,
     ) -> Result<AccountId, ConnectionError> {
-        #[cfg(unix)]
-        if matches!(
-            selected.provider,
-            super::Provider::Google | super::Provider::Microsoft | super::Provider::Dropbox
-        ) {
-            return self.import_rclone_oauth(roots, selected);
-        }
         if selected.origin != super::Origin::Rclone
             || !matches!(
                 selected.provider,

@@ -27,7 +27,7 @@ impl ProviderView for Provider {
         match self {
             Self::Google => "installer-online-google",
             Self::Microsoft => "installer-online-microsoft",
-            Self::Dropbox => "installer-online-dropbox",
+            Self::Dropbox => unreachable!("Dropbox accounts are not offered"),
             Self::Nextcloud => "installer-online-nextcloud",
         }
     }
@@ -75,7 +75,7 @@ impl Default for AccountsForm {
             provider: LocalState::new(Provider::Google),
             email: LocalState::new(String::new()),
             server: LocalState::new(String::new()),
-            files: LocalState::new(true),
+            files: LocalState::new(false),
             mail: LocalState::new(false),
             calendar: LocalState::new(false),
             collections: LocalState::new(Vec::new()),
@@ -172,9 +172,11 @@ impl AccountsForm {
             return Err(FormError::StaleSource);
         }
         if hints.len() > MAX_HINTS
-            || hints
-                .iter()
-                .any(|hint| !bounded_field(&hint.email) || !safe_server(&hint.server))
+            || hints.iter().any(|hint| {
+                hint.provider == Provider::Dropbox
+                    || !bounded_field(&hint.email)
+                    || !safe_server(&hint.server)
+            })
         {
             return Err(FormError::InvalidFields);
         }
@@ -218,7 +220,7 @@ impl AccountsForm {
         } else {
             String::new()
         };
-        let files = self.files.with(|v| *v);
+        let files = provider == Provider::Nextcloud && self.files.with(|v| *v);
         let mail = provider.supports_mail() && self.mail.with(|v| *v);
         let calendar = provider.supports_calendar() && self.calendar.with(|v| *v);
         if !bounded_field(&email) || !bounded_field(&server) || (!files && !mail && !calendar) {
@@ -331,18 +333,14 @@ impl AccountsForm {
 
     fn providers(&self, idle: bool, provider: Provider) -> Row {
         let mut providers = Row::new();
-        for choice in [
-            Provider::Google,
-            Provider::Microsoft,
-            Provider::Dropbox,
-            Provider::Nextcloud,
-        ] {
+        for choice in [Provider::Google, Provider::Microsoft, Provider::Nextcloud] {
             let form = self.clone();
             providers = providers.push(Box::new(
                 Button::new(choice.label(), &t(choice.label()))
                     .with_enabled(idle && provider != choice)
                     .on_view(move || {
                         form.provider.set(choice);
+                        form.files.set(false);
                         form.mail.set(false);
                         form.calendar.set(false);
                     }),
@@ -390,14 +388,16 @@ impl AccountsForm {
                         .disabled(!idle),
                 ));
         }
-        column = column
-            .push(Box::new(Text::new(&t("installer-online-review"))))
-            .push(Box::new(
+        column = column.push(Box::new(Text::new(&t("installer-online-review"))));
+        if provider == Provider::Nextcloud {
+            column = column.push(Box::new(
                 Checkbox::from_state(&self.files)
                     .with_id("installer.online.files")
                     .with_label(t("installer-online-files"))
                     .with_enabled(idle),
-            ))
+            ));
+        }
+        column = column
             .push(Box::new(
                 Checkbox::from_state(&self.mail)
                     .with_id("installer.online.mail")
@@ -736,11 +736,12 @@ mod tests {
             let account = ConnectedAccount {
                 provider: Provider::Google,
                 identity: "private@example.org".into(),
-                files: true,
+                files: false,
                 mail: false,
                 calendar: true,
             };
             form.set_connected(vec![account.clone()]);
+            form.mail.set(true);
             form.submit(false).unwrap();
             perform(
                 &form,
@@ -778,12 +779,13 @@ mod tests {
         {
             let form = AccountsForm::new();
             form.email.set("person@example.org".into());
+            form.mail.set(true);
             assert_eq!(form.submit(false), Ok(()));
             form.email.set("changed@example.org".into());
             assert_eq!(form.submit(false), Err(FormError::Busy));
             let commands = form.drain_commands();
             assert!(matches!(&commands[..], [AccountsCommand::Add(request)]
-                if request.email == "person@example.org" && request.files && !request.mail));
+                if request.email == "person@example.org" && request.mail && !request.files));
         }
 
         phase structural_changes_are_consumed_without_tracking_text_or_consent;
@@ -830,6 +832,7 @@ mod tests {
         {
             let form = AccountsForm::new();
             form.provider.set(Provider::Nextcloud);
+            form.files.set(true);
             form.server.set("http://example.org".into());
             assert_eq!(form.submit(false), Err(FormError::InvalidFields));
             form.set_status(AccountsStatus::Failed);
@@ -896,14 +899,16 @@ mod tests {
         phase unsupported_services_are_not_requested;
         {
             let form = AccountsForm::new();
-            form.provider.set(Provider::Dropbox);
+            form.provider.set(Provider::Nextcloud);
+            form.server.set("https://cloud.example.org".into());
             form.mail.set(true);
-            form.files.set(false);
             assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+            form.mail.set(false);
             form.files.set(true);
             assert_eq!(form.submit(false), Ok(()));
             assert!(
-                matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)] if !request.mail)
+                matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+                if request.files && !request.mail && !request.calendar)
             );
         }
 

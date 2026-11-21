@@ -27,7 +27,7 @@ impl Belongings {
         selected: &[imager_backend::windows_inventory::SelectedRoot],
     ) -> Result<Self, String> {
         let windows = imager_backend::windows_inventory::Inventory::discover(selected)?;
-        let accounts = account_transfer::discover_windows_sources(&windows);
+        let accounts = account_transfer::Inventory::default();
         let mut belongings = Self {
             windows: Some(windows),
             accounts,
@@ -128,11 +128,11 @@ impl Belongings {
             .filter(|candidate| {
                 candidate.can_import_credentials
                     || super::accounts::can_connect_candidate(candidate)
+                    || !super::accounts::source_account_services(candidate).is_empty()
             })
             .map(|candidate| match candidate.provider {
-                Provider::Google => "installer-accounts-google-drive",
-                Provider::Microsoft => "installer-accounts-onedrive",
-                Provider::Dropbox => "installer-accounts-dropbox",
+                Provider::Google => "installer-online-google",
+                Provider::Microsoft => "installer-online-microsoft",
                 Provider::Nextcloud => "installer-accounts-nextcloud",
                 Provider::WebDav => "installer-accounts-webdav",
                 Provider::Spotify => "installer-accounts-spotify",
@@ -143,10 +143,6 @@ impl Belongings {
             })
             .chain(self.accounts.tilo_accounts.iter().map(|candidate| {
                 match candidate.type_id.as_str() {
-                    "google-drive" => "installer-accounts-google-drive",
-                    "onedrive" => "installer-accounts-onedrive",
-                    "dropbox" => "installer-accounts-dropbox",
-                    "icloud-drive" => "installer-accounts-icloud",
                     "nextcloud" => "installer-accounts-nextcloud",
                     "webdav" => "installer-accounts-webdav",
                     "spotify" => "installer-accounts-spotify",

@@ -125,21 +125,6 @@ enum PendingGrant {
 }
 
 impl PendingGrant {
-    fn resolve_storage(
-        &self,
-        ownership: &CredentialStore,
-        cloud: OAuthCloud,
-    ) -> Result<serde_json::Value, AccountsError> {
-        match self {
-            Self::Existing(tokens) => ownership
-                .resolve_storage(cloud, &tokens.0)
-                .map_err(|_| AccountsError::Unavailable),
-            Self::GoogleCalendar(pending) => pending
-                .resolve_storage(ownership)
-                .map_err(|_| AccountsError::Unavailable),
-        }
-    }
-
     fn mail_identity(
         &self,
         ownership: &CredentialStore,
@@ -533,7 +518,7 @@ impl Drop for AccountsController {
 }
 
 fn connected_accounts(root: &Path, selected: &[AccountId]) -> Vec<ConnectedAccount> {
-    use accounts::cloud_types::{DROPBOX, GOOGLE_DRIVE, MOUNT_CONFIG_KEY, NEXTCLOUD, ONEDRIVE};
+    use accounts::cloud_types::NEXTCLOUD;
     let store = AccountStore::load_in(root);
     let mut connected: Vec<ConnectedAccount> = Vec::new();
     for id in selected {
@@ -551,9 +536,6 @@ fn connected_accounts(root: &Path, selected: &[AccountId]) -> Vec<ConnectedAccou
                 .is_some_and(|collections| !collections.is_empty());
         let kind = account.type_id.as_str();
         let provider = match kind {
-            GOOGLE_DRIVE => Provider::Google,
-            ONEDRIVE => Provider::Microsoft,
-            DROPBOX => Provider::Dropbox,
             NEXTCLOUD => Provider::Nextcloud,
             "email" => match config.get("imap_host").and_then(serde_json::Value::as_str) {
                 Some("imap.gmail.com") => Provider::Google,
@@ -578,13 +560,8 @@ fn connected_accounts(root: &Path, selected: &[AccountId]) -> Vec<ConnectedAccou
             }
             _ => continue,
         };
-        let files = match kind {
-            GOOGLE_DRIVE | ONEDRIVE | DROPBOX => config
-                .get(MOUNT_CONFIG_KEY)
-                .is_some_and(serde_json::Value::is_object),
-            NEXTCLOUD => config.get("use_files").and_then(serde_json::Value::as_bool) == Some(true),
-            _ => false,
-        };
+        let files = kind == NEXTCLOUD
+            && config.get("use_files").and_then(serde_json::Value::as_bool) == Some(true);
         let mail = kind == "email";
         if !files && !mail && !calendar {
             continue;
@@ -647,6 +624,7 @@ fn validate_request(request: &AccountRequest) -> Result<(), AccountsError> {
         || [&request.email, &request.server]
             .iter()
             .any(|value| value.len() > 2048 || value.chars().any(char::is_control))
+        || (request.files && request.provider != Provider::Nextcloud)
         || (request.mail && !matches!(request.provider, Provider::Google | Provider::Microsoft))
         || (request.calendar && !matches!(request.provider, Provider::Google | Provider::Nextcloud))
     {
@@ -671,8 +649,7 @@ fn authorize(
     let cloud = match request.provider {
         Provider::Google => OAuthCloud::GoogleDrive,
         Provider::Microsoft => OAuthCloud::OneDrive,
-        Provider::Dropbox => OAuthCloud::Dropbox,
-        Provider::Nextcloud => return Err(AccountsError::InvalidRequest),
+        Provider::Dropbox | Provider::Nextcloud => return Err(AccountsError::InvalidRequest),
     };
     let hint = (!request.email.is_empty()).then_some(request.email.as_str());
     let issuer = cloud.issuer();
@@ -699,14 +676,6 @@ fn authorize(
         entries: Vec::new(),
         calendar: None,
     };
-    if request.files {
-        let mount = private_tokens.resolve_storage(ownership, cloud)?;
-        let mut account = new_account(cloud.type_id());
-        account.config = serde_json::json!({"provider": cloud.type_id(), accounts::cloud_types::MOUNT_CONFIG_KEY: mount});
-        verified
-            .entries
-            .push((account, private_tokens.staging_credential()));
-    }
     if request.mail {
         let email = private_tokens.mail_identity(ownership, issuer)?;
         if email.len() > 2048 || hint.is_some_and(|hint| !hint.eq_ignore_ascii_case(&email)) {
@@ -796,9 +765,6 @@ fn requested_capabilities(
 ) -> Vec<account_credentials::Capability> {
     use account_credentials::Capability;
     let mut capabilities = Vec::new();
-    if request.files {
-        capabilities.push(Capability::Files);
-    }
     if request.calendar {
         capabilities.push(Capability::Calendar);
     }

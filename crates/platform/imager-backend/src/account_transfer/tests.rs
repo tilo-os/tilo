@@ -99,51 +99,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase cloud_connection_uses_real_pkce_exchange_and_canonical_sealed_grant;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("target");
-        let server = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let credential_store = account_credentials::CredentialStore::for_root(Some(root.clone())).with_provider(
-            account_credentials::OAuthCloud::GoogleDrive,
-            server.provider(),
-            "tilo-client",
-        );
-        let connector = Connector::with_credential_store(root.clone(), credential_store);
-        let authorization = connector
-            .begin_oauth(
-                account_credentials::OAuthCloud::GoogleDrive,
-                Some("ada@example.test"),
-            )
-            .unwrap();
-        let url = authorization.url().to_string();
-        let browser = std::thread::spawn(move || tilo_oauth::fake::browse(&url));
-        let id = connector
-            .finish_oauth(
-                account_credentials::OAuthCloud::GoogleDrive,
-                "My Drive",
-                authorization,
-            )
-            .unwrap();
-        browser.join().unwrap().unwrap();
-        let store = AccountStore::load_in(&root);
-        let account = store.get(&id).unwrap();
-        assert_eq!(account.type_id.as_str(), "google-drive");
-        assert!(
-            account
-                .config
-                .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
-                .is_some()
-        );
-        let secret = SecretVault::open_in(&root).get(&id).unwrap();
-        assert!(secret.token.unwrap().contains("refresh_token"));
-        assert!(
-            !std::fs::read_to_string(accounts::store_path_in(&root))
-                .unwrap()
-                .contains("refresh_token")
-        );
-    }
-
     phase retry_does_not_overwrite_an_unrelated_target_credential;
     {
         let temp = tempfile::tempdir().unwrap();
@@ -195,19 +150,32 @@ tilo_test_env::scenario! {
 
     phase local_account_actions_keep_private_pkce_state_and_return_only_sealed_receipts;
     {
+        use account_credentials::{ClientTable, CredentialStore, OAuthIssuer};
         let temp = tempfile::tempdir().unwrap();
         let target_home = temp.path().join("target-home");
         std::fs::create_dir_all(&target_home).unwrap();
         let root = target_home.join(".config/tilo");
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let credential_store = account_credentials::CredentialStore::for_root(Some(root.clone())).with_provider(
-            account_credentials::OAuthCloud::GoogleDrive,
-            server.provider(),
-            "tilo-client",
-        );
-        let mut actions = actions::AccountActions::default().with_credential_store(credential_store);
+        let table = ClientTable::parse(
+            r#"
+[spotify]
+client_id = "tilo-test-registered-client"
+[spotify.scopes]
+music = ["user-read-private", "user-library-read"]
+"#,
+        )
+        .unwrap();
+        let credential_store = CredentialStore::for_root(Some(root.clone()))
+            .with_client_table(table)
+            .with_issuer_endpoints(OAuthIssuer::Spotify, server.provider());
+        let (endpoint, api) = super::spotify_identity::profile_server(vec![
+            serde_json::json!({"id":"ada-spotify","account_id":"stable-ada","display_name":"Ada"}),
+        ]);
+        let mut actions = actions::AccountActions::default()
+            .with_credential_store(credential_store)
+            .with_spotify_api(endpoint);
         let consent = actions
-            .begin(actions::ConnectionProvider::GoogleDrive, None, &target_home)
+            .begin(actions::ConnectionProvider::Spotify, None, &target_home)
             .unwrap();
         assert!(actions.busy());
         assert_eq!(
@@ -227,9 +195,11 @@ tilo_test_env::scenario! {
         let job = actions.complete(&consent.connection_id).unwrap();
         let outcome = wait_for_account_job(&mut actions, &job);
         browser.join().unwrap().unwrap();
+        api.join().unwrap();
         let actions::AccountJobState::Completed { account_id } = outcome else {
             panic!("connection failed");
         };
+        assert_eq!(account_id, "music.spotify");
         assert!(
             SecretVault::open_in(&root)
                 .get(&AccountId::new(account_id))
@@ -258,13 +228,13 @@ tilo_test_env::scenario! {
         std::fs::create_dir_all(config.join("rclone")).unwrap();
         std::fs::write(config.join("goa-1.0/accounts.conf"), "[Account first]\nProvider=google\nPresentationIdentity=ada@gmail.example\npassword=DO_NOT_LEAK\n[Account second]\nProvider=ms_graph\nPresentationIdentity=work@example.test\n").unwrap();
         std::fs::write(config.join("Nextcloud/nextcloud.cfg"), "[Accounts]\n0\\url=https://cloud.example.test/base\n0\\webflow_user=ada\n0\\password=DO_NOT_LEAK\n1\\url=https://ada:DO_NOT_LEAK@bad.example\n1\\user=ada\n").unwrap();
-        std::fs::write(config.join("rclone/rclone.conf"), "[My drive]\ntype=drive\ntoken={\"refresh_token\":\"DO_NOT_LEAK\"}\n[Team files]\ntype=webdav\nvendor=nextcloud\nurl=https://team.example.test/\nuser=ada\npass=DO_NOT_LEAK\n").unwrap();
+        std::fs::write(config.join("rclone/rclone.conf"), "[Team files]\ntype=webdav\nvendor=nextcloud\nurl=https://team.example.test/\nuser=ada\npass=DO_NOT_LEAK\n").unwrap();
         std::fs::create_dir_all(config.join("Slack/Local Storage/leveldb")).unwrap();
         std::fs::create_dir_all(home.join(".var/app/com.discordapp.Discord/config/discord")).unwrap();
         std::fs::create_dir_all(home.join(".mozilla/firefox/fixture.default")).unwrap();
         let inventory = discover(&SourceRoots { home, config });
         assert!(inventory.unreadable_sources.is_empty());
-        assert_eq!(inventory.candidates.len(), 8);
+        assert_eq!(inventory.candidates.len(), 7);
         assert_eq!(
             inventory
                 .candidates
@@ -289,8 +259,8 @@ tilo_test_env::scenario! {
         let own = AccountId::new("own");
         let other = AccountId::new("other");
         let mut store = AccountStore::new();
-        store.upsert(Account::new(own.clone(), "google-drive"));
-        let mut shared = Account::new(other.clone(), "dropbox");
+        store.upsert(Account::new(own.clone(), "webdav"));
+        let mut shared = Account::new(other.clone(), "nextcloud");
         shared.owner = Some("another-person".into());
         store.upsert(shared);
         store.save_in(&source).unwrap();
@@ -325,13 +295,13 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase selected_rclone_app_password_is_extracted_and_invalid_oauth_is_refused;
+    phase selected_rclone_app_password_is_extracted;
     {
         let temp = tempfile::tempdir().unwrap();
         let config = temp.path().join("source/.config");
         std::fs::create_dir_all(config.join("rclone")).unwrap();
         let source = config.join("rclone/rclone.conf");
-        let original = "[Team]\ntype=webdav\nvendor=nextcloud\nurl=https://cloud.example.test/remote.php/dav/files/ada/\nuser=ada\npass=AAECAwQFBgcICQoLDA0OD2f2H1FyoCWnrFF4SHSBvFFHjlw9\n[Drive]\ntype=drive\ntoken=FOREIGN_GRANT\n";
+        let original = "[Team]\ntype=webdav\nvendor=nextcloud\nurl=https://cloud.example.test/remote.php/dav/files/ada/\nuser=ada\npass=AAECAwQFBgcICQoLDA0OD2f2H1FyoCWnrFF4SHSBvFFHjlw9\n";
         std::fs::write(&source, original).unwrap();
         let roots = SourceRoots {
             home: temp.path().join("source"),
@@ -359,15 +329,6 @@ tilo_test_env::scenario! {
             "fixture-app-password"
         );
         assert_eq!(connector.import_rclone(&roots, team).unwrap(), id);
-        let drive = inventory
-            .candidates
-            .iter()
-            .find(|c| c.label == "Drive")
-            .unwrap();
-        assert_eq!(
-            connector.import_rclone(&roots, drive),
-            Err(ConnectionError::CredentialUnavailable)
-        );
         assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
         let mut changed = team.clone();
         changed.server = Some("https://different.example/".into());
@@ -497,7 +458,7 @@ tilo_test_env::scenario! {
         let mut actions = actions::AccountActions::default();
         assert_eq!(
             actions
-                .begin(actions::ConnectionProvider::GoogleDrive, None, &target)
+                .begin(actions::ConnectionProvider::Spotify, None, &target)
                 .unwrap_err(),
             actions::ActionError::TargetRedirected
         );
@@ -514,7 +475,7 @@ tilo_test_env::scenario! {
         let mut actions = AccountActions::default();
         assert_eq!(
             actions
-                .begin(ConnectionProvider::GoogleDrive, None, &target_home)
+                .begin(ConnectionProvider::Spotify, None, &target_home)
                 .unwrap_err(),
             ActionError::TargetRedirected
         );
@@ -530,7 +491,7 @@ tilo_test_env::scenario! {
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o777)).unwrap();
         assert_eq!(
             AccountActions::default()
-                .begin(ConnectionProvider::GoogleDrive, None, &home)
+                .begin(ConnectionProvider::Spotify, None, &home)
                 .unwrap_err(),
             ActionError::TargetNotPrivate
         );
@@ -540,7 +501,7 @@ tilo_test_env::scenario! {
         std::fs::set_permissions(home.join(".config"), std::fs::Permissions::from_mode(0o777)).unwrap();
         assert_eq!(
             AccountActions::default()
-                .begin(ConnectionProvider::GoogleDrive, None, &home)
+                .begin(ConnectionProvider::Spotify, None, &home)
                 .unwrap_err(),
             ActionError::TargetNotPrivate
         );
@@ -693,87 +654,6 @@ music = ["user-read-private", "user-library-read"]
 
 tilo_test_env::scenario! {
     fn copied_credentials_stay_nonrevocable_and_never_overwrite_the_target;
-
-    phase copied_tilo_cloud_grant_refresh_and_portable_import_keep_source_sign_in_nonrevocable;
-    {
-        let temporary = tempfile::tempdir().unwrap();
-        let source = temporary.path().join("source");
-        let target = temporary.path().join("target");
-        let id = AccountId::new("source-google");
-        let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-        issuer.accept_refresh_token("source-refresh");
-        let tokens = account_credentials::TokenSet {
-            refresh_token: "source-refresh".into(),
-            ..Default::default()
-        };
-        let original_secret = account_credentials::oauth_secret(&tokens);
-        let mut vault = SecretVault::open_in(&source);
-        vault.put(&id, &original_secret);
-        vault.try_save().unwrap();
-        let mut source_store = AccountStore::new();
-        source_store.upsert(Account::new(id.clone(), "google-drive"));
-        source_store.save_in(&source).unwrap();
-        let source_bytes = std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap();
-        let connector = Connector::new(target.clone());
-        assert_eq!(connector.import_tilo(&source, &id).unwrap(), id);
-        assert_eq!(connector.import_tilo(&source, &id).unwrap(), id);
-        let imported_secret = SecretVault::open_in(&target).get(&id).unwrap();
-        assert_eq!(
-            imported_secret,
-            account_credentials::copied_secret(source_store.get(&id).unwrap(), &original_secret)
-        );
-        assert!(account_credentials::is_copied_secret(&imported_secret));
-        let credential_store = account_credentials::CredentialStore::for_root(Some(target.clone())).with_provider(
-            account_credentials::OAuthCloud::GoogleDrive,
-            issuer.provider(),
-            "tilo-client",
-        );
-        credential_store
-            .oauth_access_token(
-                &id,
-                account_credentials::OAuthCloud::GoogleDrive.oauth_use(),
-                true,
-            )
-            .unwrap();
-        assert!(account_credentials::is_copied_secret(
-            &SecretVault::open_in(&target).get(&id).unwrap()
-        ));
-        assert_eq!(connector.import_tilo(&source, &id).unwrap(), id);
-        let key = tilo_seal::SymmetricKey::generate().unwrap();
-        let sealed = connector
-            .seal_selected_accounts(std::slice::from_ref(&id), &key, b"source-copy")
-            .unwrap();
-        let restored_root = temporary.path().join("restored");
-        Connector::new(restored_root.clone())
-            .import_sealed_accounts(&sealed, &key, b"source-copy")
-            .unwrap();
-        let restored_secret = SecretVault::open_in(&restored_root).get(&id).unwrap();
-        assert!(account_credentials::is_copied_secret(&restored_secret));
-        let account = AccountStore::load_in(&restored_root)
-            .get(&id)
-            .cloned()
-            .unwrap();
-        credential_store.revoke(&account, &restored_secret);
-        assert!(issuer.revoked().is_empty());
-        assert_eq!(
-            std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap(),
-            source_bytes
-        );
-        assert_eq!(
-            SecretVault::open_read_only_in(&source).get(&id).unwrap(),
-            original_secret
-        );
-        // An independent newly-authorized prepared grant retains revocation on handoff.
-        let fresh_target = temporary.path().join("fresh-prepared-target");
-        Connector::new(fresh_target.clone())
-            .handoff_prepared(&source, &id)
-            .unwrap();
-        let handed_off = SecretVault::open_in(&fresh_target).get(&id).unwrap();
-        assert_eq!(handed_off, original_secret);
-        assert!(!account_credentials::is_copied_secret(&handed_off));
-        credential_store.revoke(&account, &handed_off);
-        assert!(!issuer.revoked().is_empty());
-    }
 
     phase copied_nextcloud_app_password_detaches_without_revoke_but_fresh_handoff_keeps_revoke;
     {

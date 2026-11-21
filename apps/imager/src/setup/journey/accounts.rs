@@ -2,7 +2,6 @@
 //! device-local.
 
 mod batch;
-mod icloud;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -113,7 +112,6 @@ impl BrowserOpener for PortalOpener {
 
 #[derive(Clone)]
 enum Selection {
-    ICloud,
     Prepared(PreparedEntry),
     Saved(Candidate),
     Tilo(TiloCandidate),
@@ -146,8 +144,7 @@ impl Selection {
                 candidate: Some(candidate),
                 ..
             } => Some(&candidate.id),
-            Self::ICloud
-            | Self::NextcloudBrowser { candidate: None }
+            Self::NextcloudBrowser { candidate: None }
             | Self::OAuth {
                 candidate: None, ..
             }
@@ -158,7 +155,6 @@ impl Selection {
     }
     fn label(&self) -> String {
         match self {
-            Self::ICloud => t("installer-accounts-icloud"),
             Self::Prepared(entry) => entry.label.clone(),
             Self::Saved(candidate) => candidate_label(candidate),
             Self::Tilo(candidate) => tilo_candidate_label(candidate),
@@ -206,7 +202,6 @@ enum Step {
     ReviewSaved,
     Providers,
     SpotifyPurpose(Option<Candidate>),
-    ICloud(Box<icloud::ICloud>),
     Confirm(Selection),
     ConfirmRemoval(PreparedEntry),
     NextcloudMethod(Selection),
@@ -290,14 +285,7 @@ pub(super) fn source_account_services(candidate: &Candidate) -> Vec<Service> {
     if !candidate.services.is_empty() {
         return candidate.services.clone();
     }
-    if matches!(
-        candidate.provider,
-        Provider::Google
-            | Provider::Microsoft
-            | Provider::Dropbox
-            | Provider::Nextcloud
-            | Provider::WebDav
-    ) {
+    if matches!(candidate.provider, Provider::Nextcloud | Provider::WebDav) {
         return vec![Service::Files];
     }
     Vec::new()
@@ -529,7 +517,6 @@ impl Accounts {
                     ..
                 }
         ) || self.saved.running()
-            || matches!(&self.step, Step::ICloud(flow) if flow.active())
             || self.actions.busy()
     }
     pub fn active(&self) -> bool {
@@ -538,7 +525,6 @@ impl Accounts {
         }
         self.saved.running()
             || matches!(self.step, Step::Working(_) | Step::Removing { .. })
-            || matches!(&self.step, Step::ICloud(flow) if flow.active())
     }
     pub fn can_continue(&self) -> bool {
         if self.checkpoint_worker.is_some() {
@@ -609,7 +595,6 @@ impl Accounts {
             Step::ReviewSaved => "review-saved",
             Step::Providers => "providers",
             Step::SpotifyPurpose(_) => "spotify-purpose",
-            Step::ICloud(flow) => flow.state(),
             Step::Confirm(_) => "confirm",
             Step::ConfirmRemoval(_) => "confirm-removal",
             Step::NextcloudMethod(_) => "nextcloud-method",
@@ -629,7 +614,6 @@ impl Accounts {
             Step::ReviewSaved => "review-saved",
             Step::Providers => "providers",
             Step::SpotifyPurpose(_) => "spotify-purpose",
-            Step::ICloud(flow) => flow.state(),
             Step::Dav { .. } => "dav-details",
             Step::NextcloudMethod(_) => "nextcloud-method",
             Step::Confirm(_) => "confirm",
@@ -678,9 +662,6 @@ impl Accounts {
         field: &str,
         value: zeroize::Zeroizing<String>,
     ) -> Result<(), &'static str> {
-        if let Step::ICloud(flow) = &mut self.step {
-            return flow.edit(field, value);
-        }
         if field == "oauth-code" && matches!(self.step, Step::PastedCode(_)) && value.len() <= 4096
         {
             self.dav_fields[2].set(value.to_string());
@@ -705,25 +686,6 @@ impl Accounts {
 
         if self.apply_saved_request(&request)? {
             return Ok(());
-        }
-        if let Step::ICloud(flow) = &mut self.step {
-            match request {
-                AccountRequest::Confirm => return flow.confirm(),
-                AccountRequest::Back => {
-                    if flow.back() {
-                        self.step = Step::Overview;
-                    }
-                    return Ok(());
-                }
-                AccountRequest::Cancel | AccountRequest::Overview => {
-                    flow.cancel();
-                    if !flow.active() {
-                        self.step = Step::Overview;
-                    }
-                    return Ok(());
-                }
-                _ => return Err("installer-accounts-invalid-action"),
-            }
         }
         match request {
             AccountRequest::Remove(id) if matches!(self.step, Step::Overview | Step::Done(_)) => {
@@ -824,21 +786,6 @@ impl Accounts {
                         return Err("installer-accounts-unavailable");
                     }
                     self.step = Step::SpotifyPurpose(None);
-                    return Ok(());
-                }
-                if id == "icloud" {
-                    let home = self.stage_home()?;
-                    let connector = self
-                        .actions
-                        .connector(&home)
-                        .map_err(|_| "installer-accounts-save-failed")?;
-                    if !connector.icloud_available() {
-                        return Err("installer-accounts-unavailable");
-                    }
-                    self.step = Step::ICloud(Box::new(icloud::ICloud::new(
-                        connector,
-                        self.stage.as_ref().unwrap().clone(),
-                    )));
                     return Ok(());
                 }
                 if matches!(id.as_str(), "webdav" | "nextcloud") {
@@ -953,21 +900,6 @@ impl Accounts {
                         nextcloud: true,
                         candidate: Some(candidate.clone()),
                     });
-                } else if matches!(
-                    *message,
-                    "installer-accounts-rclone-source-reconnect"
-                        | "installer-accounts-goa-source-reconnect"
-                ) {
-                    let provider = saved_cloud_provider(selected)
-                        .ok_or("installer-accounts-invalid-action")?;
-                    self.require_connection(provider)?;
-                    let Selection::Saved(candidate) = selected else {
-                        return Err("installer-accounts-invalid-action");
-                    };
-                    self.step = Step::Confirm(Selection::OAuth {
-                        provider,
-                        candidate: Some(candidate.clone()),
-                    });
                 } else {
                     return Err("installer-accounts-invalid-action");
                 }
@@ -982,7 +914,7 @@ impl Accounts {
                     return Err("installer-accounts-invalid-action");
                 };
                 if matches!(&self.step, Step::Failed { message, .. }
-                    if matches!(*message, "installer-accounts-nextcloud-source-reconnect" | "installer-accounts-rclone-source-reconnect" | "installer-accounts-goa-source-reconnect" | "installer-accounts-tilo-reconnect"))
+                    if matches!(*message, "installer-accounts-nextcloud-source-reconnect" | "installer-accounts-tilo-reconnect"))
                 {
                     return Err("installer-accounts-invalid-action");
                 }
@@ -1141,7 +1073,7 @@ impl Accounts {
     fn start_work(&mut self, selected: &Selection) -> Result<Work, &'static str> {
         let home = self.stage_home()?;
         match selected {
-            Selection::ICloud | Selection::Prepared(_) => Err("installer-accounts-invalid-action"),
+            Selection::Prepared(_) => Err("installer-accounts-invalid-action"),
             Selection::Tilo(candidate) => {
                 let job = self
                     .actions
@@ -1267,26 +1199,6 @@ impl Accounts {
         if self.poll_saved_queue() {
             return true;
         }
-        if let Step::ICloud(flow) = &mut self.step {
-            return match flow.poll() {
-                None => false,
-                Some(Err(())) => {
-                    self.step = Step::Overview;
-                    true
-                }
-                Some(Ok(None)) => true,
-                Some(Ok(Some(id))) => {
-                    self.prepared.push(PreparedEntry {
-                        id: id.as_str().to_owned(),
-                        source_id: None,
-                        label: t("installer-accounts-icloud"),
-                        revoke_on_remove: true,
-                    });
-                    self.step = Step::Done(Selection::ICloud);
-                    true
-                }
-            };
-        }
         if let Step::Removing {
             selected,
             job,
@@ -1383,20 +1295,6 @@ impl Accounts {
                             && reason == ConnectionError::CredentialUnavailable
                         {
                             "installer-accounts-nextcloud-source-reconnect"
-                        } else if saved_cloud_provider(&work.selected).is_some()
-                            && matches!(
-                                reason,
-                                ConnectionError::CredentialUnavailable
-                                    | ConnectionError::SignInFailed
-                                    | ConnectionError::SignInUnavailable
-                            )
-                        {
-                            if matches!(&work.selected, Selection::Saved(candidate) if candidate.origin == imager_backend::account_transfer::Origin::Gnome)
-                            {
-                                "installer-accounts-goa-source-reconnect"
-                            } else {
-                                "installer-accounts-rclone-source-reconnect"
-                            }
                         } else {
                             connection_message(reason)
                         },
@@ -1488,7 +1386,6 @@ impl Accounts {
             Step::ReviewSaved => t("installer-accounts-review-saved-heading"),
             Step::Providers => t("installer-accounts-provider-heading"),
             Step::SpotifyPurpose(_) => t("installer-accounts-spotify-purpose-heading"),
-            Step::ICloud(flow) => flow.heading(),
             Step::ConfirmRemoval(entry) => {
                 service_copy("installer-accounts-remove-heading", &entry.label)
             }
@@ -1535,9 +1432,7 @@ impl Accounts {
         match &self.step {
             Step::Overview => t("installer-accounts-intro"),
             Step::ReviewSaved => t("installer-accounts-review-saved-intro"),
-            Step::Providers | Step::SpotifyPurpose(None) => String::new(),
             Step::SpotifyPurpose(Some(_)) => t("installer-accounts-spotify-source-reconnect"),
-            Step::ICloud(flow) => flow.intro(),
             Step::ConfirmRemoval(_) => t("installer-accounts-remove-intro"),
             Step::NextcloudMethod(_) => t("installer-accounts-nextcloud-method-intro"),
             Step::Dav { field, .. } => t([
@@ -1555,7 +1450,7 @@ impl Accounts {
                 provider: ConnectionProvider::SpotifyStreaming,
                 ..
             }) => t("installer-accounts-spotify-playback-intro"),
-            Step::Confirm(_) => t("installer-accounts-cloud-intro"),
+            Step::Providers | Step::SpotifyPurpose(None) | Step::Confirm(_) => String::new(),
             Step::PastedCode(_) => t("installer-accounts-code-intro"),
             Step::Working(work) if work.cancelling => t("installer-accounts-cancelling-intro"),
             Step::Working(work) if work.sign_in && work.url.is_none() => {
@@ -1679,9 +1574,6 @@ impl Accounts {
             body = body.push(Box::new(Text::new(&t(key))));
         }
         match &self.step {
-            Step::ICloud(flow) => {
-                body = body.push(flow.view(dispatch.clone(), actions));
-            }
             Step::ConfirmRemoval(_) => {
                 body = body
                     .push(Box::new(
@@ -1774,25 +1666,6 @@ impl Accounts {
                 )));
             }
             Step::Providers => {
-                for (id, provider) in [
-                    ("google-drive", ConnectionProvider::GoogleDrive),
-                    ("onedrive", ConnectionProvider::OneDrive),
-                    ("dropbox", ConnectionProvider::Dropbox),
-                ] {
-                    if !self.actions.connection_available(provider) {
-                        continue;
-                    }
-                    let choose = dispatch.clone();
-                    body = body.push(Box::new(
-                        ListRow::new(
-                            format!("installer.account.provider.{id}"),
-                            provider_label(provider),
-                        )
-                        .icon(Icon::Cloud)
-                        .secondary(t("installer-accounts-add"))
-                        .on_effect(move || choose(AccountRequest::Provider(id.into()))),
-                    ));
-                }
                 if self
                     .actions
                     .connection_available(ConnectionProvider::Spotify)
@@ -1816,7 +1689,6 @@ impl Accounts {
                 for (id, label) in [
                     ("nextcloud", "installer-accounts-nextcloud"),
                     ("webdav", "installer-accounts-webdav"),
-                    ("icloud", "installer-accounts-icloud"),
                 ] {
                     let choose = dispatch.clone();
                     body = body.push(Box::new(
@@ -1824,8 +1696,6 @@ impl Accounts {
                             .icon(Icon::Cloud)
                             .secondary(t(if id == "nextcloud" {
                                 "installer-accounts-nextcloud-add"
-                            } else if id == "icloud" {
-                                "installer-accounts-icloud-add"
                             } else {
                                 "installer-accounts-app-password-needed"
                             }))
@@ -1935,7 +1805,6 @@ impl Accounts {
                         ConnectionProvider::SpotifyStreaming => {
                             "installer-accounts-spotify-playback-permission"
                         }
-                        _ => "installer-accounts-files-permission",
                     };
                     body = body.push(Box::new(Text::new(&t(permission))));
                 }
@@ -2023,20 +1892,12 @@ impl Accounts {
             Step::Failed {
                 retry_cleanup,
                 message,
-                selected,
+                ..
             } => {
                 if matches!(
                     *message,
-                    "installer-accounts-nextcloud-source-reconnect"
-                        | "installer-accounts-rclone-source-reconnect"
-                        | "installer-accounts-goa-source-reconnect"
-                        | "installer-accounts-tilo-reconnect"
+                    "installer-accounts-nextcloud-source-reconnect" | "installer-accounts-tilo-reconnect"
                 ) {
-                    let available = saved_cloud_provider(selected)
-                        .is_none_or(|provider| self.actions.connection_available(provider));
-                    if !available {
-                        body = body.push(Box::new(Text::new(&t("installer-accounts-unavailable"))));
-                    }
                     body = body.push(Box::new(
                         action_button(
                             "installer.account.reconnect",
@@ -2044,10 +1905,9 @@ impl Accounts {
                             AccountRequest::Reconnect,
                             dispatch.clone(),
                         )
-                        .role(ButtonRole::Primary)
-                        .with_enabled(available),
+                        .role(ButtonRole::Primary),
                     ));
-                } else if *message != "installer-accounts-tilo-reconnect" {
+                } else {
                     body = body.push(Box::new(
                         action_button(
                             "installer.account.retry",
@@ -2116,9 +1976,6 @@ fn service_copy(key: &str, service: &str) -> String {
 }
 fn provider_label(provider: ConnectionProvider) -> String {
     t(match provider {
-        ConnectionProvider::GoogleDrive => "installer-accounts-google-drive",
-        ConnectionProvider::OneDrive => "installer-accounts-onedrive",
-        ConnectionProvider::Dropbox => "installer-accounts-dropbox",
         ConnectionProvider::Spotify => "installer-accounts-spotify-library",
         ConnectionProvider::SpotifyStreaming => "installer-accounts-spotify-playback",
     })
@@ -2128,30 +1985,8 @@ pub(super) fn can_connect_candidate(candidate: &Candidate) -> bool {
         || matches!(candidate.provider, Provider::Nextcloud | Provider::WebDav)
 }
 
-fn saved_cloud_provider(selected: &Selection) -> Option<ConnectionProvider> {
-    let Selection::Saved(candidate) = selected else {
-        return None;
-    };
-    if !matches!(
-        candidate.origin,
-        imager_backend::account_transfer::Origin::Rclone
-            | imager_backend::account_transfer::Origin::Gnome
-    ) {
-        return None;
-    }
-    match candidate.provider {
-        Provider::Google => Some(ConnectionProvider::GoogleDrive),
-        Provider::Microsoft => Some(ConnectionProvider::OneDrive),
-        Provider::Dropbox => Some(ConnectionProvider::Dropbox),
-        _ => None,
-    }
-}
-
 fn candidate_provider(candidate: &Candidate) -> Option<ConnectionProvider> {
     match candidate.provider {
-        Provider::Google => Some(ConnectionProvider::GoogleDrive),
-        Provider::Microsoft => Some(ConnectionProvider::OneDrive),
-        Provider::Dropbox => Some(ConnectionProvider::Dropbox),
         Provider::Spotify => Some(ConnectionProvider::Spotify),
         _ => None,
     }
@@ -2190,10 +2025,6 @@ pub(super) fn tilo_candidate_label(
     candidate: &imager_backend::account_transfer::TiloCandidate,
 ) -> String {
     let service = match candidate.type_id.as_str() {
-        "google-drive" => "installer-accounts-google-drive",
-        "onedrive" => "installer-accounts-onedrive",
-        "dropbox" => "installer-accounts-dropbox",
-        "icloud-drive" => "installer-accounts-icloud",
         "nextcloud" => "installer-accounts-nextcloud",
         "webdav" => "installer-accounts-webdav",
         "spotify" if candidate.account_id == "music.spotify.streaming" => {

@@ -143,7 +143,6 @@ tilo_test_env::scenario! {
         app.step = Step::Accounts;
         app.accounts_initialized = true;
         app.accounts_controller = Some(controller);
-        app.accounts_form.files.set(true);
         app.accounts_form.mail.set(true);
         app.accounts_form.submit(false).unwrap();
         tilo_test_env::wait_until("the accounts to be added", || {
@@ -155,18 +154,14 @@ tilo_test_env::scenario! {
         profile.join().unwrap();
         let _ = tilo_test_env::recv("the authorization URL", &urls);
         let labels = local_labels(app.accounts_form.view().as_ref());
-        for label in [
-            "personal@example.org",
-            "Connected for Files",
-            "Connected for Mail",
-        ] {
+        for label in ["personal@example.org", "Connected for Mail"] {
             assert!(labels.iter().any(|value| value == label), "missing {label}");
         }
         assert!(!labels.iter().any(|value| value == "Connected for Calendar"));
         assert_eq!(server.verifiers().len(), 1);
         let connected = app.accounts_controller.as_ref().unwrap().connected();
         assert_eq!(connected.len(), 1);
-        assert!(connected[0].files && connected[0].mail && !connected[0].calendar);
+        assert!(!connected[0].files && connected[0].mail && !connected[0].calendar);
         imager_backend::destination::online_accounts::tests::assert_adopted_projection(
             app.accounts_controller.as_mut().unwrap(),
         );

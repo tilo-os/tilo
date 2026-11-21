@@ -98,15 +98,13 @@ tilo_test_env::scenario! {
         );
         accounts.apply(AccountRequest::AddAccount).unwrap();
         let chooser = accounts.view(Rc::new(|_| {}), None);
-        for provider in ["google-drive", "onedrive", "dropbox", "spotify"] {
-            assert!(
-                find(&chooser, &format!("installer.account.provider.{provider}")).is_none(),
-                "unconfigured {provider} must not be offered as a new connection"
-            );
-        }
+        assert!(
+            find(&chooser, "installer.account.provider.spotify").is_none(),
+            "an unconfigured Spotify must not be offered as a new connection"
+        );
         assert!(find(&chooser, "installer.account.provider.webdav").is_some());
         assert_eq!(
-            accounts.apply(AccountRequest::Provider("google-drive".into())),
+            accounts.apply(AccountRequest::Provider("spotify".into())),
             Err("installer-accounts-unavailable")
         );
         accounts.step = Step::Confirm(Selection::OAuth {
@@ -132,9 +130,9 @@ tilo_test_env::scenario! {
         let (_temp, _server, mut accounts, browser) = oauth_accounts(false);
         let candidate = Candidate {
             id: "configured-source".into(),
-            provider: Provider::Google,
+            provider: Provider::Spotify,
             origin: imager_backend::account_transfer::Origin::Application,
-            label: "Google Drive".into(),
+            label: "Spotify".into(),
             identity: None,
             server: None,
             profile: std::path::PathBuf::from("unused-metadata-profile"),
@@ -146,10 +144,14 @@ tilo_test_env::scenario! {
         accounts
             .apply(AccountRequest::Source(candidate.id))
             .unwrap();
+        assert!(matches!(accounts.step, Step::SpotifyPurpose(Some(_))));
+        accounts
+            .apply(AccountRequest::Provider("spotify".into()))
+            .unwrap();
         assert!(matches!(
             accounts.step,
             Step::Confirm(Selection::OAuth {
-                provider: ConnectionProvider::GoogleDrive,
+                provider: ConnectionProvider::Spotify,
                 ..
             })
         ));
@@ -632,21 +634,38 @@ fn oauth_accounts(
     Accounts,
     Arc<Browser>,
 ) {
+    use account_credentials::{ClientTable, CredentialStore, OAuthIssuer};
     let temp = tempfile::tempdir().unwrap();
     let server = tilo_oauth::fake::FakeAuthorizationServer::start();
     let browser = Browser::new(follow);
+    let table = ClientTable::parse(
+        r#"
+[spotify]
+client_id = "tilo-test-registered-client"
+[spotify.scopes]
+music = ["user-read-private", "user-library-read"]
+music_streaming = ["streaming", "user-read-private"]
+"#,
+    )
+    .unwrap();
+    let credential_store = CredentialStore::for_root(Some(
+        temp.path().join("injected-fixture-root"),
+    ))
+    .with_client_table(table)
+    .with_issuer_endpoints(OAuthIssuer::Spotify, server.provider());
+    let profile = serde_json::json!({"id":"ada-spotify","account_id":"stable-ada","display_name":"Ada"});
+    let (endpoint, _profiles) =
+        imager_backend::account_transfer::spotify_identity::profile_server(vec![
+            profile.clone(),
+            profile.clone(),
+            profile.clone(),
+            profile,
+        ]);
     let mut accounts = Accounts::default();
     accounts.opener = browser.clone();
-    accounts.actions = AccountActions::default().with_credential_store(
-        account_credentials::CredentialStore::for_root(Some(
-            temp.path().join("injected-fixture-root"),
-        ))
-        .with_provider(
-            account_credentials::OAuthCloud::GoogleDrive,
-            server.provider(),
-            "tilo-client",
-        ),
-    );
+    accounts.actions = AccountActions::default()
+        .with_credential_store(credential_store)
+        .with_spotify_api(endpoint);
     (temp, server, accounts, browser)
 }
 
@@ -658,7 +677,7 @@ tilo_test_env::scenario! {
         let (_temp, _server, mut accounts, browser) = oauth_accounts(true);
         accounts.view(Rc::new(|_| {}), None);
         accounts
-            .apply(AccountRequest::Provider("google-drive".into()))
+            .apply(AccountRequest::Provider("spotify".into()))
             .unwrap();
         accounts.view(Rc::new(|_| {}), None);
         assert!(accounts.stage.is_none());
@@ -685,9 +704,11 @@ tilo_test_env::scenario! {
         let (_temp, _server, mut accounts, browser) = oauth_accounts(false);
         accounts.apply(AccountRequest::AddAccount).unwrap();
         accounts
-            .apply(AccountRequest::from_parts("choose-provider", Some("google-drive".into())).unwrap())
+            .apply(AccountRequest::from_parts("choose-provider", Some("spotify".to_string())).unwrap())
             .unwrap();
         assert!(matches!(accounts.step, Step::Confirm(_)));
+        accounts.apply(AccountRequest::Back).unwrap();
+        assert!(matches!(accounts.step, Step::SpotifyPurpose(None)));
         accounts.apply(AccountRequest::Back).unwrap();
         assert!(matches!(accounts.step, Step::Providers));
         accounts.apply(AccountRequest::Back).unwrap();
@@ -701,7 +722,7 @@ tilo_test_env::scenario! {
 fn cancelling_unapproved_sign_in_stops_wait_and_does_not_prepare_an_account() {
     let (_temp, _server, mut accounts, browser) = oauth_accounts(false);
     accounts
-        .apply(AccountRequest::Provider("google-drive".into()))
+        .apply(AccountRequest::Provider("spotify".into()))
         .unwrap();
     accounts.apply(AccountRequest::Confirm).unwrap();
     assert_eq!(browser.opened.lock().unwrap().len(), 1);
@@ -718,7 +739,7 @@ fn cancelling_unapproved_sign_in_stops_wait_and_does_not_prepare_an_account() {
 fn cancellation_racing_completed_sign_in_removes_staged_connection() {
     let (_temp, _server, mut accounts, _browser) = oauth_accounts(true);
     accounts
-        .apply(AccountRequest::Provider("google-drive".into()))
+        .apply(AccountRequest::Provider("spotify".into()))
         .unwrap();
     accounts.apply(AccountRequest::Confirm).unwrap();
     let until = std::time::Instant::now() + tilo_test_env::hang_bound();
@@ -743,7 +764,7 @@ fn cancellation_racing_completed_sign_in_removes_staged_connection() {
 }
 
 #[test]
-fn dropping_during_token_exchange_revokes_new_grant_and_preserves_originals() {
+fn dropping_during_token_exchange_removes_the_staged_grant_and_preserves_originals() {
     let (_temp, server, mut controller, browser) = oauth_accounts(true);
     let source = tempfile::tempdir().unwrap();
     let config = source.path().join(".config");
@@ -761,7 +782,7 @@ fn dropping_during_token_exchange_revokes_new_grant_and_preserves_originals() {
         .unwrap();
     let hold = server.hold_token_exchange();
     controller
-        .apply(AccountRequest::Provider("google-drive".into()))
+        .apply(AccountRequest::Provider("spotify".into()))
         .unwrap();
     controller.apply(AccountRequest::Confirm).unwrap();
     assert!(hold.wait_for_exchange(tilo_test_env::hang_bound()));
@@ -772,7 +793,7 @@ fn dropping_during_token_exchange_revokes_new_grant_and_preserves_originals() {
     let until = std::time::Instant::now() + tilo_test_env::hang_bound();
     loop {
         let root = stage.path().join(".config/tilo");
-        if !server.revoked().is_empty() && Arc::strong_count(&stage) == 1 {
+        if Arc::strong_count(&stage) == 1 {
             assert!(accounts::AccountStore::load_in(&root).is_empty());
             assert!(accounts::SecretVault::open_in(&root).is_empty());
             break;
@@ -783,7 +804,6 @@ fn dropping_during_token_exchange_revokes_new_grant_and_preserves_originals() {
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert_eq!(server.revoked().len(), 1);
     assert_eq!(
         std::fs::read(original).unwrap(),
         b"original-account-session"
@@ -1096,263 +1116,6 @@ fn dropping_nextcloud_during_inflight_approval_revokes_only_the_new_app_password
     assert_eq!(cloud.revoked.load(Ordering::SeqCst), 1);
 }
 
-#[derive(Default)]
-struct InstallerICloud {
-    calls: Mutex<Vec<&'static str>>,
-    entered: Mutex<Option<mpsc::Sender<()>>>,
-    release: Mutex<Option<mpsc::Receiver<()>>>,
-    revoked: Mutex<Option<mpsc::Sender<()>>>,
-}
-impl account_credentials::icloud::ICloudAuth for InstallerICloud {
-    fn sign_in(
-        &self,
-        apple_id: &str,
-        password: &str,
-    ) -> Result<
-        account_credentials::icloud::ICloudSignIn,
-        account_credentials::icloud::ICloudAuthError,
-    > {
-        use account_credentials::icloud::*;
-        self.calls.lock().unwrap().push("sign-in");
-        if apple_id != "ada@icloud.test" || password != "private-apple-password" {
-            return Err(ICloudAuthError::InvalidCredentials);
-        }
-        Ok(ICloudSignIn::NeedsCode(ICloudChallenge(
-            zeroize::Zeroizing::new("private-challenge".into()),
-        )))
-    }
-    fn verify_code(
-        &self,
-        challenge: &account_credentials::icloud::ICloudChallenge,
-        code: &str,
-    ) -> Result<
-        account_credentials::icloud::ICloudSessionState,
-        account_credentials::icloud::ICloudAuthError,
-    > {
-        use account_credentials::icloud::*;
-        self.calls.lock().unwrap().push("verify");
-        assert_eq!(challenge.0.as_str(), "private-challenge");
-        if code != "123456" {
-            return Err(ICloudAuthError::InvalidCode);
-        }
-        let entered = self.entered.lock().unwrap().take();
-        if let Some(entered) = entered {
-            entered.send(()).unwrap();
-        }
-        let release = self.release.lock().unwrap().take();
-        if let Some(release) = release {
-            release.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        }
-        Ok(ICloudSessionState(zeroize::Zeroizing::new(
-            "private-session-trust".into(),
-        )))
-    }
-    fn resume(
-        &self,
-        session: &account_credentials::icloud::ICloudSessionState,
-    ) -> Result<
-        (
-            account_credentials::icloud::ICloudSessionState,
-            account_credentials::icloud::ICloudHeaders,
-        ),
-        account_credentials::icloud::ICloudAuthError,
-    > {
-        Ok((
-            session.clone(),
-            account_credentials::icloud::ICloudHeaders {
-                headers: Vec::new(),
-                expires_unix: None,
-            },
-        ))
-    }
-    fn sign_out(&self, _: &account_credentials::icloud::ICloudSessionState) {
-        self.calls.lock().unwrap().push("sign-out");
-        let revoked = self.revoked.lock().unwrap().take();
-        if let Some(revoked) = revoked {
-            revoked.send(()).unwrap();
-        }
-    }
-}
-fn icloud_accounts(auth: Arc<InstallerICloud>) -> Accounts {
-    let mut accounts = Accounts::default();
-    accounts.actions = AccountActions::default().with_credential_store(
-        account_credentials::CredentialStore::for_root(None).with_icloud(auth),
-    );
-    accounts
-}
-fn submit_icloud_details(accounts: &mut Accounts) {
-    accounts
-        .apply(AccountRequest::Provider("icloud".into()))
-        .unwrap();
-    accounts
-        .set_dav_field(
-            "icloud-login",
-            zeroize::Zeroizing::new("ada@icloud.test".into()),
-        )
-        .unwrap();
-    accounts.apply(AccountRequest::Confirm).unwrap();
-    accounts
-        .set_dav_field(
-            "icloud-password",
-            zeroize::Zeroizing::new("private-apple-password".into()),
-        )
-        .unwrap();
-    accounts.apply(AccountRequest::Confirm).unwrap();
-    settle(accounts);
-    assert_eq!(accounts.projection()["state"], "icloud-code");
-    assert!(!accounts.can_continue());
-    assert!(accounts.prepared.is_empty());
-}
-tilo_test_env::scenario! {
-    fn an_icloud_connection_seals_and_revokes_only_its_own_session;
-
-    phase icloud_guided_sign_in_retries_code_and_seals_only_session_trust;
-    {
-        let auth = Arc::new(InstallerICloud::default());
-        let mut accounts = icloud_accounts(auth.clone());
-        accounts.view(Rc::new(|_| {}), None);
-        assert!(auth.calls.lock().unwrap().is_empty());
-        submit_icloud_details(&mut accounts);
-        accounts
-            .set_dav_field("icloud-code", zeroize::Zeroizing::new("000000".into()))
-            .unwrap();
-        accounts.apply(AccountRequest::Confirm).unwrap();
-        settle(&mut accounts);
-        assert_eq!(accounts.projection()["state"], "icloud-code");
-        assert!(accounts.prepared.is_empty());
-        accounts
-            .set_dav_field("icloud-code", zeroize::Zeroizing::new("123456".into()))
-            .unwrap();
-        accounts.apply(AccountRequest::Confirm).unwrap();
-        settle(&mut accounts);
-        assert_eq!(accounts.projection()["state"], "connected");
-        assert!(accounts.can_continue());
-        let prepared = accounts.prepared_handle().unwrap();
-        assert_eq!(prepared.count(), 1);
-        let root = prepared.config_root();
-        let store = accounts::AccountStore::load_in(&root);
-        assert_eq!(store.len(), 1);
-        assert_eq!(
-            store.all()[0].type_id.as_str(),
-            accounts::cloud_types::ICLOUD_DRIVE
-        );
-        let secret = accounts::SecretVault::open_in(&root)
-            .get(&store.all()[0].id)
-            .unwrap();
-        assert!(secret.password.is_empty());
-        assert!(secret.token.unwrap().contains("private-session-trust"));
-        assert!(!accounts.projection().to_string().contains("private-"));
-        assert_eq!(*auth.calls.lock().unwrap(), ["sign-in", "verify", "verify"]);
-    }
-
-    phase removing_new_icloud_connection_revokes_only_the_selected_staged_session;
-    {
-        let auth = Arc::new(InstallerICloud::default());
-        let mut accounts = icloud_accounts(auth.clone());
-        submit_icloud_details(&mut accounts);
-        accounts
-            .set_dav_field("icloud-code", zeroize::Zeroizing::new("123456".into()))
-            .unwrap();
-        accounts.apply(AccountRequest::Confirm).unwrap();
-        settle(&mut accounts);
-        let id = accounts.prepared[0].id.clone();
-        let root = accounts.prepared_handle().unwrap().config_root();
-        accounts.apply(AccountRequest::Remove(id)).unwrap();
-        assert_eq!(*auth.calls.lock().unwrap(), ["sign-in", "verify"]);
-        accounts.apply(AccountRequest::Confirm).unwrap();
-        settle(&mut accounts);
-        assert_eq!(
-            *auth.calls.lock().unwrap(),
-            ["sign-in", "verify", "sign-out"]
-        );
-        assert!(accounts::AccountStore::load_in(&root).is_empty());
-        assert_eq!(accounts.prepared_handle().unwrap().count(), 0);
-    }
-
-    phase forgetting_copied_canonical_icloud_grant_does_not_sign_out_its_original;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("source");
-        let target = temp.path().join("target");
-        let auth = Arc::new(InstallerICloud::default());
-        let source_connector = Connector::with_credential_store(
-            source.clone(),
-            account_credentials::CredentialStore::for_root(Some(source.clone())).with_icloud(auth.clone()),
-        );
-        let id = source_connector
-            .finish_icloud(
-                "ada@icloud.test",
-                account_credentials::icloud::ICloudSessionState(zeroize::Zeroizing::new(
-                    "source-session-trust".into(),
-                )),
-            )
-            .unwrap();
-        let bytes = std::fs::read(accounts::store_path_in(&source)).unwrap();
-        let target_connector = Connector::with_credential_store(
-            target.clone(),
-            account_credentials::CredentialStore::for_root(Some(target.clone())).with_icloud(auth.clone()),
-        );
-        let copied_id = target_connector.import_tilo(&source, &id).unwrap();
-        target_connector.forget_prepared(&copied_id).unwrap();
-        assert!(accounts::AccountStore::load_in(&target).is_empty());
-        assert!(
-            accounts::SecretVault::open_in(&target)
-                .get(&copied_id)
-                .is_none()
-        );
-        assert_eq!(
-            std::fs::read(accounts::store_path_in(&source)).unwrap(),
-            bytes
-        );
-        assert!(
-            accounts::SecretVault::open_in(&source)
-                .get(&id)
-                .unwrap()
-                .token
-                .unwrap()
-                .contains("source-session-trust")
-        );
-        assert!(auth.calls.lock().unwrap().is_empty());
-    }
-}
-#[test]
-fn dropping_icloud_during_verification_compensates_new_session_without_source_changes() {
-    let source = tempfile::tempdir().unwrap();
-    let original = source.path().join("original-profile");
-    std::fs::write(&original, b"unchanged account profile").unwrap();
-    let (entered_send, entered) = mpsc::channel();
-    let (release, release_receive) = mpsc::channel();
-    let (revoked_send, revoked) = mpsc::channel();
-    let auth = Arc::new(InstallerICloud {
-        entered: Mutex::new(Some(entered_send)),
-        release: Mutex::new(Some(release_receive)),
-        revoked: Mutex::new(Some(revoked_send)),
-        ..Default::default()
-    });
-    let mut accounts = icloud_accounts(auth);
-    submit_icloud_details(&mut accounts);
-    let stage = accounts.stage.as_ref().unwrap().clone();
-    accounts
-        .set_dav_field("icloud-code", zeroize::Zeroizing::new("123456".into()))
-        .unwrap();
-    accounts.apply(AccountRequest::Confirm).unwrap();
-    entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-    drop(accounts);
-    release.send(()).unwrap();
-    revoked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-    let root = stage.path().join(".config/tilo");
-    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-    while !accounts::AccountStore::load_in(&root).is_empty() {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(accounts::AccountStore::load_in(&root).is_empty());
-    assert_eq!(
-        std::fs::read(&original).unwrap(),
-        b"unchanged account profile"
-    );
-}
-
 tilo_test_env::scenario! {
     fn a_prepared_import_keeps_the_source_it_came_from;
 
@@ -1361,7 +1124,6 @@ tilo_test_env::scenario! {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         let config = source.join(".config");
-        let auth = Arc::new(InstallerICloud::default());
         let source_config = config.join("rclone/rclone.conf");
         std::fs::create_dir_all(source_config.parent().unwrap()).unwrap();
         let original = "[Files]\ntype=webdav\nurl=https://files.example.test/dav\nuser=ada\npass=AAECAwQFBgcICQoLDA0OD2f2H1FyoCWnrFF4SHSBvFFHjlw9\n";
@@ -1377,7 +1139,7 @@ tilo_test_env::scenario! {
             .find(|c| c.can_import_credentials)
             .unwrap();
         let candidate_id = candidate.id.clone();
-        let mut accounts = icloud_accounts(auth.clone());
+        let mut accounts = Accounts::default();
         accounts.update_sources(roots, inventory).unwrap();
         accounts
             .apply(AccountRequest::Source(candidate_id.clone()))
@@ -1409,10 +1171,6 @@ tilo_test_env::scenario! {
             "explicit empty selection remains transferable"
         );
         assert!(accounts::AccountStore::load_in(&stage_root).is_empty());
-        assert!(
-            auth.calls.lock().unwrap().is_empty(),
-            "copied source grant must not be revoked"
-        );
         assert_eq!(std::fs::read_to_string(&source_config).unwrap(), original);
         accounts
             .apply(AccountRequest::Source(candidate_id))
@@ -1499,8 +1257,8 @@ tilo_test_env::scenario! {
             if change_metadata {
                 let mut store = accounts::AccountStore::load_in(&root);
                 let mut changed = store.get(&source.id).unwrap().clone();
-                changed.type_id = "dropbox".into();
-                changed.config = serde_json::json!({"provider":"dropbox"});
+                changed.type_id = "nextcloud".into();
+                changed.config = serde_json::json!({"provider":"nextcloud"});
                 store.upsert(changed);
                 store.save_in(&root).unwrap();
             }
@@ -1541,7 +1299,7 @@ tilo_test_env::scenario! {
                 accounts.apply(AccountRequest::Reconnect).unwrap();
                 assert!(matches!(accounts.step, Step::Providers));
                 let chooser = accounts.view(Rc::new(|_| {}), None);
-                assert!(account_widget(&chooser, "installer.account.provider.google-drive").is_some());
+                assert!(account_widget(&chooser, "installer.account.provider.nextcloud").is_some());
                 assert!(accounts.prepared.is_empty());
                 assert!(browser.opened.lock().unwrap().is_empty());
                 assert_eq!(
@@ -1549,172 +1307,6 @@ tilo_test_env::scenario! {
                     original
                 );
             }
-        }
-    }
-}
-
-struct DropboxPaste {
-    _busy: std::net::TcpListener,
-    issuer: tilo_oauth::fake::FakeAuthorizationServer,
-    _storage: test_http::Responder,
-    accounts: Accounts,
-    browser: Arc<Browser>,
-}
-fn dropbox_paste() -> DropboxPaste {
-    let busy = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-    let storage = test_http::Responder::handle(|request| {
-        assert_eq!(request.method, "POST");
-        assert_eq!(request.target, "/2/users/get_current_account");
-        Some(
-            test_http::Reply::status(200).body(
-                br#"{"root_info":{"root_namespace_id":"personal","home_namespace_id":"personal"}}"#
-                    .to_vec(),
-            ),
-        )
-    });
-    let api = storage.url();
-    let registration = account_credentials::Registration {
-        client_id: "tilo-dropbox-fixture".into(),
-        client_secret: None,
-        redirect_ports: tilo_oauth::RedirectPorts::Registered(vec![
-            busy.local_addr().unwrap().port(),
-        ]),
-        redirect: tilo_oauth::Redirect::default(),
-        paste_code_fallback: true,
-    };
-    let credential_store = account_credentials::CredentialStore::for_root(None)
-        .with_provider(
-            account_credentials::OAuthCloud::Dropbox,
-            issuer.provider(),
-            registration,
-        )
-        .with_storage_config(
-            account_credentials::OAuthCloud::Dropbox,
-            serde_json::json!({
-                "root":"", "upload_chunk":4194304,
-                "endpoints":{"api":api,"content":api,"notify":api}
-            }),
-        );
-    let browser = Browser::new(false);
-    let mut accounts = Accounts::default();
-    accounts.opener = browser.clone();
-    accounts.actions = AccountActions::default().with_credential_store(credential_store);
-    DropboxPaste {
-        _busy: busy,
-        issuer,
-        _storage: storage,
-        accounts,
-        browser,
-    }
-}
-
-tilo_test_env::scenario! {
-    fn dropbox_connects_by_pasted_code_when_its_redirect_ports_are_busy;
-
-    phase dropbox_busy_redirect_ports_offer_private_code_and_import_real_authenticated_grant;
-    {
-        let mut fixture = dropbox_paste();
-        let accounts = &mut fixture.accounts;
-        accounts
-            .apply(AccountRequest::Provider("dropbox".into()))
-            .unwrap();
-        assert!(fixture.browser.opened.lock().unwrap().is_empty());
-        accounts.apply(AccountRequest::Confirm).unwrap();
-        assert!(matches!(accounts.step, Step::PastedCode(_)));
-        assert_eq!(accounts.projection()["state"], "awaiting-code");
-        assert!(fixture.issuer.requests().is_empty());
-        let url = fixture
-            .browser
-            .opened
-            .lock()
-            .unwrap()
-            .last()
-            .unwrap()
-            .clone();
-        let code = tilo_oauth::fake::browse(&url).unwrap();
-        accounts
-            .set_dav_field("oauth-code", zeroize::Zeroizing::new(code.clone()))
-            .unwrap();
-        let view = accounts.view(Rc::new(|_| {}), None);
-        fn find<'a>(root: &'a dyn ui::widget::Widget, id: &str) -> Option<&'a dyn ui::widget::Widget> {
-            if root.test_id() == Some(id) {
-                return Some(root);
-            }
-            root.children()
-                .into_iter()
-                .find_map(|child| find(child, id))
-        }
-        let input = find(&view, "installer.account.oauth-code").unwrap();
-        let accessible = input.accessibility().unwrap();
-        assert!(accessible.value.is_none());
-        assert!(!accounts.projection().to_string().contains(&code));
-        accounts.apply(AccountRequest::SubmitCode).unwrap();
-        assert!(accounts.dav_fields[2].get().is_empty());
-        settle(accounts);
-        assert!(matches!(accounts.step, Step::Done(_)));
-        let prepared = accounts.prepared_handle().unwrap();
-        let store = accounts::AccountStore::load_in(&prepared.config_root());
-        let id = accounts::AccountId::new(&accounts.prepared[0].id);
-        assert_eq!(store.get(&id).unwrap().type_id.as_str(), "dropbox");
-        assert!(
-            store
-                .get(&id)
-                .unwrap()
-                .config
-                .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
-                .is_some()
-        );
-        let secret = accounts::SecretVault::open_in(&prepared.config_root())
-            .get(&id)
-            .unwrap();
-        assert!(secret.token.unwrap().contains("refresh_token"));
-        assert!(
-            !fixture.issuer.verifiers().is_empty(),
-            "canonical PKCE exchange happened"
-        );
-        assert!(
-            !std::fs::read_to_string(accounts::store_path_in(&prepared.config_root()))
-                .unwrap()
-                .contains(&code)
-        );
-        assert!(!accounts.projection().to_string().contains(&code));
-    }
-
-    phase dropbox_pasted_code_back_cancels_and_invalid_exchange_never_prepares_account;
-    {
-        let mut fixture = dropbox_paste();
-        let accounts = &mut fixture.accounts;
-        for invalid_exchange in [false, true] {
-            accounts
-                .apply(AccountRequest::Provider("dropbox".into()))
-                .unwrap();
-            accounts.apply(AccountRequest::Confirm).unwrap();
-            accounts
-                .set_dav_field(
-                    "oauth-code",
-                    zeroize::Zeroizing::new("private-invalid-code".into()),
-                )
-                .unwrap();
-            if invalid_exchange {
-                accounts.apply(AccountRequest::SubmitCode).unwrap();
-                settle(accounts);
-                assert!(matches!(accounts.step, Step::Failed { .. }));
-            } else {
-                accounts.apply(AccountRequest::Back).unwrap();
-                assert!(accounts.at_overview());
-                assert!(!accounts.actions.busy());
-                assert!(fixture.issuer.requests().is_empty());
-            }
-            assert!(accounts.dav_fields[2].get().is_empty());
-            assert!(accounts.prepared.is_empty());
-            assert!(accounts.prepared_handle().is_none());
-            assert!(
-                !accounts
-                    .projection()
-                    .to_string()
-                    .contains("private-invalid-code")
-            );
         }
     }
 }
@@ -1737,7 +1329,7 @@ fn tilo_source(with_grant: bool) -> TiloSource {
     account.config = serde_json::json!({"provider":"spotify"});
     let mut store = accounts::AccountStore::new();
     store.upsert(account);
-    let mut foreign = accounts::Account::new(accounts::AccountId::new("someone-else"), "dropbox");
+    let mut foreign = accounts::Account::new(accounts::AccountId::new("someone-else"), "nextcloud");
     foreign.owner = Some("another-person".into());
     store.upsert(foreign);
     store.save_in(&source).unwrap();
@@ -2023,7 +1615,7 @@ tilo_test_env::scenario! {
         accounts.opener = browser.clone();
         let overview = accounts.view(Rc::new(|_| {}), None);
         assert!(account_widget(&overview, "installer.account.add").is_some());
-        assert!(account_widget(&overview, "installer.account.provider.google-drive").is_none());
+        assert!(account_widget(&overview, "installer.account.provider.nextcloud").is_none());
         assert!(
             account_widget(
                 &overview,
@@ -2037,7 +1629,7 @@ tilo_test_env::scenario! {
         assert_eq!(accounts.projection()["state"], "providers");
         assert!(!accounts.can_continue());
         let chooser = accounts.view(Rc::new(|_| {}), None);
-        assert!(account_widget(&chooser, "installer.account.provider.google-drive").is_some());
+        assert!(account_widget(&chooser, "installer.account.provider.nextcloud").is_some());
         assert!(account_widget(&chooser, "installer.account.add").is_none());
         accounts
             .apply(AccountRequest::from_parts("back", None).unwrap())
@@ -2460,63 +2052,6 @@ tilo_test_env::scenario! {
             1
         );
     }
-
-    phase unavailable_selected_goa_credentials_offer_explicit_bound_reconnect_without_keyring_or_browser;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-        let temporary = tempfile::tempdir().unwrap();
-        let home = temporary.path().join("source");
-        let config = home.join(".config");
-        std::fs::create_dir_all(config.join("goa-1.0")).unwrap();
-        let source = config.join("goa-1.0/accounts.conf");
-        let original = "[Account account_1]\nProvider=google\nIdentity=person@example.test\nPresentationIdentity=Personal Drive\nFilesEnabled=true\n";
-        std::fs::write(&source, original).unwrap();
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o666)).unwrap();
-        let roots = SourceRoots { home, config };
-        let inventory = imager_backend::account_transfer::discover(&roots);
-        let selected = inventory.candidates[0].clone();
-        assert!(selected.can_import_credentials);
-        let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let browser = Browser::new(false);
-        let mut accounts = Accounts::default();
-        accounts.opener = browser.clone();
-        accounts.actions = AccountActions::default().with_credential_store(
-            account_credentials::CredentialStore::for_root(None).with_provider(
-                account_credentials::OAuthCloud::GoogleDrive,
-                issuer.provider(),
-                "new-tilo-client",
-            ),
-        );
-        accounts.update_sources(roots, inventory).unwrap();
-        accounts
-            .apply(AccountRequest::Source(selected.id.clone()))
-            .unwrap();
-        accounts.apply(AccountRequest::Confirm).unwrap();
-        settle(&mut accounts);
-        assert!(matches!(&accounts.step, Step::Failed { message, .. }
-            if *message == "installer-accounts-goa-source-reconnect"));
-        assert!(accounts.prepared.is_empty());
-        assert_eq!(
-            accounts.apply(AccountRequest::Retry),
-            Err("installer-accounts-invalid-action")
-        );
-        let failed = accounts.view(Rc::new(|_| {}), None);
-        assert!(account_widget(&failed, "installer.account.reconnect").is_some());
-        assert!(account_widget(&failed, "installer.account.retry").is_none());
-        accounts
-            .apply(AccountRequest::from_parts("reconnect", None).unwrap())
-            .unwrap();
-        assert!(
-            matches!(&accounts.step, Step::Confirm(Selection::OAuth { candidate: Some(candidate), .. })
-            if candidate.id == selected.id && candidate.identity == selected.identity)
-        );
-        assert!(!accounts.actions.busy());
-        assert!(browser.opened.lock().unwrap().is_empty());
-        assert!(issuer.requests().is_empty());
-        assert_eq!(std::fs::read_to_string(source).unwrap(), original);
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2800,69 +2335,4 @@ tilo_test_env::scenario! {
         assert!(stopped.accounts.saved.attention.is_empty());
         stopped.assert_sources_unchanged();
     }
-}
-
-#[cfg(unix)]
-#[test]
-fn unavailable_saved_rclone_cloud_grants_offer_explicit_reconnect_without_opening_browser() {
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-    let temporary = tempfile::tempdir().unwrap();
-    let home = temporary.path().join("source");
-    let config = home.join(".config");
-    std::fs::create_dir_all(config.join("rclone")).unwrap();
-    let source = config.join("rclone/rclone.conf");
-    let original = "[Drive]\ntype=drive\ntoken=invalid-source-grant\n[Microsoft]\ntype=onedrive\ntoken={}\n[Dropbox]\ntype=dropbox\ntoken={}\n";
-    std::fs::write(&source, original).unwrap();
-    let roots = SourceRoots { home, config };
-    let inventory = imager_backend::account_transfer::discover(&roots);
-    let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-    let browser = Browser::new(false);
-    for candidate in &inventory.candidates {
-        let cloud = match candidate.provider {
-            Provider::Google => account_credentials::OAuthCloud::GoogleDrive,
-            Provider::Microsoft => account_credentials::OAuthCloud::OneDrive,
-            Provider::Dropbox => account_credentials::OAuthCloud::Dropbox,
-            _ => panic!("unexpected candidate"),
-        };
-        let mut accounts = Accounts::default();
-        accounts.opener = browser.clone();
-        accounts.actions = AccountActions::default().with_credential_store(
-            account_credentials::CredentialStore::for_root(None).with_provider(
-                cloud,
-                issuer.provider(),
-                "new-tilo-client",
-            ),
-        );
-        accounts
-            .update_sources(roots.clone(), inventory.clone())
-            .unwrap();
-        accounts
-            .apply(AccountRequest::Source(candidate.id.clone()))
-            .unwrap();
-        accounts.apply(AccountRequest::Confirm).unwrap();
-        settle(&mut accounts);
-        assert!(matches!(&accounts.step, Step::Failed { message, .. }
-            if *message == "installer-accounts-rclone-source-reconnect"));
-        assert!(accounts.prepared.is_empty());
-        assert_eq!(
-            accounts.apply(AccountRequest::Retry),
-            Err("installer-accounts-invalid-action")
-        );
-        let failed = accounts.view(Rc::new(|_| {}), None);
-        assert!(account_widget(&failed, "installer.account.reconnect").is_some());
-        assert!(account_widget(&failed, "installer.account.retry").is_none());
-        accounts
-            .apply(AccountRequest::from_parts("reconnect", None).unwrap())
-            .unwrap();
-        assert!(
-            matches!(&accounts.step, Step::Confirm(Selection::OAuth { candidate: Some(chosen), .. }) if chosen.id == candidate.id)
-        );
-        assert!(!accounts.actions.busy());
-        accounts.apply(AccountRequest::Back).unwrap();
-        assert!(accounts.prepared.is_empty());
-    }
-    assert!(browser.opened.lock().unwrap().is_empty());
-    assert!(issuer.requests().is_empty());
-    assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
 }

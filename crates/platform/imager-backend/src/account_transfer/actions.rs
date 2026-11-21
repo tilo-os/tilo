@@ -10,7 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use account_credentials::{Authorization, CredentialStore, OAuthCloud};
+use account_credentials::{Authorization, CredentialStore};
 use accounts::AccountId;
 use serde::Serialize;
 
@@ -18,9 +18,6 @@ use super::{Candidate, ConnectionError, Connector, Inventory, SourceRoots};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectionProvider {
-    GoogleDrive,
-    OneDrive,
-    Dropbox,
     Spotify,
     SpotifyStreaming,
 }
@@ -28,30 +25,13 @@ pub enum ConnectionProvider {
 impl ConnectionProvider {
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
-            "google-drive" => Some(Self::GoogleDrive),
-            "onedrive" => Some(Self::OneDrive),
-            "dropbox" => Some(Self::Dropbox),
             "spotify" => Some(Self::Spotify),
             "spotify-streaming" => Some(Self::SpotifyStreaming),
             _ => None,
         }
     }
-    fn cloud(self) -> Option<OAuthCloud> {
-        match self {
-            Self::GoogleDrive => Some(OAuthCloud::GoogleDrive),
-            Self::OneDrive => Some(OAuthCloud::OneDrive),
-            Self::Dropbox => Some(OAuthCloud::Dropbox),
-            Self::Spotify | Self::SpotifyStreaming => None,
-        }
-    }
     fn accepts(self, candidate: &Candidate) -> bool {
-        candidate.provider
-            == match self {
-                Self::GoogleDrive => super::Provider::Google,
-                Self::OneDrive => super::Provider::Microsoft,
-                Self::Dropbox => super::Provider::Dropbox,
-                Self::Spotify | Self::SpotifyStreaming => super::Provider::Spotify,
-            }
+        candidate.provider == super::Provider::Spotify
     }
 }
 
@@ -102,7 +82,6 @@ pub struct AccountJob {
 
 struct PendingConnection {
     provider: ConnectionProvider,
-    label: String,
     home: PathBuf,
     connector: Connector,
     authorization: Authorization,
@@ -221,37 +200,33 @@ impl AccountActions {
     pub fn connection_available(&self, provider: ConnectionProvider) -> bool {
         let live = CredentialStore::live();
         let credential_store = self.credential_store.as_ref().unwrap_or(&live);
-        if let Some(cloud) = provider.cloud() {
-            credential_store.is_configured(cloud.oauth_use())
-        } else {
-            let playback = provider == ConnectionProvider::SpotifyStreaming;
-            credential_store
-                .use_config(account_credentials::OAuthUse::new(
-                    account_credentials::OAuthIssuer::Spotify,
+        let playback = provider == ConnectionProvider::SpotifyStreaming;
+        credential_store
+            .use_config(account_credentials::OAuthUse::new(
+                account_credentials::OAuthIssuer::Spotify,
+                if playback {
+                    account_credentials::Capability::MusicStreaming
+                } else {
+                    account_credentials::Capability::Music
+                },
+            ))
+            .is_ok_and(|(configured, _)| {
+                [
+                    "user-read-private",
                     if playback {
-                        account_credentials::Capability::MusicStreaming
+                        "streaming"
                     } else {
-                        account_credentials::Capability::Music
+                        "user-library-read"
                     },
-                ))
-                .is_ok_and(|(configured, _)| {
-                    [
-                        "user-read-private",
-                        if playback {
-                            "streaming"
-                        } else {
-                            "user-library-read"
-                        },
-                    ]
-                    .iter()
-                    .all(|scope| {
-                        configured
-                            .scopes
-                            .iter()
-                            .any(|value| value.as_str() == *scope)
-                    })
+                ]
+                .iter()
+                .all(|scope| {
+                    configured
+                        .scopes
+                        .iter()
+                        .any(|value| value.as_str() == *scope)
                 })
-        }
+            })
     }
 
     pub fn validate_destination(&self, home: &Path) -> Result<PathBuf, ActionError> {
@@ -336,10 +311,6 @@ impl AccountActions {
             #[cfg(target_os = "linux")]
             if selected.origin == super::Origin::Nextcloud {
                 return connector.import_nextcloud(&roots, &selected);
-            }
-            #[cfg(target_os = "linux")]
-            if selected.origin == super::Origin::Gnome {
-                return connector.import_goa(&roots, &selected);
             }
             connector.import_rclone(&roots, &selected)
         }))
@@ -513,29 +484,10 @@ impl AccountActions {
         if selected.is_some_and(|candidate| !provider.accepts(candidate)) {
             return Err(ActionError::WrongProvider);
         }
-        let label = selected.map_or_else(
-            || {
-                match provider {
-                    ConnectionProvider::GoogleDrive => "Google Drive",
-                    ConnectionProvider::OneDrive => "OneDrive",
-                    ConnectionProvider::Dropbox => "Dropbox",
-                    ConnectionProvider::Spotify => "Spotify",
-                    ConnectionProvider::SpotifyStreaming => "Spotify playback",
-                }
-                .to_string()
-            },
-            |candidate| candidate.label.clone(),
-        );
         let connector = self.connector(target_home)?;
-        let authorization = match provider.cloud() {
-            Some(cloud) => connector.begin_oauth(
-                cloud,
-                selected.and_then(|candidate| candidate.identity.as_deref()),
-            ),
-            None if provider == ConnectionProvider::SpotifyStreaming => {
-                connector.begin_spotify_streaming()
-            }
-            None => connector.begin_spotify(),
+        let authorization = match provider {
+            ConnectionProvider::SpotifyStreaming => connector.begin_spotify_streaming(),
+            ConnectionProvider::Spotify => connector.begin_spotify(),
         }
         .map_err(|_| ActionError::ConnectionFailed)?;
         let id = uuid::Uuid::new_v4().to_string();
@@ -548,7 +500,6 @@ impl AccountActions {
             id,
             PendingConnection {
                 provider,
-                label,
                 home: target_home.to_path_buf(),
                 connector,
                 authorization,
@@ -611,23 +562,14 @@ impl AccountActions {
             .as_ref()
             .map(|_| pending.connector.clone());
         let job = self.spawn(move || {
-            let result = match (pending.provider.cloud(), code) {
-                (Some(cloud), Some(code)) => pending.connector.finish_oauth_with_code(
-                    cloud,
-                    &pending.label,
-                    pending.authorization,
-                    code,
-                ),
-                (Some(cloud), None) => {
-                    pending
-                        .connector
-                        .finish_oauth(cloud, &pending.label, pending.authorization)
-                }
-                (None, None) if pending.provider == ConnectionProvider::SpotifyStreaming => pending
+            let result = match (pending.provider, code) {
+                (ConnectionProvider::SpotifyStreaming, None) => pending
                     .connector
                     .finish_spotify_streaming(pending.authorization),
-                (None, None) => pending.connector.finish_spotify(pending.authorization),
-                (None, Some(_)) => Err(ConnectionError::InvalidConfiguration),
+                (ConnectionProvider::Spotify, None) => {
+                    pending.connector.finish_spotify(pending.authorization)
+                }
+                (_, Some(_)) => Err(ConnectionError::InvalidConfiguration),
             };
             if let Ok(id) = &result
                 && requested.load(Ordering::SeqCst)

@@ -5,7 +5,6 @@ installer-windows-find = Suggest locations
 installer-windows-source-title = Select one exact source folder
 installer-windows-grant = Review this folder
 installer-windows-choose-known-folder = Choose a personal folder
-installer-windows-choose-onedrive = Choose a OneDrive folder
 installer-windows-choose-outlook = Choose Outlook archives or local stores
 installer-windows-choose-steam = Choose Steam data
 installer-windows-choose-steam-library = Choose another Steam library
@@ -1141,7 +1140,6 @@ installer-preview-hosting-open-title = Ask after it installs
 
 installer-preview-hosting-open-body = You choose which workspaces it holds, and whether it keeps encrypted copies only or takes their work, from your Servers entry.
 
-
 installer-plan-heading = The plan
 
 installer-plan-token = Carry this single-use code to the computer: { $token }
@@ -1397,12 +1395,6 @@ installer-accounts-source-identity = { $account } ({ $identity })
 
 installer-accounts-intro = Connect the services you want in Tilo. This is optional; you can connect them after setup in Settings, under Accounts.
 
-installer-accounts-google-drive = Google Drive
-
-installer-accounts-onedrive = OneDrive
-
-installer-accounts-dropbox = Dropbox
-
 installer-accounts-spotify = Spotify
 
 installer-accounts-add = Connect an account
@@ -1419,11 +1411,7 @@ installer-accounts-import-intro = Use the saved connection in Tilo. Your existin
 
 installer-accounts-connect-heading = Connect { $service }
 
-installer-accounts-cloud-intro = Make your cloud files available in Tilo.
-
 installer-accounts-spotify-intro = Find your Spotify library in Tilo.
-
-installer-accounts-files-permission = Approve access to read and update your cloud files in your browser.
 
 installer-accounts-spotify-permission = Allow Tilo to read your saved music.
 
@@ -1598,46 +1586,6 @@ installer-media-official-required = Choose a Tilo installer image to carry your 
 
 installer-media-cancel = Cancel transfer
 installer-media-cancel-preparation = Stop preparation
-
-installer-accounts-icloud = iCloud Drive
-
-installer-accounts-icloud-add = Connect with your Apple Account.
-
-installer-accounts-icloud-login-heading = Connect iCloud Drive
-
-installer-accounts-icloud-login-intro = Use the Apple Account you use for iCloud.
-
-installer-accounts-icloud-login-label = Apple Account
-
-installer-accounts-icloud-password-heading = Sign in to iCloud
-
-installer-accounts-icloud-password-intro = Your password is used to sign in and is not saved in Tilo.
-
-installer-accounts-icloud-password-label = Apple Account password
-
-installer-accounts-icloud-code-heading = Check your trusted device
-
-installer-accounts-icloud-code-intro = Enter the verification code Apple sent to your trusted devices.
-
-installer-accounts-icloud-code-label = Verification code
-
-installer-accounts-icloud-wait-heading = Connecting iCloud Drive…
-
-installer-accounts-icloud-wait-intro = Waiting for Apple to confirm your sign-in.
-
-installer-accounts-icloud-required = Fill in this field to continue.
-
-installer-accounts-icloud-login-invalid = Enter your Apple Account email address or phone number.
-
-installer-accounts-icloud-credentials-invalid = Your Apple Account or password was not accepted. Try again.
-
-installer-accounts-icloud-code-invalid = That code was not accepted. Enter a new code from your trusted device.
-
-installer-accounts-icloud-web-access = Allow access to iCloud data on the web in iCloud settings on your trusted device, then try again.
-
-installer-accounts-icloud-locked = Your Apple Account needs attention. Review it at account.apple.com, then try again.
-
-installer-accounts-icloud-offline = Apple could not be reached. Check your connection and try again.
 
 installer-media-retry = Try again
 
@@ -1907,8 +1855,6 @@ installer-media-source-failed = Your selected files could not be verified. The d
 
 installer-media-plan-changed = Your image or drive selection changed during review. Review the plan again before writing.
 
-installer-accounts-rclone-source-reconnect = This saved connection could not be used. Sign in again to connect it to Tilo; your original connection stays unchanged.
-
 imager-setup-account-consumer-unavailable = This Tilo release cannot use your saved connections. Choose a newer release, or go back and leave these connections out.
 
 installer-source-unavailable = Your prepared files are no longer available. Review them again to prepare the latest version. Your identity and connected accounts are kept.
@@ -1992,8 +1938,6 @@ installer-media-phase-ciphertext = Delivering the encrypted files
 installer-media-progress-bytes = { $size } processed
 
 installer-media-progress-bytes-total = { $size } of { $total } processed
-
-installer-accounts-goa-source-reconnect = This saved online account could not be brought over. Sign in again to connect it to Tilo.
 
 installer-migration-grant-failed = Allow access to the home folder shown in the request, then try again. Your setup choices are kept.
 
@@ -2259,7 +2203,6 @@ installer-online-title = Online accounts
 installer-online-private = Sign in privately on this computer. Windows suggestions contain account details, not sign-in tokens.
 installer-online-google = Google
 installer-online-microsoft = Microsoft
-installer-online-dropbox = Dropbox
 installer-online-nextcloud = Nextcloud
 installer-online-use-hint = Review suggested account
 installer-online-email = Email (optional)
@@ -2286,7 +2229,7 @@ installer-online-cancel = Cancel sign-in
 installer-online-skip = Continue without another sign-in
 installer-online-invalid = Check the server address and select at least one supported service, then try again.
 installer-online-previous = Suggestions from Windows, not connected
-installer-online-source-onedrive = Found in OneDrive and suggested for Files. Review permissions before connecting.
+installer-online-source-onedrive = Found in OneDrive. Review permissions before connecting.
 installer-online-source-outlook = Found in Outlook and suggested for Mail. Review permissions before connecting.
 installer-online-source-google-web = Found as a Google web account. Choose which services to connect.
 installer-online-manual = Connect an account

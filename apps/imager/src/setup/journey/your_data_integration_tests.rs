@@ -835,7 +835,7 @@ tilo_test_env::scenario! {
             .iter()
             .find(|group| group.id == format!("account|{person_id}"))
             .expect("the person's exact account row");
-        assert_eq!(person_group.items.len(), 3, "Files, Mail and Calendar");
+        assert_eq!(person_group.items.len(), 2, "Mail and Calendar");
         assert!(
             person_group
                 .items
@@ -936,7 +936,7 @@ tilo_test_env::scenario! {
         assert_eq!(selected[0].identity, "person@example.test");
         assert_eq!(
             selected[0].services,
-            vec![Service::Files, Service::Mail],
+            vec![Service::Mail],
             "Calendar was turned off"
         );
 
@@ -962,7 +962,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0].services, vec![Service::Files, Service::Mail]);
+        assert_eq!(receipts[0].services, vec![Service::Mail]);
         assert!(receipts[0].pending);
         assert!(
             !serde_json::to_string(&receipts)
@@ -982,10 +982,6 @@ tilo_test_env::scenario! {
                     .get("email")
                     .and_then(serde_json::Value::as_str)
                     != Some("other@example.test")
-        }));
-        assert!(after.all().iter().any(|account| {
-            account.type_id.as_str() == ::accounts::cloud_types::GOOGLE_DRIVE
-                && account.config["source_goa_identity"] == "person@example.test"
         }));
         let mail = after
             .all()

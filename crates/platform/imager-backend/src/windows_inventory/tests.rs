@@ -63,10 +63,6 @@ tilo_test_env::scenario! {
             root.join("mystery.bin").exists(),
             "exclusion never deletes originals"
         );
-        let accounts = crate::account_transfer::discover_windows_sources(&inventory);
-        assert_eq!(accounts.candidates.len(), 1);
-        assert!(!accounts.candidates[0].can_import_credentials);
-        assert!(accounts.candidates[0].needs_sign_in);
     }
 
     phase steam_external_library_is_only_a_suggestion_and_requires_its_own_grant;
