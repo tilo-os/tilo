@@ -227,6 +227,8 @@ pub struct State {
     pub(crate) space: Space<Window>,
     /// Toplevels a client created that have not shown a buffer yet.
     unmapped: Vec<Window>,
+    /// The person's keys typed for a window that has not shown yet ([`crate::awaited_keys`]).
+    pub(crate) awaited_keys: crate::awaited_keys::AwaitedKeys,
     pub(crate) popups: PopupManager,
     /// The surfaces that place themselves on a layer of an output (`zwlr_layer_shell_v1`).
     pub(crate) layers: crate::layer::Layers,
@@ -440,6 +442,7 @@ impl State {
             keyboard: None,
             space: Space::default(),
             unmapped: Vec::new(),
+            awaited_keys: crate::awaited_keys::AwaitedKeys::default(),
             popups: PopupManager::default(),
             layers: crate::layer::Layers::new(display),
             policy,
@@ -1058,7 +1061,9 @@ impl State {
                 // The person's own keyboard, kept so a seat's next event puts their held keys aside
                 // and gives them back.
                 self.seats.hold_person_key(keycode, pressed);
-                self.key(keycode, pressed, serial, time, at);
+                if !self.await_window_with_key(keycode, pressed, at) {
+                    self.key(keycode, pressed, serial, time, at);
+                }
             }
             InputEvent::TouchDown { slot, x, y } => {
                 self.touch_down(slot, Point::from((x, y)), serial, time);
@@ -1725,6 +1730,8 @@ impl State {
             self.focus_window(window, SERIAL_COUNTER.next_serial());
         }
         self.rearrange();
+        // The keys typed for it reach it now that it shows and has the keyboard.
+        self.route_awaited_keys();
     }
 
     /// Ask the policy to lay the windows out again and apply its answer,
@@ -1892,6 +1899,8 @@ impl State {
         self.unmapped.retain(IsAlive::alive);
         self.sync_toplevels();
         self.layers.refresh();
+        // A launch that gave up its window lets the keys typed for it go where keys go.
+        self.route_awaited_keys();
     }
 }
 

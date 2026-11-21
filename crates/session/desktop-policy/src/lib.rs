@@ -1662,6 +1662,29 @@ impl DesktopPolicy {
         Some(window)
     }
 
+    /// Whether the place the person is at waits for the window a launch brings, none having come:
+    /// the tab a launch holds is in front of them, or the shell is still making the tab of one they
+    /// started in front of them. Their keys are for that window.
+    #[must_use]
+    pub fn awaits_launched_window(&self) -> bool {
+        let active = self.handle.read(|tree| {
+            let route = tilo_desktop_surface::navigation::active_route(tree)?;
+            Some((route.tab, window_of(tree, route.tab).is_some()))
+        });
+        if active.is_some_and(|(_, shows_window)| shows_window) {
+            return false;
+        }
+        let held = self.held.borrow();
+        held.values().flatten().any(|held| {
+            !held.background
+                && match (held.tab, active) {
+                    (Some(tab), Some((front, _))) => tab == front,
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                }
+        })
+    }
+
     fn newest_dialog_of(&self, window: u64) -> Option<u64> {
         self.floating
             .iter()

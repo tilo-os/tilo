@@ -1521,3 +1521,42 @@ fn the_windows_scrolled_off_the_display_are_not_in_view() {
     }
     assert_eq!(in_view.len() + off.len(), layout.shown.len(), "{layout:?}");
 }
+
+#[test]
+fn the_keyboard_waits_for_the_window_a_launch_in_front_of_the_person_brings() {
+    let (mut driver, mut policy) = mount();
+    // An empty desktop: the launch the person starts is where their keys go, before the shell
+    // has even made its tab.
+    assert!(!policy.awaits_launched_window(), "nothing is on its way");
+    assert!(policy.hold_open("so.tilo.notes", false));
+    assert!(
+        policy.awaits_launched_window(),
+        "the keys wait for the window of the launch"
+    );
+    frames(&mut driver, 2);
+    assert!(
+        policy.awaits_launched_window(),
+        "the place the launch holds is in front of the person"
+    );
+    map(&mut driver, &mut policy, 4, "so.tilo.notes");
+    assert!(
+        !policy.awaits_launched_window(),
+        "the window came: keys go to it"
+    );
+
+    // A launch in the background brings nothing to where the person is.
+    assert!(policy.hold_open("org.gnome.Terminal", true));
+    frames(&mut driver, 2);
+    assert!(!policy.awaits_launched_window());
+    map(&mut driver, &mut policy, 5, "org.gnome.Terminal");
+
+    // One started in front of a window: the place it holds comes forward, and the keys wait
+    // for its window there.
+    assert!(policy.hold_open("so.tilo.files", false));
+    frames(&mut driver, 2);
+    assert!(policy.awaits_launched_window());
+    // It started nothing: its place goes, and the keys with it.
+    policy.release_held("so.tilo.files");
+    frames(&mut driver, 2);
+    assert!(!policy.awaits_launched_window());
+}

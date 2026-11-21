@@ -193,6 +193,10 @@ pub struct Seen {
     pub buttons: Vec<(u32, bool)>,
     pub keyboard_focused: bool,
     pub keys: Vec<(u32, bool)>,
+    /// The modifiers the keyboard last said are held, as their XKB mask.
+    pub modifiers_held: u32,
+    /// Each key pressed, with the modifiers held as it went down.
+    pub presses: Vec<(u32, u32)>,
     /// The keymap the keyboard sent, as XKB text: the client's own answer to which characters its
     /// keys type.
     pub keymap: Option<String>,
@@ -1370,8 +1374,14 @@ impl Dispatch<WlKeyboard, ()> for Seen {
             wl_keyboard::Event::Enter { .. } => seen.keyboard_focused = true,
             wl_keyboard::Event::Leave { .. } => seen.keyboard_focused = false,
             wl_keyboard::Event::Key { key, state, .. } => {
-                seen.keys
-                    .push((key, state == WEnum::Value(wl_keyboard::KeyState::Pressed)));
+                let pressed = state == WEnum::Value(wl_keyboard::KeyState::Pressed);
+                seen.keys.push((key, pressed));
+                if pressed {
+                    seen.presses.push((key, seen.modifiers_held));
+                }
+            }
+            wl_keyboard::Event::Modifiers { mods_depressed, .. } => {
+                seen.modifiers_held = mods_depressed;
             }
             wl_keyboard::Event::Keymap { fd, size, .. } => {
                 let mut text = Vec::new();

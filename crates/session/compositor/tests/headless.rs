@@ -13,6 +13,8 @@
 
 #[path = "headless/assists.rs"]
 mod assists;
+#[path = "headless/awaited_keys.rs"]
+mod awaited_keys;
 #[path = "headless/display_cut.rs"]
 mod display_cut;
 #[path = "headless/framing.rs"]

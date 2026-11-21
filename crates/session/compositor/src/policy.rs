@@ -165,6 +165,13 @@ pub trait WindowPolicy {
         true
     }
 
+    /// Whether the keyboard waits for a window that has not shown yet: the person looks at the
+    /// place of one on its way to them, which will take the keyboard as it shows. Their keys wait
+    /// for it in order ([`crate::awaited_keys`]) until this says no more. By default nothing waits.
+    fn keyboard_awaits_window(&mut self) -> bool {
+        false
+    }
+
     /// Whether pressing a pointer button on a window focuses and raises it.
     fn focus_on_click(&mut self, _window: &WindowInfo) -> bool {
         true

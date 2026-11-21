@@ -1282,6 +1282,16 @@ impl WindowPolicy for StripPolicy {
         self.desktop.borrow().policy.focused()
     }
 
+    /// The keyboard waits for the window in front of the person while it has not shown: one the
+    /// shell placed that has drawn nothing yet, or the one a launch is bringing to the place.
+    fn keyboard_awaits_window(&mut self) -> bool {
+        let desktop = self.desktop.borrow();
+        match desktop.policy.focused() {
+            Some(window) => self.pending.contains(&window),
+            None => desktop.policy.awaits_launched_window(),
+        }
+    }
+
     fn activate(&mut self, window: &WindowInfo, fresh: bool) -> bool {
         let mut desktop = self.desktop.borrow_mut();
         if fresh {
