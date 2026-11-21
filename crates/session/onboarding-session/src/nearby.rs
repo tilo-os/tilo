@@ -728,7 +728,7 @@ mod tests {
             };
             assert_eq!(
                 poll_until_over(&mut pairing),
-                NearbyEvent::Failed(expected.clone())
+                NearbyEvent::Failed(expected)
             );
             assert_eq!(read_progress(&fixture.status), NearbyProgress::Starting);
         }
@@ -898,7 +898,7 @@ mod tests {
         let over = pairing.deadline;
         let event = poll_until_over_at(&mut pairing, Some(over));
         let expected = NearbyFailure::new(NearbyCause::TimedOut);
-        assert_eq!(event, NearbyEvent::Failed(expected.clone()));
+        assert_eq!(event, NearbyEvent::Failed(expected));
         assert!(pairing.child.is_none(), "the stuck helper was stopped");
         assert_eq!(
             read_progress(&fixture.status),
