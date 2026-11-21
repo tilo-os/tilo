@@ -43,6 +43,11 @@ pub struct Device<'a> {
 /// the workspaces the device joined. `configure` adjusts the service's configuration beyond
 /// what every device's service shares.
 ///
+/// The service's member copies act as `device`, and that is set here rather than left to the
+/// embedder: a device that holds a member copy syncs it with the device serving it, and a
+/// service opened without its device keeps the copy and never syncs it. Every device's service
+/// is opened through here, so none of them can diverge.
+///
 /// # Errors
 /// The device cannot certify the service's own key, or the service's store cannot be opened.
 pub async fn open(
@@ -54,13 +59,14 @@ pub async fn open(
     configure: impl FnOnce(ServiceConfig) -> ServiceConfig,
 ) -> Result<WorkspaceService, ServiceError> {
     let identity = ServiceIdentity::beside_device(&store, device.cert, &**device.signer).await?;
-    let config = configure(ServiceConfig {
-        member: Some(Arc::new(MemberDevice {
-            cert: device.cert.clone(),
-            signer: Arc::clone(device.signer),
-        })),
-        ..ServiceConfig::new(store, tilo_server_protocol::WorkSetting::none())
-    });
+    let mut config = configure(ServiceConfig::new(
+        store,
+        tilo_server_protocol::WorkSetting::none(),
+    ));
+    config.member = Some(Arc::new(MemberDevice {
+        cert: device.cert.clone(),
+        signer: Arc::clone(device.signer),
+    }));
     if governs {
         WorkspaceService::open(config, identity, endpoint, Some(groups)).await
     } else {

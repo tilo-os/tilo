@@ -504,12 +504,6 @@ impl ServiceWorkspaces {
         .await
         .unwrap();
         let service = Arc::new(service);
-        service.workspaces().set_member_device(Arc::new(
-            tilo_workspace_service::workspaces::MemberDevice {
-                cert: cert.clone(),
-                signer: Arc::clone(&identity.signer),
-            },
-        ));
         let workspaces = Self::new(Arc::clone(&service), identity, endpoint, BTreeSet::new());
         service
             .hold_own_workspace(&workspace.to_string(), "Home", &cert)
