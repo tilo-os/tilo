@@ -490,6 +490,10 @@ impl Workspaces {
     ///
     /// The answer or the address does not hold up, or the copy could not be
     /// kept here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one hold: the copy a workstation's disk kept, and the one taken in here"
+    )]
     pub(super) async fn hold_member(
         &self,
         device: &MemberDevice,
@@ -521,6 +525,12 @@ impl Workspaces {
             // workspace as a member copy of it from now on: what it reads and writes reaches
             // the workspace, and the copy it kept answers until then.
             let copied = governed.member.is_none();
+            // The device serving the workspace, as the copy holds it now: a copy held again by
+            // the same device keeps its link.
+            let serving_changed = governed
+                .member
+                .as_ref()
+                .is_none_or(|member| member.addr != address.endpoint_addr);
             let mut peer = governed.peer().clone();
             take_governance(&mut peer, bootstrap, now)?;
             *governed.peer.lock() = peer;
@@ -553,9 +563,12 @@ impl Workspaces {
                      holds it as a member copy of it from now on"
                 );
             }
-            // Synced again however often it is held: a copy held once more takes in what the
-            // serving device sends under its new enrollment.
-            self.serve_member(&held, device).await?;
+            // A copy held again takes in what the new answer carries, and is synced again only
+            // when the device serving it changed or its link is down: a live link to the same
+            // device is kept, and the frames it is carrying are not thrown away under it.
+            if serving_changed || !self.member_link_up(workspace) {
+                self.serve_member(&held, device).await?;
+            }
         } else {
             let path = self.inner.dir.join(format!("{name}.workspace"));
             let keys = self.device_keys();
@@ -1132,6 +1145,49 @@ impl Workspaces {
             .lock()
             .ok()
             .and_then(|links| links.get(&workspace).cloned())
+    }
+
+    /// Whether a link to the device serving `workspace` is up here: the copy's dialling task is
+    /// still running, so a copy held again keeps it rather than replacing it.
+    fn member_link_up(&self, workspace: WorkspaceId) -> bool {
+        self.inner
+            .member
+            .syncing
+            .lock()
+            .ok()
+            .and_then(|all| {
+                all.get(&workspace)
+                    .map(|[dialling, _]| !dialling.is_finished())
+            })
+            .unwrap_or(false)
+    }
+
+    /// What syncs `workspace`'s member copy, as the ids of its dialling and following tasks: a
+    /// test tells a link it kept from one it dialled again by them.
+    #[cfg(test)]
+    pub(super) fn member_syncing(&self, workspace: WorkspaceId) -> Option<[tokio::task::Id; 2]> {
+        self.inner
+            .member
+            .syncing
+            .lock()
+            .ok()?
+            .get(&workspace)
+            .map(|tasks| tasks.each_ref().map(tokio::task::AbortHandle::id))
+    }
+
+    /// The address of the device serving `workspace`, as its member copy here holds it: what a
+    /// test holding the copy again presents.
+    #[cfg(test)]
+    pub(super) async fn member_hint(&self, workspace: WorkspaceId) -> Option<TransportHint> {
+        let state = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace.to_string())
+            .cloned()?;
+        let governed = state.lock().await;
+        governed.member.as_ref().map(|member| member.hint.clone())
     }
 
     /// Open every workspace recorded under `dir`, bind each to the service,

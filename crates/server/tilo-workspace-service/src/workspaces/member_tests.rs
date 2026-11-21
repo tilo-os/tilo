@@ -210,6 +210,67 @@ async fn a_member_copy_is_held_as_one_when_the_service_opens_again() {
 }
 
 #[tokio::test]
+async fn a_member_copy_held_again_with_its_link_up_keeps_that_link() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Held", 17).await;
+    let workspace = created.workspace.clone();
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(&workspace).expect("a workspace id");
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    copies
+        .wait_member_link(workspace_id)
+        .await
+        .expect("the member copy's link is up");
+    let linked = copies
+        .member_syncing(workspace_id)
+        .expect("the copy is synced");
+    let hint = copies
+        .member_hint(workspace_id)
+        .await
+        .expect("the copy names the device serving it");
+
+    // The serving device renames the workspace, and this copy is held again by the same device
+    // before it takes the name in: holding a copy again never drops the link it has.
+    serving
+        .workspaces()
+        .rename(&workspace, "Held still")
+        .await
+        .expect("the serving device renames its workspace");
+    copies
+        .hold_as_member(workspace_id, &hint)
+        .await
+        .expect("the copy is held again");
+    assert_eq!(
+        copies
+            .member_syncing(workspace_id)
+            .expect("the copy is synced"),
+        linked,
+        "the copy kept the link it had to the device serving it"
+    );
+
+    // What the serving device changed in between still reaches the copy.
+    let workspaces = copies.clone();
+    let renamed = workspace.clone();
+    tilo_test_env::within("the copy reads the name sent in between", async move {
+        loop {
+            let renamed = workspaces.state(&renamed).await.is_some_and(|state| {
+                state.governance().workspace_name().as_deref() == Some("Held still")
+            });
+            if renamed {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_members_write_reaches_the_device_serving_the_workspace() {
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
