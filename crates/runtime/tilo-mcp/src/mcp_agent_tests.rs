@@ -2136,7 +2136,7 @@ tilo_test_env::scenario! {
         let (app, _, _) = structured_read(&host, "notes", None);
         assert_eq!(app["kind"], "app", "{app:#}");
         let surface = app["surface"].as_str().expect("an app answers its surface");
-        assert!(surface.contains("notes.page"), "{surface}");
+        assert!(surface.contains("tl.so.tilo.notes."), "{surface}");
         // A child's path is a ref the other tools take: it reads that note.
         let (child, _, _) = structured_read(&host, "notes/Todo", None);
         assert_eq!(child["fields"]["title"], "Todo", "{child:#}");

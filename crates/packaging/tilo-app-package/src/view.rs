@@ -614,7 +614,7 @@ mod tests {
             for (app, german) in [
                 ("file-explorer", "Dateien"),
                 ("settings", "Einstellungen"),
-                ("notes", "Notizen"),
+                ("calendar", "Kalender"),
             ] {
                 let manifest = read_manifest(&repo().join("apps").join(app).join("tilo-app.toml"))
                     .unwrap_or_else(|e| panic!("{app}: {e}"));

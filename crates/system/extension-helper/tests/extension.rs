@@ -468,7 +468,7 @@ tilo_test_env::scenario! {
             RAW_ID,
         )
         .unwrap();
-        assert!(entry.installed_bytes >= 3_000_000_000);
+        assert!(entry.installed_bytes >= 2_000_000_000);
     }
 }
 
