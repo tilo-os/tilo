@@ -27,7 +27,7 @@ The target must already be a regular file with the reserved 64 KiB tail.
 The tool opens it without following links, validates the open handle, writes
 the production secret-free profile and verifies the complete block by reading
 it back through that same handle. It cannot create a target or accept a block
-device. The existing `embed-profile` Imager example delegates to the same CLI.
+device.
 
 `cargo test --locked --manifest-path tools/imager-profile/Cargo.toml` checks
 the shared model and writes a temporary image consumed by the real live-media
