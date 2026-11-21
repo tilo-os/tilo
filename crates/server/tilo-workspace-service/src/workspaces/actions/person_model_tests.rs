@@ -301,6 +301,35 @@ async fn ask_as(
     }
 }
 
+/// The member `cy` of another workspace links a provider of its own there and chooses its model
+/// for requests.
+async fn another_workspace_links_its_own(
+    workspaces: &Workspaces,
+    host: &ServiceWorkspaceActions,
+    elsewhere_id: WorkspaceId,
+    cy: &DeviceCert,
+) {
+    let theirs = link(
+        host,
+        elsewhere_id,
+        cy,
+        ("Cy's own", "https://models.example.com/v1", BO_KEY),
+    )
+    .await;
+    workspaces
+        .offer_models_for(&elsewhere_id.to_string(), &theirs, &["open-model"])
+        .unwrap();
+    ask_own(
+        host,
+        elsewhere_id,
+        cy,
+        person_models::SET_ASSIGNMENT,
+        json!({"kind": "request", "provider": theirs, "model": "open-model"}),
+    )
+    .await
+    .expect("the other workspace chooses its model");
+}
+
 /// The members of one workspace link a provider between them, as their own
 /// devices, through the actions Settings asks with: the one model it linked
 /// answers work done in the workspace, asked with the one key it keeps, and
@@ -354,25 +383,7 @@ async fn a_workspace_is_answered_by_the_one_model_it_linked_and_another_by_its_o
     assert_eq!(chosen["assignments"][0]["model"], json!("gemini-main"));
 
     // Another workspace's member links its own.
-    let theirs = link(
-        &host,
-        elsewhere_id,
-        &cy,
-        ("Cy's own", "https://models.example.com/v1", BO_KEY),
-    )
-    .await;
-    workspaces
-        .offer_models_for(&elsewhere_id.to_string(), &theirs, &["open-model"])
-        .unwrap();
-    ask_own(
-        &host,
-        elsewhere_id,
-        &cy,
-        person_models::SET_ASSIGNMENT,
-        json!({"kind": "request", "provider": theirs, "model": "open-model"}),
-    )
-    .await
-    .expect("the other workspace chooses its model");
+    another_workspace_links_its_own(workspaces, &host, elsewhere_id, &cy).await;
 
     // The other member of the one workspace reads what it keeps, and one
     // model answers work there for both.
@@ -380,7 +391,11 @@ async fn a_workspace_is_answered_by_the_one_model_it_linked_and_another_by_its_o
         .await
         .unwrap();
     assert_eq!(his["providers"][0]["id"], json!(provider), "{his}");
-    assert_eq!(his["assignments"][0]["model"], json!("gemini-main"), "{his}");
+    assert_eq!(
+        his["assignments"][0]["model"],
+        json!("gemini-main"),
+        "{his}"
+    );
     let answered = workspaces
         .workspace_model(workspace_id, Interaction::Request)
         .answer(&asking("Good morning"), soon(), &mut |_| {})
@@ -422,6 +437,93 @@ async fn a_workspace_is_answered_by_the_one_model_it_linked_and_another_by_its_o
     assert_eq!(scripted.asked().len(), 2);
 }
 
+/// Her yes to `agent` replaces the key of her `provider`, and still no answer carries a key.
+async fn her_yes_replaces_the_key(
+    workspaces: &Workspaces,
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    ada: &DeviceCert,
+    agent: &Caller,
+    provider: &str,
+) {
+    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
+    workspaces.ask_people(allowing.clone());
+    let replaced = ask_as(
+        host,
+        workspace_id,
+        ada,
+        agent,
+        (
+            person_models::SET_KEY,
+            json!({"provider": provider, "key": REPLACED_KEY}),
+        ),
+    )
+    .await
+    .expect("she allowed the change");
+    assert_eq!(replaced["configured"], json!(true), "{replaced}");
+    assert!(!replaced.to_string().contains(REPLACED_KEY));
+    assert_eq!(allowing.count(), 1, "one question for one change");
+}
+
+/// A member of another workspace and a device of nobody (`strangers`), a bare turn, a local agent
+/// and an app are answered nothing by `ada`'s store: no listing, no key either way, and none of
+/// the `changes`.
+async fn nobody_else_is_answered(
+    host: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    ada: &DeviceCert,
+    strangers: [&DeviceCert; 2],
+    changes: &[(&'static str, Value)],
+) {
+    let person = hex::encode(ada.user_public_key);
+    let nobodies = [
+        Caller::agent_turn(
+            "helper",
+            person.clone(),
+            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
+        ),
+        Caller::local_agent("helper"),
+        Caller::local_app("so.tilo.chat").acting_for(person),
+    ];
+    for nobody in &nobodies {
+        for asking in [
+            (person_models::LIST, json!({})),
+            (
+                person_models::ASK,
+                serde_json::to_value(asking("Spend her key")).unwrap(),
+            ),
+        ]
+        .into_iter()
+        .chain(changes.iter().cloned())
+        {
+            let verb = asking.0;
+            let refused = ask_as(host, workspace_id, ada, nobody, asking).await;
+            assert!(
+                matches!(refused, Err(ActionCallError::UnknownAction)),
+                "{verb} as {:?}: {refused:?}",
+                nobody.acting()
+            );
+        }
+    }
+    let [other_member, nobodys_device] = strangers;
+    for (who, device) in [
+        ("a member of another workspace", other_member),
+        ("a device of nobody", nobodys_device),
+    ] {
+        for asking in [(person_models::LIST, json!({}))]
+            .into_iter()
+            .chain(changes.iter().cloned())
+        {
+            let verb = asking.0;
+            let refused = ask_as(host, workspace_id, device, &caller(device), asking).await;
+            assert!(
+                matches!(refused, Err(ActionCallError::UnknownAction)),
+                "{who}, {verb}: {refused:?}"
+            );
+        }
+    }
+}
+
 /// An agent a member's device handed its session to reads the workspace's
 /// providers, and never a key: what it reads back says only that one is
 /// kept. Its changes ask that member first, and are made only when they
@@ -439,13 +541,7 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
     // A provider on this machine that takes the key it holds and the one
     // her agent would keep in its place.
     let (stand_in, endpoint) = stand_in(&[ADA_KEY, REPLACED_KEY]);
-    let provider = link(
-        &host,
-        workspace_id,
-        &ada,
-        ("Stand-in", &endpoint, ADA_KEY),
-    )
-    .await;
+    let provider = link(&host, workspace_id, &ada, ("Stand-in", &endpoint, ADA_KEY)).await;
     workspaces
         .offer_models_for(&workspace_id.to_string(), &provider, &["gemini-main"])
         .unwrap();
@@ -473,10 +569,20 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
     // The agent her own computer hands its session to reads the listing,
     // which says a key is kept and carries none.
     let agent = caller(&ada).delegated_to("helper");
-    let listed = ask_as(&host, workspace_id, &ada, &agent, (person_models::LIST, json!({})))
-        .await
-        .unwrap();
-    assert_eq!(listed["providers"][0]["configured"], json!(true), "{listed}");
+    let listed = ask_as(
+        &host,
+        workspace_id,
+        &ada,
+        &agent,
+        (person_models::LIST, json!({})),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed["providers"][0]["configured"],
+        json!(true),
+        "{listed}"
+    );
     assert!(!listed.to_string().contains(ADA_KEY), "{listed}");
 
     // Every change it would make asks her first: unanswered none is made,
@@ -502,77 +608,20 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
     assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
     assert_eq!(hers["assignments"], Value::Null, "nothing changed");
 
-    // Her yes replaces the key, and still no answer carries one.
+    // Her yes replaces the key, and the provider is asked about the new one once.
     stand_in.drain_requests();
-    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    workspaces.ask_people(allowing.clone());
-    let replaced = ask_as(
-        &host,
-        workspace_id,
-        &ada,
-        &agent,
-        (
-            person_models::SET_KEY,
-            json!({"provider": provider, "key": REPLACED_KEY}),
-        ),
-    )
-    .await
-    .expect("she allowed the change");
-    assert_eq!(replaced["configured"], json!(true), "{replaced}");
-    assert!(!replaced.to_string().contains(REPLACED_KEY));
-    assert_eq!(allowing.count(), 1, "one question for one change");
+    her_yes_replaces_the_key(workspaces, &host, workspace_id, &ada, &agent, &provider).await;
     let asked = stand_in.drain_requests();
-    assert_eq!(asked.len(), 1, "the provider is asked about the new key once");
+    assert_eq!(
+        asked.len(),
+        1,
+        "the provider is asked about the new key once"
+    );
     assert_eq!(
         asked[0].header("authorization"),
         Some(format!("Bearer {REPLACED_KEY}").as_str())
     );
-
-    // A member of another workspace, a bare turn, a local agent and an app
-    // are answered nothing: no listing, no key either way.
-    let person = hex::encode(ada.user_public_key);
-    let nobodies = [
-        Caller::agent_turn(
-            "helper",
-            person.clone(),
-            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-        ),
-        Caller::local_agent("helper"),
-        Caller::local_app("so.tilo.chat").acting_for(person),
-    ];
-    for nobody in &nobodies {
-        for asking in [
-            (person_models::LIST, json!({})),
-            (
-                person_models::ASK,
-                serde_json::to_value(asking("Spend her key")).unwrap(),
-            ),
-        ]
-        .into_iter()
-        .chain(changes())
-        {
-            let verb = asking.0;
-            let refused = ask_as(&host, workspace_id, &ada, nobody, asking).await;
-            assert!(
-                matches!(refused, Err(ActionCallError::UnknownAction)),
-                "{verb} as {:?}: {refused:?}",
-                nobody.acting()
-            );
-        }
-    }
-    for (who, device) in [
-        ("a member of another workspace", &cy),
-        ("a device of nobody", &stranger),
-    ] {
-        for asking in [(person_models::LIST, json!({}))].into_iter().chain(changes()) {
-            let verb = asking.0;
-            let refused = ask_as(&host, workspace_id, device, &caller(device), asking).await;
-            assert!(
-                matches!(refused, Err(ActionCallError::UnknownAction)),
-                "{who}, {verb}: {refused:?}"
-            );
-        }
-    }
+    nobody_else_is_answered(&host, workspace_id, &ada, [&cy, &stranger], &changes()).await;
 
     // The workspace's key is still the one its model is asked with.
     let scripted = ScriptedProvider::answering([Reply::text("done")]);
@@ -590,10 +639,7 @@ async fn a_handed_agent_reads_the_workspaces_listing_and_its_key_changes_ask() {
         .answer(&asking("Do it"), soon(), &mut |_| {})
         .await
         .unwrap();
-    assert_eq!(
-        scripted.asked()[0].key.as_deref(),
-        Some(REPLACED_KEY)
-    );
+    assert_eq!(scripted.asked()[0].key.as_deref(), Some(REPLACED_KEY));
     server.shutdown().await;
 }
 
@@ -663,7 +709,11 @@ async fn a_page_asks_the_workspaces_model_through_its_host() {
     assert!(
         matches!(his.message.content.as_slice(), [Content::Text { text }] if text == "from the server too")
     );
-    assert_eq!(scripted.asked().len(), 2, "the workspace's one model answers");
+    assert_eq!(
+        scripted.asked().len(),
+        2,
+        "the workspace's one model answers"
+    );
 
     // A page in another workspace is answered by none.
     let theirs = ask_own(&host, elsewhere_id, &cy, person_models::ASK, turn)
@@ -671,7 +721,11 @@ async fn a_page_asks_the_workspaces_model_through_its_host() {
         .unwrap();
     let theirs: Result<ModelResponse, ModelError> = serde_json::from_value(theirs).unwrap();
     assert_eq!(theirs.unwrap_err().kind, ErrorKind::NoProvider);
-    assert_eq!(scripted.asked().len(), 2, "no other workspace's model answers");
+    assert_eq!(
+        scripted.asked().len(),
+        2,
+        "no other workspace's model answers"
+    );
 }
 
 /// A page's ask is answered as the model writes it: the server admits it at
@@ -860,7 +914,9 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
     )
     .await;
     assert_eq!(
-        asked_with(&workspaces, workspace_id, &scripted).await.as_deref(),
+        asked_with(&workspaces, workspace_id, &scripted)
+            .await
+            .as_deref(),
         Some(KEPT_KEY)
     );
     let mut said = Vec::new();
@@ -905,7 +961,9 @@ async fn a_key_the_provider_does_not_take_leaves_the_kept_key_in_use() {
         assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
         said.push(hers.to_string());
         assert_eq!(
-            asked_with(&workspaces, workspace_id, &scripted).await.as_deref(),
+            asked_with(&workspaces, workspace_id, &scripted)
+                .await
+                .as_deref(),
             Some(KEPT_KEY),
             "after {which}"
         );
@@ -1038,7 +1096,9 @@ async fn a_key_the_provider_takes_is_asked_about_once_and_replaces_the_kept_key(
         Some(format!("Bearer {NEXT_KEY}").as_str())
     );
     assert_eq!(
-        asked_with(&workspaces, workspace_id, &scripted).await.as_deref(),
+        asked_with(&workspaces, workspace_id, &scripted)
+            .await
+            .as_deref(),
         Some(NEXT_KEY)
     );
 
@@ -1107,7 +1167,9 @@ async fn a_vault_items_key_the_provider_does_not_take_leaves_the_kept_key_in_use
         "Stand-in did not accept this key. The key kept before is still in use."
     );
     assert_eq!(
-        asked_with(&workspaces, workspace_id, &scripted).await.as_deref(),
+        asked_with(&workspaces, workspace_id, &scripted)
+            .await
+            .as_deref(),
         Some(KEPT_KEY)
     );
 
@@ -1116,7 +1178,9 @@ async fn a_vault_items_key_the_provider_does_not_take_leaves_the_kept_key_in_use
         .expect("an item's key the provider takes is kept");
     assert_eq!(view["configured"], json!(true), "{view}");
     assert_eq!(
-        asked_with(&workspaces, workspace_id, &scripted).await.as_deref(),
+        asked_with(&workspaces, workspace_id, &scripted)
+            .await
+            .as_deref(),
         Some(ITEM_KEY)
     );
     for key in [KEPT_KEY, ITEM_KEY, UNKNOWN_KEY] {
@@ -1180,8 +1244,7 @@ async fn the_member_and_their_own_computers_agent_ask_the_workspaces_model() {
         )
         .await
         .unwrap_or_else(|refused| panic!("{who} asks it: {refused:?}"));
-        let answered: Result<ModelResponse, ModelError> =
-            serde_json::from_value(answered).unwrap();
+        let answered: Result<ModelResponse, ModelError> = serde_json::from_value(answered).unwrap();
         assert!(
             matches!(answered.unwrap().message.content.as_slice(), [Content::Text { text }] if text == "from the workspace"),
             "{who}"

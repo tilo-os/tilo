@@ -239,7 +239,10 @@ async fn what_a_member_forgets_is_gone_and_what_is_no_change_is_refused() {
         .iter()
         .map(|(_, held)| held.text.as_str())
         .collect();
-    assert_eq!(told, texts, "a turn is told what the workspace's list holds");
+    assert_eq!(
+        told, texts,
+        "a turn is told what the workspace's list holds"
+    );
 
     for (asking, why) in [
         ((FORGET, json!({"fact": coffee})), "a fact that is gone"),
@@ -274,6 +277,140 @@ async fn what_a_member_forgets_is_gone_and_what_is_no_change_is_refused() {
     served.shutdown().await;
 }
 
+/// An agent her device handed its session to reads the list, and its changes ask her first:
+/// unanswered they change nothing, her no refuses them, and her yes makes the change as the
+/// agent's, which `bo`, another member, then reads. `his` is the list before.
+async fn her_agent_asks_her_first(
+    workspaces: &crate::workspaces::Workspaces,
+    provider: &Asking<'_>,
+    ada: &DeviceCert,
+    bo: &DeviceCert,
+    his: &Facts,
+) {
+    let agent = caller(ada).delegated_to(SCOUT);
+    let seen = provider
+        .ask_as(ada, &agent, (LIST, json!({})))
+        .await
+        .unwrap();
+    let seen: Facts = serde_json::from_value(seen).unwrap();
+    assert_eq!(&seen, his, "an agent reads the workspace's list");
+    let teaching = (
+        LEARN,
+        json!({"text": "Prefers calls after noon.", "source": "She said so"}),
+    );
+    let unasked = provider.ask_as(ada, &agent, teaching.clone()).await;
+    assert!(
+        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+        "a change with nobody to ask through: {unasked:?}"
+    );
+    let silent = Asked::answering(None);
+    workspaces.ask_people(silent.clone());
+    let unanswered = provider.ask_as(ada, &agent, teaching.clone()).await;
+    assert!(
+        matches!(
+            unanswered,
+            Err(ActionCallError::ConfirmationRequired { .. })
+        ),
+        "a change with no answer: {unanswered:?}"
+    );
+    assert_eq!(silent.count(), 1, "the change asked her");
+    let (asked_person, question) = silent.questions.lock().unwrap()[0].clone();
+    assert_eq!(
+        asked_person, ada.user_public_key,
+        "her agent, her own answer"
+    );
+    assert_eq!(question.agent_id, SCOUT);
+    assert_eq!(provider.list(ada).await, *his, "nothing changed");
+
+    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
+    workspaces.ask_people(refusing.clone());
+    let refused = provider.ask_as(ada, &agent, teaching.clone()).await;
+    assert!(matches!(refused, Err(Refused { .. })), "{refused:?}");
+    assert_eq!(refusing.count(), 1, "the change asked her");
+    assert_eq!(provider.list(ada).await, *his, "nothing changed");
+
+    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
+    workspaces.ask_people(allowing.clone());
+    let changed = provider.ask_as(ada, &agent, teaching).await.unwrap();
+    let changed: Facts = serde_json::from_value(changed).unwrap();
+    let kept = changed
+        .facts
+        .iter()
+        .find(|held| held.text == "Prefers calls after noon.")
+        .expect("the fact the agent kept");
+    assert_eq!(kept.by.as_deref(), Some(SCOUT), "the agent wrote it");
+    assert_eq!(allowing.count(), 1, "one question for one change");
+    assert_eq!(
+        provider.list(bo).await,
+        changed,
+        "the change is the workspace's"
+    );
+}
+
+/// Nobody but the workspace's members on their own sessions reaches `ada`'s list with any of
+/// `asks`: a member of another workspace and a device of nobody (`strangers`), a session that is
+/// not the caller's own, a bare agent turn with no member's device behind it, and an app.
+async fn nobody_else_reaches_it(
+    provider: &Asking<'_>,
+    ada: &DeviceCert,
+    bo: &DeviceCert,
+    strangers: [&DeviceCert; 2],
+    asks: &[(&'static str, Value)],
+) {
+    // A member of another workspace, and a device that is no member's, are
+    // nobody to it.
+    let [other_member, nobodys_device] = strangers;
+    for (who, device) in [
+        ("a member of another workspace", other_member),
+        ("a device of nobody", nobodys_device),
+    ] {
+        for asking in asks.iter().cloned() {
+            let action = asking.0;
+            let refused = provider.ask_as(device, &caller(device), asking).await;
+            assert!(
+                matches!(refused, Err(UnknownAction)),
+                "{who}, {action}: {refused:?}"
+            );
+        }
+    }
+
+    // A session that is not the caller's own: he on her session, she named
+    // on his.
+    for (device, named) in [(ada, caller(bo)), (bo, caller(ada))] {
+        for asking in asks.iter().cloned() {
+            let action = asking.0;
+            let refused = provider.ask_as(device, &named, asking).await;
+            assert!(
+                matches!(refused, Err(UnknownAction)),
+                "{action}: {refused:?}"
+            );
+        }
+    }
+
+    // A bare agent turn with no device of a member's behind it, and an app.
+    let person = hex::encode(ada.user_public_key);
+    let nobodied = [
+        Caller::agent_turn(
+            SCOUT,
+            person.clone(),
+            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
+        ),
+        Caller::local_agent(SCOUT),
+        Caller::local_app("so.tilo.chat").acting_for(person),
+    ];
+    for agent in &nobodied {
+        for asking in asks.iter().cloned() {
+            let action = asking.0;
+            let refused = provider.ask_as(ada, agent, asking).await;
+            assert!(
+                matches!(refused, Err(UnknownAction)),
+                "{action} as {:?}: {refused:?}",
+                agent.acting()
+            );
+        }
+    }
+}
+
 /// Nobody outside the workspace reaches its list. Another member reads and
 /// changes the one list; a member of another workspace, a device of nobody,
 /// a bare agent turn with no device of a member's behind it and an app are
@@ -285,10 +422,10 @@ async fn nobody_outside_the_workspace_reaches_what_was_learned() {
     let (key, owner) = governor();
     let served = test_host(dir.path(), &key, &owner).await;
     let workspaces = served.workspaces();
-    let (workspace, here, service) = governed(workspaces).await;
+    let (workspace, here_id, service) = governed(workspaces).await;
     let provider = Asking {
         server: &service,
-        workspace: here,
+        workspace: here_id,
     };
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
@@ -305,7 +442,7 @@ async fn nobody_outside_the_workspace_reaches_what_was_learned() {
         .unwrap();
     let hers = provider.ask(&ada, (LIST, json!({}))).await.unwrap();
     let fact = hers.facts.first().expect("her fact").id.clone();
-    let changes = || {
+    let asks = || {
         [
             (LIST, json!({})),
             (
@@ -344,116 +481,9 @@ async fn nobody_outside_the_workspace_reaches_what_was_learned() {
         "what one member writes, every member reads"
     );
 
-    // A member of another workspace, and a device that is no member's, are
-    // nobody to it.
-    for (who, device) in [
-        ("a member of another workspace", &cy),
-        ("a device of nobody", &stranger),
-    ] {
-        for asking in changes() {
-            let action = asking.0;
-            let refused = provider.ask_as(device, &caller(device), asking).await;
-            assert!(
-                matches!(refused, Err(UnknownAction)),
-                "{who}, {action}: {refused:?}"
-            );
-        }
-    }
+    nobody_else_reaches_it(&provider, &ada, &bo, [&cy, &stranger], &asks()).await;
 
-    // A session that is not the caller's own: he on her session, she named
-    // on his.
-    for (device, named) in [(&ada, caller(&bo)), (&bo, caller(&ada))] {
-        for asking in changes() {
-            let action = asking.0;
-            let refused = provider.ask_as(device, &named, asking).await;
-            assert!(
-                matches!(refused, Err(UnknownAction)),
-                "{action}: {refused:?}"
-            );
-        }
-    }
-
-    // A bare agent turn with no device of a member's behind it, and an app.
-    let person = hex::encode(ada.user_public_key);
-    let nobodied = [
-        Caller::agent_turn(
-            SCOUT,
-            person.clone(),
-            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-        ),
-        Caller::local_agent(SCOUT),
-        Caller::local_app("so.tilo.chat").acting_for(person),
-    ];
-    for agent in &nobodied {
-        for asking in changes() {
-            let action = asking.0;
-            let refused = provider.ask_as(&ada, agent, asking).await;
-            assert!(
-                matches!(refused, Err(UnknownAction)),
-                "{action} as {:?}: {refused:?}",
-                agent.acting()
-            );
-        }
-    }
-
-    // An agent her device handed its session to reads the list, and its
-    // changes ask her first: unanswered they change nothing, her no refuses
-    // them, and her yes makes the change as the agent's.
-    let agent = caller(&ada).delegated_to(SCOUT);
-    let seen = provider.ask_as(&ada, &agent, (LIST, json!({}))).await.unwrap();
-    let seen: Facts = serde_json::from_value(seen).unwrap();
-    assert_eq!(seen, his, "an agent reads the workspace's list");
-    let teaching = (
-        LEARN,
-        json!({"text": "Prefers calls after noon.", "source": "She said so"}),
-    );
-    let unasked = provider.ask_as(&ada, &agent, teaching.clone()).await;
-    assert!(
-        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
-        "a change with nobody to ask through: {unasked:?}"
-    );
-    let silent = Asked::answering(None);
-    workspaces.ask_people(silent.clone());
-    let unanswered = provider.ask_as(&ada, &agent, teaching.clone()).await;
-    assert!(
-        matches!(
-            unanswered,
-            Err(ActionCallError::ConfirmationRequired { .. })
-        ),
-        "a change with no answer: {unanswered:?}"
-    );
-    assert_eq!(silent.count(), 1, "the change asked her");
-    let (asked_person, question) = silent.questions.lock().unwrap()[0].clone();
-    assert_eq!(
-        asked_person, ada.user_public_key,
-        "her agent, her own answer"
-    );
-    assert_eq!(question.agent_id, SCOUT);
-    assert_eq!(provider.list(&ada).await, his, "nothing changed");
-
-    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
-    workspaces.ask_people(refusing.clone());
-    let refused = provider.ask_as(&ada, &agent, teaching.clone()).await;
-    assert!(matches!(refused, Err(Refused { .. })), "{refused:?}");
-    assert_eq!(refusing.count(), 1, "the change asked her");
-    assert_eq!(provider.list(&ada).await, his, "nothing changed");
-
-    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    workspaces.ask_people(allowing.clone());
-    let changed = provider.ask_as(&ada, &agent, teaching).await.unwrap();
-    let changed: Facts = serde_json::from_value(changed).unwrap();
-    let kept = changed
-        .facts
-        .iter()
-        .find(|held| held.text == "Prefers calls after noon.")
-        .expect("the fact the agent kept");
-    assert_eq!(kept.by.as_deref(), Some(SCOUT), "the agent wrote it");
-    assert_eq!(allowing.count(), 1, "one question for one change");
-    assert_eq!(
-        provider.list(&bo).await,
-        changed,
-        "the change is the workspace's"
-    );
+    her_agent_asks_her_first(workspaces, &provider, &ada, &bo, &his).await;
     served.shutdown().await;
 }
 
@@ -556,7 +586,10 @@ async fn what_was_learned_is_kept_for_one_workspace() {
     for workspace in [&here, &there] {
         let theirs: Vec<_> = kept
             .iter()
-            .filter(|path| path.to_string_lossy().contains(&hex::encode(workspace.as_bytes())))
+            .filter(|path| {
+                path.to_string_lossy()
+                    .contains(&hex::encode(workspace.as_bytes()))
+            })
             .collect();
         let [path] = theirs.as_slice() else {
             panic!("one resource of each workspace's own, not {theirs:?}");

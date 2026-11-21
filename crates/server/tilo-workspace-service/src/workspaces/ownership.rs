@@ -80,7 +80,10 @@ impl Workspaces {
             Some(person)
         });
         let Some(person) = named
-            .or_else(|| self.own().and_then(|own| own.owner_of(governed.workspace())))
+            .or_else(|| {
+                self.own()
+                    .and_then(|own| own.owner_of(governed.workspace()))
+            })
             .filter(|person| *person != host)
         else {
             return Ok(());
@@ -130,6 +133,10 @@ mod tests {
     /// its owner, the grant that named them is gone, and the host stays in it
     /// as an administrator. The next start changes nothing.
     #[tokio::test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "each start binds the server it drives until it shuts it down at the end"
+    )]
     async fn a_kept_workspace_is_handed_to_its_person_at_the_next_start() {
         let dir = tempfile::tempdir().unwrap();
         let host = governor();

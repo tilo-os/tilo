@@ -159,6 +159,57 @@ async fn a_sign_in_asked_by(
     .map(|_| ())
 }
 
+/// No agent signs in on its own: beginning or stopping a sign-in is put to its member first, and
+/// one no device of theirs stands behind is answered nothing.
+async fn no_agent_signs_in_on_its_own(
+    workspaces: &crate::workspaces::Workspaces,
+    actions: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    ada: &DeviceCert,
+) {
+    let assistant = super::tests::caller(ada).delegated_to("assistant");
+    for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
+        let unasked = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
+        assert!(
+            matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+            "{verb} with nobody to ask through: {unasked:?}"
+        );
+    }
+    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
+    workspaces.ask_people(refusing);
+    for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
+        let refused = a_sign_in_asked_by(actions, workspace_id, ada, &assistant, verb).await;
+        assert!(
+            matches!(refused, Err(ActionCallError::Refused { .. })),
+            "{verb} its member refused: {refused:?}"
+        );
+    }
+    let person = hex::encode(ada.user_public_key);
+    let nobodies = [
+        Caller::agent_turn(
+            "assistant",
+            person.clone(),
+            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
+        ),
+        Caller::local_agent("assistant"),
+        Caller::local_app("so.tilo.chat").acting_for(person),
+    ];
+    for nobody in &nobodies {
+        for verb in [
+            person_models::BEGIN_SIGN_IN,
+            person_models::WAIT_SIGN_IN,
+            person_models::CANCEL_SIGN_IN,
+        ] {
+            let refused = a_sign_in_asked_by(actions, workspace_id, ada, nobody, verb).await;
+            assert!(
+                matches!(refused, Err(ActionCallError::UnknownAction)),
+                "{verb} as {:?}: {refused:?}",
+                nobody.acting()
+            );
+        }
+    }
+}
+
 /// A member signs in to their `ChatGPT` plan from a page, entering a code on
 /// `OpenAI`'s page, with no key typed and no device of theirs about. The
 /// plan's models are listed and the first becomes the workspace's default; a
@@ -220,50 +271,7 @@ async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answe
         "{keyed:?}"
     );
 
-    // No agent signs in on its own: beginning or stopping a sign-in is put
-    // to its member first, and one no device of theirs stands behind it is
-    // answered nothing.
-    let assistant = super::tests::caller(&ada).delegated_to("assistant");
-    for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
-        let unasked = a_sign_in_asked_by(&actions, workspace_id, &ada, &assistant, verb).await;
-        assert!(
-            matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
-            "{verb} with nobody to ask through: {unasked:?}"
-        );
-    }
-    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
-    workspaces.ask_people(refusing);
-    for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
-        let refused = a_sign_in_asked_by(&actions, workspace_id, &ada, &assistant, verb).await;
-        assert!(
-            matches!(refused, Err(ActionCallError::Refused { .. })),
-            "{verb} its member refused: {refused:?}"
-        );
-    }
-    let person = hex::encode(ada.user_public_key);
-    let nobodies = [
-        Caller::agent_turn(
-            "assistant",
-            person.clone(),
-            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-        ),
-        Caller::local_agent("assistant"),
-        Caller::local_app("so.tilo.chat").acting_for(person),
-    ];
-    for nobody in &nobodies {
-        for verb in [
-            person_models::BEGIN_SIGN_IN,
-            person_models::WAIT_SIGN_IN,
-            person_models::CANCEL_SIGN_IN,
-        ] {
-            let refused = a_sign_in_asked_by(&actions, workspace_id, &ada, nobody, verb).await;
-            assert!(
-                matches!(refused, Err(ActionCallError::UnknownAction)),
-                "{verb} as {:?}: {refused:?}",
-                nobody.acting()
-            );
-        }
-    }
+    no_agent_signs_in_on_its_own(workspaces, &actions, workspace_id, &ada).await;
 
     // Signing out forgets the grant: the plan is not asked, and the person
     // is told to sign in again.

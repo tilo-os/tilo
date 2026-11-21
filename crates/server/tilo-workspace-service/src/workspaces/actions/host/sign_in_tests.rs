@@ -139,8 +139,8 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(&workspaces).await;
-    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.in_workspace_as(workspace_id, &device);
     let ada = caller(&device);
     let landing = Landing::stand();
@@ -235,8 +235,8 @@ async fn a_grant_renews_through_the_web_client_it_was_signed_in_with() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(&workspaces).await;
-    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.in_workspace_as(workspace_id, &device);
     let landing = Landing::stand();
     workspaces.accounts_call_back_at(landing.origin.clone());
@@ -276,8 +276,8 @@ async fn a_microsoft_sign_in_keeps_the_account_too() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(&workspaces).await;
-    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.in_workspace_as(workspace_id, &device);
     let ada = caller(&device);
     let landing = Landing::stand();
@@ -331,8 +331,8 @@ async fn a_sign_in_is_the_workspaces_and_goes_stale() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(&workspaces).await;
-    let ada_device = admit(&workspaces, &workspace, &owner, 1).await;
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let ada_device = admit(workspaces, &workspace, &owner, 1).await;
     let ada_page = actions.in_workspace_as(workspace_id, &ada_device);
     let landing = Landing::stand();
     workspaces.accounts_call_back_at(landing.origin.clone());
@@ -349,8 +349,8 @@ async fn a_sign_in_is_the_workspaces_and_goes_stale() {
     );
 
     // Another workspace's member shows none of it, and can stop none of it.
-    let (elsewhere, elsewhere_id, _) = governed(&workspaces).await;
-    let bob_device = admit(&workspaces, &elsewhere, &owner, 2).await;
+    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let bob_device = admit(workspaces, &elsewhere, &owner, 2).await;
     let bob_page = actions.in_workspace_as(elsewhere_id, &bob_device);
     let theirs: MailAccounts = answered(
         settled(bob_page.invoke(
@@ -463,8 +463,8 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     workspaces.call_private_model_addresses(true);
-    let (workspace, workspace_id, actions) = governed(&workspaces).await;
-    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.in_workspace_as(workspace_id, &device);
     let ada = caller(&device);
 
@@ -564,8 +564,8 @@ async fn a_sign_in_finished_elsewhere_reaches_every_follow_of_the_accounts() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(&workspaces).await;
-    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.in_workspace_as(workspace_id, &device);
     let ada = caller(&device);
     let landing = Landing::stand();

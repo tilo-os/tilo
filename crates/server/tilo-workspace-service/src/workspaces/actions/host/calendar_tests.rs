@@ -739,8 +739,8 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
         asked(&ada.page(), &app, target.clone(), json!({})).await,
     );
     // What the workspace in which Cy is a member keeps is none of this one's.
-    let cy_page = ada.actions.in_workspace_as(elsewhere_id, &cy);
-    let theirs = asked(&cy_page, &caller(&cy), target, json!({}))
+    let elsewhere_page = ada.actions.in_workspace_as(elsewhere_id, &cy);
+    let theirs = asked(&elsewhere_page, &caller(&cy), target, json!({}))
         .await
         .expect("his own workspace's list");
     assert_eq!(theirs["accounts"], json!([]), "{theirs}");
@@ -1453,12 +1453,15 @@ async fn the_catalogue_offers_the_workspaces_calendars_to_its_members_agents_alo
         offered(&page, &her).await.is_empty(),
         "her own page asks directly and is offered no row"
     );
-    let bob = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
-    let bobs_page = ada.actions.in_workspace_as(ada.workspace_id, &bob);
+    let stranger = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
+    let strangers_page = ada.actions.in_workspace_as(ada.workspace_id, &stranger);
     assert!(
-        offered(&bobs_page, &caller(&bob).delegated_to("assistant"))
-            .await
-            .is_empty(),
+        offered(
+            &strangers_page,
+            &caller(&stranger).delegated_to("assistant")
+        )
+        .await
+        .is_empty(),
         "an agent of a person who is no member"
     );
     let (elsewhere, _, _) = governed(&ada.workspaces).await;
