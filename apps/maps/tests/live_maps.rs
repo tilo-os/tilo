@@ -83,7 +83,7 @@ fn assert_real_imagery(tiles: &[Vec<u8>]) {
 }
 
 #[test]
-#[ignore = "requires live tile services; run the explicit maps live job"]
+#[ignore = "requires live tile services; the nightly-live-maps check runs it"]
 fn live_tiles_fetch_decode_and_cache() {
     let cache = unique_cache();
     let mut app = Harness::new(MapsApp::new_with_cache_dir(cache.clone()), VP);
@@ -142,7 +142,7 @@ fn live_tiles_fetch_decode_and_cache() {
 }
 
 #[test]
-#[ignore = "requires live tile services and a GPU; run the explicit maps live job"]
+#[ignore = "requires live tile services and a GPU; the nightly-live-maps check runs it"]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
