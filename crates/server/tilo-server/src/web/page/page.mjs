@@ -519,6 +519,9 @@ function start() {
     const kept = held && page.querySelector(held.key);
     if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) act(kept, {value: held.value});
     follow();
+    // The page says it arrived, as the entry it came from did: what a tool
+    // waits for is the same marker on either.
+    document.documentElement.dataset.arrival = 'done';
     if (!performance.getEntriesByName('tilo-page-shown').length) performance.mark('tilo-page-shown');
   };
 
