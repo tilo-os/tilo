@@ -35,7 +35,12 @@ use crate::workspaces::fixtures::{self, governor};
 use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
 use crate::workspaces::person_model::{ProviderProtocol, Spender};
 
-pub(super) const ADA: [u8; 32] = [8; 32];
+/// The workspace Ada's coding agents work in.
+pub(super) const WORKSPACE: &str = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
+/// [`WORKSPACE`] as the model store is opened for it.
+pub(super) fn workspace_of(name: &str) -> collab_types::WorkspaceId {
+    collab_types::WorkspaceId::parse(name).expect("a workspace id")
+}
 /// Ada's key at her provider. Nothing in the machine may ever hold it.
 const ADA_KEY: &str = "sk-ada-KEY-THAT-STAYS-ON-THE-SERVER";
 
@@ -140,13 +145,15 @@ impl Coding {
         let (asked, models) = (Arc::clone(&tilo_asked), workspaces.clone());
         let serves = Serves {
             model: Arc::new(move |kind| {
-                models.person_model(ADA, kind).spending_as(Spender {
-                    workspace: "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a".into(),
-                    agent: "coder".into(),
-                    name: "Coder".into(),
-                    day: "2026-11-17".into(),
-                    limit_micros,
-                })
+                models
+                    .workspace_model(workspace_of(WORKSPACE), kind)
+                    .spending_as(Spender {
+                        workspace: WORKSPACE.into(),
+                        agent: "coder".into(),
+                        name: "Coder".into(),
+                        day: "2026-11-17".into(),
+                        limit_micros,
+                    })
             }),
             tilo: Arc::new(move |request| {
                 asked.lock_recover().push(request.clone());
@@ -188,7 +195,7 @@ pub(super) async fn host_of_ada(
     let scripted = ScriptedProvider::answering(replies);
     host.workspaces().answer_models_with(scripted.clone());
     host.workspaces()
-        .link_model_for(&ADA, &ANTHROPIC, true)
+        .link_model_for(WORKSPACE, &ANTHROPIC, true)
         .unwrap();
     (host, scripted)
 }
@@ -431,7 +438,7 @@ async fn a_machine_that_cannot_serve_a_run_says_why_in_words() {
             Arc::new(Ends(Mutex::new(Some(over)))),
             Arc::new(ClaudeCode),
             Serves {
-                model: Arc::new(move |kind| models.person_model(ADA, kind)),
+                model: Arc::new(move |kind| models.workspace_model(workspace_of(WORKSPACE), kind)),
                 tilo: Arc::new(|_| None),
                 language: None,
             },

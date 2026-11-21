@@ -354,12 +354,11 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
-    let person = cert.user_public_key;
     let models = ScriptedProvider::answering([Reply::text("Looked.").costing(600_000)]);
     workspaces.answer_models_with(models.clone());
     workspaces
         .link_model_for(
-            &person,
+            &workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
@@ -402,7 +401,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
         on.day_limit_micros,
     );
     let model = workspaces
-        .person_model(person, Interaction::Task)
+        .workspace_model(WorkspaceId::parse(&workspace).unwrap(), Interaction::Task)
         .spending_as(spender);
     tokio::task::spawn_blocking(move || {
         model.say_blocking(

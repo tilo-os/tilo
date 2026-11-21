@@ -1,5 +1,5 @@
-//! A computer's apps ask the person's own model where a page asks it: on the server that keeps
-//! their workspace, with the key their vault keeps there. The way there is the session the
+//! A computer's apps ask the workspace's own model where a page asks it: on the server that keeps
+//! the workspace, with the key its vault keeps there. The way there is the session the
 //! computer holds with that server, the one its `tilo` commands use; the model gateway asks
 //! through the API that session's holder serves (`POST …/model/ask`), and the answer comes
 //! back as the model writes it. With nothing serving that API, the app is told there is no
@@ -61,7 +61,7 @@ async fn a_computers_model_asks_stream_from_its_workspaces_server_over_its_held_
     workspaces.answer_models_with(model.clone());
     workspaces
         .link_model_for(
-            &ada.verifying_key().to_bytes(),
+            &workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
@@ -75,7 +75,7 @@ async fn a_computers_model_asks_stream_from_its_workspaces_server_over_its_held_
     let holder = Holder::start(&on_server, &ada, &workspace, "Claude Code").await;
 
     let (words, answer) = ask(&holder.command(), "when is the launch?").await;
-    let answer = answer.expect("the person's model answers");
+    let answer = answer.expect("the workspace's model answers");
     assert_eq!(
         answer.message.content,
         [Content::Text {

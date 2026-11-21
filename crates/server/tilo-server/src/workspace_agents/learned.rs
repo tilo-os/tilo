@@ -123,7 +123,7 @@ pub(super) fn keeps(turn: &Turn) -> Option<[u8; 32]> {
     knows(&turn.agent, &turn.person, &conversation)
 }
 
-/// What this server keeps of what was learned about `agent`'s keeper in `workspace`, for a turn
+/// What this server keeps of what was learned in `workspace`, for a turn of `agent`
 /// `person` asked in `conversation`: none unless the turn knows it ([`knows`]).
 pub(super) async fn learned_for(
     workspaces: &Workspaces,
@@ -131,9 +131,9 @@ pub(super) async fn learned_for(
     agent: &Agent,
     (person, conversation): (&str, &Id),
 ) -> Option<Learned> {
-    let keeper = knows(agent, person, conversation)?;
+    knows(agent, person, conversation)?;
     let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
-    tokio::task::spawn_blocking(move || workspaces.learned_about(&keeper, &workspace))
+    tokio::task::spawn_blocking(move || workspaces.learned_about(&workspace))
         .await
         .ok()
         .flatten()
@@ -240,7 +240,7 @@ impl Keeping {
     /// The list as a turn reads it, from its `from`th fact.
     fn list(&self, from: usize) -> String {
         self.workspaces
-            .learned_about(&self.keeper, &self.workspace)
+            .learned_about(&self.workspace)
             .map_or_else(|| NOTHING.to_owned(), |resource| listing(&resource, from))
     }
 }

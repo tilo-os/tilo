@@ -1,13 +1,13 @@
-//! Who a person's connections are answered to on this server, and what of
-//! them an agent of theirs finds in its listing.
+//! Who a workspace's connections are answered to on this server, and what
+//! of them an agent finds in its listing.
 //!
-//! The person, on a device of theirs, adds a connection, removes one and
-//! reads them. An agent acting for them, with a device of theirs behind it,
-//! reads the list, looks at an address and reads a connection's commands
-//! again. It adds nothing and removes nothing, so no call of an agent's
-//! gives it reach it did not have. Another member, their agent, a bot and an
-//! app are told what a caller asking for something that does not exist is
-//! told, before the request is read.
+//! The services a workspace connected are its own, reached as the
+//! workspace's policy says ([`Store::CONNECTIONS`]): a member adds one,
+//! removes one and reads them as their role lets them, an agent or a key as
+//! its grants do. A command that changes something asks the agent's person
+//! first unless a grant says otherwise. A caller the workspace does not have
+//! is told what a caller asking for something that does not exist is told,
+//! before the request is read.
 //!
 //! An agent whose turn this server carries out itself, with no device of its
 //! person's on, is answered by an entry of its own ([`for_turn`]): there a
@@ -26,17 +26,18 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use super::{Asked, Publisher, Verb};
 use crate::connections::{self, Calling, Reach};
 use crate::workspaces::Workspaces;
+use crate::workspaces::workspace_stores::Store;
 
 mod for_turn;
 
-/// A person's connections, as their server publishes them.
+/// A workspace's connections, as its server publishes them.
 pub(super) const CONNECTIONS: Publisher = Publisher {
     provider: person_connections::PROVIDER,
     kind: person_connections::KIND,
 };
 
-/// What an agent does with its person's connections. Each reads: none of
-/// them adds a connection or changes what a service keeps.
+/// What an agent is offered of the workspace's connections. Each reads:
+/// none of them adds a connection or changes what a service keeps.
 const AGENT_VERBS: [Verb; 4] = [
     reads(person_connections::LIST, "List connections", Vec::new),
     reads(
@@ -68,7 +69,7 @@ fn address_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
         "address",
         ParamType::Text,
-        "The service's address, such as https://service.example/mcp. The server connects there and answers the name the service gives itself, whether it wants a sign-in, and its commands. Nothing is kept: only the person adds a connection.",
+        "The service's address, such as https://service.example/mcp. The server connects there and answers the name the service gives itself, whether it wants a sign-in, and its commands. Nothing is kept.",
     )]
 }
 
@@ -96,7 +97,7 @@ fn call_params() -> Vec<ActionParam> {
     ]
 }
 
-/// What an agent of a person's is offered of that person's connections.
+/// What an agent is offered of the workspace's connections.
 pub(super) fn agent_rows() -> Vec<CatalogueRow> {
     AGENT_VERBS
         .iter()
@@ -126,14 +127,22 @@ fn said<T: serde::Serialize>(outcome: Result<T, String>) -> Result<Value, Refuse
 }
 
 impl Workspaces {
-    /// Whether `caller` is an agent acting for a person with a device of
-    /// theirs behind it: whom that person's connections are listed for.
-    pub(super) fn connects_as_agent((workspace_id, caller, certificate): Asked<'_>) -> bool {
-        caller.acting().is_agent()
-            && Self::asking_for_person(caller, certificate, workspace_id).is_ok()
+    /// Whether `caller` is an agent the workspace's policy lets read its
+    /// connections: whom they are listed for.
+    pub(super) async fn connects_as_agent(&self, asked: Asked<'_>) -> bool {
+        asked.1.acting().is_agent()
+            && self
+                .reaching(
+                    asked,
+                    Store::CONNECTIONS,
+                    person_connections::LIST,
+                    ActionKind::Read,
+                )
+                .await
+                .is_ok()
     }
 
-    /// What this server calls for its people's connections: addresses on the
+    /// What this server calls for its workspaces' connections: addresses on the
     /// internet, and its own network too where its operator lets it call
     /// the addresses people name. Read anew for every request.
     fn connections_reach(&self) -> Reach {
@@ -141,7 +150,7 @@ impl Workspaces {
     }
 
     /// Answer what no other provider of the server's own answered: a request
-    /// for a person's connections ([`person_connections::PROVIDER`]).
+    /// for a workspace's connections ([`person_connections::PROVIDER`]).
     /// Anything else is unknown.
     pub(super) async fn connections_invoke(
         workspaces: &Self,
@@ -155,32 +164,36 @@ impl Workspaces {
             return Err(Refused::UnknownAction);
         }
         let action = target.address.action.as_str();
-        // Unknown and forbidden are the same answer, given before the
-        // request is read. `by` names the agent that asks for the person;
-        // it is empty where they ask themselves.
-        let (person, by) = match action {
-            person_connections::ADD
-            | person_connections::REMOVE
-            | person_connections::USES
-            | person_connections::BEGIN_SIGN_IN
-            | person_connections::FINISH_SIGN_IN => (
-                Self::asking_person(caller, certificate, workspace_id)?,
-                String::new(),
-            ),
+        // Decided before the request is read.
+        let effect = match action {
             person_connections::LIST
             | person_connections::LOOK
             | person_connections::REFRESH
-            | person_connections::CALL => {
-                Self::asking_for_person(caller, certificate, workspace_id)?
-            }
+            | person_connections::USES => ActionKind::Read,
+            // A command the service marks as only reading is called; any
+            // other asks the agent's person first ([`connections::call`]).
+            person_connections::CALL => ActionKind::Read,
+            person_connections::ADD
+            | person_connections::REMOVE
+            | person_connections::BEGIN_SIGN_IN
+            | person_connections::FINISH_SIGN_IN => ActionKind::Undoable,
             _ => return Err(Refused::UnknownAction),
         };
-        let calling = if caller.acting().is_person() {
+        let reach = workspaces
+            .reaching_allowed(
+                (workspace_id, caller, certificate),
+                Store::CONNECTIONS,
+                action,
+                effect,
+            )
+            .await?;
+        let by = reach.by();
+        let calling = if reach.agent.is_none() {
             Calling::Person
         } else {
             Calling::Agent(&by)
         };
-        let root = workspaces.person_settings_root(&person);
+        let root = workspaces.workspace_root(&reach.workspace.to_string());
         let reach = workspaces.connections_reach();
         let by_address = "a service is named by its address";
         let by_id = "a connection is named by its id";

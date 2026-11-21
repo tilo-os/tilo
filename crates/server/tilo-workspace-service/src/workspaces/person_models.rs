@@ -1,14 +1,14 @@
-//! A person's model providers on the host: the ready-made providers a page
-//! adds by name, the list of models the host asks a provider for with the
-//! key it keeps, and the model each kind of work runs on.
+//! A workspace's model providers on the host: the ready-made providers a
+//! page adds by name, the list of models the host asks a provider for with
+//! the key it keeps, and the model each kind of work runs on.
 //!
-//! The store is the one [`super::person_settings`] keeps: the person's own
-//! model configuration and vault under `people/<person>`. Here is what
-//! changes it for a page, and the one outbound request those changes make: a
-//! provider's own list of models, asked by the host because only it holds
-//! the key.
+//! The store is the one [`super::person_settings`] keeps: the workspace's
+//! model configuration and vault ([`Workspaces::workspace_root`]), reached as
+//! the workspace's policy says ([`Store::MODELS`]). Here is what changes it
+//! for a page, and the one outbound request those changes make: a provider's
+//! own list of models, asked by the host because only it holds the key.
 //!
-//! A person names a provider's address, so the host calls an address a
+//! A member names a provider's address, so the host calls an address a
 //! person typed. Unless its operator lets it call its own network
 //! ([`Workspaces::call_private_model_addresses`], the one leave the model
 //! call itself reads), it keeps and asks only https addresses on the
@@ -39,6 +39,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 use super::person_model::Models;
+use super::workspace_stores::Store;
 use super::person_settings::{
     ProviderKeys, add_provider, answer, argument, provider_argument, provider_config, providers,
     remove_key, remove_provider, save_provider_config, set_assignment, set_key, view_of,
@@ -77,7 +78,7 @@ impl Reach {
 }
 
 impl Workspaces {
-    /// What this host keeps and asks for its people's providers: https
+    /// What this host keeps and asks for its workspaces' providers: https
     /// addresses on the internet, and its own network too where its
     /// operator lets it call there.
     pub(super) fn model_reach(&self) -> Reach {
@@ -92,17 +93,33 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        if request.target.address.action == person_models::ASK {
-            let person = Self::asking_for_model(caller, certificate, workspace_id)?;
+        let action = request.target.address.action.as_str();
+        let effect = match action {
+            // Asking a model reads with the key the workspace keeps.
+            person_models::LIST | person_models::ASK | person_models::WAIT_SIGN_IN => {
+                tilo_action_policy::ActionKind::Read
+            }
+            _ => tilo_action_policy::ActionKind::Undoable,
+        };
+        let reach = self
+            .reaching_allowed(
+                (workspace_id, caller, certificate),
+                Store::MODELS,
+                action,
+                effect,
+            )
+            .await?;
+        if action == person_models::ASK {
             let asked: ModelRequest = argument(request, "a model request")?;
             return self
-                .ask_person_model(person, workspace_id, &asked, &mut |_| {})
+                .ask_workspace_model(reach.workspace, &asked, &mut |_| {})
                 .await;
         }
-        let person = Self::asking_person(caller, certificate, workspace_id)?;
-        let root = self.person_settings_root(&person);
+        let here = reach.workspace.to_string();
+        let root = self.workspace_root(&here);
+        let person = reach.person;
         let reach = self.model_reach();
-        match request.target.address.action.as_str() {
+        match action {
             person_models::BEGIN_SIGN_IN => {
                 // Named nothing, a sign-in is to the plan.
                 let beginning: BeginSignIn =
@@ -111,7 +128,11 @@ impl Workspaces {
                     } else {
                         argument(request, "a sign-in to begin")?
                     };
-                return answer(&self.begin_openai_sign_in(person, beginning, reach).await);
+                return answer(
+                    &self
+                        .begin_openai_sign_in((person, &here), beginning, reach)
+                        .await,
+                );
             }
             person_models::WAIT_SIGN_IN => {
                 let waiting: WaitSignIn = argument(request, "a sign-in to wait for")?;
@@ -180,13 +201,13 @@ impl Workspaces {
 }
 
 impl Workspaces {
-    /// One turn of `person`'s own model, for a window of theirs that has no
-    /// model service of its own (a page): the model they chose for a request,
-    /// asked with the key their vault keeps for its provider, as every
-    /// model call this host makes for them is. The answer is the turn or
-    /// the reason there is none, as a model failure the window shows.
-    /// One [`person_models::ASK`] of `caller`, its answer's stream events
-    /// told to `events` as the model writes them.
+    /// One turn of the workspace's model, for a window that has no model
+    /// service of its own (a page): the model the workspace chose for a
+    /// request, asked with the key its vault keeps for its provider, as every
+    /// model call this host makes in it is. The answer is the turn or the
+    /// reason there is none, as a model failure the window shows. One
+    /// [`person_models::ASK`] of `caller`, its answer's stream events told to
+    /// `events` as the model writes them.
     pub(super) async fn ask_streamed(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -195,23 +216,26 @@ impl Workspaces {
         request: &InvokeRequest,
         events: super::person_model::Events<'_>,
     ) -> Result<Value, ActionCallError> {
-        let person = Self::asking_for_model(caller, certificate, workspace_id)?;
+        let reach = self
+            .reaching_allowed(
+                (workspace_id, caller, certificate),
+                Store::MODELS,
+                person_models::ASK,
+                tilo_action_policy::ActionKind::Read,
+            )
+            .await?;
         let asked: ModelRequest = argument(request, "a model request")?;
-        self.ask_person_model(person, workspace_id, &asked, events)
+        self.ask_workspace_model(reach.workspace, &asked, events)
             .await
     }
 
-    async fn ask_person_model(
+    async fn ask_workspace_model(
         &self,
-        person: [u8; 32],
-        workspace_id: Option<collab_types::WorkspaceId>,
+        workspace: collab_types::WorkspaceId,
         asked: &ModelRequest,
         events: super::person_model::Events<'_>,
     ) -> Result<Value, ActionCallError> {
-        let mut model = self.person_model(person, Interaction::Request);
-        if let Some(workspace) = workspace_id {
-            model = model.working_in(workspace);
-        }
+        let model = self.workspace_model(workspace, Interaction::Request);
         let now = tilo_clock::now();
         let deadline = now.checked_add(TURN_TIMEOUT).unwrap_or(now);
         let answered: Result<ModelResponse, ModelError> = model

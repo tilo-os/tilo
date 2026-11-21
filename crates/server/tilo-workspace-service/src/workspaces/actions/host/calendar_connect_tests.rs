@@ -1,13 +1,14 @@
-//! A calendar connected by her telling her assistant where it is. The turn
-//! of an agent she keeps hands over the address, her user name and a name,
-//! and nothing else: no argument is a password, and none makes the account
-//! writable. She is asked for the password, and no calendar server is asked
-//! anything before she typed. What she types connects the account for
-//! reading only and names that agent for it, once. A calendar server that
-//! refuses the sign-in keeps nothing here, and what she typed for it is not
-//! kept, while a login she kept before stays hers. An address that is not
-//! https or is inside is refused before anybody is asked. Told twice it adds
-//! nothing. And no turn that is not her own agent's is offered it.
+//! A calendar connected by a member's agent telling the server where it is.
+//! The turn of a member's agent hands over the address, the user name and a
+//! name, and nothing else: no argument is a password, and none makes the
+//! account writable. The member is asked for the password, and no calendar
+//! server is asked anything before they typed. What they type connects the
+//! account for reading only, once, for the whole workspace. A calendar
+//! server that refuses the sign-in keeps nothing here, and what they typed
+//! for it is not kept, while a login they kept before stays theirs. An
+//! address that is not https or is inside is refused before anybody is
+//! asked. Told twice it adds nothing. And no turn that is not a member's own
+//! agent's is offered it.
 
 use super::super::super::vault_tests::ask as of_her_vault;
 use super::*;
@@ -143,15 +144,15 @@ fn in_words(what: &str, answer: Result<TurnConnect, ActionError>) -> String {
     }
 }
 
-/// Her agent's turn tells of her calendar: she is asked for a login at her
-/// calendar server and nobody else is asked anything. What she types
-/// connects the account for reading only, every calendar of it too, and
-/// names that agent for it: its turn then reads what her calendar holds,
-/// and what would write to her calendar server is refused in words also
-/// when she asks herself. The turn is told the calendars by their names and
-/// nothing else. The password is in no answer.
+/// A member's agent's turn tells of their calendar: they are asked for a
+/// login at their calendar server and nobody else is asked anything. What
+/// they type connects the account for reading only, every calendar of it
+/// too, in the workspace: the turn then reads what the calendar holds, as
+/// any member's agent's does, and what would write to the calendar server is
+/// refused in words also when they ask themselves. The turn is told the
+/// calendars by their names and nothing else. The password is in no answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn what_she_tells_is_asked_for_and_her_typing_connects_it_for_reading_only() {
+async fn what_they_tell_is_asked_for_and_their_typing_connects_it_for_reading_only() {
     let hers = Hers::new().await;
     // The test's calendar server answers on this machine: its operator lets
     // this server call its own network.
@@ -234,7 +235,8 @@ async fn what_she_tells_is_asked_for_and_her_typing_connects_it_for_reading_only
         "never the sign-in"
     );
 
-    // The agent that asked is named for it, and reads.
+    // The turn that asked reads the account it connected, as any member's
+    // agent's turn reads the workspace's calendars.
     assert_eq!(
         hers.offered(&turn).await,
         [held::LIST, held::ENTRIES, held::FREE]
@@ -242,7 +244,7 @@ async fn what_she_tells_is_asked_for_and_her_typing_connects_it_for_reading_only
     let read = hers
         .asks(&turn, held::ENTRIES, week())
         .await
-        .expect("its turn reads what she connected");
+        .expect("its turn reads what it connected");
     assert_eq!(read["entries"][0]["title"], "Review", "{read}");
 
     // Nothing is written to it, also when she asks herself.
@@ -352,9 +354,10 @@ async fn an_address_that_is_not_https_or_is_inside_is_refused_before_anybody_is_
 }
 
 /// A calendar server that refuses the sign-in is said so in its own words.
-/// Nothing is kept: no account, nobody named, and the item she typed for
-/// the question is taken out of her vault again. A login she kept for that
-/// server before she told of it is hers and stays, whatever comes of it.
+/// Nothing is kept: no account, nothing to read, and the item they typed for
+/// the question is taken out of their vault again. A login they kept for
+/// that server before they told of it is theirs and stays, whatever comes of
+/// it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_account() {
     let hers = Hers::new().await;
@@ -406,7 +409,7 @@ async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_accoun
         "the item she typed for the question is taken out again"
     );
     assert!(hers.accounts().await.is_empty(), "no account is kept");
-    assert!(hers.offered(&turn).await.is_empty(), "nobody is named");
+    assert!(hers.offered(&turn).await.is_empty(), "nothing to read");
     assert!(hers.workspaces.open_connects(&hers.workspace).is_empty());
     assert!(
         hers.server.mailed().is_empty(),
@@ -461,16 +464,27 @@ async fn the_same_account_told_twice_asks_once_and_adds_nothing_once_connected()
     assert_eq!(hers.vault().await.len(), 1);
 }
 
-/// Only a turn of an agent she keeps herself is offered the connecting and
-/// taken at its word: every other caller is nobody. An agent that anything
-/// narrows is offered it, and taken, only where a rule of its names this
-/// very action.
+/// Only a turn of a member's own agent is offered the connecting and taken
+/// at its word: every other caller is nobody. An agent that anything narrows
+/// is offered it, and taken, only where a rule of its names this very
+/// action.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn only_a_turn_of_her_own_agent_is_offered_the_connecting() {
+async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
     let keeper = hers.keeper();
     let bo = admit(&hers.workspaces, &hers.workspace, &hers.owner, 2).await;
+    // Another member's own agent's turn connects for the workspace too.
+    let (bos_caller, bos_keeper) = (
+        on_turn(&bo, &hers.workspace, SCOUT),
+        hex::encode(bo.user_public_key),
+    );
+    let bos_turn = hers.turn(&bos_caller, &bos_keeper, None);
+    assert_eq!(
+        hers.connecting_offered(&bos_turn).await,
+        [held::CONNECT],
+        "another member's agent connects the workspace's calendars"
+    );
     let mut others = not_her_agents_turns(&hers.ada, &bo, &hers.workspace);
     others.push((
         "another member's own agent under her agent's id, said to be hers",

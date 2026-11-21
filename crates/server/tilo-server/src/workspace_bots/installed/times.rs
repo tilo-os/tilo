@@ -150,15 +150,19 @@ impl BotRunner {
         }) else {
             return Ok(Vec::new());
         };
-        let Some(assistant) =
-            super::super::assistant::assistant_of(&self.workspaces, &self.workspace, &person)
-                .await?
-        else {
+        // What an entry says is handed to its person's assistant: none, nothing read.
+        if super::super::assistant::assistant_of(&self.workspaces, &self.workspace, &person)
+            .await?
+            .is_none()
+        {
+            return Ok(Vec::new());
+        }
+        let Some(workspace) = collab_types::WorkspaceId::parse(&self.workspace) else {
             return Ok(Vec::new());
         };
         let occurrences = self
             .workspaces
-            .calendar_occurrences_for(&person, &self.workspace, &assistant.id.0, from_ms, to_ms)
+            .calendar_occurrences_for(workspace, &person, from_ms, to_ms)
             .await?;
         Ok(occurrences
             .into_iter()

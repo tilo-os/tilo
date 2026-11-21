@@ -825,8 +825,9 @@ async fn what_a_service_repeats_comes_back_without_the_key() {
 
 /// Only a turn of the key's own keeper makes a call with it: not a person
 /// asking for themselves, not an agent that anything narrows without a rule
-/// that names the call, not another member's agent that was handed the
-/// reference. And no device's request makes one at all.
+/// that names the call, and another member's turn holds the workspace's
+/// reference, its use asking his person. And no device's request makes one
+/// at all.
 #[tokio::test]
 async fn only_a_turn_of_its_keepers_makes_a_call() {
     stage!(
@@ -882,7 +883,8 @@ async fn only_a_turn_of_its_keepers_makes_a_call() {
             .await,
         Err(NotPermitted)
     );
-    // Another member's agent holds the reference and no key of its own.
+    // Another member's turn holds the workspace's reference too: the item is
+    // the workspace's, and its use asks his person, not hers.
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let his = on_turn(&bo, &workspace, "rover");
     let his_keeper = hex::encode(bo.user_public_key);
@@ -892,13 +894,14 @@ async fn only_a_turn_of_its_keepers_makes_a_call() {
         keeper: &his_keeper,
         bound: None,
     };
+    let open = asked(
+        workspaces
+            .use_for_turn(&theirs, &own_with(&paying, &item), json!({}))
+            .await,
+    );
     assert_eq!(
-        refusal(
-            workspaces
-                .use_for_turn(&theirs, &own_with(&paying, &item), json!({}))
-                .await
-        ),
-        "That item is not kept here"
+        open.person, his_keeper,
+        "the workspace's item asks his person"
     );
     // His agent's turn said to be kept by her is nobody's.
     let claimed = HostedTurn {
@@ -913,25 +916,37 @@ async fn only_a_turn_of_its_keepers_makes_a_call() {
             .await,
         Err(UnknownAction)
     );
-    // No device's request makes a call: not hers, not her agent's on it.
+    // No device's request makes a call: the person's is no action the
+    // vault has, and her agent's asks her first.
     let asking = json!({"url": format!("{}/v1/balance", paying.url()), "key": item});
-    for who in [(&ada, &as_ada), (&ada, &scout)] {
-        assert_eq!(
-            ask(
-                &service,
-                workspace_id,
-                who,
-                person_vault::WEB_CALL,
-                asking.clone()
-            )
-            .await,
-            Err(UnknownAction)
-        );
-    }
-    assert!(paying.drain_requests().is_empty(), "nothing was sent");
+    assert_eq!(
+        ask(
+            &service,
+            workspace_id,
+            (&ada, &as_ada),
+            person_vault::WEB_CALL,
+            asking.clone()
+        )
+        .await,
+        Err(UnknownAction)
+    );
+    let hers = ask(
+        &service,
+        workspace_id,
+        (&ada, &scout),
+        person_vault::WEB_CALL,
+        asking,
+    )
+    .await;
     assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "and nobody was asked"
+        matches!(hers, Err(ActionCallError::ConfirmationRequired { .. })),
+        "{hers:?}"
+    );
+    assert!(paying.drain_requests().is_empty(), "nothing was sent");
+    assert_eq!(
+        workspaces.open_use_asks(&workspace).len(),
+        1,
+        "his person was asked about it"
     );
     assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
 }

@@ -39,7 +39,7 @@ fn grant(access: &str, refresh: &str, expires_in: u64) -> TokenSet {
 }
 
 /// Keep the calendar account a sign-in on Google's page keeps, and its
-/// calendar as a device's Calendar keeps them, in Ada's own store: the
+/// calendar as a device's Calendar keeps them, in the workspace's store: the
 /// calendar server `server`, whose one calendar "work" is in it.
 fn seed_google_calendar(root: &Path, server: &fake_caldav::Server, tokens: &TokenSet) -> String {
     let server_url = server.url();
@@ -71,10 +71,10 @@ fn seed_google_calendar(root: &Path, server: &fake_caldav::Server, tokens: &Toke
     id
 }
 
-/// Whether a sign-in is still kept for `account` in the person's vault.
+/// Whether a sign-in is still kept for `account` in the workspace's vault.
 fn secret_kept(root: &Path, account: &str) -> bool {
     crate::workspaces::person_settings::credentials(root)
-        .expect("the person's vault")
+        .expect("the workspace's vault")
         .get(&accounts::AccountId::from(account.to_owned()))
         .is_some()
 }
@@ -90,9 +90,7 @@ async fn a_fresh_grant_reads_the_calendar_server_with_its_access_token() {
         .await
         .reading_a_grant("access-token-1");
     let her = ada.herself();
-    let root = ada
-        .workspaces
-        .person_settings_root(&ada.device.user_public_key);
+    let root = ada.root();
     let id = seed_google_calendar(
         &root,
         &ada.server,
@@ -137,9 +135,7 @@ async fn an_expired_grant_is_renewed_before_the_server_is_read() {
         .await
         .reading_a_grant("access-token-2");
     let her = ada.herself();
-    let root = ada
-        .workspaces
-        .person_settings_root(&ada.device.user_public_key);
+    let root = ada.root();
     // No lifetime reported: renewed before every read.
     let id = seed_google_calendar(
         &root,
@@ -185,9 +181,7 @@ async fn a_grant_the_provider_will_not_renew_leaves_the_account_needing_a_sign_i
         .await
         .reading_a_grant("access-token-2");
     let her = ada.herself();
-    let root = ada
-        .workspaces
-        .person_settings_root(&ada.device.user_public_key);
+    let root = ada.root();
     // The provider knows no such refresh token: it will never renew this
     // grant.
     let id = seed_google_calendar(

@@ -387,12 +387,14 @@ impl Initiative {
         theirs.then(|| look_round_spender(workspace, event, NAME, day, kept.day_limit()))
     }
 
-    /// What `spender` spent on its day, as `person`'s store counts it.
-    fn spent(&self, person: &[u8; 32], spender: &Spender) -> u64 {
-        self.inner
-            .workspaces
-            .person_model(*person, Interaction::Task)
-            .spent_by(spender)
+    /// What `spender` spent on its day, as `workspace`'s store counts it.
+    fn spent(&self, workspace: &str, spender: &Spender) -> u64 {
+        collab_types::WorkspaceId::parse(workspace).map_or(0, |workspace| {
+            self.inner
+                .workspaces
+                .workspace_model(workspace, Interaction::Task)
+                .spent_by(spender)
+        })
     }
 
     /// Answer `message` for `workspace_id`: the actions' rows, or one
@@ -505,7 +507,6 @@ impl Initiative {
             workspace_id,
             caller,
             owner: (workspace_id.to_string(), hex::encode(person)),
-            person,
             asker,
         })
     }
@@ -673,7 +674,7 @@ impl Initiative {
         let limit = kept.day_limit();
         let spent = event.as_ref().map_or(0, |event| {
             self.spent(
-                &asked.person,
+                &asked.owner.0,
                 &look_round_spender(&asked.owner.0, &event.id, &event.name, &day, limit),
             )
         });
@@ -705,14 +706,14 @@ impl Initiative {
         })
     }
 
-    /// Watch `person`'s mail for as long as their assistant looks round, so
-    /// a look can say what came in.
-    fn listen(&self, owner: &Owner, person: [u8; 32]) {
+    /// Watch the workspace's mail for as long as `owner`'s assistant looks
+    /// round, so a look can say what came in.
+    fn listen(&self, owner: &Owner) {
         self.inner
             .listening
             .lock_recover()
             .entry(owner.clone())
-            .or_insert_with(|| self.inner.workspaces.listen_for_mail(person));
+            .or_insert_with(|| self.inner.workspaces.listen_for_mail(&owner.0));
     }
 
     /// Take the look `instruction` fired, and hand it on through `steps`
@@ -729,7 +730,7 @@ impl Initiative {
         let id = instruction.cause.invocation.0.to_string();
         let kept = self.kept(owner);
         let now_ms = tilo_clock::unix_now_ms_i64();
-        self.listen(owner, person);
+        self.listen(owner);
         let workspaces = &self.inner.workspaces;
         let gathered = on_the_runtime(|runtime| {
             runtime
@@ -757,7 +758,7 @@ impl Initiative {
         let day = crate::workspace_agents::today();
         let limit = kept.day_limit();
         let spent = self.spent(
-            &person,
+            &owner.0,
             &look_round_spender(&owner.0, &event, NAME, &day, limit),
         );
         let found = gathered.found;
@@ -1060,7 +1061,6 @@ struct Asked<'a> {
     workspace_id: WorkspaceId,
     caller: &'a Caller,
     owner: Owner,
-    person: [u8; 32],
     asker: Asker,
 }
 

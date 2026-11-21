@@ -59,7 +59,7 @@ impl Workspace for Recorded {
                 }
                 Ok(account)
             }
-            other => anyhow::bail!("no person/mail-accounts#{other}"),
+            other => anyhow::bail!("no workspace/mail-accounts#{other}"),
         }
     }
 

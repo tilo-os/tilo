@@ -396,7 +396,7 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it
     let asked = Arc::new(Mutex::new(Vec::new()));
     let served = Served::new(&actions, &workspaces, &workspace, &asked);
     assert!(
-        workspaces.learned_about(&ada_key, &workspace).is_none(),
+        workspaces.learned_about(&workspace).is_none(),
         "nothing is learned yet"
     );
 
@@ -418,7 +418,7 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it
         );
     }
     let kept = workspaces
-        .learned_about(&ada_key, &workspace)
+        .learned_about(&workspace)
         .expect("the server keeps it");
     let facts: Vec<_> = kept.facts.iter().map(|(_, fact)| fact.clone()).collect();
     let [fact] = facts.as_slice() else {
@@ -479,13 +479,9 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it
         "{refused:?}"
     );
     assert_eq!(
-        workspaces.learned_about(&ada_key, &workspace),
+        workspaces.learned_about(&workspace),
         Some(kept),
-        "her resource is as it was"
-    );
-    assert!(
-        workspaces.learned_about(&bo_key, &workspace).is_none(),
-        "and her agent keeps nothing for him"
+        "the workspace's list is as it was: his refused call kept nothing"
     );
 
     // Nor does he read her list by asking for it.
@@ -542,8 +538,8 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it
         "{refused:?}"
     );
     let after = workspaces
-        .learned_about(&ada_key, &workspace)
-        .expect("her resource");
+        .learned_about(&workspace)
+        .expect("the workspace keeps it");
     assert_eq!(
         after
             .facts
@@ -564,7 +560,6 @@ async fn a_hosted_turn_keeps_what_its_keeper_tells_it_and_only_her_turns_know_it
 async fn asked_what_it_knows_a_hosted_turn_answers_from_the_list_and_changes_it_on_her_word() {
     team!(ada, bo, actions, workspaces, workspace, page);
     let hers = (&ada.0, &ada.1);
-    let ada_key = ada.0.verifying_key().to_bytes();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let served = Served::new(&actions, &workspaces, &workspace, &asked);
     for fact in ["Takes her coffee black.", "Works from Graz on Fridays."] {
@@ -575,8 +570,8 @@ async fn asked_what_it_knows_a_hosted_turn_answers_from_the_list_and_changes_it_
     let (question, _) = served.asked_of(hers, "what do you know about me?").await;
     let answer = served.reply_to(&question).await;
     let resource = workspaces
-        .learned_about(&ada_key, &workspace)
-        .expect("her resource");
+        .learned_about(&workspace)
+        .expect("the workspace keeps it");
     assert_eq!(resource.facts.len(), 2);
     assert!(answer.starts_with("2 facts are kept"), "{answer}");
     assert_eq!(answer.matches("\n- [").count(), 2, "{answer}");
@@ -601,7 +596,7 @@ async fn asked_what_it_knows_a_hosted_turn_answers_from_the_list_and_changes_it_
             "correct: Works from Graz on Fridays. => Works from Vienna on Fridays.",
         )
         .await;
-    let resource = workspaces.learned_about(&ada_key, &workspace).unwrap();
+    let resource = workspaces.learned_about(&workspace).unwrap();
     assert_eq!(resource.facts.len(), 2, "the same two facts");
     let vienna = resource.facts.get(&graz).expect("the fact it named");
     assert_eq!(vienna.text, "Works from Vienna on Fridays.");
@@ -623,7 +618,7 @@ async fn asked_what_it_knows_a_hosted_turn_answers_from_the_list_and_changes_it_
         "{}",
         turn.request
     );
-    let resource = workspaces.learned_about(&ada_key, &workspace).unwrap();
+    let resource = workspaces.learned_about(&workspace).unwrap();
     assert_eq!(
         resource
             .facts
@@ -637,10 +632,7 @@ async fn asked_what_it_knows_a_hosted_turn_answers_from_the_list_and_changes_it_
     let (unknown, _) = served.asked_of(hers, "forget: Likes tea.").await;
     let refused = served.reply_to(&unknown).await;
     assert!(refused.contains("no fact is kept"), "{refused}");
-    assert_eq!(
-        workspaces.learned_about(&ada_key, &workspace),
-        Some(resource)
-    );
+    assert_eq!(workspaces.learned_about(&workspace), Some(resource));
 
     // With the last one forgotten no turn is told anything.
     served
@@ -708,8 +700,8 @@ async fn a_turn_started_for_the_keeper_is_hers_and_one_started_for_another_membe
         );
     }
     let kept = workspaces
-        .learned_about(&ada_key, &workspace)
-        .expect("her resource");
+        .learned_about(&workspace)
+        .expect("the workspace keeps it");
     let milk = kept
         .facts
         .iter()
@@ -774,13 +766,9 @@ async fn a_turn_started_for_the_keeper_is_hers_and_one_started_for_another_membe
         "{refused:?}"
     );
     assert_eq!(
-        workspaces.learned_about(&ada_key, &workspace),
+        workspaces.learned_about(&workspace),
         Some(kept),
-        "her resource is as it was"
-    );
-    assert!(
-        workspaces.learned_about(&bo_key, &workspace).is_none(),
-        "and her agent keeps nothing for him"
+        "the workspace's list is as it was: his refused call kept nothing"
     );
     page.peer.close();
 }

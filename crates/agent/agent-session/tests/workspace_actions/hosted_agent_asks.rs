@@ -614,7 +614,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
     workspaces.answer_models_with(theirs.clone());
     workspaces
         .link_model_for(
-            &root.verifying_key().to_bytes(),
+            &workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,

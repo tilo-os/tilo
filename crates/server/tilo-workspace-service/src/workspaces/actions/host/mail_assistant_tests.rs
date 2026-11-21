@@ -1,7 +1,8 @@
-//! A person's mail and the agents of theirs: only the person says which
-//! agent may read which account; the one they named reads, searches and
-//! drafts through the host; a message it would send waits for its person;
-//! and nobody else's agent is anybody to that mail.
+//! A workspace's mail, its members and their agents: every member reads the
+//! accounts the workspace keeps; an agent a member's session was handed to
+//! reads, searches and drafts through the host as the workspace's policy
+//! lets it; a message it would send waits for its person; and nobody outside
+//! the workspace is anybody to that mail.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -15,11 +16,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_action_policy::turn::Turn;
 use tilo_actions::remote::person_accounts::{
-    self, AccountAssistants, FetchedMail, FetchedMessage, FoundMail, MailAccounts, MailArrivals,
+    self, FetchedMail, FetchedMessage, FoundMail, MailAccounts, MailArrivals,
     StartedSend,
 };
 use tilo_actions::remote::{
@@ -30,8 +30,8 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{caller, settled};
-use super::accounts_tests::{asking, key_of};
+use super::super::tests::{admit, caller, governed, settled};
+use super::accounts_tests::asking;
 use crate::workspaces::fixtures::TestHost;
 use crate::workspaces::mail_watch::testing::{Watched, keep};
 use crate::workspaces::tests::{governor, test_host};
@@ -41,12 +41,14 @@ const ACCOUNT: &str = "ada@example.test";
 const ASSISTANT: &str = "assistant";
 
 /// Ada's setup: a holder whose mail servers answer and keep what they were
-/// asked, a device of hers, the workspace its page is in, and one account
-/// she keeps signed in.
+/// asked, the workspace she is a member of, a device of hers, and one account
+/// the workspace keeps signed in.
 struct Setup {
     servers: Arc<Watched>,
     workspaces: Workspaces,
     host: ServiceWorkspaceActions,
+    owner: DeviceCert,
+    workspace: String,
     device: DeviceCert,
     workspace_id: WorkspaceId,
     _server: TestHost,
@@ -61,19 +63,19 @@ impl Setup {
         let workspaces = server.workspaces().clone();
         let servers = Arc::new(Watched::answering());
         workspaces.carry_mail_through(servers.clone());
-        let host = ServiceWorkspaceActions::new();
-        host.attach(workspaces.clone());
-        let device = key_of(&SigningKey::from_bytes(&rand::random()), "studio");
+        let (workspace, workspace_id, host) = governed(&workspaces).await;
+        let device = admit(&workspaces, &workspace, &owner, 1).await;
         keep(
-            &workspaces.person_settings_root(&device.user_public_key),
+            &workspaces.workspace_root(&workspace_id.to_string()),
             ACCOUNT,
             "adas-password",
         );
-        let workspace_id = workspaces.create("Mail").await.unwrap().workspace_id;
         Self {
             servers,
             workspaces,
             host,
+            owner,
+            workspace,
             device,
             workspace_id,
             _server: server,
@@ -91,14 +93,10 @@ impl Setup {
         caller(&self.device)
     }
 
-    /// The agent `name` on Ada's device, over the connection that device
-    /// certified.
+    /// The agent `name` Ada's device handed its session to, over the
+    /// connection that device certified.
     fn agent(&self, name: &str) -> Caller {
-        Caller::delegated_agent(
-            name,
-            self.device.user_public_key,
-            self.device.device_public_key,
-        )
+        self.ada().delegated_to(name)
     }
 
     /// What `caller` is answered when it asks `action` over Ada's page.
@@ -109,16 +107,6 @@ impl Setup {
         argument: Value,
     ) -> Result<Value, ActionCallError> {
         asked_of(&self.page(), caller, action, argument).await
-    }
-
-    /// Ada says whether `agent` may read her account, and is answered who
-    /// may now.
-    async fn name(&self, agent: &str, may: bool) -> Vec<String> {
-        let saying = json!({"account": ACCOUNT, "agent": agent, "may": may});
-        let said = self
-            .ask(&self.ada(), person_accounts::ASSISTANT, saying)
-            .await;
-        read::<AccountAssistants>(said).agents
     }
 }
 
@@ -229,70 +217,47 @@ impl AsksPeople for Asked {
     }
 }
 
-/// Only the person says which agent of theirs may read which account, on a
-/// device of theirs. Until they do, their own agent is nobody to their mail
-/// and is offered nothing; once they did, it is offered what it may do and
-/// reads the account it was named for alone; and when they take it back, it
-/// is nobody again.
-#[tokio::test]
-async fn a_person_names_the_agent_that_may_read_an_account() {
-    let setup = Setup::new().await;
-    let (ada, agent) = (setup.ada(), setup.agent(ASSISTANT));
-    keep(
-        &setup
-            .workspaces
-            .person_settings_root(&setup.device.user_public_key),
-        "ada@other.test",
-        "another-password",
-    );
-    let hers = || json!({"account": ACCOUNT});
-
-    // Nobody is named yet: her own agent is nobody to her mail.
-    let named = setup.ask(&ada, person_accounts::ASSISTANTS, hers()).await;
-    assert!(read::<AccountAssistants>(named).agents.is_empty());
-    let unnamed = setup.ask(&agent, person_accounts::LIST, json!({})).await;
-    nobody("her agent before she named it", unnamed);
-    assert!(offered(&setup.page(), &agent).await.is_empty());
-
-    // An account she does not keep names nobody.
-    let stranger = json!({"account": "eve@example.test", "agent": ASSISTANT, "may": true});
-    let refused = setup.ask(&ada, person_accounts::ASSISTANT, stranger).await;
-    assert!(
-        matches!(refused, Err(ActionCallError::Refused { .. })),
-        "{refused:?}"
-    );
-
-    assert_eq!(setup.name(ASSISTANT, true).await, [ASSISTANT]);
-    let listed: MailAccounts = read(setup.ask(&agent, person_accounts::LIST, json!({})).await);
+/// `caller` lists and fetches the workspace's one account over `page`.
+async fn reads_the_account_kept(
+    page: &(impl ActionProvider + Sync),
+    caller: &Caller,
+    who: &str,
+) {
+    let listed: MailAccounts =
+        read(asked_of(page, caller, person_accounts::LIST, json!({})).await);
     let ids: Vec<&str> = listed.accounts.iter().map(|one| one.id.as_str()).collect();
-    assert_eq!(ids, [ACCOUNT], "the account it was named for alone");
-    let rows = offered(&setup.page(), &agent).await;
+    assert_eq!(ids, [ACCOUNT], "{who} reads the workspace's account");
+    let inbox = json!({"account": ACCOUNT, "folder": "inbox"});
+    let folder: FetchedMail = read(asked_of(page, caller, person_accounts::FETCH, inbox).await);
+    assert_eq!(folder.messages[0].subject, "Lunch", "{who}");
+}
+
+/// Two members of one workspace read the same mail: what the workspace
+/// keeps is listed and fetched for each, with its one sign-in, and an agent
+/// a member's session was handed to is offered what it may do.
+#[tokio::test]
+async fn two_members_read_the_one_account_the_workspace_keeps() {
+    let setup = Setup::new().await;
+    let bo = admit(&setup.workspaces, &setup.workspace, &setup.owner, 2).await;
+    let bos_page = setup.host.in_workspace_as(setup.workspace_id, &bo);
+    reads_the_account_kept(&setup.page(), &setup.ada(), "Ada").await;
+    reads_the_account_kept(&bos_page, &caller(&bo), "Bo").await;
+    assert_eq!(
+        setup.servers.asked(),
+        [
+            "fetch ada@example.test inbox",
+            "fetch ada@example.test inbox"
+        ]
+    );
+    let rows = offered(&setup.page(), &setup.agent(ASSISTANT)).await;
     for verb in READS_AND_DRAFTS {
         assert!(rows.iter().any(|row| row == verb), "{verb}: {rows:?}");
     }
-    for verb in THE_PERSONS_ALONE {
-        assert!(!rows.iter().any(|row| row == verb), "{verb}: {rows:?}");
-    }
-    let hers_directly = offered(&setup.page(), &ada).await;
+    let hers_directly = offered(&setup.page(), &setup.ada()).await;
     assert!(hers_directly.is_empty(), "a page asks the host directly");
-
-    // Her other account, and another agent of hers.
-    let other = json!({"account": "ada@other.test", "folder": "inbox"});
-    let unread = setup.ask(&agent, person_accounts::FETCH, other).await;
-    nobody("an account it was not named for", unread);
-    let writer = setup.agent("writer");
-    let unlisted = setup.ask(&writer, person_accounts::LIST, json!({})).await;
-    nobody("an agent of hers she did not name", unlisted);
-
-    // She takes it back.
-    assert!(setup.name(ASSISTANT, false).await.is_empty());
-    let after = setup.ask(&agent, person_accounts::LIST, json!({})).await;
-    nobody("her agent after she took it back", after);
-    assert!(offered(&setup.page(), &agent).await.is_empty());
-    assert!(setup.servers.asked().is_empty(), "no server was asked");
 }
 
-/// What a named agent is offered among the mail actions.
+/// What an agent is offered among the mail actions.
 const READS_AND_DRAFTS: [&str; 7] = [
     person_accounts::LIST,
     person_accounts::ARRIVED,
@@ -303,25 +268,23 @@ const READS_AND_DRAFTS: [&str; 7] = [
     person_accounts::SEND,
 ];
 
-/// What only the person does, on a device of theirs.
-const THE_PERSONS_ALONE: [&str; 5] = [
+/// What changes the workspace's mail, which a handed agent's person is asked
+/// about first.
+const CHANGES: [&str; 3] = [
     person_accounts::MARK,
     person_accounts::REMOVE,
     person_accounts::ADD_MAIL,
-    person_accounts::ASSISTANT,
-    person_accounts::ASSISTANTS,
 ];
 
-/// The agent a person named reads a folder and a message, searches, hears
-/// what arrived and keeps a draft, each through the host with the person's
-/// own sign-in: over the connection a device of theirs certified, and in a
-/// turn the host runs for them on such a device. What only the person does
-/// is not there for it.
+/// A member's agent reads a folder and a message, searches and hears what
+/// arrived through the host with the workspace's sign-in: over the
+/// connection a device of theirs certified, and in a turn the host runs for
+/// them on such a device. A draft it keeps, and every change it would make,
+/// waits for its person first.
 #[tokio::test]
-async fn the_persons_assistant_reads_searches_and_drafts_through_the_host() {
+async fn a_members_agent_reads_and_searches_and_its_changes_ask_first() {
     let setup = Setup::new().await;
     let agent = setup.agent(ASSISTANT);
-    setup.name(ASSISTANT, true).await;
     let inbox = json!({"account": ACCOUNT, "folder": "inbox"});
     let message = json!({"account": ACCOUNT, "folder": "inbox", "uid": 4, "uidValidity": 7});
 
@@ -343,10 +306,20 @@ async fn the_persons_assistant_reads_searches_and_drafts_through_the_host() {
             .await,
     );
     let keeping = json!({"send": begun.send});
+    let unasked = setup
+        .ask(&agent, person_accounts::SAVE_DRAFT, keeping.clone())
+        .await;
+    assert!(
+        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+        "a draft with nobody to ask through: {unasked:?}"
+    );
+    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
+    setup.workspaces.ask_people(allowing.clone());
     setup
         .ask(&agent, person_accounts::SAVE_DRAFT, keeping)
         .await
         .unwrap();
+    assert_eq!(allowing.count(), 1, "she was asked about the draft");
 
     // In a turn this host runs for her: her agent with a device of hers
     // behind it, as the host hands it the session.
@@ -369,9 +342,16 @@ async fn the_persons_assistant_reads_searches_and_drafts_through_the_host() {
             "fetch ada@example.test sent",
         ]
     );
-    for action in THE_PERSONS_ALONE {
-        nobody(action, setup.ask(&agent, action, message.clone()).await);
+    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
+    setup.workspaces.ask_people(refusing.clone());
+    for action in CHANGES {
+        let refused = setup.ask(&agent, action, message.clone()).await;
+        assert!(
+            matches!(refused, Err(ActionCallError::Refused { .. })),
+            "{action}: {refused:?}"
+        );
     }
+    assert_eq!(refusing.count(), CHANGES.len(), "each change asked her");
 }
 
 /// Sending still asks. A message the person's assistant would send is put
@@ -384,7 +364,6 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
     let setup = Setup::new().await;
     let page = setup.page();
     let agent = setup.agent(ASSISTANT);
-    setup.name(ASSISTANT, true).await;
 
     let unasked = send_lunch(&page, &agent).await;
     assert!(
@@ -403,7 +382,7 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
         "with no answer: {unanswered:?}"
     );
     let (person, question) = silent.questions.lock().unwrap()[0].clone();
-    assert_eq!(person, setup.device.user_public_key, "her mail, her answer");
+    assert_eq!(person, setup.device.user_public_key, "her agent, her answer");
     assert_eq!(question.agent_id, ASSISTANT);
     assert_eq!(question.action_label, "send this message");
     assert_eq!(question.resource_label, ACCOUNT);
@@ -438,19 +417,19 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
     assert_eq!(allowing.count(), 1, "her own message asks her nothing");
 }
 
-/// A person's mail is theirs and their named agent's. Another person's
-/// agent is nobody to it by any road: on its own person's device, over the
-/// other's page, in a turn of its own person's, or under no person at all.
-/// The person's own named agent is nobody too where no device of theirs
-/// stands behind it, and in any workspace but the one it was named in. No
+/// A workspace's mail is its members'. Somebody who is no member, and their
+/// agent, is nobody to it by any road: on their own device, over a
+/// member's page, in a turn of their own, or under no person at all. A
+/// member's agent id with no device of theirs behind it is nobody too, and
+/// a member of another workspace reads nothing of this one's mail there. No
 /// server is asked for any of them.
 #[tokio::test]
-async fn nobody_elses_agent_reads_a_persons_mail() {
+async fn nobody_outside_the_workspace_reads_its_mail() {
     let setup = Setup::new().await;
-    setup.name(ASSISTANT, true).await;
-    let bo = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
+    let (elsewhere, elsewhere_id, _) = governed(&setup.workspaces).await;
+    let bo = admit(&setup.workspaces, &elsewhere, &setup.owner, 2).await;
     let bos_page = setup.host.in_workspace_as(setup.workspace_id, &bo);
-    let bos_agent = Caller::delegated_agent(ASSISTANT, bo.user_public_key, bo.device_public_key);
+    let bos_agent = caller(&bo).delegated_to(ASSISTANT);
     let bos_turn = Caller::agent_turn(
         ASSISTANT,
         hex::encode(bo.user_public_key),
@@ -460,62 +439,54 @@ async fn nobody_elses_agent_reads_a_persons_mail() {
     let hers = || json!({"account": ACCOUNT, "folder": "inbox"});
     let fetch = person_accounts::FETCH;
 
-    let own_device = asked_of(&bos_page, &bos_agent, fetch, hers()).await;
-    nobody("on its own person's device", own_device);
-    let listing = asked_of(&bos_page, &bos_agent, person_accounts::LIST, json!({})).await;
-    nobody("listing on its own person's device", listing);
     nobody(
-        "over the other person's page",
+        "a member of another workspace",
+        asked_of(&bos_page, &caller(&bo), fetch, hers()).await,
+    );
+    nobody(
+        "their agent on their own device",
+        asked_of(&bos_page, &bos_agent, fetch, hers()).await,
+    );
+    let listing = asked_of(&bos_page, &bos_agent, person_accounts::LIST, json!({})).await;
+    nobody("listing on their own device", listing);
+    nobody(
+        "over a member's page",
         setup.ask(&bos_agent, fetch, hers()).await,
     );
     nobody(
-        "in a turn of its own person's",
+        "in a turn of their own",
         asked_of(&line, &bos_turn, fetch, hers()).await,
     );
     let unowned = Caller::local_agent(ASSISTANT);
     nobody("under no person", setup.ask(&unowned, fetch, hers()).await);
-    // Her own named agent is hers only with a device of hers behind it,
-    // and only in the workspace she named it in: its id means something
-    // among that workspace's agents alone.
     let bare_turn = Caller::agent_turn(
         ASSISTANT,
         hex::encode(setup.device.user_public_key),
         Turn::new("chat/main", "message-2"),
     );
     nobody(
-        "her agent's id with no device of hers behind it",
+        "a member's agent id with no device of theirs behind it",
         asked_of(&line, &bare_turn, fetch, hers()).await,
-    );
-    let elsewhere = setup
-        .workspaces
-        .create("Shared")
-        .await
-        .unwrap()
-        .workspace_id;
-    let other_page = setup.host.in_workspace_as(elsewhere, &setup.device);
-    nobody(
-        "the same id in another workspace",
-        asked_of(&other_page, &setup.agent(ASSISTANT), fetch, hers()).await,
     );
     assert!(offered(&bos_page, &bos_agent).await.is_empty());
 
-    // Bo himself reads his own accounts, of which this is none.
-    let his = asked_of(&bos_page, &caller(&bo), fetch, hers()).await;
+    // In the workspace Bo is a member of, this account is none it keeps.
+    let his_page = setup.host.in_workspace_as(elsewhere_id, &bo);
+    let his: MailAccounts =
+        read(asked_of(&his_page, &caller(&bo), person_accounts::LIST, json!({})).await);
+    assert!(his.accounts.is_empty(), "{his:?}");
+    let theirs = asked_of(&his_page, &caller(&bo), fetch, hers()).await;
     assert!(
-        matches!(his, Err(ActionCallError::Refused { .. })),
-        "{his:?}"
+        matches!(theirs, Err(ActionCallError::Refused { .. })),
+        "{theirs:?}"
     );
     assert!(setup.servers.asked().is_empty(), "no server was asked");
-
-    // The named agent of the person whose mail it is does read it.
-    let own = setup.ask(&setup.agent(ASSISTANT), fetch, hers()).await;
-    assert_eq!(read::<FetchedMail>(own).folder, "inbox");
 }
 
 /// A person moving in from another mail program connects their accounts from the computer they
 /// logged in with `tilo login`, which asks them in its terminal first: the agent that computer
-/// hands its own session to lists and adds their accounts as they do, signed in before anything
-/// is kept. It reads none of their mail for that, and an agent a grant admitted adds nothing.
+/// hands its own session to adds their accounts into the workspace once they allowed it,
+/// signed in before anything is kept, and lists them as they do.
 #[tokio::test]
 async fn the_persons_own_computer_connects_an_account_they_move_in() {
     let setup = Setup::new().await;
@@ -525,6 +496,9 @@ async fn the_persons_own_computer_connects_an_account_they_move_in() {
             "bos-password" => Ok("signed in".into()),
             _ => Err("IMAP server rejected the credential".into()),
         });
+    setup
+        .workspaces
+        .ask_people(Asked::answering(Some(ConfirmationAnswer::AllowOnce)));
     let own_computer = setup
         .ada()
         .delegated_to(tilo_actions::remote::device_agent_id(
@@ -571,55 +545,6 @@ async fn the_persons_own_computer_connects_an_account_they_move_in() {
             .any(|account| account.address == "ada@lab.example.test"),
         "{listed:?}"
     );
-
-    // Reading mail is still an agent's, named for an account first.
-    let inbox = json!({"account": "ada@lab.example.test", "folder": "inbox"});
-    nobody(
-        "her own computer's agent reading mail",
-        setup
-            .ask(&own_computer, person_accounts::FETCH, inbox)
-            .await,
-    );
-    // An agent a grant admitted on her device adds nothing.
-    nobody(
-        "an agent a grant admitted",
-        setup
-            .ask(
-                &setup.agent(ASSISTANT),
-                person_accounts::ADD_MAIL,
-                adding("bos-password"),
-            )
-            .await,
-    );
-}
-
-/// Removing an account forgets who was named for it: the same address
-/// kept again names nobody.
-#[tokio::test]
-async fn removing_an_account_forgets_the_agents_named_for_it() {
-    let setup = Setup::new().await;
-    let (ada, agent) = (setup.ada(), setup.agent(ASSISTANT));
-    setup.name(ASSISTANT, true).await;
-    let hers = || json!({"account": ACCOUNT});
-
-    setup
-        .ask(&ada, person_accounts::REMOVE, hers())
-        .await
-        .unwrap();
-    let gone = setup.ask(&agent, person_accounts::LIST, json!({})).await;
-    nobody("her agent once the account is gone", gone);
-
-    keep(
-        &setup
-            .workspaces
-            .person_settings_root(&setup.device.user_public_key),
-        ACCOUNT,
-        "adas-password",
-    );
-    let named = setup.ask(&ada, person_accounts::ASSISTANTS, hers()).await;
-    assert!(read::<AccountAssistants>(named).agents.is_empty());
-    let again = setup.ask(&agent, person_accounts::LIST, json!({})).await;
-    nobody("her agent for the account kept again", again);
 }
 
 /// Security review, 17 November 2026. The question a person is put before a
@@ -632,7 +557,6 @@ async fn the_question_names_every_address_the_message_goes_to() {
     let setup = Setup::new().await;
     let page = setup.page();
     let agent = setup.agent(ASSISTANT);
-    setup.name(ASSISTANT, true).await;
     let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
     setup.workspaces.ask_people(allowing.clone());
 
@@ -698,8 +622,8 @@ const WHOM: [&str; 3] = ["To", "Copy to", "Blind copy to"];
 /// What the lunch to Bo alone is handed to the servers as.
 const LUNCH_LEFT: &str = "send ada@example.test to bo@example.test: Lunch";
 
-/// Ada's setup with her assistant named for her account, and Ada allowing
-/// whatever she is asked: so what leaves is what the question let through.
+/// Ada's setup with her assistant, and Ada allowing whatever she is asked:
+/// so what leaves is what the question let through.
 struct Sending {
     setup: Setup,
     allowing: Arc<Asked>,
@@ -708,7 +632,6 @@ struct Sending {
 impl Sending {
     async fn new() -> Self {
         let setup = Setup::new().await;
-        setup.name(ASSISTANT, true).await;
         let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
         setup.workspaces.ask_people(allowing.clone());
         Self { setup, allowing }
@@ -1074,10 +997,11 @@ impl AsksPeople for RewrittenMeanwhile {
 #[tokio::test]
 async fn the_message_that_leaves_is_the_one_that_was_shown() {
     let setup = Setup::new().await;
-    setup.name(ASSISTANT, true).await;
-    let person = setup.device.user_public_key;
     let rewriting = Arc::new(RewrittenMeanwhile {
-        sends: setup.workspaces.person_settings_root(&person).join("sends"),
+        sends: setup
+            .workspaces
+            .workspace_root(&setup.workspace_id.to_string())
+            .join("sends"),
         to: "eve@elsewhere.test",
         asked: Mutex::default(),
     });

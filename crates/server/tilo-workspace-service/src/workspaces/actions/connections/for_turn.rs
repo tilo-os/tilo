@@ -1,5 +1,5 @@
-//! A person's connections as a turn this server carries out itself reaches
-//! them.
+//! A workspace's connections as a turn this server carries out itself
+//! reaches them.
 //!
 //! An agent a person keeps on this server works with every device of theirs
 //! off, so no transport verified a device behind what it asks. This is the
@@ -7,7 +7,9 @@
 //! code that carries the turn out calls it, with the very caller the turn's
 //! tools act as ([`HostedTurn`]). The turn is its keeper's own or it is
 //! answered as if the provider were not there
-//! ([`Workspaces::keepers_turn`]). Then the connections' own rule:
+//! ([`Workspaces::keepers_turn`]), and the workspace's policy lets its keeper
+//! reach the workspace's connections ([`Store::CONNECTIONS`]). Then the
+//! connections' own rule:
 //!
 //! - an agent that anything narrows (what its entry bounds it to; a
 //!   sub-agent) reaches only a connection a rule of its own names, and looks
@@ -52,6 +54,7 @@ use crate::connections::{self, Calling, Reach};
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
+use crate::workspaces::workspace_stores::Store;
 
 /// The most arguments a question shows whole, as JSON: a call with more is
 /// refused before anybody is asked.
@@ -307,6 +310,19 @@ fn command_row(connection: &Connection, site: &str, command: &Command) -> Catalo
 }
 
 impl Workspaces {
+    /// Whether the person `using` acts for reaches the workspace's
+    /// connections, as the workspace's policy decides for them.
+    async fn reaches_connections(&self, turn: &HostedTurn<'_>, using: &KeepersTurn) -> bool {
+        self.person_reaches(
+            turn.workspace,
+            &using.person,
+            Store::CONNECTIONS,
+            person_connections::LIST,
+            tilo_action_policy::ActionKind::Read,
+        )
+        .await
+    }
+
     /// Take what `request` asks of its person's connections, for `turn`.
     ///
     /// # Errors
@@ -327,7 +343,10 @@ impl Workspaces {
         if target.provider != person_connections::PROVIDER {
             return Err(Refused::UnknownAction);
         }
-        let root = self.person_settings_root(&using.person);
+        if !self.reaches_connections(turn, &using).await {
+            return Err(Refused::UnknownAction);
+        }
+        let root = self.workspace_root(&using.workspace);
         let reach = self.connections_reach();
         let at = (root.as_path(), &reach);
         let resource: &str = &target.address.resource;
@@ -552,7 +571,10 @@ impl Workspaces {
         let Ok(using) = self.keepers_turn(turn).await else {
             return Vec::new();
         };
-        let root = self.person_settings_root(&using.person);
+        if !self.reaches_connections(turn, &using).await {
+            return Vec::new();
+        }
+        let root = self.workspace_root(&using.workspace);
         let reach = self.connections_reach();
         let reached: Vec<Connection> = connections::list(&root)
             .map(|kept: Connections| kept.connections)
@@ -630,7 +652,7 @@ impl Workspaces {
         let Some(leave) = leave.filter(|leave| matches!(leave, Leave::Once | Leave::Always)) else {
             return Ok(None);
         };
-        let root = self.person_settings_root(&using.person);
+        let root = self.workspace_root(&using.workspace);
         let reach = self.connections_reach();
         match waits.shown {
             Shown::Call(asked) => {

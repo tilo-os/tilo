@@ -10,17 +10,15 @@
 //!
 //! Two checks, in this order, and neither is the whole rule. The turn is its
 //! keeper's own ([`Workspaces::keepers_turn`]): an agent on a turn for the
-//! person who keeps it, whom the workspace admits now. And that person named
-//! this agent for the account, in this workspace
-//! ([`person_accounts::ASSISTANT`]): nothing is granted by default, and the
-//! same id in a workspace somebody else keeps is nobody. An agent that
+//! person who keeps it, whom the workspace admits now. And the workspace's
+//! policy lets that person reach its mail ([`Store::MAIL`]). An agent that
 //! anything narrows (what its entry bounds it to; a sub-agent) also holds a
 //! rule that names the very action ([`HostedTurn::may_take`]). Unknown and
 //! forbidden are the same answer.
 //!
-//! What such a turn may do is what the named agent may behind a device of
-//! its person: list its accounts, read what arrived, read a folder and a
-//! message with the files it carries by name and size, search, begin a
+//! What such a turn may do is what an agent may behind a device of its
+//! person: list the workspace's accounts, read what arrived, read a folder
+//! and a message with the files it carries by name and size, search, begin a
 //! message and keep it as a draft. The account's sign-in is used inside the
 //! mail session and never answered.
 //!
@@ -33,7 +31,7 @@
 //! over a restart of this server. On their own answer
 //! ([`Workspaces::send_asked`]) the message that waited is read again, and
 //! it leaves only when it still shows exactly what they were shown and its
-//! agent is still named for the account. Whatever comes of the answer, what
+//! person still reaches the workspace's mail. Whatever comes of the answer, what
 //! waited is gone, so nothing leaves twice. No answer lets mail leave
 //! unasked from then on.
 
@@ -45,9 +43,9 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::remote::person_accounts::{self, BeginSend, SendId, SentMail};
 use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
 
-use super::{
-    NamedAgent, Staged, accounts_of_assistant, argument, begun_for, send_staged, sends_root,
-};
+use super::{Staged, argument, begun_for, send_staged, sends_root};
+use crate::workspaces::workspace_stores::Store;
+use tilo_action_policy::ActionKind;
 use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
 use crate::workspaces::{WorkspaceId, Workspaces};
@@ -179,45 +177,46 @@ fn set_apart(root: &Path, dir: &Path, asked: &AskedSend) -> Result<(), String> {
 
 impl Workspaces {
     /// Whose turn `turn` is, the id of its workspace as a grant is kept by
-    /// it, and the mail accounts its person named its agent for there.
+    /// it, and the workspace's mail accounts.
     ///
     /// # Errors
     /// [`ActionCallError::UnknownAction`] for a turn that is not its keeper's
-    /// own, and for an agent its person named for no mail account in this
-    /// workspace.
+    /// own, for a keeper the workspace's policy does not let read its mail,
+    /// and in a workspace that keeps no mail account.
     async fn mail_of_turn(
         &self,
         turn: &HostedTurn<'_>,
     ) -> Result<(KeepersTurn, String, BTreeSet<String>), ActionCallError> {
         let using = self.keepers_turn(turn).await?;
-        // The person's word is kept by the workspace's id, as their device
-        // gave it from that workspace.
         let workspace = turn.workspace.to_string();
-        let root = self.person_settings_root(&using.person);
-        let named = NamedAgent {
-            workspace: &workspace,
-            agent: &using.agent,
-        };
-        let kept = accounts::AccountStore::load_in(&root);
-        // Named for a mail account: one named for a calendar alone reaches
-        // nothing of mail.
-        let named_for: BTreeSet<String> = accounts_of_assistant(&root, named)
-            .into_iter()
-            .filter(|account| {
-                kept.get(&accounts::AccountId::from(account.clone()))
-                    .is_some_and(|kept| kept.type_id.as_str() == accounts::email::TYPE_ID)
-            })
-            .collect();
-        if named_for.is_empty() {
+        if !self
+            .person_reaches(
+                turn.workspace,
+                &using.person,
+                Store::MAIL,
+                person_accounts::LIST,
+                ActionKind::Read,
+            )
+            .await
+        {
             return Err(ActionCallError::UnknownAction);
         }
-        Ok((using, workspace, named_for))
+        let root = self.workspace_root(&workspace);
+        let accounts: BTreeSet<String> = accounts::AccountStore::load_in(&root)
+            .list(&accounts::AccountTypeId::from(accounts::email::TYPE_ID))
+            .iter()
+            .map(|account| account.id.as_str().to_owned())
+            .collect();
+        if accounts.is_empty() {
+            return Err(ActionCallError::UnknownAction);
+        }
+        Ok((using, workspace, accounts))
     }
 
     /// The mail actions `turn` is offered, as a catalogue lists them: each
     /// one it would not be refused. None for a turn that is not its keeper's
-    /// own and for an agent its person named for no mail account in this
-    /// workspace; a narrowed agent is offered the ones a rule of its names.
+    /// own, for a keeper who does not reach the workspace's mail and in a
+    /// workspace that keeps no mail account; a narrowed agent is offered the ones a rule of its names.
     pub async fn mail_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let Ok((using, ..)) = self.mail_of_turn(turn).await else {
             return Vec::new();
@@ -238,7 +237,7 @@ impl Workspaces {
 
     /// Answer the mail request `request` of `turn`.
     ///
-    /// Everything but a send is answered as the named agent is answered
+    /// Everything but a send is answered as an agent is answered
     /// behind a device of its person. A send is not carried out: the
     /// message is set apart and [`TurnMail::Asks`] answers what its person
     /// is to be shown. The caller puts that question to them, or says that
@@ -246,7 +245,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The turn is none this server carries out for the account's person or
-    /// its agent is not named for the account
+    /// its person does not reach the workspace's mail
     /// ([`ActionCallError::UnknownAction`]), its agent is narrowed and holds no
     /// rule for the action ([`ActionCallError::NotPermitted`]), the arguments do
     /// not read, the mail server refused, or a message to send cannot be
@@ -262,24 +261,20 @@ impl Workspaces {
         {
             return Err(ActionCallError::UnknownAction);
         }
-        let (using, workspace, named_for) = self.mail_of_turn(turn).await?;
+        let (using, workspace, kept) = self.mail_of_turn(turn).await?;
         if !turn.may_take(&using.workspace, target) {
             return Err(ActionCallError::NotPermitted);
         }
-        let named = NamedAgent {
-            workspace: &workspace,
-            agent: &using.agent,
-        };
+        let root = self.workspace_root(&workspace);
         if target.address.action != person_accounts::SEND {
             return self
-                .assistant_invoke(using.person, named, turn.caller, request)
+                .mail_read_or_draft(&root, &workspace, request, true)
                 .await
                 .map(TurnMail::Done);
         }
-        let root = self.person_settings_root(&using.person);
         let sending: SendId = argument(request, "a message to send")?;
         let (dir, beginning) = begun_for(&root, &sending.send)?;
-        if !named_for.contains(&beginning.message.account) {
+        if !kept.contains(&beginning.message.account) {
             return Err(ActionCallError::UnknownAction);
         }
         let account = beginning.message.account.clone();
@@ -305,11 +300,7 @@ impl Workspaces {
     /// message is a begun one again, for its agent to ask once more or to
     /// keep as a draft.
     pub fn send_not_asked(&self, asked: &AskedSend) {
-        let mut person = [0; 32];
-        if hex::decode_to_slice(&asked.person, &mut person).is_err() {
-            return;
-        }
-        let root = self.person_settings_root(&person);
+        let root = self.workspace_root(&asked.workspace);
         let Ok(waits) = asked_dir(&root, &asked.workspace, &asked.send) else {
             return;
         };
@@ -332,7 +323,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// Why nothing left, in words its person reads: nothing waits under
-    /// that question, the agent is no longer named for the account, what
+    /// that question, its person no longer reaches the workspace's mail, what
     /// waited no longer shows what they were shown, or the mail server
     /// refused.
     pub async fn send_asked(
@@ -351,7 +342,8 @@ impl Workspaces {
         }
         let mut person = [0; 32];
         hex::decode_to_slice(&ask.person, &mut person).map_err(|_| gone())?;
-        let root = self.person_settings_root(&person);
+        let workspace = WorkspaceId::parse(&asked.workspace).ok_or_else(gone)?;
+        let root = self.workspace_root(&asked.workspace);
         // Taken from where it waited before anything is done with it.
         let waits = asked_dir(&root, &asked.workspace, &asked.send)?;
         let taken = waits.with_extension("leaving");
@@ -359,7 +351,7 @@ impl Workspaces {
             .and_then(|()| std::fs::remove_file(taken.join(ASKED_FILE)))
             .map_err(|_| gone())?;
         let left = if allowed {
-            self.leave_as_shown(&root, &taken, &asked, &ask.agent)
+            self.leave_as_shown(&root, &taken, &asked, (workspace, &person))
                 .await
                 .map(Some)
         } else {
@@ -377,30 +369,32 @@ impl Workspaces {
     }
 
     /// Hand the message in `taken` to its account's server, if it still
-    /// shows what `asked` showed its person and `agent` is still named for
-    /// the account.
+    /// shows what `asked` showed its person and that person still reaches
+    /// the workspace's mail.
     async fn leave_as_shown(
         &self,
         root: &Path,
         taken: &Path,
         asked: &AskedSend,
-        agent: &str,
+        (workspace, person): (WorkspaceId, &[u8; 32]),
     ) -> Result<SentMail, String> {
         let gone = |_| NO_LONGER_WAITS.to_owned();
         let meta = std::fs::read(taken.join("meta.json")).map_err(gone)?;
         let beginning: BeginSend =
             serde_json::from_slice(&meta).map_err(|_| NO_LONGER_WAITS.to_owned())?;
-        // Its person may have taken their word back since they were asked.
-        let named = NamedAgent {
-            workspace: &asked.workspace,
-            agent,
-        };
+        // The workspace may have taken its grant back since they were asked.
         if beginning.message.account != asked.account
-            || !accounts_of_assistant(root, named).contains(&asked.account)
+            || !self
+                .person_reaches(
+                    workspace,
+                    person,
+                    Store::MAIL,
+                    person_accounts::SEND,
+                    ActionKind::Outside,
+                )
+                .await
         {
-            return Err(
-                "This assistant is no longer named for that account, so nothing was sent.".into(),
-            );
+            return Err("You no longer send mail from this workspace, so nothing was sent.".into());
         }
         let staged = Staged::read(taken.to_path_buf(), beginning)?;
         if staged.shown()?.rows() != asked.rows.as_slice() {

@@ -2,15 +2,16 @@
 //!
 //! An agent a person keeps on this server works with every device of theirs
 //! off, so no transport verified a device behind what it asks, and the check
-//! a device's request passes ([`Workspaces::asking_for_person`]) has nothing
-//! to compare. This is the server's own entry for such a turn. It is reached
+//! a device's request passes ([`Workspaces::reaching`]) has nothing to
+//! compare. This is the server's own entry for such a turn. It is reached
 //! from no transport: only the code that carries out the turn calls it, with
 //! the very caller the turn's tools act as and what the workspace's list of
 //! its agents says of the agent ([`HostedTurn`]).
 //!
 //! The rule is the vault's own, and nothing here hands a secret to whoever
 //! asks. A reference becomes its secret only inside this server, only in the
-//! vault of the person the turn acts for, only for the kind the use needs
+//! vault of the workspace the turn works in, when the workspace's policy
+//! lets the person the turn acts for use it, only for the kind the use needs
 //! and only at the places the use sends it to, with the use written down
 //! first ([`accounts::vault_items::VaultItems::use_as`]). The caller is
 //! answered what the person would be: the account, the provider.
@@ -84,6 +85,7 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 
 use super::person_asking::{workspace_store_dir, workspace_store_root};
+use super::workspace_stores::Store;
 use super::{WorkspaceId, Workspaces};
 
 mod web_call;
@@ -857,6 +859,19 @@ impl Workspaces {
         if !turn.may_take(&using.workspace, target) {
             return Err(NotPermitted);
         }
+        // The workspace's vault is used only by whom its policy lets use it.
+        if !self
+            .person_reaches(
+                turn.workspace,
+                &using.person,
+                Store::VAULT,
+                &target.address.action,
+                ActionKind::Undoable,
+            )
+            .await
+        {
+            return Err(NotPermitted);
+        }
         Ok(using)
     }
 
@@ -915,7 +930,7 @@ impl Workspaces {
     /// ([`UnknownAction`]), its agent is narrowed and holds
     /// no rule for this use ([`NotPermitted`]), the
     /// arguments do not read, or the vault refuses the use: no such item in
-    /// that person's vault, another kind, a place it does not belong to.
+    /// the workspace's vault, another kind, a place it does not belong to.
     pub async fn use_for_turn(
         &self,
         turn: &HostedTurn<'_>,
@@ -925,7 +940,7 @@ impl Workspaces {
         let using = self.turn_uses_for(turn, &request.target).await?;
         let arguments = arguments_of(request);
         let wanted = Use::read(&request.target, &arguments)?;
-        let root = self.person_settings_root(&using.person);
+        let root = self.workspace_root(&using.workspace);
         let (item, kind, places) = wanted.wanted(&root).map_err(refused)?;
         if !using.may_use(item.as_str()) {
             return Err(refused(not_delegated()));
@@ -1181,7 +1196,7 @@ impl Workspaces {
     ) -> Result<Option<Value>, ActionCallError> {
         let mut person = [0; 32];
         hex::decode_to_slice(&kept.person, &mut person).map_err(|_| UnknownAction)?;
-        let root = self.person_settings_root(&person);
+        let root = self.workspace_root(&kept.workspace);
         if kept.detail != *shown {
             return Err(refused(
                 "The question is not the one this server asked: nothing was used",
@@ -1431,7 +1446,7 @@ impl Workspaces {
 }
 
 impl Workspaces {
-    /// Whether `turn` may ask for a page's field to be filled from its person's vault at
+    /// Whether `turn` may ask for a page's field to be filled from its workspace's vault at
     /// all: what [`Self::release_for_turn`] refuses before the vault is opened, asked before
     /// any window is.
     ///
@@ -1457,7 +1472,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// As [`Self::use_for_turn`], and the vault's own refusals: no such item
-    /// in that person's vault, a site it does not belong to or that did not
+    /// in the workspace's vault, a site it does not belong to or that did not
     /// arrive over https, an item that is no login, code generator or value.
     pub async fn release_for_turn(
         &self,
@@ -1468,7 +1483,7 @@ impl Workspaces {
     ) -> Result<TurnRelease, ActionCallError> {
         let target = person_vault::page_target();
         let using = self.turn_uses_for(turn, &target).await?;
-        let root = self.person_settings_root(&using.person);
+        let root = self.workspace_root(&using.workspace);
         let (item, site) = page_wanted(fill).map_err(refused)?;
         if !using.may_use(item.as_str()) {
             return Err(refused(not_delegated()));

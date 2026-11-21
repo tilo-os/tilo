@@ -1,4 +1,4 @@
-//! A program that waits on the times its person's calendars hold: a moment
+//! A program that waits on the times the workspace's calendars hold: a moment
 //! before each entry of a category, carried out with every device off and a
 //! clock the test sets. The calendar is kept as a pull of its server left
 //! it, and changed as the next pull would after another client changed it.
@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tilo_automation::resource_time::{CALENDAR_START, PERSON_CALENDARS};
 
-use super::judging::{ASSISTANT, keeps_an_assistant};
+use super::judging::keeps_an_assistant;
 use super::*;
 
 /// The moment `text` names, ms since the epoch.
@@ -115,7 +115,6 @@ async fn pass(runner: &mut installed::BotRunner, clock: &tilo_clock::ManualClock
 async fn a_moment_before_each_entry_of_a_category_fires_once_and_follows_the_calendar() {
     let scratch = tempfile::tempdir().unwrap();
     let (workspaces, workspace, cert, _holder) = person_with_an_assistant(scratch.path()).await;
-    let person = cert.user_public_key;
     let set = (&workspaces, workspace.as_str(), &cert);
     let state = scratch.path().join("times.json");
     let assistant = Assistant::answering(vec![]);
@@ -143,7 +142,7 @@ async fn a_moment_before_each_entry_of_a_category_fires_once_and_follows_the_cal
         .to_owned();
     let keep = |entries: Vec<String>| {
         workspaces
-            .keep_calendar_as_pulled(&person, Some((workspace.as_str(), ASSISTANT)), &entries)
+            .keep_calendar_as_pulled(&workspace, &entries)
             .unwrap();
     };
     keep(vec![standup.clone(), lunch.clone(), offsite.clone()]);
@@ -238,49 +237,5 @@ async fn a_moment_before_each_entry_of_a_category_fires_once_and_follows_the_cal
         runner.dead_letters().next().is_none(),
         "{:?}",
         runner.dead_letters().collect::<Vec<_>>()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_entrys_time_reaches_only_an_assistant_its_person_named_for_the_calendar() {
-    let scratch = tempfile::tempdir().unwrap();
-    let (workspaces, workspace, cert, _holder) = person_with_an_assistant(scratch.path()).await;
-    let person = cert.user_public_key;
-    let set = (&workspaces, workspace.as_str(), &cert);
-    let assistant = Assistant::answering(vec![]);
-    let review = entry(
-        "review-1@example.org",
-        "Review",
-        "20261019T093000",
-        "CATEGORIES:Board\r\n",
-    );
-
-    // Their calendar is kept here, and they named no agent for it.
-    workspaces
-        .keep_calendar_as_pulled(&person, None, std::slice::from_ref(&review))
-        .unwrap();
-    let manual = Arc::new(tilo_clock::ManualClock::new(at("2026-10-19T06:00:00Z")));
-    let state = scratch.path().join("unnamed.json");
-    let mut runner = waiting(set, &assistant, &manual, state).await;
-    pass(&mut runner, &manual, "2026-10-19T06:00:00Z").await;
-    pass(&mut runner, &manual, "2026-10-19T07:15:00Z").await;
-    assert!(
-        handed(&assistant).is_empty(),
-        "nothing of a calendar its person did not let it read"
-    );
-
-    // They name their assistant for it while the entry has not begun: it is
-    // told then.
-    workspaces
-        .keep_calendar_as_pulled(
-            &person,
-            Some((workspace.as_str(), ASSISTANT)),
-            std::slice::from_ref(&review),
-        )
-        .unwrap();
-    pass(&mut runner, &manual, "2026-10-19T07:20:00Z").await;
-    assert_eq!(
-        handed(&assistant),
-        [("2026-10-19".to_owned(), at("2026-10-19T07:30:00Z"))]
     );
 }

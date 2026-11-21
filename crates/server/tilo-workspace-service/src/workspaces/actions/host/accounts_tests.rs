@@ -1,10 +1,10 @@
-//! The person's own mail accounts as a live read: a window that follows
-//! them is sent the whole listing again when they change, woken by the
-//! change rather than asking for it again.
+//! A workspace's mail accounts as a live read: a window that follows them is
+//! sent the whole listing again when they change, woken by the change rather
+//! than asking for it again.
 //!
 //! A page keeps no vault and no mail connection, so its window reads the
-//! accounts the host keeps, and another window's add or removal must reach
-//! it when it happens.
+//! accounts the workspace keeps, and another member's add or removal must
+//! reach it when it happens.
 
 #![expect(
     clippy::significant_drop_tightening,
@@ -20,8 +20,7 @@ use tilo_actions::remote::{
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::super::ServiceWorkspaceActions;
-use super::super::tests::{caller, settled};
+use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::tests::{governor, test_host};
 
 /// A device of the person `root`.
@@ -60,7 +59,7 @@ pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {
     }
 }
 
-/// `address` kept in the person's own store, as a window's add keeps one.
+/// `address` kept in the workspace's own store, as a window's add keeps one.
 fn keep(root: &std::path::Path, address: &str) {
     let mut store = accounts::AccountStore::load_in(root);
     let mut account = accounts::Account::new(address, accounts::email::TYPE_ID);
@@ -90,31 +89,28 @@ pub(super) fn listed(
     serde_json::from_value(value).expect("the listing reads")
 }
 
-/// A window following the person's accounts is sent the whole listing
-/// again when another window removes one: no timer asks the host, and the
+/// A window following the workspace's accounts is sent the whole listing
+/// again when another member removes one: no timer asks the host, and the
 /// wake is the change.
 #[tokio::test]
 async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "studio");
-    let person = root.verifying_key().to_bytes();
-    let keeping = workspaces.person_settings_root(&person);
+    let workspaces = server.workspaces().clone();
+    let (workspace, workspace_id, host) = governed(&workspaces).await;
+    let ada = admit(&workspaces, &workspace, &owner, 1).await;
+    let bo = admit(&workspaces, &workspace, &owner, 2).await;
+    let keeping = workspaces.workspace_root(&workspace_id.to_string());
     keep(&keeping, "ada@example.test");
     keep(&keeping, "bob@example.test");
-    let page = host.in_workspace_as(
-        workspaces.create("Mail").await.unwrap().workspace_id,
-        &device,
-    );
-    let caller = caller(&device);
+    let hers = host.in_workspace_as(workspace_id, &ada);
+    let ada = caller(&ada);
+    let bos_page = host.in_workspace_as(workspace_id, &bo);
+    let bo = caller(&bo);
 
-    // The window follows them: the host reads them as they are.
-    let receipt = settled(page.invoke(&caller, asking(person_accounts::WATCH, json!({}))))
+    // Her window follows them: the host reads them as they are.
+    let receipt = settled(hers.invoke(&ada, asking(person_accounts::WATCH, json!({}))))
         .await
         .unwrap();
     let id = receipt.invocation;
@@ -123,13 +119,13 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
         "a follow stays open: {:?}",
         receipt.status
     );
-    assert_eq!(listed(&page, &caller, id).accounts.len(), 2);
+    assert_eq!(listed(&hers, &ada, id).accounts.len(), 2);
 
-    // Another window removes one through the same host, and this one is
+    // Another member's window removes one through the same host, and hers is
     // woken by that change rather than asking again.
-    let waking = page.next_change(&caller, &id).expect("a follower is woken");
-    settled(page.invoke(
-        &caller,
+    let waking = hers.next_change(&ada, &id).expect("a follower is woken");
+    settled(bos_page.invoke(
+        &bo,
         asking(
             person_accounts::REMOVE,
             json!({"account": "bob@example.test"}),
@@ -139,7 +135,7 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     .unwrap();
     settled(waking).await;
 
-    let now = listed(&page, &caller, id);
+    let now = listed(&hers, &ada, id);
     assert_eq!(
         now.accounts
             .iter()
@@ -157,36 +153,31 @@ fn arrived(receipt: tilo_actions::remote::InvocationReceipt) -> MailArrivals {
     serde_json::from_value(output.value.expect("an answer")).expect("the arrivals read")
 }
 
-/// What arrived in a person's inboxes is theirs to ask for, and asking is
-/// listening: the host watches their inboxes from then on, with no window
-/// open. Another person reads their own log, and an agent is offered
-/// nothing.
+/// What arrived in a workspace's inboxes is its members' to ask for, and
+/// asking is listening: the host watches its inboxes from then on, with no
+/// window open. A member of another workspace reads their own log, which
+/// holds none of this one's mail, and neither an app nor an agent with no
+/// device behind it reaches it at all.
 #[tokio::test]
-async fn a_person_asks_what_arrived_and_the_host_watches_from_then_on() {
+async fn a_member_asks_what_arrived_and_the_host_watches_from_then_on() {
     use crate::workspaces::mail_watch::testing::{Watched, keep as keep_signed_in, told};
     use tilo_mail_session::InboxSeen;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
+    let workspaces = server.workspaces().clone();
     let servers = std::sync::Arc::new(Watched::default());
     workspaces.carry_mail_through(servers.clone());
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "studio");
-    let person = root.verifying_key().to_bytes();
+    let (workspace, workspace_id, host) = governed(&workspaces).await;
+    let ada = admit(&workspaces, &workspace, &owner, 1).await;
     keep_signed_in(
-        &workspaces.person_settings_root(&person),
+        &workspaces.workspace_root(&workspace_id.to_string()),
         "ada@example.test",
         "adas-password",
     );
-    let page = host.in_workspace_as(
-        workspaces.create("Mail").await.unwrap().workspace_id,
-        &device,
-    );
-    let ada = caller(&device);
+    let page = host.in_workspace_as(workspace_id, &ada);
+    let ada = caller(&ada);
     assert!(servers.running().is_empty(), "nobody asked yet");
 
     let first = arrived(
@@ -231,27 +222,30 @@ async fn a_person_asks_what_arrived_and_the_host_watches_from_then_on() {
         "asking again starts no second watch"
     );
 
-    // Another person reads their own log, never this one.
-    let other = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
-    let other_page = host.in_workspace_as(
-        workspaces.create("Other").await.unwrap().workspace_id,
-        &other,
-    );
+    // A member of another workspace reads their own log, never this one.
+    let (elsewhere, elsewhere_id, _) = governed(&workspaces).await;
+    let bo = admit(&workspaces, &elsewhere, &owner, 2).await;
+    let elsewhere_page = host.in_workspace_as(elsewhere_id, &bo);
     let theirs = arrived(
-        settled(other_page.invoke(&caller(&other), asking(person_accounts::ARRIVED, json!({}))))
+        settled(elsewhere_page.invoke(&caller(&bo), asking(person_accounts::ARRIVED, json!({}))))
             .await
             .unwrap(),
     );
     assert!(theirs.arrivals.is_empty());
 
-    // An agent is offered nothing here, the person's own included.
-    let agent = Caller::delegated_agent("writer", device.user_public_key, device.device_public_key);
-    let refused = settled(page.invoke(&agent, asking(person_accounts::ARRIVED, json!({})))).await;
+    // An app, and an agent with no device behind it, are nobody here.
+    let asking_arrivals = asking(person_accounts::ARRIVED, json!({}));
+    let app = settled(page.invoke(&Caller::local_app("so.tilo.chat"), asking_arrivals.clone())).await;
+    assert!(
+        matches!(app, Err(tilo_actions::remote::ActionCallError::UnknownAction)),
+        "{app:?}"
+    );
+    let unowned = settled(page.invoke(&Caller::local_agent("writer"), asking_arrivals)).await;
     assert!(
         matches!(
-            refused,
+            unowned,
             Err(tilo_actions::remote::ActionCallError::UnknownAction)
         ),
-        "{refused:?}"
+        "{unowned:?}"
     );
 }

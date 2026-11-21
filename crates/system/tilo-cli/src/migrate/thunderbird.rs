@@ -7,7 +7,7 @@
 //! Each account Thunderbird reads from a server is **connected**: its incoming and outgoing
 //! servers, the names and addresses it sends as, and the password Thunderbird saved for it go to
 //! the server that keeps the person's workspace, as their own request
-//! (`person/mail-accounts#add`). That server signs in with the password first, and only once
+//! (`workspace/mail-accounts#add`). That server signs in with the password first, and only once
 //! the mail server took it keeps the account and seals the password in the person's vault. Mail
 //! then syncs the account from its server, as it does any account. Nothing is copied from
 //! Thunderbird's cache for it. Connecting is the person's to say: the migration shows each account
@@ -44,7 +44,7 @@ const DELIVER: &str = "mail/mail.messages#deliver-message";
 const ADD_CONTACTS: &str = "contacts/contacts.contacts#add-contacts";
 const NEW_EVENT: &str = "calendar/calendar.calendar#new-event";
 /// The person's mail accounts on the server that keeps their workspace, which only they add to.
-pub const MAIL_ACCOUNTS: &str = "person/mail-accounts";
+pub const MAIL_ACCOUNTS: &str = "workspace/mail-accounts";
 /// What the review names an account's cached messages by: `cache/<address>`.
 const CACHE: &str = "cache/";
 /// The kind of the item that copies an account's cache.
@@ -469,7 +469,7 @@ fn signs_in_with(
         })
 }
 
-/// Connect the mail account `adding` describes (as `person/mail-accounts#add` takes it), once
+/// Connect the mail account `adding` describes (as `workspace/mail-accounts#add` takes it), once
 /// the person says yes, and only say so once the server lists it.
 ///
 /// # Errors
@@ -583,7 +583,7 @@ fn config(
         .ok()
 }
 
-/// What the person's `person/mail-accounts#add` takes for `account`, including the password
+/// What `workspace/mail-accounts#add` takes for `account`, including the password
 /// Thunderbird saved for it: `None` for an account Mail cannot reach (local folders, POP) or
 /// whose settings do not check.
 fn account_arguments(

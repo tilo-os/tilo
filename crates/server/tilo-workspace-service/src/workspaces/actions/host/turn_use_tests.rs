@@ -301,8 +301,9 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
     server.shutdown().await;
 }
 
-/// No agent reads an item's leaves or takes them back. Its person does,
-/// from their own device: what the item remembers after.
+/// An agent reads an item's uses with its person's access, and takes no
+/// leave back: its person does, from their own device. What the item
+/// remembers after.
 async fn she_alone_takes_the_leave_back(
     service: &super::super::ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
@@ -311,20 +312,24 @@ async fn she_alone_takes_the_leave_back(
 ) -> Value {
     let as_ada = caller(ada);
     let helper = Caller::delegated_agent("scout", ada.user_public_key, ada.device_public_key);
-    for action in [person_vault::USES, person_vault::TAKE_BACK] {
-        let refused = ask(
-            service,
-            workspace_id,
-            (ada, &helper),
-            action,
-            json!({"item": item}),
-        )
-        .await;
-        assert!(
-            matches!(refused, Err(UnknownAction)),
-            "{action}: {refused:?}"
-        );
-    }
+    ask(
+        service,
+        workspace_id,
+        (ada, &helper),
+        person_vault::USES,
+        json!({"item": item}),
+    )
+    .await
+    .expect("an agent reads what its item remembers");
+    let taken = ask(
+        service,
+        workspace_id,
+        (ada, &helper),
+        person_vault::TAKE_BACK,
+        json!({"item": item}),
+    )
+    .await;
+    assert!(matches!(taken, Err(UnknownAction)), "{taken:?}");
     ask(
         service,
         workspace_id,
@@ -577,8 +582,8 @@ pub(super) fn not_her_agents_turns(
 /// before the vault is opened: a person, an agent with no turn, an agent
 /// admitted as a member, a bot, an app, a turn confined elsewhere, a turn
 /// on a device the workspace does not admit that person on, and another
-/// member's ask of the agent. Another member's own agent finds nothing
-/// under her reference.
+/// member's ask of the agent. Another member's own turn uses the
+/// workspace's item, and its use asks his person.
 #[tokio::test]
 async fn only_an_agents_turn_for_its_own_keeper_uses_their_vault() {
     let dir = tempfile::tempdir().unwrap();
@@ -606,8 +611,14 @@ async fn only_an_agents_turn_for_its_own_keeper_uses_their_vault() {
         assert!(workspaces.uses_offered(&turn).await.is_empty(), "{who}");
     }
 
-    // Bo's own agent, on Bo's own turn, is not refused as a turn. Her
-    // reference names nothing in his vault, which is the only one opened.
+    assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
+    assert!(
+        workspaces.open_use_asks(&workspace).is_empty(),
+        "nobody was asked"
+    );
+
+    // Bo's own agent, on Bo's own turn, is not refused as a turn: the item
+    // is the workspace's, and its use asks his person, not hers.
     let bo_id = hex::encode(bo.user_public_key);
     let bos = on_turn(&bo, &workspace, "bos-agent");
     let his = HostedTurn {
@@ -616,16 +627,15 @@ async fn only_an_agents_turn_for_its_own_keeper_uses_their_vault() {
         keeper: &bo_id,
         bound: None,
     };
-    let nothing = workspaces.use_for_turn(&his, &adding, json!({})).await;
-    assert!(
-        matches!(&nothing, Err(Refused { reason }) if reason == "That item is not kept here"),
-        "{nothing:?}"
-    );
+    let open = asked(workspaces.use_for_turn(&his, &adding, json!({})).await);
+    assert_eq!(open.person, bo_id, "the workspace's item asks his person");
+    assert_eq!(open.agent, "bos-agent");
 
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
-    assert!(
-        workspaces.open_use_asks(&workspace).is_empty(),
-        "nobody was asked"
+    assert_eq!(
+        workspaces.open_use_asks(&workspace).len(),
+        1,
+        "his person is asked about it"
     );
     assert_eq!(
         remembered(&service, workspace_id, hers, &login).await,

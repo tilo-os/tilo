@@ -16,7 +16,7 @@ use super::*;
 use crate::coding_agents::harness::Start;
 use crate::coding_agents::run::{Conversation, Serves};
 use crate::coding_agents::testing::Local;
-use crate::coding_agents::tests::{ADA, Written, host_of_ada};
+use crate::coding_agents::tests::{WORKSPACE, Written, host_of_ada, workspace_of};
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::scripted::Reply;
 
@@ -55,7 +55,7 @@ impl Kept {
             local,
             starts,
             serves: Serves {
-                model: Arc::new(move |kind| models.person_model(ADA, kind)),
+                model: Arc::new(move |kind| models.workspace_model(workspace_of(WORKSPACE), kind)),
                 tilo: Arc::new(|_| None),
                 language: None,
             },

@@ -206,7 +206,7 @@ async fn four_hundred_words_reach_a_device_while_they_are_written() {
     workspaces.answer_models_with(theirs.clone());
     workspaces
         .link_model_for(
-            &root.verifying_key().to_bytes(),
+            &workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,

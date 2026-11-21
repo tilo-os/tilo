@@ -1,22 +1,17 @@
-//! The person's mail accounts, calendar accounts and model providers, kept
-//! by the holder their workspace runs on.
+//! A workspace's mail accounts, calendar accounts and model providers, kept
+//! by the host the workspace runs on.
 //!
 //! A page has no mail connection and no vault, so the panes that add a mail
-//! account or a provider key from a browser ask the holder: it opens the mail
+//! account or a provider key from a browser ask the host: it opens the mail
 //! server's session to prove the sign-in, keeps the account and the key in
-//! the person's own vault, and answers what it kept. A secret travels in and
+//! the workspace's vault, and answers what it kept. A secret travels in and
 //! never back — a reading says only whether one is kept.
 //!
-//! They are the person's, not any workspace's: one store per person under
-//! `people/<person>` in the holder's state, whichever of their workspaces
-//! they ask from, with its own owner-only key file where there is no keyring.
-//! The stores are the shared account and settings formats, so a device that
-//! reads them keeps reading the same files.
-//!
-//! Only the person themselves asks: a device of theirs, its certificate
-//! naming them. Another member, an administrator or the workspace's owner
-//! included, reaches only their own store, and an agent's request is refused
-//! here, as the holder's own operations refuse one.
+//! They are the workspace's: one store per workspace
+//! ([`Workspaces::workspace_root`]), for all its members, reached as the
+//! workspace's policy says ([`super::workspace_stores`]). The stores are the
+//! shared account and settings formats, so a device that reads them keeps
+//! reading the same files.
 
 /// One provider's grant, kept in the person's vault and renewed behind one
 /// lock.
@@ -26,15 +21,14 @@ mod sending;
 mod sign_in;
 pub mod turn_mail;
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tilo_account_probe::AccountTester;
 use tilo_actions::remote::person_accounts::{
-    AccountAssistants, ArrivedAfter, AssistantAccess, FetchMail, FetchedMail, FetchedMessage,
-    FoundMail, MarkMail, ReadMail, SearchMail,
+    ArrivedAfter, FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail,
+    SearchMail,
 };
 use tilo_actions::remote::person_accounts::{
     AddMailAccount, BeginSend, MAX_SEND_FILE_BYTES, MAX_SEND_FILES, MAX_SEND_PIECE_BYTES,
@@ -56,6 +50,7 @@ use tilo_net::proxy::host::Destinations;
 use tilo_user_identity::DeviceCert;
 
 use super::person_models::kept_location;
+use super::workspace_stores::Store;
 use super::{Workspaces, system_time};
 
 mod person_mail;
@@ -74,33 +69,32 @@ pub(in crate::workspaces) mod calendars;
 pub(in crate::workspaces) mod mail_connect;
 
 impl Workspaces {
-    /// Where this host keeps `person`'s own accounts and model providers,
-    /// with the vault their sign-ins and keys are sealed in: theirs alone,
-    /// apart from every other person's, and the same in each of their
-    /// workspaces.
+    /// Where this host keeps `person`'s own settings: their formats and
+    /// zone, and what may interrupt them. Theirs in every workspace, and
+    /// nothing a workspace keeps.
     pub(super) fn person_settings_root(&self, person: &[u8; 32]) -> PathBuf {
         self.inner.dir.join("people").join(hex::encode(person))
     }
 
-    /// The mail accounts the person's vault keeps, as [`person_accounts::LIST`]
+    /// The mail accounts `workspace` keeps, as [`person_accounts::LIST`]
     /// answers them: what a window following [`person_accounts::WATCH`] is
     /// sent again whenever they change.
-    pub(super) fn accounts_listing(&self, person: &[u8; 32]) -> Result<Value, ActionCallError> {
-        answer(&mail_accounts(&self.person_settings_root(person)))
+    pub(super) fn accounts_listing(&self, workspace: &str) -> Result<Value, ActionCallError> {
+        answer(&mail_accounts(&self.workspace_root(workspace)))
     }
 
-    /// What the person's own settings kept here changed: a window following
-    /// them reads them again.
+    /// What a workspace's accounts or providers kept here changed: a window
+    /// following them reads them again.
     pub(super) fn person_settings_changed(&self) {
         self.inner
             .person_settings_moved
             .send_modify(|count| *count = count.wrapping_add(1));
         // An inbox somebody listens for is watched with the accounts as its
-        // person keeps them now.
+        // workspace keeps them now.
         self.watch_listened_inboxes();
     }
 
-    /// Fires whenever a person's own settings kept here change.
+    /// Fires whenever a workspace's accounts or providers kept here change.
     pub(super) fn person_settings_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.person_settings_moved.subscribe()
     }
@@ -129,22 +123,15 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = session;
     }
 
-    /// Keep the mail account `address` for `person` with a sign-in, as
-    /// adding it from a window keeps one, and name the agent `named` (a
-    /// workspace and the agent's id there) for it when one is given: a
-    /// test stands in for the account's servers
-    /// ([`Self::carry_mail_through`]).
+    /// Keep the mail account `address` in `workspace` with a sign-in, as
+    /// adding it from a window keeps one: a test stands in for the account's
+    /// servers ([`Self::carry_mail_through`]).
     ///
     /// # Errors
-    /// The account, its sign-in or the naming could not be kept.
+    /// The account or its sign-in could not be kept.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn keep_mail_account_as_added(
-        &self,
-        person: &[u8; 32],
-        address: &str,
-        named: Option<(&str, &str)>,
-    ) -> Result<(), String> {
-        let root = self.person_settings_root(person);
+    pub fn keep_mail_account_as_added(&self, workspace: &str, address: &str) -> Result<(), String> {
+        let root = self.workspace_root(workspace);
         let id = accounts::AccountId::from(address.to_owned());
         let mut account = accounts::Account::new(id, accounts::email::TYPE_ID);
         // Where its servers are is not kept: the stand-in is every server.
@@ -154,34 +141,12 @@ impl Workspaces {
         store.save_in(&root).map_err(|error| format!("{error:?}"))?;
         let mut vault =
             accounts::AccountCredentials::open_in(&root).map_err(|error| format!("{error:?}"))?;
-        // Added by its person with its password: bound to the servers it
-        // names, as an added account is.
+        // Added with its password: bound to the servers it names, as an
+        // added account is.
         vault.put_for(&account, &accounts::Secret::password("kept-for-a-test"));
         vault.try_save().map_err(|error| format!("{error:?}"))?;
-        if let Some((workspace, agent)) = named {
-            let naming = tilo_actions::remote::person_accounts::AssistantAccess {
-                account: address.to_owned(),
-                agent: agent.to_owned(),
-                may: true,
-            };
-            say_assistant(&root, workspace, &naming)?;
-        }
         self.person_settings_changed();
         Ok(())
-    }
-
-    /// The accounts of `person` that they named the agent `agent` of
-    /// `workspace` for: what that agent may read, search and draft through.
-    pub(super) fn accounts_named_for(
-        &self,
-        person: &[u8; 32],
-        workspace: &str,
-        agent: &str,
-    ) -> BTreeSet<String> {
-        accounts_of_assistant(
-            &self.person_settings_root(person),
-            NamedAgent { workspace, agent },
-        )
     }
 
     /// What proves an account's sign-in at its server before the account is
@@ -317,272 +282,9 @@ impl Workspaces {
         Ok(certificate.user_public_key)
     }
 
-    /// The person whose own model `caller` asks. A computer logged in as the person acts as
-    /// them, and anything running under their user there can read its device key anyway: the
-    /// person on a device of theirs ([`Self::asking_person`]) and the agent such a computer
-    /// hands its own session to (its apps, the person's own agent) ask the person's model.
-    /// An agent a grant admitted (a key minted for it, a hosted or invited agent) is answered
-    /// nothing here: it uses the person's model only as far as its grant says, on the turns
-    /// the server works for it.
-    pub(super) fn asking_for_model(
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<[u8; 32], ActionCallError> {
-        if let Ok(person) = Self::asking_person(caller, certificate, workspace_id) {
-            return Ok(person);
-        }
-        Self::asking_from_own_computer(caller, certificate, workspace_id)
-    }
-
-    /// The person whose own computer `caller` asks from: the agent a computer logged in as the
-    /// person (`tilo login`) hands its own session to. Never an agent a grant admitted (a key
-    /// minted for it, a hosted or invited agent).
-    pub(super) fn asking_from_own_computer(
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<[u8; 32], ActionCallError> {
-        workspace_id.ok_or(ActionCallError::UnknownAction)?;
-        // Handed the session of the device it connects through, not admitted by a delegation
-        // of its own.
-        if !caller.is_session_delegated() {
-            return Err(ActionCallError::UnknownAction);
-        }
-        let acting = caller.acting();
-        let (Some(_), Some(person)) = (acting.agent_id(), acting.acted_for_person()) else {
-            return Err(ActionCallError::UnknownAction);
-        };
-        let person: [u8; 32] = hex::decode(person)
-            .ok()
-            .and_then(|key| key.try_into().ok())
-            .ok_or(ActionCallError::UnknownAction)?;
-        // That device is a computer of the person's own: no key minted for an agent, no
-        // server's key, no stand-in.
-        let own_computer = certificate.is_some_and(|certificate| {
-            certificate.user_public_key == person
-                && !certificate.capabilities.server_key
-                && certificate.capabilities.agent.is_none()
-                && !certificate.capabilities.stand_in
-                && caller.device_public_key() == Some(&certificate.device_public_key)
-                && caller.user_public_key() == Some(&certificate.user_public_key)
-        });
-        if !own_computer {
-            return Err(ActionCallError::UnknownAction);
-        }
-        Ok(person)
-    }
-
-    /// Who `caller` is to a person's mail: the person on a device of theirs
-    /// ([`Self::asking_person`]), or an agent acting for a person. An agent
-    /// is a person's when a key of that person's stands behind its
-    /// connection, as the transport certified: a device of theirs that
-    /// handed it its session, a key they made for it, or the device this
-    /// host runs their agent's turn for. What it may then do is what that
-    /// person named it for in the workspace it asks through, and nobody
-    /// else's agent is anybody here.
-    pub(super) fn asking_about_mail(
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<AskingAboutMail, ActionCallError> {
-        if let Ok(person) = Self::asking_person(caller, certificate, workspace_id) {
-            return Ok(AskingAboutMail::Person(person));
-        }
-        let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
-        let acting = caller.acting();
-        let (Some(agent), Some(person)) = (acting.agent_id(), acting.acted_for_person()) else {
-            return Err(ActionCallError::UnknownAction);
-        };
-        let person: [u8; 32] = hex::decode(person)
-            .ok()
-            .and_then(|key| key.try_into().ok())
-            .ok_or(ActionCallError::UnknownAction)?;
-        let certified = certificate.is_some_and(|certificate| {
-            certificate.user_public_key == person
-                && caller.device_public_key() == Some(&certificate.device_public_key)
-                && caller.user_public_key() == Some(&certificate.user_public_key)
-        });
-        if !certified {
-            return Err(ActionCallError::UnknownAction);
-        }
-        Ok(AskingAboutMail::Assistant {
-            person,
-            agent: agent.to_owned(),
-            workspace: workspace.to_string(),
-        })
-    }
-
-    /// Whether `caller` is an agent its person named for at least one of
-    /// their mail accounts: what the catalogue offers the mail actions by.
-    pub(super) fn reads_mail_as_assistant(
-        &self,
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> bool {
-        match Self::asking_about_mail(caller, certificate, workspace_id) {
-            Ok(AskingAboutMail::Assistant {
-                person,
-                agent,
-                workspace,
-            }) => {
-                let named = NamedAgent {
-                    workspace: &workspace,
-                    agent: &agent,
-                };
-                // Named for a mail account: one named for a calendar alone
-                // is offered nothing of mail.
-                let root = self.person_settings_root(&person);
-                let kept = accounts::AccountStore::load_in(&root);
-                accounts_of_assistant(&root, named).iter().any(|account| {
-                    kept.get(&accounts::AccountId::from(account.clone()))
-                        .is_some_and(|kept| kept.type_id.as_str() == accounts::email::TYPE_ID)
-                })
-            }
-            _ => false,
-        }
-    }
-
-    /// Answer an agent of `person`'s: what the person let it do with the
-    /// accounts they named it for, and nothing else. It reads, searches and
-    /// drafts. A message it would send is put to its person first. What
-    /// only the person does (adding and removing accounts, marking mail,
-    /// saying who may read) is not there for it: unknown and forbidden are
-    /// the same answer.
-    async fn assistant_invoke(
-        &self,
-        person: [u8; 32],
-        agent: NamedAgent<'_>,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<Value, ActionCallError> {
-        let root = self.person_settings_root(&person);
-        let named = accounts_of_assistant(&root, agent);
-        // An account it is named for, whose sign-in says the servers it was
-        // typed for: an agent's call binds none.
-        let may = |account: &str| {
-            if named.contains(account) {
-                bound_for_an_agent(&root, account)
-                    .map_err(|reason| ActionCallError::Refused { reason })
-            } else {
-                Err(ActionCallError::UnknownAction)
-            }
-        };
-        if named.is_empty() {
-            return Err(ActionCallError::UnknownAction);
-        }
-        match request.target.address.action.as_str() {
-            person_accounts::LIST => answer(&mail_accounts(&root).map(|mut listed| {
-                listed
-                    .accounts
-                    .retain(|account| named.contains(&account.id));
-                if !named.contains(&listed.active) {
-                    listed.active = String::new();
-                }
-                // Whose sign-in is running is the person's own business.
-                listed.signing_in.clear();
-                listed
-            })),
-            person_accounts::FETCH => {
-                let asking: FetchMail = argument(request, "a folder to read")?;
-                may(&asking.account)?;
-                answer(&fetch_with(self.mail_session(), &root, asking).await)
-            }
-            person_accounts::READ => {
-                let reading: ReadMail = argument(request, "a message to read")?;
-                may(&reading.account)?;
-                answer(&read_with(self.mail_session(), &root, reading).await)
-            }
-            person_accounts::SEARCH => {
-                let searching: SearchMail = argument(request, "what to search for")?;
-                may(&searching.account)?;
-                answer(&search_with(self.mail_session(), &root, searching).await)
-            }
-            person_accounts::ARRIVED => {
-                let mut arrived = self.arrived_after(&person, arrived_argument(request)?.after);
-                arrived
-                    .arrivals
-                    .retain(|arrival| named.contains(&arrival.account));
-                answer(&Ok::<_, String>(arrived))
-            }
-            person_accounts::BEGIN_SEND => {
-                let beginning: BeginSend = argument(request, "a message to begin")?;
-                may(&beginning.message.account)?;
-                answer(&begin_send(&root, &beginning))
-            }
-            person_accounts::SEND_PIECE => {
-                let piece: SendPiece = argument(request, "a piece of a message's file")?;
-                may(&begun_for(&root, &piece.send)?.1.message.account)?;
-                answer(&send_piece(&root, &piece))
-            }
-            person_accounts::SAVE_DRAFT => {
-                let keeping: SendId = argument(request, "a draft to keep")?;
-                may(&begun_for(&root, &keeping.send)?.1.message.account)?;
-                answer(&save_staged_draft_with(self.mail_session(), &root, keeping).await)
-            }
-            person_accounts::SEND => {
-                let sending: SendId = argument(request, "a message to send")?;
-                let (dir, beginning) = begun_for(&root, &sending.send)?;
-                may(&beginning.message.account)?;
-                // The message is read once, here. Its person is shown that
-                // reading, and that reading is what leaves on their yes:
-                // nothing is read again from what was begun.
-                let read =
-                    Staged::read(dir, beginning).and_then(|staged| Ok((staged.shown()?, staged)));
-                let sent = match read {
-                    Ok((shown, staged)) => {
-                        // A message that left already is answered as the send
-                        // it was: its person is asked nothing more.
-                        if let Some(sent) = self
-                            .recorded_mail_send(Some(agent.workspace), &staged)
-                            .await
-                        {
-                            Ok(sent)
-                        } else {
-                            self.ask_person(person, shown.question(agent.agent, caller))
-                                .await?;
-                            self.send_in_workspace(
-                                Some(agent.workspace),
-                                self.mail_session(),
-                                &root,
-                                staged,
-                            )
-                            .await
-                        }
-                    }
-                    Err(unshowable) => Err(unshowable),
-                };
-                answer(&sent)
-            }
-            _ => Err(ActionCallError::UnknownAction),
-        }
-    }
-
-    /// Who asks `request` of the person's accounts. A person moving in from another mail
-    /// program connects their accounts from their own computer, which asked them in its
-    /// terminal first: that computer lists and adds their accounts as they do. Everything else
-    /// of their mail stays as an agent's.
-    fn asking_about_accounts(
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        workspace_id: Option<collab_types::WorkspaceId>,
-        request: &InvokeRequest,
-    ) -> Result<AskingAboutMail, ActionCallError> {
-        let connects = matches!(
-            request.target.address.action.as_str(),
-            person_accounts::LIST | person_accounts::ADD_MAIL
-        );
-        if connects
-            && Self::asking_person(caller, certificate, workspace_id).is_err()
-            && let Ok(person) = Self::asking_from_own_computer(caller, certificate, workspace_id)
-        {
-            return Ok(AskingAboutMail::Person(person));
-        }
-        Self::asking_about_mail(caller, certificate, workspace_id)
-    }
-
-    /// Answer a [`person_accounts::PROVIDER`] request.
+    /// Answer a [`person_accounts::PROVIDER`] request: the workspace's mail
+    /// accounts and their mail, as the workspace's policy lets the caller
+    /// reach them at Mail ([`Store::MAIL`]).
     pub(super) async fn person_accounts_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -590,103 +292,182 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        // The person's calendars are another resource of the same provider.
+        // The workspace's calendars are another resource of the same provider.
         #[cfg(feature = "agents")]
         if request.target.address.resource == calendars::RESOURCE {
             return self
                 .person_calendars_invoke(workspace_id, caller, certificate, request)
                 .await;
         }
-        let person = match Self::asking_about_accounts(caller, certificate, workspace_id, request)?
-        {
-            AskingAboutMail::Person(person) => person,
-            AskingAboutMail::Assistant {
-                person,
-                agent,
-                workspace,
-            } => {
-                let named = NamedAgent {
-                    workspace: &workspace,
-                    agent: &agent,
-                };
-                return self.assistant_invoke(person, named, caller, request).await;
-            }
+        let action = request.target.address.action.as_str();
+        let effect = mail_effect(action);
+        let asked = (workspace_id, caller, certificate);
+        // A send asks its person with the message itself, below.
+        let reach = if action == person_accounts::SEND {
+            self.reaching(asked, Store::MAIL, action, effect).await?
+        } else {
+            self.reaching_allowed(asked, Store::MAIL, action, effect)
+                .await?
         };
-        let root = self.person_settings_root(&person);
-        // The person's request came through a workspace, or it was not
-        // theirs: an agent they name is named in that one.
-        let here = workspace_id.map(|id| id.to_string()).unwrap_or_default();
-        // The person asks the keeper of their accounts to sign in: a sign-in
-        // kept with no servers on it is bound to the servers its account
-        // names now.
-        if signs_in(request.target.address.action.as_str())
-            && let Err(reason) = bind_kept_first(&root)
-        {
-            return Err(ActionCallError::Refused { reason });
+        let here = reach.workspace.to_string();
+        let root = self.workspace_root(&here);
+        if signs_in(action) {
+            // A sign-in kept with no servers on it is bound to the servers
+            // its account names now by a person signing in; an agent's call
+            // under its own name binds none.
+            let bound = if reach.agent.is_some() {
+                Ok(())
+            } else {
+                bind_kept_first(&root)
+            };
+            bound.map_err(|reason| ActionCallError::Refused { reason })?;
         }
+        let agent = reach.agent.is_some();
         // Signing in on a provider's own page: begun, stopped, and the
         // accounts as they are.
         if matches!(
-            request.target.address.action.as_str(),
+            action,
             person_accounts::BEGIN_SIGN_IN | person_accounts::CANCEL_SIGN_IN
         ) {
-            return sign_in::accounts_sign_in(self, person, &root, request).await;
+            return sign_in::accounts_sign_in(self, reach.person, &root, request).await;
         }
-        // What changes the accounts a person keeps is answered before the
-        // rest: finding servers, adding an account, saying what it feeds and
-        // removing it.
+        // What changes the accounts the workspace keeps is answered before
+        // the rest: finding servers, adding an account, saying what it feeds
+        // and removing it.
         if let Some(answered) = self.person_mail_action(&root, request).await? {
             return Ok(answered);
         }
-        match request.target.address.action.as_str() {
-            person_accounts::LIST => answer(&mail_accounts(&root)),
-            person_accounts::FETCH => {
-                let asking: FetchMail = argument(request, "a folder to read")?;
-                answer(&fetch_with(self.mail_session(), &root, asking).await)
-            }
-            person_accounts::READ => {
-                let reading: ReadMail = argument(request, "a message to read")?;
-                answer(&read_with(self.mail_session(), &root, reading).await)
-            }
-            person_accounts::SEARCH => {
-                let searching: SearchMail = argument(request, "what to search for")?;
-                answer(&search_with(self.mail_session(), &root, searching).await)
-            }
+        match action {
             person_accounts::SEND => {
                 let sending: SendId = argument(request, "a message to send")?;
-                answer(&self.send_a_message(&here, &root, sending).await)
-            }
-            person_accounts::SAVE_DRAFT => {
-                let keeping: SendId = argument(request, "a draft to keep")?;
-                answer(&save_staged_draft_with(self.mail_session(), &root, keeping).await)
+                let (dir, beginning) = begun_for(&root, &sending.send)?;
+                may_use(&root, agent, &beginning.message.account)?;
+                // The message is read once, here. Where its person is asked,
+                // they are shown that reading, and that reading is what
+                // leaves on their yes: nothing is read again from what was
+                // begun.
+                let staged = Staged::read(dir, beginning).map_err(refused_with)?;
+                if reach.answer != tilo_action_policy::Answer::Allow {
+                    let shown = staged.shown().map_err(refused_with)?;
+                    // A message that left already is answered as the send
+                    // it was: its person is asked nothing more.
+                    if let Some(sent) = self.recorded_mail_send(Some(&here), &staged).await {
+                        return answer(&Ok::<_, String>(sent));
+                    }
+                    let agent = caller
+                        .acting()
+                        .agent_id()
+                        .ok_or(ActionCallError::NotPermitted)?;
+                    self.ask_person(reach.person, shown.question(agent, caller))
+                        .await?;
+                }
+                answer(
+                    &self
+                        .send_in_workspace(Some(&here), self.mail_session(), &root, staged)
+                        .await,
+                )
             }
             person_accounts::MARK => {
                 let marking: MarkMail = argument(request, "what changed about a message")?;
                 answer(&mark_with(self.mail_session(), &root, marking).await)
             }
-            person_accounts::ASSISTANT => {
-                let saying: AssistantAccess = argument(request, "who may read an account")?;
-                answer(&say_assistant(&root, &here, &saying))
+            _ => self.mail_read_or_draft(&root, &here, request, agent).await,
+        }
+    }
+
+    /// Answer what reads the workspace's mail kept under `root` or drafts
+    /// in it, for an agent (`agent`) or a person: listing the accounts,
+    /// reading a folder or a message, searching, reading what arrived, and
+    /// beginning a message and keeping it as a draft.
+    pub(super) async fn mail_read_or_draft(
+        &self,
+        root: &Path,
+        workspace: &str,
+        request: &InvokeRequest,
+        agent: bool,
+    ) -> Result<Value, ActionCallError> {
+        match request.target.address.action.as_str() {
+            person_accounts::LIST => answer(&mail_accounts(root).map(|mut listed| {
+                if agent {
+                    // Whose sign-in is running is no agent's business.
+                    listed.signing_in.clear();
+                }
+                listed
+            })),
+            person_accounts::FETCH => {
+                let asking: FetchMail = argument(request, "a folder to read")?;
+                may_use(root, agent, &asking.account)?;
+                answer(&fetch_with(self.mail_session(), root, asking).await)
             }
-            person_accounts::ASSISTANTS => {
-                let account = account_argument(request)?;
-                answer(&Ok::<_, String>(account_assistants(&root, &here, &account)))
+            person_accounts::READ => {
+                let reading: ReadMail = argument(request, "a message to read")?;
+                may_use(root, agent, &reading.account)?;
+                answer(&read_with(self.mail_session(), root, reading).await)
+            }
+            person_accounts::SEARCH => {
+                let searching: SearchMail = argument(request, "what to search for")?;
+                may_use(root, agent, &searching.account)?;
+                answer(&search_with(self.mail_session(), root, searching).await)
             }
             person_accounts::ARRIVED => {
                 let asking = arrived_argument(request)?;
-                answer(&Ok::<_, String>(self.arrived_after(&person, asking.after)))
+                answer(&Ok::<_, String>(self.arrived_after(workspace, asking.after)))
             }
             person_accounts::BEGIN_SEND => {
                 let beginning: BeginSend = argument(request, "a message to begin")?;
-                answer(&begin_send(&root, &beginning))
+                may_use(root, agent, &beginning.message.account)?;
+                answer(&begin_send(root, &beginning))
             }
             person_accounts::SEND_PIECE => {
                 let piece: SendPiece = argument(request, "a piece of a message's file")?;
-                answer(&send_piece(&root, &piece))
+                may_use(root, agent, &begun_for(root, &piece.send)?.1.message.account)?;
+                answer(&send_piece(root, &piece))
+            }
+            person_accounts::SAVE_DRAFT => {
+                let keeping: SendId = argument(request, "a draft to keep")?;
+                may_use(root, agent, &begun_for(root, &keeping.send)?.1.message.account)?;
+                answer(&save_staged_draft_with(self.mail_session(), root, keeping).await)
             }
             _ => Err(ActionCallError::UnknownAction),
         }
     }
+}
+
+/// Whether `account`'s sign-in may be used now: by a person always, and by
+/// an agent's call (`agent`) once the sign-in says the servers it was typed
+/// for, since a call an agent makes under its own name binds none.
+fn may_use(root: &Path, agent: bool, account: &str) -> Result<(), ActionCallError> {
+    if agent {
+        bound_for_an_agent(root, account).map_err(refused_with)
+    } else {
+        Ok(())
+    }
+}
+
+/// What `action` of the workspace's mail does, as the workspace's policy
+/// decides it: reading, a change kept here, or something that leaves. A
+/// message begun and written piece by piece is only staged on this host:
+/// nothing in the mail changes and nothing leaves until it is kept as a
+/// draft or sent, which the policy weighs then.
+pub(super) fn mail_effect(action: &str) -> tilo_action_policy::ActionKind {
+    use tilo_action_policy::ActionKind;
+    match action {
+        person_accounts::LIST
+        | person_accounts::WATCH
+        | person_accounts::FETCH
+        | person_accounts::READ
+        | person_accounts::SEARCH
+        | person_accounts::ARRIVED
+        | person_accounts::FIND_SERVERS
+        | person_accounts::BEGIN_SEND
+        | person_accounts::SEND_PIECE => ActionKind::Read,
+        person_accounts::SEND => ActionKind::Outside,
+        _ => ActionKind::Undoable,
+    }
+}
+
+fn refused_with(reason: String) -> ActionCallError {
+    ActionCallError::Refused { reason }
 }
 
 /// Turn one action's answer into what the caller reads, or the reason it was
@@ -722,17 +503,6 @@ pub(super) fn argument<T: serde::de::DeserializeOwned>(
         .map_err(|error| invalid(&format!("{what} is not readable: {error}")))
 }
 
-/// The `account` a request about one account names.
-fn account_argument(request: &InvokeRequest) -> Result<String, ActionCallError> {
-    let value: Map<String, Value> = argument(request, "the account")?;
-    value
-        .get("account")
-        .and_then(Value::as_str)
-        .filter(|account| !account.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| invalid("the request names its account"))
-}
-
 /// The place in the arrival log a [`person_accounts::ARRIVED`] reads on
 /// from: its start, when the request names none.
 fn arrived_argument(request: &InvokeRequest) -> Result<ArrivedAfter, ActionCallError> {
@@ -746,29 +516,6 @@ fn arrived_argument(request: &InvokeRequest) -> Result<ArrivedAfter, ActionCallE
 /// that goes on with it.
 fn begun_for(root: &Path, send: &str) -> Result<(PathBuf, BeginSend), ActionCallError> {
     begun_send(root, send).map_err(|reason| ActionCallError::Refused { reason })
-}
-
-/// Who asks about a person's mail.
-pub(super) enum AskingAboutMail {
-    /// The person, on a device of theirs.
-    Person([u8; 32]),
-    /// An agent acting for the person, by the id it acts under in the
-    /// workspace its request came through.
-    Assistant {
-        person: [u8; 32],
-        agent: String,
-        workspace: String,
-    },
-}
-
-/// An agent as its person names it for their mail: by the id it acts under
-/// and the workspace it acts in. An id means something among one
-/// workspace's agents alone, so the same id in another workspace, where
-/// somebody else may have made the agent, names nobody.
-#[derive(Clone, Copy)]
-struct NamedAgent<'a> {
-    workspace: &'a str,
-    agent: &'a str,
 }
 
 /// Let a sign-in go stale, as the minutes passing would: a test's hand on a
@@ -901,11 +648,6 @@ fn remove_mail(root: &Path, account: &str) -> Result<MailAccounts, String> {
     if vault.remove(&id) {
         vault.try_save()?;
     }
-    // Nobody reads an account that is gone.
-    let mut named = assistants(root);
-    if named.remove(account).is_some() {
-        write_assistants(root, &named)?;
-    }
     // The calendars kept as its service go with it.
     if let Some(calendar) = &linked
         && let Err(why) = remove_calendar(root, calendar)
@@ -918,110 +660,6 @@ fn remove_mail(root: &Path, account: &str) -> Result<MailAccounts, String> {
         );
     }
     mail_accounts(root)
-}
-
-/// Where a person's word on which agents of theirs may read which of their
-/// accounts is kept: in their own store, beside the accounts.
-fn assistants_at(root: &Path) -> PathBuf {
-    root.join("mail").join("assistants.json")
-}
-
-/// The agents a person let read, search and draft through each of their
-/// accounts: by the account's id, then by the workspace each agent was
-/// named in.
-type Assistants = BTreeMap<String, BTreeMap<String, BTreeSet<String>>>;
-
-/// Who a person named for their accounts. What does not read names nobody.
-fn assistants(root: &Path) -> Assistants {
-    let bytes = match std::fs::read(assistants_at(root)) {
-        Ok(bytes) => bytes,
-        // The person named nobody yet.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return BTreeMap::new(),
-        Err(error) => {
-            tracing::warn!(%error, "mail: who may read a person's accounts could not be read, so no agent may");
-            return BTreeMap::new();
-        }
-    };
-    match serde_json::from_slice(&bytes) {
-        Ok(named) => named,
-        Err(error) => {
-            tracing::warn!(%error, "mail: who may read a person's accounts does not read, so no agent may");
-            BTreeMap::new()
-        }
-    }
-}
-
-fn write_assistants(root: &Path, named: &Assistants) -> Result<(), String> {
-    let bytes = serde_json::to_vec(named).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write_creating_parent_with_mode(&assistants_at(root), &bytes, 0o600)
-        .map_err(|error| error.to_string())
-}
-
-/// The accounts `named` may read, search and draft through.
-fn accounts_of_assistant(root: &Path, named: NamedAgent<'_>) -> BTreeSet<String> {
-    assistants(root)
-        .into_iter()
-        .filter(|(_, workspaces)| {
-            workspaces
-                .get(named.workspace)
-                .is_some_and(|agents| agents.contains(named.agent))
-        })
-        .map(|(account, _)| account)
-        .collect()
-}
-
-/// The agents of `workspace` that may read, search and draft through
-/// `account`.
-fn account_assistants(root: &Path, workspace: &str, account: &str) -> AccountAssistants {
-    AccountAssistants {
-        account: account.to_owned(),
-        agents: assistants(root)
-            .remove(account)
-            .and_then(|mut workspaces| workspaces.remove(workspace))
-            .unwrap_or_default()
-            .into_iter()
-            .collect(),
-    }
-}
-
-/// Keep the person's word on one agent of `workspace` and one account they
-/// keep here, and answer who of that workspace may read the account now.
-fn say_assistant(
-    root: &Path,
-    workspace: &str,
-    saying: &AssistantAccess,
-) -> Result<AccountAssistants, String> {
-    let agent = saying.agent.trim();
-    if agent.is_empty() || agent.chars().count() > 256 || agent.chars().any(char::is_control) {
-        return Err("an agent is named by the id it acts under".into());
-    }
-    let kept_here = accounts::AccountStore::load_in(root)
-        .get(&accounts::AccountId::from(saying.account.clone()))
-        .is_some_and(|account| {
-            matches!(
-                account.type_id.as_str(),
-                accounts::email::TYPE_ID | "caldav"
-            )
-        });
-    if !kept_here {
-        return Err("That account is not kept here".into());
-    }
-    let mut named = assistants(root);
-    let workspaces = named.entry(saying.account.clone()).or_default();
-    let agents = workspaces.entry(workspace.to_owned()).or_default();
-    if saying.may {
-        agents.insert(agent.to_owned());
-    } else {
-        agents.remove(agent);
-    }
-    if agents.is_empty() {
-        workspaces.remove(workspace);
-    }
-    if workspaces.is_empty() {
-        named.remove(&saying.account);
-    }
-    write_assistants(root, &named)?;
-    Ok(account_assistants(root, workspace, &saying.account))
 }
 
 /// The account `id` names, with the sign-in its vault keeps: what a page
@@ -1342,20 +980,6 @@ impl Workspaces {
         self.release_mail_send(workspace, &device, &lease, now)
             .await;
         outcome
-    }
-
-    /// Send the message begun under `sending`'s id in `workspace`: what it
-    /// says, its files and its invitation, as they were begun.
-    async fn send_a_message(
-        &self,
-        workspace: &str,
-        root: &Path,
-        sending: SendId,
-    ) -> Result<SentMail, String> {
-        let (dir, beginning) = begun_send(root, &sending.send)?;
-        let staged = Staged::read(dir, beginning)?;
-        self.send_in_workspace(Some(workspace), self.mail_session(), root, staged)
-            .await
     }
 
     /// What the workspace recorded of `staged` having left, if a key holder

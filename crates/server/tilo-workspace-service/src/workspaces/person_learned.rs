@@ -1,17 +1,19 @@
-//! What the agents on this server learned about a person, kept where the server reads and writes
-//! it with every device of theirs off.
+//! What the agents on this server learned in a workspace, kept where the
+//! server reads and writes it with every device off.
 //!
-//! A workspace server keeps what its agents learn about their keeper in the person's
-//! private store beside their vault and model providers. The records use the same
-//! [`tilo_workspace_agent::learned::Learned`] resource as the person's devices, with
-//! one document per workspace context. Each person's store is separate and is readable
-//! on disk by the server's own user. Writes are serialized.
+//! A workspace server keeps what its agents learn in the workspace's store
+//! beside its vault and model providers ([`Workspaces::workspace_root`]). The
+//! records use the same [`tilo_workspace_agent::learned::Learned`] resource
+//! as devices do, one document per workspace, and each change names who made
+//! it and for whom. The store is readable on disk by the server's own user.
+//! Writes are serialized.
 //!
-//! Two callers reach it. Code linked into the server, which answers the turns of a person's agents and decides
-//! first whose turn it is ([`Workspaces::learned_about`], [`Workspaces::change_learned`]). And
-//! the person themselves on a device of theirs, through the provider [`PROVIDER`]: they read the
-//! list, correct a fact, forget one, or write one down. Nobody else is answered, the person's
-//! own agents included: unknown and forbidden are the same answer.
+//! Two callers reach it. Code linked into the server, which answers the
+//! turns of the workspace's agents and decides first whose turn it is
+//! ([`Workspaces::learned_about`], [`Workspaces::change_learned`]). And
+//! whoever the workspace's policy lets, through the provider [`PROVIDER`]
+//! ([`Store::LEARNED`]): they read the list, correct a fact, forget one, or
+//! write one down.
 //!
 //! Nothing a fact says is written to a log.
 
@@ -30,8 +32,9 @@ use tilo_workspace_agent::learned::{Learned, learned};
 
 use super::Workspaces;
 use super::person_settings::{answer, argument};
+use super::workspace_stores::Store;
 
-/// The provider a person reads and changes what this server's agents learned about them by.
+/// The provider a workspace's members read and change what its agents learned by.
 pub const PROVIDER: &str = super::actions::LEARNED;
 /// Its one resource: the facts, in the workspace the request comes through.
 pub const RESOURCE: &str = "facts";
@@ -47,7 +50,7 @@ pub const FORGET: &str = "forget";
 /// The app whose resource this is, as every change of it names it.
 const CHAT: (&str, &str) = ("so.tilo.chat", "Chat");
 
-/// The folder of a person's store their learned resources are kept in, one file a workspace.
+/// The folder of a workspace's store its learned resource is kept in.
 const FOLDER: &str = "learned";
 
 /// The most bytes one kept resource holds. A few hundred short facts with their history stay far
@@ -70,7 +73,7 @@ pub fn target(action: &str) -> RemoteActionTarget {
     }
 }
 
-/// What the provider answers: the facts this server keeps about the person in one workspace,
+/// What the provider answers: the facts this server keeps in one workspace,
 /// newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,7 +87,7 @@ pub struct Facts {
     pub facts: Vec<FactView>,
 }
 
-/// One fact, as its person reads it.
+/// One fact, as a member reads it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FactView {
@@ -97,7 +100,7 @@ pub struct FactView {
     pub source: String,
     /// When it was learned or last corrected, in milliseconds since the Unix epoch.
     pub at_ms: i64,
-    /// The agent that wrote it down, by its id; absent where the person wrote it themselves.
+    /// The agent that wrote it down, by its id; absent where a person wrote it themselves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
 }
@@ -125,27 +128,24 @@ struct Forget {
 }
 
 impl Workspaces {
-    /// Where `person`'s learned resource of `workspace` is kept.
-    fn learned_at(&self, person: &[u8; 32], workspace: &str) -> Result<PathBuf, String> {
+    /// Where `workspace`'s learned resource is kept.
+    fn learned_at(&self, workspace: &str) -> Result<PathBuf, String> {
         // The id as the workspace spells it, never the caller's text: the name of a file.
         let workspace = collab_types::WorkspaceId::parse(workspace)
             .ok_or_else(|| "not a workspace id".to_owned())?;
         Ok(self
-            .person_settings_root(person)
+            .workspace_root(&workspace.to_string())
             .join(FOLDER)
             .join(format!("{workspace}.automerge")))
     }
 
-    /// The resource this server keeps about `person` in `workspace` and what it stands at; none
-    /// where nothing was learned yet, and none where it does not read.
-    fn learned_kept(&self, person: &[u8; 32], workspace: &str) -> Option<(Learned, String)> {
-        let bytes = match self
-            .learned_at(person, workspace)
-            .and_then(|path| read(&path))
-        {
+    /// The resource this server keeps in `workspace` and what it stands at; none where nothing
+    /// was learned yet, and none where it does not read.
+    fn learned_kept(&self, workspace: &str) -> Option<(Learned, String)> {
+        let bytes = match self.learned_at(workspace).and_then(|path| read(&path)) {
             Ok(bytes) => bytes?,
             Err(error) => {
-                tracing::warn!(%workspace, %error, "what was learned about a person is not read");
+                tracing::warn!(%workspace, %error, "what was learned in a workspace is not read");
                 return None;
             }
         };
@@ -159,22 +159,22 @@ impl Workspaces {
             .ok();
         if read.is_none() {
             // Why is left unsaid: a resource's own error may quote what it holds.
-            tracing::warn!(%workspace, "what was learned about a person does not read as its resource");
+            tracing::warn!(%workspace, "what was learned in a workspace does not read as its resource");
         }
         read.map(|learned| (learned, revision))
     }
 
-    /// What this server's agents learned about `person` in `workspace`: none where nothing was
-    /// learned yet. For the code that answers the turns of the person's agents; it decides whose turn is told it.
+    /// What this server's agents learned in `workspace`: none where nothing was learned yet. For
+    /// the code that answers the turns of the workspace's agents; it decides whose turn is told
+    /// it.
     #[must_use]
-    pub fn learned_about(&self, person: &[u8; 32], workspace: &str) -> Option<Learned> {
-        self.learned_kept(person, workspace)
-            .map(|(learned, _)| learned)
+    pub fn learned_about(&self, workspace: &str) -> Option<Learned> {
+        self.learned_kept(workspace).map(|(learned, _)| learned)
     }
 
-    /// Change what this server keeps about `person` in `workspace` through the resource's own
-    /// verbs: `change` applies them, as the agent `by` acting for the person, or as the person
-    /// themselves where `by` is none, stamped with the time now. One change is made at a time,
+    /// Change what this server keeps in `workspace` through the resource's own verbs: `change`
+    /// applies them, as the agent `by` acting for `person`, or as `person` themselves where `by`
+    /// is none, stamped with the time now. One change is made at a time,
     /// the first makes the resource, and one that fails keeps the resource as it was.
     ///
     /// # Errors
@@ -187,7 +187,7 @@ impl Workspaces {
         by: Option<&str>,
         change: impl FnOnce(&mut Replica<Learned>) -> Result<R, String>,
     ) -> Result<R, String> {
-        let path = self.learned_at(person, workspace)?;
+        let path = self.learned_at(workspace)?;
         let keeper = hex::encode(person);
         let one_at_a_time = CHANGING.lock_recover();
         let resource = opened(read(&path)?)?;
@@ -208,7 +208,7 @@ impl Workspaces {
         Ok(answer)
     }
 
-    /// Keep `text` as a fact about `person` in `workspace`, with where it came from in words,
+    /// Keep `text` as a fact for `person` in `workspace`, with where it came from in words,
     /// as server code that read it from the workspace's resources: `by` is the id it writes under,
     /// one no agent has. A model's words never come this way: a turn keeps what it learns
     /// through its own tools, which decide first whose turn it is.
@@ -231,9 +231,9 @@ impl Workspaces {
         })
     }
 
-    /// The facts this server keeps about `person` in `workspace`, as the provider answers them.
-    fn learned_facts(&self, person: &[u8; 32], workspace: &str) -> Facts {
-        let (learned, revision) = self.learned_kept(person, workspace).unwrap_or_default();
+    /// The facts this server keeps in `workspace`, as the provider answers them.
+    fn learned_facts(&self, workspace: &str) -> Facts {
+        let (learned, revision) = self.learned_kept(workspace).unwrap_or_default();
         let mut facts: Vec<FactView> = learned
             .facts
             .iter()
@@ -253,25 +253,41 @@ impl Workspaces {
         }
     }
 
-    /// Answer a [`PROVIDER`] request: the person's own list in the workspace the request comes
-    /// through, read or changed by them on a device of theirs and by nobody else.
-    pub(super) fn person_learned_invoke(
+    /// Answer a [`PROVIDER`] request: the list of the workspace the request comes through, read
+    /// or changed as the workspace's policy lets the caller.
+    pub(super) async fn person_learned_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let person = Self::asking_person(caller, certificate, workspace_id)?;
-        let workspace = workspace_id.ok_or(UnknownAction)?.to_string();
         if request.target.address.resource != RESOURCE {
             return Err(UnknownAction);
         }
+        let action = request.target.address.action.as_str();
+        let effect = if action == LIST {
+            tilo_action_policy::ActionKind::Read
+        } else {
+            tilo_action_policy::ActionKind::Undoable
+        };
+        let reach = self
+            .reaching_allowed(
+                (workspace_id, caller, certificate),
+                Store::LEARNED,
+                action,
+                effect,
+            )
+            .await?;
+        let workspace = reach.workspace.to_string();
+        let person = reach.person;
+        let by = reach.agent.clone();
+        let by = by.as_deref();
         let changed = match request.target.address.action.as_str() {
             LIST => Ok(()),
             LEARN => {
                 let Learn { text, source } = argument(request, "a fact with where it came from")?;
-                self.change_learned(&person, &workspace, None, |resource| {
+                self.change_learned(&person, &workspace, by, |resource| {
                     let learn = learned::Learn {
                         text: said(&text)?,
                         source: said(&source)?,
@@ -282,7 +298,7 @@ impl Workspaces {
             CORRECT => {
                 let Correct { fact, text, source } =
                     argument(request, "the fact to correct and what it says now")?;
-                self.change_learned(&person, &workspace, None, |resource| {
+                self.change_learned(&person, &workspace, by, |resource| {
                     let correct = learned::Correct {
                         fact: Id::from_raw(fact),
                         text: said(&text)?,
@@ -293,7 +309,7 @@ impl Workspaces {
             }
             FORGET => {
                 let Forget { fact } = argument(request, "the fact to forget")?;
-                self.change_learned(&person, &workspace, None, |resource| {
+                self.change_learned(&person, &workspace, by, |resource| {
                     let forget = learned::Forget {
                         fact: Id::from_raw(fact),
                     };
@@ -302,7 +318,7 @@ impl Workspaces {
             }
             _ => return Err(UnknownAction),
         };
-        answer(&changed.map(|()| self.learned_facts(&person, &workspace)))
+        answer(&changed.map(|()| self.learned_facts(&workspace)))
     }
 }
 

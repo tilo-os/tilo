@@ -1,6 +1,6 @@
 //! Signing in with an `OpenAI` account from a page, on the real path: the
 //! page's actions on the server, the server's device-code sign-in against a fake
-//! `OpenAI`, the grant in the person's vault, and their model asked on the
+//! `OpenAI`, the grant in the workspace's vault, and its model asked on the
 //! plan through the model gateway, refreshed when it expires.
 
 #![allow(
@@ -11,6 +11,8 @@
     reason = "the server and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the server it drives"
 )]
 
+use std::sync::Arc;
+
 use agent_provider_config::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, ToolChoice,
 };
@@ -19,12 +21,13 @@ use serde_json::{Value, json};
 use tilo_actions::remote::person_models::{SignInStarted, SignInState};
 use tilo_actions::remote::{ActionCallError, Caller, person_models};
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::ServiceWorkspaceActions;
 use super::tests::{admit, ask_own, governed, request, settled};
-use crate::workspaces::OpenAiSignIn;
 use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::{AsksPeople, OpenAiSignIn, PersonAnswer};
 
 fn asking(text: &str) -> Value {
     serde_json::to_value(ModelRequest {
@@ -116,13 +119,54 @@ fn at_fake(fake: &FakeProviders) -> OpenAiSignIn {
     }
 }
 
-/// A person signs in to their `ChatGPT` plan from a page, entering a code on
+/// A person who answers every question one way, or not at all.
+struct Asked {
+    answer: Option<ConfirmationAnswer>,
+}
+
+impl Asked {
+    fn answering(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
+        Arc::new(Self { answer })
+    }
+}
+
+impl AsksPeople for Asked {
+    fn ask(&self, _: [u8; 32], _: PendingConfirmation) -> PersonAnswer {
+        let answer = self
+            .answer
+            .clone()
+            .ok_or_else(|| "nobody answered".to_owned());
+        Box::pin(async move { answer })
+    }
+}
+
+/// One of the sign-in actions asked by `caller` on `member`'s device.
+async fn a_sign_in_asked_by(
+    actions: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    member: &DeviceCert,
+    caller: &Caller,
+    verb: &str,
+) -> Result<(), ActionCallError> {
+    let mut asking = request("", "", json!({"signIn": "any"}));
+    asking.target = person_models::target(verb);
+    settled(tilo_actions::remote::ActionProvider::invoke(
+        &actions.in_workspace_as(workspace_id, member),
+        caller,
+        asking,
+    ))
+    .await
+    .map(|_| ())
+}
+
+/// A member signs in to their `ChatGPT` plan from a page, entering a code on
 /// `OpenAI`'s page, with no key typed and no device of theirs about. The
-/// plan's models are listed and the first becomes the default; a turn is
-/// answered on it with the grant the vault keeps, refreshed when it
-/// expires, and nothing a page reads carries a token. No agent signs in.
+/// plan's models are listed and the first becomes the workspace's default; a
+/// turn is answered on it with the grant its vault keeps, refreshed when it
+/// expires, and nothing a page reads carries a token. No agent signs in on
+/// its own.
 #[tokio::test]
-async fn a_person_signs_in_to_chatgpt_from_a_page_and_their_model_answers_on_the_plan() {
+async fn a_member_signs_in_to_chatgpt_from_a_page_and_the_workspaces_model_answers_on_the_plan() {
     let fake = FakeProviders::start().await.unwrap();
     // Access tokens expired at once: every ask finds one to refresh.
     fake.set_token_lifetime(1);
@@ -176,27 +220,47 @@ async fn a_person_signs_in_to_chatgpt_from_a_page_and_their_model_answers_on_the
         "{keyed:?}"
     );
 
-    for agent in [
-        Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key),
+    // No agent signs in on its own: beginning or stopping a sign-in is put
+    // to its member first, and one no device of theirs stands behind it is
+    // answered nothing.
+    let assistant = super::tests::caller(&ada).delegated_to("assistant");
+    for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
+        let unasked = a_sign_in_asked_by(&actions, workspace_id, &ada, &assistant, verb).await;
+        assert!(
+            matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+            "{verb} with nobody to ask through: {unasked:?}"
+        );
+    }
+    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
+    workspaces.ask_people(refusing);
+    for verb in [person_models::BEGIN_SIGN_IN, person_models::CANCEL_SIGN_IN] {
+        let refused = a_sign_in_asked_by(&actions, workspace_id, &ada, &assistant, verb).await;
+        assert!(
+            matches!(refused, Err(ActionCallError::Refused { .. })),
+            "{verb} its member refused: {refused:?}"
+        );
+    }
+    let person = hex::encode(ada.user_public_key);
+    let nobodies = [
+        Caller::agent_turn(
+            "assistant",
+            person.clone(),
+            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
+        ),
         Caller::local_agent("assistant"),
-    ] {
+        Caller::local_app("so.tilo.chat").acting_for(person),
+    ];
+    for nobody in &nobodies {
         for verb in [
             person_models::BEGIN_SIGN_IN,
             person_models::WAIT_SIGN_IN,
             person_models::CANCEL_SIGN_IN,
         ] {
-            let mut asking = request("", "", json!({"signIn": "any"}));
-            asking.target = person_models::target(verb);
-            let refused = settled(tilo_actions::remote::ActionProvider::invoke(
-                &actions.in_workspace_as(workspace_id, &ada),
-                &agent,
-                asking,
-            ))
-            .await
-            .map(|_| ());
+            let refused = a_sign_in_asked_by(&actions, workspace_id, &ada, nobody, verb).await;
             assert!(
                 matches!(refused, Err(ActionCallError::UnknownAction)),
-                "{verb}: {refused:?}"
+                "{verb} as {:?}: {refused:?}",
+                nobody.acting()
             );
         }
     }

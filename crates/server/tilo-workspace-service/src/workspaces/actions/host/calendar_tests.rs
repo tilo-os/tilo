@@ -1,10 +1,11 @@
-//! A person's calendars on their holder, against a calendar server the test
-//! starts: an account is added only once its server took the sign-in, its
-//! entries are kept and read with every device off, a category is the
-//! server's own field, an invitation is one entry, and only the person and
-//! the agent they named reach any of it. What that agent may change is an
-//! invitation to its person and nothing the person entered themselves, an
-//! entry that names people otherwise waits for the person's answer, and the
+//! A workspace's calendars on the host that serves it, against a calendar
+//! server the test starts: an account is added only once its server took the
+//! sign-in, its entries are kept and read with every device off, a category is
+//! the server's own field, and an invitation is one entry. Every member of the
+//! workspace reaches them, and nobody outside it does; what an agent a
+//! member's session was handed to changes waits for that member's answer,
+//! unless their allowance says otherwise, and what it may change at all is an
+//! invitation to its person and nothing the person entered themselves. The
 //! calendar server is told to write to nobody.
 
 #![allow(
@@ -37,7 +38,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as HolderActions;
-use super::super::tests::{caller, settled};
+use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::key_of;
 use crate::workspaces::fixtures::TestHost as TestHolder;
 use crate::workspaces::person_asking::Allowing;
@@ -65,15 +66,17 @@ const PASSWORD: &str = "marker-7f3a-calendar-password";
 /// signs in with it.
 const ADDRESS: &str = "ada@example.test";
 
-/// What Ada has: a calendar server that knows her, the holder that keeps her
-/// calendars, a device of hers and the workspace its page is in.
+/// What Ada has: a calendar server that knows her, the workspace the holder
+/// keeps its calendars in, a device she is admitted on and its page.
 struct Ada {
     /// The name her calendar account signs in with.
     user: &'static str,
     server: fake_caldav::Server,
     workspaces: Workspaces,
     actions: HolderActions,
+    owner: DeviceCert,
     device: DeviceCert,
+    workspace: String,
     workspace_id: WorkspaceId,
     _holder: TestHolder,
     _dir: tempfile::TempDir,
@@ -93,10 +96,8 @@ impl Ada {
         // Her calendar server is this machine: the operator lets the server
         // call its own network, which it is otherwise kept from.
         workspaces.call_private_model_addresses(true);
-        let actions = HolderActions::new();
-        actions.attach(workspaces.clone());
-        let device = key_of(&SigningKey::from_bytes(&rand::random()), "studio");
-        let workspace_id = workspaces.create("Calendars").await.unwrap().workspace_id;
+        let (workspace, workspace_id, actions) = governed(&workspaces).await;
+        let device = admit(&workspaces, &workspace, &owner, 1).await;
         let server = fake_caldav::Server::start(user, PASSWORD);
         server.add_calendar("work", "Work");
         Self {
@@ -104,11 +105,33 @@ impl Ada {
             server,
             workspaces,
             actions,
+            owner,
             device,
+            workspace,
             workspace_id,
             _holder: holder,
             _dir: dir,
         }
+    }
+
+    /// Where the workspace keeps its calendars, its sign-ins among them.
+    fn root(&self) -> PathBuf {
+        self.workspaces
+            .workspace_root(&self.workspace_id.to_string())
+    }
+
+    /// The occurrences of the workspace's calendars between Monday
+    /// 19 October 2026 and before Wednesday 28 October, as an automation
+    /// waiting on an entry's time reads them for `person`.
+    async fn occurrences(&self, person: &[u8; 32]) -> Result<Vec<Value>, String> {
+        self.workspaces
+            .calendar_occurrences_for(
+                self.workspace_id,
+                person,
+                1_792_368_000_000,
+                1_793_145_600_000,
+            )
+            .await
     }
 
     fn page(&self) -> impl ActionService + Clone + Send + 'static {
@@ -120,13 +143,10 @@ impl Ada {
         caller(&self.device)
     }
 
-    /// The agent `name` on Ada's device, over the connection it certified.
+    /// The agent `name` Ada's device handed its session to, over the
+    /// connection that device certified.
     fn agent(&self, name: &str) -> Caller {
-        Caller::delegated_agent(
-            name,
-            self.device.user_public_key,
-            self.device.device_public_key,
-        )
+        self.herself().delegated_to(name)
     }
 
     /// What `caller` is answered when it asks `action` of the calendars.
@@ -163,22 +183,10 @@ impl Ada {
         .expect("her own server takes her sign-in")
     }
 
-    /// Ada adds her account and names the agent `assistant` for it: that
+    /// Ada adds her account and hands her session to her assistant: that
     /// agent, on her device.
     async fn with_her_assistant(&self) -> Caller {
-        let id = self.add().await["id"].as_str().expect("its id").to_owned();
-        let naming = RemoteActionTarget {
-            provider: person_accounts::PROVIDER.to_owned(),
-            address: ActionAddress::new(person_accounts::RESOURCE, person_accounts::ASSISTANT),
-        };
-        asked(
-            &self.page(),
-            &self.herself(),
-            naming,
-            json!({"account": id, "agent": "assistant", "may": true}),
-        )
-        .await
-        .expect("she names her assistant for the calendar account");
+        self.add().await;
         self.agent("assistant")
     }
 
@@ -552,9 +560,7 @@ async fn a_calendar_on_the_persons_own_server_is_kept_read_and_filed_by_their_ho
         .await
         .expect("the list reads");
     assert!(!listed.to_string().contains(PASSWORD));
-    let root = ada
-        .workspaces
-        .person_settings_root(&ada.device.user_public_key);
+    let root = ada.root();
     let vault = accounts::vault_dir_in(&root);
     let kept: Vec<PathBuf> = files_under(&root)
         .into_iter()
@@ -594,8 +600,13 @@ async fn a_calendar_on_the_persons_own_server_is_kept_read_and_filed_by_their_ho
     );
 }
 
+/// Every member of the workspace reaches the calendars it keeps, with their
+/// own device and with an agent their session was handed to; an agent's
+/// change waits for its person's answer, and a refusal changes nothing. A
+/// member of another workspace, a person who is no member, a bare agent turn
+/// and an app are nobody to them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn only_the_person_and_the_agent_they_named_reach_their_calendars() {
+async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks_its_person() {
     let ada = Ada::new().await;
     let her = ada.herself();
     ada.server.put(
@@ -606,24 +617,8 @@ async fn only_the_person_and_the_agent_they_named_reach_their_calendars() {
     let id = ada.add().await["id"].as_str().expect("its id").to_owned();
     let assistant = ada.agent("assistant");
 
-    // Nothing is granted by default.
-    nobody(
-        "an agent she did not name",
-        ada.ask(&assistant, held::LIST, json!({})).await,
-    );
-    let naming = RemoteActionTarget {
-        provider: person_accounts::PROVIDER.to_owned(),
-        address: ActionAddress::new(person_accounts::RESOURCE, person_accounts::ASSISTANT),
-    };
-    asked(
-        &ada.page(),
-        &her,
-        naming,
-        json!({"account": id, "agent": "assistant", "may": true}),
-    )
-    .await
-    .expect("she names her assistant for the calendar account");
-
+    // She reads it, the agent her device handed its session to reads it, and
+    // so does every other member of the workspace.
     let listed = ada
         .ask(&assistant, held::LIST, json!({}))
         .await
@@ -633,48 +628,122 @@ async fn only_the_person_and_the_agent_they_named_reach_their_calendars() {
         ada.week(&assistant).await,
         ["Review 2026-11-17T10:00:00+01:00"]
     );
-    let invitation = meeting("offsite-9@example.org", "Offsite", "20261119T140000", "")
-        .replace("VERSION:2.0\r\n", "VERSION:2.0\r\nMETHOD:REQUEST\r\n");
-    let made = ada
-        .ask(&assistant, held::ADD_INVITATION, json!({"ics": invitation}))
-        .await
-        .expect("it puts an invitation in");
-    assert_eq!(made["made"], "created");
-
-    // What is the person's alone is not there for it, and nobody else is
-    // anybody to her calendars.
-    nobody(
-        "removing is hers",
-        ada.ask(&assistant, held::REMOVE, json!({"account": id}))
-            .await,
-    );
-    nobody(
-        "a typed password is hers",
-        ada.ask(
-            &assistant,
-            held::ADD,
-            json!({"serverUrl": ada.server.url(), "username": "ada", "password": PASSWORD}),
-        )
-        .await,
-    );
-    nobody(
-        "another agent",
-        ada.ask(&ada.agent("stranger"), held::LIST, json!({})).await,
-    );
-    let bob = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
-    let bobs_page = ada.actions.in_workspace_as(ada.workspace_id, &bob);
+    let bo = admit(&ada.workspaces, &ada.workspace, &ada.owner, 2).await;
+    let bos_page = ada.actions.in_workspace_as(ada.workspace_id, &bo);
     let target = RemoteActionTarget {
         provider: person_accounts::PROVIDER.to_owned(),
         address: ActionAddress::new(held::RESOURCE, held::LIST),
     };
-    let his = asked(&bobs_page, &caller(&bob), target, json!({}))
+    let theirs = asked(&bos_page, &caller(&bo), target, json!({}))
         .await
-        .expect("his own list");
+        .expect("a member's list");
     assert_eq!(
-        his["accounts"],
-        json!([]),
-        "another person reads their own, which is empty"
+        theirs["accounts"][0]["id"],
+        id.as_str(),
+        "a member reads the account the workspace keeps"
     );
+
+    // A change the agent makes waits for her answer, and her allowing it is
+    // what puts it in.
+    let invitation = meeting("offsite-9@example.org", "Offsite", "20261119T140000", "")
+        .replace("VERSION:2.0\r\n", "VERSION:2.0\r\nMETHOD:REQUEST\r\n");
+    let unasked = ada
+        .ask(&assistant, held::ADD_INVITATION, json!({"ics": invitation}))
+        .await;
+    assert!(
+        matches!(unasked, Err(ActionError::ConfirmationRequired { .. })),
+        "with nobody to ask through: {unasked:?}"
+    );
+    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
+    ada.workspaces.ask_people(allowing.clone());
+    let made = ada
+        .ask(&assistant, held::ADD_INVITATION, json!({"ics": invitation}))
+        .await
+        .expect("she allowed what she was shown");
+    assert_eq!(made["made"], "created");
+    assert_eq!(allowing.count(), 1, "the change asked her");
+
+    // What she refuses changes nothing: her account is not removed and none
+    // is added with a password the agent typed.
+    ada.workspaces
+        .ask_people(Answering::with(Some(ConfirmationAnswer::Deny)));
+    for (what, action, argument) in [
+        ("removing the account", held::REMOVE, json!({"account": id})),
+        (
+            "adding one with a typed password",
+            held::ADD,
+            json!({"serverUrl": ada.server.url(), "username": "ada", "password": PASSWORD}),
+        ),
+    ] {
+        let refused = ada.ask(&assistant, action, argument).await;
+        assert!(
+            matches!(refused, Err(ActionError::Refused { .. })),
+            "{what}: {refused:?}"
+        );
+    }
+    let kept = ada
+        .ask(&her, held::LIST, json!({}))
+        .await
+        .expect("the list reads");
+    assert_eq!(
+        kept["accounts"][0]["id"],
+        id.as_str(),
+        "what she refused changed nothing"
+    );
+
+    // Nobody outside the workspace is anybody to its calendars, by any road.
+    let (elsewhere, elsewhere_id, _) = governed(&ada.workspaces).await;
+    let cy = admit(&ada.workspaces, &elsewhere, &ada.owner, 3).await;
+    let cys_page = ada.actions.in_workspace_as(ada.workspace_id, &cy);
+    let target = RemoteActionTarget {
+        provider: person_accounts::PROVIDER.to_owned(),
+        address: ActionAddress::new(held::RESOURCE, held::LIST),
+    };
+    let his = asked(&cys_page, &caller(&cy), target.clone(), json!({})).await;
+    nobody("a member of another workspace", his);
+    nobody(
+        "their agent on their own device",
+        asked(
+            &cys_page,
+            &caller(&cy).delegated_to("assistant"),
+            target.clone(),
+            json!({}),
+        )
+        .await,
+    );
+    let stranger = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
+    let strangers_page = ada.actions.in_workspace_as(ada.workspace_id, &stranger);
+    nobody(
+        "a person who is no member",
+        asked(
+            &strangers_page,
+            &caller(&stranger),
+            target.clone(),
+            json!({}),
+        )
+        .await,
+    );
+    let bare_turn = Caller::agent_turn(
+        "assistant",
+        hex::encode(ada.device.user_public_key),
+        tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
+    );
+    nobody(
+        "an agent turn with no device of hers behind it",
+        asked(&ada.page(), &bare_turn, target.clone(), json!({})).await,
+    );
+    let app =
+        Caller::local_app("so.tilo.calendar").acting_for(hex::encode(ada.device.user_public_key));
+    nobody(
+        "an app",
+        asked(&ada.page(), &app, target.clone(), json!({})).await,
+    );
+    // What the workspace in which Cy is a member keeps is none of this one's.
+    let cy_page = ada.actions.in_workspace_as(elsewhere_id, &cy);
+    let theirs = asked(&cy_page, &caller(&cy), target, json!({}))
+        .await
+        .expect("his own workspace's list");
+    assert_eq!(theirs["accounts"], json!([]), "{theirs}");
 
     // By reference: the vault decides. A login that belongs to the server
     // adds the account, one that belongs elsewhere is never sent there.
@@ -693,14 +762,15 @@ async fn only_the_person_and_the_agent_they_named_reach_their_calendars() {
     let hers = keep(ada.server.url())
         .await
         .expect("she keeps her calendar's login");
-    let elsewhere = keep("https://elsewhere.example".to_owned())
+    let outside = keep("https://elsewhere.example".to_owned())
         .await
         .expect("and another");
+    ada.workspaces.ask_people(allowing.clone());
     let wrong = ada
         .ask(
             &assistant,
             held::ADD_WITH_ITEM,
-            json!({"serverUrl": ada.server.url(), "password": elsewhere["reference"]}),
+            json!({"serverUrl": ada.server.url(), "password": outside["reference"]}),
         )
         .await;
     refused("an item that belongs elsewhere", wrong);
@@ -797,12 +867,13 @@ impl AsksPeople for Answering {
     }
 }
 
-/// An agent named for a calendar account writes the text it hands over
-/// itself, and reads the identity of every entry the calendar holds. So what
-/// its person entered themselves is not its to change: a cancellation under
-/// that identity removes nothing, another time under it moves nothing,
-/// whatever sender the text names, and the same holds for an entry in which
-/// the person invites others. The person changes what is theirs by asking.
+/// An agent a member's device handed its session to writes the text it
+/// hands over itself, and reads the identity of every entry the calendar
+/// holds. So what its person entered themselves is not its to change: a
+/// cancellation under that identity removes nothing, another time under it
+/// moves nothing, whatever sender the text names, and the same holds for an
+/// entry in which the person invites others. The person changes what is
+/// theirs by asking.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_she_entered_herself_is_not_her_assistants_to_change_or_remove() {
     let ada = Ada::signing_in_as(ADDRESS).await;
@@ -914,16 +985,16 @@ async fn what_she_entered_herself_is_not_her_assistants_to_change_or_remove() {
 }
 
 /// An invitation to her is her assistant's to put in, to bring up to date
-/// and to take out again for the sender it came from, and for nobody else.
-/// What her calendar server is sent tells it to write to nobody: every line
-/// that names somebody says the server is not the one to, and the removal
-/// says to answer nobody.
+/// and to take out again for the sender it came from, and for nobody else,
+/// once she allowed each of them: with nobody to ask through, with no answer
+/// and on her no, nothing goes in and nothing comes out. What her calendar
+/// server is sent tells it to write to nobody: every line that names
+/// somebody says the server is not the one to, and the removal says to
+/// answer nobody.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_invitation_to_her_goes_in_and_out_unasked_and_no_server_writes_of_it() {
+async fn an_invitation_to_her_goes_in_and_out_once_she_allowed_it_and_no_server_writes_of_it() {
     let ada = Ada::signing_in_as(ADDRESS).await;
     let assistant = ada.with_her_assistant().await;
-    let answering = Answering::with(None);
-    ada.workspaces.ask_people(answering.clone());
     let offsite = |method: &str, start: &str| {
         carried(
             method,
@@ -939,18 +1010,22 @@ async fn an_invitation_to_her_goes_in_and_out_unasked_and_no_server_writes_of_it
     // What the server was asked while her account was added does not count.
     let _ = ada.server.requests();
 
+    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
+    ada.workspaces.ask_people(allowing.clone());
     let made = ada
         .put(&assistant, &offsite("REQUEST", "20261119T140000"))
         .await
-        .expect("an invitation to her goes in");
+        .expect("she allowed the invitation in");
     assert_eq!(made["made"], "created", "{made}");
     let moved = ada
         .put(&assistant, &offsite("REQUEST", "20261119T160000"))
         .await
-        .expect("its sender's later version");
+        .expect("its sender's later version, which she allowed");
     assert_eq!(moved["made"], "updated", "{moved}");
+    assert_eq!(allowing.count(), 2, "each version asked her");
 
-    // A cancellation that names another sender takes nothing out.
+    // A cancellation that names another sender takes nothing out, and asks
+    // her nothing: it is not hers to allow.
     let forged = carried(
         "CANCEL",
         &inviting(
@@ -968,18 +1043,27 @@ async fn an_invitation_to_her_goes_in_and_out_unasked_and_no_server_writes_of_it
         "a cancellation from somebody else than its sender removed the entry ({answered:?})"
     );
     refused("a cancellation from somebody else", answered);
+    assert_eq!(allowing.count(), 2);
 
+    // With nobody to ask through, nothing comes out either.
+    ada.workspaces.ask_people(Answering::with(None));
+    let unanswered = ada
+        .put(&assistant, &offsite("CANCEL", "20261119T160000"))
+        .await;
+    assert!(
+        matches!(unanswered, Err(ActionError::ConfirmationRequired { .. })),
+        "with nobody to ask through: {unanswered:?}"
+    );
+    assert_eq!(ada.server.held("work").len(), 1, "the entry is still there");
+
+    ada.workspaces.ask_people(allowing.clone());
     let gone = ada
         .put(&assistant, &offsite("CANCEL", "20261119T160000"))
         .await
-        .expect("its sender's cancellation");
+        .expect("its sender's cancellation, which she allowed");
     assert_eq!(gone["made"], "cancelled", "{gone}");
     assert!(ada.server.held("work").is_empty());
-    assert_eq!(
-        answering.count(),
-        0,
-        "an invitation to her asks her nothing"
-    );
+    assert_eq!(allowing.count(), 3);
 
     let requests = ada.server.requests();
     let stored: Vec<String> = requests
@@ -1328,52 +1412,42 @@ async fn what_she_always_allows_is_put_unasked_until_she_takes_it_back() {
     assert_eq!(ada.server.held("work").len(), 1);
 }
 
+/// The catalogue offers a member's agent what it may ask of the workspace's
+/// calendars, and nothing that is a person's own: no account added with a
+/// typed password, none removed. The person's own page asks directly and is
+/// offered no row, and nobody outside the workspace is offered one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_catalogue_offers_her_calendars_to_the_agent_she_named_and_to_nobody_else() {
+async fn the_catalogue_offers_the_workspaces_calendars_to_its_members_agents_alone() {
     let ada = Ada::new().await;
     let her = ada.herself();
     let page = ada.page();
-    let id = ada.add().await["id"].as_str().expect("its id").to_owned();
+    ada.add().await;
     let assistant = ada.agent("assistant");
-    let name = |may: bool| {
-        let naming = RemoteActionTarget {
-            provider: person_accounts::PROVIDER.to_owned(),
-            address: ActionAddress::new(person_accounts::RESOURCE, person_accounts::ASSISTANT),
-        };
-        asked(
-            &page,
-            &her,
-            naming,
-            json!({"account": id, "agent": "assistant", "may": may}),
-        )
+    let rows = [
+        "calendars#add-invitation",
+        "calendars#entries",
+        "calendars#free",
+        "calendars#list",
+        "calendars#set-categories",
+        "calendars#sync",
+    ];
+
+    let calendar_rows = |rows: Vec<String>| -> Vec<String> {
+        rows.into_iter()
+            .filter(|row| row.starts_with("calendars#"))
+            .collect()
     };
-
-    // Nothing is offered by default.
-    assert!(
-        offered(&page, &assistant).await.is_empty(),
-        "an agent she did not name"
-    );
-    name(true)
-        .await
-        .expect("she names her assistant for the calendar account");
-
-    // What it may ask and nothing that is hers alone: no account added with
-    // a typed password, none removed. Named for a calendar, it is offered
-    // nothing of mail.
     assert_eq!(
-        offered(&page, &assistant).await,
-        [
-            "calendars#add-invitation",
-            "calendars#entries",
-            "calendars#free",
-            "calendars#list",
-            "calendars#set-categories",
-            "calendars#sync",
-        ]
+        calendar_rows(offered(&page, &assistant).await),
+        rows,
+        "an agent's page offers what it may do with the workspace's calendars"
     );
-    assert!(
-        offered(&page, &ada.agent("stranger")).await.is_empty(),
-        "another agent on her device"
+    let bo = admit(&ada.workspaces, &ada.workspace, &ada.owner, 2).await;
+    let bos_page = ada.actions.in_workspace_as(ada.workspace_id, &bo);
+    assert_eq!(
+        calendar_rows(offered(&bos_page, &caller(&bo).delegated_to("assistant")).await),
+        rows,
+        "another member's agent reads the same calendars"
     );
     assert!(
         offered(&page, &her).await.is_empty(),
@@ -1381,28 +1455,29 @@ async fn the_catalogue_offers_her_calendars_to_the_agent_she_named_and_to_nobody
     );
     let bob = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
     let bobs_page = ada.actions.in_workspace_as(ada.workspace_id, &bob);
-    let bobs_agent =
-        Caller::delegated_agent("assistant", bob.user_public_key, bob.device_public_key);
     assert!(
-        offered(&bobs_page, &bobs_agent).await.is_empty(),
-        "an agent of the same name that another person keeps"
+        offered(&bobs_page, &caller(&bob).delegated_to("assistant"))
+            .await
+            .is_empty(),
+        "an agent of a person who is no member"
     );
-
-    // Her word taken back takes the rows with it.
-    name(false).await.expect("she takes her word back");
+    let (elsewhere, _, _) = governed(&ada.workspaces).await;
+    let cy = admit(&ada.workspaces, &elsewhere, &ada.owner, 3).await;
+    let cys_page = ada.actions.in_workspace_as(ada.workspace_id, &cy);
     assert!(
-        offered(&page, &assistant).await.is_empty(),
-        "an agent she no longer names"
+        offered(&cys_page, &caller(&cy).delegated_to("assistant"))
+            .await
+            .is_empty(),
+        "an agent of a member of another workspace"
     );
 }
 
 /// What an automation that waits on an entry's time is handed: every
-/// occurrence as the pull of her own server left it, for the agent she named
-/// and for nobody else.
+/// occurrence as the pull of her own server left it, for a member of the
+/// workspace and for nobody else.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_times_her_calendars_hold_are_read_for_the_agent_she_named_alone() {
+async fn the_times_the_workspaces_calendars_hold_are_read_for_its_members_alone() {
     let ada = Ada::new().await;
-    let her = ada.herself();
     // A series over the end of summer time, at 09:30 where she lives, with a
     // day it leaves out and a day moved to the afternoon; and a whole day.
     let series = meeting(
@@ -1426,40 +1501,29 @@ async fn the_times_her_calendars_hold_are_read_for_the_agent_she_named_alone() {
          UID:offsite-1@example.org\r\nSUMMARY:Offsite\r\nDTSTART;VALUE=DATE:20261023\r\n\
          DTEND;VALUE=DATE:20261024\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
     );
-    let id = ada.add().await["id"].as_str().expect("its id").to_owned();
+    ada.add().await;
     let person = ada.device.user_public_key;
-    let workspace = ada.workspace_id.to_string();
-    // From Monday 19 October 2026 to before Wednesday 28 October, in UTC.
-    let (from, to) = (1_792_368_000_000_i64, 1_793_145_600_000_i64);
-    let read = |agent: &'static str| {
-        ada.workspaces
-            .calendar_occurrences_for(&person, &workspace, agent, from, to)
-    };
 
-    // Nothing of her calendar for an agent she did not name.
-    assert_eq!(read("assistant").await, Ok(Vec::new()));
-    let naming = RemoteActionTarget {
-        provider: person_accounts::PROVIDER.to_owned(),
-        address: ActionAddress::new(person_accounts::RESOURCE, person_accounts::ASSISTANT),
-    };
-    asked(
-        &ada.page(),
-        &her,
-        naming,
-        json!({"account": id, "agent": "assistant", "may": true}),
-    )
-    .await
-    .expect("she names her assistant for the calendar account");
-    assert_eq!(read("stranger").await, Ok(Vec::new()));
+    // Nothing of the workspace's calendars for a person who is no member.
+    let stranger = SigningKey::from_bytes(&rand::random());
+    assert_eq!(
+        ada.occurrences(&stranger.verifying_key().to_bytes()).await,
+        Ok(Vec::new())
+    );
+    assert!(
+        ada.occurrences(&person).await.is_ok(),
+        "a member reads them"
+    );
 
     // Every occurrence at the moment it starts: 09:30 where she lives is
     // 07:30 UTC in summer time and 08:30 after it ended on the 25th; the day
     // left out is not there, the moved one is where it was moved to under
     // the date it had in its series, and the whole day begins at her
     // midnight.
-    let held: Vec<(String, String, i64, bool)> = read("assistant")
+    let held: Vec<(String, String, i64, bool)> = ada
+        .occurrences(&person)
         .await
-        .expect("her assistant's read")
+        .expect("a member's read")
         .iter()
         .map(|occurrence| {
             (
@@ -1528,8 +1592,8 @@ async fn filed(
 /// Filing an entry under categories rewrites it on its server. So what she
 /// entered herself is her assistant's to file only once she was shown the
 /// entry and the words and allowed it: with nobody to ask through, with no
-/// answer and on her no, the entry stays as it was. What her assistant put
-/// in itself it files unasked, and her own filing asks her nothing.
+/// answer and on her no, the entry stays as it was. Every change it makes
+/// asks her, and her own filing asks her nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_she_entered_herself_is_filed_by_her_assistant_only_once_she_allowed_it() {
     let ada = Ada::signing_in_as(ADDRESS).await;
@@ -1604,7 +1668,8 @@ async fn what_she_entered_herself_is_filed_by_her_assistant_only_once_she_allowe
     assert!(text.contains("CATEGORIES:Board,Quarter\r\n"), "{text}");
     assert!(text.contains("X-SERVER-NOTE:kept as it is\r\n"), "{text}");
 
-    // What her assistant put in itself is its own to file, unasked.
+    // What her assistant put in itself, and every other change it makes,
+    // waits for her answer as well.
     let offsite = carried(
         "REQUEST",
         &inviting(
@@ -1617,23 +1682,20 @@ async fn what_she_entered_herself_is_filed_by_her_assistant_only_once_she_allowe
     );
     ada.put(&assistant, &offsite)
         .await
-        .expect("an invitation to her goes in");
+        .expect("she allowed the invitation in");
+    assert_eq!(allowing.count(), 2, "the invitation asked her too");
     let its_own = entry_titled(&ada, &assistant, "Offsite").await;
     let travel = filed(&ada, &assistant, &its_own, &["Travel"])
         .await
-        .expect("what it put in itself it files");
+        .expect("she allowed what it put in itself to be filed");
     assert_eq!(travel["categories"], json!(["Travel"]));
-    assert_eq!(
-        allowing.count(),
-        1,
-        "what it put in itself asks her nothing"
-    );
+    assert_eq!(allowing.count(), 3, "each change asked her");
 
     // Her own filing asks her nothing.
     filed(&ada, &ada.herself(), &board, &["Board"])
         .await
         .expect("her own entry, by her own word");
-    assert_eq!(allowing.count(), 1, "her own filing asks her nothing");
+    assert_eq!(allowing.count(), 3, "her own filing asks her nothing");
     ada.nobody_was_mailed("entries filed");
 }
 

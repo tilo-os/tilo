@@ -94,18 +94,18 @@ fn keeping_what_was_judged(at_ms: i64) -> installed::InstalledBot {
     )
 }
 
-/// `person` linked a provider of their own with their key and chose its
+/// The provider `workspace` keeps for itself, with its own key, choosing its
 /// small model for judging; it answers as `replies` script it.
 fn their_own_model(
     workspaces: &Workspaces,
-    person: &[u8; 32],
+    workspace: &str,
     replies: Vec<Reply>,
 ) -> std::sync::Arc<ScriptedProvider> {
     let theirs = ScriptedProvider::answering(replies);
     workspaces.answer_models_with(theirs.clone());
     let provider = workspaces
         .link_model_for(
-            person,
+            workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
@@ -117,7 +117,12 @@ fn their_own_model(
         )
         .unwrap();
     workspaces
-        .choose_model_for(person, Interaction::Classifier, &provider, "gemini-small")
+        .choose_model_for(
+            workspace,
+            Interaction::Classifier,
+            &provider,
+            "gemini-small",
+        )
         .unwrap();
     theirs
 }
@@ -165,10 +170,11 @@ fn said(call: &Asked, message: usize) -> String {
         .unwrap_or_default()
 }
 
-/// The host's own answer to a judgement: the model its person chose for
-/// judging, asked with their key, and held to the shape the step asked for.
+/// The host's own answer to a judgement: the model the workspace keeps for
+/// judging, asked with the key it keeps, and held to the shape the step asked
+/// for.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_judgement_is_answered_by_its_persons_own_model_with_their_own_key() {
+async fn a_judgement_is_answered_by_its_workspaces_own_model_with_its_own_key() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
@@ -180,7 +186,7 @@ async fn a_judgement_is_answered_by_its_persons_own_model_with_their_own_key() {
     let person = cert.user_public_key;
     let theirs = their_own_model(
         &workspaces,
-        &person,
+        &workspace,
         vec![
             Reply::text("It is.").costing(100),
             Reply::text(r#"{"result": true}"#).costing(150),
@@ -219,12 +225,12 @@ async fn a_judgement_is_answered_by_its_persons_own_model_with_their_own_key() {
     for call in &asked {
         assert_eq!(
             call.model, "gemini-small",
-            "the model they chose for judging"
+            "the model the workspace chose for judging"
         );
         assert_eq!(
             call.key.as_deref(),
             Some("sk-their-own"),
-            "with their own key"
+            "with the workspace's own key"
         );
         assert!(call.request.tools.is_empty(), "a judgement acts on nothing");
         assert!(said(call, 0).contains(QUESTION), "{}", said(call, 0));
@@ -248,11 +254,11 @@ async fn a_judgements_cost_is_on_its_persons_assistants_day_and_a_refusal_is_sai
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
     let person = cert.user_public_key;
     let owner = hex::encode(person);
-    // Their provider charges 250 for the one answer, and their assistant
-    // may spend 250 in a day.
+    // The workspace's provider charges 250 for the one answer, and their
+    // assistant may spend 250 in a day.
     let theirs = their_own_model(
         &workspaces,
-        &person,
+        &workspace,
         vec![Reply::text(r#"{"result": true}"#).costing(250)],
     );
     keeps_an_assistant(&workspaces, &workspace, &cert, &owner, Some(250)).await;
@@ -287,10 +293,12 @@ async fn a_judgements_cost_is_on_its_persons_assistants_day_and_a_refusal_is_sai
     assert_eq!(runner.kept().read().note().kept, Value::Null);
     drop(runner);
 
-    // Someone who linked no model is told so. Nobody else's model answers
-    // for them, and the run guesses nothing.
+    // A workspace with no model linked tells its program so. Another
+    // workspace's model answers for it no more than a person's did, and the
+    // run guesses nothing.
+    let (elsewhere, _) = chat_workspace(&workspaces, &cert).await;
     let (runner, _) = judged_once(
-        set,
+        (&workspaces, elsewhere.as_str(), &cert),
         &hex::encode(MALLORY),
         at_ms.saturating_add(120_000),
         scratch.path().join("none.json"),
@@ -308,7 +316,7 @@ async fn a_judgements_cost_is_on_its_persons_assistants_day_and_a_refusal_is_sai
     assert_eq!(
         theirs.asked().len(),
         1,
-        "nobody else's model is asked for Mallory"
+        "no other workspace's model is asked"
     );
     assert_eq!(runner.kept().read().note().kept, Value::Null);
 }

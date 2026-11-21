@@ -50,6 +50,9 @@ mod api_beside_import;
 #[path = "workspace_actions/api_invites.rs"]
 mod api_invites;
 #[cfg(test)]
+#[path = "workspace_actions/api_key_mail.rs"]
+mod api_key_mail;
+#[cfg(test)]
 #[path = "workspace_actions/api_layout.rs"]
 mod api_layout;
 #[cfg(test)]

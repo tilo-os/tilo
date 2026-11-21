@@ -1,12 +1,11 @@
-//! What this holder offers an agent of a person's of that person's mail: the
-//! actions of `tilo.accounts` it may call, as rows of the catalogue it
-//! reads. A page asks the holder directly and is offered no row; an agent
-//! finds what it may do here, once its person named it for an account
-//! ([`person_accounts::ASSISTANT`]).
+//! What this holder offers an agent of a workspace's mail: the actions of
+//! `tilo.accounts` it may call, as rows of the catalogue it reads. A page
+//! asks the holder directly and is offered no row; an agent is offered these
+//! where the workspace's policy lets it read the mail.
 //!
-//! It reads, searches and drafts. Sending is offered too, and is put to its
-//! person before anything leaves. What only the person does (adding and
-//! removing accounts, marking mail, saying who may read) is no row.
+//! It reads, searches and drafts. Sending is offered too, and the policy
+//! decides whether its person is asked before anything leaves. Adding and
+//! removing accounts and marking mail are no row.
 
 use tilo_actions::remote::{CatalogueRow, person_accounts};
 #[cfg(feature = "agents")]
@@ -14,8 +13,11 @@ use tilo_actions::{ActionContract, contract::Audience};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 
 use super::{Publisher, Verb};
+#[cfg(feature = "agents")]
+use crate::workspaces::person_settings::calendars::LIST as CALENDARS_LIST;
+use crate::workspaces::workspace_stores::Store;
 
-/// A person's mail accounts, as their holder publishes them.
+/// A workspace's mail accounts, as their holder publishes them.
 pub(super) const MAIL: Publisher = Publisher {
     provider: person_accounts::PROVIDER,
     kind: "tilo.accounts",
@@ -89,7 +91,7 @@ const VERBS: [Verb; 9] = [
     },
 ];
 
-/// The rows an agent its person named for an account is offered.
+/// The rows an agent the workspace's policy lets read its mail is offered.
 pub(super) fn assistant_rows() -> Vec<CatalogueRow> {
     VERBS
         .iter()
@@ -241,8 +243,8 @@ const CONNECT_ABOUT: &str = "Sign your person in to a mail account of theirs fro
      password in a protected field of your conversation with them, which you cannot read: \
      never ask for a password and never take one. The call ends at once, told that they \
      are asked and which servers were found: tell them in one line to type the password \
-     there, and do not make the call again. Once they typed it the account is signed in, \
-     you are named for it and you are told. A password that is not accepted is asked for \
+     there, and do not make the call again. Once they typed it the account is signed in \
+     for the workspace and you are told. A password that is not accepted is asked for \
      again by this server itself.";
 
 #[cfg(feature = "agents")]
@@ -307,11 +309,33 @@ impl super::super::Workspaces {
         row
     }
 
-    /// The rows an agent its person named for an account is offered, for the
-    /// entry a turn this holder carries out reaches that person's mail
-    /// through: such a turn has no device behind it for the catalogue to
-    /// offer them by.
+    /// The rows an agent the workspace's policy lets read its mail is
+    /// offered, for the entry a turn this holder carries out reaches the
+    /// workspace's mail through: such a turn has no device behind it for the
+    /// catalogue to offer them by.
     pub(in crate::workspaces) fn assistant_mail_rows() -> Vec<CatalogueRow> {
         assistant_rows()
+    }
+
+    /// The rows `asked`, an agent, is offered of the workspace's mail and its
+    /// calendars: those the workspace's policy lets it read.
+    pub(super) async fn mail_rows(&self, asked: super::Asked<'_>) -> Vec<CatalogueRow> {
+        let mut rows = Vec::new();
+        if self
+            .reaching(asked, Store::MAIL, person_accounts::LIST, ActionKind::Read)
+            .await
+            .is_ok()
+        {
+            rows.extend(assistant_rows());
+        }
+        #[cfg(feature = "agents")]
+        if self
+            .reaching(asked, Store::CALENDARS, CALENDARS_LIST, ActionKind::Read)
+            .await
+            .is_ok()
+        {
+            rows.extend(super::calendars::assistant_rows());
+        }
+        rows
     }
 }

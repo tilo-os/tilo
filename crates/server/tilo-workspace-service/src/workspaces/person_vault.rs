@@ -1,37 +1,37 @@
-//! What a person keeps to sign in with, in their own vault on the host
-//! their workspace runs on: logins, keys, code generators, ssh keys and
-//! plain values such as a card number, each bound to where it belongs.
+//! What a workspace keeps to sign in with, in its vault on the host it runs
+//! on: logins, keys, code generators, ssh keys and plain values such as a
+//! card number, each bound to where it belongs.
 //!
-//! The items are sealed in the vault that already keeps the person's mail
-//! sign-ins and provider keys ([`super::person_settings`]), and they are
-//! reached as those are: only by the person themselves, on a device of
-//! theirs whose certificate names them. Another member reaches only their
-//! own vault, and an agent's request is refused, whoever it acts for.
+//! The items are sealed in the vault that already keeps the workspace's mail
+//! sign-ins and provider keys ([`super::person_settings`]), under the
+//! workspace's own key, and they are reached as the workspace's policy says
+//! at Passwords' vault ([`Store::VAULT`]): a member through their role, an
+//! agent or a key through a grant there. A Mail grant opens no vault.
 //!
 //! A secret travels in and never back. A listing says what is safe to say
 //! of an item and no request answers more.
 //!
-//! The entries of the person's Passwords are kept in the same vault, and
-//! they are the exception: the person reads and edits them, secrets
-//! included, from any device of theirs, a browser page as much as a laptop
-//! ([`person_vault::ENTRIES`]). They are answered to the person alone, as
-//! everything here is: never to an app or an agent.
+//! The entries of the workspace's Passwords are kept in the same vault, and
+//! they are the exception: whoever reads the vault reads them, secrets
+//! included, from any device, a browser page as much as a laptop
+//! ([`person_vault::ENTRIES`]).
 //!
 //! What uses an item names it by its reference and carries no secret, so an
-//! agent acting for the person may ask it ([`Workspaces::asking_for_person`]):
-//! adding a mail account whose sign-in the vault keeps, keeping a provider's
-//! key from it. The host resolves the reference in the person's own vault,
-//! hands the secret only to the code that signs in, only where the item
-//! belongs, and the item remembers the use. The agent is answered what the
-//! person would be: the account or the provider, never the secret. Nothing here tells a caller why
-//! an argument did not read in the argument's own words, so what was meant
-//! as a secret is never echoed in a refusal.
+//! agent whose grants reach both the vault and what it uses the item for may
+//! ask it: adding a mail account whose sign-in the vault keeps, keeping a
+//! provider's key from it. The host resolves the reference in the
+//! workspace's vault, hands the secret only to the code that signs in, only
+//! where the item belongs, and the item remembers the use. The agent is
+//! answered what the person would be: the account or the provider, never the
+//! secret. Nothing here tells a caller why an argument did not read in the
+//! argument's own words, so what was meant as a secret is never echoed in a
+//! refusal.
 //!
 //! An agent on this server, working with no device of its person's on, uses
 //! an item through the server's own entry ([`super::hosted_use`]), which asks
-//! the person first. Their "Always" is a grant kept by the workspace.
-//! The person reads the leaves beside the uses and takes them back here,
-//! and no agent does either.
+//! the person first. Their "Always" is a grant kept by the workspace. A
+//! member reads the leaves beside the uses and takes them back here, and no
+//! agent does either.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -39,7 +39,7 @@ use std::sync::Arc;
 use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultItems};
 use serde_json::Value;
 use tilo_account_probe::AccountTester;
-use tilo_action_policy::{Answer, Grant, Level};
+use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
@@ -50,6 +50,7 @@ use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeReques
 use tilo_user_identity::DeviceCert;
 
 use super::person_asking::{ApprovalChange, is_scoped_approval};
+use super::workspace_stores::Store;
 use super::{WorkspaceId, Workspaces};
 
 /// What the vault is asked to keep where a person is asked for a login's password: where it
@@ -62,16 +63,16 @@ pub struct LoginAsked {
 
 impl Workspaces {
     /// Ask `person`, on their own devices, for the password `question` words, and keep what
-    /// they type in their vault as a login `asked` names: the reference of the item it is kept
-    /// as, `None` where they declined. The password goes from their device's protected field to
-    /// this host and into the vault; only the reference comes back.
+    /// they type in `workspace`'s vault as a login `asked` names: the reference of the item it
+    /// is kept as, `None` where they declined. The password goes from their device's protected
+    /// field to this host and into the vault; only the reference comes back.
     ///
     /// # Errors
     /// No device of theirs could be asked, nobody answered in time, or the vault did not keep
     /// what they typed.
     pub async fn ask_for_login(
         &self,
-        person: [u8; 32],
+        (person, workspace): ([u8; 32], &str),
         question: tilo_server_protocol::certify::PendingConfirmation,
         asked: LoginAsked,
     ) -> Result<Option<ItemRef>, String> {
@@ -84,7 +85,7 @@ impl Workspaces {
         else {
             return Ok(None);
         };
-        let root = self.person_settings_root(&person);
+        let root = self.workspace_root(workspace);
         let adding = AddItem {
             kind: ItemKind::Login,
             belongs_to: asked.belongs_to,
@@ -107,9 +108,26 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let person = Self::asking_person(caller, certificate, workspace_id)?;
-        let root = self.person_settings_root(&person);
-        match request.target.address.action.as_str() {
+        let action = request.target.address.action.as_str();
+        let effect = match action {
+            person_vault::LIST | person_vault::ENTRIES | person_vault::USES => ActionKind::Read,
+            _ => ActionKind::Undoable,
+        };
+        // Who takes back what an agent may always use is a member, never an
+        // agent: an agent's call of it is no call of the vault.
+        if action == person_vault::TAKE_BACK && caller.acting().is_agent() {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let reach = self
+            .reaching_allowed(
+                (workspace_id, caller, certificate),
+                Store::VAULT,
+                action,
+                effect,
+            )
+            .await?;
+        let root = self.workspace_root(&reach.workspace.to_string());
+        match action {
             person_vault::LIST => answer(kept(&root)),
             person_vault::ADD => {
                 let adding: AddItem = argument(
@@ -171,7 +189,6 @@ impl Workspaces {
         take_back: Option<&TakeBack>,
     ) -> Result<Vec<AlwaysUse>, ActionCallError> {
         let name = workspace.to_string();
-        let person = hex::encode(device.user_public_key);
         let workspace = self
             .workspace(&name)
             .await
@@ -182,6 +199,7 @@ impl Workspaces {
             .peer()
             .permissions(device.device_public_key, at)
             .map_err(|_| ActionCallError::NotPermitted)?;
+        let person = hex::encode(device.user_public_key);
         if !access.acting.is_person()
             || access.person_id() != Some(person.as_str())
             || access.policy.active_role(&person).is_none()
@@ -192,7 +210,7 @@ impl Workspaces {
             .policy
             .grants
             .iter()
-            .filter_map(|grant| Some((grant.clone(), vault_approval(grant, &person, item)?)))
+            .filter_map(|grant| Some((grant.clone(), vault_approval(grant, item)?)))
             .collect();
         drop(access);
         if let Some(taking) = take_back {
@@ -233,41 +251,6 @@ impl Workspaces {
         Ok(shown)
     }
 
-    /// The person a request that uses what their vault keeps is for, and
-    /// whom the use is remembered for: the person themselves on a device of
-    /// theirs (nobody is named), or an agent acting for them, by the name
-    /// they know it under. The device is the one `certificate` certifies for
-    /// that person, which the transport verified. A bot, an app and an agent
-    /// no such certificate stands behind are told what a caller asking for
-    /// something that does not exist is told.
-    pub(super) fn asking_for_person(
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<([u8; 32], String), ActionCallError> {
-        workspace_id.ok_or(ActionCallError::UnknownAction)?;
-        let acting = caller.acting();
-        if acting.app().is_some() || !(acting.is_person() || acting.is_agent()) {
-            return Err(ActionCallError::UnknownAction);
-        }
-        let certificate = certificate
-            .filter(|certificate| {
-                caller.device_public_key() == Some(&certificate.device_public_key)
-                    && caller.user_public_key() == Some(&certificate.user_public_key)
-            })
-            .ok_or(ActionCallError::UnknownAction)?;
-        let by = if acting.is_agent() {
-            caller
-                .agent_name()
-                .or_else(|| acting.agent_id())
-                .unwrap_or_default()
-                .to_owned()
-        } else {
-            String::new()
-        };
-        Ok((certificate.user_public_key, by))
-    }
-
     /// Answer a request that uses a vault item by its reference:
     /// [`person_accounts::ADD_MAIL_WITH_ITEM`] or
     /// [`person_models::SET_KEY_FROM_ITEM`].
@@ -278,9 +261,23 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let (person, by) = Self::asking_for_person(caller, certificate, workspace_id)?;
-        let root = self.person_settings_root(&person);
         let target = &request.target;
+        let action = target.address.action.as_str();
+        let asked = (workspace_id, caller, certificate);
+        // The item is used, never read: whoever reaches the vault's items
+        // and what the item is used for may.
+        let used_for = if target.provider == person_accounts::PROVIDER {
+            Store::MAIL
+        } else {
+            Store::MODELS
+        };
+        let reach = self
+            .reaching_allowed(asked, used_for, action, ActionKind::Undoable)
+            .await?;
+        self.reaching_allowed(asked, Store::VAULT, action, ActionKind::Undoable)
+            .await?;
+        let by = reach.by();
+        let root = self.workspace_root(&reach.workspace.to_string());
         // What the item is used for is written down with the use. How it
         // was allowed is not the vault's to say here: nothing of it asked.
         let word = person_vault::use_word(target);
@@ -402,7 +399,7 @@ fn remove(root: &Path, item: &ItemRef) -> Result<KeptItems, vault_items::ItemErr
     kept(root)
 }
 
-/// The person's Passwords, in the vault under `root`, refusing a vault
+/// The workspace's Passwords, in the vault under `root`, refusing a vault
 /// whose key is gone rather than answering it empty.
 fn passwords(root: &Path) -> Result<accounts::SecretStore, String> {
     let store = accounts::SecretStore::open_in(root);
@@ -412,7 +409,7 @@ fn passwords(root: &Path) -> Result<accounts::SecretStore, String> {
     }
 }
 
-/// Every entry of the person's Passwords, secrets included.
+/// Every entry of the workspace's Passwords, secrets included.
 fn entries(root: &Path) -> Result<Entries, String> {
     let entries = passwords(root)?
         .list()
@@ -435,7 +432,7 @@ fn keep_entry(root: &Path, keeping: KeepEntry) -> Result<Entries, String> {
 }
 
 /// Forget the entry `forgetting` names, answering every entry left. One
-/// already gone is no refusal: another device of the person's may have
+/// already gone is no refusal: another device may have
 /// forgotten it first.
 fn forget_entry(root: &Path, forgetting: ForgetEntry) -> Result<Entries, String> {
     passwords(root)?
@@ -454,11 +451,10 @@ fn refused(reason: String) -> ActionCallError {
     ActionCallError::Refused { reason }
 }
 
-fn vault_approval(grant: &Grant, person: &str, item: &ItemRef) -> Option<AlwaysUse> {
-    if !is_scoped_approval(grant)
-        || grant.answer != Answer::Allow
-        || grant.granted_by.person_id() != Some(person)
-    {
+/// What `grant` lets an agent always use of the workspace's vault item
+/// `item`, if it is such a grant.
+fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
+    if !is_scoped_approval(grant) || grant.answer != Answer::Allow {
         return None;
     }
     let agent = grant.grantee.agent_id()?;

@@ -1,19 +1,18 @@
-//! What only the person does, asked from a computer that holds their identity
-//! (`tilo login --new-identity`): their vault and their mail accounts.
+//! The workspace's vault and mail accounts, asked from a computer that holds
+//! a person's identity (`tilo login --new-identity`) as that person.
 //!
-//! The person's vault (`person/vault`) and their mail accounts
-//! (`person/mail-accounts`) are kept on the host that runs their workspace,
-//! and the host answers them to the person on a device of theirs alone: a key
-//! made for a script and an agent are refused. Their page asks them over its
-//! own session with the host, as their device. A computer that holds the
-//! person's root can certify any device of theirs and approve any key, so it
-//! asks the same as the page does: over a session of the device the root
-//! certified on it, never marked as an agent's run. The host checks and keeps
-//! what it is asked exactly as it does for the page.
+//! The workspace's vault (`workspace/vault`) and its mail accounts
+//! (`workspace/mail-accounts`) are kept on the host that runs the workspace,
+//! and the host answers them as the workspace's policy decides for whoever
+//! asks. A computer that holds the person's root can certify any device of
+//! theirs and approve any key, so it asks as their page does: over a session
+//! of the device the root certified on it, never marked as an agent's run.
+//! The host checks and keeps what it is asked exactly as it does for the
+//! page.
 //!
-//! `tilo do person/vault#keep-entry entry='{…}' -w WORKSPACE`, as every other
-//! `tilo do`: the action's arguments as `name=value`, its answer printed as
-//! the API prints one.
+//! `tilo do workspace/vault#keep-entry entry='{…}' -w WORKSPACE`, as every
+//! other `tilo do`: the action's arguments as `name=value`, its answer
+//! printed as the API prints one.
 
 use std::sync::Arc;
 
@@ -26,17 +25,17 @@ use tilo_session_client::device::Device;
 
 use crate::login;
 
-/// The person's mail accounts, as `tilo do` names them.
-const MAIL_ACCOUNTS: &str = "person/mail-accounts";
-/// The person's vault, as `tilo do` names it.
-const VAULT: &str = "person/vault";
+/// The workspace's mail accounts, as `tilo do` names them.
+const MAIL_ACCOUNTS: &str = "workspace/mail-accounts";
+/// The workspace's vault, as `tilo do` names it.
+const VAULT: &str = "workspace/vault";
 
-/// The host's action `path` (`person/vault#keep-entry`) names, when it names
-/// one of the person's own.
+/// The host's action `path` (`workspace/vault#keep-entry`) names, when it names
+/// one of the workspace's vault or mail accounts.
 fn target(path: &str) -> Option<RemoteActionTarget> {
     let (resource, action) = path.rsplit_once('#')?;
     match resource {
-        // Named as the API names it (`person/mail-accounts#add`).
+        // Named as the API names it (`workspace/mail-accounts#add`).
         MAIL_ACCOUNTS if action == "add" => {
             Some(person_accounts::target(person_accounts::ADD_MAIL))
         }
@@ -47,7 +46,7 @@ fn target(path: &str) -> Option<RemoteActionTarget> {
 }
 
 /// Whether `tilo do path` is asked here as the person: `path` is one of
-/// theirs, no key was named for the command, and this computer holds their
+/// these, no key was named for the command, and this computer holds their
 /// root.
 pub fn answers(path: &str, keyed: bool) -> bool {
     !keyed && target(path).is_some() && crate::identity::holds_root()
@@ -153,16 +152,16 @@ mod tests {
     #[test]
     fn only_the_persons_own_paths_are_asked_as_them() {
         assert_eq!(
-            target("person/vault#keep-entry"),
+            target("workspace/vault#keep-entry"),
             Some(person_vault::target(person_vault::KEEP_ENTRY))
         );
         assert_eq!(
-            target("person/mail-accounts#add"),
+            target("workspace/mail-accounts#add"),
             Some(person_accounts::target(person_accounts::ADD_MAIL))
         );
-        assert_eq!(target("person/vault"), None);
+        assert_eq!(target("workspace/vault"), None);
         assert_eq!(target("notes/Notes#new-note"), None);
         assert!(!answers("notes/Notes#new-note", false));
-        assert!(!answers("person/vault#entries", true));
+        assert!(!answers("workspace/vault#entries", true));
     }
 }

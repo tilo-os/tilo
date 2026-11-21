@@ -68,14 +68,14 @@ impl Spenders for OneAssistant {
     }
 }
 
-/// Ada links a provider of her own, which answers as the test scripts it.
+/// The workspace's model, which answers as the test scripts it.
 fn linked(setup: &Setup) -> Arc<ScriptedProvider> {
     let scripted = ScriptedProvider::answering(Vec::<Reply>::new());
     setup.workspaces.answer_models_with(scripted.clone());
     setup
         .workspaces
         .link_model_for(
-            &setup.ada.user_public_key,
+            &setup.own.to_string(),
             &Linking {
                 name: "Models",
                 protocol: ProviderProtocol::OpenAiCompatible,
@@ -89,8 +89,8 @@ fn linked(setup: &Setup) -> Arc<ScriptedProvider> {
     scripted
 }
 
-/// Ada's own model judges, counted on the day of the assistant she keeps,
-/// which may spend `limit` a day.
+/// The workspace's model judges, counted on the day of the assistant Ada
+/// keeps, which may spend `limit` a day.
 fn judge(setup: &Setup, limit: Option<u64>) -> Arc<ScriptedProvider> {
     let scripted = linked(setup);
     setup

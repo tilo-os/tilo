@@ -2,16 +2,15 @@
 //! asks before it sends, with no device of theirs on.
 //!
 //! The whole way through the server's own interfaces. The account is the one the assistant signed
-//! in to with a password it never saw ([`super::hosted_secret_use`]). Its person names the
-//! assistant for that account on a device of theirs, and then every device of theirs goes off. A
-//! message arrives. The turn that is asked about it lists what arrived, reads the message with
-//! the file it carries, searches, and keeps an answer in the Drafts folder. A send asks: the
-//! question waits in the person's conversation with every address the message goes to, what it
-//! is called and what it says, and offers no answer that would let mail leave unasked from then
-//! on. A question its agent edited sends nothing. Nobody's answer but the person's own does
-//! anything, the server restarts while the question waits, and on their answer one message
-//! leaves, once. The account's password is in no model request, tool result, message, log line
-//! or file in the clear.
+//! in to with a password it never saw ([`super::hosted_secret_use`]), and the workspace keeps it.
+//! Its person's every device goes off. A message arrives. The turn that is asked about it lists
+//! what arrived, reads the message with the file it carries, searches, and keeps an answer in the
+//! Drafts folder. A send asks: the question waits in the person's conversation with every address
+//! the message goes to, what it is called and what it says, and offers no answer that would let
+//! mail leave unasked from then on. A question its agent edited sends nothing. Nobody's answer but
+//! the person's own does anything, the server restarts while the question waits, and on their
+//! answer one message leaves, once. The account's password is in no model request, tool result,
+//! message, log line or file in the clear.
 use super::hosted_agent_turns::{SCOUT, conversation_part};
 use super::hosted_secret_use::{
     Hosted, Lines, PASSWORD, does, files_holding, logged, the_first_use_asks_and_always_signs_in,
@@ -21,7 +20,7 @@ use super::*;
 use serde_json::json;
 use std::sync::Mutex;
 use tilo_actions::remote::person_accounts::{
-    self, FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MailAttachment, MarkMail,
+    FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MailAttachment, MarkMail,
     ReadMail, SearchMail, SendMail, SentMail,
 };
 use tilo_server::{
@@ -240,27 +239,17 @@ fn answer_to_bo() -> serde_json::Value {
     begun_message(ACCOUNT, (BO, CY), "Re: Lunch on Friday?", ANSWER)
 }
 
-/// Her own device is still on: she names her assistant for the account, and then every device
-/// of hers goes off.
-async fn she_names_her_assistant_and_every_device_goes_off(hosted: &mut Hosted) {
-    let named = hosted
-        .on_device(
-            (
-                person_accounts::PROVIDER,
-                person_accounts::RESOURCE,
-                person_accounts::ASSISTANT,
-            ),
-            json!({"account": ACCOUNT, "agent": SCOUT, "may": true}),
-        )
-        .await;
-    assert_eq!(named["agents"], json!([SCOUT]), "{named}");
+/// Every device of hers goes off: the workspace's account and its mail are the server's to keep
+/// from here until she comes back.
+fn every_device_of_hers_goes_off(hosted: &mut Hosted) {
     hosted.page.peer.close();
 }
 
-/// The watch the server keeps of her inbox with no window open hears a message arrive.
-fn a_message_arrives(hosted: &Hosted, servers: &Servers, keeper: &[u8; 32]) {
+/// The watch the server keeps of the workspace's inbox with no window open hears a message
+/// arrive.
+fn a_message_arrives(hosted: &Hosted, servers: &Servers) {
     let heard = servers.heard.lock().unwrap().clone();
-    let heard = heard.expect("her inbox is watched");
+    let heard = heard.expect("the workspace's inbox is watched");
     // A watch's first look says where it starts: what was there before is no arrival.
     heard.arrived(
         Vec::new(),
@@ -276,8 +265,12 @@ fn a_message_arrives(hosted: &Hosted, servers: &Servers, keeper: &[u8; 32]) {
             uid: 4,
         },
     );
-    let arrived = hosted.workspaces.mail_arrivals(keeper, 0);
-    assert_eq!(arrived.len(), 1, "the server knows of it: {arrived:?}");
+    let arrived = hosted.workspaces.mail_arrivals(&hosted.workspace, 0);
+    assert_eq!(
+        arrived.arrivals.len(),
+        1,
+        "the server knows of it: {arrived:?}"
+    );
 }
 
 /// Asked about it, the turn lists what arrived, reads the message with the name and the size of
@@ -698,12 +691,12 @@ async fn with_every_device_off_the_assistant_reads_arrived_mail_drafts_and_asks_
     // The account: signed in to with a password the assistant never saw.
     let reference = the_password_goes_from_the_persons_device_to_their_vault(&mut hosted).await;
     the_first_use_asks_and_always_signs_in(&hosted, &reference).await;
-    she_names_her_assistant_and_every_device_goes_off(&mut hosted).await;
+    every_device_of_hers_goes_off(&mut hosted);
 
-    // Something on the server listens for her mail, as an event with a mail trigger does.
-    let keeper = hosted.root.verifying_key().to_bytes();
-    let _listening = hosted.workspaces.listen_for_mail(keeper);
-    a_message_arrives(&hosted, &servers, &keeper);
+    // Something on the server listens for the workspace's mail, as an event with a mail trigger
+    // does.
+    let _listening = hosted.workspaces.listen_for_mail(&hosted.workspace);
+    a_message_arrives(&hosted, &servers);
     the_turn_reads_what_arrived(&hosted, &servers).await;
     the_turn_keeps_a_draft(&hosted, &servers).await;
     a_question_its_agent_edited_sends_nothing(&hosted, &servers).await;

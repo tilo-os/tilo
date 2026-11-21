@@ -19,7 +19,7 @@ use tilo_actions::remote::{ActionCallError, InvokeRequest};
 #[cfg(feature = "agents")]
 use super::calendars;
 use super::credentials;
-use super::{account_argument, add_mail_with, answer, argument, remove_mail};
+use super::{add_mail_with, answer, argument, remove_mail};
 use crate::workspaces::Workspaces;
 
 impl Workspaces {
@@ -318,7 +318,7 @@ impl Workspaces {
                 answer(&kept)
             }
             person_accounts::REMOVE => {
-                let account = account_argument(request)?;
+                let account = one_account(request)?;
                 let kept = remove_mail(root, &account);
                 if kept.is_ok() {
                     self.person_settings_changed();
@@ -696,4 +696,15 @@ fn port(account: &accounts::Account, name: &str, default: u16) -> u16 {
         .and_then(Value::as_u64)
         .and_then(|port| u16::try_from(port).ok())
         .unwrap_or(default)
+}
+
+/// The account a request names, as `{ "account": … }`.
+fn one_account(request: &InvokeRequest) -> Result<String, ActionCallError> {
+    let value: Map<String, Value> = argument(request, "the account")?;
+    value
+        .get("account")
+        .and_then(Value::as_str)
+        .filter(|account| !account.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| super::invalid("the request names its account"))
 }

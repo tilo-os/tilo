@@ -56,7 +56,7 @@ pub trait Workspace {
     /// The workspace refused it ([`Refused`], by its code) or could not be reached.
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer>;
 
-    /// Ask `action` of the person's own `path` (`person/mail-accounts`) on the workspace's
+    /// Ask `action` of `path` (`workspace/mail-accounts`) on the workspace's
     /// server, as the person on their own device rather than as their agent: what only they may
     /// do, such as keeping a mail account and its sign-in. Its answer, or why it was refused.
     ///

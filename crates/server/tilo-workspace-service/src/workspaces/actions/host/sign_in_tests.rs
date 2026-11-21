@@ -1,5 +1,5 @@
 //! Signing in on a provider's own page, from a window: begun, answered by a
-//! stand-in provider, and kept as the person's own account.
+//! stand-in provider, and kept as the workspace's account.
 //!
 //! Every provider here is a stand-in on loopback: no real account, password
 //! or mailbox is touched. What a browser would do is done by the test, which
@@ -15,14 +15,12 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
-use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::person_accounts::{self, MailAccounts, Provider, SignInStep};
 use tilo_actions::remote::{ActionProvider as _, InvocationReceipt, ReceiptStatus};
 
-use super::super::ServiceWorkspaceActions;
-use super::super::tests::{caller, settled};
-use super::accounts_tests::{asking, key_of, listed};
+use super::super::tests::{admit, caller, governed, settled};
+use super::accounts_tests::{asking, listed};
 use crate::workspaces::tests::{governor, test_host};
 
 /// What an action answered.
@@ -110,7 +108,7 @@ fn web_client(
         );
 }
 
-/// The account a signed-in person keeps, by its address.
+/// The account a signed-in workspace keeps, by its address.
 fn sealed(root: &std::path::Path, address: &str) -> Option<accounts::Secret> {
     crate::workspaces::person_settings::credentials(root)
         .ok()
@@ -128,8 +126,9 @@ async fn until(what: &str, ready: impl Fn() -> bool + Send + Sync) {
     assert!(waited.is_ok(), "{what}");
 }
 
-/// A person who signs in with Google gets the account, its sealed grant and
-/// its calendar, and the same state cannot be handed in twice.
+/// A member who signs in with Google gets the workspace the account, its
+/// sealed grant and its calendar, and the same state cannot be handed in
+/// twice.
 #[tokio::test]
 async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
     let fake = tilo_oauth::fake::FakeAuthorizationServer::start();
@@ -140,15 +139,9 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "studio");
-    let person = root.verifying_key().to_bytes();
-    let page = actions.in_workspace_as(
-        workspaces.create("Mail").await.unwrap().workspace_id,
-        &device,
-    );
+    let (workspace, workspace_id, actions) = governed(&workspaces).await;
+    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
     let ada = caller(&device);
     let landing = Landing::stand();
     workspaces.accounts_call_back_at(landing.origin.clone());
@@ -202,7 +195,7 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
     // A reading never carries the grant.
     assert!(!serde_json::to_string(&listed).unwrap().contains("access-"));
 
-    let keeping = workspaces.person_settings_root(&person);
+    let keeping = workspaces.workspace_root(&workspace_id.to_string());
     let grant = sealed(&keeping, "ada@gmail.example").expect("the grant is sealed");
     assert!(grant.token.is_some() && grant.password.is_empty());
     // The same grant opens the calendar server the account feeds.
@@ -242,15 +235,9 @@ async fn a_grant_renews_through_the_web_client_it_was_signed_in_with() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "studio");
-    let person = root.verifying_key().to_bytes();
-    let page = actions.in_workspace_as(
-        workspaces.create("Mail").await.unwrap().workspace_id,
-        &device,
-    );
+    let (workspace, workspace_id, actions) = governed(&workspaces).await;
+    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
     let landing = Landing::stand();
     workspaces.accounts_call_back_at(landing.origin.clone());
     let step: SignInStep = answered(
@@ -267,7 +254,7 @@ async fn a_grant_renews_through_the_web_client_it_was_signed_in_with() {
     tilo_oauth::fake::browse(&step.open).unwrap();
     workspaces.accounts_return(&landing.query()).await.unwrap();
 
-    let root = workspaces.person_settings_root(&person);
+    let root = workspaces.workspace_root(&workspace_id.to_string());
     let secret = tokio::task::spawn_blocking(move || {
         crate::workspaces::person_settings::account_secret_for_test(&root, "ada@gmail.example")
     })
@@ -289,15 +276,9 @@ async fn a_microsoft_sign_in_keeps_the_account_too() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "laptop");
-    let person = root.verifying_key().to_bytes();
-    let page = actions.in_workspace_as(
-        workspaces.create("Mail").await.unwrap().workspace_id,
-        &device,
-    );
+    let (workspace, workspace_id, actions) = governed(&workspaces).await;
+    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
     let ada = caller(&device);
     let landing = Landing::stand();
     workspaces.accounts_call_back_at(landing.origin.clone());
@@ -328,7 +309,7 @@ async fn a_microsoft_sign_in_keeps_the_account_too() {
             .any(|account| account.address == "ada@outlook.example"),
         "{listed:?}"
     );
-    let keeping = workspaces.person_settings_root(&person);
+    let keeping = workspaces.workspace_root(&workspace_id.to_string());
     let account = accounts::AccountStore::load_in(&keeping)
         .get(&accounts::AccountId::from("ada@outlook.example".to_owned()))
         .cloned()
@@ -339,10 +320,10 @@ async fn a_microsoft_sign_in_keeps_the_account_too() {
     );
 }
 
-/// One person's sign-ins are neither shown to nor finished by another, and
-/// one that ran out finishes nothing.
+/// A workspace's sign-ins are neither shown to nor finished by another
+/// workspace, and one that ran out finishes nothing.
 #[tokio::test]
-async fn a_sign_in_is_the_person_who_began_it_and_goes_stale() {
+async fn a_sign_in_is_the_workspaces_and_goes_stale() {
     let fake = tilo_oauth::fake::FakeAuthorizationServer::start();
     let mut env = tilo_test_env::ScopedEnv::new();
     web_client(&mut env, "GOOGLE", &fake);
@@ -350,14 +331,9 @@ async fn a_sign_in_is_the_person_who_began_it_and_goes_stale() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(workspaces.clone());
-    let ada = SigningKey::from_bytes(&rand::random());
-    let ada_device = key_of(&ada, "studio");
-    let ada_page = actions.in_workspace_as(
-        workspaces.create("Mail").await.unwrap().workspace_id,
-        &ada_device,
-    );
+    let (workspace, workspace_id, actions) = governed(&workspaces).await;
+    let ada_device = admit(&workspaces, &workspace, &owner, 1).await;
+    let ada_page = actions.in_workspace_as(workspace_id, &ada_device);
     let landing = Landing::stand();
     workspaces.accounts_call_back_at(landing.origin.clone());
     let step: SignInStep = answered(
@@ -372,13 +348,10 @@ async fn a_sign_in_is_the_person_who_began_it_and_goes_stale() {
         .unwrap(),
     );
 
-    // Somebody else's window shows none of it, and can stop none of it.
-    let bob = SigningKey::from_bytes(&rand::random());
-    let bob_device = key_of(&bob, "laptop");
-    let bob_page = actions.in_workspace_as(
-        workspaces.create("Other").await.unwrap().workspace_id,
-        &bob_device,
-    );
+    // Another workspace's member shows none of it, and can stop none of it.
+    let (elsewhere, elsewhere_id, _) = governed(&workspaces).await;
+    let bob_device = admit(&workspaces, &elsewhere, &owner, 2).await;
+    let bob_page = actions.in_workspace_as(elsewhere_id, &bob_device);
     let theirs: MailAccounts = answered(
         settled(bob_page.invoke(
             &caller(&bob_device),
@@ -408,7 +381,7 @@ async fn a_sign_in_is_the_person_who_began_it_and_goes_stale() {
     tilo_oauth::fake::browse(&step.open).unwrap();
     assert!(workspaces.accounts_return(&landing.query()).await.is_err());
 
-    // A failure is kept with it, in words the person reads, until cancelled.
+    // A failure is kept with it, in words a member reads, until cancelled.
     let another: SignInStep = answered(
         settled(ada_page.invoke(
             &caller(&ada_device),
@@ -490,15 +463,9 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     workspaces.call_private_model_addresses(true);
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "studio");
-    let person = root.verifying_key().to_bytes();
-    let page = actions.in_workspace_as(
-        workspaces.create("Mail").await.unwrap().workspace_id,
-        &device,
-    );
+    let (workspace, workspace_id, actions) = governed(&workspaces).await;
+    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
     let ada = caller(&device);
 
     let step: SignInStep = answered(
@@ -513,7 +480,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         .unwrap(),
     );
     assert_eq!(step.open, format!("{}/login/v2/flow/abc", responder.url()));
-    let keeping = workspaces.person_settings_root(&person);
+    let keeping = workspaces.workspace_root(&workspace_id.to_string());
     until("the Nextcloud account is kept", || {
         accounts::AccountStore::load_in(&keeping)
             .all()
@@ -597,14 +564,9 @@ async fn a_sign_in_finished_elsewhere_reaches_every_follow_of_the_accounts() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "studio");
-    let page = actions.in_workspace_as(
-        workspaces.create("Mail").await.unwrap().workspace_id,
-        &device,
-    );
+    let (workspace, workspace_id, actions) = governed(&workspaces).await;
+    let device = admit(&workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
     let ada = caller(&device);
     let landing = Landing::stand();
     workspaces.accounts_call_back_at(landing.origin.clone());

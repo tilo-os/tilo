@@ -1,9 +1,9 @@
-//! A person's mail and a turn this server carries out for them: the turn of
-//! the agent they named for the account reads, searches and drafts with no
-//! device behind it; every other turn reaches nothing and is offered
-//! nothing; and a message a turn would send is set apart until its person
-//! answers, leaves as they were shown it, once, and is found again after the
-//! server stopped.
+//! A workspace's mail and a turn this server carries out for a member: the
+//! turn reads, searches and drafts with no device behind it wherever the
+//! workspace's policy lets that member reach its mail; every other turn
+//! reaches nothing and is offered nothing; and a message a turn would send is
+//! set apart until its person answers, leaves as they were shown it, once,
+//! and is found again after the server stopped.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,15 +25,15 @@ use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions as HolderActions;
-use super::super::tests::{admit, caller, governed};
+use super::super::tests::{admit, governed};
 use super::accounts_tests::asking;
-use super::mail_assistant_tests::{asked_of, lunch, lunch_with};
+use super::mail_assistant_tests::{lunch, lunch_with};
 use super::turn_use_tests::{not_her_agents_turns, on_turn};
 use crate::workspaces::hosted_use::{AskedSend, HostedTurn, SEND_CARRIER, TurnMail};
 use crate::workspaces::mail_watch::testing::{Watched, keep};
 use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
 use crate::workspaces::tests::{governor, test_host as test_server};
-use crate::workspaces::{WorkspaceId, Workspaces};
+use crate::workspaces::{RemoveMemberRequest, WorkspaceId, Workspaces};
 
 const ACCOUNT: &str = "ada@example.test";
 const PASSWORD: &str = "adas-password";
@@ -42,15 +42,17 @@ const SCOUT: &str = "scout";
 const LUNCH_LEFT: &str = "send ada@example.test to bo@example.test: Lunch";
 
 /// Ada in a workspace of a server whose mail servers answer and keep what
-/// they were asked: a device the workspace admits her on, and one account
-/// she keeps signed in.
+/// they were asked: a device the workspace admits her on, and one account the
+/// workspace keeps signed in.
 struct Mail {
     servers: Arc<Watched>,
     workspaces: Workspaces,
     workspace: String,
     workspace_id: WorkspaceId,
-    service: HolderActions,
+    /// The workspace's actions, held while the turns ask of its mail.
+    _service: HolderActions,
     ada: DeviceCert,
+    owner: DeviceCert,
 }
 
 impl Mail {
@@ -60,7 +62,7 @@ impl Mail {
         let (workspace, workspace_id, service) = governed(workspaces).await;
         let ada = admit(workspaces, &workspace, owner, 1).await;
         keep(
-            &workspaces.person_settings_root(&ada.user_public_key),
+            &workspaces.workspace_root(&workspace_id.to_string()),
             ACCOUNT,
             PASSWORD,
         );
@@ -69,32 +71,13 @@ impl Mail {
             workspaces: workspaces.clone(),
             workspace,
             workspace_id,
-            service,
+            _service: service,
             ada,
+            owner: owner.clone(),
         }
     }
 
-    /// Ada says, on her own device in the workspace `from` names, whether
-    /// `agent` may use her account.
-    async fn names_from(&self, from: WorkspaceId, agent: &str, may: bool) {
-        let page = self.service.in_workspace_as(from, &self.ada);
-        let saying = json!({"account": ACCOUNT, "agent": agent, "may": may});
-        asked_of(
-            &page,
-            &caller(&self.ada),
-            person_accounts::ASSISTANT,
-            saying,
-        )
-        .await
-        .expect("she says who may use her account");
-    }
-
-    /// Ada says so from the workspace her agent works in.
-    async fn names(&self, agent: &str, may: bool) {
-        self.names_from(self.workspace_id, agent, may).await;
-    }
-
-    /// Ada, as the keeper an agent's entry names.
+    /// Ada's person, as the keeper a turn's entry names.
     fn keeper(&self) -> String {
         hex::encode(self.ada.user_public_key)
     }
@@ -115,7 +98,7 @@ impl Mail {
         }
     }
 
-    /// What `turn` is answered when it asks `action` of her mail.
+    /// What `turn` is answered when it asks `action` of the workspace's mail.
     async fn asks(
         &self,
         turn: &HostedTurn<'_>,
@@ -165,6 +148,22 @@ impl Mail {
         self.workspaces.claim_ask(&kept.ask).unwrap()
     }
 
+    /// Remove Ada from the workspace as its owner does, so its policy no
+    /// longer lets her reach its mail.
+    async fn remove_ada(&self) {
+        self.workspaces
+            .remove_member(
+                &self.workspace,
+                &self.owner,
+                RemoveMemberRequest {
+                    request_id: rand::random(),
+                    user_public_key: self.ada.user_public_key,
+                },
+            )
+            .await
+            .expect("the owner removes her");
+    }
+
     /// What left through the mail servers, oldest first.
     fn left(&self) -> Vec<String> {
         let asked = self.servers.asked();
@@ -191,18 +190,18 @@ fn asked(answer: Result<TurnMail, ActionCallError>) -> AskedSend {
     }
 }
 
-/// One message of her inbox, as a request to read it names it.
+/// One message of the inbox, as a request to read it names it.
 fn reading() -> Value {
     json!({"account": ACCOUNT, "folder": "inbox", "uid": 4, "uidValidity": 7})
 }
 
-/// Nothing is granted by default. Once she named it, the turn of her agent
-/// is offered the mail actions, lists her account, reads what arrived, a
-/// folder and a message, searches, and keeps a draft, and nothing leaves.
-/// What only she does, and an account she did not name it for, are not
-/// there for it. When she takes her word back it reaches nothing again.
+/// The workspace keeps the account, and the turn of a member its policy lets
+/// read its mail is offered the mail actions, lists the workspace's account,
+/// reads what arrived, a folder and a message, searches, and keeps a draft,
+/// and nothing leaves. What only a person does is no action of a turn, and a
+/// member the workspace removes reaches nothing again.
 #[tokio::test]
-async fn the_turn_of_the_agent_she_named_reads_searches_and_drafts() {
+async fn a_members_turn_reads_searches_and_drafts() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
@@ -211,11 +210,6 @@ async fn the_turn_of_the_agent_she_named_reads_searches_and_drafts() {
     let turn = mail.turn(&scout, &keeper, None);
     let nobody = Err(ActionCallError::UnknownAction);
 
-    assert!(mail.offered(&turn).await.is_empty(), "not named yet");
-    let listing = mail.asks(&turn, person_accounts::LIST, json!({})).await;
-    assert_eq!(listing, nobody);
-
-    mail.names(SCOUT, true).await;
     assert_eq!(
         mail.offered(&turn).await,
         [
@@ -257,44 +251,36 @@ async fn the_turn_of_the_agent_she_named_reads_searches_and_drafts() {
     }
     assert!(mail.left().is_empty(), "a draft leaves nothing");
 
-    // What only she does is not there for a turn, and neither is an account
-    // she did not name it for.
-    let naming = json!({"account": ACCOUNT, "agent": "other", "may": true});
+    // What only a person does is no action a turn takes.
     for (action, argument) in [
-        (person_accounts::ASSISTANT, naming),
-        (person_accounts::ASSISTANTS, json!({"account": ACCOUNT})),
         (person_accounts::REMOVE, json!({"account": ACCOUNT})),
         (person_accounts::MARK, reading()),
+        (person_accounts::ADD_MAIL, json!({"address": ACCOUNT})),
+        (person_accounts::SET_SERVICES, json!({"account": ACCOUNT})),
     ] {
         assert_eq!(mail.asks(&turn, action, argument).await, nobody, "{action}");
     }
-    let root = mail
-        .workspaces
-        .person_settings_root(&mail.ada.user_public_key);
-    keep(&root, "news@example.test", "another-password");
-    let mut other = reading();
-    other["account"] = json!("news@example.test");
-    assert_eq!(mail.asks(&turn, person_accounts::READ, other).await, nobody);
 
-    mail.names(SCOUT, false).await;
+    // Removed from the workspace, she is let reach nothing of its mail.
+    mail.remove_ada().await;
     assert!(
         mail.offered(&turn).await.is_empty(),
-        "her word is taken back"
+        "the workspace removed her"
     );
     let after = mail.asks(&turn, person_accounts::READ, reading()).await;
     assert_eq!(after, nobody);
     server.shutdown().await;
 }
 
-/// Named from a workspace somebody else keeps, an id is nobody here. And
-/// though she named her agent, every caller that is not that agent's turn
-/// for her reaches nothing of her mail and is offered nothing: a person, an
-/// agent outside a turn, a bot, an app, a turn confined elsewhere, another
-/// member's ask of her agent, another member's own agent under the very id
-/// she named, an agent of hers she did not name, and the agent of a person
-/// of another workspace. No mail server is asked for any of them.
+/// Every caller that is not a turn of a member the workspace lets read its
+/// mail reaches nothing of it and is offered nothing: a person, an agent
+/// outside a turn, an agent admitted as a member, a bot, an app, a turn
+/// confined nowhere or elsewhere, a turn on a device the workspace does not
+/// admit that person on, and a turn kept by somebody else's person. Another
+/// member's turn in the same workspace reads it, as the one store it is. No
+/// mail server is asked for the refused.
 #[tokio::test]
-async fn only_the_turn_of_the_agent_she_named_reaches_her_mail() {
+async fn only_a_members_turn_reaches_the_workspaces_mail() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
@@ -303,28 +289,20 @@ async fn only_the_turn_of_the_agent_she_named_reaches_her_mail() {
     let (elsewhere, elsewhere_id, _) = governed(&mail.workspaces).await;
     let cy = admit(&mail.workspaces, &elsewhere, &owner, 3).await;
     let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
-    let nobody = Err(ActionCallError::UnknownAction);
-
-    mail.names_from(elsewhere_id, SCOUT, true).await;
     let hers = mail.turn(&scout, &keeper, None);
-    let reads = mail.asks(&hers, person_accounts::READ, reading()).await;
-    assert_eq!(
-        reads, nobody,
-        "named where somebody else keeps the workspace"
-    );
-    assert!(mail.offered(&hers).await.is_empty());
-    mail.names(SCOUT, true).await;
+    let nobody = Err(ActionCallError::UnknownAction);
 
     let mut others = not_her_agents_turns(&mail.ada, &bo, &mail.workspace);
     others.push((
-        "another member's own agent under the id she named",
-        on_turn(&bo, &mail.workspace, SCOUT),
-        hex::encode(bo.user_public_key),
-    ));
-    others.push((
-        "an agent of hers she did not name",
-        on_turn(&mail.ada, &mail.workspace, "other"),
-        keeper.clone(),
+        "a turn in another workspace",
+        Caller::authenticated(cy.user_public_key, cy.device_public_key)
+            .in_workspace(&elsewhere)
+            .delegated_to(SCOUT)
+            .on_turn(
+                tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
+                Vec::new(),
+            ),
+        hex::encode(cy.user_public_key),
     ));
     for (who, asks, kept_by) in others {
         let turn = mail.turn(&asks, &kept_by, None);
@@ -332,25 +310,29 @@ async fn only_the_turn_of_the_agent_she_named_reaches_her_mail() {
         assert_eq!(reads, nobody, "{who}");
         assert!(mail.offered(&turn).await.is_empty(), "{who}");
     }
-
-    // A person of another workspace, whose agent there has the same id.
-    let (cys, cy_id) = (
-        on_turn(&cy, &elsewhere, SCOUT),
-        hex::encode(cy.user_public_key),
-    );
-    let turn = HostedTurn {
+    // A turn carried out in the other workspace reaches that one's mail,
+    // which keeps none.
+    let cys = on_turn(&cy, &elsewhere, SCOUT);
+    let cy_keeper = hex::encode(cy.user_public_key);
+    let there = HostedTurn {
         workspace: elsewhere_id,
         caller: &cys,
-        keeper: &cy_id,
+        keeper: &cy_keeper,
         bound: None,
     };
-    let reads = mail.asks(&turn, person_accounts::READ, reading()).await;
-    assert_eq!(reads, nobody, "a person of another workspace");
-    assert!(mail.offered(&turn).await.is_empty());
+    let reads = mail.asks(&there, person_accounts::READ, reading()).await;
+    assert_eq!(reads, nobody, "a workspace that keeps no mail");
+    assert!(mail.offered(&there).await.is_empty());
 
     assert!(mail.servers.asked().is_empty(), "no mail server was asked");
-    let message: FetchedMessage = done(mail.asks(&hers, person_accounts::READ, reading()).await);
-    assert_eq!(message.uid, 4, "her own agent's turn reads");
+
+    // Another member's turn in the same workspace reads the one store.
+    let (bos, bos_keeper) = (on_turn(&bo, &mail.workspace, SCOUT), hex::encode(bo.user_public_key));
+    let his = mail.turn(&bos, &bos_keeper, None);
+    let message: FetchedMessage = done(mail.asks(&his, person_accounts::READ, reading()).await);
+    assert_eq!(message.uid, 4, "a member's turn reads the workspace's mail");
+    let hers_read: FetchedMessage = done(mail.asks(&hers, person_accounts::READ, reading()).await);
+    assert_eq!(hers_read.uid, 4, "and so does hers");
     server.shutdown().await;
 }
 
@@ -365,7 +347,6 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    mail.names("sub-agent", true).await;
     let (sub, keeper) = (
         on_turn(&mail.ada, &mail.workspace, "sub-agent"),
         mail.keeper(),
@@ -454,7 +435,6 @@ async fn a_send_from_a_turn_is_set_apart_and_shows_its_person_everything() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    mail.names(SCOUT, true).await;
     let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
     let turn = mail.turn(&scout, &keeper, None);
 
@@ -547,15 +527,14 @@ async fn a_send_from_a_turn_is_set_apart_and_shows_its_person_everything() {
 
 /// On its person's answer the message that waited leaves as it was shown,
 /// once. An ask that is another person's, a question that showed something
-/// else, an agent she no longer names and her "no" send nothing, and after
-/// each answer what waited is gone.
+/// else, her "no", and the workspace no longer letting her send mail send
+/// nothing, and after each answer what waited is gone.
 #[tokio::test]
 async fn only_what_its_person_was_shown_leaves_and_once() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    mail.names(SCOUT, true).await;
     let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
     let turn = mail.turn(&scout, &keeper, None);
     let workspaces = &mail.workspaces;
@@ -594,22 +573,21 @@ async fn only_what_its_person_was_shown_leaves_and_once() {
         "what waited is gone with the answer: {gone:?}"
     );
 
-    // She took her word back while the question waited.
-    let shown = mail.sends(&turn, lunch()).await;
-    mail.names(SCOUT, false).await;
-    let refused = workspaces.send_asked(&mail.claimed(&shown), true).await;
-    assert!(
-        matches!(&refused, Err(why) if why.contains("no longer named")),
-        "{refused:?}"
-    );
-    mail.names(SCOUT, true).await;
-
     // Her "no".
     let shown = mail.sends(&turn, lunch()).await;
     let claimed = mail.claimed(&shown);
     assert_eq!(workspaces.send_asked(&claimed, false).await, Ok(None));
     let after = workspaces.send_asked(&claimed, true).await;
     assert!(after.is_err(), "{after:?}");
+
+    // The workspace stopped letting her send while the question waited.
+    let shown = mail.sends(&turn, lunch()).await;
+    mail.remove_ada().await;
+    let refused = workspaces.send_asked(&mail.claimed(&shown), true).await;
+    assert!(
+        matches!(&refused, Err(why) if why.contains("no longer send mail")),
+        "{refused:?}"
+    );
 
     assert_eq!(mail.left(), [LUNCH_LEFT], "one message left, once");
     server.shutdown().await;
@@ -624,7 +602,6 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    mail.names(SCOUT, true).await;
     let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
     let turn = mail.turn(&scout, &keeper, None);
     let shown = mail.sends(&turn, lunch()).await;

@@ -1,9 +1,9 @@
-//! A person's event that waits on their mail, through the server's own
-//! actions ([`crate::workspace_bots::events`]) and the watch it keeps of
-//! their inbox, with no device of theirs asking: a message that arrives
-//! starts the event once with what arrived as data, nothing that arrives
-//! asks nobody anything, and what is not hers, not her assistant's to read,
-//! or came while the event was paused is never handed over.
+//! A person's event that waits on the workspace's mail, through the server's
+//! own actions ([`crate::workspace_bots::events`]) and the watch it keeps of
+//! the accounts the workspace holds, with no device of theirs asking: a
+//! message that arrives starts the event once with what arrived as data,
+//! nothing that arrives asks nobody anything, and what another workspace
+//! keeps, or came while the event was paused, is never handed over.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,28 +19,23 @@ use super::*;
 use crate::workspace_bots::events::PersonEvents;
 use crate::workspaces::fixtures::mail::{InboxSeen, Inboxes, held_message};
 
-/// The account her assistant is named for.
+/// The account the event watches.
 const WORK: &str = "ada@example.test";
-/// An account of hers.
+/// Another account the workspace keeps.
 const HOME: &str = "ada@home.example.test";
-/// Another person's account on the same server.
+/// An account another workspace keeps, on the same server.
 const BOBS: &str = "bob@example.test";
-/// That other person.
-const BOB: [u8; 32] = [9; 32];
 const BO: &str = "bo@example.test";
 const CY: &str = "cy@example.test";
-/// The line an event that waits on its person's mail opens with.
+/// The line an event that waits on the workspace's mail opens with.
 const ON_MAIL: &str = "when something new is in \"tilo.accounts.mail\"";
 
 /// A person who keeps an assistant in a workspace of theirs, on a holder no
-/// device is connected to, with a mail account they named that assistant
-/// for and mail servers the test stands in for.
+/// device is connected to, with the mail accounts the workspace keeps and
+/// mail servers the test stands in for.
 struct Hers {
     workspaces: Workspaces,
     workspace: String,
-    /// The workspace as the server names it to whoever acts in it, which is
-    /// how an agent is named for an account.
-    named_in: String,
     cert: DeviceCert,
     inboxes: Arc<Inboxes>,
 }
@@ -49,17 +44,15 @@ impl Hers {
     /// Her, and what keeps the holder going while it is held.
     async fn on(scratch: &std::path::Path) -> (Self, impl Sized) {
         let (workspaces, workspace, cert, holder) = person_with_an_assistant(scratch).await;
-        let named_in = WorkspaceId::parse(&workspace).unwrap().to_string();
         let inboxes = Arc::new(Inboxes::default());
         workspaces.carry_mail_through(inboxes.clone());
         let hers = Self {
             workspaces,
             workspace,
-            named_in,
             cert,
             inboxes,
         };
-        hers.keeps(WORK, true);
+        hers.keeps(WORK);
         (hers, holder)
     }
 
@@ -68,12 +61,10 @@ impl Hers {
         self.cert.user_public_key
     }
 
-    /// She keeps `account` on this server, and names her assistant for it
-    /// when `named`.
-    fn keeps(&self, account: &str, named: bool) {
-        let named = named.then_some((self.named_in.as_str(), ASSISTANT));
+    /// The workspace keeps `account` on this server.
+    fn keeps(&self, account: &str) {
         self.workspaces
-            .keep_mail_account_as_added(&self.person(), account, named)
+            .keep_mail_account_as_added(&self.workspace, account)
             .unwrap();
     }
 
@@ -178,10 +169,10 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
     let assistant = Assistant::answering(vec![]);
     let events = hers.events(&state, &assistant);
 
-    // A message reaches her log while something else listens, before any
-    // event of hers waits on her mail.
+    // A message reaches the workspace's log while something else listens,
+    // before any event of hers waits on its mail.
     {
-        let _asking = hers.workspaces.listen_for_mail(hers.person());
+        let _asking = hers.workspaces.listen_for_mail(&hers.workspace);
         hers.arrives(WORK, 3, BO, ("Old news", "This came before the event."));
     }
     assert!(
@@ -258,7 +249,7 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
         hers.inboxes.watched().is_empty().then_some(())
     })
     .await;
-    let _asking = hers.workspaces.listen_for_mail(hers.person());
+    let _asking = hers.workspaces.listen_for_mail(&hers.workspace);
     hers.arrives(WORK, 6, BO, ("While you were down", "Still on for Friday?"));
     assert_eq!(assistant.taken().len(), 2);
 
@@ -321,50 +312,51 @@ async fn nothing_new_asks_nobody_and_its_persons_model_says_what_is_handed_over(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn only_mail_that_is_hers_and_her_assistants_to_read_is_handed_over() {
+async fn mail_the_workspace_keeps_is_handed_over_and_another_workspaces_mail_is_not() {
     let scratch = tempfile::tempdir().unwrap();
     let (hers, _holder) = Hers::on(scratch.path()).await;
     let assistant = Assistant::answering(vec![]);
     let events = hers.events(&scratch.path().join("person-events"), &assistant);
 
-    // She keeps a second account and names nobody for it. Another person
-    // keeps an account on the same server, names an agent of the same id in
-    // the same workspace for it, and something listens for their mail.
-    hers.keeps(HOME, false);
+    // The workspace keeps a second account. Another workspace keeps an
+    // account on the same server, and something listens for its mail.
+    hers.keeps(HOME);
+    let (elsewhere, _) = chat_workspace(&hers.workspaces, &hers.cert).await;
     hers.workspaces
-        .keep_mail_account_as_added(&BOB, BOBS, Some((hers.named_in.as_str(), ASSISTANT)))
+        .keep_mail_account_as_added(&elsewhere, BOBS)
         .unwrap();
-    let _bobs = hers.workspaces.listen_for_mail(BOB);
+    let _bobs = hers.workspaces.listen_for_mail(&elsewhere);
+    until("the other workspace's inbox is watched", || {
+        hers.inboxes.heard(BOBS).is_some().then_some(())
+    })
+    .await;
     hers.sets_up(&events, ON_MAIL, &json!({}));
 
-    hers.arrives(HOME, 4, BO, ("Private", "For her eyes."));
-    hers.arrives(BOBS, 4, BO, ("Bob's own", "For Bob."));
-    hers.arrives(WORK, 4, BO, ("Hers", "For her assistant too."));
-    handed(&assistant, 1).await;
+    hers.arrives(HOME, 4, BO, ("Home", "For her."));
+    hers.arrives(BOBS, 4, BO, ("Elsewhere", "For the other workspace."));
+    hers.arrives(WORK, 4, BO, ("Work", "For her too."));
+    let _taken = handed(&assistant, 2).await;
     a_pass_goes_by().await;
     let taken = assistant.taken();
-    assert_eq!(taken.len(), 1, "{taken:?}");
-    let told = &taken[0].instruction;
-    assert!(told.contains("For her assistant too."), "{told}");
-    for kept_back in ["Private", "For her eyes.", "Bob's own", "For Bob.", BOBS] {
-        assert!(
-            !told.contains(kept_back),
-            "nothing of an account she named nobody for, and nothing of anybody else's: {told}"
-        );
-    }
-
-    // She names her assistant for the second account: what arrived there
-    // before is not handed over afterwards, what arrives from now on is.
-    hers.keeps(HOME, true);
-    hers.arrives(HOME, 5, CY, ("From now on", "Readable."));
-    let taken = handed(&assistant, 2).await;
-    a_pass_goes_by().await;
-    assert_eq!(assistant.taken().len(), 2);
-    let told = &taken[1].instruction;
+    assert_eq!(
+        taken.len(),
+        2,
+        "one instruction for each account the workspace keeps: {taken:?}"
+    );
+    let told: String = taken
+        .iter()
+        .map(|taken| taken.instruction.clone())
+        .collect();
     assert!(
-        told.contains("From now on") && !told.contains("Private"),
+        told.contains("For her.") && told.contains("For her too."),
         "{told}"
     );
+    for kept_back in ["Elsewhere", "For the other workspace.", BOBS] {
+        assert!(
+            !told.contains(kept_back),
+            "nothing of another workspace's mail: {told}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -373,7 +365,7 @@ async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_c
     let (hers, _holder) = Hers::on(scratch.path()).await;
     let assistant = Assistant::answering(vec![]);
     let events = hers.events(&scratch.path().join("person-events"), &assistant);
-    hers.keeps(HOME, true);
+    hers.keeps(HOME);
     let when = format!("{ON_MAIL} at \"{WORK}\" where from is \"{BO}\"");
     let made = hers.sets_up(&events, &when, &json!({}));
     assert_eq!(made.when, when, "the line reads back as it was written");

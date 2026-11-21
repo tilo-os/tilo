@@ -100,7 +100,7 @@ impl OnTheirServer {
         if servers_model.is_none() {
             workspaces
                 .link_model_for(
-                    &keeper,
+                    &workspace,
                     &Linking {
                         name: "Google",
                         protocol: ProviderProtocol::OpenAiCompatible,

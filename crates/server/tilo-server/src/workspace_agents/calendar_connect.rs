@@ -13,11 +13,11 @@
 //! told that they are asked, and this server asks them itself, on their own devices: the
 //! system's protected password field on the sheet their shell or their page draws, in the words
 //! the server's entry says ([`Workspaces::ask_for_login`]). What they type goes from that field
-//! to this server and into their vault; only the item's reference comes back here.
+//! to this server and into the workspace's vault; only the item's reference comes back here.
 //!
 //! The ask is claimed once they answered, so an answer is carried out at most once. Then the
-//! entry signs in to the calendar server, keeps the account for reading only and names the agent
-//! for it, and the agent is woken once, in its conversation with its person, with what came of
+//! entry signs in to the calendar server, keeps the account in the workspace for reading only, and
+//! the agent is woken once, in its conversation with its person, with what came of
 //! it: the calendars by their names, or the calendar server's refusal. Neither the password nor
 //! the item's reference passes a model on this way. A server that restarts while its person is
 //! asked asks them again.
@@ -221,7 +221,7 @@ pub(super) enum Typed {
 }
 
 /// Ask the person `open` names for its password on their own devices, in this server's words,
-/// and keep what they type in their vault. Waits for their answer.
+/// and keep what they type in the workspace's vault. Waits for their answer.
 pub(super) async fn ask_for_password(workspaces: &Workspaces, open: &dyn PutAsk) -> Typed {
     let mut person = [0; 32];
     if hex::decode_to_slice(open.of_person(), &mut person).is_err() {
@@ -246,7 +246,7 @@ pub(super) async fn ask_for_password(workspaces: &Workspaces, open: &dyn PutAsk)
         ..PendingConfirmation::default()
     };
     match workspaces
-        .ask_for_login(person, question, open.login())
+        .ask_for_login((person, open.in_workspace()), question, open.login())
         .await
     {
         Ok(Some(kept)) => Typed::Kept(kept),
@@ -514,8 +514,8 @@ impl Carrier {
                 TYPED,
                 format!(
                     "The account is connected for reading only: nothing is ever written to that \
-                     calendar server. You are named for it and read it with the calendar \
-                     actions. Its calendars, as the calendar server names them: {}.",
+                     calendar server. The workspace keeps it, and you read it with the \
+                     calendar actions. Its calendars, as the calendar server names them: {}.",
                     names_of(connected, "none yet")
                 ),
             ),

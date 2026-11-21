@@ -1,9 +1,10 @@
-//! A person's calendars and a turn this server carries out for them: the
-//! turn of the agent they named for the account reads what the calendars
-//! hold with no device behind it; every other turn reaches nothing and is
-//! offered nothing; a narrowed agent reads where a rule of its names the
-//! read; and no turn changes a calendar, so their calendar server is asked
-//! to read and nothing else, and writes to nobody.
+//! A workspace's calendars and a turn this server carries out for a member's
+//! agent: its keeper's own turn reads what the calendars hold with no device
+//! behind it, as every member's does; a member of another workspace, a
+//! person who is no member and every turn that is not its keeper's own
+//! reaches nothing and is offered nothing; a narrowed agent reads where a
+//! rule of its names the read; and no turn changes a calendar, so the
+//! calendar server is asked to read and nothing else, and writes to nobody.
 
 use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
 
@@ -95,16 +96,6 @@ impl Hers {
         added["id"].as_str().expect("its id").to_owned()
     }
 
-    /// She says whether `agent` may use the calendar account `account`.
-    async fn names(&self, account: &str, agent: &str, may: bool) {
-        let naming = Self::target(person_accounts::RESOURCE, person_accounts::ASSISTANT);
-        self.herself(
-            naming,
-            json!({"account": account, "agent": agent, "may": may}),
-        )
-        .await;
-    }
-
     /// Ada, as the keeper an agent's entry names.
     fn keeper(&self) -> String {
         hex::encode(self.ada.user_public_key)
@@ -182,25 +173,25 @@ impl Hers {
     }
 }
 
-/// Nothing is granted by default. Once she named it, the turn of her agent
-/// is offered the reads, lists her account without its sign-in, reads what
-/// her calendars hold and when she is free. What changes a calendar or an
-/// account is not there for a turn, and no other turn reaches anything.
-/// When she takes her word back it reaches nothing again.
+/// A member's agent's turn is offered the reads, lists the workspace's
+/// account without its sign-in, reads what the calendars hold and when its
+/// person is free, and another member's agent's turn reads the same. What
+/// changes a calendar or an account is not there for a turn, and a turn that
+/// is not its keeper's own reaches nothing. Before the workspace keeps an
+/// account, a turn is offered nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_turn_of_the_agent_she_named_reads_her_calendars_and_changes_nothing() {
+async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_nothing() {
     let hers = Hers::new().await;
     let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
     let turn = hers.turn(&scout, &keeper, None);
 
-    let account = hers.adds().await;
-    assert!(hers.offered(&turn).await.is_empty(), "not named yet");
+    assert!(hers.offered(&turn).await.is_empty(), "no account yet");
     nobody(
-        "not named yet",
+        "no account yet",
         hers.asks(&turn, held::ENTRIES, week()).await,
     );
 
-    hers.names(&account, SCOUT, true).await;
+    let account = hers.adds().await;
     assert_eq!(
         hers.offered(&turn).await,
         [held::LIST, held::ENTRIES, held::FREE]
@@ -208,7 +199,7 @@ async fn the_turn_of_the_agent_she_named_reads_her_calendars_and_changes_nothing
     let listed = hers
         .asks(&turn, held::LIST, json!({}))
         .await
-        .expect("its turn lists the account she named it for");
+        .expect("its turn lists the workspace's account");
     assert_eq!(listed["accounts"][0]["id"], account.as_str(), "{listed}");
     assert!(
         !listed.to_string().contains(PASSWORD),
@@ -258,51 +249,63 @@ async fn the_turn_of_the_agent_she_named_reads_her_calendars_and_changes_nothing
         1,
         "her calendar holds what it held"
     );
-    assert!(hers.asked_only_to_read("the turn of the agent she named") > 0);
+    assert!(hers.asked_only_to_read("a member's agent's turn") > 0);
 
-    // Every caller that is not a turn of her own agent, an agent of hers
-    // she did not name, and another member's agent under the same id.
+    // Another member's agent's turn reads the same account, as the
+    // workspace's calendars are every member's.
     let bo = admit(&hers.workspaces, &hers.workspace, &hers.owner, 2).await;
-    let mut others = not_her_agents_turns(&hers.ada, &bo, &hers.workspace);
-    others.push((
-        "another member's own agent under the id she named",
+    let (bos_caller, bos_keeper) = (
         on_turn(&bo, &hers.workspace, SCOUT),
         hex::encode(bo.user_public_key),
-    ));
-    others.push((
-        "an agent of hers she did not name",
-        on_turn(&hers.ada, &hers.workspace, "other"),
-        keeper.clone(),
-    ));
-    for (who, asks, kept_by) in others {
+    );
+    let bos_turn = hers.turn(&bos_caller, &bos_keeper, None);
+    assert_eq!(
+        hers.offered(&bos_turn).await,
+        [held::LIST, held::ENTRIES, held::FREE]
+    );
+    let his = hers
+        .asks(&bos_turn, held::ENTRIES, week())
+        .await
+        .expect("another member's agent reads them");
+    assert_eq!(his["entries"][0]["title"], "Review", "{his}");
+
+    // Every caller that is not a turn of some member's own agent.
+    for (who, asks, kept_by) in not_her_agents_turns(&hers.ada, &bo, &hers.workspace) {
         let turn = hers.turn(&asks, &kept_by, None);
         nobody(who, hers.asks(&turn, held::ENTRIES, week()).await);
         assert!(hers.offered(&turn).await.is_empty(), "{who}");
     }
     assert_eq!(
-        hers.asked_only_to_read("turns that are not her agent's"),
+        hers.asked_only_to_read("turns that are not a member's own"),
         0,
         "no calendar server was asked for them"
     );
 
-    hers.names(&account, SCOUT, false).await;
-    nobody(
-        "after she took her word back",
-        hers.asks(&turn, held::ENTRIES, week()).await,
+    // A member of another workspace's turn reaches nothing here.
+    let (elsewhere, _, _) = governed(&hers.workspaces).await;
+    let cy = admit(&hers.workspaces, &elsewhere, &hers.owner, 3).await;
+    let (cys_caller, cys_keeper) = (
+        on_turn(&cy, &elsewhere, SCOUT),
+        hex::encode(cy.user_public_key),
     );
-    assert!(hers.offered(&turn).await.is_empty());
+    let elsewhere_turn = hers.turn(&cys_caller, &cys_keeper, None);
+    nobody(
+        "a member of another workspace",
+        hers.asks(&elsewhere_turn, held::ENTRIES, week()).await,
+    );
+    assert!(hers.offered(&elsewhere_turn).await.is_empty());
+    assert_eq!(hers.asked_only_to_read("a member of another workspace"), 0);
 }
 
-/// An agent its entry narrows reads her calendars only where a rule of its
-/// bound names exactly that read: no rule, a rule for the whole provider, a
-/// rule for another action and a rule that denies it all refuse, and it is
-/// offered only what a rule names. A rule that names a change makes it no
-/// action of a turn.
+/// An agent its entry narrows reads the workspace's calendars only where a
+/// rule of its bound names exactly that read: no rule, a rule for the whole
+/// provider, a rule for another action and a rule that denies it all refuse,
+/// and it is offered only what a rule names. A rule that names a change
+/// makes it no action of a turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_narrowed_agent_reads_her_calendars_only_where_a_rule_names_the_read() {
+async fn a_narrowed_agent_reads_them_only_where_a_rule_names_the_read() {
     let hers = Hers::new().await;
-    let account = hers.adds().await;
-    hers.names(&account, "sub-agent", true).await;
+    hers.adds().await;
     let (sub, keeper) = (
         on_turn(&hers.ada, &hers.workspace, "sub-agent"),
         hers.keeper(),
@@ -412,8 +415,7 @@ async fn a_turn_reads_an_entrys_notes_whole_when_short_and_by_their_beginning_wh
     );
     let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
     let turn = hers.turn(&scout, &keeper, None);
-    let account = hers.adds().await;
-    hers.names(&account, SCOUT, true).await;
+    hers.adds().await;
 
     let read = hers
         .asks(&turn, held::ENTRIES, week())

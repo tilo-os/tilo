@@ -1,11 +1,11 @@
-//! A person's connections as a turn their server carries out itself reaches
-//! them: with no device of theirs on it lists them and calls a command that
-//! only reads; a command that changes something asks its person and is
-//! called only on their own answer; their "always" covers one command of
-//! one connection as its service defined it, until they take it back; a
-//! connection is proposed and added only by their yes; and nobody else's
-//! turn, no narrowed agent without a rule that names the connection, and no
-//! token reaches any of it.
+//! A workspace's connections as a turn its server carries out itself reaches
+//! them: with no device of the turn's person on it lists them and calls a
+//! command that only reads; a command that changes something asks that
+//! person and is called only on their own answer; their "always" covers one
+//! command of one connection as its service defined it, until they take it
+//! back; a connection is proposed and added only by their yes; and no
+//! caller that is not the turn's own, no narrowed agent without a rule that
+//! names the connection, and no token reaches any of it.
 
 #![allow(
     clippy::unwrap_used,
@@ -33,7 +33,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_user_identity::DeviceCert;
 
 use super::super::vault_tests::ask_at;
-use super::{NOT_KEPT, Refused, Served, admit, caller, governed, governor, start_serving};
+use super::{Refused, Served, admit, caller, governed, governor, start_serving};
 use crate::connections::DEFINED_ANEW;
 use crate::connections::stand_in::StandIn;
 use crate::workspaces::Workspaces;
@@ -291,8 +291,8 @@ impl<'a> Team<'a> {
         offered(&self.workspaces.connection_rows_for_turn(turn).await)
     }
 
-    /// What Ada is answered by a provider of her own, asked from her own
-    /// device through the workspace's action service.
+    /// What a member is answered by the workspace's providers, asked from a
+    /// device of theirs through its action service.
     async fn hers(&self, target: RemoteActionTarget, argument: Value) -> Value {
         let her = (&self.ada, &self.as_ada);
         ask_at(&self.actions, self.workspace_id, her, target, argument)
@@ -300,7 +300,8 @@ impl<'a> Team<'a> {
             .expect("Ada is answered on her own device")
     }
 
-    /// Ada's connections, as she reads them on her own device.
+    /// The connections the workspace keeps, as a member reads them on a
+    /// device of theirs.
     async fn her_connections(&self) -> Value {
         let listed = self.hers(person_connections::target(LIST), json!({})).await;
         listed["connections"].clone()
@@ -360,10 +361,10 @@ impl<'a> Team<'a> {
     }
 }
 
-/// The turn lists its person's connection and finds in its listing what an
-/// agent does with connections and each command of the connection, with
+/// The turn lists the workspace's connection and finds in its listing what
+/// an agent does with connections and each command of the connection, with
 /// whether it asks first. Adding is no row.
-async fn the_turn_reads_what_its_person_connected(team: &Team<'_>, service: &StandIn, id: &str) {
+async fn the_turn_reads_what_the_workspace_connected(team: &Team<'_>, service: &StandIn, id: &str) {
     let turn = team.turn();
     let listed = done(team.takes(&turn, &of(LIST, json!({}))).await);
     assert_eq!(listed["connections"][0]["id"], id);
@@ -453,23 +454,27 @@ async fn the_turn_calls_what_only_reads(team: &Team<'_>, service: &StandIn, id: 
     );
 }
 
-/// Another member's own agent, acting for them, reaches their own
-/// connections, which are none, and nothing of Ada's. Whoever else writes
-/// to Ada's agent makes its turn act for them: such a turn is told nothing,
-/// and neither is a caller that is no turn.
-async fn nobody_elses_turn_reaches_it(team: &Team<'_>, service: &StandIn, id: &str) {
+/// Another member's own agent, acting for them, reaches the connections the
+/// workspace keeps as this one does: they are the workspace's, not Ada's.
+/// Whoever else writes to Ada's agent makes its turn act for them: such a
+/// turn is told nothing, and neither is a caller that is no turn.
+async fn another_members_turn_reaches_what_the_workspace_connected(
+    team: &Team<'_>,
+    service: &StandIn,
+    id: &str,
+) {
     let its = person_connections::connection_resource(id);
     let finding = calling(id, "find_trees", json!({"orchard": "north"}));
     let bos = hex::encode(team.bo.user_public_key);
     let bos_agent = on_turn(&team.bo, &team.workspace, "bos-agent");
     let for_bo = team.turn_of(&bos_agent, &bos);
     let theirs = done(team.takes(&for_bo, &of(LIST, json!({}))).await);
-    assert_eq!(theirs["connections"], json!([]));
-    let refused = team.takes(&for_bo, &finding).await;
-    assert!(refused_with(&refused, NOT_KEPT), "{refused:?}");
+    assert_eq!(theirs["connections"][0]["id"], id, "{theirs}");
+    let found = done(team.takes(&for_bo, &finding).await);
+    assert_eq!(found["structured"]["trees"], 3);
     let theirs = team.finds(&for_bo).await;
     assert!(
-        theirs.iter().all(|(resource, _)| *resource != its),
+        theirs.iter().any(|(resource, _)| *resource == its),
         "{theirs:?}"
     );
 
@@ -490,26 +495,27 @@ async fn nobody_elses_turn_reaches_it(team: &Team<'_>, service: &StandIn, id: &s
         assert!(team.finds(&strange).await.is_empty(), "{who}");
     }
     assert!(
-        calls(&service.seen()).is_empty(),
-        "the service was called for someone it is not connected for"
+        !calls(&service.seen()).is_empty(),
+        "the workspace's connection was called for its other member's agent"
     );
 }
 
 /// With no device of its person's on, a turn their server carries out lists
-/// their connections, finds each command in its listing with whether it
-/// asks first, and calls a command that only reads. What only the person
-/// does is not a turn's, and nobody else's turn reaches any of it.
+/// the workspace's connections, finds each command in its listing with
+/// whether it asks first, and calls a command that only reads. What only a
+/// person does is not a turn's, another member's turn reaches the same
+/// connections, and no caller that is not the turn's own is answered.
 #[tokio::test]
-async fn a_turn_with_no_device_reads_its_persons_connections_and_nobody_elses_turn_does() {
+async fn a_turn_with_no_device_reads_the_workspaces_connections_and_no_other_caller_does() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let started = start_serving(dir.path(), &key, &owner).await;
     let team = Team::on(started.workspaces(), &owner).await;
     let service = StandIn::start("plain");
     let id = team.connects(&service).await;
-    the_turn_reads_what_its_person_connected(&team, &service, &id).await;
+    the_turn_reads_what_the_workspace_connected(&team, &service, &id).await;
     the_turn_calls_what_only_reads(&team, &service, &id).await;
-    nobody_elses_turn_reaches_it(&team, &service, &id).await;
+    another_members_turn_reaches_what_the_workspace_connected(&team, &service, &id).await;
     started.shutdown().await;
 }
 

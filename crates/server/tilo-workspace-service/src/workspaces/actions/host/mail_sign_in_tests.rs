@@ -1,4 +1,4 @@
-//! A person's accounts on the holder that keeps them: the servers of an
+//! A workspace's accounts on the holder that keeps them: the servers of an
 //! address are found from the address alone, an account is added from its
 //! address and password, iCloud's calendars are kept with its app password,
 //! the services an account feeds are turned on and off, and removing an
@@ -17,7 +17,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use collab_types::WorkspaceId;
-use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_account_probe::mail_servers::{Found, MailServers, Server};
 use tilo_actions::remote::person_accounts::{
@@ -30,9 +29,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_user_identity::DeviceCert;
 
-use super::super::ServiceWorkspaceActions as HolderActions;
-use super::super::tests::{caller, settled};
-use super::accounts_tests::key_of;
+use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost as TestHolder;
 use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
@@ -51,7 +48,7 @@ const APP_PASSWORD: &str = "icloud-app-password";
 /// What one test's holder and page are.
 struct Setup {
     workspaces: Workspaces,
-    holder: HolderActions,
+    holder: super::super::ServiceWorkspaceActions,
     device: DeviceCert,
     workspace: WorkspaceId,
     _holder: TestHolder,
@@ -68,26 +65,21 @@ impl Setup {
         // its own network.
         workspaces.call_private_model_addresses(true);
         workspaces.sign_in_accounts_through(|_address, _password| Ok("signed in".into()));
-        let holder = HolderActions::new();
-        holder.attach(workspaces.clone());
-        let device = key_of(&SigningKey::from_bytes(&rand::random()), "studio");
-        let workspace = workspaces.create("Mail").await.unwrap().workspace_id;
+        let (workspace, workspace_id, holder) = governed(&workspaces).await;
+        let device = admit(&workspaces, &workspace, &owner, 1).await;
         Self {
             workspaces,
             holder,
             device,
-            workspace,
+            workspace: workspace_id,
             _holder: server,
             _dir: dir,
         }
     }
 
-    fn person(&self) -> [u8; 32] {
-        self.device.user_public_key
-    }
-
     fn root(&self) -> std::path::PathBuf {
-        self.workspaces.person_settings_root(&self.person())
+        self.workspaces
+            .workspace_root(&self.workspace.to_string())
     }
 
     fn page(&self) -> impl tilo_actions::remote::ActionProvider + Clone + Send + 'static {
@@ -129,7 +121,7 @@ impl Setup {
             });
     }
 
-    /// What `action` of `resource` answers, as the person's page asks it.
+    /// What `action` of `resource` answers, as a member's page asks it.
     async fn ask(
         &self,
         resource: &str,
@@ -180,15 +172,15 @@ impl Setup {
         )
         .await
         .map(|answer| serde_json::from_value(answer).expect("the listing reads"))
-        .expect("the person reads their accounts")
+        .expect("a member reads the accounts")
     }
 
-    /// The calendar accounts the person keeps, as their page reads them.
+    /// The calendar accounts the workspace keeps, as a member's page reads them.
     async fn calendars(&self) -> Vec<Value> {
         let answer = self
             .ask(held::RESOURCE, held::LIST, Value::Null)
             .await
-            .expect("the person reads their calendars");
+            .expect("a member reads the calendars");
         answer["accounts"].as_array().expect("accounts").clone()
     }
 }
@@ -201,7 +193,7 @@ fn settings(root: &Path, id: &str) -> Value {
         .expect("the account is kept")
 }
 
-/// A person types their address and password and nothing else: the servers
+/// A member types their address and password and nothing else: the servers
 /// are worked out from the address, and the account is added once they took
 /// the sign-in.
 #[tokio::test]
@@ -257,7 +249,7 @@ async fn a_google_address_finds_its_servers_and_names_who_signs_in() {
 }
 
 /// An address whose servers nobody answers for is refused in words its
-/// person reads, naming the domain whose servers were not found.
+/// member reads, naming the domain whose servers were not found.
 #[tokio::test]
 async fn finding_servers_that_answer_nowhere_names_the_domain() {
     let setup = Setup::new().await;
@@ -276,7 +268,7 @@ async fn finding_servers_that_answer_nowhere_names_the_domain() {
     assert_eq!(reason, "No mail servers were found for nowhere.example.");
 }
 
-/// A Google address is not added with a password: its person is told to sign
+/// A Google address is not added with a password: its member is told to sign
 /// in on Google's page instead.
 #[tokio::test]
 async fn a_google_address_says_to_sign_in_with_google() {
@@ -329,7 +321,7 @@ async fn an_icloud_account_keeps_its_calendars_with_its_app_password() {
         "the mail account keeps the calendar account's id"
     );
 
-    // One listing answers both as the person's one account.
+    // One listing answers both as the workspace's one account.
     let listed = setup.listed().await;
     assert_eq!(listed.accounts.len(), 1, "{listed:?}");
     assert_eq!(listed.accounts[0].id, ICLOUD);
@@ -394,7 +386,7 @@ async fn setting_services_keeps_and_removes_an_icloud_calendar() {
             json!({"account": ICLOUD, "services": {"mail": true, "calendar": false}}),
         )
         .await
-        .expect("the person says what they use");
+        .expect("a member says what the workspace uses");
     let off: MailAccounts = serde_json::from_value(off).unwrap();
     assert_eq!(off.accounts.len(), 1, "the mail account stays");
     assert!(off.accounts[0].services.mail);
@@ -456,7 +448,7 @@ async fn removing_an_account_takes_its_calendar_with_it() {
     );
 }
 
-/// The listing answers every account a person keeps: an account added before
+/// The listing answers every account a workspace keeps: an account added before
 /// it said who provides it defaults to the provider its servers name and
 /// mail alone, and a Nextcloud server's account is listed with no mail
 /// server at all.

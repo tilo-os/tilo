@@ -196,12 +196,11 @@ pub(super) fn read(answer: &str) -> Option<(bool, String)> {
 }
 
 impl Workspaces {
-    /// `matter` judged by `person`'s own model against `rule`, the call
-    /// counted on `spender`'s day, for work in `workspace`. Called only
+    /// `matter` judged against its person's `rule` by the model of
+    /// `workspace`, the work it is about, the call counted on `spender`'s day. Called only
     /// where the rule does not decide alone ([`settled`]).
     pub(super) async fn judged(
         &self,
-        person: &[u8; 32],
         rule: &Importance,
         matter: &Matter<'_>,
         spender: Option<Spender>,
@@ -218,15 +217,13 @@ impl Workspaces {
             revision: rule.revision,
         };
         // No call is made that no day counts.
-        let Some(spender) = spender else {
+        // The model is the workspace's: none named, none asked.
+        let (Some(spender), Some(workspace)) = (spender, workspace) else {
             return unjudged(NO_ASSISTANT, String::new());
         };
-        let mut model = self
-            .person_model(*person, Interaction::Classifier)
+        let model = self
+            .workspace_model(workspace, Interaction::Classifier)
             .spending_as(spender);
-        if let Some(workspace) = workspace {
-            model = model.working_in(workspace);
-        }
         let request = ModelRequest {
             messages: vec![
                 Message::text(Role::System, INSTRUCTIONS),

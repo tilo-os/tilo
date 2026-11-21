@@ -1,5 +1,5 @@
-//! A person's model asked from one of their devices ([`person_models::ASK`]),
-//! answered as it is written.
+//! A workspace's model asked from a device ([`person_models::ASK`]), as the
+//! workspace's policy lets the caller, answered as it is written.
 //!
 //! The ask is admitted at once and answered on the server's runtime. While the model
 //! writes, the invocation's state is an item holding the answer so far (its
@@ -20,6 +20,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::{FOLLOW_WAKE, ServiceWorkspaceActions as Actions, failed, succeeded};
 use crate::workspaces::Workspaces;
+use crate::workspaces::workspace_stores::Store;
 use agent_provider_config::protocol::StreamEvent;
 
 /// What a running ask has written so far.
@@ -29,7 +30,7 @@ struct Written {
     reasoning: String,
 }
 
-/// Whether `request` is an ask of the person's model, which
+/// Whether `request` is an ask of the workspace's model, which
 /// [`Actions::ask_model`] answers.
 pub(super) fn is_model_ask(request: &InvokeRequest) -> bool {
     request.target == person_models::target(person_models::ASK)
@@ -39,13 +40,28 @@ impl super::InWorkspace {
     /// [`Actions::ask_model`] for this workspace and caller's certificate.
     pub(super) fn ask_model(
         &self,
-        workspaces: &Workspaces,
+        workspaces: Workspaces,
         caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionCallError> {
-        let certificate = self.certificate.as_ref();
-        self.server
-            .ask_model(workspaces, caller, certificate, self.workspace_id, request)
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (host, caller, workspace_id, certificate) = (
+            self.server.clone(),
+            caller.clone(),
+            self.workspace_id,
+            self.certificate.clone(),
+        );
+        self.server.spawn(async move {
+            // Who may ask is decided before anything is admitted.
+            workspaces
+                .reaching_allowed(
+                    (workspace_id, &caller, certificate.as_ref()),
+                    Store::MODELS,
+                    person_models::ASK,
+                    tilo_action_policy::ActionKind::Read,
+                )
+                .await?;
+            host.ask_model(&workspaces, &caller, certificate.as_ref(), workspace_id, &request)
+        })
     }
 }
 
@@ -61,8 +77,6 @@ impl Actions {
         workspace_id: Option<WorkspaceId>,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionCallError> {
-        // Who may ask is decided before anything is admitted.
-        Workspaces::asking_for_model(caller, certificate, workspace_id)?;
         let invocation = request.invocation;
         let mut log = self.log();
         if log.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {

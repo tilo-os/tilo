@@ -1220,9 +1220,9 @@ fn model_requests(provider: &str) -> Vec<(&'static str, Value)> {
     ]
 }
 
-/// What `other` sees of the person's providers, and that naming
-/// `provider` reaches nothing of theirs.
-async fn reaches_none_of_hers(
+/// What another workspace sees of the host's providers, and that naming
+/// `provider` there reaches nothing of this workspace's.
+async fn reaches_none_of_it(
     host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     other: &DeviceCert,
@@ -1235,7 +1235,7 @@ async fn reaches_none_of_hers(
         .unwrap();
     assert_eq!(listed["providers"], json!([]), "{listed}");
     // Every request that names a provider: the three that name none are the
-    // other person's own to make, of their own store.
+    // other workspace's own to make, of its own store.
     let naming = model_requests(provider).into_iter().filter(|(verb, _)| {
         ![
             person_models::LIST,
@@ -1253,12 +1253,13 @@ async fn reaches_none_of_hers(
     }
 }
 
-/// A person's provider keys and mail sign-ins are theirs, not the
-/// workspace's: the host seals them in the person's own vault, and another
-/// administrator of the workspace, its owner included, neither lists them
-/// nor reaches them through any request, nor finds them in a store of theirs.
+/// A workspace's provider key is the workspace's, not a person's: the host
+/// seals it in the workspace's own vault, every member reads back only that
+/// one is kept, and the key is nowhere on the host's disk in the clear.
+/// Another workspace on the same host neither lists the provider nor reaches
+/// it through any request, nor finds its key in a store of its own.
 #[tokio::test]
-async fn no_other_administrator_reads_a_persons_secrets() {
+async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
     use tilo_actions::remote::person_models;
     const SECRET: &str = "sk-ada-own-secret";
 
@@ -1301,44 +1302,55 @@ async fn no_other_administrator_reads_a_persons_secrets() {
         .unwrap();
     assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
 
+    // Bo, another member of the workspace, reads the provider the workspace
+    // keeps, and what he reads back says only that a key is kept.
+    let his = ask_own(&host, workspace_id, &bo, person_models::LIST, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(his["providers"][0]["configured"], json!(true), "{his}");
+    assert!(!his.to_string().contains(SECRET), "{his}");
+
+    // Another workspace on the same host reaches none of it.
+    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let cy = admit(workspaces, &elsewhere, &owner, 3).await;
+    reaches_none_of_it(&host, elsewhere_id, &cy, &provider).await;
+
     let (reference, authorization) =
         accounts::provider_api_key(&provider, "https://models.example/v1").unwrap();
-    for other in [&bo, &owner] {
-        reaches_none_of_hers(&host, workspace_id, other, &provider).await;
-        let theirs = workspaces.person_settings_root(&other.user_public_key);
-        assert!(
-            !accounts::vault_dir_in(&theirs).exists()
-                || !accounts::ServiceCredentials::open_in(&theirs)
-                    .status(&reference, &authorization)
-                    .unwrap(),
-            "another person's vault holds Ada's key"
-        );
-    }
+    let theirs = workspaces.workspace_root(&elsewhere_id.to_string());
+    assert!(
+        !accounts::vault_dir_in(&theirs).exists()
+            || !accounts::ServiceCredentials::open_in(&theirs)
+                .status(&reference, &authorization)
+                .unwrap(),
+        "another workspace's vault holds this workspace's key"
+    );
 
-    // The key is sealed in Ada's own vault, which sits in her own store with
-    // its key file, and is nowhere on the host's disk in the clear.
-    let own = workspaces.person_settings_root(&ada.user_public_key);
-    assert!(own.ends_with(hex::encode(ada.user_public_key)));
+    // The key is sealed in the workspace's own vault, which sits in its own
+    // store with its key file, and is nowhere on the host's disk in the
+    // clear.
+    let own = workspaces.workspace_root(&workspace_id.to_string());
     let sealed = accounts::ServiceCredentials::open_in(&own)
         .resolve(&reference, &authorization)
         .unwrap()
-        .expect("the key is in Ada's vault");
+        .expect("the key is in the workspace's vault");
     assert_eq!(sealed.as_str(), SECRET);
     let (clear, vault_files) =
         files_holding(dir.path(), SECRET.as_bytes(), &accounts::vault_dir_in(&own));
-    assert!(clear.is_empty(), "Ada's key in the clear: {clear:?}");
+    assert!(clear.is_empty(), "the key in the clear: {clear:?}");
     assert!(
         vault_files > 0,
-        "Ada's vault keeps its sealed file in her store"
+        "the workspace's vault keeps its sealed file in its store"
     );
 }
 
-/// No agent reaches a person's model providers, the keys kept for them or
-/// the models chosen, whatever it asks: not one the person delegated on
-/// their own device. Unknown and forbidden are the same answer, and nothing
-/// of the person's changed.
+/// An agent no device of a member's stands behind reaches nothing of the
+/// workspace's model providers, whatever it asks: not a turn's own, not one
+/// the server admitted itself, not a bot and not an app. Unknown and
+/// forbidden are the same answer, and nothing of the workspace's changed.
 #[tokio::test]
-async fn no_agent_reaches_a_persons_model_providers() {
+async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
+    use agent_provider_config::protocol::{Message, ModelRequest, Role, ToolChoice};
     use tilo_actions::remote::person_models;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1370,12 +1382,30 @@ async fn no_agent_reaches_a_persons_model_providers() {
         .await
         .unwrap();
 
+    let person = hex::encode(ada.user_public_key);
     let agents = [
-        Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key),
+        Caller::agent_turn(
+            "assistant",
+            person.clone(),
+            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
+        ),
         Caller::local_agent("assistant"),
+        Caller::local_bot("bot"),
+        Caller::local_app("so.tilo.chat").acting_for(person),
     ];
     for agent in &agents {
-        for (verb, argument) in model_requests(&provider) {
+        let mut asks = model_requests(&provider);
+        asks.push((
+            person_models::ASK,
+            serde_json::to_value(ModelRequest {
+                messages: vec![Message::text(Role::User, "Spend the workspace's key")],
+                tools: Vec::new(),
+                tool_choice: ToolChoice::Auto,
+                max_output_tokens: 16,
+            })
+            .unwrap(),
+        ));
+        for (verb, argument) in asks {
             let mut asking = request("", "", argument);
             asking.target = person_models::target(verb);
             let refused = settled(
@@ -1398,8 +1428,8 @@ async fn no_agent_reaches_a_persons_model_providers() {
     server.shutdown().await;
 }
 
-/// `person` asks their own model once, and it answers.
-async fn asks_their_model(workspaces: &Workspaces, person: &DeviceCert) {
+/// The model of `workspace` is asked once, and it answers.
+async fn asks_their_model(workspaces: &Workspaces, workspace: WorkspaceId) {
     use agent_provider_config::Interaction;
     use agent_provider_config::protocol::{Message, ModelRequest, Role, ToolChoice};
 
@@ -1416,10 +1446,10 @@ async fn asks_their_model(workspaces: &Workspaces, person: &DeviceCert) {
         .checked_add(tilo_test_env::hang_bound())
         .unwrap();
     workspaces
-        .person_model(person.user_public_key, Interaction::Request)
+        .workspace_model(workspace, Interaction::Request)
         .answer(&request, deadline, &mut |_| {})
         .await
-        .expect("the person's model answers");
+        .expect("the workspace's model answers");
 }
 
 /// What `at` was sent by the ask before.
@@ -1461,14 +1491,14 @@ async fn asks_for_level(
     .await
 }
 
-/// The level `person`'s settings keep for `provider`, with the field the
-/// provider is told it in.
+/// The level the workspace's settings keep for `provider`, with the field
+/// the provider is told it in.
 fn kept_level(
     workspaces: &Workspaces,
-    person: &DeviceCert,
+    workspace_id: WorkspaceId,
     provider: &str,
 ) -> Option<agent_provider_config::ReasoningSetting> {
-    let root = workspaces.person_settings_root(&person.user_public_key);
+    let root = workspaces.workspace_root(&workspace_id.to_string());
     crate::workspaces::person_settings::provider_config(&root)
         .profiles
         .into_iter()
@@ -1497,14 +1527,14 @@ async fn ready_made(
         .to_owned()
 }
 
-/// How hard a person's provider thinks is theirs to choose, in one request:
-/// the next ask of their model carries the level to the provider, a word
-/// that is no level changes nothing, and with the level taken back the
+/// How hard the workspace's provider thinks is its members' to choose, in one
+/// request: the next ask of its model carries the level to the provider, a
+/// word that is no level changes nothing, and with the level taken back the
 /// provider is told nothing again, as before anybody chose. Each provider is
 /// told in the field it takes a level in, and one that is asked for none
 /// says so and keeps nothing.
 #[tokio::test]
-async fn a_persons_thinking_level_reaches_their_provider_with_the_next_ask() {
+async fn a_thinking_level_reaches_the_workspaces_provider_with_the_next_ask() {
     use agent_provider_config::{ReasoningParam, ReasoningSetting};
     use test_http::{Reply, Responder};
     use tilo_actions::remote::person_models;
@@ -1545,7 +1575,7 @@ async fn a_persons_thinking_level_reaches_their_provider_with_the_next_ask() {
     .expect("Ada chooses her model");
     provider_at.drain_requests();
 
-    asks_their_model(workspaces, &ada).await;
+    asks_their_model(workspaces, workspace_id).await;
     let before = sent(&provider_at);
     assert!(
         before.get("reasoning_effort").is_none() && before.get("reasoning").is_none(),
@@ -1553,7 +1583,7 @@ async fn a_persons_thinking_level_reaches_their_provider_with_the_next_ask() {
     );
 
     let chosen = asks_for_level(&actions, workspace_id, &ada, &provider, Some("low")).await;
-    assert!(chosen.is_ok(), "Ada's own choice is taken: {chosen:?}");
+    assert!(chosen.is_ok(), "a member's own choice is taken: {chosen:?}");
     assert_eq!(chosen.unwrap()["reasoning"], json!("low"));
     let listed = ask_own(&actions, workspace_id, &ada, person_models::LIST, json!({}))
         .await
@@ -1563,7 +1593,7 @@ async fn a_persons_thinking_level_reaches_their_provider_with_the_next_ask() {
         json!("low"),
         "{listed}"
     );
-    asks_their_model(workspaces, &ada).await;
+    asks_their_model(workspaces, workspace_id).await;
     let low = sent(&provider_at);
     assert_eq!(low["reasoning_effort"], json!("low"), "{low}");
 
@@ -1573,28 +1603,28 @@ async fn a_persons_thinking_level_reaches_their_provider_with_the_next_ask() {
         matches!(refused, Err(ActionCallError::Refused { .. })),
         "{refused:?}"
     );
-    asks_their_model(workspaces, &ada).await;
+    asks_their_model(workspaces, workspace_id).await;
     let still = sent(&provider_at);
     assert_eq!(still["reasoning_effort"], json!("low"), "{still}");
 
     // Taken back: the provider is told nothing again.
     let cleared = asks_for_level(&actions, workspace_id, &ada, &provider, None).await;
-    assert!(cleared.is_ok(), "Ada takes her choice back: {cleared:?}");
+    assert!(cleared.is_ok(), "the choice is taken back: {cleared:?}");
     assert!(cleared.unwrap().get("reasoning").is_none());
-    asks_their_model(workspaces, &ada).await;
+    asks_their_model(workspaces, workspace_id).await;
     let after = sent(&provider_at);
     assert!(
         after.get("reasoning_effort").is_none() && after.get("reasoning").is_none(),
         "{after}"
     );
-    assert_eq!(kept_level(workspaces, &ada, &provider), None);
+    assert_eq!(kept_level(workspaces, workspace_id, &provider), None);
 
     // Each provider is told in the field it takes a level in.
     let router = ready_made(&actions, workspace_id, &ada, "openrouter").await;
     let taken = asks_for_level(&actions, workspace_id, &ada, &router, Some("high")).await;
     assert!(taken.is_ok(), "{taken:?}");
     assert_eq!(
-        kept_level(workspaces, &ada, &router),
+        kept_level(workspaces, workspace_id, &router),
         Some(ReasoningSetting {
             param: ReasoningParam::ReasoningObject,
             effort: "high".into(),
@@ -1606,7 +1636,7 @@ async fn a_persons_thinking_level_reaches_their_provider_with_the_next_ask() {
         matches!(turned_away, Err(ActionCallError::Refused { .. })),
         "{turned_away:?}"
     );
-    assert_eq!(kept_level(workspaces, &ada, &anthropic), None);
+    assert_eq!(kept_level(workspaces, workspace_id, &anthropic), None);
     server.shutdown().await;
 }
 
@@ -1683,12 +1713,12 @@ fn model_for(reads: &Value, kind: &str) -> Option<Value> {
         .map(|chosen| chosen["model"].clone())
 }
 
-/// Two people on one host each link a provider with a key of their own.
-/// The host asks the provider for its models with each person's key, each
-/// chooses the models their kinds of work run on, and neither reads the
+/// Two workspaces on one host each link a provider with a key of their own.
+/// The host asks the provider for its models with each workspace's key, each
+/// chooses the models its kinds of work run on, and neither reads the
 /// other's or chooses from them.
 #[tokio::test]
-async fn each_person_links_a_provider_and_chooses_their_own_models() {
+async fn each_workspace_links_a_provider_and_chooses_its_own_models() {
     use tilo_actions::remote::person_models;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1696,38 +1726,43 @@ async fn each_person_links_a_provider_and_chooses_their_own_models() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let bo = admit(workspaces, &elsewhere, &owner, 2).await;
     // The provider is on this machine, which a server calls only with its
     // operator's leave.
     workspaces.call_private_model_addresses(true);
     let (_fake, adding) = provider_of_two_keys();
     let hers = links_a_provider(&host, workspace_id, &ada, &adding, "sk-ada").await;
-    let his = links_a_provider(&host, workspace_id, &bo, &adding, "sk-bo").await;
+    let his = links_a_provider(&host, elsewhere_id, &bo, &adding, "sk-bo").await;
 
-    for (person, verb, choosing) in [
+    for (here, person, verb, choosing) in [
         (
+            workspace_id,
             &ada,
             person_models::SET_DEFAULT,
             json!({"provider": hers, "model": "ada-small"}),
         ),
         (
+            workspace_id,
             &ada,
             person_models::SET_ASSIGNMENTS,
             json!({"kinds": ["request", "task"], "provider": hers, "model": "ada-large"}),
         ),
         (
+            workspace_id,
             &ada,
             person_models::SET_ASSIGNMENT,
             json!({"kind": "subtask", "provider": hers, "model": "ada-small"}),
         ),
         (
+            elsewhere_id,
             &bo,
             person_models::SET_DEFAULT,
             json!({"provider": his, "model": "bo-only"}),
         ),
     ] {
-        ask_own(&host, workspace_id, person, verb, choosing)
+        ask_own(&host, here, person, verb, choosing)
             .await
             .expect("a model is chosen");
     }
@@ -1752,7 +1787,7 @@ async fn each_person_links_a_provider_and_chooses_their_own_models() {
     assert_eq!(model_for(&ada_reads, "subtask"), Some(json!("ada-small")));
     assert_eq!(model_for(&ada_reads, "classifier"), None);
 
-    let bo_reads = ask_own(&host, workspace_id, &bo, person_models::LIST, json!({}))
+    let bo_reads = ask_own(&host, elsewhere_id, &bo, person_models::LIST, json!({}))
         .await
         .unwrap();
     assert_eq!(bo_reads["defaultProvider"], json!(his), "{bo_reads}");
@@ -1764,7 +1799,7 @@ async fn each_person_links_a_provider_and_chooses_their_own_models() {
     for provider in [&his, &hers] {
         let refused = ask_own(
             &host,
-            workspace_id,
+            elsewhere_id,
             &bo,
             person_models::SET_DEFAULT,
             json!({"provider": provider, "model": "ada-large"}),

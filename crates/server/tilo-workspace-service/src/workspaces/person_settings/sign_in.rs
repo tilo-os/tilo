@@ -1,12 +1,12 @@
 //! Signing in on a provider's own page.
 //!
 //! A page has no vault and cannot keep the `OAuth` code its provider sends
-//! back, so the server that keeps a person's accounts does both: it begins
-//! the sign-in with a proof key and a `state` bound to that person
+//! back, so the server that keeps a workspace's accounts does both: it begins
+//! the sign-in with a proof key and a `state` bound to the person who asked
 //! ([`BEGIN_SIGN_IN`]), sends their browser to the provider, and finishes it
 //! when the provider sends the browser back to `GET /accounts/return`
 //! ([`Workspaces::accounts_return`]). The grant it gets is sealed in the
-//! person's vault the way a device's own sign-in seals it
+//! workspace's vault the way a device's own sign-in seals it
 //! ([`account_credentials::oauth_secret`]), so one refresh path renews it for
 //! mail, calendar and every reader.
 //!
@@ -64,7 +64,7 @@ static ORIGIN: Mutex<Option<String>> = Mutex::new(None);
 struct Begun {
     id: String,
     person: [u8; 32],
-    /// The person's store this sign-in keeps its account in.
+    /// The workspace's store this sign-in keeps its account in.
     root: PathBuf,
     until_ms: u64,
     failed: Option<String>,
@@ -244,8 +244,9 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(origin.into());
     }
 
-    /// Begin signing in on `asking`'s provider page for `person`, answering
-    /// where their browser goes. What reaches the person's store is what
+    /// Begin signing in on `asking`'s provider page for `person`, into the
+    /// workspace store `root`, answering where their browser goes. What
+    /// reaches the store is what
     /// [`BEGIN_SIGN_IN`] says: nothing yet.
     ///
     /// # Errors
@@ -256,7 +257,7 @@ impl Workspaces {
     /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_accounts::BEGIN_SIGN_IN
     pub(super) async fn begin_sign_in(
         &self,
-        person: [u8; 32],
+        (person, root): ([u8; 32], PathBuf),
         asking: &BeginSignIn,
         reach: &tilo_account_probe::imap::Reach,
     ) -> Result<SignInStep, String> {
@@ -267,9 +268,10 @@ impl Workspaces {
             return Err("Too many sign-ins are open here. Finish or cancel one first".into());
         }
         if let Some(issuer) = issuer_of(provider) {
-            self.begin_web(person, issuer, services, asking)
+            Self::begin_web((person, root), issuer, services, asking)
         } else if provider == Provider::Nextcloud {
-            self.begin_nextcloud(person, services, asking, reach).await
+            self.begin_nextcloud((person, root), services, asking, reach)
+                .await
         } else {
             Err(format!(
                 "{} signs in with a password, not on its own page",
@@ -279,8 +281,7 @@ impl Workspaces {
     }
 
     fn begin_web(
-        &self,
-        person: [u8; 32],
+        (person, root): ([u8; 32], PathBuf),
         issuer: OAuthIssuer,
         services: Services,
         asking: &BeginSignIn,
@@ -314,7 +315,7 @@ impl Workspaces {
             Begun {
                 id: id.clone(),
                 person,
-                root: self.person_settings_root(&person),
+                root,
                 until_ms: now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES)),
                 failed: None,
                 kind: Kind::Web {
@@ -331,7 +332,7 @@ impl Workspaces {
 
     async fn begin_nextcloud(
         &self,
-        person: [u8; 32],
+        (person, root): ([u8; 32], PathBuf),
         services: Services,
         asking: &BeginSignIn,
         reach: &tilo_account_probe::imap::Reach,
@@ -355,7 +356,6 @@ impl Workspaces {
         let open = flow.login_url().to_owned();
         let (stop, cancelled) = nextcloud::cancellation();
         let account = asking.account.trim().to_owned();
-        let root = self.person_settings_root(&person);
         begun().insert(
             id.clone(),
             Begun {
@@ -401,11 +401,11 @@ impl Workspaces {
     /// the accounts once it is listed.
     pub(super) async fn begin_account_sign_in(
         &self,
-        person: [u8; 32],
+        (person, root): ([u8; 32], PathBuf),
         asking: &BeginSignIn,
     ) -> Result<SignInStep, String> {
         let reach = self.inner.models.mail_reach();
-        let step = self.begin_sign_in(person, asking, &reach).await;
+        let step = self.begin_sign_in((person, root), asking, &reach).await;
         if step.is_ok() {
             self.person_settings_changed();
         }
@@ -427,7 +427,7 @@ impl Workspaces {
     }
 
     /// Finish the sign-in a browser came back from at `GET /accounts/return`,
-    /// keeping the person's account.
+    /// keeping the account in the workspace it was begun for.
     ///
     /// # Errors
     /// The callback names no sign-in begun here, ran out, was refused by the
@@ -439,14 +439,13 @@ impl Workspaces {
             .map(str::to_owned)
             .unwrap_or_default();
         let id = hex::encode(Sha256::digest(state.as_bytes()));
-        let person = begun()
+        let (person, root) = begun()
             .get(&id)
             .filter(|entry| entry.until_ms > now_ms())
-            .map(|entry| entry.person)
+            .map(|entry| (entry.person, entry.root.clone()))
             .ok_or_else(|| {
                 "That sign-in was not begun here or took too long. Begin it again".to_string()
             })?;
-        let root = self.person_settings_root(&person);
         finish(&root, &id, person, query).await?;
         self.person_settings_changed();
         Ok(())
@@ -483,7 +482,11 @@ pub(super) async fn accounts_sign_in(
     match request.target.address.action.as_str() {
         BEGIN_SIGN_IN => {
             let asking: BeginSignIn = super::argument(request, "a provider to sign in with")?;
-            super::answer(&workspaces.begin_account_sign_in(person, &asking).await)
+            super::answer(
+                &workspaces
+                    .begin_account_sign_in((person, root.to_path_buf()), &asking)
+                    .await,
+            )
         }
         CANCEL_SIGN_IN => {
             let stopping: CancelSignIn = super::argument(request, "a sign-in to stop")?;

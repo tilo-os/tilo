@@ -174,10 +174,9 @@ impl ServerAgents {
         let theirs = tilo_action_policy::PersonId::parse(&turn.agent.keeper)
             .ok()
             .and_then(|keeper| keeper.root())
-            .map(|keeper| {
+            .map(|_| {
                 self.workspaces
-                    .person_model(keeper, Interaction::OneShot)
-                    .working_in(workspace_id)
+                    .workspace_model(workspace_id, Interaction::OneShot)
                     .spending_as(Spender {
                         workspace: workspace.to_owned(),
                         agent: super::sub_agents::payer(turn).id.0.clone(),

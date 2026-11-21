@@ -5,7 +5,7 @@
 //! account" and its address. Her assistant's one tool call hands the server that address and
 //! nothing else. The server works out the account's two servers, asks her for the password
 //! itself, on her own device in the system's protected field, with a question that names both
-//! servers, keeps what she typed in her vault, signs in with it, keeps the account, names her assistant for it and wakes the
+//! servers, keeps what she typed in the workspace's vault, signs in with it, keeps the account in the workspace and wakes the
 //! assistant once. Nobody is asked to allow a use. The password is in no request a model was
 //! sent, no message, no log line and no file of the server in the clear, and on this way the
 //! model never holds even the item's reference.
@@ -270,8 +270,8 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
     );
     assert!(her_mail(&mut hosted).await.is_empty(), "nothing yet");
 
-    // She types. Her server keeps it in her vault, signs in, keeps the account and names her
-    // assistant for it, and her assistant is told once and says so in one line.
+    // She types. Her server keeps it in her vault, signs in, keeps the account in the
+    // workspace, and her assistant is told once and says so in one line.
     she_types(&devices, 0, TYPED);
     let told = the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
     assert!(
@@ -300,17 +300,6 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
         kept.contains(READS) && kept.contains(SENDS),
         "the account is kept at the servers that were found: {kept}"
     );
-    let named = hosted
-        .on_device(
-            (
-                person_accounts::PROVIDER,
-                person_accounts::RESOURCE,
-                person_accounts::ASSISTANTS,
-            ),
-            serde_json::json!({"account": ADDRESS}),
-        )
-        .await;
-    assert_eq!(named["agents"], serde_json::json!([SCOUT]), "{named}");
     // The sentence took three asks of the model: the call, its closing words, and the news.
     assert_eq!(
         hosted.model.asked().len(),

@@ -489,38 +489,38 @@ fn host_provider() -> Arc<dyn ModelProvider> {
 }
 
 impl Workspaces {
-    /// The model `person` chose for `kind` of work, to ask on their behalf:
-    /// the one entry everything this host runs for a person asks a model
+    /// The model `workspace` chose for `kind` of work, to ask on its behalf:
+    /// the one entry everything this host runs in a workspace asks a model
     /// through.
     ///
-    /// The handle reads the person's choice anew for every call, and their
-    /// key again whenever their vault was written since, so it may be kept:
-    /// a model they change in Settings answers the next call.
+    /// The handle reads the workspace's choice anew for every call, and its
+    /// key again whenever its vault was written since, so it may be kept: a
+    /// model a member changes in Settings answers the next call.
     #[must_use]
-    pub fn person_model(&self, person: [u8; 32], kind: Interaction) -> PersonModel {
+    pub fn workspace_model(&self, workspace: WorkspaceId, kind: Interaction) -> PersonModel {
         PersonModel {
             models: Arc::clone(&self.inner.models),
-            root: self.person_settings_root(&person),
+            root: self.workspace_root(&workspace.to_string()),
             kept: Arc::default(),
             kind,
             named: None,
-            workspace: None,
+            workspace: Some(workspace),
             spenders: Vec::new(),
             quiet: None,
         }
     }
 
-    /// Whether `person`'s settings on this server hold what `named` names as
-    /// provider/model ([`PersonModel::naming`]): what a skill may name as the
-    /// model its work is done with. It reads the person's settings from disk,
-    /// so an asynchronous caller asks it off the runtime's workers.
+    /// Whether `workspace`'s settings on this server hold what `named` names
+    /// as provider/model ([`PersonModel::naming`]): what a skill may name as
+    /// the model its work is done with. It reads the settings from disk, so
+    /// an asynchronous caller asks it off the runtime's workers.
     ///
     /// # Errors
-    /// Nothing the person linked here is named so. The words say what they
+    /// Nothing the workspace linked here is named so. The words say what it
     /// linked, each provider by its name with the models it offers, and never
     /// a key.
-    pub fn person_links_model(&self, person: &[u8; 32], named: &str) -> Result<(), String> {
-        let root = self.person_settings_root(person);
+    pub fn workspace_links_model(&self, workspace: &str, named: &str) -> Result<(), String> {
+        let root = self.workspace_root(workspace);
         let linked: Vec<String> = if root.is_dir() {
             let config = provider_config(&root);
             if named_selection(&config, named).is_some() {
@@ -544,12 +544,12 @@ impl Workspaces {
         };
         Err(if linked.is_empty() {
             format!(
-                "{named:?} names no model: the person linked no provider on this server. \
+                "{named:?} names no model: the workspace linked no provider on this server. \
                  Leave the model out."
             )
         } else {
             format!(
-                "{named:?} names no model the person linked on this server. Name one as \
+                "{named:?} names no model the workspace linked on this server. Name one as \
                  provider/model from: {}.",
                 linked.join("; ")
             )
@@ -579,9 +579,9 @@ impl Workspaces {
 #[derive(Clone)]
 pub struct PersonModel {
     models: Arc<Models>,
-    /// The person's own store on this host.
+    /// The workspace's store on this host.
     root: PathBuf,
-    /// The key this work last took from the person's vault (`person_model/kept.rs`).
+    /// The key this work last took from the workspace's vault (`person_model/kept.rs`).
     kept: Arc<kept::Key>,
     kind: Interaction,
     /// The model its caller names in place of the person's choice for the

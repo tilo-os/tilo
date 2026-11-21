@@ -1,5 +1,5 @@
-//! A person's calendar, connected by their telling their assistant where it
-//! is.
+//! A workspace's calendar, connected by a person telling their assistant
+//! where it is.
 //!
 //! A person connects anything by saying so to their assistant. A turn this
 //! server carries out for them, with every device of theirs off, hands over
@@ -19,15 +19,14 @@
 //! ([`Workspaces::carry_out_connect`]), never what a conversation says was
 //! asked: it signs in to the calendar server with what the vault item keeps,
 //! keeps the account for reading only ([`super::add_with_item`]; nothing
-//! here can ask for anything else) and names the agent that asked for the
-//! account, which is what its person was told their typing does. An answer
+//! here can ask for anything else) in the workspace's store, which is what
+//! its person was told their typing does. An answer
 //! is carried out at most once ([`Workspaces::claim_connect`]).
 //!
 //! A calendar server that does not take the sign-in keeps nothing here: no
 //! account, and the item the person typed for this question is taken out of
-//! their vault again: a login for that server alone that their vault did
-//! not keep when it was asked. An item they kept before the question is
-//! theirs and stays.
+//! the workspace's vault again: a login for that server alone that the vault
+//! did not keep when it was asked. An item kept before the question stays.
 //!
 //! The address comes from a model's tool call, so it is held to what a
 //! key's web call is held to ([`crate::workspaces::hosted_use`]) before
@@ -37,8 +36,9 @@
 //! address there taken. The connection that signs in later looks the name
 //! up again, so a name that answers differently then is not caught here.
 //!
-//! The turn is its keeper's own ([`Workspaces::keepers_turn`]) or it is
-//! offered nothing and reaches nothing, and an agent that anything narrows
+//! The turn is its keeper's own ([`Workspaces::keepers_turn`]), whom the
+//! workspace's policy lets change its calendars, or it is offered nothing and
+//! reaches nothing, and an agent that anything narrows
 //! holds a rule that names this very action ([`HostedTurn::may_take`]). The
 //! same account told twice adds nothing: connected already, it is refused in
 //! words; asked for and not yet answered, the one question stands.
@@ -50,7 +50,7 @@ use std::sync::MutexGuard;
 use accounts::vault_items::{ItemId, ItemKind, Place, VaultItems};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_actions::remote::person_accounts::{self, AssistantAccess};
+use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{
     ActionCallError as ActionError, CatalogueRow, InvokeRequest, RemoteActionTarget,
@@ -60,14 +60,16 @@ use tilo_lock::MutexRecover as _;
 
 use super::{
     AddWithItem, CONNECT, RESOURCE, account_id, accounts_at, add_with_item, argument, off_thread,
-    remove, server_of,
+    server_of,
 };
 use crate::connections::wire::{Destinations, Lookup, check_destination, is_public, system_lookup};
 use crate::workspaces::Workspaces;
+use crate::workspaces::person_asking::workspace_store_root;
+use crate::workspaces::workspace_stores::Store;
 use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
 
-/// Where a person's connections that wait for their password are kept, under
-/// their own root.
+/// Where a workspace's connections that wait for a person's password are
+/// kept, under its store.
 const ASKS_DIR: &str = "calendar-asks";
 /// The most that wait for one person at a time: an agent that goes on
 /// asking is told so instead of filling their conversation.
@@ -118,8 +120,7 @@ pub struct ConnectAsk {
     pub workspace: String,
     /// The person asked: their root key, hex.
     pub person: String,
-    /// The agent that asked, by its id: the one named for the account once
-    /// it is connected.
+    /// The agent that asked, by its id.
     pub agent: String,
     /// The name its person knows that agent under.
     pub name: String,
@@ -327,7 +328,7 @@ fn ask_path(root: &Path, ask: &str) -> PathBuf {
     root.join(ASKS_DIR).join(format!("{ask}.json"))
 }
 
-/// Keep `ask` under its person's `root`, readable by this server alone.
+/// Keep `ask` under its workspace's `root`, readable by this server alone.
 fn keep(root: &Path, ask: &ConnectAsk) -> Result<(), String> {
     let bytes = serde_json::to_vec(ask).map_err(|error| error.to_string())?;
     tilo_files::native::atomic::write_creating_parent_with_mode(
@@ -353,15 +354,15 @@ fn read_kept(path: &Path) -> Option<ConnectAsk> {
     }
 }
 
-/// Every ask kept under the people's roots in `people`, oldest first. One
-/// that was started is read back interrupted.
-fn kept_under(people: &Path) -> Vec<ConnectAsk> {
-    let mut asks: Vec<ConnectAsk> = std::fs::read_dir(people)
+/// Every ask kept under the workspaces' stores in `stores`, oldest first.
+/// One that was started is read back interrupted.
+fn kept_under(stores: &Path) -> Vec<ConnectAsk> {
+    let mut asks: Vec<ConnectAsk> = std::fs::read_dir(stores)
         .into_iter()
         .flatten()
         .flatten()
-        .flat_map(|person| {
-            std::fs::read_dir(person.path().join(ASKS_DIR))
+        .flat_map(|workspace| {
+            std::fs::read_dir(workspace.path().join(ASKS_DIR))
                 .into_iter()
                 .flatten()
         })
@@ -385,7 +386,7 @@ fn kept_under(people: &Path) -> Vec<ConnectAsk> {
 /// protected field of `ask`'s question made: a login that belongs to the
 /// calendar server's origin and to nothing else, which their vault did not
 /// keep when it was asked. Such an item is taken out again when nothing is
-/// connected with it; any other is its person's own and stays.
+/// connected with it; any other stays.
 fn typed_for(root: &Path, item: &ItemRef, ask: &ConnectAsk) -> Option<ItemId> {
     let id = ItemId::parse(item.id())?;
     let facts = VaultItems::open_in(root)
@@ -407,7 +408,7 @@ fn typed_for(root: &Path, item: &ItemRef, ask: &ConnectAsk) -> Option<ItemId> {
 fn take_out(root: &Path, id: &ItemId) {
     let taken = VaultItems::open_in(root).and_then(|mut items| items.remove(id));
     if let Err(error) = taken {
-        tracing::warn!(%error, "an item typed for a calendar that was not connected stays in its person's vault");
+        tracing::warn!(%error, "an item typed for a calendar that was not connected stays in the workspace's vault");
     }
 }
 
@@ -417,26 +418,26 @@ impl Workspaces {
     fn connects(&self) -> MutexGuard<'_, Option<Vec<ConnectAsk>>> {
         let mut asks = self.inner.vault_uses.connects.lock_recover();
         if asks.is_none() {
-            *asks = Some(kept_under(&self.inner.dir.join("people")));
+            *asks = Some(kept_under(&workspace_store_root(&self.inner.dir)));
         }
         asks
     }
 
-    /// Forget the ask `ask` of `person`: nothing is connected for it any
+    /// Forget the ask `ask` of `workspace`: nothing is connected for it any
     /// more.
-    fn forget_connect(&self, person: &str, ask: &str) {
+    fn forget_connect(&self, workspace: &str, ask: &str) {
         if let Some(asks) = self.connects().as_mut() {
             asks.retain(|kept| kept.ask != ask);
         }
-        let mut root = [0; 32];
-        if is_ask_id(ask) && hex::decode_to_slice(person, &mut root).is_ok() {
-            let _ = std::fs::remove_file(ask_path(&self.person_settings_root(&root), ask));
+        if is_ask_id(ask) {
+            let _ = std::fs::remove_file(ask_path(&self.workspace_root(workspace), ask));
         }
     }
 
     /// Whose turn `turn` is, where it may ask `target`, the connecting of a
-    /// calendar: its keeper's own, and for an agent that anything narrows
-    /// one a rule of its names.
+    /// calendar: its keeper's own, whom the workspace's policy lets change
+    /// its calendars, and for an agent that anything narrows one a rule of
+    /// its names.
     async fn connecting(
         &self,
         turn: &HostedTurn<'_>,
@@ -449,6 +450,18 @@ impl Workspaces {
             return Err(ActionError::UnknownAction);
         }
         let using = self.keepers_turn(turn).await?;
+        if !self
+            .person_reaches(
+                turn.workspace,
+                &using.person,
+                Store::CALENDARS,
+                CONNECT,
+                tilo_action_policy::ActionKind::Undoable,
+            )
+            .await
+        {
+            return Err(ActionError::UnknownAction);
+        }
         if !turn.may_take(&using.workspace, target) {
             return Err(ActionError::NotPermitted);
         }
@@ -517,12 +530,12 @@ impl Workspaces {
         // The one rule every calendar sign-in is under holds here too.
         let server = server_of(address.as_str()).map_err(refused)?;
         let place = Place::parse(server.as_str()).map_err(|error| refused(error.to_string()))?;
-        let root = self.person_settings_root(&using.person);
+        let root = self.workspace_root(&using.workspace);
         let id = account_id(&username, &server);
         if accounts_at(&root).iter().any(|kept| kept.id == id) {
             return Err(refused(ALREADY));
         }
-        // What their vault keeps now is theirs whatever comes of this.
+        // What the vault keeps now stays whatever comes of this.
         let known = VaultItems::open_in(&root)
             .map_err(|error| refused(error.to_string()))?
             .facts()
@@ -587,7 +600,7 @@ impl Workspaces {
     /// over without an answer: nothing waits any more, and the calendar is
     /// asked for again when it is wanted.
     pub fn connect_not_asked(&self, ask: &ConnectAsk) {
-        self.forget_connect(&ask.person, &ask.ask);
+        self.forget_connect(&ask.workspace, &ask.ask);
     }
 
     /// The asks to connect a calendar kept for `workspace`, oldest first:
@@ -634,12 +647,9 @@ impl Workspaces {
             kept.started = true;
             kept.clone()
         };
-        let mut person = [0; 32];
-        let said = hex::decode_to_slice(&claimed.person, &mut person)
-            .map_err(|error| error.to_string())
-            .and_then(|()| keep(&self.person_settings_root(&person), &claimed));
+        let said = keep(&self.workspace_root(&claimed.workspace), &claimed);
         if let Err(error) = said {
-            self.forget_connect(&claimed.person, &claimed.ask);
+            self.forget_connect(&claimed.workspace, &claimed.ask);
             return Err(refused(error));
         }
         Ok(claimed)
@@ -654,7 +664,7 @@ impl Workspaces {
     /// What the person typed is in their vault already, under `typed`;
     /// this server decides what comes of it. What is connected is the
     /// account kept under the ask, for reading only, signed in with what
-    /// the vault item keeps, and the agent that asked is named for it.
+    /// the vault item keeps.
     /// Answers the account and the names of its calendars, `None` where
     /// they declined. Where nothing is connected the item typed for this
     /// question is taken out of their vault again. Whatever comes of it,
@@ -670,32 +680,24 @@ impl Workspaces {
         claimed: &ConnectAsk,
         typed: Option<&str>,
     ) -> Result<Option<Connected>, String> {
-        let mut person = [0; 32];
-        let root = hex::decode_to_slice(&claimed.person, &mut person)
-            .map(|()| self.person_settings_root(&person))
-            .map_err(|_| NOT_THEIRS.to_owned());
+        let root = self.workspace_root(&claimed.workspace);
         let item = typed.and_then(ItemRef::parse);
-        let own = match (&root, &item) {
-            (Ok(root), Some(item)) => typed_for(root, item, claimed),
-            _ => None,
-        };
-        let carried = match (root.as_ref(), typed) {
-            (Err(why), _) => Err(why.clone()),
-            (Ok(_), None) => Ok(None),
-            (Ok(root), Some(_)) => self.connect(turn, claimed, root, item).await.map(Some),
+        let own = item.as_ref().and_then(|item| typed_for(&root, item, claimed));
+        let carried = match typed {
+            None => Ok(None),
+            Some(_) => self.connect(turn, claimed, &root, item).await.map(Some),
         };
         if !matches!(carried, Ok(Some(_)))
-            && let (Ok(root), Some(id)) = (&root, &own)
+            && let Some(id) = &own
         {
-            take_out(root, id);
+            take_out(&root, id);
         }
-        self.forget_connect(&claimed.person, &claimed.ask);
+        self.forget_connect(&claimed.workspace, &claimed.ask);
         carried
     }
 
     /// Connect the account `kept` names with the sign-in `item` keeps in the
-    /// vault under `root`, for reading only, and name the agent that asked
-    /// for it.
+    /// vault under `root`, for reading only.
     async fn connect(
         &self,
         turn: &HostedTurn<'_>,
@@ -729,16 +731,6 @@ impl Workspaces {
         let (at, by) = (root.to_path_buf(), using.name);
         let reach = self.inner.models.mail_reach();
         let view = off_thread(move || add_with_item(&at, &reach, adding, &by)).await?;
-        let naming = AssistantAccess {
-            account: view.id.clone(),
-            agent: kept.agent.clone(),
-            may: true,
-        };
-        if let Err(why) = super::super::say_assistant(root, &kept.workspace, &naming) {
-            // An account nobody reads for them is not what they typed for.
-            let _ = remove(root, &view.id);
-            return Err(why);
-        }
         self.person_settings_changed();
         Ok(Connected {
             account: view.id,

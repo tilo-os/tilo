@@ -1,21 +1,20 @@
-//! The inboxes this host watches for its people, with no Mail window open.
+//! The inboxes this host watches for its workspaces, with no Mail window
+//! open.
 //!
-//! A person's mailbox is their own record, sealed for their devices: the
-//! host can neither read nor write it, and a program the host runs never
-//! follows one. So the host keeps no copy of the mail. The account's server
-//! stays the store, and what the host keeps, in the person's own store
-//! beside their accounts, is where each watch has read up to and a bounded
-//! log of what arrived: for each message its envelope and the start of its
-//! words, never the whole message. Whoever needs the message reads it from
-//! its server, through the host's mail actions, by where the arrival says
-//! it is held. A device or a page takes the message into the mailbox when
-//! it next reads the folder, as it always did.
+//! The host keeps no copy of the mail. The account's server stays the
+//! store, and what the host keeps, in the workspace's store beside its
+//! accounts, is where each watch has read up to and a bounded log of what
+//! arrived: for each message its envelope and the start of its words, never
+//! the whole message. Whoever needs the message reads it from its server,
+//! through the host's mail actions, by where the arrival says it is held. A
+//! device or a page takes the message into the mailbox when it next reads
+//! the folder, as it always did.
 //!
-//! An inbox is watched only while something listens for its person
-//! ([`Workspaces::listen_for_mail`]): a program with a mail trigger, or the
-//! person or their assistant asking what arrived. Mail that was there
-//! before an inbox's first watch is no arrival, and a watch that starts
-//! again tells what arrived while none ran.
+//! An inbox is watched only while something listens for its workspace
+//! ([`Workspaces::listen_for_mail`]): a program with a mail trigger, or a
+//! member or an agent asking what arrived. Mail that was there before an
+//! inbox's first watch is no arrival, and a watch that starts again tells
+//! what arrived while none ran.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher as _;
@@ -29,14 +28,14 @@ use tilo_mail_session::{InboxHeard, InboxSeen, Watching};
 
 use super::Workspaces;
 
-/// How many arrivals a person's log keeps, newest last.
+/// How many arrivals a workspace's log keeps, newest last.
 const ARRIVALS_KEPT: usize = 500;
 /// How much of a message's words an arrival keeps.
 const EXCERPT_CHARS: usize = 2000;
 /// The folder every arrival is in: an inbox is what a watch watches.
 const INBOX: &str = "inbox";
 
-/// What the host keeps of a person's arriving mail.
+/// What the host keeps of a workspace's arriving mail.
 #[derive(Default, Serialize, Deserialize)]
 struct Kept {
     /// The place the newest arrival took; the next takes the one after it.
@@ -68,14 +67,14 @@ fn read_kept(root: &Path) -> Kept {
         // Nothing arrived yet.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Kept::default(),
         Err(error) => {
-            tracing::warn!(%error, "mail: a person's arrival log could not be read and starts over");
+            tracing::warn!(%error, "mail: a workspace's arrival log could not be read and starts over");
             return Kept::default();
         }
     };
     match serde_json::from_slice(&bytes) {
         Ok(kept) => kept,
         Err(error) => {
-            tracing::warn!(%error, "mail: a person's arrival log does not read and starts over");
+            tracing::warn!(%error, "mail: a workspace's arrival log does not read and starts over");
             Kept::default()
         }
     }
@@ -96,16 +95,16 @@ pub(super) struct MailWatches {
 
 #[derive(Default)]
 struct State {
-    /// For each person somebody listens for: how many do, and the watch of
-    /// each of their accounts.
-    listened: Mutex<HashMap<[u8; 32], Listened>>,
-    /// The people who asked what arrived, which is listening for as long
-    /// as this host runs.
-    asked: Mutex<HashSet<[u8; 32]>>,
+    /// For each workspace somebody listens for: how many do, and the watch
+    /// of each of its accounts.
+    listened: Mutex<HashMap<String, Listened>>,
+    /// The workspaces somebody asked what arrived in, which is listening for
+    /// as long as this host runs.
+    asked: Mutex<HashSet<String>>,
     logs: Arc<Logs>,
 }
 
-/// What every watch writes into: a person's log, one writer at a time, and
+/// What every watch writes into: a workspace's log, one writer at a time, and
 /// the count that moves whenever a log grew.
 struct Logs {
     writing: Mutex<()>,
@@ -136,108 +135,112 @@ impl Listened {
     }
 }
 
-/// Somebody listening for a person's mail. While at least one is held for a
-/// person, the host watches that person's inboxes.
+/// Somebody listening for a workspace's mail. While at least one is held for
+/// a workspace, the host watches its inboxes.
 pub struct MailListening {
     state: Arc<State>,
-    person: [u8; 32],
+    workspace: String,
 }
 
 impl Drop for MailListening {
     fn drop(&mut self) {
         let mut listened = self.state.listened.lock_recover();
-        let Some(entry) = listened.get_mut(&self.person) else {
+        let Some(entry) = listened.get_mut(&self.workspace) else {
             return;
         };
         entry.listeners = entry.listeners.saturating_sub(1);
         if entry.listeners == 0 {
             // The watches go with their last listener.
-            listened.remove(&self.person);
+            listened.remove(&self.workspace);
         }
     }
 }
 
 impl Workspaces {
-    /// Listen for `person`'s mail: for as long as the answer is held, this
-    /// host watches the inbox of each account that person keeps here with
-    /// its sign-in, and what arrives joins their log
+    /// Listen for `workspace`'s mail: for as long as the answer is held,
+    /// this host watches the inbox of each account the workspace keeps here
+    /// with its sign-in, and what arrives joins its log
     /// ([`Self::mail_arrivals`]).
     #[must_use]
-    pub fn listen_for_mail(&self, person: [u8; 32]) -> MailListening {
+    pub fn listen_for_mail(&self, workspace: &str) -> MailListening {
         let state = Arc::clone(&self.inner.mail_watches.state);
         state
             .listened
             .lock_recover()
-            .entry(person)
+            .entry(workspace.to_owned())
             .or_default()
             .add();
-        self.watch_inboxes_of(&person);
-        MailListening { state, person }
+        self.watch_inboxes_of(workspace);
+        MailListening {
+            state,
+            workspace: workspace.to_owned(),
+        }
     }
 
-    /// What arrived for `person` after place `after` of their log, oldest
-    /// first. Each arrival keeps its place and its id for good, so whoever
-    /// reads with the place it got to takes each arrival once.
+    /// What arrived in `workspace` after place `after` of its log, oldest
+    /// first, with the newest place the log has given out. Each arrival
+    /// keeps its place and its id for good, so whoever reads with the place
+    /// it got to takes each arrival once.
     #[must_use]
-    pub fn mail_arrivals(&self, person: &[u8; 32], after: u64) -> Vec<MailArrival> {
-        self.arrivals_kept(person, after).arrivals
+    pub fn mail_arrivals(&self, workspace: &str, after: u64) -> MailArrivals {
+        self.arrivals_kept(workspace, after)
     }
 
-    /// Moves whenever anybody's arrival log grew: what a reader of
+    /// [`Self::mail_arrivals`] for what an automation hands an agent of
+    /// `person`'s: where the workspace's policy does not let `person` read
+    /// its mail, the answer is the newest place alone, so nothing of it is
+    /// handed over and a reader that may later reads on from there.
+    pub async fn mail_arrivals_for(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        person: &[u8; 32],
+        after: u64,
+    ) -> MailArrivals {
+        let mut arrived = self.arrivals_kept(&workspace.to_string(), after);
+        if !self
+            .person_reaches(
+                workspace,
+                person,
+                super::workspace_stores::Store::MAIL,
+                tilo_actions::remote::person_accounts::ARRIVED,
+                tilo_action_policy::ActionKind::Read,
+            )
+            .await
+        {
+            arrived.arrivals.clear();
+        }
+        arrived
+    }
+
+    /// Moves whenever any workspace's arrival log grew: what a reader of
     /// [`Self::mail_arrivals`] wakes on.
     #[must_use]
     pub fn mail_arrival_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.mail_watches.state.logs.grew.subscribe()
     }
 
-    /// What arrived for `person` after place `after` of their log in the
-    /// accounts they named the agent `named` (a workspace and the agent's
-    /// id there) for, oldest first, with the newest place the whole log has
-    /// given out. An agent reads nothing of an account its person did not
-    /// name it for, so nothing of one is handed over for it either: named
-    /// for none, or with no agent given, the answer is that place alone.
-    /// Whoever reads on from the place answered takes each arrival once,
-    /// and what arrived in an account before its person named the agent for
-    /// it is not handed over afterwards.
-    #[must_use]
-    pub fn mail_arrivals_for(
-        &self,
-        person: &[u8; 32],
-        named: Option<(&str, &str)>,
-        after: u64,
-    ) -> MailArrivals {
-        let mut arrived = self.arrivals_kept(person, after);
-        let accounts = named
-            .map(|(workspace, agent)| self.accounts_named_for(person, workspace, agent))
-            .unwrap_or_default();
-        arrived
-            .arrivals
-            .retain(|arrival| accounts.contains(&arrival.account));
-        arrived
-    }
-
-    /// [`Self::mail_arrivals`] as a person's own request reads it, which is
-    /// also listening: from the first time a person or their assistant asks
-    /// what arrived, this host watches their inboxes for as long as it runs.
-    pub(super) fn arrived_after(&self, person: &[u8; 32], after: u64) -> MailArrivals {
+    /// [`Self::mail_arrivals`] as a request reads it, which is also
+    /// listening: from the first time anybody asks what arrived in a
+    /// workspace, this host watches its inboxes for as long as it runs.
+    pub(super) fn arrived_after(&self, workspace: &str, after: u64) -> MailArrivals {
         let state = &self.inner.mail_watches.state;
-        if state.asked.lock_recover().insert(*person) {
+        if state.asked.lock_recover().insert(workspace.to_owned()) {
             state
                 .listened
                 .lock_recover()
-                .entry(*person)
+                .entry(workspace.to_owned())
                 .or_default()
                 .add();
-            self.watch_inboxes_of(person);
+            self.watch_inboxes_of(workspace);
         }
-        self.arrivals_kept(person, after)
+        self.arrivals_kept(workspace, after)
     }
 
-    fn arrivals_kept(&self, person: &[u8; 32], after: u64) -> MailArrivals {
+    fn arrivals_kept(&self, workspace: &str, after: u64) -> MailArrivals {
         let state = &self.inner.mail_watches.state;
         let kept = {
             let _writing = state.logs.writing.lock_recover();
-            read_kept(&self.person_settings_root(person))
+            read_kept(&self.workspace_root(workspace))
         };
         MailArrivals {
             arrivals: kept
@@ -249,46 +252,46 @@ impl Workspaces {
         }
     }
 
-    /// Bring the watches of everyone somebody listens for in line with the
-    /// accounts they keep now: an account added is watched, one removed is
+    /// Bring the watches of every workspace somebody listens for in line
+    /// with the accounts it keeps now: an account added is watched, one removed is
     /// not, and one whose sign-in changed is watched with the new one.
     pub(super) fn watch_listened_inboxes(&self) {
-        let people: Vec<[u8; 32]> = self
+        let workspaces: Vec<String> = self
             .inner
             .mail_watches
             .state
             .listened
             .lock_recover()
             .keys()
-            .copied()
+            .cloned()
             .collect();
-        for person in people {
-            self.watch_inboxes_of(&person);
+        for workspace in workspaces {
+            self.watch_inboxes_of(&workspace);
         }
     }
 
-    /// Watch the inbox of each account `person` keeps here with a password,
-    /// when somebody listens for them, and stop watching what they no
-    /// longer keep.
+    /// Watch the inbox of each account `workspace` keeps here with a
+    /// password, when somebody listens for it, and stop watching what it no
+    /// longer keeps.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the entry found under the lock is changed to the end of the function"
     )]
-    fn watch_inboxes_of(&self, person: &[u8; 32]) {
+    fn watch_inboxes_of(&self, workspace: &str) {
         let state = &self.inner.mail_watches.state;
-        let root = self.person_settings_root(person);
+        let root = self.workspace_root(workspace);
         // This server keeps the accounts it watches and asks for their
         // sign-ins itself: one kept with no servers on it is bound to the
         // servers its account names now.
         if let Err(reason) = super::person_settings::bind_kept_first(&root) {
-            tracing::warn!(%reason, "mail: a person's sign-ins could not be bound to their servers, so their inboxes are not watched");
+            tracing::warn!(%reason, "mail: a workspace's sign-ins could not be bound to their servers, so its inboxes are not watched");
             return;
         }
         let store = accounts::AccountStore::load_in(&root);
         let vault = match accounts::AccountCredentials::open_in(&root) {
             Ok(vault) => vault,
             Err(reason) => {
-                tracing::warn!(%reason, "mail: a person's sign-ins could not be read, so their inboxes are not watched");
+                tracing::warn!(%reason, "mail: a workspace's sign-ins could not be read, so its inboxes are not watched");
                 return;
             }
         };
@@ -320,7 +323,7 @@ impl Workspaces {
         };
         let session = self.mail_session();
         let mut listened = state.listened.lock_recover();
-        let Some(entry) = listened.get_mut(person) else {
+        let Some(entry) = listened.get_mut(workspace) else {
             return;
         };
         entry.watches.retain(|account, (signs_in, _)| {
@@ -374,7 +377,7 @@ fn signs_in_by(account: &accounts::Account, secret: &accounts::Secret) -> String
     )
 }
 
-/// What one account's watch tells: its arrivals join the person's log.
+/// What one account's watch tells: its arrivals join the workspace's log.
 struct Heard {
     root: PathBuf,
     account: String,
@@ -783,11 +786,12 @@ mod tests {
     use super::testing::{Watched, keep, told};
     use crate::workspaces::tests::{governor, test_host};
 
-    const ADA: [u8; 32] = [7; 32];
-    const BOB: [u8; 32] = [9; 32];
+    /// Two workspaces this host keeps stores for.
+    const ADA: &str = "6f1d2c3b-0000-4000-8000-00000000ada0";
+    const BOB: &str = "6f1d2c3b-0000-4000-8000-00000000b0b0";
 
     /// With nobody listening no inbox is watched. Listening watches the
-    /// person's inboxes, however many listen, with their own sign-in. The
+    /// workspace's inboxes, however many listen, with its own sign-in. The
     /// watch stops with its last listener and starts again where it had
     /// read up to.
     #[tokio::test]
@@ -795,7 +799,7 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "the host a test binds has to outlive every step it drives"
     )]
-    async fn an_inbox_is_watched_while_somebody_listens_for_its_person() {
+    async fn an_inbox_is_watched_while_somebody_listens_for_its_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
@@ -803,12 +807,12 @@ mod tests {
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
         keep(
-            &workspaces.person_settings_root(&ADA),
+            &workspaces.workspace_root(ADA),
             "ada@example.test",
             "adas-password",
         );
         keep(
-            &workspaces.person_settings_root(&BOB),
+            &workspaces.workspace_root(BOB),
             "bob@example.test",
             "bobs-password",
         );
@@ -819,12 +823,12 @@ mod tests {
         assert_eq!(
             servers.running(),
             [("ada@example.test".to_owned(), None)],
-            "one watch per account however many listen, and none for a person nobody listens for"
+            "one watch per account however many listen, and none for a workspace nobody listens for"
         );
         assert_eq!(
             servers.watches.lock().unwrap()[0].password,
             "adas-password",
-            "the watch signs in with the person's own sign-in"
+            "the watch signs in with the workspace's own sign-in"
         );
         servers.heard("ada@example.test").arrived(
             Vec::new(),
@@ -861,14 +865,14 @@ mod tests {
     }
 
     /// What arrives is kept once, with a place and an id that stay, as the
-    /// start of the message and never the whole, and another person's log
+    /// start of the message and never the whole, and another workspace's log
     /// holds none of it.
     #[tokio::test]
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the host a test binds has to outlive every step it drives"
     )]
-    async fn what_arrives_is_kept_once_for_its_person_alone() {
+    async fn what_arrives_is_kept_once_for_its_workspace_alone() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
@@ -876,12 +880,12 @@ mod tests {
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
         keep(
-            &workspaces.person_settings_root(&ADA),
+            &workspaces.workspace_root(ADA),
             "ada@example.test",
             "adas-password",
         );
         keep(
-            &workspaces.person_settings_root(&BOB),
+            &workspaces.workspace_root(BOB),
             "bob@example.test",
             "bobs-password",
         );
@@ -898,7 +902,7 @@ mod tests {
                 uid: 3,
             },
         );
-        assert!(workspaces.mail_arrivals(&ADA, 0).is_empty());
+        assert!(workspaces.mail_arrivals(ADA, 0).arrivals.is_empty());
         assert!(!grew.has_changed().unwrap());
 
         let long = "word ".repeat(2000);
@@ -918,7 +922,7 @@ mod tests {
             },
         );
         assert!(grew.has_changed().unwrap(), "a reader is woken");
-        let arrived = workspaces.mail_arrivals(&ADA, 0);
+        let arrived = workspaces.mail_arrivals(ADA, 0).arrivals;
         assert_eq!(
             arrived
                 .iter()
@@ -949,37 +953,37 @@ mod tests {
                 uid: 5,
             },
         );
-        assert_eq!(workspaces.mail_arrivals(&ADA, 0).len(), 2);
+        assert_eq!(workspaces.mail_arrivals(ADA, 0).arrivals.len(), 2);
         assert_eq!(
             workspaces
-                .mail_arrivals(&ADA, 1)
+                .mail_arrivals(ADA, 1).arrivals
                 .iter()
                 .map(|arrival| arrival.seq)
                 .collect::<Vec<_>>(),
             [2]
         );
         assert!(
-            workspaces.mail_arrivals(&BOB, 0).is_empty(),
-            "a person's arrivals are theirs alone"
+            workspaces.mail_arrivals(BOB, 0).arrivals.is_empty(),
+            "a workspace's arrivals are its own"
         );
     }
 
-    /// The watches follow the accounts a listened person keeps: one they
-    /// add is watched, one they remove is not, and one whose sign-in they
-    /// changed is watched with the new one.
+    /// The watches follow the accounts a listened workspace keeps: one
+    /// added is watched, one removed is not, and one whose sign-in changed
+    /// is watched with the new one.
     #[tokio::test]
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the host a test binds has to outlive every step it drives"
     )]
-    async fn the_watches_follow_the_accounts_a_person_keeps() {
+    async fn the_watches_follow_the_accounts_a_workspace_keeps() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
-        let root = workspaces.person_settings_root(&ADA);
+        let root = workspaces.workspace_root(ADA);
         keep(&root, "ada@example.test", "first-password");
         let _listening = workspaces.listen_for_mail(ADA);
         assert_eq!(servers.running().len(), 1);

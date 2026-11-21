@@ -6,8 +6,8 @@
 //! tool call hands the server that address, the user name and a name for the account, and nothing
 //! else: no password, no reference, nothing that makes the account writable. The server asks her
 //! for the password itself, on her own device in the system's protected field. What she types
-//! goes from that field to her vault. The server then signs in to her calendar server, keeps the account
-//! for reading only, names her assistant for it and tells the assistant which calendars the
+//! goes from that field to the workspace's vault. The server then signs in to her calendar server, keeps the account
+//! in the workspace for reading only and tells the assistant which calendars the
 //! server lists, by their names. Her assistant reads an entry through its tools afterwards. The
 //! calendar server was asked to read and nothing else. The password is in no request a model was
 //! sent, no message, no log line and no file of the server in the clear, and on this way the
@@ -222,7 +222,7 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
     assert!(her_accounts(&mut hosted).await.is_empty(), "nothing yet");
 
     // She types. Her server keeps it in her vault for that server alone, signs in, keeps the
-    // account for reading only and names her assistant for it. Her assistant is told once: the
+    // account in the workspace for reading only. Her assistant is told once: the
     // calendars by their names, and nothing else of what her calendar server answered.
     she_types(&devices, TYPED);
     let told = the_assistant_is_told(
@@ -260,18 +260,6 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
             .all(|calendar| calendar["readOnly"] == true),
         "every calendar of it is one that is not written: {account}"
     );
-    let id = account["id"].as_str().expect("its id").to_owned();
-    let named = hosted
-        .on_device(
-            (
-                person_accounts::PROVIDER,
-                person_accounts::RESOURCE,
-                person_accounts::ASSISTANTS,
-            ),
-            serde_json::json!({"account": id}),
-        )
-        .await;
-    assert_eq!(named["agents"], serde_json::json!([SCOUT]), "{named}");
 
     // It reads an entry through its tools.
     let starts = meeting_start();

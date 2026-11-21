@@ -98,7 +98,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          tilo as that owner on their own device, with no key:
                          what the host answers the person alone, as their
                          page asks it (their vault, their mail accounts):
-                         stack.sh person do person/vault#entries -w <workspace>
+                         stack.sh person do workspace/vault#entries -w <workspace>
   stack.sh owner [KEY] [--name NAME]
                          an owner link: opening it in any browser (one with
                          no Tilo identity yet too) makes that person an owner
@@ -2632,7 +2632,10 @@ keys_apart() {
     say "the server does not keep the keys of people's sealed stores apart from its state; it says: ${said#*the keys of }"
     return 1
   fi
-  found=$(find "$state/server" -path '*/workspaces/people/*' \( -name vault.key -o -name vault.enc \)) || {
+  # Each workspace's store, and a store a server kept per person before it
+  # moved into the workspaces that person owns.
+  found=$(find "$state/server" \( -path '*/workspaces/workspaces/*' -o -path '*/workspaces/people/*' \) \
+    \( -name vault.key -o -name vault.enc \)) || {
     say "the state under $state/server could not be read whole, so where people's keys lie was not seen"
     return 1
   }

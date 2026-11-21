@@ -94,7 +94,7 @@ pub(super) fn files_holding(dir: &Path, needle: &[u8]) -> Vec<std::path::PathBuf
     holding
 }
 
-/// A server with one person, their assistant on it, and their own model.
+/// A server with one person, their assistant on it, and the workspace's own model.
 pub(super) struct Hosted {
     /// The server itself, kept running until the test ends: a test that needs something of
     /// the server's own reads it here.
@@ -109,7 +109,7 @@ pub(super) struct Hosted {
     /// The server's own device: what another person's page names as what serves the workspace.
     served_by: crate::support::Device,
     pub(super) agents: Agents,
-    /// The person's model, scripted, and everything it was sent.
+    /// The workspace's model, scripted, and everything it was sent.
     pub(super) model: Arc<ScriptedProvider>,
     /// What the mail servers' stand-in was asked to sign in with.
     proved: Arc<Mutex<Vec<String>>>,
@@ -273,7 +273,7 @@ impl Hosted {
         workspaces.answer_models_with(model.clone());
         workspaces
             .link_model_for(
-                &keeper,
+                &workspace,
                 &Linking {
                     name: "Google",
                     protocol: ProviderProtocol::OpenAiCompatible,
@@ -824,13 +824,13 @@ async fn a_path_where_a_secret_is_taken_reads_no_resource_and_opens_nothing() {
 /// What another person typed into their own protected field. Nothing of her turn may hold it.
 const HIS_PASSWORD: &str = "only-his-own-mail-server-may-read-this";
 
-/// Admit the person of `device` to the workspace as an editor: the server issues them an
+/// Admit the person of `device` to `workspace` as an editor: the server issues them an
 /// invitation and their device redeems it.
-async fn admit(hosted: &Hosted, device: &crate::support::Device) {
+async fn admit(hosted: &Hosted, workspace: &str, device: &crate::support::Device) {
     let invitation = hosted
         .workspaces
         .issue(
-            &hosted.workspace,
+            workspace,
             &hosted.workspaces.governor().clone(),
             tilo_server::workspaces::IssueInvitationRequest {
                 request_id: device.cert.device_public_key,
@@ -865,10 +865,10 @@ async fn admit(hosted: &Hosted, device: &crate::support::Device) {
         .unwrap();
 }
 
-/// What another person keeps is not hers to use. Bo, another member of the workspace, keeps a
-/// password of his own in his vault on the same server, for the very servers her assistant's
+/// What another workspace keeps is not hers to use. Bo, who keeps a workspace of his own on the
+/// same server, keeps a password of his own in its vault, for the very servers her assistant's
 /// call names. The reference of his item reaches the action as it was written, and the vault of
-/// the person the turn acts for answers: it holds no such item. Nobody is asked, nothing signs
+/// the workspace the turn acts in answers: it holds no such item. Nobody is asked, nothing signs
 /// in, his item remembers no use, and what he typed is nowhere her turn or a reader looks.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
@@ -886,28 +886,29 @@ async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
         .await;
     let hers = hers["reference"].as_str().expect("a reference").to_owned();
 
+    // Another person, with a workspace of his own on the same server, which his item is kept in.
     let (bo, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
     let his_device = enrol(&bo, "bo-browser", DeviceCapabilities::member());
-    admit(&hosted, &his_device).await;
+    let elsewhere = hosted
+        .workspaces
+        .create("Elsewhere")
+        .await
+        .unwrap()
+        .workspace;
+    admit(&hosted, &elsewhere, &his_device).await;
     let server = hosted
         .server
         .downcast_ref::<tilo_server::daemon::Server>()
         .expect("the server the test started");
-    // A member the workspace let in joins it from a page of their own: only a device of the
-    // server's own person asks the server to govern a workspace first.
+    // A member joins a workspace from a page of their own: only a device of the server's own
+    // person asks the server to govern a workspace first.
     let peer = Browser::session(server, &his_device, &hosted.served_by);
     let events = peer.events();
-    let joined =
-        tilo_server_protocol::WorkspaceId::parse(&hosted.workspace).expect("the workspace's id");
+    let joined = tilo_server_protocol::WorkspaceId::parse(&elsewhere).expect("the workspace's id");
     peer.send(tilo_session_client::Cmd::Join(joined))
         .expect("his page asks to join");
     crate::support::admitted_to(&peer, joined).await;
-    let mut his_page = Browser::joined(
-        (peer, events),
-        &his_device,
-        &hosted.served_by,
-        &hosted.workspace,
-    );
+    let mut his_page = Browser::joined((peer, events), &his_device, &hosted.served_by, &elsewhere);
     let his = on_page(
         &mut his_page,
         vault(person_vault::ADD),

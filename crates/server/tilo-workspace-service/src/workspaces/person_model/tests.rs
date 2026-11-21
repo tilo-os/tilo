@@ -1,6 +1,6 @@
-//! A person's model, from their store to the provider's answer: which model
-//! a kind of work runs on, every reason nothing answers, the stream, the
-//! cost, and a call that is stopped.
+//! A workspace's model, from the workspace's store to the provider's answer:
+//! which model a kind of work runs on, every reason nothing answers, the
+//! stream, the cost, and a call that is stopped.
 
 #![allow(
     clippy::unwrap_used,
@@ -23,8 +23,8 @@ use super::*;
 use crate::workspaces::person_settings::save_provider_config;
 use crate::workspaces::tests::{governor, test_host};
 
-const ADA: [u8; 32] = [7; 32];
-const BO: [u8; 32] = [9; 32];
+const ADA: WorkspaceId = WorkspaceId::from_u128(7);
+const BO: WorkspaceId = WorkspaceId::from_u128(9);
 const ADA_KEY: &str = "sk-ada-main-thread";
 const ADA_SECOND_KEY: &str = "sk-ada-parts";
 const BO_KEY: &str = "sk-bo-own";
@@ -73,8 +73,8 @@ fn text_of(answer: &Answer) -> String {
         .collect()
 }
 
-/// A person who linked nothing is refused in words they can act on, the
-/// provider is never asked, and asking keeps no store for them.
+/// A workspace that linked nothing is refused in words people can act on,
+/// the provider is never asked, and asking keeps no store for it.
 #[tokio::test]
 async fn nothing_linked_is_refused_and_asks_no_provider() {
     let dir = tempfile::tempdir().unwrap();
@@ -84,7 +84,7 @@ async fn nothing_linked_is_refused_and_asks_no_provider() {
     let scripted = ScriptedProvider::answering([Reply::text("never said")]);
     workspaces.answer_models_with(scripted.clone());
 
-    let model = workspaces.person_model(ADA, Interaction::Task);
+    let model = workspaces.workspace_model(ADA, Interaction::Task);
     let refused = model.linked().unwrap_err();
     assert_eq!(
         refused,
@@ -107,14 +107,14 @@ async fn nothing_linked_is_refused_and_asks_no_provider() {
     assert_eq!(answered.unwrap_err(), refused);
     assert!(scripted.asked().is_empty(), "no provider is asked");
     assert!(
-        !workspaces.person_settings_root(&ADA).exists(),
-        "asking keeps no store for a person who set nothing up"
+        !workspaces.workspace_root(&ADA.to_string()).exists(),
+        "asking keeps no store for a workspace that set nothing up"
     );
 }
 
 /// A kind of work runs on the model chosen for it and every other kind on
-/// the person's default, each asked with its own provider's key; another
-/// person on the same host is answered by their own.
+/// the workspace's default, each asked with its own provider's key; another
+/// workspace on the same host is answered by its own.
 #[tokio::test]
 async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
     let dir = tempfile::tempdir().unwrap();
@@ -128,10 +128,10 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
     ]);
     workspaces.answer_models_with(scripted.clone());
 
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
-    let parts = workspaces.link_model_for(&ADA, &ANTHROPIC, false).unwrap();
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let parts = workspaces.link_model_for(&ADA.to_string(), &ANTHROPIC, false).unwrap();
     workspaces
-        .choose_model_for(&ADA, Interaction::Subtask, &parts, "claude-parts")
+        .choose_model_for(&ADA.to_string(), Interaction::Subtask, &parts, "claude-parts")
         .unwrap();
     let bo = Linking {
         name: "Bo's own",
@@ -140,10 +140,10 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
         models: &["open-model"],
         ..GOOGLE
     };
-    workspaces.link_model_for(&BO, &bo, true).unwrap();
+    workspaces.link_model_for(&BO.to_string(), &bo, true).unwrap();
 
     let main = workspaces
-        .person_model(ADA, Interaction::Request)
+        .workspace_model(ADA, Interaction::Request)
         .answer(&asking("Good morning"), soon(), &mut |_| {})
         .await
         .unwrap();
@@ -151,14 +151,14 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
     assert_eq!(main.linked.provider, "Google");
     assert_eq!(main.linked.model.id, "gemini-main");
     let part = workspaces
-        .person_model(ADA, Interaction::Subtask)
+        .workspace_model(ADA, Interaction::Subtask)
         .answer(&asking("Look this up"), soon(), &mut |_| {})
         .await
         .unwrap();
     assert_eq!(part.linked.provider, "Anthropic");
     assert_eq!(part.linked.protocol, ProviderProtocol::Anthropic);
     let theirs = workspaces
-        .person_model(BO, Interaction::Request)
+        .workspace_model(BO, Interaction::Request)
         .answer(&asking("Hello"), soon(), &mut |_| {})
         .await
         .unwrap();
@@ -192,7 +192,7 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
 }
 
 /// A model chosen for a kind that can no longer be used is a refusal that
-/// names it: the person's default does not answer in its place.
+/// names it: the workspace's default does not answer in its place.
 #[tokio::test]
 async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
     let dir = tempfile::tempdir().unwrap();
@@ -201,14 +201,14 @@ async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("the default")]);
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
-    let parts = workspaces.link_model_for(&ADA, &ANTHROPIC, false).unwrap();
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let parts = workspaces.link_model_for(&ADA.to_string(), &ANTHROPIC, false).unwrap();
     workspaces
-        .choose_model_for(&ADA, Interaction::Task, &parts, "claude-parts")
+        .choose_model_for(&ADA.to_string(), Interaction::Task, &parts, "claude-parts")
         .unwrap();
 
-    // The person switches the provider off.
-    let root = workspaces.person_settings_root(&ADA);
+    // A member switches the provider off.
+    let root = workspaces.workspace_root(&ADA.to_string());
     let mut config = provider_config(&root);
     config
         .profiles
@@ -219,7 +219,7 @@ async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
     save_provider_config(&root, &config).unwrap();
 
     let refused = workspaces
-        .person_model(ADA, Interaction::Task)
+        .workspace_model(ADA, Interaction::Task)
         .answer(&asking("Do this"), soon(), &mut |_| {})
         .await
         .unwrap_err();
@@ -239,7 +239,7 @@ async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
     // Every other kind still runs on the default.
     assert_eq!(
         workspaces
-            .person_model(ADA, Interaction::Request)
+            .workspace_model(ADA, Interaction::Request)
             .linked()
             .unwrap()
             .model
@@ -260,10 +260,10 @@ async fn a_provider_without_its_key_is_refused() {
         key: None,
         ..GOOGLE
     };
-    workspaces.link_model_for(&ADA, &keyless, true).unwrap();
+    workspaces.link_model_for(&ADA.to_string(), &keyless, true).unwrap();
 
     let refused = workspaces
-        .person_model(ADA, Interaction::Request)
+        .workspace_model(ADA, Interaction::Request)
         .linked()
         .unwrap_err();
     assert_eq!(
@@ -280,20 +280,20 @@ async fn a_provider_without_its_key_is_refused() {
 }
 
 /// A provider at an address off the public internet, or one without TLS, is
-/// called only on a host whose operator allows it: a person's settings never
-/// point the host at its own network.
+/// called only on a host whose operator allows it: a workspace's settings
+/// never point the host at its own network.
 #[tokio::test]
 async fn an_address_off_the_public_internet_needs_the_operators_word() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    for (person, endpoint) in [
-        ([1; 32], "http://127.0.0.1:8000/v1"),
-        ([2; 32], "https://10.0.0.5/v1"),
-        ([3; 32], "https://models.lan/v1"),
-        ([4; 32], "http://models.example.com/v1"),
-        ([5; 32], "https://localhost/v1"),
+    for (workspace, endpoint) in [
+        (WorkspaceId::from_u128(1), "http://127.0.0.1:8000/v1"),
+        (WorkspaceId::from_u128(2), "https://10.0.0.5/v1"),
+        (WorkspaceId::from_u128(3), "https://models.lan/v1"),
+        (WorkspaceId::from_u128(4), "http://models.example.com/v1"),
+        (WorkspaceId::from_u128(5), "https://localhost/v1"),
     ] {
         let local = Linking {
             name: "A model server",
@@ -301,8 +301,10 @@ async fn an_address_off_the_public_internet_needs_the_operators_word() {
             key: None,
             ..GOOGLE
         };
-        workspaces.link_model_for(&person, &local, true).unwrap();
-        let model = workspaces.person_model(person, Interaction::Request);
+        workspaces
+            .link_model_for(&workspace.to_string(), &local, true)
+            .unwrap();
+        let model = workspaces.workspace_model(workspace, Interaction::Request);
         assert_eq!(
             model.linked().unwrap_err(),
             ModelRefusal::AddressRefused {
@@ -313,7 +315,7 @@ async fn an_address_off_the_public_internet_needs_the_operators_word() {
     }
     assert_eq!(
         workspaces
-            .person_model([1; 32], Interaction::Request)
+            .workspace_model(WorkspaceId::from_u128(1), Interaction::Request)
             .linked()
             .unwrap_err()
             .model_error()
@@ -324,7 +326,7 @@ async fn an_address_off_the_public_internet_needs_the_operators_word() {
     // The operator's own network, and a server there that takes no key.
     workspaces.call_private_model_addresses(true);
     let linked = workspaces
-        .person_model([1; 32], Interaction::Request)
+        .workspace_model(WorkspaceId::from_u128(1), Interaction::Request)
         .linked()
         .unwrap();
     assert_eq!(linked.provider, "A model server");
@@ -343,8 +345,8 @@ async fn the_answer_streams_and_says_what_it_cost() {
         Reply::tool_call("call-1", "invoke", serde_json::json!({"action": "post"})).costing(90),
     ]);
     workspaces.answer_models_with(scripted);
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
-    let model = workspaces.person_model(ADA, Interaction::Request);
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let model = workspaces.workspace_model(ADA, Interaction::Request);
 
     let mut stream = protocol::StreamState::default();
     let mut pieces = 0_usize;
@@ -381,8 +383,8 @@ async fn the_answer_streams_and_says_what_it_cost() {
 }
 
 /// A provider's own failure is the refusal, in the words it is safe to
-/// show. Where the provider turns the person's key away, or the key's
-/// account, the refusal names the provider and says what the person can do
+/// show. Where the provider turns the workspace's key away, or the key's
+/// account, the refusal names the provider and says what a member can do
 /// about it, in their language; the failure keeps the provider's kind.
 #[tokio::test]
 async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider() {
@@ -414,8 +416,8 @@ async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider
             .chain([ErrorKind::RateLimited])
             .map(|kind| Reply::failing(ModelError::new(kind))),
     ));
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
-    let model = workspaces.person_model(ADA, Interaction::Request);
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let model = workspaces.workspace_model(ADA, Interaction::Request);
 
     for (kind, english, german) in of_the_key {
         let refused = model
@@ -452,9 +454,9 @@ async fn a_host_that_speaks_to_no_provider_answers_nothing() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     workspaces.answer_models_with(Arc::new(NoProvider));
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
     let refused = workspaces
-        .person_model(ADA, Interaction::Request)
+        .workspace_model(ADA, Interaction::Request)
         .answer(&asking("Hello"), soon(), &mut |_| {})
         .await
         .unwrap_err();
@@ -474,8 +476,8 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::never(), Reply::never(), Reply::never()]);
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
-    let model = workspaces.person_model(ADA, Interaction::Task);
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let model = workspaces.workspace_model(ADA, Interaction::Task);
 
     let due = tilo_clock::now()
         .checked_add(std::time::Duration::from_millis(50))
@@ -538,8 +540,8 @@ async fn a_plain_question_is_answered_in_words() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("yes").costing(12)]);
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
-    let model = workspaces.person_model(ADA, Interaction::Classifier);
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let model = workspaces.workspace_model(ADA, Interaction::Classifier);
 
     let said = tokio::task::spawn_blocking(move || {
         model.say_blocking(
@@ -568,7 +570,7 @@ async fn a_plain_question_is_answered_in_words() {
 }
 
 /// A picture goes only to a model that reads pictures: one that does not is
-/// never asked, and the person is told which model it is.
+/// never asked, and members are told which model it is.
 #[tokio::test]
 async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
     let dir = tempfile::tempdir().unwrap();
@@ -577,10 +579,8 @@ async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("A receipt.")]);
     workspaces.answer_models_with(scripted.clone());
-    let provider = workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
-    let model = workspaces
-        .person_model(ADA, Interaction::Request)
-        .working_in(tilo_server_protocol::WorkspaceId::default());
+    let provider = workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let model = workspaces.workspace_model(ADA, Interaction::Request);
     let mut pictured = asking("What is this?");
     pictured.messages[0].content.push(Content::Image {
         media_type: "image/png".into(),
@@ -606,7 +606,7 @@ async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
     assert!(scripted.asked().is_empty(), "the model is not asked");
 
     // The provider's list says the model reads pictures: it is asked.
-    let root = workspaces.person_settings_root(&ADA);
+    let root = workspaces.workspace_root(&ADA.to_string());
     let mut config = provider_config(&root);
     for model in &mut config
         .profiles
@@ -644,8 +644,8 @@ async fn nothing_printed_carries_the_key() {
     let workspaces = server.workspaces();
     let printing = Arc::new(Printing::default());
     workspaces.answer_models_with(printing.clone());
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
-    let model = workspaces.person_model(ADA, Interaction::Request);
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let model = workspaces.workspace_model(ADA, Interaction::Request);
     let refused = model
         .answer(&asking("Hello"), soon(), &mut |_| {})
         .await
@@ -698,10 +698,10 @@ async fn the_days_limit_stops_a_run() {
         4,
     ));
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
     let today = scout("2026-11-17", Some(2_000_000));
     let model = workspaces
-        .person_model(ADA, Interaction::Task)
+        .workspace_model(ADA, Interaction::Task)
         .spending_as(today.clone());
 
     let first = model.answer(&asking("Go on"), soon(), &mut |_| {}).await;
@@ -734,7 +734,7 @@ async fn the_days_limit_stops_a_run() {
         ..today.clone()
     };
     let theirs = workspaces
-        .person_model(ADA, Interaction::Task)
+        .workspace_model(ADA, Interaction::Task)
         .spending_as(other)
         .answer(&asking("Go on"), soon(), &mut |_| {})
         .await
@@ -749,7 +749,7 @@ async fn the_days_limit_stops_a_run() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("a new day").costing(10_000)]);
     workspaces.answer_models_with(scripted.clone());
-    let model = workspaces.person_model(ADA, Interaction::Task);
+    let model = workspaces.workspace_model(ADA, Interaction::Task);
     let still = model
         .clone()
         .spending_as(today)
@@ -783,7 +783,7 @@ async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
         3,
     ));
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
     let agent = scout("2026-11-17", Some(1_200_000));
     let watching = Spender {
         agent: "event:watching".into(),
@@ -792,7 +792,7 @@ async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
         ..agent.clone()
     };
     let model = workspaces
-        .person_model(ADA, Interaction::Task)
+        .workspace_model(ADA, Interaction::Task)
         .spending_as(agent.clone());
     let bounded = model.clone().spending_as(watching.clone());
 
@@ -860,9 +860,9 @@ async fn calls_at_once_are_each_counted_on_the_day() {
     workspaces.answer_models_with(ScriptedProvider::answering(
         (0..=CALLS).map(|_| Reply::text("a part").costing(1_000)),
     ));
-    workspaces.link_model_for(&ADA, &GOOGLE, true).unwrap();
+    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
     let model = workspaces
-        .person_model(ADA, Interaction::Subtask)
+        .workspace_model(ADA, Interaction::Subtask)
         .spending_as(scout("2026-11-17", None));
 
     let mut running = tokio::task::JoinSet::new();
@@ -888,8 +888,8 @@ async fn calls_at_once_are_each_counted_on_the_day() {
     assert_eq!(after.unwrap().spent_today_micros, Some((CALLS + 1) * 1_000));
 }
 
-/// A person's settings under `root`: one provider with its key and two
-/// models, the first chosen for each of `kinds`, the second their default
+/// A workspace's settings under `root`: one provider with its key and two
+/// models, the first chosen for each of `kinds`, the second the default
 /// where `default` says so.
 fn chose(root: &Path, kinds: &[Interaction], default: bool) {
     let mut config = provider_config(root);
@@ -938,7 +938,7 @@ fn answered_by(root: &Path, kind: Interaction) -> Result<String, ModelRefusal> {
     .map(|resolved| resolved.model.id)
 }
 
-/// A person's main thread is one choice kept as two kinds: what answers
+/// A workspace's main thread is one choice kept as two kinds: what answers
 /// there and what works there. Chosen for one of them only, as a device that
 /// chooses them with two asks leaves it between the two, and with no
 /// default, that model answers the other kind as well. No other kind of work
@@ -984,8 +984,8 @@ fn one_kind_of_the_main_thread_answers_for_its_other_kind_and_for_no_other_work(
         );
     }
 
-    // A person with a default is answered as before: their default answers
-    // the kind they chose nothing for.
+    // A workspace with a default is answered as before: its default answers
+    // the kind it chose nothing for.
     let dir = tempfile::tempdir().unwrap();
     chose(dir.path(), &[Interaction::Request], true);
     assert_eq!(answered_by(dir.path(), Interaction::Request), Ok(main));

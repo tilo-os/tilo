@@ -1776,7 +1776,7 @@ impl ServerAgents {
         let theirs = tilo_action_policy::PersonId::parse(&turn.agent.keeper)
             .ok()
             .and_then(|keeper| keeper.root())
-            .map(|keeper| {
+            .map(|_| {
                 // Every call is counted on the agent's day as it is answered, so turns of
                 // one agent going at once cannot each spend the day's whole limit.
                 let named_model = turn.agent.model.as_deref().or_else(|| {
@@ -1788,11 +1788,10 @@ impl ServerAgents {
                 });
                 let theirs = self
                     .workspaces
-                    .person_model(keeper, sub_agents::kind_of(&turn.agent))
+                    .workspace_model(workspace_id, sub_agents::kind_of(&turn.agent))
                     // The model the agent itself names answers where its keeper linked it on
                     // this server: a sub-agent's is its skill's, or the one its starter named.
                     .naming(named_model)
-                    .working_in(workspace_id)
                     .spending_as(Spender {
                         workspace: workspace.to_owned(),
                         agent: sub_agents::payer(turn).id.0.clone(),

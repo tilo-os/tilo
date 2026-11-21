@@ -539,8 +539,8 @@ impl super::ServerAgents {
         agent: &Agent,
         heard: &Arc<Heard>,
     ) -> Result<Serves, String> {
-        // Its keeper pays, so their own model answers.
-        let keeper: [u8; 32] = tilo_action_policy::PersonId::parse(&agent.keeper)
+        // The workspace's model answers, for a sub-agent that works for a person.
+        tilo_action_policy::PersonId::parse(&agent.keeper)
             .ok()
             .and_then(|keeper| keeper.root())
             .ok_or("a sub-agent works for a person")?;
@@ -555,8 +555,7 @@ impl super::ServerAgents {
             model: Arc::new(move |kind| {
                 let spends = spending.spends.lock_recover().clone();
                 workspaces
-                    .person_model(keeper, kind)
-                    .working_in(workspace_id)
+                    .workspace_model(workspace_id, kind)
                     .spending_as(Spender {
                         workspace: workspace.clone(),
                         agent: spends.agent,

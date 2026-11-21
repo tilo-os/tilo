@@ -7,15 +7,16 @@ what it wrote as JSON. `check EXPECTED` reads each of them back and fails, namin
 missing, when one is gone. Both talk to the stack's API as its owner, with TILO_API_URL and
 TILO_API_KEY (`stack.sh env`).
 
-What the host keeps for the person alone, it answers on a device of theirs alone: a key is
-their agent's, and is refused. Those are asked as the person's page asks them, by the stack's
-own person on their device (`stack.sh person do person/…`, STACK_SH naming stack.sh and
-PERSON_TILO the tilo command that asks): an entry of their Passwords and an item of their
-vault, and a mail account at the stack's stand-in mail server (`TILO_SH_MAIL_STAND_IN=1`),
-its sign-in taken by that server before the host keeps it. The messages the stand-in holds
-are read from it through the host and recorded in the workspace's mailbox, as the page's Mail
-does. After the upgrade the entry still opens to its secret, the item still signs in to the
-mail server, and the account still reads its inbox.
+The workspace's vault and mail accounts on its host are asked as the person's page asks
+them, by the stack's own person on their device (`stack.sh person do workspace/…`, STACK_SH
+naming stack.sh and PERSON_TILO the tilo command that asks): an entry of its Passwords and an
+item of its vault, and a mail account at the stack's stand-in mail server
+(`TILO_SH_MAIL_STAND_IN=1`), its sign-in taken by that server before the host keeps it. The
+messages the stand-in holds are read from it through the host and recorded in the
+workspace's mailbox, as the page's Mail does. The base build kept these per person; this one
+moves them into the workspaces that person owns as it starts. After the upgrade the entry
+still opens to its secret, the item still signs in to the mail server, and the account still
+reads its inbox.
 
 usage: workspace_data.py fill > expected.json
        workspace_data.py check expected.json
@@ -113,7 +114,7 @@ def stand_in() -> dict:
 
 def inbox(workspace: str, account: str) -> list[dict]:
     """The account's inbox as its mail server holds it, read through the host."""
-    return person(workspace, "person/mail-accounts#fetch", account=account,
+    return person(workspace, "workspace/mail-accounts#fetch", account=account,
                   folder="inbox").get("messages", [])
 
 
@@ -175,14 +176,14 @@ def fill() -> dict:
              "username": "ada@bank.example", "password": "kept-before-the-upgrade-7Q",
              "origins": ["https://bank.example"], "created_unix": int(time.time()),
              "updated_unix": int(time.time())}
-    person(workspace, "person/vault#keep-entry", entry=entry)
+    person(workspace, "workspace/vault#keep-entry", entry=entry)
     # A mail account at the stand-in, as the page's Settings connects one: the server signs
     # in with the password before it keeps the account and seals the password.
     account = stand_in()
-    connected = person(workspace, "person/mail-accounts#add", identities=[], **account)
+    connected = person(workspace, "workspace/mail-accounts#add", identities=[], **account)
     # An item of the vault, bound to the stand-in's servers: what an account connected by
     # reference signs in with.
-    item = person(workspace, "person/vault#add", kind="login",
+    item = person(workspace, "workspace/vault#add", kind="login",
                   belongsTo=[f"imap://localhost:{account['incomingPort']}",
                              f"smtp://localhost:{account['outgoingPort']}"],
                   username=account["username"], secret=account["password"])
@@ -206,9 +207,9 @@ def fill() -> dict:
         "mail/Messages": [mail, *received],
         "contacts": ["Grace"],
         "calendar/Calendar": [event],
-        "person/vault#entries": {key: entry[key] for key in ("id", "title", "password")},
-        "person/vault#list": {"reference": item["reference"], "belongsTo": item["belongsTo"]},
-        "person/mail-accounts#list": {key: account[key] for key in
+        "workspace/vault#entries": {key: entry[key] for key in ("id", "title", "password")},
+        "workspace/vault#list": {"reference": item["reference"], "belongsTo": item["belongsTo"]},
+        "workspace/mail-accounts#list": {key: account[key] for key in
                                       ("address", "incomingHost", "incomingPort",
                                        "outgoingHost", "outgoingPort")},
         "inbox": received,
@@ -232,26 +233,26 @@ def check(expected: dict) -> list[str]:
 def check_persons_own(workspace: str, expected: dict) -> list[str]:
     """What the person keeps on the host for themself, read back and used as they would."""
     missing = []
-    entry = expected["person/vault#entries"]
-    entries = person(workspace, "person/vault#entries").get("entries", [])
+    entry = expected["workspace/vault#entries"]
+    entries = person(workspace, "workspace/vault#entries").get("entries", [])
     kept = next((held for held in entries if held.get("id") == entry["id"]), None)
     if kept is None or kept.get("title") != entry["title"]:
-        missing.append(f"person/vault: the Passwords entry {entry['title']!r}")
+        missing.append(f"workspace/vault: the Passwords entry {entry['title']!r}")
     elif kept.get("password") != entry["password"]:
-        missing.append(f"person/vault: the Passwords entry {entry['title']!r} opens to "
+        missing.append(f"workspace/vault: the Passwords entry {entry['title']!r} opens to "
                        "another secret than it was kept with")
-    item = expected["person/vault#list"]
-    items = person(workspace, "person/vault#list").get("items", [])
+    item = expected["workspace/vault#list"]
+    items = person(workspace, "workspace/vault#list").get("items", [])
     if not any(held.get("reference") == item["reference"]
                and held.get("belongsTo") == item["belongsTo"] for held in items):
-        missing.append(f"person/vault: the item {item['reference']} for {item['belongsTo']}")
-    account = expected["person/mail-accounts#list"]
-    accounts = person(workspace, "person/mail-accounts#list").get("accounts", [])
+        missing.append(f"workspace/vault: the item {item['reference']} for {item['belongsTo']}")
+    account = expected["workspace/mail-accounts#list"]
+    accounts = person(workspace, "workspace/mail-accounts#list").get("accounts", [])
     held = next((held for held in accounts if held.get("address") == account["address"]), None)
     if held is None or not held.get("hasSecret"):
-        return missing + [f"person/mail-accounts: {account['address']!r}, with its sign-in"]
+        return missing + [f"workspace/mail-accounts: {account['address']!r}, with its sign-in"]
     if any(held.get(key) != value for key, value in account.items()):
-        missing.append(f"person/mail-accounts: {account['address']!r} names other servers: "
+        missing.append(f"workspace/mail-accounts: {account['address']!r} names other servers: "
                        f"{held}")
     # The sign-in the host kept opens: the inbox reads from the mail server again.
     read = [message["subject"] for message in inbox(workspace, held["id"])]
@@ -260,7 +261,7 @@ def check_persons_own(workspace: str, expected: dict) -> list[str]:
     # The item's secret opens: the host signs in with it before it takes it as the
     # account's sign-in, and the inbox reads with it.
     if not missing:
-        person(workspace, "person/mail-accounts#add-mail-with-item",
+        person(workspace, "workspace/mail-accounts#add-mail-with-item",
                password=item["reference"],
                **{key: value for key, value in account.items()})
         read = [message["subject"] for message in inbox(workspace, held["id"])]

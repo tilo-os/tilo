@@ -67,11 +67,9 @@ use tilo_dav::{Credentials, DavClient, Depth, Limits, Precondition, Url, props};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
-use super::{
-    AskingAboutMail, NamedAgent, accounts_of_assistant, answer, argument, credentials,
-    mail_accounts, sending,
-};
+use super::{answer, argument, credentials, mail_accounts, sending};
 use crate::workspaces::Workspaces;
+use crate::workspaces::workspace_stores::Store;
 
 /// The calendar server tests ask.
 #[cfg(test)]
@@ -107,8 +105,6 @@ pub const SET_CATEGORIES: &str = "set-categories";
 /// Connect an account by a turn's telling, for reading only ([`connect`]).
 pub const CONNECT: &str = "connect";
 
-/// What an agent its person named for a calendar account may ask.
-const ASSISTANT_MAY: [&str; 6] = [LIST, SYNC, ENTRIES, FREE, ADD_INVITATION, SET_CATEGORIES];
 /// How old a copy may be before a read asks the server again.
 const FRESH_MS: i64 = 60_000;
 /// How old a copy may be before whoever waits on an entry's time asks the
@@ -814,7 +810,7 @@ pub(super) fn remove_account(root: &Path, account: &str) -> Result<(), String> {
     if !accounts_at(root).iter().any(|kept| kept.id == account) {
         return Err("That calendar account is not kept here".into());
     }
-    // The account, its sign-in and who was named for it go together.
+    // The account and its sign-in go together.
     super::remove_mail(root, account)?;
     let _ = std::fs::remove_file(kept_at(root, account));
     Ok(())
@@ -958,12 +954,15 @@ fn writable<'a>(
     Ok(found)
 }
 
-/// The agent a person named for a calendar account, where it is the one
-/// that asks.
+/// The agent that asks about a workspace's calendars, where one does.
 struct Assistant {
     person: [u8; 32],
     workspace: String,
     agent: String,
+    /// Whether the workspace's policy asks its person before it changes a
+    /// calendar: what it writes then waits for their answer even where its
+    /// judging lets it go.
+    asks: bool,
 }
 
 impl Assistant {
@@ -1259,7 +1258,18 @@ enum Judged {
     Asks(Vec<(String, String)>),
 }
 
-/// What the agent a person named for their calendar may do with `planned`,
+impl Judged {
+    /// This, asked of its person all the same where `asks`: the workspace's
+    /// policy has them asked before an agent changes a calendar.
+    fn or_asked(self, asks: bool) -> Self {
+        match self {
+            Self::Goes if asks => Self::Asks(Vec::new()),
+            judged => judged,
+        }
+    }
+}
+
+/// What an agent may do with `planned` in its workspace's calendar,
 /// whose text is the agent's own writing, for the person written to at
 /// `own`.
 ///
@@ -1559,6 +1569,15 @@ fn set_categories(
     file(root, reach, filing(root, reach, accounts, asked)?)
 }
 
+/// What `action` does to a workspace's calendars, as its policy weighs it.
+fn calendar_effect(action: &str) -> tilo_action_policy::ActionKind {
+    if [LIST, SYNC, ENTRIES, FREE].contains(&action) {
+        tilo_action_policy::ActionKind::Read
+    } else {
+        tilo_action_policy::ActionKind::Undoable
+    }
+}
+
 /// Do `work`, which asks servers, off the threads that answer requests.
 async fn off_thread<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -1569,60 +1588,38 @@ async fn off_thread<T: Send + 'static>(
 }
 
 impl Workspaces {
-    /// Whether `caller` is an agent its person named for at least one of
-    /// their calendar accounts: what the catalogue offers the calendar
-    /// actions by.
-    pub(in crate::workspaces) fn reads_calendars_as_assistant(
-        &self,
-        caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> bool {
-        match Self::asking_about_mail(caller, certificate, workspace_id) {
-            Ok(AskingAboutMail::Assistant {
-                person,
-                agent,
-                workspace,
-            }) => {
-                let root = self.person_settings_root(&person);
-                let named = accounts_of_assistant(
-                    &root,
-                    NamedAgent {
-                        workspace: &workspace,
-                        agent: &agent,
-                    },
-                );
-                accounts_at(&root)
-                    .iter()
-                    .any(|account| named.contains(&account.id))
-            }
-            _ => false,
-        }
-    }
-
     /// Every occurrence between `from_ms` and `to_ms` in the calendar
-    /// accounts `person` named the agent `agent` of `workspace` for, each as
-    /// [`ENTRIES`] answers one: what an automation that waits on an entry's
-    /// time reads before it tells that agent. Nothing where they named it
-    /// for no calendar account, so an automation hands an agent nothing of a
-    /// calendar its person did not let it read. A copy older than five
-    /// minutes is brought up to date first, and a server that does not
-    /// answer leaves the copy as it stood.
+    /// accounts `workspace` keeps, each as [`ENTRIES`] answers one: what an
+    /// automation that waits on an entry's time reads before it tells an
+    /// agent of `person`'s. Nothing where the workspace's policy does not let
+    /// `person` read its calendars, so an automation hands an agent nothing
+    /// its person may not read. A copy older than five minutes is brought up
+    /// to date first, and a server that does not answer leaves the copy as it
+    /// stood.
     ///
     /// # Errors
     /// The span does not read, or the read did not end.
     pub async fn calendar_occurrences_for(
         &self,
+        workspace: collab_types::WorkspaceId,
         person: &[u8; 32],
-        workspace: &str,
-        agent: &str,
         from_ms: i64,
         to_ms: i64,
     ) -> Result<Vec<Value>, String> {
-        let root = self.person_settings_root(person);
-        let named = accounts_of_assistant(&root, NamedAgent { workspace, agent });
-        let mut accounts = accounts_at(&root);
-        accounts.retain(|account| named.contains(&account.id));
+        if !self
+            .person_reaches(
+                workspace,
+                person,
+                Store::CALENDARS,
+                ENTRIES,
+                tilo_action_policy::ActionKind::Read,
+            )
+            .await
+        {
+            return Ok(Vec::new());
+        }
+        let root = self.workspace_root(&workspace.to_string());
+        let accounts = accounts_at(&root);
         if accounts.is_empty() {
             return Ok(Vec::new());
         }
@@ -1640,8 +1637,8 @@ impl Workspaces {
     }
 
     /// Add a calendar account with the sign-in a vault item keeps. A
-    /// sign-in named by reference carries none, so the person or an agent
-    /// acting for them may ask: the vault decides who uses it and where.
+    /// sign-in named by reference carries none, so whoever the workspace's
+    /// policy lets may ask: the vault decides who uses it and where.
     async fn calendar_by_reference(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -1649,8 +1646,16 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionError> {
-        let (person, by) = Self::asking_for_person(caller, certificate, workspace_id)?;
-        let root = self.person_settings_root(&person);
+        let reach = self
+            .reaching_allowed(
+                (workspace_id, caller, certificate),
+                Store::CALENDARS,
+                ADD_WITH_ITEM,
+                tilo_action_policy::ActionKind::Undoable,
+            )
+            .await?;
+        let by = reach.by();
+        let root = self.workspace_root(&reach.workspace.to_string());
         let adding: AddWithItem = argument(
             request,
             "a calendar account names its server and the vault item that is its password",
@@ -1663,51 +1668,46 @@ impl Workspaces {
         answer(&kept)
     }
 
-    /// Whose calendars `caller` asks about with `action`, and which of
-    /// their accounts it may ask of: every one for the person, the ones it
-    /// was named for for an agent of theirs, which reads and files and
-    /// removes no account, and is answered as that agent
-    /// ([`Self::assistant_adds`]). Unknown and forbidden are the same
-    /// answer.
-    fn calendars_asked(
+    /// The calendars of the workspace `caller` asks about with `action`, as
+    /// its policy lets the caller: every account it keeps, and the agent
+    /// asking where one does, answered as that agent ([`Self::assistant_adds`]).
+    /// An agent's entry of its own writing is judged before its person is
+    /// asked about it, so the policy's question about that is left to the
+    /// judging ([`Assistant::asks`]); every other question is put first.
+    async fn calendars_asked(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         action: &str,
     ) -> Result<(PathBuf, Vec<Account>, Option<Assistant>), ActionError> {
-        match Self::asking_about_mail(caller, certificate, workspace_id)? {
-            AskingAboutMail::Person(person) => {
-                let root = self.person_settings_root(&person);
-                let accounts = accounts_at(&root);
-                Ok((root, accounts, None))
-            }
-            AskingAboutMail::Assistant {
-                person,
-                agent,
-                workspace,
-            } => {
-                let root = self.person_settings_root(&person);
-                let named = accounts_of_assistant(
-                    &root,
-                    NamedAgent {
-                        workspace: &workspace,
-                        agent: &agent,
-                    },
-                );
-                let mut accounts = accounts_at(&root);
-                accounts.retain(|account| named.contains(&account.id));
-                if accounts.is_empty() || !ASSISTANT_MAY.contains(&action) {
-                    return Err(ActionError::UnknownAction);
-                }
-                let assistant = Assistant {
-                    person,
-                    workspace,
-                    agent,
-                };
-                Ok((root, accounts, Some(assistant)))
-            }
-        }
+        let effect = calendar_effect(action);
+        let reach = self
+            .reaching(
+                (workspace_id, caller, certificate),
+                Store::CALENDARS,
+                action,
+                effect,
+            )
+            .await?;
+        let judged_first =
+            reach.agent.is_some() && [ADD_INVITATION, SET_CATEGORIES].contains(&action);
+        let reach = if judged_first {
+            reach
+        } else {
+            self.allowed(reach, caller, Store::CALENDARS, action, effect)
+                .await?
+        };
+        let workspace = reach.workspace.to_string();
+        let root = self.workspace_root(&workspace);
+        let accounts = accounts_at(&root);
+        let assistant = reach.agent.clone().map(|agent| Assistant {
+            person: reach.person,
+            workspace,
+            agent,
+            asks: reach.answer != tilo_action_policy::Answer::Allow,
+        });
+        Ok((root, accounts, assistant))
     }
 
     /// Put `question`, about an entry an agent of `person`'s would put into
@@ -1771,6 +1771,7 @@ impl Workspaces {
             Ok(read) => read,
             Err(reason) => return Err(ActionError::Refused { reason }),
         };
+        let judged = judged.or_asked(assistant.asks);
         // A permission of theirs that stays, where one lets it go unasked.
         let stays = match judged {
             Judged::Goes => None,
@@ -1835,6 +1836,7 @@ impl Workspaces {
             Ok(read) => read,
             Err(reason) => return Err(ActionError::Refused { reason }),
         };
+        let judged = judged.or_asked(assistant.asks);
         // A permission of theirs that stays, where one lets it go unasked.
         let stays = match judged {
             Judged::Goes => None,
@@ -1861,9 +1863,8 @@ impl Workspaces {
         answer(&made)
     }
 
-    /// Answer a request about a person's calendars ([`RESOURCE`]): the
-    /// person on a device of theirs, or an agent they named for the
-    /// account.
+    /// Answer a request about a workspace's calendars ([`RESOURCE`]), as its
+    /// policy lets the caller.
     pub(super) async fn person_calendars_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -1877,8 +1878,9 @@ impl Workspaces {
                 .calendar_by_reference(workspace_id, caller, certificate, request)
                 .await;
         }
-        let (root, accounts, assistant) =
-            self.calendars_asked(workspace_id, caller, certificate, &action)?;
+        let (root, accounts, assistant) = self
+            .calendars_asked(workspace_id, caller, certificate, &action)
+            .await?;
         let listed = |root: &Path, accounts: &[Account]| Listed {
             accounts: accounts.iter().map(|account| view(root, account)).collect(),
         };
@@ -1960,28 +1962,25 @@ impl Workspaces {
     }
 }
 
-/// What a test of something that reads a person's calendars keeps of them
+/// What a test of something that reads a workspace's calendars keeps of them
 /// without a calendar server at hand.
 #[cfg(any(test, feature = "test-support"))]
 impl Workspaces {
-    /// Keep a calendar account for `person` as if its server had been pulled
-    /// this moment: one calendar that holds `entries`, each the iCalendar
-    /// text of one entry, with the agent `named` (a workspace and the
-    /// agent's id there) named for the account when one is given. Answers
-    /// the account's id. Calling it again replaces what the calendar holds,
+    /// Keep a calendar account in `workspace` as if its server had been
+    /// pulled this moment: one calendar that holds `entries`, each the
+    /// iCalendar text of one entry. Answers the account's id. Calling it again replaces what the calendar holds,
     /// as the next pull does after another client changed it.
     ///
     /// # Errors
     /// The account or the copy could not be kept.
     pub fn keep_calendar_as_pulled(
         &self,
-        person: &[u8; 32],
-        named: Option<(&str, &str)>,
+        workspace: &str,
         entries: &[String],
     ) -> Result<String, String> {
         const SERVER: &str = "https://calendar.example.test/dav/";
         const CALENDAR: &str = "https://calendar.example.test/dav/calendars/ada/work/";
-        let root = self.person_settings_root(person);
+        let root = self.workspace_root(workspace);
         let id = account_id("ada", &server_of(SERVER)?);
         let mut store = calendar_model::AccountStore::new();
         store.upsert(CalendarAccount {
@@ -2004,14 +2003,6 @@ impl Workspaces {
             read_only: false,
         });
         store.persist_in(&root).map_err(|error| error.to_string())?;
-        if let Some((workspace, agent)) = named {
-            let naming = tilo_actions::remote::person_accounts::AssistantAccess {
-                account: id.clone(),
-                agent: agent.to_owned(),
-                may: true,
-            };
-            super::say_assistant(&root, workspace, &naming)?;
-        }
         let mut kept = Kept {
             synced_at_ms: now_ms(),
             ..Kept::default()

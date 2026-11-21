@@ -51,7 +51,7 @@ enum Who<'a> {
     Another(&'a str),
 }
 
-/// A server with one person, their assistant on it, and their own model.
+/// A server with one person, their assistant on it, and the workspace's own model.
 struct Hosted {
     /// The server itself, kept running until the test ends.
     _server: daemon::Server,
@@ -63,7 +63,7 @@ struct Hosted {
     root: SigningKey,
     browser: crate::support::Device,
     agents: ServerAgents,
-    /// The person's model, scripted, and everything it was sent.
+    /// The workspace's model, scripted, and everything it was sent.
     model: Arc<ScriptedProvider>,
     _state: tempfile::TempDir,
 }
@@ -97,7 +97,7 @@ impl Hosted {
         workspaces.answer_models_with(model.clone());
         workspaces
             .link_model_for(
-                &keeper,
+                &workspace,
                 &Linking {
                     name: "Google",
                     protocol: ProviderProtocol::OpenAiCompatible,

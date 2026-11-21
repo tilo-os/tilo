@@ -249,12 +249,12 @@ fn never_asked(asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
     looks_then_answers(1, asked)
 }
 
-/// The keeper linked a model of their own: the agent the server runs for them works with it, asked
-/// with their own key, and the server's model is never asked. What it cost is counted on the agent's
-/// record as the provider charged it, on a server that decides every change against its app's
-/// surface, as tilo.sh's server does.
+/// The workspace linked a model of its own: the agent the server runs for its person works with
+/// it, asked with the workspace's own key, and the server's model is never asked. What it cost is
+/// counted on the agent's record as the provider charged it, on a server that decides every
+/// change against its app's surface, as tilo.sh's server does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
+async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
     use tilo_server::workspaces::person_model::{
         ProviderProtocol,
         scripted::{Linking, Reply, ScriptedProvider},
@@ -284,7 +284,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
-    // The keeper's own provider, as their settings and their vault keep it on this server.
+    // The workspace's own provider, as its settings and its vault keep it on this server.
     let theirs = ScriptedProvider::answering([
         Reply::tool_call("call-1", "tilo_ls", serde_json::json!({})).costing(700),
         Reply::text("I looked through the workspace: the plan is ready for you.").costing(300),
@@ -292,7 +292,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     workspaces.answer_models_with(theirs.clone());
     workspaces
         .link_model_for(
-            &keeper,
+            &workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
@@ -421,11 +421,11 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     )
     .await;
 
-    // A provider linked without its key: its keeper is told which key is missing, and the server's
+    // A provider linked without its key: the workspace is told which key is missing, and the server's
     // own model does not answer in its place.
     workspaces
         .link_model_for(
-            &keeper,
+            &workspace,
             &Linking {
                 name: "Anthropic",
                 protocol: ProviderProtocol::Anthropic,
@@ -1042,7 +1042,7 @@ async fn long_notes(
 /// to take into the conversation's summary; once the answer has its words the server asks a model
 /// once for it and Chat keeps it, so the next turn is told what was said long ago and asks for
 /// nothing more. When the conversation outgrows it again the summary is extended from where it
-/// stood. The question goes to the keeper's own model once they linked one, and is counted on
+/// stood. The question goes to the workspace's own model once one is linked, and is counted on
 /// the agent's day as its turns are.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
@@ -1197,7 +1197,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
         "what is left outside the summary is carried as written"
     );
 
-    // The keeper links a model of their own, and the conversation outgrows its summary again:
+    // The workspace links a model of its own, and the conversation outgrows its summary again:
     // their model is asked, once, for what the new messages add to it.
     let theirs = ScriptedProvider::answering([
         Reply::text("Still nothing.").costing(300),
@@ -1206,7 +1206,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     workspaces.answer_models_with(theirs.clone());
     workspaces
         .link_model_for(
-            &keeper,
+            &workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,

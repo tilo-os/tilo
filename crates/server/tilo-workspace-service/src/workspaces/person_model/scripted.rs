@@ -290,23 +290,23 @@ pub struct Linking<'a> {
     pub protocol: ProviderProtocol,
     /// The address every request goes to.
     pub endpoint: &'a str,
-    /// Its API key, kept in the person's vault; none keeps no key.
+    /// Its API key, kept in the workspace's vault; none keeps no key.
     pub key: Option<&'a str>,
     /// The models it offers. The first is the provider's default.
     pub models: &'a [&'a str],
 }
 
 impl Workspaces {
-    /// Keep `linking` for `person` as their settings keep a provider, its key
-    /// in their vault, and answer its id. With `default`, it is the provider
-    /// their work runs on when no kind of work names another.
+    /// Keep `linking` for `workspace` as its settings keep a provider, its
+    /// key in its vault, and answer its id. With `default`, it is the provider
+    /// its work runs on when no kind of work names another.
     pub fn link_model_for(
         &self,
-        person: &[u8; 32],
+        workspace: &str,
         linking: &Linking<'_>,
         default: bool,
     ) -> Result<String, String> {
-        let root = self.person_settings_root(person);
+        let root = self.workspace_root(workspace);
         std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
         let mut config = provider_config(&root);
         let id = uuid::Uuid::new_v4().to_string();
@@ -339,15 +339,15 @@ impl Workspaces {
         Ok(id)
     }
 
-    /// List `models` as what `person`'s provider `provider` offers, in place
-    /// of the listing the host reads from the provider itself.
+    /// List `models` as what `workspace`'s provider `provider` offers, in
+    /// place of the listing the host reads from the provider itself.
     pub fn offer_models_for(
         &self,
-        person: &[u8; 32],
+        workspace: &str,
         provider: &str,
         models: &[&str],
     ) -> Result<(), String> {
-        let root = self.person_settings_root(person);
+        let root = self.workspace_root(workspace);
         let mut config = provider_config(&root);
         let profile = config
             .profiles
@@ -361,16 +361,16 @@ impl Workspaces {
         save_provider_config(&root, &config)
     }
 
-    /// Choose `model` of `person`'s provider `provider` for `kind` of work,
-    /// as Settings does.
+    /// Choose `model` of `workspace`'s provider `provider` for `kind` of
+    /// work, as Settings does.
     pub fn choose_model_for(
         &self,
-        person: &[u8; 32],
+        workspace: &str,
         kind: Interaction,
         provider: &str,
         model: &str,
     ) -> Result<(), String> {
-        let root = self.person_settings_root(person);
+        let root = self.workspace_root(workspace);
         let mut config = provider_config(&root);
         config
             .set_interaction_model(

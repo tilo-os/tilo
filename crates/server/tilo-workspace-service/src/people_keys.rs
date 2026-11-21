@@ -1,10 +1,13 @@
-//! Where a server keeps the keys of its people's sealed stores.
+//! Where a server keeps the keys of the sealed stores in its state.
 //!
-//! What a person keeps on their server to sign in with (their sign-ins,
+//! What a workspace keeps on its server to sign in with (its sign-ins,
 //! provider keys and vault items) is one sealed file in the server's state,
-//! and the server opens it with a key it keeps as a file. Its operator names
-//! a folder apart from the state for those keys, so that a copy or a backup
-//! of the state alone opens nobody's store.
+//! and the server opens it with a key it keeps as a file, under the
+//! workspace's folder within the folder named here (`workspaces/`). Its
+//! operator names a folder apart from the state for those keys, so that a
+//! copy or a backup of the state alone opens nobody's store. The setting and
+//! the lines logged still say people's stores: what the deployments and
+//! scripts that read them name.
 //!
 //! This decides, once as the server opens, whether the folder named keeps
 //! them, and says in the log where they are kept. Only a server's operator is

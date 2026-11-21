@@ -8,7 +8,7 @@
 //! workspace's resources, and takes it. The tool call ends at once, told that its person is
 //! asked and which servers were found, and this server asks them on their own devices, in the
 //! system's protected password field, in the words the entry says, which name both servers.
-//! What they type goes into their vault.
+//! What they type goes into the workspace's vault.
 //!
 //! A password a mail server does not take is asked for again by the server itself, saying which
 //! server refused it, and no model is asked anything for that. Once the account is signed in, or
@@ -281,8 +281,8 @@ impl Carrier {
             Ok(MailCarried::SignedIn(signed_in)) => (
                 TYPED,
                 format!(
-                    "The mail account {} is signed in on your person's server: its mail is read \
-                     at {} and sent through {}. You are named for it and read, search and draft \
+                    "The mail account {} is signed in for the workspace: its mail is read \
+                     at {} and sent through {}. You read, search and draft \
                      its mail with the mail actions. Tell them in one line that it is signed in.",
                     signed_in.address, signed_in.reads, signed_in.sends
                 ),

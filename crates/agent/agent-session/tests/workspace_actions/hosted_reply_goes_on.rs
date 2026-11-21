@@ -153,7 +153,7 @@ impl Drop for LetsGo {
 /// server ask it for their agent's turns.
 fn reporting(
     workspaces: &tilo_server::workspaces::Workspaces,
-    root: &SigningKey,
+    workspace: &str,
     calls: impl IntoIterator<Item = Vec<Next>>,
 ) -> (Arc<Reporting>, LetsGo) {
     let theirs = Arc::new(Reporting {
@@ -165,7 +165,7 @@ fn reporting(
     workspaces.answer_models_with(theirs.clone());
     workspaces
         .link_model_for(
-            &root.verifying_key().to_bytes(),
+            workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
@@ -357,7 +357,7 @@ async fn an_answer_longer_than_one_message_stands_whole_in_the_conversation() {
     let waits_at = lines().saturating_sub(BEYOND / 2);
     let (theirs, _lets_go) = reporting(
         &workspaces,
-        &root,
+        &workspace,
         [vec![
             Reports(0, waits_at),
             Waits,
@@ -490,7 +490,7 @@ async fn a_stop_that_names_a_message_of_a_long_answer_ends_its_turn(nth: usize) 
     let waits_at = lines().saturating_sub(BEYOND / 2);
     let (theirs, _lets_go) = reporting(
         &workspaces,
-        &root,
+        &workspace,
         [vec![
             Reports(0, waits_at),
             Waits,
@@ -585,7 +585,7 @@ async fn a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped()
     let waits_at = lines().saturating_sub(BEYOND / 2);
     let (theirs, _lets_go) = reporting(
         &workspaces,
-        &root,
+        &workspace,
         [
             vec![Reports(0, waits_at), Waits, Reports(waits_at, lines())],
             vec![Writes("The report ends here.")],
@@ -658,7 +658,7 @@ async fn the_thinking_and_the_steps_of_a_long_answer_stay_with_its_first_message
     team!(root, browser, actions, workspaces, workspace, page, person);
     let (theirs, _lets_go) = reporting(
         &workspaces,
-        &root,
+        &workspace,
         [
             vec![Thinks("The plan names May."), Reports(0, lines()), Looks],
             vec![
@@ -766,7 +766,7 @@ async fn a_sub_agents_long_answer_goes_on_in_its_own_conversation() {
     let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
     let (_theirs, _lets_go) = reporting(
         &workspaces,
-        &root,
+        &workspace,
         [
             // Its job, then what its starter says to the news of it.
             vec![Writes("The notes are tidy.")],

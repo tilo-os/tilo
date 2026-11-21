@@ -13,7 +13,7 @@ use super::*;
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tilo_actions::remote::{person_accounts, person_models, person_vault};
+use tilo_actions::remote::{person_models, person_vault};
 use tilo_api::Server;
 
 /// A key's calls of the API.
@@ -1676,9 +1676,9 @@ async fn asked(
         .map_err(|refused| refused.code)
 }
 
-/// What only the person asks of the server that keeps their workspace, each with what it is
-/// called here: their vault listed and added to, a model key set, an agent named for their mail.
-fn what_only_the_person_asks() -> [(&'static str, RemoteActionTarget, Value); 4] {
+/// What the workspace keeps for its members, each with what it is called here: its vault listed
+/// and added to, and a model key set.
+fn what_the_workspace_keeps() -> [(&'static str, RemoteActionTarget, Value); 3] {
     [
         (
             "lists the vault",
@@ -1700,21 +1700,14 @@ fn what_only_the_person_asks() -> [(&'static str, RemoteActionTarget, Value); 4]
             person_models::target(person_models::SET_KEY),
             json!({"provider": "a-provider", "key": "sk-test-not-a-key"}),
         ),
-        (
-            "names an agent for a mail account",
-            person_accounts::target(person_accounts::ASSISTANT),
-            json!({"account": "ada@example.test", "agent": "assistant", "may": true}),
-        ),
     ]
 }
 
-/// What a person keeps for themselves alone where their workspace is kept (what they sign in
-/// with, their model keys, which agent reads their mail) answers that person on a device of
-/// theirs, and nobody else. A key they made for a script is certified as an agent's grant, so
-/// its calls are their agent's: asked on the key's own session, as an API server asks for it,
-/// each is told what a caller asking for something that does not exist is told.
+/// What the workspace keeps (what its members sign in with, their model keys) answers its
+/// members on devices of theirs, and a key a person made for a script as their agent there: the
+/// preset their approval of the key gave its agent is what it reaches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_key_made_for_a_script_is_not_its_person_where_only_the_person_is_answered() {
+async fn a_key_made_for_a_script_reaches_the_workspaces_stores_as_its_persons_agent() {
     Box::pin(async {
         let served = api_on_server(ISSUER).await;
         let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -1753,7 +1746,7 @@ async fn a_key_made_for_a_script_is_not_its_person_where_only_the_person_is_answ
             .enter(&on_laptop, &workspace)
             .await
             .expect("her laptop enters her workspace");
-        for (what, target, argument) in what_only_the_person_asks() {
+        for (what, target, argument) in what_the_workspace_keeps() {
             let answered = asked(&on_laptop.device, laptop_in, target, &argument).await;
             assert_ne!(
                 answered.as_ref().err().map(String::as_str),
@@ -1783,18 +1776,34 @@ async fn a_key_made_for_a_script_is_not_its_person_where_only_the_person_is_answ
             .enter(&with_key, &workspace)
             .await
             .expect("the key enters the workspace it made");
-        for (what, target, argument) in what_only_the_person_asks() {
+        // The key reads the same store: it is her agent in the workspace, and what its approval
+        // gave that agent is what an agent of hers may.
+        let listed = asked(&with_key.device, key_in, list(), &json!({}))
+            .await
+            .expect("her key, as her agent, lists the workspace's vault");
+        assert_eq!(
+            listed, kept,
+            "the vault the workspace keeps, as she reads it"
+        );
+        for (what, target, argument) in what_the_workspace_keeps().into_iter().skip(1) {
             let answered = asked(&with_key.device, key_in, target, &argument).await;
-            assert_eq!(
-                answered,
-                Err("unknown_action".to_owned()),
-                "a key made for a script {what}"
+            assert_ne!(
+                answered.as_ref().err().map(String::as_str),
+                Some("unknown_action"),
+                "her key, as her agent, {what}"
             );
         }
 
-        // Nothing of hers moved: her vault holds what she kept, and nothing the key handed it.
-        let after = asked(&on_laptop.device, laptop_in, list(), &json!({})).await;
-        assert_eq!(after, Ok(kept));
+        // Her own device still reads the vault the workspace keeps, whatever her key asked.
+        let after = asked(&on_laptop.device, laptop_in, list(), &json!({}))
+            .await
+            .expect("her own device lists the workspace's vault");
+        assert!(
+            after["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            "{after}"
+        );
     })
     .await;
 }

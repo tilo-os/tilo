@@ -205,7 +205,15 @@ pub(super) async fn gather(
     }
     // The first look starts at the newest arrival: mail from before it is
     // where the inbox stands.
-    let arrivals = workspaces.mail_arrivals(person, seen.mail_seq);
+    let arrivals = match collab_types::WorkspaceId::parse(workspace) {
+        Some(id) => {
+            workspaces
+                .mail_arrivals_for(id, person, seen.mail_seq)
+                .await
+                .arrivals
+        }
+        None => Vec::new(),
+    };
     next.mail_seq = arrivals
         .iter()
         .map(|arrival| arrival.seq)

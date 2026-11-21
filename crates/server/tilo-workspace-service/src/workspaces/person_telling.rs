@@ -39,7 +39,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
-use super::person_settings::{AskingAboutMail, answer, argument};
+use super::person_settings::{answer, argument};
 
 pub mod addresses;
 mod judge;
@@ -418,22 +418,40 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         workspace_id: Option<collab_types::WorkspaceId>,
     ) -> Result<Asking, ActionCallError> {
-        match Self::asking_about_mail(caller, certificate, workspace_id)? {
-            AskingAboutMail::Person(person) => Ok(Asking::Person(person)),
-            AskingAboutMail::Assistant {
-                person,
-                agent,
-                workspace,
-            } => Ok(Asking::Agent {
-                own: self.owns(&person, &workspace),
-                name: caller
-                    .agent_name()
-                    .map_or_else(|| agent.clone(), str::to_owned),
-                id: agent,
-                workspace,
-                person,
-            }),
+        if let Ok(person) = Self::asking_person(caller, certificate, workspace_id) {
+            return Ok(Asking::Person(person));
         }
+        let workspace = workspace_id
+            .ok_or(ActionCallError::UnknownAction)?
+            .to_string();
+        let acting = caller.acting();
+        let (Some(agent), Some(person)) = (acting.agent_id(), acting.acted_for_person()) else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let person: [u8; 32] = hex::decode(person)
+            .ok()
+            .and_then(|key| key.try_into().ok())
+            .ok_or(ActionCallError::UnknownAction)?;
+        // An agent is a person's when a key of that person's stands behind
+        // its connection, as the transport certified.
+        let certified = certificate.is_some_and(|certificate| {
+            certificate.user_public_key == person
+                && caller.device_public_key() == Some(&certificate.device_public_key)
+                && caller.user_public_key() == Some(&certificate.user_public_key)
+        });
+        if !certified {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let agent = agent.to_owned();
+        Ok(Asking::Agent {
+            own: self.owns(&person, &workspace),
+            name: caller
+                .agent_name()
+                .map_or_else(|| agent.clone(), str::to_owned),
+            id: agent,
+            workspace,
+            person,
+        })
     }
 
     /// Whether `caller` is an agent of a person's that the rule's and the

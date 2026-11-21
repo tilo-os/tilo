@@ -61,11 +61,11 @@ impl Drop for LetsGo {
     }
 }
 
-/// Link `root` a provider of their own whose model thinks before it answers, and have the
+/// Link the workspace a provider of its own whose model thinks before it answers, and have the
 /// server ask it for their agent's turns.
 fn thinking(
     workspaces: &tilo_server::workspaces::Workspaces,
-    root: &SigningKey,
+    workspace: &str,
     writes: bool,
 ) -> (Arc<Thinking>, LetsGo) {
     let theirs = Arc::new(Thinking {
@@ -75,7 +75,7 @@ fn thinking(
     workspaces.answer_models_with(theirs.clone());
     workspaces
         .link_model_for(
-            &root.verifying_key().to_bytes(),
+            workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
@@ -140,7 +140,7 @@ async fn thought(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let (theirs, _lets_go) = thinking(&workspaces, &root, false);
+    let (theirs, _lets_go) = thinking(&workspaces, &workspace, false);
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -188,7 +188,7 @@ async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_model_thought_stands_beside_the_words_it_then_writes() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let (theirs, _lets_go) = thinking(&workspaces, &root, true);
+    let (theirs, _lets_go) = thinking(&workspaces, &workspace, true);
     let first = write_to_agent(
         &actions,
         &workspaces,

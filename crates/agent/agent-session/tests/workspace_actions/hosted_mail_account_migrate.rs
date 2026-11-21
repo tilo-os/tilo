@@ -1,6 +1,6 @@
 //! A mail account moved in from Thunderbird is connected, not copied: `tilo migrate start
 //! thunderbird` hands the account's servers, the other address it sends as and the password
-//! Thunderbird saved to the person's server as their own request (`person/mail-accounts#add`
+//! Thunderbird saved to the person's server as their own request (`workspace/mail-accounts#add`
 //! over `POST /v1/workspaces/{workspace}/resources/…/actions/…`, by the same client and call the
 //! importer makes, as the laptop `tilo login` made), and the server signs in before it keeps
 //! anything. Mail then reads the account's inbox from its mail server through her server, as a page
@@ -23,7 +23,7 @@ use tilo_server::workspaces::fixtures::mail::{
 };
 
 /// What `tilo migrate` asks, as resource and action (thunderbird.rs `MAIL_ACCOUNTS`).
-const ACCOUNTS: &str = "person/mail-accounts";
+const ACCOUNTS: &str = "workspace/mail-accounts";
 /// The account, made up for this file.
 const ADDRESS: &str = "ada@mail.example.test";
 /// What Thunderbird saved for it: the sign-in of nothing but the stand-in below.

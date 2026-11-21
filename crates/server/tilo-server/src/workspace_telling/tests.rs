@@ -94,7 +94,7 @@ impl Host {
         self.workspaces.answer_models_with(scripted.clone());
         self.workspaces
             .link_model_for(
-                &ADA,
+                WORKSPACE,
                 &Linking {
                     name: "Models",
                     protocol: ProviderProtocol::OpenAiCompatible,

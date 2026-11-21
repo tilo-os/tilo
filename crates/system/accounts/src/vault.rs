@@ -224,6 +224,39 @@ impl SecretVault {
         }
     }
 
+    /// Seal every secret of the vault under the config root `from` into the
+    /// vault under `to`, under `to`'s own key, as they are: a store that moves
+    /// to another owner (a host's per-person store becoming a workspace's)
+    /// keeps every secret and where each was typed for. A secret `to` keeps
+    /// already stays as `to` keeps it. `from` is only read.
+    ///
+    /// # Errors
+    /// Either vault cannot be opened, or `to` cannot be written.
+    pub fn reseal_into(from: &Path, to: &Path) -> Result<(), String> {
+        let source = Self::open_read_only_in(from);
+        if let Some(error) = source.recovery_error() {
+            return Err(error.to_owned());
+        }
+        let mut target = Self::open_in(to);
+        if let Some(error) = target.recovery_error() {
+            return Err(error.to_owned());
+        }
+        let pending = target
+            .pending
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (id, secret) in &source.entries {
+            if target.entries.contains_key(id) {
+                continue;
+            }
+            // Inserted as they are, past `put`: a secret moved with its word
+            // of where it was typed for keeps that word.
+            target.entries.insert(id.clone(), secret.clone());
+            pending.insert(id.clone(), (None, Some(secret.clone())));
+        }
+        target.try_save()
+    }
+
     /// Open the encrypted vault in a supplied profile-bound config directory.
     /// Browser hosts must load that directory's file mirror and secret storage
     /// before opening. The Dir capability, not an app-chosen user label, selects

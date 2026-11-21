@@ -91,6 +91,8 @@ use invocation_states::{answered_within, failed, still_running, succeeded};
 #[cfg(not(target_arch = "wasm32"))]
 mod telling;
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::workspace_stores::Store;
 use super::authority::WorkspaceOp;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
@@ -1304,19 +1306,12 @@ impl Workspaces {
             let rows = self.account_rows(workspace_id, caller, certificate).await;
             offer.add(host::ACCOUNT, "", rows);
         }
-        // An agent its person named for a mail or a calendar account finds
-        // what it may do with it here. A page asks directly, and is offered
-        // no row.
+        // An agent or a key the workspace's policy lets read its mail or its
+        // calendars finds what it may do with them here. A page asks
+        // directly, and is offered no row.
         #[cfg(not(target_arch = "wasm32"))]
-        if wants(person_accounts::PROVIDER) {
-            let mut rows = Vec::new();
-            if self.reads_mail_as_assistant(caller, certificate, workspace_id) {
-                rows.extend(mail::assistant_rows());
-            }
-            #[cfg(feature = "agents")]
-            if self.reads_calendars_as_assistant(caller, certificate, workspace_id) {
-                rows.extend(calendars::assistant_rows());
-            }
+        if wants(person_accounts::PROVIDER) && caller.acting().is_agent() {
+            let rows = self.mail_rows((workspace_id, caller, certificate)).await;
             if !rows.is_empty() {
                 offer.add(mail::MAIL, "", rows);
             }
@@ -1330,11 +1325,13 @@ impl Workspaces {
         {
             offer.add(telling::TELLING, "", telling::agent_rows(own));
         }
-        // An agent of a person's finds what it may read of the services
-        // that person connected. Adding one is the person's own, and no row.
+        // An agent finds what it may read of the services the workspace
+        // connected. Adding one is no row.
         #[cfg(not(target_arch = "wasm32"))]
         if wants(person_connections::PROVIDER)
-            && Self::connects_as_agent((workspace_id, caller, certificate))
+            && self
+                .connects_as_agent((workspace_id, caller, certificate))
+                .await
         {
             offer.add(connections::CONNECTIONS, "", connections::agent_rows());
         }
@@ -1445,7 +1442,10 @@ impl Workspaces {
             // What the agents on this server learned about the person: theirs to read
             // and to change, and no agent's. A turn keeps a fact through its own tools.
             #[cfg(not(target_arch = "wasm32"))]
-            (LEARNED, _) => self.person_learned_invoke(workspace_id, caller, certificate, request),
+            (LEARNED, _) => {
+                self.person_learned_invoke(workspace_id, caller, certificate, request)
+                    .await
+            }
             (server_account::PROVIDER, _)
                 if request.target == server_account::target(server_account::ACCOUNT) =>
             {
@@ -2246,7 +2246,7 @@ pub(crate) struct Shared {
     /// The admitted invocations that follow the person's mail accounts: live
     /// reads, each with the person whose accounts it reads, moved on whenever
     /// those settings change.
-    account_follows: Mutex<std::collections::HashMap<InvocationId, [u8; 32]>>,
+    account_follows: Mutex<std::collections::HashMap<InvocationId, String>>,
     /// The running asks of people's models, each with the signal that moves
     /// whenever it wrote more or ended.
     model_asks: Mutex<std::collections::HashMap<InvocationId, tokio::sync::watch::Receiver<u64>>>,
@@ -2405,18 +2405,17 @@ impl ServiceWorkspaceActions {
         self.log().get(caller, id).is_some()
     }
 
-    /// Follow the person's mail accounts for `caller` as invocation
-    /// `request` asks ([`person_accounts::WATCH`]): the accounts now, as its
-    /// first item; [`Self::accounts_moved`] moves it on.
+    /// Follow `workspace`'s mail accounts for `caller`, whom its policy let
+    /// read them, as invocation `request` asks ([`person_accounts::WATCH`]):
+    /// the accounts now, as its first item; [`Self::accounts_moved`] moves it
+    /// on.
     fn follow_accounts(
         &self,
         workspaces: &Workspaces,
         caller: &Caller,
-        certificate: Option<&DeviceCert>,
-        workspace_id: Option<WorkspaceId>,
+        workspace: String,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionCallError> {
-        let person = Workspaces::asking_person(caller, certificate, workspace_id)?;
         let invocation = request.invocation;
         let mut log = self.log();
         if log.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
@@ -2430,7 +2429,7 @@ impl ServiceWorkspaceActions {
             InvocationUpdate::Item {
                 invocation,
                 sequence: 1,
-                value: workspaces.accounts_listing(&person)?,
+                value: workspaces.accounts_listing(&workspace)?,
             },
         );
         let receipt = state.receipt();
@@ -2439,7 +2438,7 @@ impl ServiceWorkspaceActions {
         self.shared
             .account_follows
             .lock_recover()
-            .insert(invocation, person);
+            .insert(invocation, workspace);
         Ok(receipt)
     }
 
@@ -2451,10 +2450,10 @@ impl ServiceWorkspaceActions {
     /// Read the person's accounts again for the follow `id`; whether they
     /// moved.
     fn accounts_moved(&self, workspaces: &Workspaces, caller: &Caller, id: &InvocationId) -> bool {
-        let Some(person) = self.shared.account_follows.lock_recover().get(id).copied() else {
+        let Some(workspace) = self.shared.account_follows.lock_recover().get(id).cloned() else {
             return false;
         };
-        let Ok(value) = workspaces.accounts_listing(&person) else {
+        let Ok(value) = workspaces.accounts_listing(&workspace) else {
             return false;
         };
         let mut log = self.log();
@@ -2581,17 +2580,27 @@ impl ActionProvider for InWorkspace {
             ));
         }
         if request.target == person_accounts::target(person_accounts::WATCH) {
-            return Pending::ready(self.server.follow_accounts(
-                &workspaces,
-                caller,
-                self.certificate.as_ref(),
+            let (host, caller, workspace_id, certificate) = (
+                self.server.clone(),
+                caller.clone(),
                 self.workspace_id,
-                &request,
-            ));
+                self.certificate.clone(),
+            );
+            return self.server.spawn(async move {
+                let reach = workspaces
+                    .reaching_allowed(
+                        (workspace_id, &caller, certificate.as_ref()),
+                        Store::MAIL,
+                        person_accounts::WATCH,
+                        tilo_action_policy::ActionKind::Read,
+                    )
+                    .await?;
+                host.follow_accounts(&workspaces, &caller, reach.workspace.to_string(), &request)
+            });
         }
         #[cfg(not(target_arch = "wasm32"))]
         if model_asks::is_model_ask(&request) {
-            return Pending::ready(self.ask_model(&workspaces, caller, &request));
+            return self.ask_model(workspaces, caller, request);
         }
         let invocation = request.invocation;
         // The log's guard must not outlive the reservation: a retry reads

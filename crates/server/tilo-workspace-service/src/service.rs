@@ -297,6 +297,13 @@ impl ServiceSessions {
             let people_keys = crate::people_keys::decide(named, &cfg.state_root);
             people_keys.say(&cfg.state_root);
             if let Some(keys) = people_keys.folder() {
+                // Each workspace's store, under the workspace's own key.
+                accounts::keep_vault_keys_apart(
+                    &cfg.state_root.join("workspaces").join("workspaces"),
+                    &keys.join("workspaces"),
+                );
+                // A store a host kept per person before, read once as it moves
+                // into the workspaces that person owns.
                 accounts::keep_vault_keys_apart(
                     &cfg.state_root.join("workspaces").join("people"),
                     keys,

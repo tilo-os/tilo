@@ -5,7 +5,7 @@
 //! stand-in that behaves as Claude Code does at its edges (`coding_agents::testing`, beside the
 //! server's own keeper of coding agents). Everything else is what a person's server does: the
 //! workspace's list of its agents, Chat's conversations, the server's own look at them, the
-//! person's own model behind their settings and their vault, and Tilo's own MCP server for
+//! workspace's own model behind its settings and its vault, and Tilo's own MCP server for
 //! the turn that is going.
 use super::*;
 use tilo_actions::remote::person_asking::{ActionName, Asked, Words};
@@ -59,19 +59,26 @@ macro_rules! on_both_kinds {
     };
 }
 
-/// The person's own model as they linked it: a scripted provider behind their settings, with
-/// [`KEY`] in their vault. It answers `replies` in order, whoever asks: the person's own agent
-/// and the coding program alike.
+/// The workspace's own model as it linked it: a scripted provider behind the workspace's
+/// settings, with [`KEY`] in its vault. It answers `replies` in order, whoever asks: the
+/// workspace's own agent and the coding program alike.
 fn links_model(
     workspaces: &Workspaces,
-    root: &SigningKey,
+    workspace: &str,
     replies: impl IntoIterator<Item = Reply>,
 ) -> Arc<ScriptedProvider> {
     let theirs = ScriptedProvider::answering(replies);
     workspaces.answer_models_with(theirs.clone());
+    links_model_in(workspaces, workspace);
+    theirs
+}
+
+/// [`links_model`]'s provider kept in `workspace` alone, for a workspace whose answers come from
+/// the provider another one registered: each workspace keeps a model of its own to ask.
+fn links_model_in(workspaces: &Workspaces, workspace: &str) {
     workspaces
         .link_model_for(
-            &root.verifying_key().to_bytes(),
+            workspace,
             &Linking {
                 name: "Anthropic",
                 protocol: ProviderProtocol::Anthropic,
@@ -82,7 +89,6 @@ fn links_model(
             true,
         )
         .unwrap();
-    theirs
 }
 
 /// The agents the server works, with coding agents worked on this computer by the scripted
@@ -286,7 +292,7 @@ on_both_kinds! {
     let key = root.verifying_key().to_bytes();
     let theirs = links_model(
         &workspaces,
-        &root,
+        &workspace,
         [
             Reply::text("Fix hello waits for your word."),
             Reply::text("Hello, twice.").costing(700),
@@ -408,7 +414,7 @@ on_both_kinds! {
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
-        &root,
+        &workspace,
         [
             Reply::text("Fix hello waits for your word."),
             Reply::text("The README says hello now.").costing(1_200),
@@ -557,7 +563,7 @@ on_both_kinds! {
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
-        &root,
+        &workspace,
         [
             Reply::text("Fix hello waits for your word."),
             Reply::text("The job is looked at."),
@@ -686,7 +692,7 @@ on_both_kinds! {
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
-        &root,
+        &workspace,
         [
             Reply::text("Fix hello waits for your word."),
             Reply::text("The job is looked at."),
@@ -873,7 +879,7 @@ on_both_kinds! {
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
-        &root,
+        &workspace,
         [
             Reply::text("Fix hello waits for your word."),
             Reply::text("The README says hello now.").costing(900),
@@ -971,7 +977,7 @@ on_both_kinds! {
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
         &workspaces,
-        &root,
+        &workspace,
         [
             Reply::text("Noted."),
             Reply::text("Fix hello waits for your word."),
@@ -1169,7 +1175,7 @@ on_both_kinds! {
     let ada_there = themselves(&root, &laptop, &other);
     let theirs = links_model(
         &workspaces,
-        &root,
+        &workspace,
         [
             Reply::text("Fix hello waits for your word."),
             Reply::text("The job is looked at."),
@@ -1180,6 +1186,9 @@ on_both_kinds! {
             Reply::text("Mine."),
         ],
     );
+    // The other workspace keeps a model of its own: its agent works through that one, never
+    // through this one's.
+    links_model_in(&workspaces, &other);
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
 
     // A coding agent of each workspace says where its model is.
@@ -1301,7 +1310,7 @@ on_both_kinds! {
     .expect("its keeper sets the day's limit of their own agent");
     let theirs = links_model(
         &workspaces,
-        &root,
+        &workspace,
         [
             Reply::text("Fix hello waits for your word."),
             Reply::text("A long first look.").costing(1_500),

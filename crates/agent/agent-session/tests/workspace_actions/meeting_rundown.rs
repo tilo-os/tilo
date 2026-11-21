@@ -1,8 +1,8 @@
 //! A rundown before a meeting, shown whole with every device of its person off.
 //!
 //! The whole way through the server's own interfaces, against a calendar server the test
-//! starts. The person adds their calendar account on a device of theirs and names their
-//! assistant for it, asks for a rundown some minutes before each meeting they file under a word
+//! starts. The person adds their calendar account on a device of theirs, asks their assistant
+//! for a rundown some minutes before each meeting they file under a word
 //! of their own, and closes their page. The assistant's own tool call sets the event up. The
 //! clock is moved to the moment: the server asks the calendar server, finds the one entry filed
 //! under that word, and starts a turn of the assistant. The turn is handed the entry as data,
@@ -171,8 +171,8 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
     calendars.put("work", "review.ics", &review(starts));
     calendars.put("work", "lunch.ics", &lunch(starts));
 
-    // On a device of hers she adds the account, which her server keeps from then on, and names
-    // her assistant for it.
+    // On a device of hers she adds the account, which her server keeps in the workspace from
+    // then on.
     let adding = serde_json::json!({
         "serverUrl": calendars.url(),
         "username": ADA,
@@ -185,21 +185,10 @@ async fn the_rundown_whole(process: tilo_clock::testing::OwnProcess) {
         adding,
     )
     .await;
-    let account = added["id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the account is kept under an id: {added}"))
-        .to_owned();
-    let named = on_device(
-        &mut page,
-        (
-            person_accounts::PROVIDER,
-            person_accounts::RESOURCE,
-            person_accounts::ASSISTANT,
-        ),
-        serde_json::json!({"account": account, "agent": SCOUT, "may": true}),
-    )
-    .await;
-    assert_eq!(named["agents"], serde_json::json!([SCOUT]), "{named}");
+    assert!(
+        added["id"].as_str().is_some(),
+        "the account is kept under an id: {added}"
+    );
 
     // She asks for the rundown and closes her page: nothing of hers is on from here until she
     // comes back. What the calendar server is asked from now on, it is asked by her server.

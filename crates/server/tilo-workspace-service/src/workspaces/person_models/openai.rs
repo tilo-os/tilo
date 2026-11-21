@@ -10,7 +10,7 @@
 //! page with no device of the person's behind it signs in as well as a
 //! computer does.
 //!
-//! The grant is kept in the person's vault in the place a provider's key
+//! The grant is kept in the workspace's vault in the place a provider's key
 //! takes, bound to the backend it is sent to, and refreshed there before it
 //! expires or when the backend turns it away. No answer, log line or
 //! `Debug` output carries a token.
@@ -227,14 +227,15 @@ impl Workspaces {
         self.inner.models.openai()
     }
 
-    /// Begin `person`'s sign-in ([`BEGIN_SIGN_IN`]): ask `OpenAI` for a
-    /// code, then wait for the person on a task of its own. A person signs
-    /// in once at a time: one begun before is let go.
+    /// Begin `person`'s sign-in for `workspace` ([`BEGIN_SIGN_IN`]): ask
+    /// `OpenAI` for a code, then wait for the person on a task of its own,
+    /// and keep the grant in the workspace's vault. A person signs in once
+    /// at a time: one begun before is let go.
     ///
     /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_models::BEGIN_SIGN_IN
     pub(super) async fn begin_openai_sign_in(
         &self,
-        person: [u8; 32],
+        (person, workspace): ([u8; 32], &str),
         beginning: BeginSignIn,
         reach: Reach,
     ) -> Result<SignInStarted, String> {
@@ -256,7 +257,7 @@ impl Workspaces {
         let state = tell.subscribe();
         let workspaces = self.clone();
         let device = code.clone();
-        let root = self.person_settings_root(&person);
+        let root = self.workspace_root(workspace);
         let task = tokio::spawn(async move {
             let outcome = workspaces
                 .signed_in(&root, &openai, &device, beginning.using, &reach)

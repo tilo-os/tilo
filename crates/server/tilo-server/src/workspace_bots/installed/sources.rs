@@ -382,19 +382,19 @@ impl BotRunner {
         if !shortcut.triggers.iter().any(waits_on_mail) {
             return;
         }
-        let Some(person) = self.person_root() else {
+        if self.person_root().is_none() {
             return;
-        };
+        }
         // Heard first and read second: what arrives between the two comes
         // after the place read.
         self.mail = Some(Mail {
-            _listening: self.workspaces.listen_for_mail(person),
+            _listening: self.workspaces.listen_for_mail(&self.workspace),
             grew: self.workspaces.mail_arrival_changes(),
             again: true,
         });
         let newest = self
             .workspaces
-            .mail_arrivals_for(&person, None, u64::MAX)
+            .mail_arrivals(&self.workspace, u64::MAX)
             .newest;
         let now_ms = self.now_ms();
         for (index, trigger) in shortcut.triggers.iter().enumerate() {
@@ -430,7 +430,8 @@ impl BotRunner {
             return firings;
         };
         // What a message says is handed to its person's assistant, so only
-        // the accounts they named that assistant for are read.
+        // the mail the workspace's policy lets that person read is read, and
+        // only where they have an assistant to hand it to.
         let assistant = match super::super::assistant::assistant_of(
             &self.workspaces,
             &self.workspace,
@@ -447,9 +448,10 @@ impl BotRunner {
                 return firings;
             }
         };
-        let named = assistant
-            .as_ref()
-            .map(|assistant| (self.workspace.as_str(), assistant.id.0.as_str()));
+        let Some(workspace) = collab_types::WorkspaceId::parse(&self.workspace) else {
+            return firings;
+        };
+        let hands_over = assistant.is_some();
         let installation = self.bot.installation.clone();
         let armed = [Armed {
             firer: Firer::Bot {
@@ -476,10 +478,16 @@ impl BotRunner {
             seen.follow(&mark, now_ms);
             // A trigger that never looked takes nothing the log holds now.
             let after = seen.place.unwrap_or(u64::MAX);
-            let mut arrived = self.workspaces.mail_arrivals_for(&person, named, after);
+            let mut arrived = self
+                .workspaces
+                .mail_arrivals_for(workspace, &person, after)
+                .await;
             if seen.place.is_some() && arrived.newest < after {
                 // The log started over: all it holds came after that.
-                arrived = self.workspaces.mail_arrivals_for(&person, named, 0);
+                arrived = self.workspaces.mail_arrivals_for(workspace, &person, 0).await;
+            }
+            if !hands_over {
+                arrived.arrivals.clear();
             }
             seen.place = Some(arrived.newest);
             for arrival in arrived.arrivals {

@@ -1,11 +1,19 @@
-//! A person's vault on their server: what they keep to sign in with is added,
-//! listed and removed only from their own device, a listing says only what
-//! is safe to say, and no agent reaches any of it, whoever it acts for.
+//! A workspace's vault on its host: what a member keeps to sign in with is
+//! shared by every member, listed only as far as it is safe to say, and
+//! reached as the workspace's policy says at Passwords' vault. A member of
+//! another workspace reaches none of it, and an agent its member's device
+//! handed its session to reads it while its changes ask its person.
 
 #![expect(
     clippy::significant_drop_tightening,
     reason = "the server's handle a test binds is kept until the test ends; dropping it earlier closes the server it drives"
 )]
+#![allow(
+    clippy::too_many_lines,
+    reason = "a vault's tests walk one subject each, whole"
+)]
+
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
@@ -15,18 +23,53 @@ use tilo_actions::remote::{
 };
 use tilo_actions::remote::{person_accounts, person_models, person_vault};
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::fixtures::test_server_keeping_keys_apart;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{governor, guest_device, test_host};
+use crate::workspaces::{AsksPeople, PersonAnswer};
 
 const PASSWORD: &str = "correct horse battery staple";
 const NAME: &str = "ada@example.test";
 /// What no site shows as a setup key: it holds digits a seed never does.
 const NOT_A_SEED: &str = "correct horse battery staple 0189";
 const KEY: &str = "sk-live-ada-own-key";
+
+/// A person who answers every question one way, or not at all, and what
+/// they were asked.
+struct Asked {
+    answer: Option<ConfirmationAnswer>,
+    questions: Mutex<Vec<PendingConfirmation>>,
+}
+
+impl Asked {
+    fn answering(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            questions: Mutex::default(),
+        })
+    }
+
+    /// How many questions the person was put.
+    fn count(&self) -> usize {
+        self.questions.lock().unwrap().len()
+    }
+}
+
+impl AsksPeople for Asked {
+    fn ask(&self, _person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
+        self.questions.lock().unwrap().push(question);
+        let answer = self
+            .answer
+            .clone()
+            .ok_or_else(|| "nobody answered".to_owned());
+        Box::pin(async move { answer })
+    }
+}
+
 
 /// `target` asked by `caller`, on the device `device` certifies, in the
 /// workspace `workspace_id` carries.
@@ -94,32 +137,6 @@ fn fields(said: &Value) -> Vec<&str> {
     fields
 }
 
-/// What `other` reaches of the item `reference` names in someone else's
-/// vault: nothing listed, nothing removed.
-async fn reaches_nothing_of_it(
-    service: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    other: (&DeviceCert, &Caller),
-    reference: &str,
-) {
-    let theirs = ask(service, workspace_id, other, person_vault::LIST, json!({}))
-        .await
-        .unwrap();
-    assert_eq!(theirs["items"], json!([]), "{theirs}");
-    let refused = ask(
-        service,
-        workspace_id,
-        other,
-        person_vault::REMOVE,
-        json!({"item": reference}),
-    )
-    .await;
-    assert!(
-        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason == "That item is not kept here"),
-        "{refused:?}"
-    );
-}
-
 /// A login to keep for the site `site`.
 fn a_login(site: &str) -> Value {
     json!({"kind": "login", "belongsTo": [site], "username": NAME, "secret": PASSWORD})
@@ -147,13 +164,14 @@ pub(super) fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::pa
     holding
 }
 
-/// A person keeps a login from their own device. What the server answers,
+/// A workspace keeps what one member signs in with. What the server answers,
 /// then and in every listing, is its kind, where it belongs and when it was
-/// added, under a reference: never the secret, never the name. Another
-/// member, the workspace's owner included, lists nothing of it and removes
-/// nothing of it, and the host's disk holds it nowhere in the clear.
+/// added, under a reference: never the secret, never the name. Every member
+/// reads the same item; a member of another workspace and a person in none
+/// are told there is no such action, and the host's disk holds the secret
+/// nowhere in the clear.
 #[tokio::test]
-async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe() {
+async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_safe() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -161,7 +179,7 @@ async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe(
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let (as_ada, as_bo, as_owner) = (caller(&ada), caller(&bo), caller(&owner));
+    let (as_ada, as_bo) = (caller(&ada), caller(&bo));
 
     let kept = ask(
         &service,
@@ -182,55 +200,100 @@ async fn a_person_keeps_what_they_sign_in_with_and_reads_back_only_what_is_safe(
     assert!(kept["addedAt"].as_u64().is_some_and(|added| added > 0));
     assert_eq!(fields(&kept), ["addedAt", "belongsTo", "kind", "reference"]);
 
-    let hers = ask(
+    // Every member of the workspace reads the same item, and none of them
+    // reads more than what is safe to say of it.
+    for (who, device, asking) in [("Ada", &ada, &as_ada), ("Bo", &bo, &as_bo)] {
+        let theirs = ask(
+            &service,
+            workspace_id,
+            (device, asking),
+            person_vault::LIST,
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(theirs["items"], json!([kept]), "{who}");
+        let said = theirs.to_string();
+        assert!(!said.contains(PASSWORD) && !said.contains(NAME), "{who}: {said}");
+    }
+
+    // A member of another workspace, and a person in none of them, are
+    // nobody to this workspace's vault, whether they ask for it or change it.
+    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let cy = admit(workspaces, &elsewhere, &owner, 3).await;
+    let (_, stranger) = guest_device();
+    for (who, device, asking) in [
+        ("a member of another workspace", &cy, &caller(&cy)),
+        ("a non-member", &stranger, &caller(&stranger)),
+    ] {
+        let listed = ask(
+            &service,
+            workspace_id,
+            (device, asking),
+            person_vault::LIST,
+            json!({}),
+        )
+        .await;
+        assert!(
+            matches!(listed, Err(ActionCallError::UnknownAction)),
+            "{who}: {listed:?}"
+        );
+        let removed = ask(
+            &service,
+            workspace_id,
+            (device, asking),
+            person_vault::REMOVE,
+            json!({"item": &reference}),
+        )
+        .await;
+        assert!(
+            matches!(removed, Err(ActionCallError::UnknownAction)),
+            "{who}: {removed:?}"
+        );
+    }
+    // The workspace they are in keeps no item of this one's.
+    let theirs = ask(
         &service,
-        workspace_id,
-        (&ada, &as_ada),
+        elsewhere_id,
+        (&cy, &caller(&cy)),
         person_vault::LIST,
         json!({}),
     )
     .await
     .unwrap();
-    assert_eq!(hers["items"], json!([kept]));
-    for said in [&kept, &hers] {
-        let said = said.to_string();
-        assert!(!said.contains(PASSWORD) && !said.contains(NAME), "{said}");
-    }
-
-    for other in [(&bo, &as_bo), (&owner, &as_owner)] {
-        reaches_nothing_of_it(&service, workspace_id, other, &reference).await;
-    }
+    assert_eq!(theirs["items"], json!([]), "{theirs}");
 
     for needle in [PASSWORD, NAME, "linkedin"] {
         let clear = files_holding(dir.path(), needle.as_bytes());
         assert!(clear.is_empty(), "{needle} in the clear: {clear:?}");
     }
-    let own = workspaces.person_settings_root(&ada.user_public_key);
+    let own = workspaces.workspace_root(&workspace_id.to_string());
     assert!(
         accounts::vault_dir_in(&own).join("vault.enc").exists(),
-        "the item is sealed in Ada's own vault"
+        "the item is sealed in the workspace's vault"
     );
 
+    // An editor's device takes it back for the whole workspace.
     let remaining = ask(
         &service,
         workspace_id,
-        (&ada, &as_ada),
+        (&bo, &as_bo),
         person_vault::REMOVE,
-        json!({"item": reference}),
+        json!({"item": &reference}),
     )
     .await
-    .expect("Ada forgets her login");
+    .expect("Bo takes it back");
     assert_eq!(remaining["items"], json!([]));
     server.shutdown().await;
 }
 
-/// No agent lists a person's vault, adds to it or removes from it: not one
-/// certified under the person's own key, not one their own device handed
-/// its connection to, not a bot, not an app. Neither does the person's key
-/// on a device that is not the one the certificate names. Each is told what
-/// a caller asking for something that does not exist is told.
+/// The workspace's vault is reached by its members as its policy says: an
+/// agent its member's device handed its session to reads it, and every
+/// change it would make asks its person first. A bot, an app, an agent no
+/// device stands behind and the person's key on another person's device are
+/// told what a caller asking for something that does not exist is told.
 #[tokio::test]
-async fn no_agent_reaches_a_persons_vault() {
+async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_person() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -249,33 +312,116 @@ async fn no_agent_reaches_a_persons_vault() {
     .await
     .expect("Ada keeps a login");
     let reference = kept["reference"].clone();
+    let entry = an_entry("Bank", PASSWORD);
+    ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::KEEP_ENTRY,
+        json!({"entry": entry}),
+    )
+    .await
+    .expect("Ada keeps an entry");
 
+    // Her agent, over the connection her device handed it, reads the
+    // items and the entries.
+    let agent = as_ada.clone().delegated_to("assistant");
+    let listed = ask(
+        &service,
+        workspace_id,
+        (&ada, &agent),
+        person_vault::LIST,
+        json!({}),
+    )
+    .await
+    .expect("her agent reads the items");
+    assert_eq!(listed["items"], json!([kept]), "{listed}");
+    let entries = ask(
+        &service,
+        workspace_id,
+        (&ada, &agent),
+        person_vault::ENTRIES,
+        json!({}),
+    )
+    .await
+    .expect("her agent reads the entries");
+    assert_eq!(entries["entries"].as_array().map(Vec::len), Some(1));
+
+    // Every change waits for its person: with nobody to ask, their answer
+    // is still wanted and nothing changed.
+    for (action, argument) in [
+        (person_vault::ADD, a_login("https://attacker.example")),
+        (person_vault::REMOVE, json!({"item": &reference})),
+        (
+            person_vault::KEEP_ENTRY,
+            json!({"entry": an_entry("Planted", "planted")}),
+        ),
+        (
+            person_vault::FORGET_ENTRY,
+            json!({"id": "an-entry-of-hers"}),
+        ),
+    ] {
+        let refused = ask(
+            &service,
+            workspace_id,
+            (&ada, &agent),
+            action,
+            argument,
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
+            "{action}: {refused:?}"
+        );
+    }
+    let unchanged = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unchanged["items"], json!([kept]));
+
+    // Allowed by its person, the change it would make is made.
+    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
+    workspaces.ask_people(allowing.clone());
+    ask(
+        &service,
+        workspace_id,
+        (&ada, &agent),
+        person_vault::ADD,
+        a_login("https://example.test"),
+    )
+    .await
+    .expect("her agent keeps what she allowed");
+    assert_eq!(allowing.count(), 1, "she was asked once");
+    let now = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(now["items"].as_array().map(Vec::len), Some(2));
+
+    // Nobody else reaches it, however it names itself.
     let person = hex::encode(ada.user_public_key);
-    let not_her: [(&str, &DeviceCert, Caller); 6] = [
+    let not_her: [(&str, &DeviceCert, Caller); 4] = [
+        ("a bot", &ada, Caller::local_bot("a-bot")),
         (
-            "an agent certified under her key",
+            "an app acting for her",
             &ada,
-            Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key),
-        ),
-        (
-            "an agent her own device handed its connection to",
-            &ada,
-            caller(&ada).delegated_to("assistant"),
-        ),
-        (
-            "a bot she installed",
-            &ada,
-            Caller::bot("bot", ada.user_public_key, ada.device_public_key),
+            Caller::local_app("so.tilo.chat").acting_for(person.clone()),
         ),
         (
             "an agent the server admitted itself, acting for her",
             &ada,
-            Caller::local_agent("assistant").acting_for(person.clone()),
-        ),
-        (
-            "an app acting for her",
-            &ada,
-            Caller::local_app("so.tilo.chat").acting_for(person),
+            Caller::local_agent("assistant").acting_for(person),
         ),
         ("her key on another person's device", &bo, caller(&ada)),
     ];
@@ -283,7 +429,7 @@ async fn no_agent_reaches_a_persons_vault() {
         for (action, argument) in [
             (person_vault::LIST, json!({})),
             (person_vault::ADD, a_login("https://attacker.example")),
-            (person_vault::REMOVE, json!({"item": reference})),
+            (person_vault::REMOVE, json!({"item": &reference})),
             (person_vault::ENTRIES, json!({})),
             (
                 person_vault::KEEP_ENTRY,
@@ -302,8 +448,8 @@ async fn no_agent_reaches_a_persons_vault() {
         }
     }
 
-    // Nothing of hers moved, and nothing was kept for anyone else.
-    let hers = ask(
+    // Nothing of the workspace's moved.
+    let still = ask(
         &service,
         workspace_id,
         (&ada, &as_ada),
@@ -312,17 +458,7 @@ async fn no_agent_reaches_a_persons_vault() {
     )
     .await
     .unwrap();
-    assert_eq!(hers["items"], json!([kept]));
-    let his = ask(
-        &service,
-        workspace_id,
-        (&bo, &caller(&bo)),
-        person_vault::LIST,
-        json!({}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(his["items"], json!([]));
+    assert_eq!(still["items"].as_array().map(Vec::len), Some(2), "{still}");
     server.shutdown().await;
 }
 
@@ -333,11 +469,12 @@ fn an_entry(title: &str, password: &str) -> Value {
     serde_json::to_value(entry).unwrap()
 }
 
-/// The person keeps the entries of their Passwords in their vault from their
-/// own device, reads them back secrets included, edits one in place and
-/// forgets it. Another person's device reads none of it.
+/// The workspace keeps the entries of its Passwords: a member keeps one
+/// from their device, every member reads them back secrets included, edits
+/// one in place and forgets it. A member of another workspace reads none of
+/// it, there or here.
 #[tokio::test]
-async fn a_persons_passwords_are_kept_and_read_back_by_them_alone() {
+async fn the_workspaces_passwords_are_kept_and_read_by_its_members_alone() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -373,7 +510,7 @@ async fn a_persons_passwords_are_kept_and_read_back_by_them_alone() {
     assert_eq!(read[0]["title"], "Bank");
     assert_eq!(
         read[0]["password"], PASSWORD,
-        "her own secret comes back to her"
+        "the workspace's secret comes back to its member"
     );
 
     let mut edited = read[0].clone();
@@ -391,6 +528,7 @@ async fn a_persons_passwords_are_kept_and_read_back_by_them_alone() {
     assert_eq!(after.len(), 1, "edited in place");
     assert_eq!(after[0]["title"], "Bank, renamed");
 
+    // Every member reads the entries of the workspace's Passwords.
     let his = ask(
         &service,
         workspace_id,
@@ -400,7 +538,34 @@ async fn a_persons_passwords_are_kept_and_read_back_by_them_alone() {
     )
     .await
     .unwrap();
-    assert_eq!(his["entries"], json!([]), "Bo reads none of hers");
+    assert_eq!(entries(&his), after, "Bo reads the workspace's entries");
+
+    // A member of another workspace reads none of it, there or here.
+    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let cy = admit(workspaces, &elsewhere, &owner, 3).await;
+    let refused = ask(
+        &service,
+        workspace_id,
+        (&cy, &caller(&cy)),
+        person_vault::ENTRIES,
+        json!({}),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(ActionCallError::UnknownAction)),
+        "{refused:?}"
+    );
+    let theirs = ask(
+        &service,
+        elsewhere_id,
+        (&cy, &caller(&cy)),
+        person_vault::ENTRIES,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(theirs["entries"], json!([]), "{theirs}");
+
     // Her entries are no items an agent may use, and the other way round.
     let items = ask(&service, workspace_id, hers, person_vault::LIST, json!({}))
         .await
@@ -554,11 +719,12 @@ async fn uses_of(
     uses["uses"].clone()
 }
 
-/// An agent acting for a person keeps a provider's key from their vault by
-/// naming the item. The host resolves it: the provider is configured, the
-/// item remembers when, where and for whom, and nothing the agent is
-/// answered carries the key. What the item was used for is the person's to
-/// read, not the agent's.
+/// An agent acting for a member keeps a provider's key from the workspace's
+/// vault by naming the item. The host resolves it: the provider is
+/// configured once its person allowed the change, the item remembers when,
+/// where and for whom, and nothing the agent is answered carries the key.
+/// What the item was used for is a member's to read, and taking a leave back
+/// is not an agent's.
 #[tokio::test]
 async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     let dir = tempfile::tempdir().unwrap();
@@ -579,21 +745,37 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     let helper = Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key)
         .named("Helper");
 
+    // A change the agent makes is put to its person first: with nobody to
+    // ask, nothing is kept.
+    let keeping = json!({"provider": provider, "key": item});
+    let unasked = ask_at(
+        &service,
+        workspace_id,
+        (&ada, &helper),
+        person_models::target(person_models::SET_KEY_FROM_ITEM),
+        keeping.clone(),
+    )
+    .await;
+    assert!(
+        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+        "{unasked:?}"
+    );
+    workspaces.ask_people(Asked::answering(Some(ConfirmationAnswer::AllowOnce)));
     let view = ask_at(
         &service,
         workspace_id,
         (&ada, &helper),
         person_models::target(person_models::SET_KEY_FROM_ITEM),
-        json!({"provider": provider, "key": item}),
+        keeping,
     )
     .await
-    .expect("the agent keeps the key by naming its item");
+    .expect("the agent keeps the key by naming its item, once its person allowed it");
     assert_eq!(view["configured"], json!(true), "{view}");
     assert!(!view.to_string().contains(KEY), "{view}");
 
-    // The key is the provider's now: sealed in Ada's vault, nowhere in the
-    // clear.
-    let own = workspaces.person_settings_root(&ada.user_public_key);
+    // The key is the provider's now: sealed in the workspace's vault,
+    // nowhere in the clear.
+    let own = workspaces.workspace_root(&workspace_id.to_string());
     let (reference, authorization) =
         accounts::provider_api_key(&provider, "https://models.example/v1").unwrap();
     let sealed = accounts::ServiceCredentials::open_in(&own)
@@ -622,17 +804,29 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     assert_eq!(uses[0]["by"], "Helper");
     assert_eq!(uses[0]["using"], "tilo.models/set-key-from-item");
     assert_eq!(fields(&uses[0]), ["at", "by", "places", "using"]);
-    let refused = ask(
+    // What the item was used for is a member's to read, and the agent reads
+    // it with its person's access: only taking a leave back is not its own.
+    let read = ask(
         &service,
         workspace_id,
         (&ada, &helper),
         person_vault::USES,
         json!({"item": item}),
     )
+    .await
+    .expect("the agent reads what its item remembers");
+    assert_eq!(read["uses"], uses);
+    let taken = ask(
+        &service,
+        workspace_id,
+        (&ada, &helper),
+        person_vault::TAKE_BACK,
+        json!({"item": item}),
+    )
     .await;
     assert!(
-        matches!(refused, Err(ActionCallError::UnknownAction)),
-        "{refused:?}"
+        matches!(taken, Err(ActionCallError::UnknownAction)),
+        "{taken:?}"
     );
     server.shutdown().await;
 }
@@ -692,8 +886,8 @@ async fn nothing_was_used(
 }
 
 /// A reference is used only where its item belongs, as the kind the use
-/// needs, for the person whose vault holds it: the wrong place, the wrong
-/// kind and another person's vault are each refused, and nothing is used.
+/// needs, in the workspace whose vault holds it: the wrong place, the wrong
+/// kind and another workspace's vault are each refused, and nothing is used.
 #[tokio::test]
 async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
     let dir = tempfile::tempdir().unwrap();
@@ -702,36 +896,39 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
     let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
+    let bo = admit(workspaces, &elsewhere, &owner, 2).await;
     let (as_ada, as_bo) = (caller(&ada), caller(&bo));
     let hers = (&ada, &as_ada);
     let (provider, items) = a_provider_and_items(&service, workspace_id, hers).await;
-    let [elsewhere, login, right] = &items;
-    let his_provider = a_provider(&service, workspace_id, (&bo, &as_bo)).await;
-    let helper = Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key);
-    let his_helper = Caller::delegated_agent("assistant", bo.user_public_key, bo.device_public_key);
+    let [elsewhere_item, login, right] = &items;
+    let his_provider = a_provider(&service, elsewhere_id, (&bo, &as_bo)).await;
 
-    for (who, provider, item, reason) in [
+    for (who, workspace, provider, item, reason) in [
         (
-            (&ada, &helper),
+            hers,
+            workspace_id,
             &provider,
-            elsewhere,
+            elsewhere_item,
             "That item belongs somewhere else",
         ),
         (
-            (&ada, &helper),
+            hers,
+            workspace_id,
             &provider,
             login,
             "That item is not the kind of thing this needs",
         ),
         (
-            (&bo, &his_helper),
+            (&bo, &as_bo),
+            elsewhere_id,
             &his_provider,
             right,
             "That item is not kept here",
         ),
         (
-            (&bo, &his_helper),
+            (&bo, &as_bo),
+            elsewhere_id,
             &provider,
             right,
             "That provider is not kept here",
@@ -739,7 +936,7 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
     ] {
         let refused = ask_at(
             &service,
-            workspace_id,
+            workspace,
             who,
             person_models::target(person_models::SET_KEY_FROM_ITEM),
             json!({"provider": provider, "key": item}),
@@ -754,11 +951,11 @@ async fn a_reference_is_refused_wherever_its_item_does_not_belong() {
     server.shutdown().await;
 }
 
-/// A bot, an app and an agent no certificate stands behind use nothing of a
-/// person's vault, and the person's own agent hands no typed key in: that
-/// way stays the person's own.
+/// A bot, an app and an agent no certificate stands behind use nothing of
+/// the workspace's vault, and an agent's typed key asks its person before
+/// anything is kept: that way stays the person's own.
 #[tokio::test]
-async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
+async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -771,11 +968,10 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
     let [_, _, right] = &items;
     let from_item = person_models::target(person_models::SET_KEY_FROM_ITEM);
     let person = hex::encode(ada.user_public_key);
-    let helper = Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key);
 
     for (other, target, key) in [
         (
-            Caller::bot("bot", ada.user_public_key, ada.device_public_key),
+            Caller::local_bot("a-bot"),
             from_item.clone(),
             right.clone(),
         ),
@@ -788,11 +984,6 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
             Caller::local_agent("assistant").acting_for(person),
             from_item,
             right.clone(),
-        ),
-        (
-            helper,
-            person_models::target(person_models::SET_KEY),
-            json!(KEY),
         ),
     ] {
         let refused = ask_at(
@@ -808,13 +999,30 @@ async fn only_a_persons_own_agent_uses_their_vault_and_only_by_reference() {
             "{other:?}: {refused:?}"
         );
     }
+
+    // An agent of hers hands no typed key in: keeping one by typing it asks
+    // its person first, and nobody answers.
+    let helper = as_ada.clone().delegated_to("assistant");
+    let typed = ask_at(
+        &service,
+        workspace_id,
+        (&ada, &helper),
+        person_models::target(person_models::SET_KEY),
+        json!({"provider": provider, "key": KEY}),
+    )
+    .await;
+    assert!(
+        matches!(typed, Err(ActionCallError::ConfirmationRequired { .. })),
+        "{typed:?}"
+    );
     nothing_was_used(&service, workspace_id, hers, &items).await;
     server.shutdown().await;
 }
 
 /// A mail sign-in named by reference goes only to the servers its item
 /// belongs to: an account at any other server or port is refused before a
-/// server is reached, and typing a password in stays the person's own.
+/// server is reached, and a password typed in by an agent asks its person
+/// first.
 #[tokio::test]
 async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     let dir = tempfile::tempdir().unwrap();
@@ -840,7 +1048,6 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     .await
     .expect("Ada keeps her mail sign-in");
     let sign_in = kept["reference"].clone();
-    let helper = Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key);
     let with_item = person_accounts::target(person_accounts::ADD_MAIL_WITH_ITEM);
 
     for (incoming, port, outgoing) in [
@@ -851,7 +1058,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
         let refused = ask_at(
             &service,
             workspace_id,
-            (&ada, &helper),
+            hers,
             with_item.clone(),
             json!({
                 "address": NAME,
@@ -867,6 +1074,8 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
             "{incoming}:{port} {outgoing}: {refused:?}"
         );
     }
+    // A password typed in by an agent waits for its person first.
+    let helper = as_ada.clone().delegated_to("assistant");
     let typed = ask_at(
         &service,
         workspace_id,
@@ -881,7 +1090,7 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     )
     .await;
     assert!(
-        matches!(typed, Err(ActionCallError::UnknownAction)),
+        matches!(typed, Err(ActionCallError::ConfirmationRequired { .. })),
         "{typed:?}"
     );
 
@@ -932,12 +1141,13 @@ fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
-/// A server told where to keep the keys of people's sealed stores keeps
-/// none of them in its state folder. So a copy of that folder, a backup or
-/// a staging copy, opens nothing of a person's vault and makes no key for
-/// it; with the keys beside it the same copy opens, which is all it lacked.
+/// A server told where to keep the keys of the workspaces' sealed stores
+/// keeps none of them in its state folder. So a copy of that folder, a
+/// backup or a staging copy, opens nothing of a workspace's vault and makes
+/// no key for it; with the keys beside it the same copy opens, which is all
+/// it lacked.
 #[tokio::test]
-async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
+async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_vault() {
     let dir = tempfile::tempdir().unwrap();
     let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
     // The folder its operator made for the keys: a server makes none.
@@ -963,7 +1173,7 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
     assert_eq!(
         files_called(&state, "vault.key"),
         Vec::<std::path::PathBuf>::new(),
-        "the key of her vault lies in the state folder"
+        "the key of the workspace's vault lies in the state folder"
     );
     assert_eq!(files_called(&keys, "vault.key").len(), 1);
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
@@ -971,12 +1181,14 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
     // A copy of the state folder alone.
     let copy = dir.path().join("copy");
     copy_folder(&state, &copy);
-    let people = |state: &std::path::Path| state.join("workspaces").join("people");
-    let hers_in = |state: &std::path::Path| people(state).join(hex::encode(ada.user_public_key));
-    let opened = accounts::vault_items::VaultItems::open_in(&hers_in(&copy));
+    let stores = |state: &std::path::Path| state.join("workspaces").join("workspaces");
+    let vault_in = |state: &std::path::Path| {
+        stores(state).join(hex::encode(workspace_id.to_string().as_bytes()))
+    };
+    let opened = accounts::vault_items::VaultItems::open_in(&vault_in(&copy));
     assert!(
         opened.is_err(),
-        "a copy of the state folder opened her vault"
+        "a copy of the state folder opened the workspace's vault"
     );
     assert_eq!(
         files_called(&copy, "vault.key"),
@@ -987,15 +1199,15 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
     // The same copy with the keys: the key was all it lacked.
     let copied_keys = dir.path().join("copied-keys");
     copy_folder(&keys, &copied_keys);
-    accounts::keep_vault_keys_apart(&people(&copy), &copied_keys);
-    let opened = accounts::vault_items::VaultItems::open_in(&hers_in(&copy))
+    accounts::keep_vault_keys_apart(&stores(&copy), &copied_keys.join("workspaces"));
+    let opened = accounts::vault_items::VaultItems::open_in(&vault_in(&copy))
         .expect("the copy opens with its keys");
     assert_eq!(opened.facts().len(), 1);
 }
 
-/// A server that kept each person's key in its state, beside the vault the
+/// A server that kept a workspace's key in its state, beside the vault the
 /// key opens, is then told a folder for the keys. Nobody is locked out of
-/// their vault. The key moves under the folder the first time the vault is
+/// the vault. The key moves under the folder the first time the vault is
 /// opened, once it was read back from there: the very key, and no new one.
 /// A key whose place under the folder cannot be made stays where it lies
 /// and opens its vault from there, at that start and at the one after it.
@@ -1010,32 +1222,39 @@ async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_i
         let state = dir.path().join(format!("state-{movable}"));
         let keys = dir.path().join(format!("keys-{movable}"));
 
-        // Before any folder was named, her key lies in the state.
+        // Before any folder was named, the workspace's key lies in the state.
         let server = test_server_keeping_keys_apart(&state, no_folder(), &key, &owner).await;
-        let (_, workspace_id, actions) = governed(server.workspaces()).await;
+        let workspaces = server.workspaces().clone();
+        let (_, workspace_id, actions) = governed(&workspaces).await;
         let login = a_login("https://example.test");
         ask(&actions, workspace_id, hers, person_vault::ADD, login)
             .await
-            .expect("she keeps a login");
+            .expect("the workspace keeps a login");
         server.shutdown().await;
         let beside = files_called(&state, "vault.key");
-        assert_eq!(beside.len(), 1, "her key lies beside her vault");
+        assert_eq!(beside.len(), 1, "the key lies beside its vault");
         let sealed_under = std::fs::read(&beside[0]).unwrap();
 
-        // The folder is named, and it is there. Her keys' place under it is
+        // The folder is named, and it is there. The key's place under it is
         // free, or it is taken by a link that leads nowhere, under which
         // nothing can be made.
         std::fs::create_dir(&keys).unwrap();
-        let her_place = keys.join(hex::encode(owner.user_public_key));
+        let her_place = keys
+            .join("workspaces")
+            .join(hex::encode(workspace_id.to_string().as_bytes()));
         if !movable {
+            std::fs::create_dir_all(keys.join("workspaces")).unwrap();
             std::os::unix::fs::symlink(dir.path().join("nowhere"), &her_place).unwrap();
         }
         for (kept, start) in (1..).zip(["the first start with the folder", "the start after it"]) {
             let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
-            let (_, workspace_id, actions) = governed(server.workspaces()).await;
+            let actions = ServiceWorkspaceActions::new();
+            actions.attach(server.workspaces().clone());
             let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
                 .await
-                .unwrap_or_else(|error| panic!("{start} locked her out of her vault: {error:?}"));
+                .unwrap_or_else(|error| {
+                    panic!("{start} locked the workspace out of its vault: {error:?}")
+                });
             assert_eq!(
                 listed["items"].as_array().map(Vec::len),
                 Some(kept),
@@ -1047,27 +1266,27 @@ async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_i
                 assert_eq!(
                     in_state,
                     Vec::<std::path::PathBuf>::new(),
-                    "{start}: her key still lies in the state"
+                    "{start}: the key still lies in the state"
                 );
                 assert_eq!(apart.len(), 1, "{start}: {apart:?}");
                 assert!(apart[0].starts_with(&her_place), "{start}: {apart:?}");
                 assert!(
                     std::fs::read(&apart[0]).unwrap() == sealed_under,
-                    "{start}: the key kept apart is not the one her vault was sealed under"
+                    "{start}: the key kept apart is not the one the vault was sealed under"
                 );
             } else {
-                assert_eq!(in_state, beside, "{start}: her key left its place");
+                assert_eq!(in_state, beside, "{start}: the key left its place");
                 assert_eq!(apart, Vec::<std::path::PathBuf>::new(), "{start}");
                 assert!(
                     std::fs::read(&in_state[0]).unwrap() == sealed_under,
-                    "{start}: her key was replaced"
+                    "{start}: the key was replaced"
                 );
             }
-            // What she keeps from now on is sealed under the same key.
+            // What is kept from now on is sealed under the same key.
             let more = a_login(&format!("https://{kept}.example.test"));
             ask(&actions, workspace_id, hers, person_vault::ADD, more)
                 .await
-                .unwrap_or_else(|error| panic!("{start} kept nothing more for her: {error:?}"));
+                .unwrap_or_else(|error| panic!("{start} kept nothing more in the vault: {error:?}"));
             server.shutdown().await;
         }
     }
@@ -1117,11 +1336,11 @@ impl Logged {
     }
 }
 
-/// A server says as it starts where it keeps the keys of people's vaults:
-/// one line at every start, a warning for as long as they lie in its state.
-/// A folder it was named that is not there it does not make; it says so and
-/// goes on opening each vault with the key beside it. Nothing it logs, at
-/// any level, holds a key.
+/// A server says as it starts where it keeps the keys of the workspaces'
+/// vaults: one line at every start, a warning for as long as they lie in
+/// its state. A folder it was named that is not there it does not make; it
+/// says so and goes on opening each vault with the key beside it. Nothing
+/// it logs, at any level, holds a key.
 #[tokio::test]
 async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_key() {
     let logged = Logged::default();
@@ -1150,18 +1369,19 @@ async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_ke
             && said[0].contains("TILO_PEOPLE_KEYS names no folder"),
         "{said:?}"
     );
-    let (_, workspace_id, actions) = governed(server.workspaces()).await;
+    let workspaces = server.workspaces().clone();
+    let (_, workspace_id, actions) = governed(&workspaces).await;
     let login = a_login("https://example.test");
     ask(&actions, workspace_id, hers, person_vault::ADD, login)
         .await
-        .expect("she keeps a login");
+        .expect("the workspace keeps a login");
     server.shutdown().await;
     let beside = files_called(&state, "vault.key");
-    assert_eq!(beside.len(), 1, "her key lies beside her vault");
+    assert_eq!(beside.len(), 1, "the key lies beside its vault");
     let her_key = std::fs::read(&beside[0]).unwrap();
 
     // A folder is named that is not there: the server makes none, says so,
-    // and her vault opens with the key where it lies.
+    // and the vault opens with the key where it lies.
     let from = logged.written();
     let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
     let said = logged.said_since(from);
@@ -1173,10 +1393,11 @@ async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_ke
             && said[0].contains(&named),
         "{said:?}"
     );
-    let (_, workspace_id, actions) = governed(server.workspaces()).await;
+    let actions = ServiceWorkspaceActions::new();
+    actions.attach(server.workspaces().clone());
     let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
         .await
-        .expect("her vault opens");
+        .expect("the vault opens");
     assert_eq!(
         listed["items"].as_array().map(Vec::len),
         Some(1),

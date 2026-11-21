@@ -1,9 +1,9 @@
-//! One provider's grant, kept in the person's vault.
+//! One provider's grant, kept in the workspace's vault.
 //!
 //! A provider that signs a person in on its own page leaves a grant: the
 //! access token mail, calendar and models read with, the token that renews
 //! it, when it expires and the scopes it was given. It is sealed as the
-//! shared `oauth_secret` shape, so every reader of a person's accounts reads
+//! shared `oauth_secret` shape, so every reader of a workspace's accounts reads
 //! it the same way, and it is renewed through the one credential store,
 //! behind a lock so two readers of one grant never renew it at once.
 //!

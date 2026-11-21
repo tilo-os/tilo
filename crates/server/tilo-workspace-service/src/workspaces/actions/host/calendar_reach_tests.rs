@@ -19,16 +19,13 @@
 
 use std::net::{Ipv4Addr, TcpListener};
 
-use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
     ActionProvider as _, InvokeArgument, InvokeRequest, RemoteActionTarget, person_accounts,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 
-use super::super::ServiceWorkspaceActions;
-use super::super::tests::{caller, settled};
-use super::accounts_tests::key_of;
+use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
 use crate::workspaces::tests::{governor, test_host};
 
@@ -75,14 +72,9 @@ async fn a_calendar_server_whose_name_answers_inside_is_connected_to_by_nobody()
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "studio");
-    let page = actions.in_workspace_as(
-        workspaces.create("Calendars").await.unwrap().workspace_id,
-        &device,
-    );
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
     let caller = caller(&device);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
     listener
@@ -135,14 +127,9 @@ async fn a_kept_calendar_is_read_from_nobody_once_the_operator_shuts_its_own_net
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(workspaces.clone());
-    let root = SigningKey::from_bytes(&rand::random());
-    let device = key_of(&root, "studio");
-    let page = actions.in_workspace_as(
-        workspaces.create("Calendars").await.unwrap().workspace_id,
-        &device,
-    );
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 2).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
     let caller = caller(&device);
     let calendars = fake_caldav::Server::start("ada", PASSWORD);
     calendars.add_calendar("work", "Work");

@@ -45,7 +45,7 @@ use tilo_server_session::workspaces::WorkspaceLabels;
 
 /// The file beside the workspaces' records that says whose each own
 /// workspace is.
-const INDEX: &str = "own-workspaces.json";
+pub(super) const INDEX: &str = "own-workspaces.json";
 /// The file beside it that keeps what each own workspace's owner labelled
 /// it with, by the workspace's UUID.
 const LABELS: &str = "own-workspace-labels.json";

@@ -379,8 +379,7 @@ impl Hosted {
         let day = crate::workspace_agents::today();
         let mut model = self
             .workspaces
-            .person_model(person, Interaction::Classifier)
-            .working_in(workspace);
+            .workspace_model(workspace, Interaction::Classifier);
         if let Some(agent) = &assistant {
             model = model.spending_as(Spender {
                 workspace: judgement.workspace.clone(),

@@ -1,6 +1,7 @@
-//! What a server's agents learned about a person, from the person's own side: they read the list
-//! and change it on a device of theirs, nobody else is answered, and each person's list in each
-//! workspace is a resource of its own.
+//! What a workspace's agents learned, from its members' own side: a member
+//! reads the list and changes it on a device of theirs, an agent a member's
+//! session was handed to reads it and its changes ask that member, and
+//! nobody outside the workspace is answered.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -12,17 +13,21 @@
     reason = "the served and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the server it drives"
 )]
 
+use std::sync::{Arc, Mutex};
+
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
     ActionCallError::{self, InvalidRequest, Refused, UnknownAction},
     ActionProvider as _, Caller, ReceiptStatus,
 };
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::tests::{admit, caller, governed, request, settled};
 use crate::workspaces::person_learned::{self, CORRECT, FORGET, Facts, LEARN, LIST};
 use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::{AsksPeople, PersonAnswer};
 
 /// The agent that works for a person on the server, by its id.
 const SCOUT: &str = "scout";
@@ -54,7 +59,7 @@ impl Asking<'_> {
         .await?;
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
-            other => panic!("a person's own list answers at once: {other:?}"),
+            other => panic!("the workspace's list answers at once: {other:?}"),
         }
     }
 
@@ -67,11 +72,11 @@ impl Asking<'_> {
             })
     }
 
-    /// The person's list as it stands.
+    /// The workspace's list as it stands.
     async fn list(&self, device: &DeviceCert) -> Facts {
         self.ask(device, (LIST, json!({})))
             .await
-            .expect("a person reads their own list")
+            .expect("a member reads the workspace's list")
     }
 }
 
@@ -95,12 +100,45 @@ macro_rules! stage {
 /// Where the agent's fact came from, as a hosted turn closes it.
 const KEPT_IN: &str = "They said so (chat.workspace/messages/m1)";
 
-/// The person reads what an agent on a workspace's server for them kept, writes a fact down themselves
-/// and corrects the agent's: every change of theirs is theirs in the resource, and the list says
-/// when it moved.
+/// A person who answers every question one way, or not at all, and what
+/// they were asked.
+struct Asked {
+    answer: Option<ConfirmationAnswer>,
+    questions: Mutex<Vec<([u8; 32], PendingConfirmation)>>,
+}
+
+impl Asked {
+    fn answering(answer: Option<ConfirmationAnswer>) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            questions: Mutex::default(),
+        })
+    }
+
+    /// How many questions the person was put.
+    fn count(&self) -> usize {
+        self.questions.lock().unwrap().len()
+    }
+}
+
+impl AsksPeople for Asked {
+    fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
+        self.questions.lock().unwrap().push((person, question));
+        let answer = self
+            .answer
+            .clone()
+            .ok_or_else(|| "nobody answered".to_owned());
+        Box::pin(async move { answer })
+    }
+}
+
+/// A member reads what an agent on the workspace's server kept, writes a
+/// fact down themselves and corrects the agent's: every change of theirs is
+/// theirs in the resource, and the list says when it moved. Every member of
+/// the workspace reads the one list.
 #[tokio::test]
-async fn a_person_reads_and_changes_what_the_servers_agents_learned_about_them() {
-    stage!(_dir, served, workspaces, workspace, provider, ada, _bo);
+async fn a_member_reads_and_changes_what_the_workspaces_agents_learned() {
+    stage!(_dir, served, workspaces, workspace, provider, ada, bo);
     let none = provider.list(&ada).await;
     assert_eq!(none.workspace, provider.workspace.to_string());
     assert!(
@@ -108,7 +146,7 @@ async fn a_person_reads_and_changes_what_the_servers_agents_learned_about_them()
         "{none:?}"
     );
 
-    // An agent on a workspace's server for her keeps a fact in a turn of hers.
+    // An agent on the workspace's server for her keeps a fact in a turn of hers.
     let coffee = ("Takes her coffee black.", KEPT_IN);
     workspaces
         .keep_learned_fact(&ada.user_public_key, &workspace, SCOUT, coffee)
@@ -122,6 +160,11 @@ async fn a_person_reads_and_changes_what_the_servers_agents_learned_about_them()
         ("Takes her coffee black.", KEPT_IN, Some(SCOUT))
     );
     assert!(fact.at_ms > 0 && !listed.revision.is_empty(), "{listed:?}");
+    assert_eq!(
+        provider.list(&bo).await,
+        listed,
+        "the other member reads the one list"
+    );
 
     // She writes one down herself: nobody's but hers, and the list has moved.
     let graz = json!({"text": "Works from Graz on Fridays.", "source": "I wrote it down"});
@@ -136,6 +179,11 @@ async fn a_person_reads_and_changes_what_the_servers_agents_learned_about_them()
     assert_eq!(
         (own.source.as_str(), own.by.as_deref()),
         ("I wrote it down", None)
+    );
+    assert_eq!(
+        provider.list(&bo).await,
+        two,
+        "what a member writes is the workspace's"
     );
 
     // She corrects the agent's fact: the same fact, hers now, from where it came.
@@ -158,10 +206,11 @@ async fn a_person_reads_and_changes_what_the_servers_agents_learned_about_them()
     served.shutdown().await;
 }
 
-/// What she forgets is gone from her list and from what a turn of hers is told. What is no
-/// change of the list is refused in words and changes nothing.
+/// What a member forgets is gone from the workspace's list and from what a
+/// turn of its agents is told. What is no change of the list is refused in
+/// words and changes nothing.
 #[tokio::test]
-async fn what_a_person_forgets_is_gone_and_what_is_no_change_is_refused() {
+async fn what_a_member_forgets_is_gone_and_what_is_no_change_is_refused() {
     stage!(_dir, served, workspaces, workspace, provider, ada, _bo);
     for fact in ["Takes her coffee black.", "Works from Graz on Fridays."] {
         workspaces
@@ -183,14 +232,14 @@ async fn what_a_person_forgets_is_gone_and_what_is_no_change_is_refused() {
     let texts: Vec<&str> = left.facts.iter().map(|held| held.text.as_str()).collect();
     assert_eq!(texts, ["Works from Graz on Fridays."]);
     let told = workspaces
-        .learned_about(&ada.user_public_key, &workspace)
+        .learned_about(&workspace)
         .expect("the resource a hosted turn is told");
     let told: Vec<&str> = told
         .facts
         .iter()
         .map(|(_, held)| held.text.as_str())
         .collect();
-    assert_eq!(told, texts, "a turn of hers is told what her list holds");
+    assert_eq!(told, texts, "a turn is told what the workspace's list holds");
 
     for (asking, why) in [
         ((FORGET, json!({"fact": coffee})), "a fact that is gone"),
@@ -220,18 +269,32 @@ async fn what_a_person_forgets_is_gone_and_what_is_no_change_is_refused() {
     assert_eq!(
         provider.list(&ada).await,
         left,
-        "her list is as she left it"
+        "the list is as she left it"
     );
     served.shutdown().await;
 }
 
-/// Nobody but the person reaches their list. Another member reads and changes only their own,
-/// a session that is not the caller's own is answered nothing, and no agent or bot is, the
-/// person's own agent included: unknown and forbidden are the same answer, for reading as for
-/// every change.
+/// Nobody outside the workspace reaches its list. Another member reads and
+/// changes the one list; a member of another workspace, a device of nobody,
+/// a bare agent turn with no device of a member's behind it and an app are
+/// answered nothing; and an agent a member's session was handed to reads,
+/// while its changes ask that member first.
 #[tokio::test]
-async fn nobody_but_the_person_reaches_what_was_learned_about_them() {
-    stage!(_dir, served, workspaces, workspace, provider, ada, bo);
+async fn nobody_outside_the_workspace_reaches_what_was_learned() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let served = test_host(dir.path(), &key, &owner).await;
+    let workspaces = served.workspaces();
+    let (workspace, here, service) = governed(workspaces).await;
+    let provider = Asking {
+        server: &service,
+        workspace: here,
+    };
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let (elsewhere, _, _) = governed(workspaces).await;
+    let cy = admit(workspaces, &elsewhere, &owner, 3).await;
+    let (_, stranger) = governor();
     workspaces
         .keep_learned_fact(
             &ada.user_public_key,
@@ -257,21 +320,48 @@ async fn nobody_but_the_person_reaches_what_was_learned_about_them() {
         ]
     };
 
-    // Another member's list is their own: empty, and her fact is no fact of it.
-    let his = provider.ask(&bo, (LIST, json!({}))).await.unwrap();
-    assert!(his.facts.is_empty() && his.revision.is_empty(), "{his:?}");
-    for asking in [
-        (
-            CORRECT,
-            json!({"fact": fact, "text": "Takes her coffee white."}),
-        ),
-        (FORGET, json!({"fact": fact})),
+    // Another member of the workspace reads and changes the one list.
+    assert_eq!(provider.ask(&bo, (LIST, json!({}))).await.unwrap(), hers);
+    let his = provider
+        .ask(
+            &bo,
+            (
+                LEARN,
+                json!({"text": "Wants invoices paid to account 7.", "source": "Bo said so"}),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(
+        his.facts
+            .iter()
+            .any(|held| held.text == "Wants invoices paid to account 7."),
+        "{his:?}"
+    );
+    assert_eq!(
+        provider.ask(&ada, (LIST, json!({}))).await.unwrap(),
+        his,
+        "what one member writes, every member reads"
+    );
+
+    // A member of another workspace, and a device that is no member's, are
+    // nobody to it.
+    for (who, device) in [
+        ("a member of another workspace", &cy),
+        ("a device of nobody", &stranger),
     ] {
-        let refused = provider.ask(&bo, asking).await;
-        assert!(matches!(refused, Err(Refused { .. })), "{refused:?}");
+        for asking in changes() {
+            let action = asking.0;
+            let refused = provider.ask_as(device, &caller(device), asking).await;
+            assert!(
+                matches!(refused, Err(UnknownAction)),
+                "{who}, {action}: {refused:?}"
+            );
+        }
     }
 
-    // A session that is not the caller's own: he on her session, she named on his.
+    // A session that is not the caller's own: he on her session, she named
+    // on his.
     for (device, named) in [(&ada, caller(&bo)), (&bo, caller(&ada))] {
         for asking in changes() {
             let action = asking.0;
@@ -283,20 +373,18 @@ async fn nobody_but_the_person_reaches_what_was_learned_about_them() {
         }
     }
 
-    // No agent and no bot, her own agent included.
+    // A bare agent turn with no device of a member's behind it, and an app.
     let person = hex::encode(ada.user_public_key);
-    let agents = [
-        Caller::delegated_agent(SCOUT, ada.user_public_key, ada.device_public_key),
-        Caller::bot("installed", ada.user_public_key, ada.device_public_key),
+    let nobodied = [
         Caller::agent_turn(
             SCOUT,
-            person,
+            person.clone(),
             tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
         ),
         Caller::local_agent(SCOUT),
-        Caller::authenticated(ada.user_public_key, ada.device_public_key).delegated_to(SCOUT),
+        Caller::local_app("so.tilo.chat").acting_for(person),
     ];
-    for agent in &agents {
+    for agent in &nobodied {
         for asking in changes() {
             let action = asking.0;
             let refused = provider.ask_as(&ada, agent, asking).await;
@@ -308,12 +396,63 @@ async fn nobody_but_the_person_reaches_what_was_learned_about_them() {
         }
     }
 
-    // Her list is as it was, and he still has none.
-    assert_eq!(provider.ask(&ada, (LIST, json!({}))).await.unwrap(), hers);
+    // An agent her device handed its session to reads the list, and its
+    // changes ask her first: unanswered they change nothing, her no refuses
+    // them, and her yes makes the change as the agent's.
+    let agent = caller(&ada).delegated_to(SCOUT);
+    let seen = provider.ask_as(&ada, &agent, (LIST, json!({}))).await.unwrap();
+    let seen: Facts = serde_json::from_value(seen).unwrap();
+    assert_eq!(seen, his, "an agent reads the workspace's list");
+    let teaching = (
+        LEARN,
+        json!({"text": "Prefers calls after noon.", "source": "She said so"}),
+    );
+    let unasked = provider.ask_as(&ada, &agent, teaching.clone()).await;
     assert!(
-        workspaces
-            .learned_about(&bo.user_public_key, &workspace)
-            .is_none()
+        matches!(unasked, Err(ActionCallError::ConfirmationRequired { .. })),
+        "a change with nobody to ask through: {unasked:?}"
+    );
+    let silent = Asked::answering(None);
+    workspaces.ask_people(silent.clone());
+    let unanswered = provider.ask_as(&ada, &agent, teaching.clone()).await;
+    assert!(
+        matches!(
+            unanswered,
+            Err(ActionCallError::ConfirmationRequired { .. })
+        ),
+        "a change with no answer: {unanswered:?}"
+    );
+    assert_eq!(silent.count(), 1, "the change asked her");
+    let (asked_person, question) = silent.questions.lock().unwrap()[0].clone();
+    assert_eq!(
+        asked_person, ada.user_public_key,
+        "her agent, her own answer"
+    );
+    assert_eq!(question.agent_id, SCOUT);
+    assert_eq!(provider.list(&ada).await, his, "nothing changed");
+
+    let refusing = Asked::answering(Some(ConfirmationAnswer::Deny));
+    workspaces.ask_people(refusing.clone());
+    let refused = provider.ask_as(&ada, &agent, teaching.clone()).await;
+    assert!(matches!(refused, Err(Refused { .. })), "{refused:?}");
+    assert_eq!(refusing.count(), 1, "the change asked her");
+    assert_eq!(provider.list(&ada).await, his, "nothing changed");
+
+    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
+    workspaces.ask_people(allowing.clone());
+    let changed = provider.ask_as(&ada, &agent, teaching).await.unwrap();
+    let changed: Facts = serde_json::from_value(changed).unwrap();
+    let kept = changed
+        .facts
+        .iter()
+        .find(|held| held.text == "Prefers calls after noon.")
+        .expect("the fact the agent kept");
+    assert_eq!(kept.by.as_deref(), Some(SCOUT), "the agent wrote it");
+    assert_eq!(allowing.count(), 1, "one question for one change");
+    assert_eq!(
+        provider.list(&bo).await,
+        changed,
+        "the change is the workspace's"
     );
     served.shutdown().await;
 }
@@ -336,19 +475,20 @@ fn kept_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// What a server keeps of what was learned about a person is kept for that person in that
-/// workspace: another person's and another workspace's are resources of their own, a change that
-/// fails changes nothing, nothing that is no workspace id names a file, and on disk each resource
-/// lies under its own person's folder, readable by the server's user alone.
+/// What a server keeps of what was learned is kept for one workspace:
+/// another workspace's is a resource of its own, a change that fails changes
+/// nothing, nothing that is no workspace id names a file, and on disk each
+/// resource lies under its workspace's own store, readable by the server's
+/// user alone.
 #[tokio::test]
-async fn what_was_learned_is_kept_for_one_person_in_one_workspace() {
+async fn what_was_learned_is_kept_for_one_workspace() {
     const ADA: [u8; 32] = [7; 32];
     const BO: [u8; 32] = [9; 32];
     stage!(dir, served, workspaces, here, _provider, _ada, _bo);
     let there = workspaces.create("There").await.unwrap().workspace;
-    let texts = |person: &[u8; 32], workspace: &str| -> Vec<String> {
+    let texts = |workspace: &str| -> Vec<String> {
         workspaces
-            .learned_about(person, workspace)
+            .learned_about(workspace)
             .map(|learned| {
                 learned
                     .facts
@@ -358,7 +498,7 @@ async fn what_was_learned_is_kept_for_one_person_in_one_workspace() {
             })
             .unwrap_or_default()
     };
-    assert!(workspaces.learned_about(&ADA, &here).is_none());
+    assert!(workspaces.learned_about(&here).is_none());
     workspaces
         .keep_learned_fact(
             &ADA,
@@ -367,20 +507,16 @@ async fn what_was_learned_is_kept_for_one_person_in_one_workspace() {
             ("Takes her coffee black.", "They said so"),
         )
         .unwrap();
-    assert_eq!(texts(&ADA, &here), ["Takes her coffee black."]);
+    assert_eq!(texts(&here), ["Takes her coffee black."]);
     assert!(
-        workspaces.learned_about(&BO, &here).is_none(),
-        "nobody else's"
-    );
-    assert!(
-        workspaces.learned_about(&ADA, &there).is_none(),
+        workspaces.learned_about(&there).is_none(),
         "no other workspace's"
     );
     workspaces
-        .keep_learned_fact(&BO, &here, SCOUT, ("Drinks tea.", "They said so"))
+        .keep_learned_fact(&BO, &there, SCOUT, ("Drinks tea.", "They said so"))
         .unwrap();
-    assert_eq!(texts(&ADA, &here), ["Takes her coffee black."]);
-    assert_eq!(texts(&BO, &here), ["Drinks tea."]);
+    assert_eq!(texts(&here), ["Takes her coffee black."]);
+    assert_eq!(texts(&there), ["Drinks tea."]);
 
     // A change that refuses keeps the resource as it was.
     let refused: Result<(), String> =
@@ -391,7 +527,7 @@ async fn what_was_learned_is_kept_for_one_person_in_one_workspace() {
             .keep_learned_fact(&ADA, &here, SCOUT, ("two\nlines", "They said so"))
             .is_err()
     );
-    assert_eq!(texts(&ADA, &here), ["Takes her coffee black."]);
+    assert_eq!(texts(&here), ["Takes her coffee black."]);
 
     // Only a workspace's id names a resource: nothing else becomes part of a path.
     for no_workspace in [
@@ -402,7 +538,7 @@ async fn what_was_learned_is_kept_for_one_person_in_one_workspace() {
         here.trim_end_matches(char::is_alphanumeric),
     ] {
         assert!(
-            workspaces.learned_about(&ADA, no_workspace).is_none(),
+            workspaces.learned_about(no_workspace).is_none(),
             "{no_workspace:?}"
         );
         assert!(
@@ -413,17 +549,22 @@ async fn what_was_learned_is_kept_for_one_person_in_one_workspace() {
         );
     }
 
-    // On disk: two resources, each under its own person's folder, for the server's user alone.
+    // On disk: one resource per workspace, each under its workspace's own
+    // store, for the server's user alone.
     let kept = kept_files(dir.path());
     assert_eq!(kept.len(), 2, "{kept:?}");
-    for person in [ADA, BO] {
+    for workspace in [&here, &there] {
         let theirs: Vec<_> = kept
             .iter()
-            .filter(|path| path.to_string_lossy().contains(&hex::encode(person)))
+            .filter(|path| path.to_string_lossy().contains(&hex::encode(workspace.as_bytes())))
             .collect();
         let [path] = theirs.as_slice() else {
-            panic!("one resource of each person's own, not {theirs:?}");
+            panic!("one resource of each workspace's own, not {theirs:?}");
         };
+        assert!(
+            path.ends_with(format!("learned/{workspace}.automerge")),
+            "{path:?}"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

@@ -611,7 +611,7 @@ async fn files(actions: &WorkspaceActions, workspace: &str, person: &Caller, tit
 }
 
 /// The look-round's own day in a turn the server really carries out. A look hands over what it
-/// found; the turn that starts is answered by its person's own model, and every call of it counts
+/// found; the turn that starts is answered by the workspace's own model, and every call of it counts
 /// on the look-round's day beside the assistant's. At the limit the turn is asked nothing more,
 /// the look-round says what it spent, and the next look, with news again, starts no turn and
 /// says what the one before it cost.
@@ -643,7 +643,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     workspaces.answer_models_with(theirs.clone());
     workspaces
         .link_model_for(
-            &keeper,
+            &workspace,
             &Linking {
                 name: "Google",
                 protocol: ProviderProtocol::OpenAiCompatible,
@@ -708,8 +708,8 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         "what the look found is handed over"
     );
 
-    // The server owes the assistant the turn the look started and carries it out with its
-    // person's own model, whose first call spends the look-round's day: it is asked nothing more.
+    // The server owes the assistant the turn the look started and carries it out with the
+    // workspace's own model, whose first call spends the look-round's day: it is asked nothing more.
     let unasked = Arc::new(Mutex::new(Vec::new()));
     let agents = ServerAgents::for_test(
         workspaces.clone(),

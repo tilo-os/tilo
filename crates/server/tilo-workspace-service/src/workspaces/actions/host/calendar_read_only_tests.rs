@@ -1,10 +1,11 @@
 //! A calendar account connected for reading only: its entries are kept and
 //! read as any account's are, and nothing is ever written to its calendar
-//! server. Not by the holder that keeps it, not by the agent its person
-//! named for it, not through the person's own asking: each is refused in
-//! words that say the account is connected for reading only, before anybody
-//! is asked anything. Adding the account again lifts nothing. Its calendar
-//! server is asked to read and nothing else, and writes to nobody.
+//! server. Not by the holder that keeps it, not by an agent a member's
+//! device handed its session to, not through the person's own asking: each
+//! is refused in words that say the account is connected for reading only,
+//! before anybody is asked anything. Adding the account again lifts nothing.
+//! Its calendar server is asked to read and nothing else, and writes to
+//! nobody.
 
 use super::*;
 
@@ -83,9 +84,7 @@ async fn a_calendar_account_connected_for_reading_only_is_never_written_to() {
 
     // Her settings say so, beside the account's server and user name: where
     // a device's Calendar reads the account too.
-    let root = ada
-        .workspaces
-        .person_settings_root(&ada.device.user_public_key);
+    let root = ada.root();
     let settings = accounts::AccountStore::load_in(&root)
         .get(&accounts::AccountId::from(account.clone()))
         .expect("the account is kept")
@@ -99,9 +98,12 @@ async fn a_calendar_account_connected_for_reading_only_is_never_written_to() {
         "every calendar of it is kept as one that cannot be written: {settings}"
     );
 
-    // Adding it again lifts nothing, whoever adds it: her assistant with a
-    // vault item's reference, and she herself with the password.
+    // Adding it again lifts nothing, whoever adds it: the agent her session
+    // was handed to with a vault item's reference, once she allowed that,
+    // and she herself with the password.
     let assistant = ada.agent("assistant");
+    let allowing = Answering::with(Some(ConfirmationAnswer::AllowOnce));
+    ada.workspaces.ask_people(allowing.clone());
     let login = asked(
         &ada.page(),
         &ada.herself(),
@@ -118,6 +120,7 @@ async fn a_calendar_account_connected_for_reading_only_is_never_written_to() {
         )
         .await
         .expect("her assistant adds the account again, with a password it never sees");
+    assert_eq!(allowing.count(), 1, "the agent's add asked her");
     assert_eq!(again["id"], added["id"], "it is the same account: {again}");
     assert!(
         kept_for_reading(&again),
@@ -138,20 +141,8 @@ async fn a_calendar_account_connected_for_reading_only_is_never_written_to() {
         "it stays connected for reading only until she removes it: {again}"
     );
 
-    // She names her assistant for it.
-    let naming = RemoteActionTarget {
-        provider: person_accounts::PROVIDER.to_owned(),
-        address: ActionAddress::new(person_accounts::RESOURCE, person_accounts::ASSISTANT),
-    };
-    asked(
-        &ada.page(),
-        &ada.herself(),
-        naming,
-        json!({"account": account, "agent": "assistant", "may": true}),
-    )
-    .await
-    .expect("she names her assistant for the calendar account");
-    // She would allow whatever she is asked: nothing is to reach her.
+    // She would allow whatever else she is asked: nothing more is to reach
+    // her, because reading only refuses first.
     let answering = Answering::with(Some(ConfirmationAnswer::AllowOnce));
     ada.workspaces.ask_people(answering.clone());
 

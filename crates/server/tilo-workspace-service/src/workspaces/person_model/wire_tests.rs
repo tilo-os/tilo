@@ -1,5 +1,5 @@
-//! A person's model asked for real: the host's own provider client against
-//! servers that speak each provider's wire. What a person keeps in their
+//! A workspace's model asked for real: the host's own provider client against
+//! servers that speak each provider's wire. What a workspace keeps in its
 //! settings and vault reaches the provider in the provider's own dialect,
 //! and the stream, the tool calls, the tokens and the cost come back.
 
@@ -27,7 +27,7 @@ use super::*;
 use crate::workspaces::fixtures::TestHost;
 use crate::workspaces::tests::{governor, test_host};
 
-const ADA: [u8; 32] = [7; 32];
+const ADA: WorkspaceId = WorkspaceId::from_u128(7);
 const KEY: &str = "sk-ada-wire-secret";
 const OPENAI: ProviderProtocol = ProviderProtocol::OpenAiCompatible;
 
@@ -62,8 +62,8 @@ fn soon() -> Instant {
 }
 
 /// A host whose operator lets it call the test's provider on this machine,
-/// with that provider linked as Ada's own: its address, its key in her vault
-/// and `model` as what her work runs on.
+/// with that provider linked as the workspace's own: its address, its key in
+/// its vault and `model` as what its work runs on.
 async fn linked(
     (name, protocol): (&str, ProviderProtocol),
     endpoint: &str,
@@ -75,8 +75,7 @@ async fn linked(
     server.workspaces().call_private_model_addresses(true);
     server
         .workspaces()
-        .link_model_for(
-            &ADA,
+        .link_model_for(&ADA.to_string(),
             &Linking {
                 name,
                 protocol,
@@ -162,8 +161,8 @@ fn keyed_only_in(request: &test_http::Request, header: &str, value: &str) {
     );
 }
 
-/// A script that answers for Ada's provider, and that provider's id in her
-/// settings.
+/// A script that answers for the workspace's provider, and that provider's
+/// id in its settings.
 fn scripted_for_ada(
     workspaces: &Workspaces,
     said: [&str; 3],
@@ -171,7 +170,7 @@ fn scripted_for_ada(
     use super::scripted::{Reply as Said, ScriptedProvider};
     let scripted = ScriptedProvider::answering(said.map(Said::text));
     workspaces.answer_models_with(scripted.clone());
-    let root = workspaces.person_settings_root(&ADA);
+    let root = workspaces.workspace_root(&ADA.to_string());
     let provider = crate::workspaces::person_settings::provider_config(&root)
         .profiles
         .first()
@@ -180,22 +179,23 @@ fn scripted_for_ada(
     (scripted, provider)
 }
 
-/// Ada's provider with its key in her vault, as her settings keep it.
+/// The workspace's provider with its key in its vault, as its settings keep
+/// it.
 const HERS: (&str, &str) = (
     "https://generativelanguage.googleapis.com/v1beta/openai",
     "gemini-main",
 );
 
-/// One piece of work asks its model many times one after the other: its
-/// person's vault is opened for the first ask and not again while it is the
-/// file it was. Other work opens it for itself.
+/// One piece of work asks its model many times one after the other: the
+/// workspace's vault is opened for the first ask and not again while it is
+/// the file it was. Other work opens it for itself.
 #[tokio::test]
 async fn the_asks_of_one_piece_of_work_open_the_vault_once() {
     let (_dir, server) = linked(("Google", OPENAI), HERS.0, HERS.1).await;
     let workspaces = server.workspaces();
     let (scripted, _) = scripted_for_ada(workspaces, ["one", "two", "three"]);
 
-    let model = workspaces.person_model(ADA, Interaction::Task);
+    let model = workspaces.workspace_model(ADA, Interaction::Task);
     model.linked().unwrap();
     for _ in 0..3 {
         model
@@ -215,12 +215,12 @@ async fn the_asks_of_one_piece_of_work_open_the_vault_once() {
         "the vault is opened once for what the work is linked to and its three asks"
     );
 
-    let other = workspaces.person_model(ADA, Interaction::Task);
+    let other = workspaces.workspace_model(ADA, Interaction::Task);
     other.linked().unwrap();
     assert_eq!(other.kept.opened(), 1);
 }
 
-/// A key its person replaces or removes while work goes on is new, or gone,
+/// A key its members replace or remove while work goes on is new, or gone,
 /// at the very next ask: the provider is asked with the new key, and is not
 /// asked at all once the key is removed.
 #[tokio::test]
@@ -231,9 +231,9 @@ async fn a_key_replaced_or_removed_between_two_asks_is_not_used_by_the_next() {
     let (_dir, server) = linked(("Google", OPENAI), HERS.0, HERS.1).await;
     let workspaces = server.workspaces();
     let (scripted, provider) = scripted_for_ada(workspaces, ["one", "two", "never"]);
-    let root = workspaces.person_settings_root(&ADA);
+    let root = workspaces.workspace_root(&ADA.to_string());
 
-    let model = workspaces.person_model(ADA, Interaction::Task);
+    let model = workspaces.workspace_model(ADA, Interaction::Task);
     model
         .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
         .await
@@ -301,7 +301,7 @@ async fn an_openai_compatible_provider_streams_its_answer_and_its_cost() {
         model,
     )
     .await;
-    let asked = server.workspaces().person_model(ADA, Interaction::Request);
+    let asked = server.workspaces().workspace_model(ADA, Interaction::Request);
 
     let mut stream = StreamState::default();
     let mut pieces = Vec::new();
@@ -364,7 +364,7 @@ async fn an_openai_compatible_providers_tool_call_comes_back_whole() {
     let mut deltas = Vec::new();
     let calling = server
         .workspaces()
-        .person_model(ADA, Interaction::Request)
+        .workspace_model(ADA, Interaction::Request)
         .answer(
             &asking("Look it up", vec![lookup()]),
             soon(),
@@ -426,7 +426,7 @@ async fn anthropic_is_asked_at_its_messages_api() {
     let mut stream = StreamState::default();
     let answer = server
         .workspaces()
-        .person_model(ADA, Interaction::Subtask)
+        .workspace_model(ADA, Interaction::Subtask)
         .answer(
             &asking("Look it up", vec![lookup()]),
             soon(),
@@ -497,7 +497,7 @@ async fn a_claude_model_that_refuses_a_forced_tool_call_is_left_to_choose() {
         request.tool_choice = ToolChoice::Required;
         let answer = server
             .workspaces()
-            .person_model(ADA, Interaction::Task)
+            .workspace_model(ADA, Interaction::Task)
             .answer(&request, soon(), &mut |_| {})
             .await
             .unwrap();
@@ -532,7 +532,7 @@ async fn gemini_is_asked_through_its_openai_endpoint_and_gets_its_signature_back
     ]);
     let endpoint = format!("{}/v1beta/openai", responder.url());
     let (_dir, server) = linked(("Google", OPENAI), &endpoint, model).await;
-    let asked = server.workspaces().person_model(ADA, Interaction::Request);
+    let asked = server.workspaces().workspace_model(ADA, Interaction::Request);
 
     let mut request = asking("How many?", vec![lookup()]);
     let first = asked.answer(&request, soon(), &mut |_| {}).await.unwrap();
@@ -599,7 +599,7 @@ async fn a_busy_provider_is_asked_again_and_a_refused_key_is_said() {
         model,
     )
     .await;
-    let asked = server.workspaces().person_model(ADA, Interaction::Task);
+    let asked = server.workspaces().workspace_model(ADA, Interaction::Task);
 
     let answer = asked
         .answer(&asking("When?", Vec::new()), soon(), &mut |_| {})
@@ -658,7 +658,7 @@ async fn a_call_let_go_of_ends_the_providers_request() {
         "gpt-4o-mini",
     )
     .await;
-    let asked = server.workspaces().person_model(ADA, Interaction::Request);
+    let asked = server.workspaces().workspace_model(ADA, Interaction::Request);
 
     let (seen, first) = tokio::sync::oneshot::channel();
     let mut seen = Some(seen);
@@ -706,10 +706,13 @@ async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
         "https://100.64.0.1/v1".to_owned(),
         "https://[::ffff:10.0.0.1]/v1".to_owned(),
     ] {
-        let person = *blake3::hash(endpoint.as_bytes()).as_bytes();
+        let hashed = blake3::hash(endpoint.as_bytes());
+        let mut first = [0; 16];
+        first.copy_from_slice(&hashed.as_bytes()[..16]);
+        let workspace = WorkspaceId::from_u128(u128::from_le_bytes(first));
         workspaces
             .link_model_for(
-                &person,
+                &workspace.to_string(),
                 &Linking {
                     name: "Inside",
                     protocol: OPENAI,
@@ -721,7 +724,7 @@ async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
             )
             .unwrap();
         let refused = workspaces
-            .person_model(person, Interaction::Request)
+            .workspace_model(workspace, Interaction::Request)
             .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
             .await
             .unwrap_err();
@@ -753,7 +756,7 @@ async fn a_silent_provider_is_let_go_of_and_the_next_call_waits_longer() {
     .await;
     let asked = server
         .workspaces()
-        .person_model(ADA, Interaction::Task)
+        .workspace_model(ADA, Interaction::Task)
         .letting_go(Quiet {
             first: Duration::from_millis(300),
             after_silence: Duration::from_millis(900),
