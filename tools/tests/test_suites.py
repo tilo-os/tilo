@@ -381,14 +381,10 @@ class CargoReaderTests(unittest.TestCase):
     def test_office_fixture_changes_select_import_consumers(self):
         manifest = suites.load()
         prefix = "crates/system/cloud-source-gdrive/tests/fixtures/"
-        for fixture in ("docx.rs", "xlsx.rs", "pptx.rs"):
+        for fixture in ("docx.rs", "xlsx.rs", "pptx.rs", "empty.svg"):
             with self.subTest(fixture=fixture):
                 self.assertEqual(
-                    suites.select_packages(manifest, [prefix + fixture]),
-                    ["settings", "tilo-fs"],
-                )
-        self.assertEqual(
-            suites.select_packages(manifest, [prefix + "empty.svg"]), ["tilo-fs"])
+                    suites.select_packages(manifest, [prefix + fixture]), ["tilo-fs"])
         # Import consumers select only the fixtures they read.
         self.assertEqual(
             suites.select_packages(manifest, [prefix + "unrelated.rs"]), [])
