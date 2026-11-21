@@ -627,7 +627,21 @@ impl Restarts {
     }
 }
 
+/// Whether `path` is a kernel's start-up image, `/usr/lib/modules/<kernel>/initramfs.img`.
+fn is_initramfs(path: &str) -> bool {
+    path.strip_prefix("/usr/lib/modules/")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(_, file)| file == "initramfs.img")
+}
+
 pub fn classify(path: &str, owner: Option<&Component>) -> Class {
+    // The start-up image holds Tilo's own sign-in and recovery programs, so it differs in nearly
+    // every image, also under an unchanged kernel. The machine that is up never reads it again:
+    // the next start takes the new one, and nobody is asked to restart for it. Called a reason to
+    // restart, it made every update one, and none could finish with the desktop alone.
+    if is_initramfs(path) {
+        return Class::NextBoot;
+    }
     if BOOT_PREFIXES.iter().any(|prefix| path.starts_with(prefix)) {
         return Class::Boot;
     }

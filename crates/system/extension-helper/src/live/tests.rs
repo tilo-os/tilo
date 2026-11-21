@@ -126,12 +126,24 @@ tilo_test_env::scenario! {
         assert!(Components::parse("").is_err());
     }
 
-    phase only_the_kernel_bootloader_and_initramfs_need_a_restart_of_the_machine;
+    phase only_the_kernel_and_bootloader_need_a_restart_of_the_machine;
     {
         let components = components();
         let class = |path: &str| classify(path, components.owner(path));
         assert_eq!(class("/usr/lib/modules/6.17.1/vmlinuz"), Class::Boot);
-        assert_eq!(class("/usr/lib/modules/6.17.1/initramfs.img"), Class::Boot);
+        assert_eq!(
+            class("/usr/lib/modules/6.17.1/kernel/fs/erofs/erofs.ko.xz"),
+            Class::Boot
+        );
+        // A kernel's start-up image is rebuilt with every image; only the next start reads it.
+        assert_eq!(
+            class("/usr/lib/modules/6.17.1/initramfs.img"),
+            Class::NextBoot
+        );
+        assert_eq!(
+            class("/usr/lib/modules/6.17.1/extra/initramfs.img"),
+            Class::Boot
+        );
         assert_eq!(
             class("/usr/lib/systemd/boot/efi/systemd-bootx64.efi"),
             Class::Boot
