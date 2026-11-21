@@ -180,13 +180,16 @@ impl sheet::Invitations for Invite {
                 // the link carries the key in its fragment.
                 let (role, recipient) = &asked;
                 let created = sheet::made(&issued.invite, role, recipient, issued.expires_at_ns);
-                if let Err(reason) = store.hand_over(
+                // The sheet's state is let go before a refusal is said in it, which borrows it
+                // again.
+                let handed = store.hand_over(
                     &mut made.borrow_mut(),
                     created,
                     &issued.text,
                     site.as_ref(),
                     host.as_deref(),
-                ) {
+                );
+                if let Err(reason) = handed {
                     tracing::warn!(%reason, "the invitation was not handed over");
                     say_refused(&made, "invite-failed", Refused::Because(reason));
                 }
