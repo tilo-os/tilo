@@ -811,9 +811,14 @@ package = "tilolang-cli"
 # describes Chat and Tasks from their sources, and the layout check's own tests lay out the
 # shell's traditional desktop, and its windows, from its sources; the dev test builds
 # generations of Counter against the repository it is handed; the check test compiles a copy of
-# the PDF viewer's surface. The copy they all stage from is `tests/support`, which names the
-# packages' directory.
-inputs = ["apps/chat/", "apps/tl/", "apps/pdf-viewer/surface.toml"]
+# the PDF viewer's surface, and the build test reads where the runtime names its platforms. The
+# copy they all stage from is `tests/support`, which names the packages' directory.
+inputs = [
+  "apps/chat/",
+  "apps/tl/",
+  "apps/pdf-viewer/surface.toml",
+  "apps/tilolang/tilo-runtime.toml",
+]
 readers = [
   "crates/lang/tilolang-cli/src/layout_check/stage.rs",
   "crates/lang/tilolang-cli/src/layout_check/windows.rs",
@@ -821,6 +826,7 @@ readers = [
   "crates/lang/tilolang-cli/tests/native_types.rs",
   "crates/lang/tilolang-cli/tests/check.rs",
   "crates/lang/tilolang-cli/tests/dev.rs",
+  "crates/lang/tilolang-cli/tests/build.rs",
 ]
 
 [[cargo]]
@@ -2386,14 +2392,8 @@ package = "tilo-cli"
 # Every program moved off PATH must be installed in /usr/libexec/tilo with its
 # old command name linked to tilo; the alias table is checked against the
 # image's component manifest.
-inputs = [
-  "os/components.toml",
-  "apps/pdf-viewer/surface.toml",
-  "apps/pdf-viewer/tilo-app.toml",
-  "apps/tasks/surface.toml",
-  "apps/tasks/tilo-app.toml",
-]
-readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/sdk.rs"]
+inputs = ["os/components.toml"]
+readers = ["crates/system/tilo-cli/src/aliases.rs"]
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
 # sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
