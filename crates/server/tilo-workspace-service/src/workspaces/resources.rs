@@ -729,11 +729,39 @@ impl Workspaces {
         if !is_store_document(document_id) {
             return Ok(Some(message));
         }
+        if envelope
+            .encryption
+            .and_then(|metadata| metadata.retention())
+            .is_none()
+        {
+            return Ok(None);
+        }
         let governed = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = governed.lock().await;
+        let now = tilo_clock::wall();
+        if governed
+            .may_start(author, (app_id, document_id), now)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let mut candidate = governed.peer().clone();
+        candidate
+            .receive_from(
+                tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
+                message.clone(),
+                now,
+            )
+            .map_err(|error| error.to_string())?;
+        if !candidate
+            .publication()
+            .has_sealed_write(app_id, document_id, envelope)
+        {
+            return Ok(None);
+        }
         if governed
             .take_resources(author, (app_id, document_id), envelope, readers.as_deref())
             .await?
@@ -744,23 +772,10 @@ impl Workspaces {
             self.tell_followers(&governed, author, written, &message, false)
                 .await;
         }
-        drop(governed);
-        // A write by a device of no editor changes nothing here, and is no document write
-        // either: it was dropped as any write the workspace refuses is.
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let permitted = {
-            let governed = state.lock().await;
-            governed
-                .may_start(author, (app_id, document_id), tilo_clock::wall())
-                .is_ok()
-        };
         // The workspace's own replica keeps the document the store indexed, as it keeps every
         // document a member wrote: a change of it is drafted after it, and the workspace's other
         // members follow it as they follow any.
-        Ok(permitted.then_some(message))
+        Ok(Some(message))
     }
 
     /// Commit an existing, staged resource update while the workspace remains held.

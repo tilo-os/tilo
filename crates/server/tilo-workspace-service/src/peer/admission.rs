@@ -20,11 +20,24 @@ pub(super) async fn enqueue_state(
     source: Option<StateSource>,
     metrics: Arc<crate::metrics::Metrics>,
 ) -> Result<(), PeerError> {
-    Box::pin(enqueue_state_inner(
+    let resource_write = if let Envelope::Delta { delta, .. } = &envelope
+        && let Some((_, _, body)) = crate::coedit::retention_view(delta)
+        && let Ok(neighbour_wire::NeighbourMsg::AppDocument { document_id, .. }) =
+            neighbour_wire::NeighbourMsg::decode(body)
+    {
+        collab_types::is_store_document(&document_id)
+    } else {
+        false
+    };
+    let admitted = Box::pin(enqueue_state_inner(
         workspace, envelope, source, metrics, false, false,
     ))
-    .await
-    .map(drop)
+    .await?;
+    // The governor projects resource writes to disk when it receives the notice.
+    if resource_write {
+        crate::persistence::receipt(admitted.completion).await?;
+    }
+    Ok(())
 }
 
 /// A state commit admitted to its workspace's ordered persistence owner.

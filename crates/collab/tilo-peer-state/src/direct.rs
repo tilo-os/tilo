@@ -735,14 +735,15 @@ impl DirectSync {
     /// this device's store, send it to every open link, and return it.
     ///
     /// # Errors
-    /// `write` refused.
+    /// `write` refused or its frame could not be kept.
     pub fn publish(
         &self,
         write: impl FnOnce(&mut StatePeer) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
         let message = write(&mut self.0.replica.lock())?;
+        self.keep(&message, false)
+            .map_err(|error| error.to_string())?;
         self.0.changed.send_modify(bump);
-        self.keep(&message, false);
         self.outgoing(Authored {
             from: self.device(),
             message: message.clone(),
@@ -901,10 +902,10 @@ impl DirectSync {
     ///
     /// # Errors
     ///
-    /// `message` is not this device's to send in the workspace (see
-    /// [`Self::publish`]).
+    /// The frame could not be kept.
     pub fn send(&self, message: NeighbourMsg) -> Result<(), String> {
-        self.keep(&message, false);
+        self.keep(&message, false)
+            .map_err(|error| error.to_string())?;
         self.outgoing(Authored {
             from: self.device(),
             message,
@@ -920,8 +921,13 @@ impl DirectSync {
     /// holds went out when it first arrived, and is not sent again. Returns
     /// whether it went out.
     pub fn carry(&self, from: [u8; 32], message: &NeighbourMsg) -> bool {
-        if !self.keep(message, false) {
-            return false;
+        match self.keep(message, false) {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(error) => {
+                tracing::warn!(%error, "a carried frame was not kept at the store");
+                return false;
+            }
         }
         self.outgoing(Authored {
             from,
@@ -2025,7 +2031,13 @@ impl DirectSync {
             .report
             .as_ref()
             .is_ok_and(|report| report.lacks_history);
-        heard.fresh = self.keep(&heard.message, true);
+        heard.fresh = match self.keep(&heard.message, true) {
+            Ok(fresh) => fresh,
+            Err(error) => {
+                tracing::warn!(%error, "a link's frame was not kept at the store");
+                return (true, None);
+            }
+        };
         let kept = match &heard.report {
             Ok(report) if !report.lacks_history => Some(Kept::Durable),
             Ok(_) => None,
@@ -2262,30 +2274,23 @@ impl DirectSync {
 
     /// Keep `message` at this device's store when it is a sealed document
     /// frame, the only history a store holds, as one a link brought when
-    /// `from_link`. Returns `false` only for a frame
-    /// the store already held: one this device took in before, on any carrier.
-    fn keep(&self, message: &NeighbourMsg, from_link: bool) -> bool {
+    /// `from_link`. Returns `Ok(false)` for a frame the store already held.
+    fn keep(&self, message: &NeighbourMsg, from_link: bool) -> Result<bool, store::StoreError> {
         let Some(store) = &self.0.store else {
-            return true;
+            return Ok(true);
         };
         let Ok(workspace) = self.0.replica.id() else {
-            return true;
+            return Ok(true);
         };
         let Ok(frame) = Frame::of(message) else {
-            return true;
+            return Ok(true);
         };
         let retained = if from_link {
             store.retain_from_link(workspace, &frame)
         } else {
             store.retain(workspace, &frame)
         };
-        match retained {
-            Ok(retained) => retained != crate::store::Retained::Duplicate,
-            Err(error) => {
-                tracing::warn!(%error, "a frame was not kept at the store");
-                true
-            }
-        }
+        retained.map(|retained| retained != store::Retained::Duplicate)
     }
 
     fn workspace(&self) -> Result<WorkspaceId, String> {

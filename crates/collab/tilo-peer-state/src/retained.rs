@@ -1,7 +1,7 @@
 //! One retained frame: what a store needs to route, order and retire a
 //! member's sealed op, and nothing that would let it open the op.
 
-use collab_types::{ContentRetention, EncryptionScheme, verify_op};
+use collab_types::{ContentRetention, verify_op};
 use neighbour_wire::NeighbourMsg;
 use web_time::UNIX_EPOCH;
 
@@ -83,10 +83,10 @@ impl Frame {
             return Err(Refusal::NotADocument);
         };
         verify_op(envelope).map_err(|_| Refusal::Unsigned)?;
-        let metadata = envelope.encryption.ok_or(Refusal::NotSealed)?;
-        let EncryptionScheme::ContentKey { retention } = metadata.scheme else {
-            return Err(Refusal::NotSealed);
-        };
+        let retention = envelope
+            .encryption
+            .and_then(|metadata| metadata.retention())
+            .ok_or(Refusal::NotSealed)?;
         let authored_at_ns = envelope
             .timestamp
             .duration_since(UNIX_EPOCH)

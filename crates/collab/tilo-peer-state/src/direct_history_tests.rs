@@ -105,7 +105,7 @@ fn join(parts: usize) -> (Duration, u64, usize) {
     let store = Arc::new(Store::open(directory.path().join("store"), Appetite::StoreAll).unwrap());
     let host = DirectSync::over(Replica::new(governor), key.clone()).with_store(store);
     for frame in &written {
-        host.keep(frame, false);
+        host.keep(frame, false).unwrap();
     }
     drop(written);
     let generation = |owner: &NativeWorkspaceOwner| {
@@ -160,6 +160,62 @@ fn join(parts: usize) -> (Duration, u64, usize) {
         })
         .count();
     (took, generation(&owner).saturating_sub(before), held)
+}
+
+#[tokio::test]
+async fn a_link_does_not_report_a_frame_it_could_not_keep() {
+    let now = tilo_clock::wall();
+    let (_, mut governor, key) = governed_fixture_at(now);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store");
+    let store = Arc::new(Store::open(&path, Appetite::StoreAll).unwrap());
+    let link = DirectSync::over(Replica::new(governor.clone()), key.clone()).with_store(store);
+    let mut heard = link.0.heard.subscribe();
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "text", "first").unwrap();
+    document.commit_edit("issues", "text");
+    let keys = key_group::KeyGroup::create(
+        WorkspaceId::parse(WORKSPACE).unwrap(),
+        key_group::MemberKey::generate("link-test").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap();
+    let artifact = collab_types::document_artifact_id(APP, WORKSPACE, "part:0");
+    let message = governor
+        .publication_mut()
+        .publish_sealed_checkpoint(
+            APP,
+            "part:0",
+            document.save(),
+            &mut |plaintext| {
+                keys.seal_content(
+                    artifact,
+                    collab_types::ContentRetention::Checkpoint,
+                    plaintext,
+                )
+                .map_err(|error| error.to_string())
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+    let author = key.verifying_key().to_bytes();
+    std::fs::remove_dir_all(&path).unwrap();
+    std::fs::write(&path, []).unwrap();
+
+    assert_eq!(
+        link.admit_kept(author, message.clone(), false, false).await,
+        (true, None)
+    );
+    assert!(heard.try_recv().is_err());
+
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        link.admit_kept(author, message, false, false).await,
+        (false, Some(super::Kept::Durable))
+    );
+    assert!(heard.try_recv().unwrap().report.is_ok());
 }
 
 #[test]
