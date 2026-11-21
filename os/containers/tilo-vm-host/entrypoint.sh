@@ -29,7 +29,7 @@
 #      member/profile/identity, the person's record under
 #      member/profile/config/tilo/identity. A profile made under another
 #      identity is that device's, and is dropped with it;
-#   4. with TILO_TAKE_WORK_SERVER, the member: `tilo-runtime --daemon`, as the
+#   4. with TILO_TAKE_WORK_DEVICE, the member: `tilo-runtime --daemon`, as the
 #      service, under the member identity, which takes the server's runs for
 #      the workspaces whose VMs are here (restarted if it stops);
 #   5. tilo-hosted-serve, the start this image and the server OS share: the
@@ -110,8 +110,8 @@ if [ -n "${TILO_VM_MEMBER_IDENTITIES:-}" ]; then
 fi
 
 # 4. the member
-if [ -n "${TILO_TAKE_WORK_SERVER:-}" ]; then
-  [ -e "$profile/identity/device-private/keypair.bin" ] || { say 'TILO_TAKE_WORK_SERVER is set, but this host has no member identity'; exit 1; }
+if [ -n "${TILO_TAKE_WORK_DEVICE:-}" ]; then
+  [ -e "$profile/identity/device-private/keypair.bin" ] || { say 'TILO_TAKE_WORK_DEVICE is set, but this host has no member identity'; exit 1; }
   mkdir -p -m 0700 "$profile" "$member/home"
   chown tilo-hosted:tilo-hosted "$profile" "$member/home"
   chmod 0700 "$profile"

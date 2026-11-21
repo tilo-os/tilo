@@ -350,7 +350,6 @@ up() {
     -e TILO_VM_STATUS_LISTEN="127.0.0.1:$status_port" \
     -e TILO_VM_GUEST_REF="$guest_ref" \
     -e TILO_VM_SERVER_ENDPOINT="$server_iroh" \
-    -e TILO_TAKE_WORK_SERVER="$server_iroh" \
     -e TILO_TAKE_WORK_DEVICE="$server_key" \
     -e TILO_TAKE_WORK_ENDPOINT="$server_endpoint" \
     "$image" >/dev/null

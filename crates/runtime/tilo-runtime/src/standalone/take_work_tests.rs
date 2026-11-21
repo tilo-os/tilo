@@ -9,47 +9,42 @@ use super::*;
 tilo_test_env::scenario! {
     fn a_member_takes_work_from_the_server_its_profile_names;
 
-    phase the_server_is_named_by_its_device_key_and_where_it_is_reached;
+    phase the_server_is_named_by_its_device_key;
     {
         let device = hex::encode([0x11; 32]);
-        let server = Server::new(&device, "127.0.0.1:7703").unwrap();
+        let server = Server::new(&device).unwrap();
         assert_eq!(server.device(), [0x11; 32]);
-        assert_eq!(server.address(), "127.0.0.1:7703");
         assert_eq!(server.endpoint, [0x11; 32], "its endpoint is its device's");
     }
 
     phase a_server_named_by_something_that_is_no_device_key_is_refused;
     {
-        assert!(Server::new("not hex", "server.example:7703").is_err());
+        assert!(Server::new("not hex").is_err());
         assert!(
-            Server::new(&hex::encode([0x11; 16]), "server.example:7703").is_err(),
+            Server::new(&hex::encode([0x11; 16])).is_err(),
             "half a key names no device"
         );
-        assert!(Server::new(&hex::encode([0x11; 32]), " ").is_err());
     }
 
     phase a_member_is_configured_by_the_server_it_serves;
     {
         let device = hex::encode([0x22; 32]);
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(SERVER_ENV);
+        env.remove(SERVER_DEVICE_ENV);
         assert_eq!(
             Server::from_env().unwrap(),
             None,
             "a profile that is no member takes no work"
         );
-        env.set(SERVER_ENV, "server.example:7703");
-        env.remove(SERVER_DEVICE_ENV);
+        env.set(SERVER_DEVICE_ENV, "not hex");
         assert!(
             Server::from_env().is_err(),
-            "the server's address alone does not say which device it is"
+            "a server named by something that is no device key"
         );
         env.set(SERVER_DEVICE_ENV, &device);
         env.remove(SERVER_ENDPOINT_ENV);
         let server = Server::from_env().unwrap().unwrap();
         assert_eq!(server.device(), [0x22; 32]);
-        assert_eq!(server.address(), "server.example:7703");
-        env.set(SERVER_ENV, "127.0.0.1:7704");
         let endpoint = public(3);
         env.set(SERVER_ENDPOINT_ENV, hex::encode(endpoint));
         let server = Server::from_env().unwrap().unwrap();
@@ -67,7 +62,7 @@ tilo_test_env::scenario! {
     {
         // A Tilo server keys its endpoint apart from its device: its requests come
         // from the endpoint, signed by the device.
-        let server = Server::new(&hex::encode([0x11; 32]), "127.0.0.1:7704")
+        let server = Server::new(&hex::encode([0x11; 32]))
             .unwrap()
             .with_endpoint(&hex::encode(public(4)))
             .unwrap();
@@ -97,17 +92,16 @@ tilo_test_env::scenario! {
     // which is a session of an existing owner's device, never does.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(SERVER_ENV);
         env.remove(SERVER_DEVICE_ENV);
         assert!(
             crate::standalone::taking_work(crate::standalone::Serving::Profile)
                 .unwrap()
                 .is_none()
         );
-        env.set(SERVER_ENV, "127.0.0.1:7703");
+        env.set(SERVER_DEVICE_ENV, "127.0.0.1:7703");
         assert!(
             crate::standalone::taking_work(crate::standalone::Serving::Profile).is_err(),
-            "a server is named, so its device key must be"
+            "a server is named by its device key, never by where it is"
         );
         env.set(SERVER_DEVICE_ENV, hex::encode([0x33; 32]));
         assert!(

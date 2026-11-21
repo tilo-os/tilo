@@ -160,11 +160,7 @@ async fn placed() -> Placed {
         profile.path(),
         (vm_host.sk.clone(), vm_host.cert.clone()),
         member_endpoint,
-        take_work::Server::new(
-            &hex::encode(shell.device_pubkey()),
-            &address_of(hosted.router.endpoint()),
-        )
-        .unwrap(),
+        take_work::Server::new(&hex::encode(shell.device_pubkey())).unwrap(),
         Some(socket),
     )
     .unwrap();

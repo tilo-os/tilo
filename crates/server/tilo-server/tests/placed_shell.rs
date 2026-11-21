@@ -78,11 +78,6 @@ pub(super) fn address_of(endpoint: &iroh::Endpoint) -> String {
     format!("127.0.0.1:{}", socket.port())
 }
 
-/// The `host:port` a host of this process is reached at.
-fn host_address(hosted: &Hosted) -> String {
-    address_of(hosted.router.endpoint())
-}
-
 /// `device`'s address, as the server reaches the member it asks.
 pub(super) fn member_at(device: [u8; 32], address: &str) -> EndpointAddr {
     let id = EndpointId::from_bytes(&device).unwrap();
@@ -166,8 +161,7 @@ pub(super) async fn placed() -> Arc<Placed> {
         profile.path(),
         (vm_host.sk.clone(), vm_host.cert.clone()),
         member_endpoint,
-        take_work::Server::new(&hex::encode(shell.device_pubkey()), &host_address(&hosted))
-            .unwrap(),
+        take_work::Server::new(&hex::encode(shell.device_pubkey())).unwrap(),
         None,
     )
     .unwrap();

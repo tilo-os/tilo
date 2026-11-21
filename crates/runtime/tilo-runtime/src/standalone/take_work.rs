@@ -37,7 +37,7 @@
 //! device outside a workspace is.
 //!
 //! A profile served by the standalone runtime takes work when
-//! [`SERVER_ENV`] and [`SERVER_DEVICE_ENV`] name its server; [`Member`] is the
+//! [`SERVER_DEVICE_ENV`] names its server; [`Member`] is the
 //! same member for a host that serves nothing else.
 
 use super::service::ServiceWorkspaces;
@@ -52,9 +52,8 @@ use tilo_user_identity::DeviceCert;
 /// The UDP port a member's endpoint listens on, and the one the relay's
 /// members file names for it.
 pub const PORT: u16 = 7703;
-/// Where the server a member serves is reached, `host:port`.
-pub const SERVER_ENV: &str = "TILO_TAKE_WORK_SERVER";
-/// The device key of the server a member serves, hex.
+/// The device key of the server a member serves, hex: a profile that names one is a member that
+/// takes that server's work.
 pub const SERVER_DEVICE_ENV: &str = "TILO_TAKE_WORK_DEVICE";
 /// The server's endpoint id, hex, when its endpoint is keyed apart from its
 /// device: a Tilo server's is (`tilo-enroll device-key` prints it as
@@ -81,25 +80,20 @@ const FILES: &str = "state/take-work/files";
 pub struct Server {
     device: [u8; 32],
     endpoint: [u8; 32],
-    address: String,
 }
 
 impl Server {
-    /// The server whose device key is `device` (hex), reached at `address`
-    /// (`host:port`).
+    /// The server whose device key is `device` (hex). Where it serves a workspace is what its
+    /// requests say, never configured here.
     ///
     /// # Errors
     ///
-    /// Either is not usable as such.
-    pub fn new(device: &str, address: &str) -> Result<Self, String> {
+    /// `device` is not a device key.
+    pub fn new(device: &str) -> Result<Self, String> {
         let key = key(device).ok_or_else(|| format!("{device} is not a device key"))?;
-        if address.trim().is_empty() {
-            return Err("the server's address is empty".into());
-        }
         Ok(Self {
             device: key,
             endpoint: key,
-            address: address.trim().to_owned(),
         })
     }
 
@@ -114,20 +108,17 @@ impl Server {
         Ok(self)
     }
 
-    /// The server the environment names ([`SERVER_ENV`], [`SERVER_DEVICE_ENV`]),
-    /// when it names one: this profile is a member that takes work.
+    /// The server the environment names ([`SERVER_DEVICE_ENV`]), when it names one: this
+    /// profile is a member that takes work.
     ///
     /// # Errors
     ///
-    /// A server is named but its address or device key is not usable.
+    /// A server is named but its device key is not usable.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let Ok(address) = std::env::var(SERVER_ENV) else {
+        let Ok(device) = std::env::var(SERVER_DEVICE_ENV) else {
             return Ok(None);
         };
-        let device = std::env::var(SERVER_DEVICE_ENV).map_err(|_| {
-            format!("{SERVER_ENV} is set, so {SERVER_DEVICE_ENV} must name the server's device key")
-        })?;
-        let server = Self::new(&device, &address)?;
+        let server = Self::new(&device)?;
         match std::env::var(SERVER_ENDPOINT_ENV) {
             Ok(endpoint) => server.with_endpoint(&endpoint).map(Some),
             Err(_) => Ok(Some(server)),
@@ -138,12 +129,6 @@ impl Server {
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
         self.device
-    }
-
-    /// Where the server is reached, `host:port`.
-    #[must_use]
-    pub fn address(&self) -> &str {
-        &self.address
     }
 }
 
