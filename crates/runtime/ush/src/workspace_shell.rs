@@ -288,11 +288,22 @@ impl WorkspaceShells {
     ) -> io::Result<Interactive> {
         let key = (workspace.to_owned(), session.to_owned());
         let shared = self.session(workspace, session, payer)?;
-        let stopped = Arc::clone(&shared.lock().unwrap_or_else(PoisonError::into_inner).stopped);
+        let stopped = Arc::clone(
+            &shared
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stopped,
+        );
         let io = Stdio {
             stdin: ush_shell::Input::host(std::fs::File::from(terminal.try_clone()?)),
-            stdout: Output::host(ush_shell::Std::Out, std::fs::File::from(terminal.try_clone()?)),
-            stderr: Output::host(ush_shell::Std::Err, std::fs::File::from(terminal.try_clone()?)),
+            stdout: Output::host(
+                ush_shell::Std::Out,
+                std::fs::File::from(terminal.try_clone()?),
+            ),
+            stderr: Output::host(
+                ush_shell::Std::Err,
+                std::fs::File::from(terminal.try_clone()?),
+            ),
         };
         let sessions = Arc::clone(&self.sessions);
         let done = std::thread::Builder::new()

@@ -43,7 +43,10 @@ impl Host {
                 "ws1",
                 "s1",
                 None,
-                TerminalSize { cols: 100, rows: 30 },
+                TerminalSize {
+                    cols: 100,
+                    rows: 30,
+                },
                 Some(KEY.into()),
             )
             .unwrap()
@@ -84,10 +87,7 @@ impl Screen {
                 .windows(needle.len())
                 .position(|window| window == needle.as_bytes())
             {
-                self.seen = self
-                    .seen
-                    .saturating_add(at)
-                    .saturating_add(needle.len());
+                self.seen = self.seen.saturating_add(at).saturating_add(needle.len());
                 return;
             }
             let text = String::from_utf8_lossy(unseen).into_owned();

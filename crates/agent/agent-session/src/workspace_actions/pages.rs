@@ -523,7 +523,10 @@ background:var(--tilo-raised);color:var(--tilo-text-dim);font-size:22px;font-wei
 
 /// An app's first letter, on the tile an icon stands on.
 fn initial_tile(title: &str) -> String {
-    let initial = title.chars().next().map(|first| first.to_uppercase().to_string());
+    let initial = title
+        .chars()
+        .next()
+        .map(|first| first.to_uppercase().to_string());
     format!(
         "<span class=\"tilo-home-initial\">{}</span>",
         escape(initial.as_deref().unwrap_or(""))

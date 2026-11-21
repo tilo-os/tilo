@@ -259,7 +259,9 @@ impl TerminalStream {
                 }
                 return Some(frame);
             }
-            let left = until.map_or(TICK, |until| until.saturating_duration_since(Instant::now()));
+            let left = until.map_or(TICK, |until| {
+                until.saturating_duration_since(Instant::now())
+            });
             if left.is_zero() {
                 return None;
             }
@@ -647,9 +649,9 @@ pub mod wire {
         };
         match (tag, payload.as_slice()) {
             (OUT, _) => Ok(Some(FromTerminal::Out(payload))),
-            (EXITED, &[a, b, c, d]) => Ok(Some(FromTerminal::Exited(i32::from_be_bytes([
-                a, b, c, d,
-            ])))),
+            (EXITED, &[a, b, c, d]) => {
+                Ok(Some(FromTerminal::Exited(i32::from_be_bytes([a, b, c, d]))))
+            }
             (SUPERSEDED, []) => Ok(Some(FromTerminal::Superseded)),
             _ => Err(invalid(tag)),
         }

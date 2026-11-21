@@ -362,9 +362,7 @@ fn an_agents_writes_answer_the_characters_they_wrote() {
                              blocks: &[(String, String)]| {
         match answer {
             Some(ui::tilo_actions::InteractionAnchor::Text { region, mut ranges }) => {
-                ranges.sort_by_key(|range| {
-                    blocks.iter().position(|(id, _)| id == &range.block)
-                });
+                ranges.sort_by_key(|range| blocks.iter().position(|(id, _)| id == &range.block));
                 Some(ui::tilo_actions::InteractionAnchor::Text { region, ranges })
             }
             other => other,
