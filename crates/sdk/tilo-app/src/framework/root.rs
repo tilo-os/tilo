@@ -1960,7 +1960,7 @@ impl RootModel for ResourceRoot {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
-        if let Some(started) = self.start_shown(op, doc)? {
+        if let Some(started) = self.start_shown(op, doc, path)? {
             return Ok(Some(started));
         }
         if let Some(output) = self.start_resource_operation(op, doc)? {
@@ -2031,6 +2031,7 @@ impl ResourceRoot {
         &mut self,
         op: &ResourceOperation<'_>,
         doc: &ui_core::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
         if let Some(request) = op.unscoped()
             && matches!(
@@ -2043,6 +2044,12 @@ impl ResourceRoot {
             self.stages
                 .open(&anchor)
                 .map_err(tilo_resource::Refusal::new)?;
+            // Showing the item changed the view's own state, and the widgets
+            // that show it are built at a sync: without one the read below
+            // answers with the item the window showed before. Run the sync
+            // the next frame would, so the view is read as it is once the
+            // item is up.
+            self.content.sync(doc.doc(), path);
         }
         Ok(with_app_view_mut(&mut self.content, |view| {
             self.native_presentation.start_operation(op, doc, view)

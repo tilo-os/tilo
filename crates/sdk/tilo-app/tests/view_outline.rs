@@ -58,6 +58,33 @@ fn shown() -> Vec<String> {
     SHOWN.with(|shown| shown.borrow().clone())
 }
 
+/// An app whose view shows the page it was asked to open, as a person's
+/// window does: the part the view puts up is chosen by the item shown.
+struct PagesApp;
+
+impl ResourceApp for PagesApp {
+    type Resource = Notebook;
+    const ID: &'static str = "so.tilo.test-pages-outline";
+    const TITLE: &'static str = "Pages";
+
+    fn view(cx: &mut ViewCx<Notebook>) -> Element {
+        let shown = cx.local(None::<String>);
+        let opening = shown.clone();
+        cx.on_open(move |anchor| {
+            opening.set(Some(anchor.to_owned()));
+            Ok::<(), Refusal>(())
+        });
+        Box::new(
+            Column::new()
+                .push(Box::new(Text::new("Pages")))
+                .push(cx.switch(&shown, |_, page| {
+                    let label = format!("Showing {}", page.as_deref().unwrap_or("nothing"));
+                    Box::new(Text::new(&label)) as Element
+                })),
+        )
+    }
+}
+
 #[test]
 fn an_outline_reads_what_the_window_shows() {
     let mut app = TestApp::<NotebookApp>::new().unwrap();
@@ -143,6 +170,31 @@ fn outlining_an_item_shows_that_item_first() {
         .expect("the item's lines")
         .expect("an outline answers");
     assert_eq!(shown(), ["page:2"], "the app showed the asked-for item");
+}
+
+#[test]
+fn an_outline_of_an_item_reads_that_items_view() {
+    let mut app = TestApp::<PagesApp>::new().unwrap();
+    let first = app
+        .call("outline", json!({ "anchor": "page:a" }))
+        .expect("the item's lines")
+        .expect("an outline answers");
+    assert!(
+        first["outline"]
+            .as_str()
+            .is_some_and(|text| text.contains("Showing page:a")),
+        "the view of the page asked for: {first}"
+    );
+    let second = app
+        .call("outline", json!({ "anchor": "page:b" }))
+        .expect("the item's lines")
+        .expect("an outline answers");
+    assert!(
+        second["outline"]
+            .as_str()
+            .is_some_and(|text| text.contains("Showing page:b")),
+        "the view of the second page asked for, not the first: {second}"
+    );
 }
 
 #[test]
