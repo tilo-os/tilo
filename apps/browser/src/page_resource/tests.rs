@@ -1993,3 +1993,42 @@ fn a_sign_ins_password_is_never_written() {
         assert!(contains(&bytes, written), "{written} is in the document");
     }
 }
+
+/// A link handed to the open window through the `open-link` every app publishes (what the
+/// session's chooser and the shell's search hand a web address to) loads in the window's page,
+/// and a web search searches there.
+#[test]
+fn a_link_handed_to_the_window_loads_in_its_page() {
+    let engine = TestEngine::new();
+    let mut app = open(&engine);
+    let login = "https://cloud.example.test/login/v2/flow/abc";
+    for link in [login, "web+search:spring%20planting"] {
+        app.call(
+            ui::tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            json!({ "link": link }),
+        )
+        .unwrap_or_else(|error| panic!("{link} is not opened: {error}"));
+        app.settle();
+    }
+    let loaded: Vec<String> = engine
+        .commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            // A navigation an invocation asked for is its own, answered when it loads.
+            WebViewCommand::ScopedNavigation {
+                command: tilo_webview::NavigationCommand::Navigate { url },
+                ..
+            }
+            | WebViewCommand::Navigate(url) => Some(url),
+            _ => None,
+        })
+        .collect();
+    assert!(loaded.iter().any(|url| url == login), "{loaded:?}");
+    assert!(
+        loaded
+            .iter()
+            .any(|url| url != login && url != PAGE && url.contains("planting")),
+        "the search is searched for: {loaded:?}"
+    );
+}
+

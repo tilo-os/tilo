@@ -111,7 +111,10 @@ impl ResourceApp for BrowserShell {
     fn open_link(link: &str) -> Option<Vec<Invoke<Browser>>> {
         let arguments = [link.to_owned()];
         let url = launch_target(&arguments).or_else(|| launch_search(&arguments))?;
-        Some(vec![Invoke::effect(&BrowserEffect::Navigate { url })])
+        // Navigating is the page's action: the window's one page loads the address.
+        Some(vec![
+            Invoke::effect(&BrowserEffect::Navigate { url }).on("browser.page"),
+        ])
     }
 
     fn commands() -> &'static [Command] {
