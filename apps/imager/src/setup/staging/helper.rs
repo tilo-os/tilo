@@ -51,6 +51,12 @@ pub struct Request {
     /// a log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_file: Option<String>,
+    /// Where the caller keeps the prebuilt installer layers a development
+    /// server applies at its first boot. A directory of regular files: the
+    /// helper copies each, owner-only, onto the staging root and never into
+    /// the ESP, the handoff, the staging journal or a log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development_layers: Option<String>,
 }
 
 /// Where a staged plan's machine finds its single-use enrollment token in the
@@ -58,11 +64,134 @@ pub struct Request {
 pub const STAGED_TOKEN_PATH: &str = "/etc/tilo/enrollment-token.txt";
 /// A token longer than this is not one the enrollment issues.
 const MAX_TOKEN_BYTES: u64 = 16 * 1024;
+/// Where a staged plan's machine finds the prebuilt layers a development
+/// install applies before its first boot, owner-only.
+pub const STAGED_DEVELOPMENT_LAYERS_DIR: &str = "/etc/tilo/development-layers";
+/// The most layers one staging carries.
+pub(crate) const MAX_DEVELOPMENT_LAYERS: usize = 16;
+/// The most those layers may come to together.
+pub(crate) const MAX_DEVELOPMENT_LAYER_BYTES: u64 = 8 << 30;
 
 pub use imager_backend::staging::protocol::{Outcome, Progress, Refusal, codes};
 
 fn io_refusal(e: impl std::fmt::Display) -> Refusal {
     Refusal::new(codes::IO_FAILED, e.to_string())
+}
+
+/// One prebuilt layer a staged development server applies at its first boot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DevelopmentLayer {
+    pub name: String,
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
+/// The regular files in the caller's development-layers directory, bounded in
+/// number and size: each is a prebuilt installer archive, not a tree.
+pub(crate) fn development_layers(dir: &Path) -> Result<Vec<DevelopmentLayer>, String> {
+    let mut layers = Vec::new();
+    let mut total = 0_u64;
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().into_string().map_err(|name| {
+            format!(
+                "{}: {} is not a UTF-8 layer name",
+                dir.display(),
+                name.to_string_lossy()
+            )
+        })?;
+        let meta = std::fs::symlink_metadata(entry.path())
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
+        if !meta.is_file() {
+            return Err(format!(
+                "{name} in {} is not a regular file; a development layer directory holds only files",
+                dir.display()
+            ));
+        }
+        if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+            return Err(format!("{name} is not a development layer name"));
+        }
+        if layers.len() >= MAX_DEVELOPMENT_LAYERS {
+            return Err(format!(
+                "{} holds more than {MAX_DEVELOPMENT_LAYERS} development layers",
+                dir.display()
+            ));
+        }
+        total = total
+            .checked_add(meta.len())
+            .ok_or_else(|| format!("{} holds more layers than can be staged", dir.display()))?;
+        layers.push(DevelopmentLayer {
+            name,
+            path: entry.path(),
+            bytes: meta.len(),
+        });
+        if total > MAX_DEVELOPMENT_LAYER_BYTES {
+            return Err(format!(
+                "{} holds more than {} GiB of development layers",
+                dir.display(),
+                MAX_DEVELOPMENT_LAYER_BYTES >> 30
+            ));
+        }
+    }
+    if layers.is_empty() {
+        return Err(format!("{} holds no development layers", dir.display()));
+    }
+    layers.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(layers)
+}
+
+fn staged_layer_path(name: &str) -> String {
+    format!("{STAGED_DEVELOPMENT_LAYERS_DIR}/{name}")
+}
+
+/// Copy `layers`, owner-only, into the staged root on `disk`.
+pub(crate) fn place_development_layers(
+    platform: &mut dyn Platform,
+    disk: &Disk,
+    root_guid: &str,
+    layers: &[DevelopmentLayer],
+) -> Result<(), Refusal> {
+    for layer in layers {
+        let placed = platform
+            .write_staging_file_from(
+                disk,
+                root_guid,
+                &staged_layer_path(&layer.name),
+                &layer.path,
+                0o600,
+            )
+            .map_err(io_refusal)?;
+        if placed != layer.bytes {
+            return Err(Refusal::new(
+                codes::IO_FAILED,
+                format!("{} changed while it was staged", layer.name),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the staged root still holds every layer the request names.
+pub(crate) fn development_layers_hold(
+    platform: &dyn Platform,
+    disk: &Disk,
+    root_guid: &str,
+    layers: &[DevelopmentLayer],
+) -> Result<bool, Refusal> {
+    for layer in layers {
+        if !platform
+            .staging_file_matches(
+                disk,
+                root_guid,
+                &staged_layer_path(&layer.name),
+                &layer.path,
+            )
+            .map_err(io_refusal)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub trait ReleaseAuthority {
@@ -235,6 +364,14 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
             }
         }
     }
+    if let Some(dir) = &request.development_layers {
+        if request.install_plan.is_none() {
+            return bad("development layers are given only with a staged plan");
+        }
+        if !dir.starts_with('/') || dir.len() > 4096 {
+            return bad("the development layers are given as an absolute directory path");
+        }
+    }
     match (&request.install_plan, &request.token_file) {
         (None, None) => {}
         (Some(plan), Some(token_file)) => {
@@ -383,6 +520,13 @@ pub fn execute(
             MAX_TOKEN_BYTES,
         )
         .map_err(|m| Refusal::new(codes::REQUEST_INVALID, m))?;
+    }
+    if request.action == Action::Stage {
+        if let Some(dir) = &request.development_layers {
+            // Refuse layers nobody could place before any disk is touched.
+            development_layers(Path::new(dir))
+                .map_err(|m| Refusal::new(codes::REQUEST_INVALID, m))?;
+        }
     }
     let mut engine = Engine {
         platform,
@@ -2029,6 +2173,17 @@ impl Engine<'_> {
         Ok(Some(zeroize::Zeroizing::new(bytes)))
     }
 
+    /// The prebuilt layers the request carries, read from the directory it
+    /// names: never from the handoff, and never into a log.
+    fn staged_layers(&self) -> Result<Option<Vec<DevelopmentLayer>>, Refusal> {
+        let Some(dir) = &self.request.development_layers else {
+            return Ok(None);
+        };
+        let layers = development_layers(Path::new(dir))
+            .map_err(|m| Refusal::new(codes::REQUEST_INVALID, m))?;
+        Ok(Some(layers))
+    }
+
     fn check_handoff(&mut self) -> Result<Actual, Refusal> {
         let Some(number) = self
             .record()
@@ -2061,6 +2216,15 @@ impl Engine<'_> {
                 return Ok(Actual::Absent);
             }
         }
+        if let Some(layers) = self.staged_layers()? {
+            // A resumed staging whose layers are missing or changed would
+            // install with older components: the handoff is complete only
+            // with them.
+            let (_, root) = self.require_staged(Which::Root)?;
+            if !development_layers_hold(&*self.platform, &disk, &root.guid, &layers)? {
+                return Ok(Actual::Absent);
+            }
+        }
         Ok(Actual::Done(detail(&[(
             "boot_number",
             efi::format_boot_number(number).into(),
@@ -2082,6 +2246,10 @@ impl Engine<'_> {
             self.platform
                 .write_staging_file(&disk, &root.guid, STAGED_TOKEN_PATH, &token, 0o600)
                 .map_err(io_refusal)?;
+        }
+        if let Some(layers) = self.staged_layers()? {
+            let (disk, root) = self.require_staged(Which::Root)?;
+            place_development_layers(self.platform, &disk, &root.guid, &layers)?;
         }
         self.platform.sync_disk(&disk).map_err(io_refusal)
     }

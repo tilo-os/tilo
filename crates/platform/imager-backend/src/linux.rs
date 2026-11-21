@@ -801,6 +801,84 @@ impl Platform for LinuxPlatform {
         })
     }
 
+    fn write_staging_file_from(
+        &mut self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        source: &std::path::Path,
+        mode: u32,
+    ) -> IoResult<u64> {
+        let relative = staging_file_path(path)?;
+        let mut input = super::staging::request_io::open_input(&source.to_string_lossy())?;
+        self.with_staging_mount(disk, partition_guid, false, |dir| {
+            let file_path = dir.join(&relative);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut options = OpenOptions::new();
+            options.write(true).create(true).truncate(true).mode(mode);
+            let mut file = options
+                .open(&file_path)
+                .map_err(|e| format!("{}: {e}", file_path.display()))?;
+            let copied = std::io::copy(&mut input, &mut file).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            std::fs::set_permissions(&file_path, PermissionsExt::from_mode(mode))
+                .map_err(|e| e.to_string())?;
+            if let Some(parent) = file_path.parent() {
+                File::open(parent)
+                    .and_then(|dir| dir.sync_all())
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(copied)
+        })
+    }
+
+    fn staging_file_matches(
+        &self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        source: &std::path::Path,
+    ) -> IoResult<bool> {
+        const CHUNK: usize = 1 << 20;
+        let relative = staging_file_path(path)?;
+        let mut input = super::staging::request_io::open_input(&source.to_string_lossy())?;
+        let expected = input
+            .metadata()
+            .map_err(|e| format!("{}: {e}", source.display()))?;
+        self.with_staging_mount(disk, partition_guid, true, |dir| {
+            let file_path = dir.join(&relative);
+            let mut placed = match File::open(&file_path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(format!("{}: {error}", file_path.display())),
+            };
+            let size = placed.metadata().map_err(|e| e.to_string())?.len();
+            if size != expected.len() {
+                return Ok(false);
+            }
+            let mut wanted = vec![0_u8; CHUNK];
+            let mut found = vec![0_u8; CHUNK];
+            loop {
+                let n = input.read(&mut wanted).map_err(|e| e.to_string())?;
+                if n == 0 {
+                    return Ok(true);
+                }
+                let mut done = 0;
+                while done < n {
+                    let got = placed
+                        .read(&mut found[done..n])
+                        .map_err(|e| e.to_string())?;
+                    if got == 0 || found[done..done + got] != wanted[done..done + got] {
+                        return Ok(false);
+                    }
+                    done += got;
+                }
+            }
+        })
+    }
+
     fn read_partition(
         &self,
         disk: &Disk,

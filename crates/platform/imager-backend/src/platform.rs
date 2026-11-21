@@ -3,6 +3,7 @@
 //! recording in `helper`.
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// `id` is a platform handle valid only for this boot (Windows disk number, Linux `/dev/...`
 /// path); `guid` is durable.
@@ -130,6 +131,36 @@ pub trait Platform {
     ) -> IoResult<Option<Vec<u8>>> {
         let _ = (disk, partition_guid, path);
         Err("reading a file from a staging root is unavailable".into())
+    }
+    /// Place the regular file `source` at `path` inside the filesystem the
+    /// given staged partition holds, streamed: the prebuilt layers a
+    /// development server applies at its first boot are far larger than
+    /// memory. Reports the bytes copied.
+    ///
+    /// Unsupported on a platform that cannot mount the staged filesystem; the
+    /// helper then refuses rather than staging a plan without its layers.
+    fn write_staging_file_from(
+        &mut self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        source: &Path,
+        mode: u32,
+    ) -> IoResult<u64> {
+        let _ = (disk, partition_guid, path, source, mode);
+        Err("streaming a file into a staging root is unavailable".into())
+    }
+    /// Whether the file `path` inside the staged partition is exactly the
+    /// regular file `source`, compared streamed for the same reason.
+    fn staging_file_matches(
+        &self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        source: &Path,
+    ) -> IoResult<bool> {
+        let _ = (disk, partition_guid, path, source);
+        Err("comparing a file in a staging root is unavailable".into())
     }
     /// Existing EFI adapters implement this surface; Linux also observes a missing efivarfs when
     /// reviewing geometry before boot eligibility.

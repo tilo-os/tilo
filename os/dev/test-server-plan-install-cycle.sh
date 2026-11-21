@@ -9,7 +9,8 @@
 #       (--bundle-dir EXPORT_DIR | --installer-disk DISK) --imager PATH \
 #       --owner-disk DEV_DISK \
 #       (--fedora-image PATH | --fedora-url URL) --fedora-sha256 SHA256 \
-#       [--release-tag imager-vX.Y.Z] [--out DIRECTORY]
+#       [--release-tag imager-vX.Y.Z] [--out DIRECTORY] \
+#       [--development-layers DIRECTORY]
 #
 # One OVMF guest boots a real retained Fedora (Fedora Cloud Base, UEFI,
 # pinned by SHA-256) with a second, empty disk. The staging helper starts in a
@@ -25,6 +26,11 @@
 # `tilo server set-default-start` unlock its disk, and reads the recovery key
 # back with `tilo server recovery-key`.
 #
+# With --development-layers, the staging request also carries a directory of
+# prebuilt installer layers: they ride beside the plan and the token into the
+# staged root, and the installed development server applies them at its first
+# boot.
+#
 # Evidence: every stage is recorded under OUT/evidence; serials that may hold
 # a secret are never copied.
 set -euo pipefail
@@ -35,9 +41,9 @@ vm="$dev_dir/vm.sh"
 
 die() { printf 'server plan install cycle: %s\n' "$*" >&2; exit 1; }
 note() { printf 'server plan install cycle: %s\n' "$*" >&2; }
-usage() { sed -n '2,28p' "$0" >&2; exit 2; }
+usage() { sed -n '2,35p' "$0" >&2; exit 2; }
 
-bundle_dir="" installer_disk="" imager="" owner_disk=""
+bundle_dir="" installer_disk="" imager="" owner_disk="" development_layers=""
 fedora_image="" fedora_url="" fedora_sha256="" out=""
 release_tag="${TILO_INTERNAL_CYCLE_RELEASE_TAG:-imager-v0.0.0}"
 # The same Fedora Cloud Base the Linux VM end-to-end check pins.
@@ -53,6 +59,7 @@ while [ "$#" -gt 0 ]; do
     --fedora-url) fedora_url="${2:-}"; shift 2 ;;
     --fedora-sha256) fedora_sha256="${2:-}"; shift 2 ;;
     --release-tag) release_tag="${2:-}"; shift 2 ;;
+    --development-layers) development_layers="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage ;;
@@ -393,6 +400,11 @@ mark_step 04-retained ok
 # --- copy the imager, bundle, plan and token into the machine ----------------
 phase=copy-in
 need=$(( $(stat -c %s "$imager") + $(stat -c %s "$esp_image") + $(stat -c %s "$root_image") + (1 << 30) ))
+if [ -n "$development_layers" ]; then
+  [ -d "$development_layers" ] \
+    || die "--development-layers must name a directory: $development_layers"
+  need=$(( need + $(du -sb "$development_layers" | cut -f1) ))
+fi
 avail="$(server "df -B1 --output=avail /var/tmp | tail -n 1" | tr -d ' \t\n')"
 [ "$avail" -ge "$need" ] || die "the retained root has $avail bytes free, the bundle needs $need"
 guest_dir=/var/tmp/tilo-server-plan
@@ -404,6 +416,21 @@ server_cp "$root_image" "$guest_dir/bundle/"
 server_cp "$storage/plan.json" "$guest_dir/plan.json"
 server_cp "$storage/machine.token" "$guest_dir/machine.token"
 server "chmod 0600 $guest_dir/machine.token"
+layers_flag=""
+if [ -n "$development_layers" ]; then
+  server "install -d -m 0700 $guest_dir/development-layers"
+  layers_copied=0
+  for layer in "$development_layers"/*; do
+    [ -f "$layer" ] && [ ! -L "$layer" ] || continue
+    server_cp "$layer" "$guest_dir/development-layers/$(basename "$layer")"
+    server "chmod 0600 $guest_dir/development-layers/$(basename "$layer")"
+    layers_copied=$((layers_copied + 1))
+  done
+  [ "$layers_copied" -gt 0 ] \
+    || die "--development-layers holds no regular files: $development_layers"
+  layers_flag="--development-layers development-layers"
+  note "the machine carries $layers_copied prebuilt development layer(s)"
+fi
 missing_libs="$(server "ldd $guest_dir/imager | grep 'not found' || true")"
 [ -z "$missing_libs" ] || die "the imager cannot start on the retained Fedora: $missing_libs"
 note 'the installer, its bundle, the plan and its token are on the machine'
@@ -421,6 +448,7 @@ server "cd $guest_dir && ./imager --tilo-staging-request --action stage \
   --component staging-root=bundle/tilo-internal-installer-$TILO_VM_ARCH-root.img \
   --target-bytes $target_bytes \
   --plan plan.json --token-file machine.token \
+  $layers_flag \
   --out 06-request.json" > "$evidence/06-request-summary.json" 2>&1 \
   || { cat "$evidence/06-request-summary.json" >&2; die 'the staging request was refused'; }
 server "sudo install -d -m 0700 /var/lib/tilo-imager"

@@ -269,6 +269,33 @@ impl Platform for FakePlatform {
             .cloned())
     }
 
+    fn write_staging_file_from(
+        &mut self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        source: &std::path::Path,
+        mode: u32,
+    ) -> IoResult<u64> {
+        let contents = std::fs::read(source).map_err(|e| format!("{}: {e}", source.display()))?;
+        self.write_staging_file(disk, partition_guid, path, &contents, mode)?;
+        Ok(contents.len() as u64)
+    }
+
+    fn staging_file_matches(
+        &self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        source: &std::path::Path,
+    ) -> IoResult<bool> {
+        let contents = std::fs::read(source).map_err(|e| format!("{}: {e}", source.display()))?;
+        Ok(self
+            .read_staging_file(disk, partition_guid, path)?
+            .as_deref()
+            == Some(&contents[..]))
+    }
+
     fn sync_disk(&mut self, _disk: &Disk) -> IoResult<()> {
         Ok(())
     }
@@ -499,6 +526,7 @@ mod tests {
             prepared_setup: None,
             install_plan: None,
             token_file: None,
+            development_layers: None,
         };
         World {
             store: RecordStore::at(dir.path()),
@@ -749,6 +777,158 @@ mod tests {
         assert!(
             !helper::rule_names(&rule("largest", ""), &nvme),
             "a rule that names no drive never matches a staging disk"
+        );
+    }
+
+    #[test]
+    fn development_layers_need_a_staged_plan() {
+        let platform = linux_platform();
+        let mut world = world(&platform);
+        let layers = world._dir.path().join("layers");
+        std::fs::create_dir(&layers).unwrap();
+        std::fs::write(layers.join("components.layer"), b"layer").unwrap();
+        world.request.development_layers = Some(layers.to_string_lossy().into_owned());
+        let refusal = helper::validate_request(&world.request).unwrap_err();
+        assert_eq!(refusal.code, codes::REQUEST_INVALID);
+        assert!(
+            refusal.message.contains("staged plan"),
+            "development layers are carried by a staged plan only: {refusal}"
+        );
+
+        world.request.development_layers = Some("layers".into());
+        world.request.install_plan = Some(server_plan(install_profile_model::plan::DiskRule {
+            kind: "serial".into(),
+            identity: "16Q0A07GTM7J".into(),
+        }));
+        let refusal = helper::validate_request(&world.request).unwrap_err();
+        assert_eq!(refusal.code, codes::REQUEST_INVALID);
+        assert!(
+            refusal.message.contains("absolute directory path"),
+            "the layers are named by an absolute directory path: {refusal}"
+        );
+    }
+
+    #[test]
+    fn development_layers_are_bounded_regular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        assert!(
+            helper::development_layers(&empty)
+                .unwrap_err()
+                .contains("no development layers")
+        );
+
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("components.layer"), b"layer").unwrap();
+        std::fs::write(nested.join("payload.layer"), b"layer").unwrap();
+        let layers = helper::development_layers(&nested).unwrap();
+        assert_eq!(
+            layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(),
+            ["components.layer", "payload.layer"]
+        );
+        std::fs::create_dir(nested.join("subdirectory")).unwrap();
+        assert!(
+            helper::development_layers(&nested)
+                .unwrap_err()
+                .contains("only files")
+        );
+
+        #[cfg(unix)]
+        {
+            std::fs::remove_dir(nested.join("subdirectory")).unwrap();
+            std::os::unix::fs::symlink(
+                nested.join("components.layer"),
+                nested.join("linked.layer"),
+            )
+            .unwrap();
+            assert!(
+                helper::development_layers(&nested)
+                    .unwrap_err()
+                    .contains("only files")
+            );
+        }
+
+        let crowded = dir.path().join("crowded");
+        std::fs::create_dir(&crowded).unwrap();
+        for index in 0..=helper::MAX_DEVELOPMENT_LAYERS {
+            std::fs::write(crowded.join(format!("layer-{index}")), b"layer").unwrap();
+        }
+        assert!(
+            helper::development_layers(&crowded)
+                .unwrap_err()
+                .contains("more than")
+        );
+
+        let heavy = dir.path().join("heavy");
+        std::fs::create_dir(&heavy).unwrap();
+        let layer = std::fs::File::create(heavy.join("oversized.layer")).unwrap();
+        layer
+            .set_len(helper::MAX_DEVELOPMENT_LAYER_BYTES + 1)
+            .unwrap();
+        assert!(
+            helper::development_layers(&heavy)
+                .unwrap_err()
+                .contains("more than 8 GiB")
+        );
+    }
+
+    #[test]
+    fn development_layers_reach_the_staging_root_and_a_resume_finds_them() {
+        let mut platform = linux_platform();
+        let world = world(&platform);
+        apply(&mut platform, &world, Action::Stage).unwrap();
+        let (_, root) = staged_guids(&platform, &world.request.plan);
+        let disk = platform.disk.clone();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("components.layer"), b"layer one").unwrap();
+        std::fs::write(dir.path().join("payload.layer"), b"layer two").unwrap();
+        let layers = helper::development_layers(dir.path()).unwrap();
+        helper::place_development_layers(&mut platform, &disk, &root, &layers).unwrap();
+
+        let placed = |platform: &FakePlatform, name: &str| {
+            platform
+                .files
+                .get(&(
+                    root.to_ascii_lowercase(),
+                    format!("/etc/tilo/development-layers/{name}"),
+                ))
+                .cloned()
+        };
+        assert_eq!(
+            placed(&platform, "components.layer").as_deref(),
+            Some(&b"layer one"[..])
+        );
+        assert_eq!(
+            placed(&platform, "payload.layer").as_deref(),
+            Some(&b"layer two"[..])
+        );
+        assert!(
+            helper::development_layers_hold(&platform, &disk, &root, &layers).unwrap(),
+            "a resumed staging finds the layers it placed"
+        );
+
+        platform
+            .files
+            .get_mut(&(
+                root.to_ascii_lowercase(),
+                "/etc/tilo/development-layers/payload.layer".to_owned(),
+            ))
+            .unwrap()
+            .push(b' ');
+        assert!(
+            !helper::development_layers_hold(&platform, &disk, &root, &layers).unwrap(),
+            "a changed layer is not the one the request names"
+        );
+        platform.files.remove(&(
+            root.to_ascii_lowercase(),
+            "/etc/tilo/development-layers/payload.layer".to_owned(),
+        ));
+        assert!(
+            !helper::development_layers_hold(&platform, &disk, &root, &layers).unwrap(),
+            "a missing layer is not the one the request names"
         );
     }
 

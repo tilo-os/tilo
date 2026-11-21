@@ -2275,6 +2275,31 @@ if [ "$INTERNAL_MODE" -eq 1 ]; then
   chcon --reference=/var/lib "${TARGET_VARS[0]}/lib/tilo" "${TARGET_VARS[0]}/lib/tilo/staging-reclaim.json" 2>/dev/null || true
 fi
 
+# A development machine's retried install carries its prebuilt layers beside
+# the plan. They reach the installed system's own first-boot input, and never
+# a release target: a release installs only signed components.
+DEVELOPMENT_LAYERS=/etc/tilo/development-layers
+if [ -d "$DEVELOPMENT_LAYERS" ] \
+    && [ -n "$(find "$DEVELOPMENT_LAYERS" -mindepth 1 -maxdepth 1 -type f -print -quit)" ]; then
+  [ "$OFFLINE_TARGET" -eq 2 ] \
+    || die "development layers are present but the target is not a development target: release targets never take unsigned layers"
+  step "Handing the prebuilt development layers to the installed system"
+  mapfile -t LAYER_FILES < <(find "$DEVELOPMENT_LAYERS" -mindepth 1 -maxdepth 1 -type f -print)
+  mapfile -t LAYER_VARS < <(find_installed_var "$MNT")
+  [ "${#LAYER_VARS[@]}" -eq 1 ] \
+    || die "could not locate the installed system's /var for its development layers"
+  LAYERS_TARGET="${LAYER_VARS[0]}/lib/tilo-vm/incoming"
+  install -d -m 0700 "$LAYERS_TARGET"
+  chcon --reference=/var/lib "${LAYER_VARS[0]}/lib/tilo-vm" "$LAYERS_TARGET" 2>/dev/null || true
+  for LAYER in "${LAYER_FILES[@]}"; do
+    LAYER_NAME="$(basename "$LAYER")"
+    install -m 0600 "$LAYER" "$LAYERS_TARGET/$LAYER_NAME"
+    chcon --reference=/var/lib "$LAYERS_TARGET/$LAYER_NAME" 2>/dev/null || true
+    log "  handed over $LAYER_NAME"
+  done
+  sync -f "$LAYERS_TARGET" 2>/dev/null || sync
+fi
+
 VM_INSTALL_PROOF=""
 VM_INSTALL_PROOF_SCHEMA=""
 VM_INSTALL_PROOF_PORT=/dev/virtio-ports/org.tilo.vm-install-proof

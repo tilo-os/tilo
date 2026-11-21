@@ -250,6 +250,7 @@ suites = [
   "os/scripts/installer-source-fixture/test_bounded_native.py",
   "os/scripts/installer-source-fixture/test_source.py",
   "os/tests/test_install_purpose.py",
+  "os/tests/test_install_development_layers.py",
   "os/tests/test_service_candidate_bridge.py",
   "os/tests/test_reconstructed_partials.py",
   "os/tests/test_reseal_image.py",

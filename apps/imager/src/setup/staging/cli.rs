@@ -20,6 +20,7 @@ struct Args {
     record: Option<String>,
     plan: Option<String>,
     token_file: Option<String>,
+    development_layers: Option<String>,
     out: Option<String>,
 }
 
@@ -74,6 +75,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--record" => once(&mut out.record, value()?)?,
             "--plan" => once(&mut out.plan, value()?)?,
             "--token-file" => once(&mut out.token_file, value()?)?,
+            "--development-layers" => once(&mut out.development_layers, value()?)?,
             "--out" => once(&mut out.out, value()?)?,
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -163,6 +165,7 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
             prepared_setup: None,
             install_plan: None,
             token_file: None,
+            development_layers: None,
         };
         let summary = json!({"ok": true, "action": action, "operation_id": id});
         return Ok((request, summary));
@@ -216,6 +219,10 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         Some(path) => Some(absolute(path).map_err(other)?),
         None => None,
     };
+    let development_layers = match &args.development_layers {
+        Some(path) => Some(absolute(path).map_err(other)?),
+        None => None,
+    };
     if let Some(target) = &args.disk {
         // The plan's disk handle is the identity the helper resolves again;
         // a `/dev` name means nothing in another namespace or boot.
@@ -240,6 +247,7 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         prepared_setup: None,
         install_plan,
         token_file,
+        development_layers,
     };
     helper::validate_request(&request).map_err(|r| other(r.to_string()))?;
     let summary = json!({
@@ -322,6 +330,26 @@ mod tests {
             assert!(parse(&s(&["--disk", "a", "--disk", "b"])).is_err());
             let r = parse(&s(&["--action", "remove", "--record", "op", "--out", "x"])).unwrap();
             assert_eq!(r.action, Some(Action::Remove));
+            let layers = parse(&s(&[
+                "--development-layers",
+                "/var/tmp/layers",
+                "--out",
+                "x",
+            ]))
+            .unwrap();
+            assert_eq!(
+                layers.development_layers.as_deref(),
+                Some("/var/tmp/layers")
+            );
+            assert!(
+                parse(&s(&[
+                    "--development-layers",
+                    "a",
+                    "--development-layers",
+                    "b"
+                ]))
+                .is_err()
+            );
             assert!(parse(&s(&["--component", "boot=x"])).is_err());
             assert!(parse(&s(&["--out", "a", "--out", "b"])).is_err());
             assert!(parse(&s(&["--bogus"])).is_err());

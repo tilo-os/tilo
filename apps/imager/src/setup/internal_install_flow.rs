@@ -546,6 +546,7 @@ fn stage_request(
         migration,
         install_plan: None,
         token_file: None,
+        development_layers: None,
     })
 }
 
@@ -1125,6 +1126,7 @@ impl InternalInstall {
             migration: None,
             install_plan: None,
             token_file: None,
+            development_layers: None,
         };
         self.link.set_state(RunState::Running {
             action,
