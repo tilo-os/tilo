@@ -166,7 +166,9 @@ pub struct OpenedFile {
     pub hash: String,
     /// The name of the file, where the app that handed it over knew it: the bytes alone say an
     /// image is a PNG, never that text is a note rather than a table.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Always written, as every field of a packet is: postcard reads fields by position, so a
+    /// field left out reads the next one in its place.
     pub name: Option<String>,
 }
 
@@ -215,9 +217,8 @@ pub struct InstanceRequest {
     pub reveal: Option<String>,
     /// The file the app was opened with, when its launch named one: the instance runs the action
     /// its package declares for the file's kind with it, as a chooser hands a file to an action.
-    /// The instance reads the bytes from the content store by their hash; a session that opens no
-    /// files leaves it out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The instance reads the bytes from the content store by their hash; `None` for a window
+    /// opened without one.
     pub open: Option<OpenedFile>,
     /// The tilolang apps installed here, by id, each with the id its documents are kept under: a
     /// package the app uses that is one of them is another app, whose documents the instance reads
@@ -665,10 +666,20 @@ mod tests {
         phase an_instance_crosses_the_link_with_its_connections;
         {
             let (session, process) = pair().unwrap();
-            let request = instance_request();
-            for (origin, content, chooser) in [
-                (None, None, None),
-                (Some(connection()), Some(connection()), Some(connection())),
+            let opened = instance_request();
+            // Most windows open without a file, and a file handed over may have no name: each
+            // crosses as it was sent, the fields after it read as theirs.
+            let plain = InstanceRequest { open: None, ..opened.clone() };
+            let unnamed = InstanceRequest {
+                open: Some(OpenedFile { hash: "cd".repeat(32), name: None }),
+                ..opened.clone()
+            };
+            for (request, (origin, content, chooser)) in [
+                (opened.clone(), (None, None, None)),
+                (opened, (Some(connection()), Some(connection()), Some(connection()))),
+                (plain.clone(), (None, None, None)),
+                (plain, (Some(connection()), Some(connection()), Some(connection()))),
+                (unnamed, (None, Some(connection()), None)),
             ] {
                 let had = (origin.is_some(), content.is_some(), chooser.is_some());
                 ToProcess::Instance {
