@@ -42,7 +42,7 @@ app UI in Rust.
 These hold for every app, the shell and the SDK. When a doc or code disagrees, these win.
 
 1. **One resource/action/view model.** State is resources; changes are typed actions on them;
-   views present resources. Native apps, tilolang apps, the shell, agents and automations all
+   views present resources. The Rust core, tilolang apps, the shell, agents and automations all
    use this one model. No second model beside it.
 2. **State is CRDT-backed changes.** Resources are owned CRDT documents; edits are recorded
    changes (diff and splice text and lists, never replace them). A widget holds presentation and
@@ -63,6 +63,26 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
    devices, searchability, composability, and agents and automations acting on an app's
    resources and actions are properties of the system architecture. Every app gets them by
    publishing its resources and actions, not because its author worked hard for them.
+
+## Designing
+
+Think about the person using what you build. When you're working on a detail, step back and
+ask whether the larger thing could be done a better way; if it could, say so before going on.
+
+- No traditional desktop or SaaS thinking: storage, permissions or accounts per app or per
+  person, or a server that owns things. A workspace has one set of resources, many devices and
+  many members.
+- Don't rebuild the system: search, history, undo, sync, restore, tabs, who did what. If its
+  version falls short, improve it there.
+- Fail fast, hard and legibly; failing is no excuse for failing in an ugly way. An error is
+  either one a person will realistically see, and is designed for that, or one that shouldn't
+  exist at all: unwrap and fail. Avoid the middle.
+- If you notice you're duplicating functionality, stop and flag it.
+- Shared, good-looking components: modern, beautiful, coherent, animated.
+- Real conditions: 10k items, long names, any aspect ratio, others and agents changing things
+  while you look.
+- No tests that copy the implementation. Aim for integration-test speed (milliseconds) with
+  end-to-end depth (realistic user flows across systems).
 
 ## Make the change
 
