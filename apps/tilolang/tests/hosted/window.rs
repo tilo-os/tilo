@@ -333,9 +333,17 @@ fn a_notebook_is_its_tree_with_the_chosen_note_beside_it_naming_the_window() {
     );
     let shell_tree = composed(&mut session);
     assert_eq!(prop(&shell_tree, "sidebar_title").as_deref(), Some("Notes"));
+    // The notebook's own head commands stand over the tree — its File menu, and the sub-note it
+    // makes inside the note open — and the window's primary action is not among them: the bar
+    // offers that once.
+    let head = buttons_in(&shell_tree, "sidebar_actions");
     assert!(
-        buttons_in(&shell_tree, "sidebar_actions").is_empty(),
-        "the sidebar's header offers no button of the window's"
+        !head.contains(&"New note".to_owned()),
+        "the sidebar's header offers no button of the window's: {head:?}"
+    );
+    assert!(
+        head.contains(&"New sub-note".to_owned()),
+        "the notebook's own command stands where its head does: {head:?}"
     );
     assert!(
         buttons_in(&shell_tree, "actions").contains(&"New note".to_owned()),
