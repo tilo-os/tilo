@@ -108,8 +108,16 @@ pub fn package_surface(package: &[u8], app: &str) -> Result<Vec<u8>, Collaborati
 
 /// Keep `app`'s `surface` where this device decides the receipts of the
 /// changes that name it: the package carries the surface, so what is signed
-/// names it, and the change is decided without asking a member for it.
-pub(super) fn keep_surface(app: &str, surface: &[u8]) {
+/// names it, and the change is decided without asking a member for it. The
+/// device's stores judge the app's resource writes by `surfaces`, its own; the
+/// receipts are decided by the process's, which is the same registry on a
+/// device that runs alone, where the second naming changes nothing.
+pub(super) fn keep_surface(
+    surfaces: &collab_types::app_surface::Surfaces,
+    app: &str,
+    surface: &[u8],
+) {
+    surfaces.register_package(app, surface);
     collab_types::app_surface::register_package(app, surface);
     if let Ok((_, canonical)) = collab_types::surface::SurfaceFile::kept(surface) {
         crate::surfaces::keep(
@@ -295,7 +303,11 @@ impl Workspaces {
         }
         // What the write is decided against: the package carries the surface,
         // so the receipt is decided without asking a member for it.
-        keep_surface(app, &package_surface(package, app)?);
+        keep_surface(
+            &self.inner.host.surfaces,
+            app,
+            &package_surface(package, app)?,
+        );
         // A document members write sealed starts sealed: its genesis is
         // sealed with the workspace's keys, as a native app's would be.
         let keys = self.sealing_keys(&governed, app, document).await?;
@@ -414,7 +426,7 @@ impl Workspaces {
         }
         // The change names the app version's surface, which the package
         // carries: the receipt is decided here.
-        keep_surface(app, &surface);
+        keep_surface(&self.inner.host.surfaces, app, &surface);
         // What the model wrote is published as the governor's signed change,
         // sealed with the workspace's keys where its members write sealed.
         let keys = self.sealing_keys(&governed, app, document).await?;

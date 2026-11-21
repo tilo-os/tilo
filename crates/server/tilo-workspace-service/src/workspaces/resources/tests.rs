@@ -1159,7 +1159,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
         let mut governed = state.lock().await;
         let device = workspaces.member_identity().unwrap();
         let draft = governed
-            .store_with_surfaces()
+            .store_with_surfaces(&workspaces.inner.host.surfaces)
             .draft_field_update(
                 (KIND, "i-1"),
                 &signed_issue("Cancelled"),

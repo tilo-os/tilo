@@ -50,27 +50,141 @@ impl Named {
     }
 }
 
-/// Counts the surfaces named so far ([`registered`]).
-static NAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The app surfaces a device knows, by app: what the changes to its records are decided
+/// against. A device knows its process's ([`Surfaces::process`]), which every free function of
+/// this module reads and names into; a test that runs several devices in one process, or many
+/// tests side by side, gives each device one of its own, so a surface one names is not a surface
+/// another knows.
+#[derive(Default)]
+pub struct Surfaces {
+    named: Mutex<BTreeMap<String, Named>>,
+    /// Counts the surfaces named so far ([`Self::registered`]).
+    count: std::sync::atomic::AtomicU64,
+}
+
+impl Surfaces {
+    /// The surfaces this process knows: those the apps it runs named.
+    #[must_use]
+    pub fn process() -> &'static Arc<Self> {
+        static PROCESS: OnceLock<Arc<Surfaces>> = OnceLock::new();
+        PROCESS.get_or_init(Arc::default)
+    }
+
+    /// How many times an app's surface was named here: a change decided against a surface that
+    /// was not here may be decided again once this moves.
+    #[must_use]
+    pub fn registered(&self) -> u64 {
+        self.count.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// A surface became readable other than by being named: an app's update installed it. A
+    /// change decided against a surface that was not here may be decided again
+    /// ([`Self::registered`] moves).
+    pub fn arrived(&self) {
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// Name `json`, the JSON form `tilo_resource::committed_surface!` wrote of the committed
+    /// surface of an app a host runs in its own process (built into the host, no package of its
+    /// own), for `app_id`, unless a package already named one.
+    pub fn register_built_in(&self, app_id: &str, json: &'static str) {
+        let Some(kept) = crate::surface::canonical_json(json) else {
+            tracing::warn!(
+                app = app_id,
+                "the app's committed surface is not JSON; it declares no resources, reads or footprints"
+            );
+            return;
+        };
+        let hash = *blake3::hash(kept.as_bytes()).as_bytes();
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            self.named.lock_recover().entry(app_id.to_owned())
+        {
+            let bytes = if kept == json {
+                json.as_bytes()
+            } else {
+                held_bytes(hash, kept.as_bytes())
+            };
+            let parsed = crate::surface::SurfaceFile::from_json(&kept);
+            entry.insert(Named::new(app_id, hash, bytes, parsed));
+            self.arrived();
+        }
+    }
+
+    /// Name `bytes`, the surface file the signed package `app_id` ships, as the one it runs
+    /// with, replacing any held before (an update of the app). A file that is not a surface
+    /// names none.
+    pub fn register_package(&self, app_id: &str, bytes: &[u8]) {
+        let (file, kept) = match crate::surface::SurfaceFile::kept(bytes) {
+            Ok(kept) => kept,
+            Err(error) => {
+                tracing::warn!(
+                    app = app_id,
+                    %error,
+                    "the app's surface file does not parse; it declares no resources, reads or footprints"
+                );
+                return;
+            }
+        };
+        let hash = *blake3::hash(kept.as_bytes()).as_bytes();
+        if self
+            .named
+            .lock_recover()
+            .get(app_id)
+            .is_some_and(|named| named.hash == hash)
+        {
+            return;
+        }
+        // Kept for the process's life, once per distinct surface.
+        let bytes = held_bytes(hash, kept.as_bytes());
+        self.named
+            .lock_recover()
+            .insert(app_id.to_owned(), Named::new(app_id, hash, bytes, Ok(file)));
+        self.arrived();
+    }
+
+    /// The hash of the surface `app_id`'s changes are decided against.
+    #[must_use]
+    pub fn hash_of(&self, app_id: &str) -> Option<[u8; 32]> {
+        self.named.lock_recover().get(app_id).map(|named| named.hash)
+    }
+
+    /// Every app's surface known here, parsed: a surface that does not parse carries none.
+    #[must_use]
+    pub fn every(&self) -> Vec<Arc<crate::surface::SurfaceFile>> {
+        self.named
+            .lock_recover()
+            .values()
+            .filter_map(|named| named.file.clone())
+            .collect()
+    }
+
+    /// The surface bytes of `app_id` in the form it is kept by ([`crate::surface::canonical`]),
+    /// when known here.
+    #[must_use]
+    pub fn bytes_of(&self, app_id: &str) -> Option<&'static [u8]> {
+        self.named.lock_recover().get(app_id).map(|named| named.bytes)
+    }
+
+    /// `app_id`'s surface as parsed, once when it was named.
+    fn surface_of(&self, app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
+        self.named.lock_recover().get(app_id)?.file.clone()
+    }
+}
 
 /// How many times an app's surface was named in this process: a change
 /// decided against a surface that was not here may be decided again once
 /// this moves.
 #[must_use]
 pub fn registered() -> u64 {
-    NAMED.load(std::sync::atomic::Ordering::Acquire)
+    Surfaces::process().registered()
 }
 
 /// A surface became readable other than by being named: an app's update
 /// installed it. A change decided against a surface that was not here may
 /// be decided again ([`registered`] moves).
 pub fn arrived() {
-    NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-}
-
-fn registry() -> &'static Mutex<BTreeMap<String, Named>> {
-    static REGISTRY: OnceLock<Mutex<BTreeMap<String, Named>>> = OnceLock::new();
-    REGISTRY.get_or_init(Mutex::default)
+    Surfaces::process().arrived();
 }
 
 /// Name `bytes`, the surface file whoever started the app named, for
@@ -92,57 +206,14 @@ pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), Stri
 /// into the host, no package of its own), for `app_id`, unless a package
 /// already named one.
 pub fn register_built_in(app_id: &str, json: &'static str) {
-    let Some(kept) = crate::surface::canonical_json(json) else {
-        tracing::warn!(
-            app = app_id,
-            "the app's committed surface is not JSON; it declares no resources, reads or footprints"
-        );
-        return;
-    };
-    let hash = *blake3::hash(kept.as_bytes()).as_bytes();
-    if let std::collections::btree_map::Entry::Vacant(entry) =
-        registry().lock_recover().entry(app_id.to_owned())
-    {
-        let bytes = if kept == json {
-            json.as_bytes()
-        } else {
-            held_bytes(hash, kept.as_bytes())
-        };
-        let parsed = crate::surface::SurfaceFile::from_json(&kept);
-        entry.insert(Named::new(app_id, hash, bytes, parsed));
-        NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    }
+    Surfaces::process().register_built_in(app_id, json);
 }
 
 /// Name `bytes`, the surface file the signed package `app_id` ships, as the
 /// one it runs with, replacing any its host held before (an update of the
 /// app). A file that is not a surface names none.
 pub fn register_package(app_id: &str, bytes: &[u8]) {
-    let (file, kept) = match crate::surface::SurfaceFile::kept(bytes) {
-        Ok(kept) => kept,
-        Err(error) => {
-            tracing::warn!(
-                app = app_id,
-                %error,
-                "the app's surface file does not parse; it declares no resources, reads or footprints"
-            );
-            return;
-        }
-    };
-    let hash = *blake3::hash(kept.as_bytes()).as_bytes();
-    if registry()
-        .lock_recover()
-        .get(app_id)
-        .is_some_and(|named| named.hash == hash)
-    {
-        return;
-    }
-    // Kept for the process's life, once per distinct surface.
-    let bytes = held_bytes(hash, kept.as_bytes());
-    registry()
-        .lock_recover()
-        .insert(app_id.to_owned(), Named::new(app_id, hash, bytes, Ok(file)));
-    NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    Surfaces::process().register_package(app_id, bytes);
 }
 
 /// The bytes of surface `hash`, kept once however many apps or launches
@@ -185,31 +256,21 @@ pub fn hash_of_kind(kind: &str) -> Option<[u8; 32]> {
 /// The hash of the surface `app_id`'s changes are decided against.
 #[must_use]
 pub fn hash_of(app_id: &str) -> Option<[u8; 32]> {
-    registry()
-        .lock_recover()
-        .get(app_id)
-        .map(|named| named.hash)
+    Surfaces::process().hash_of(app_id)
 }
 
 /// Every app's surface this process carries, parsed: a surface that does not
 /// parse carries none.
 #[must_use]
 pub fn every() -> Vec<Arc<crate::surface::SurfaceFile>> {
-    registry()
-        .lock_recover()
-        .values()
-        .filter_map(|named| named.file.clone())
-        .collect()
+    Surfaces::process().every()
 }
 
 /// The surface bytes of `app_id` in the form it is kept by
 /// ([`crate::surface::canonical`]), when this process carries them.
 #[must_use]
 pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
-    registry()
-        .lock_recover()
-        .get(app_id)
-        .map(|named| named.bytes)
+    Surfaces::process().bytes_of(app_id)
 }
 
 /// `app_id`'s surface as parsed, once when it was named: every check of a
@@ -217,7 +278,7 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
 /// process holds no surface for the app, or it does not parse (logged when it
 /// was named).
 fn surface_of(app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
-    registry().lock_recover().get(app_id)?.file.clone()
+    Surfaces::process().surface_of(app_id)
 }
 
 /// The kind of `app_id`'s own record of a workspace, the first its surface declares: the resource

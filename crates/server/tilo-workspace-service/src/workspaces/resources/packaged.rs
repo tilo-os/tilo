@@ -141,7 +141,7 @@ impl Workspaces {
         {
             return Err(denied());
         }
-        keep_surface(app, &surface_bytes);
+        keep_surface(&self.inner.host.surfaces, app, &surface_bytes);
         let stamp = Stamp {
             verb: call.action.to_owned(),
             invoker: agent.to_owned(),
@@ -155,7 +155,7 @@ impl Workspaces {
                 .collect(),
             ..Stamp::default()
         };
-        let store = governed.store_with_surfaces();
+        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
         let held = store
             .index()
             .get(kind, id)

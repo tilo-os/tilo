@@ -671,6 +671,9 @@ impl Server {
                 // A server serves other people's workspaces; it joins none as
                 // a member.
                 member: None,
+                surfaces: std::sync::Arc::clone(
+                    collab_types::app_surface::Surfaces::process(),
+                ),
             },
             identity.clone(),
             endpoint.clone(),

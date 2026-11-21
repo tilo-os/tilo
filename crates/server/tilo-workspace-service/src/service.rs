@@ -87,6 +87,10 @@ pub struct ServiceConfig {
     /// keeps it on a device that serves the workspaces that device joined as
     /// a member: `None` for a server, which joins none.
     pub member: Option<Arc<crate::workspaces::MemberDevice>>,
+    /// The app surfaces the device knows, which the stores of its workspaces declare the
+    /// resource types and verbs of: the process's own ([`collab_types::app_surface::Surfaces::process`]),
+    /// or, for a test that runs several devices in one process, each device's own.
+    pub surfaces: Arc<collab_types::app_surface::Surfaces>,
 }
 
 impl ServiceConfig {
@@ -107,6 +111,7 @@ impl ServiceConfig {
             reachability: Reachability::default(),
             people_keys: None,
             member: None,
+            surfaces: Arc::clone(collab_types::app_surface::Surfaces::process()),
         }
     }
 }
@@ -377,6 +382,7 @@ impl ServiceSessions {
             })),
             arrivals: self.handler.arrivals.clone(),
             member: cfg.member.clone(),
+            surfaces: Arc::clone(&cfg.surfaces),
         }
     }
 

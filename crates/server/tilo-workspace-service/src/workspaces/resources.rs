@@ -70,8 +70,8 @@ pub(super) struct Resources {
     used: BTreeMap<String, Instant>,
     /// The documents whose kept snapshot is older than they are.
     unsnapshotted: BTreeSet<String>,
-    /// How many surfaces this process had named when the store last declared them
-    /// ([`collab_types::app_surface::registered`]).
+    /// How many surfaces the device had named when the store last declared them
+    /// ([`collab_types::app_surface::Surfaces::registered`]).
     #[cfg(any(feature = "apps", feature = "agents"))]
     declared: u64,
     /// The queries apps hold open, by the store's watch of their kind.
@@ -485,14 +485,14 @@ impl GovernedWorkspace {
         self.resources.document(doc)
     }
 
-    /// The workspace's store, with the types and verbs of every app surface this process knows
-    /// declared: what this device's writes and the members' are judged by.
+    /// The workspace's store, with the types and verbs of every app surface the device knows
+    /// (`surfaces`) declared: what this device's writes and the members' are judged by.
     #[cfg(any(feature = "apps", feature = "agents"))]
-    fn store_with_surfaces(&mut self) -> &mut Store {
-        let named = collab_types::app_surface::registered();
+    fn store_with_surfaces(&mut self, surfaces: &collab_types::app_surface::Surfaces) -> &mut Store {
+        let named = surfaces.registered();
         if self.resources.declared != named {
             self.resources.declared = named;
-            for file in collab_types::app_surface::every() {
+            for file in surfaces.every() {
                 for surface in &file.resources {
                     self.resources
                         .store_mut()
@@ -694,7 +694,7 @@ impl Workspaces {
             return false;
         }
         #[cfg(any(feature = "apps", feature = "agents"))]
-        governed.store_with_surfaces();
+        governed.store_with_surfaces(&self.inner.host.surfaces);
         if let Err(error) = governed
             .take_resources(author, (app_id, document_id), envelope, readers.as_deref())
             .await
@@ -884,7 +884,7 @@ impl Workspaces {
         let author = device.device();
         let document = &write.doc;
         governed
-            .store_with_surfaces()
+            .store_with_surfaces(&self.inner.host.surfaces)
             .check_write(write, author)
             .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
         let admission = tokio::select! {
@@ -934,7 +934,7 @@ impl Workspaces {
         use tilo_resource_store::wire::{Command, Reply, read};
         let may_read = may_read(hex::encode(device.cert.user_public_key));
         let mut governed = state.lock().await;
-        let store = governed.store_with_surfaces();
+        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
         let answer = match command {
             Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
                 Reply::Versions(
@@ -986,7 +986,7 @@ impl Workspaces {
             return Ok(false);
         }
         let admit = |_: &tilo_resource_store::Proposal<'_>| true;
-        let write = governed.store_with_surfaces().draft_field_update(
+        let write = governed.store_with_surfaces(&self.inner.host.surfaces).draft_field_update(
             (kind, id),
             resource,
             stamp,
@@ -1063,7 +1063,7 @@ impl Workspaces {
         }
 
         let (writes, refusal) =
-            match tilo_resource_store::wire::draft(governed.store_with_surfaces(), command) {
+            match tilo_resource_store::wire::draft(governed.store_with_surfaces(&self.inner.host.surfaces), command) {
                 Ok(writes) => (writes, None),
                 Err(refused) => (refused.written, Some(refused.error.to_string())),
             };
@@ -1167,7 +1167,7 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        governed.store_with_surfaces();
+        governed.store_with_surfaces(&self.inner.host.surfaces);
         Ok(governed.resources.open_query(query, reader))
     }
 }

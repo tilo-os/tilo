@@ -484,6 +484,10 @@ async fn host_on(
         ServiceConfig {
             max_workspace_grants: grants,
             people_keys: people_keys.map(Path::to_owned),
+            // Each device knows only the app surfaces named to it: tests run side by side in one
+            // process, and a surface one of them names must not change what another's stores
+            // admit.
+            surfaces: Arc::default(),
             // A server of other people's workspaces takes their work in them.
             ..ServiceConfig::new(
                 state_root.to_owned(),
