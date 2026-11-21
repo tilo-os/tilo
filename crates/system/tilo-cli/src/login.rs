@@ -1323,84 +1323,7 @@ pub fn login_held(
             });
     let site = site_origin(site)?;
     let runtime = runtime()?;
-    let (key, device, others) = runtime.block_on(async {
-        let origin = home_server(&Origin::new(&http(), &site)).await?;
-        let server = Origin::new(&http(), &origin);
-        let info = https::server_info(&server).await.map_err(|error| {
-            debug_why("asking the site's server", &error);
-            anyhow!(UNREACHED)
-        })?;
-        let dialed = info
-            .address
-            .as_ref()
-            .map(tilo_server_client::ServerAddress::published)
-            .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
-        let key = SigningKey::from_bytes(&rand::random());
-        let label = label(&agent.name, &hostname());
-        let cert = held_device_cert(person, &key, &label)?;
-        let user = person.user();
-        let unentered = PairingLink::parse(&format!(
-            "{site}/#/@{}/w/{}?pair={user}",
-            host_of(&origin),
-            uuid::Uuid::nil()
-        ))
-        .map_err(|error| anyhow!(error))?;
-        let signed = SignIn {
-            link: unentered,
-            agent: agent.name.clone(),
-            label: label.clone(),
-            server: dialed,
-            cert: cert.clone(),
-            server_cert: info.server_cert.clone(),
-        };
-        let session = Entered::connect(&signed, Arc::new(key.clone()));
-        let chosen = async {
-            session
-                .connected()
-                .await
-                .map_err(|refusal| anyhow!("{refusal}"))?;
-            let mut list = session
-                .personal_list(
-                    &tilo_server_session::workspaces::WorkspaceLabels::new(),
-                    None,
-                )
-                .await
-                .map_err(|refusal| anyhow!("{refusal}"))?;
-            // The person's list of devices takes this key in, as when a tab approves one.
-            list.devices
-                .push(tilo_server_session::workspaces::PersonalDevice {
-                    cert: cert.clone(),
-                    name: None,
-                    revoked: false,
-                    browser: None,
-                    agent: Some(agent.name.clone()),
-                    last_active_ms: None,
-                    online: false,
-                });
-            session
-                .keep_personal(&list)
-                .await
-                .map_err(|refusal| anyhow!("{refusal}"))?;
-            let others = list.workspaces.len().saturating_sub(1);
-            choose_workspace(&list.workspaces, workspace).map(|(id, name)| (id, name, others))
-        }
-        .await;
-        session.close();
-        let (id, name, others) = chosen?;
-        let device = Device {
-            site: format!("{site}/"),
-            host_origin: origin,
-            workspace: id,
-            workspace_name: Some(name),
-            user,
-            agent: agent.name.clone(),
-            label,
-            cert: hex::encode(postcard::to_allocvec(&cert)?),
-            server_cert: hex::encode(postcard::to_allocvec(&info.server_cert)?),
-            server_address: None,
-        };
-        anyhow::Ok((key, device, others))
-    })?;
+    let (key, device, others) = runtime.block_on(enter_with_a_held_key(person, &agent, &site, workspace))?;
     let dir = device_dir()?;
     store(&dir, &key, &device)?;
     println!(
@@ -1424,6 +1347,98 @@ pub fn login_held(
 
 /// After a login without a tab: Tilo's tools added to the agent, the workspace entered once to say
 /// it opens, its folder put on this computer, and what to do next.
+/// Enter a workspace as a device of `person` with a key this computer makes now: the server takes
+/// the key in, and the computer enters `workspace` (by name or id), else the first of their own
+/// there ([`choose_workspace`]); the peer it starts takes in every other workspace the person has
+/// there. Answers the key, the device, and how many other workspaces there are.
+async fn enter_with_a_held_key(
+    person: &crate::identity::Person,
+    agent: &agent::Agent,
+    site: &str,
+    workspace: Option<&str>,
+) -> anyhow::Result<(
+    SigningKey,
+    Device,
+    usize,
+)> {
+    let origin = home_server(&Origin::new(&http(), site)).await?;
+    let server = Origin::new(&http(), &origin);
+    let info = https::server_info(&server).await.map_err(|error| {
+        debug_why("asking the site's server", &error);
+        anyhow!(UNREACHED)
+    })?;
+    let dialed = info
+        .address
+        .as_ref()
+        .map(tilo_server_client::ServerAddress::published)
+        .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
+    let key = SigningKey::from_bytes(&rand::random());
+    let label = label(&agent.name, &hostname());
+    let cert = held_device_cert(person, &key, &label)?;
+    let user = person.user();
+    let unentered = PairingLink::parse(&format!(
+        "{site}/#/@{}/w/{}?pair={user}",
+        host_of(&origin),
+        uuid::Uuid::nil()
+    ))
+    .map_err(|error| anyhow!(error))?;
+    let signed = SignIn {
+        link: unentered,
+        agent: agent.name.clone(),
+        label: label.clone(),
+        server: dialed,
+        cert: cert.clone(),
+        server_cert: info.server_cert.clone(),
+    };
+    let session = Entered::connect(&signed, Arc::new(key.clone()));
+    let chosen = async {
+        session
+            .connected()
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        let mut list = session
+            .personal_list(
+                &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                None,
+            )
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        // The person's list of devices takes this key in, as when a tab approves one.
+        list.devices
+            .push(tilo_server_session::workspaces::PersonalDevice {
+                cert: cert.clone(),
+                name: None,
+                revoked: false,
+                browser: None,
+                agent: Some(agent.name.clone()),
+                last_active_ms: None,
+                online: false,
+            });
+        session
+            .keep_personal(&list)
+            .await
+            .map_err(|refusal| anyhow!("{refusal}"))?;
+        let others = list.workspaces.len().saturating_sub(1);
+        choose_workspace(&list.workspaces, workspace).map(|(id, name)| (id, name, others))
+    }
+    .await;
+    session.close();
+    let (id, name, others) = chosen?;
+    let device = Device {
+        site: format!("{site}/"),
+        host_origin: origin,
+        workspace: id,
+        workspace_name: Some(name),
+        user,
+        agent: agent.name.clone(),
+        label,
+        cert: hex::encode(postcard::to_allocvec(&cert)?),
+        server_cert: hex::encode(postcard::to_allocvec(&info.server_cert)?),
+        server_address: None,
+    };
+    anyhow::Ok((key, device, others))
+}
+
 fn entered_after_login(
     runtime: &tokio::runtime::Runtime,
     key: &SigningKey,
