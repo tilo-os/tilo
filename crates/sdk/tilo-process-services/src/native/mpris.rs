@@ -290,6 +290,10 @@ mod imp {
     // read `self` still can't drop the receiver without breaking the
     // interface.
     #[interface(name = "org.mpris.MediaPlayer2")]
+    #[allow(
+        clippy::unused_self,
+        reason = "the interface dispatches by exact method signature, so a constant property keeps its receiver"
+    )]
     impl RootIface {
         fn raise(&self) {
             let _ = self.cmd.send(MprisCommand::Raise);
@@ -298,17 +302,14 @@ mod imp {
             let _ = self.cmd.send(MprisCommand::Quit);
         }
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn can_quit(&self) -> bool {
             true
         }
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn can_raise(&self) -> bool {
             true
         }
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn has_track_list(&self) -> bool {
             false
         }
@@ -342,6 +343,10 @@ mod imp {
     // matching this exact method signature, so the receiver and its
     // mutability can't be dropped without breaking the interface.
     #[interface(name = "org.mpris.MediaPlayer2.Player")]
+    #[allow(
+        clippy::unused_self,
+        reason = "the interface dispatches by exact method signature, so a constant property keeps its receiver"
+    )]
     impl PlayerIface {
         fn play(&self) {
             let _ = self.cmd.send(MprisCommand::Play);
@@ -367,7 +372,6 @@ mod imp {
         fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
             let _ = self.cmd.send(MprisCommand::SetPosition(position));
         }
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn open_uri(&self, _uri: String) {}
 
         /// Emitted after a seek not caused by normal playback.
@@ -397,29 +401,24 @@ mod imp {
             let _ = self.cmd.send(MprisCommand::SetVolume(v));
         }
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
         #[allow(
-            clippy::unused_self,
             clippy::needless_pass_by_ref_mut,
-            reason = "see the comment above this impl"
+            reason = "the interface dispatches by exact method signature, so a no-op setter keeps `&mut`"
         )]
         fn set_rate(&mut self, _rate: f64) {}
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn minimum_rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn maximum_rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn can_control(&self) -> bool {
             true
         }
