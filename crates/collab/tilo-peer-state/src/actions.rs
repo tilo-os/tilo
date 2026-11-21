@@ -668,10 +668,12 @@ impl ActionService {
             })?;
         let now = tilo_clock::wall();
         // A placement that does not decode is no placement: the request is decided as any other.
-        let placement = action
-            .placement
-            .as_deref()
-            .and_then(|bytes| postcard::from_bytes::<crate::join::TransportHint>(bytes).ok());
+        let placement = action.placement.as_deref().and_then(|bytes| {
+            tilo_failure::ignored!(
+                "a placement that does not decode places nothing, and the request is decided as any other",
+                postcard::from_bytes::<crate::join::TransportHint>(bytes).ok()
+            )
+        });
         let (authority, certificate) = self
             .read_workspace_for(
                 Some((source, placement.as_ref())),

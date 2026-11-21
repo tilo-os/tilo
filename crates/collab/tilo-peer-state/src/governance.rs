@@ -23,9 +23,11 @@ pub const MAX_RETAINED_IDENTITY_ADMISSIONS: usize = 8;
 /// its device, when the bytes are one: what a history of the workspace calls the device it added.
 #[must_use]
 pub fn device_row_label(row: &[u8]) -> Option<String> {
-    GovernedIdentity::decode(row)
-        .ok()
-        .map(|identity| identity.device_cert.device_label)
+    tilo_failure::ignored!(
+        "governance bytes that are not a governed identity name no device",
+        GovernedIdentity::decode(row).ok()
+    )
+    .map(|identity| identity.device_cert.device_label)
 }
 
 /// Keep the latest [`MAX_RETAINED_IDENTITY_ADMISSIONS`] receipts, in order.
