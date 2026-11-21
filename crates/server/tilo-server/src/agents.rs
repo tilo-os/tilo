@@ -1259,7 +1259,9 @@ pub async fn start_serving_documents(
 ) -> Result<(Server, WorkspaceActions), ServerError> {
     let content = crate::content::stores(&cfg.state_root);
     let state_dir = cfg.state_root.join("agents");
-    let (server, actions) = start_app_server(
+    // The server this starts is a large future of its own; boxing it keeps every caller's
+    // future small, so a caller that awaits several starts does not build a large one.
+    let (server, actions) = Box::pin(start_app_server(
         cfg,
         identity,
         AgentOptions {
@@ -1274,7 +1276,7 @@ pub async fn start_serving_documents(
         None,
         None,
         Serving::Documents,
-    )
+    ))
     .await?;
     Ok((server, actions.actions.clone()))
 }
@@ -1482,7 +1484,9 @@ async fn start_inner(
         (options.state_dir.clone(), Arc::clone(&content)),
         Arc::clone(&options.model),
     );
-    let (server, actions) = start_app_server(
+    // The server this starts is a large future of its own; boxing it keeps every caller's
+    // future small, so a caller that awaits several starts does not build a large one.
+    let (server, actions) = Box::pin(start_app_server(
         cfg,
         identity,
         options,
@@ -1490,7 +1494,7 @@ async fn start_inner(
         Some(&mut agents),
         relay_mode,
         serving,
-    )
+    ))
     .await?;
     Ok((server, agents, actions))
 }
