@@ -116,7 +116,7 @@ build_bundle() {
   bindgen=$(bindgen_tool) || { echo 'could not build wasm-bindgen' >&2; return 1; }
   [[ ${#names[@]} == 0 ]] || bundle+=-names
   WASM_BINDGEN=$bindgen bash "$repo/crates/browser/tilo-browser-runtime/scripts/build-wasm-on-builder.sh" "$bundle" "$run" \
-    --bundle desktop --profile local --no-wasm-opt --update "${names[@]}"
+    --bundle runtime --profile local --no-wasm-opt --update "${names[@]}"
 }
 
 mkdir -p "$CARGO_TARGET_DIR/$stage"

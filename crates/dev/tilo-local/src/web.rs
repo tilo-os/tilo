@@ -1,4 +1,4 @@
-//! `cargo web`: the web desktop, built by the bundle's own build (`build.sh --bundle desktop`) and
+//! `cargo web`: the web entry, built by the bundle's own build (`build.sh --bundle runtime`) and
 //! served by the local hosting stack (`os/containers/tilo-sh/stack.sh`), which runs production's
 //! entrypoints and site layout. After it serves, the page is read back as a browser would start it:
 //! the entry page, every module it names, and the runtime's WebAssembly. A missing piece fails the
@@ -14,8 +14,8 @@ use crate::{repo_root, seconds, state_home, target_dir};
 const HELP: &str = "\
 cargo web: the web desktop on this machine, served by the local tilo.sh stack.
 
-Builds the desktop bundle (crates/browser/tilo-browser-runtime/scripts/build.sh
---bundle desktop; only what changed rebuilds) and serves it with the stack
+Builds the entry's bundle (crates/browser/tilo-browser-runtime/scripts/build.sh
+--bundle runtime; only what changed rebuilds) and serves it with the stack
 production's site runs on (os/containers/tilo-sh/stack.sh: the server, the API
 server and the web entry, all on 127.0.0.1). A running stack keeps running
 and only the web entry restarts on the new bundle. Then it loads the page the
@@ -32,8 +32,8 @@ Options:
               longer; the default is the development profile (build.sh
               --profile quick), rebuilt in place
   --fresh     start the stack on new state (a new Lounge, a new entry)
-  --bundle DIR  serve this built desktop bundle (build.sh --bundle desktop's
-              output, such as CI's web-desktop-bundle) instead of building one
+  --bundle DIR  serve this built entry bundle (build.sh --bundle runtime's
+              output, such as CI's web-entry-bundle) instead of building one
   --check     smoke test on a stack of its own (its own state and ports):
               build, serve, load the page and its runtime module, stop
 
