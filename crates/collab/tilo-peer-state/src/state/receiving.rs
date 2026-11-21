@@ -28,19 +28,50 @@ impl StatePeer {
     }
 
     /// Exact observations from the real admission path, not a durability receipt.
+    /// A record write is decided against the exact admission index: one
+    /// already recorded is a duplicate, other bytes at its sequence conflict.
     pub fn receive_from_report(
         &mut self,
         origin: TransportOrigin,
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<AdmissionReport, AdmissionError> {
-        if matches!(message, NeighbourMsg::AppDocument { .. }) && !self.core.exact_selected {
+        self.admit_from(origin, message, now, true)
+    }
+
+    /// Admit a message from `origin`, queuing it while prerequisites are missing.
+    /// A record write at or below its writer's floor is a duplicate.
+    /// An [`AdmissionError::Device`] is this device failing to decide it, never
+    /// the message being refused.
+    pub fn receive_from(
+        &mut self,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<ReceiveOutcome, AdmissionError> {
+        self.admit_from(origin, message, now, false)
+            .map(|report| report.summary)
+    }
+
+    /// Admit a message from `origin` on a copy of this state, and keep the
+    /// copy once the message is decided. `exact` decides record writes
+    /// against the exact admission index rather than the writers' floors.
+    fn admit_from(
+        &mut self,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+        now: SystemTime,
+        exact: bool,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        let document = matches!(message, NeighbourMsg::AppDocument { .. });
+        if exact && document && !self.core.exact_selected {
             return Err(AdmissionError::WriterSelectionRequired);
         }
         if let TransportOrigin::RetainedNativePublication { publisher } = origin {
-            return self.receive_native_publication(publisher, message, now, true);
+            return self.receive_native_publication(publisher, message, now, exact);
         }
-        if matches!(&message, NeighbourMsg::AppDocument { .. })
+        if exact
+            && document
             && let Some(report) = self.lookup_exact_document_report(origin, &message, now)?
         {
             return Ok(report);
@@ -48,9 +79,15 @@ impl StatePeer {
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
         let written = written_route(&message);
         let mut candidate = self.clone();
-        let received = candidate.receive_with_context(source, message, now, retained_replay, true);
+        let received = candidate.receive_with_context(source, message, now, retained_replay, exact);
         self.remember_refused_base(&candidate);
-        let mut report = received.inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
+        let mut report = received.inspect_err(|error| {
+            // A device that could not decide the frame has not refused it:
+            // what waited for the writer stays waiting for it.
+            if !error.is_device_failure() {
+                self.forget_refused(source, written.as_ref());
+            }
+        })?;
         let landed = report.summary.changed || report.summary.metadata_changed;
         report.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
@@ -283,37 +320,6 @@ impl StatePeer {
             .collect())
     }
 
-    /// Admit a message from `origin`, queuing it while prerequisites are missing.
-    /// An [`AdmissionError::Device`] is this device failing to decide it, never
-    /// the message being refused.
-    pub fn receive_from(
-        &mut self,
-        origin: TransportOrigin,
-        message: NeighbourMsg,
-        now: SystemTime,
-    ) -> Result<ReceiveOutcome, AdmissionError> {
-        if let TransportOrigin::RetainedNativePublication { publisher } = origin {
-            return self
-                .receive_native_publication(publisher, message, now, false)
-                .map(|report| report.summary);
-        }
-        let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
-        let written = written_route(&message);
-        let mut candidate = self.clone();
-        let received = candidate.receive_with_context(source, message, now, retained_replay, false);
-        self.remember_refused_base(&candidate);
-        let mut outcome = received.inspect_err(|error| {
-            // A device that could not decide the frame has not refused it:
-            // what waited for the writer stays waiting for it.
-            if !error.is_device_failure() {
-                self.forget_refused(source, written.as_ref());
-            }
-        })?;
-        let landed = outcome.summary.changed || outcome.summary.metadata_changed;
-        outcome.summary.replay_wanted |= candidate.missed_landed(landed);
-        *self = candidate;
-        Ok(outcome.summary)
-    }
     /// Keep what `candidate`, this copy's own clone, learnt while it decided
     /// a message: the base of its governor it refused. A refused message
     /// leaves nothing else of itself here.
