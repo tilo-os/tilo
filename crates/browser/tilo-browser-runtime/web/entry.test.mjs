@@ -692,50 +692,29 @@ test('any other link waits for the runtime’s grammar before admission', async 
   page.router.stop?.();
 });
 
-test('the home workspace’s app in front is fetched once admitted, never before or when refused', async () => {
+test('an admitted browser is handed to the page, and one the host refuses is not', async () => {
   const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/', app: 'so.tilo.chat'};
   const run = async enterViaHost => {
     const order = [];
     const window = {
       __tiloLinkSecrets: Object.freeze({}),
-      location: {href: 'https://workspaces.example/open/', hash: ''},
+      location: {href: 'https://workspaces.example/open/', hash: '', replace: url => order.push(url)},
       history: {state: null, replaceState() {}, pushState() {}},
       addEventListener() {}, removeEventListener() {},
     };
     const deps = {
-      loadRuntime: async () => runtimeFake({...entering('entry')}),
-      prefetchApplication: app => order.push(`prefetch ${app}`),
+      loadRuntime: async () => runtimeFake({...entering('entry'), formatLink: () => 'https://workspaces.example/open/#/@workspaces.example/w/r1'}),
       fetch: async () => ({ok: true, json: async () => ({home})}),
       enterViaHost: async () => { order.push('entry'); return enterViaHost(); },
     };
-    // An admitted boot goes on past what this asks of it.
     void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
     await new Promise(resolve => setTimeout(resolve, 10));
     return order;
   };
-  assert.deepEqual((await run(async () => ({workspace: 'r1'}))).slice(0, 2), ['entry', 'prefetch so.tilo.chat']);
+  // The app the home names is the page it opens on the server; nothing of it is
+  // asked of the entry.
+  assert.deepEqual(await run(async () => ({workspace: 'r1'})), ['entry', 'https://workspaces.example/open/w/r1/chat']);
   assert.deepEqual(await run(async () => { throw new Error('closed'); }), ['entry', 'closed']);
-});
-
-test('a desktop’s first-layout code is asked for before the entry, the app’s only once admitted', async () => {
-  const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/', app: 'so.tilo.chat'};
-  const order = [];
-  const window = {
-    __tiloLinkSecrets: Object.freeze({}),
-    location: {href: 'https://workspaces.example/open/', hash: ''},
-    history: {state: null, replaceState() {}, pushState() {}},
-    addEventListener() {}, removeEventListener() {},
-  };
-  const deps = {
-    loadRuntime: async () => runtimeFake({...entering('entry')}),
-    prefetchDesktop: () => order.push('prefetch desktop'),
-    prefetchApplication: app => order.push(`prefetch ${app}`),
-    fetch: async () => ({ok: true, json: async () => ({home})}),
-    enterViaHost: async () => { order.push('entry'); return {workspace: 'r1'}; },
-  };
-  void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.deepEqual(order.slice(0, 3), ['prefetch desktop', 'entry', 'prefetch so.tilo.chat']);
 });
 
 test('only a bare desktop entry under a home reopens the workspace the person last chose', () => {
@@ -912,18 +891,17 @@ test('a page opened at an address ending in #/ goes in through its home’s entr
   const order = [];
   const window = {
     __tiloLinkSecrets: Object.freeze({}),
-    location: {href: 'https://workspaces.example/open/#/', hash: '#/'},
+    location: {href: 'https://workspaces.example/open/#/', hash: '#/', replace: url => order.push(url)},
     history: {state: null, replaceState() {}, pushState() {}},
     addEventListener() {}, removeEventListener() {},
   };
   const deps = {
-    loadRuntime: async () => runtimeFake({...entering('entry'), parseLink: noRoute}),
-    prefetchApplication: app => order.push(`prefetch ${app}`),
+    loadRuntime: async () => runtimeFake({...entering('entry'), parseLink: noRoute,
+      formatLink: () => 'https://workspaces.example/open/#/@workspaces.example/w/r1'}),
     fetch: async () => ({ok: true, json: async () => ({home})}),
     enterViaHost: async () => { order.push('entry'); return {workspace: 'r1'}; },
   };
-  // An admitted boot goes on past what this asks of it.
   void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
   await new Promise(resolve => setTimeout(resolve, 10));
-  assert.deepEqual(order.slice(0, 2), ['entry', 'prefetch so.tilo.chat']);
+  assert.deepEqual(order.slice(0, 2), ['entry', 'https://workspaces.example/open/w/r1/chat']);
 });
