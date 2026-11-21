@@ -627,6 +627,33 @@ impl Decorator for WindowFrame {
                 theme.tokens.colors.window_edge_focused(),
             ));
         }
+        // The pill the controls stand in, under them and over the content they sit on: the
+        // floating material's ground and edge, without a shadow of its own, as it is painted.
+        if self.pill.area() > 0.0 {
+            let path = format!("{}#controls-pill", node.path);
+            let mut pill = crate::composition::Composed::new(
+                path,
+                "WindowControlsPill",
+                [
+                    self.pill.x0,
+                    self.pill.y0,
+                    self.pill.width(),
+                    self.pill.height(),
+                ],
+            );
+            pill.ground = Some(crate::composition::Ground {
+                fill: Some(crate::composition::rgba8(crate::chrome::panel_ground(
+                    theme,
+                ))),
+                edge: Some(crate::composition::rgba8(crate::chrome::panel_border(
+                    theme,
+                ))),
+                radius: crate::chrome::ChromeRole::Selector.radius(theme, self.pill.height()),
+                inset: [0.0; 2],
+            });
+            let at = node.children.len().saturating_sub(1);
+            node.children.insert(at, pill);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
