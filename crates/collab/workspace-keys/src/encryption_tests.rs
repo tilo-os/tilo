@@ -2668,8 +2668,9 @@ fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
 }
 
 /// A reader that asks for a document's keys before the workspace's governance names who reads it
-/// is answered Unavailable, and its route is told once the governance arrives: asked again then,
-/// the document's group opens. Left untold, the route never asked again.
+/// is answered Unavailable, and its route, which follows the workspace's changes, is told once the
+/// governance arrives and again once the group opens. Left untold, the route never asked again and
+/// never took the keys.
 #[test]
 fn a_document_asked_for_before_its_readers_are_known_is_told_when_they_are() {
     let workspace = Arc::new(Workspace::default());
@@ -2689,23 +2690,28 @@ fn a_document_asked_for_before_its_readers_are_known_is_told_when_they_are() {
         reader.service.access_scope(scope.clone(), now),
         KeyAccess::Unavailable
     ));
-    let group = scope.group();
-    let told = reader.service.workspace_change(group);
+    // The route names the workspace and follows its changes.
+    let told = reader.service.workspace_change(workspace_id);
     drive(&mut [&mut reader], &mut now, 2);
     assert_eq!(
-        reader.service.workspace_change(group),
+        reader.service.workspace_change(workspace_id),
         told,
         "nothing changed while no one names the readers"
     );
     policy.document_readers.lock().unwrap().insert(public(1));
     drive(&mut [&mut reader], &mut now, 2);
+    let named = reader.service.workspace_change(workspace_id);
     assert_ne!(
-        reader.service.workspace_change(group),
-        told,
+        named, told,
         "the route is told once the governance names the document's readers"
     );
     reader.service.access_scope(scope.clone(), now);
     drive(&mut [&mut reader], &mut now, 8);
+    assert_ne!(
+        reader.service.workspace_change(workspace_id),
+        named,
+        "the route is told once the document's group opens"
+    );
     assert!(
         matches!(reader.service.access_scope(scope, now), KeyAccess::Ready(_)),
         "asked again, the document's group opens"

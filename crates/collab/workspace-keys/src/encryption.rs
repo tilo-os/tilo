@@ -2002,9 +2002,17 @@ impl WorkspaceKeys {
     }
 
     /// Record that `workspace`'s keys or access changed, and announce it.
+    ///
+    /// A document's or reader set's group is a change of the workspace that
+    /// carries it too: the routes it keys name that workspace, not the group,
+    /// and follow the workspace's changes ([`SharedKeys::workspace_changed`]).
     fn bump(&mut self, workspace: WorkspaceId) {
         self.generation = self.generation.wrapping_add(1);
         self.changed.insert(workspace, self.generation);
+        let carrier = self.directory.carrier(workspace);
+        if carrier != workspace {
+            self.changed.insert(carrier, self.generation);
+        }
         self.changes.send_replace(self.generation);
     }
 }
@@ -2427,8 +2435,8 @@ impl KeyProvider {
     ///
     /// Resolves at once when the workspace changed since `after`; otherwise
     /// when it next changes, or when the service is installed, replaced or
-    /// goes away. It reports only that this one group changed, nothing
-    /// about its keys or any other group: the endpoint then asks the
+    /// goes away. It reports only that this group, or a document's or reader
+    /// set's group the workspace carries, changed, nothing about its keys: the endpoint then asks the
     /// identity service, which checks the device's trust and the person's
     /// role on every answer. Costs no wakeup while nothing changes.
     pub async fn workspace_changed(&self, workspace: WorkspaceId, after: u64) -> u64 {
