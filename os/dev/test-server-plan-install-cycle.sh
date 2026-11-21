@@ -102,7 +102,6 @@ mkdir -p "$storage"
 cycle_dir="$storage"
 mkdir -p "$cycle_dir"
 
-export TILO_MEM="${TILO_MEM:-8192}"
 export TILO_BOOT_WAIT_SECS="${TILO_BOOT_WAIT_SECS:-1800}"
 export TILO_USER="${TILO_USER:-tester}"
 export TILO_PASS="${TILO_PASS:-tilo}"
@@ -127,8 +126,12 @@ server_cp() {
     -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes "$1" "cycle@127.0.0.1:$2"
 }
 # The machine under installation, booted from the retained Fedora.
+# The machine and the owner device share this check's own VM, whose kernel
+# has a little under 8 GiB: a guest of 8 GiB beside the owner is refused its
+# memory outright, and QEMU stops before the firmware prints a line.
 server_vm() {
-  TILO_RUN="$server_dir" TILO_SSH_PORT="$server_port" "$vm" "$@"
+  TILO_RUN="$server_dir" TILO_SSH_PORT="$server_port" \
+    TILO_MEM="${TILO_SERVER_CYCLE_SERVER_MEM:-4096}" "$vm" "$@"
 }
 # The owner device, booted from the dev disk.
 owner() {
