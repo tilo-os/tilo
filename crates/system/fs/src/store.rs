@@ -997,7 +997,7 @@ impl ContentStore {
     ) -> impl std::future::Future<
         Output = std::result::Result<Vec<fs_protocol::FileDocumentId>, BlobDocumentLookupError>,
     > + Send
-           + 'a {
+    + 'a {
         let roots = if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_document == 0

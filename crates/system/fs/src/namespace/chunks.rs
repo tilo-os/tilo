@@ -317,8 +317,10 @@ impl Chunks {
             && let Some((counted, count)) = counted_value(self.counted.load(Ordering::Relaxed))
             && counted == chunk
         {
-            self.counted
-                .store(counted_word(chunk, count.saturating_add(1)), Ordering::Relaxed);
+            self.counted.store(
+                counted_word(chunk, count.saturating_add(1)),
+                Ordering::Relaxed,
+            );
         }
         Ok(())
     }
