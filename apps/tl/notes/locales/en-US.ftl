@@ -71,8 +71,6 @@ d-qymo5lg2-body = Body
 d-37dxigeq = New sub-note
     .doc = Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row.
 
-d-37dxigeq-n = N
-
 d-qvjedq2v = Carry native notebook
     .doc = The notebook the native Notes app kept before this app took its id over, carried into this one once: each page a note, under the note its page stood under and in the order its pages stood there, with its title, its body, its tags and the id its page had.
 
@@ -244,7 +242,6 @@ d-akcqjax3 = Notebook
     .w-write-something = Write something
 
 d-x4im3xs5 = Notebook head
-    .w-new-sub-note = New sub-note
 
 d-qrsfr4a5 = Notebook menu
     .w-file = File

@@ -153,8 +153,6 @@ d-ttq2d5ah = Dateiname
 
 # What each argument is called where a person gives it.
 
-d-37dxigeq-n = N
-
 d-qhmjwgei-pinned = Angeheftet
 
 d-7jhaq3a5-moved = Verschoben
