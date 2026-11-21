@@ -23,8 +23,8 @@ use ui::tilo_actions::remote::{
 use ui::{Arrival, InvocationCall, RemoteActions};
 
 use super::{EngineEvent, EngineHandle, EngineRequest, EngineRequestId, EngineRequestKind};
-use crate::model::{Addr, Attachment, Folder, Message, MessageId, ServerPlace};
-use crate::sync::Synced;
+use mail_engine::model::{Addr, Attachment, Folder, Message, MessageId, ServerPlace};
+use mail_engine::sync::Synced;
 
 /// One request asked of the host, and where its answer goes.
 struct Asked {
@@ -37,13 +37,13 @@ struct Asked {
 enum Staging {
     Beginning {
         request_id: EngineRequestId,
-        files: Vec<crate::model::SendFile>,
+        files: Vec<mail_engine::model::SendFile>,
         call: InvocationCall,
     },
     Piece {
         request_id: EngineRequestId,
         send: String,
-        files: Vec<crate::model::SendFile>,
+        files: Vec<mail_engine::model::SendFile>,
         file: usize,
         offset: u64,
         call: InvocationCall,
@@ -74,7 +74,7 @@ impl Staging {
 
 /// The bytes of the file at `offset` up to where its next piece ends: what
 /// it hands the host this time.
-fn piece_end(file: &crate::model::SendFile, offset: u64) -> u64 {
+fn piece_end(file: &mail_engine::model::SendFile, offset: u64) -> u64 {
     offset
         .saturating_add(MAX_SEND_PIECE_BYTES as u64)
         .min(file.bytes.len() as u64)
@@ -166,7 +166,7 @@ impl HostMail {
     /// the host proves it and seals it in the person's vault, and the
     /// next reading shows the account.
     #[cfg(any(not(feature = "live"), test))]
-    pub(super) fn add_account(&mut self, config: &crate::model::AccountConfig) {
+    pub(super) fn add_account(&mut self, config: &mail_engine::model::AccountConfig) {
         let adding = person_accounts::AddMailAccount {
             address: config.email.clone(),
             display_name: config.display_name.clone(),
@@ -226,8 +226,10 @@ impl HostMail {
             } = request
             {
                 self.drafts.insert(request_id);
-                match crate::attachment_store::materialize_files(&self.content, &draft.attachments)
-                {
+                match mail_engine::attachment_store::materialize_files(
+                    &self.content,
+                    &draft.attachments,
+                ) {
                     Ok(files) => self.begin_send(request_id, &account, &draft, files),
                     Err(reason) => self.fail_send(request_id, reason),
                 }
@@ -391,9 +393,9 @@ impl HostMail {
     fn begin_send(
         &mut self,
         request_id: EngineRequestId,
-        account: &crate::model::AccountConfig,
-        draft: &crate::model::Draft,
-        files: Vec<crate::model::SendFile>,
+        account: &mail_engine::model::AccountConfig,
+        draft: &mail_engine::model::Draft,
+        files: Vec<mail_engine::model::SendFile>,
     ) {
         let beginning = BeginSend {
             message: SendMail {
@@ -536,7 +538,7 @@ impl HostMail {
         &mut self,
         request_id: EngineRequestId,
         send: String,
-        files: Vec<crate::model::SendFile>,
+        files: Vec<mail_engine::model::SendFile>,
         file: usize,
     ) {
         if file >= files.len() {
@@ -564,7 +566,7 @@ impl HostMail {
         &mut self,
         request_id: EngineRequestId,
         send: String,
-        files: Vec<crate::model::SendFile>,
+        files: Vec<mail_engine::model::SendFile>,
         file_index: usize,
         offset: u64,
     ) {
@@ -647,7 +649,7 @@ impl HostMail {
                     synced: synced(
                         fetched,
                         &account.email,
-                        matches!(want, crate::sync::Want::Older { .. }),
+                        matches!(want, mail_engine::sync::Want::Older { .. }),
                     ),
                 },
                 Err(error) => EngineEvent::Error {
@@ -723,14 +725,14 @@ fn asking(
             // for a window scrolled past its oldest one, the page before
             // that.
             let asking = match want {
-                crate::sync::Want::Latest { known } => FetchMail {
+                mail_engine::sync::Want::Latest { known } => FetchMail {
                     account: account.email.clone(),
                     folder: folder.as_key().to_owned(),
                     known_uid: known.map(|window| window.newest),
                     known_uid_validity: known.map(|window| window.uid_validity),
                     before_uid: None,
                 },
-                crate::sync::Want::Older { known } => FetchMail {
+                mail_engine::sync::Want::Older { known } => FetchMail {
                     account: account.email.clone(),
                     folder: folder.as_key().to_owned(),
                     known_uid: None,
@@ -778,7 +780,7 @@ fn asking(
 /// Which message a change is for: where its server holds it, or, for one
 /// this window never read from there (a draft's earlier copy), its
 /// `Message-ID` in the folder it is in.
-fn marking_of(account: &crate::model::AccountConfig, message: &Message) -> Option<MarkMail> {
+fn marking_of(account: &mail_engine::model::AccountConfig, message: &Message) -> Option<MarkMail> {
     let marking = MarkMail {
         account: account.email.clone(),
         message_id: message.rfc_message_id.clone().filter(|id| !id.is_empty()),
@@ -936,13 +938,16 @@ fn message_id(message: &person_accounts::FetchedMessage) -> MessageId {
         .message_id
         .as_deref()
         .filter(|id| !id.trim().is_empty())
-        .map_or_else(uuid::Uuid::new_v4, crate::transport::stable_message_id)
+        .map_or_else(
+            uuid::Uuid::new_v4,
+            mail_engine::transport::stable_message_id,
+        )
 }
 
 /// The fields a window shows of one account the host keeps, without any
 /// secret: the host opens the sessions itself.
-pub(super) fn account(listed: &MailAccount) -> crate::account::Account {
-    let mut account = crate::account::Account::new(crate::model::AccountConfig {
+pub(super) fn account(listed: &MailAccount) -> mail_engine::account::Account {
+    let mut account = mail_engine::account::Account::new(mail_engine::model::AccountConfig {
         display_name: listed.display_name.clone(),
         email: listed.address.clone(),
         username: listed.address.clone(),
@@ -952,7 +957,7 @@ pub(super) fn account(listed: &MailAccount) -> crate::account::Account {
         smtp_host: listed.outgoing_host.clone(),
         smtp_port: listed.outgoing_port,
         smtp_tls: true,
-        auth: crate::model::AuthMethod::Password,
+        auth: mail_engine::model::AuthMethod::Password,
         import_pending: false,
         password: String::new(),
         identities: listed.identities.clone(),
@@ -1284,17 +1289,17 @@ mod tests {
         let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
         let (handle, mut mail) = engine(tilo_content::ContentStore::memory());
-        let config = crate::model::AccountConfig {
+        let config = mail_engine::model::AccountConfig {
             email: "ada@example.test".into(),
-            ..crate::model::AccountConfig::default()
+            ..mail_engine::model::AccountConfig::default()
         };
         handle
             .tx
             .send(EngineRequest::fetch_wanting(
                 config.clone(),
                 Folder::Inbox,
-                crate::sync::Want::Older {
-                    known: crate::sync::Window {
+                mail_engine::sync::Want::Older {
+                    known: mail_engine::sync::Window {
                         uid_validity: 7,
                         newest: 42,
                         oldest: 12,
@@ -1402,7 +1407,7 @@ mod tests {
         let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
         let (_handle, mut mail) = engine(tilo_content::ContentStore::memory());
-        let config = crate::model::AccountConfig {
+        let config = mail_engine::model::AccountConfig {
             display_name: "Ada".into(),
             email: "ada@example.test".into(),
             username: "ada@example.test".into(),
@@ -1412,7 +1417,7 @@ mod tests {
             smtp_port: 465,
             identities: vec!["Ada at work <ada@work.example.test>".into()],
             password: "thunderbird-secret".into(),
-            ..crate::model::AccountConfig::default()
+            ..mail_engine::model::AccountConfig::default()
         };
         mail.add_account(&config);
         assert!(mail.poll());
@@ -1444,15 +1449,15 @@ mod tests {
         handle
             .tx
             .send(EngineRequest::save_draft(
-                crate::model::AccountConfig {
+                mail_engine::model::AccountConfig {
                     email: "ada@example.test".into(),
-                    ..crate::model::AccountConfig::default()
+                    ..mail_engine::model::AccountConfig::default()
                 },
-                Box::new(crate::model::Draft {
+                Box::new(mail_engine::model::Draft {
                     to: "bob@example.test".into(),
                     subject: "Not yet".into(),
                     body: "Still thinking.".into(),
-                    ..crate::model::Draft::default()
+                    ..mail_engine::model::Draft::default()
                 }),
             ))
             .unwrap();
@@ -1510,14 +1515,14 @@ mod tests {
         handle
             .tx
             .send(EngineRequest::save_draft(
-                crate::model::AccountConfig {
+                mail_engine::model::AccountConfig {
                     email: "ada@example.test".into(),
-                    ..crate::model::AccountConfig::default()
+                    ..mail_engine::model::AccountConfig::default()
                 },
-                Box::new(crate::model::Draft {
+                Box::new(mail_engine::model::Draft {
                     to: "bob@example.test".into(),
                     subject: "Due now".into(),
-                    ..crate::model::Draft::default()
+                    ..mail_engine::model::Draft::default()
                 }),
             ))
             .unwrap();
@@ -1545,8 +1550,8 @@ mod tests {
         let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
         let (handle, mut mail) = engine(tilo_content::ContentStore::memory());
-        let file = |name: &str, bytes: &[u8]| crate::model::SendFile {
-            attachment: crate::model::DraftAttachment {
+        let file = |name: &str, bytes: &[u8]| mail_engine::model::SendFile {
+            attachment: mail_engine::model::DraftAttachment {
                 content_id: format!("mail-attachment:blake3:{}", "0".repeat(64)),
                 filename: name.into(),
                 mime: "application/pdf".into(),
@@ -1558,17 +1563,17 @@ mod tests {
         handle
             .tx
             .send(EngineRequest::send(
-                crate::model::AccountConfig {
+                mail_engine::model::AccountConfig {
                     email: "ada@example.test".into(),
-                    ..crate::model::AccountConfig::default()
+                    ..mail_engine::model::AccountConfig::default()
                 },
-                Box::new(crate::model::Draft {
+                Box::new(mail_engine::model::Draft {
                     to: "bob@example.test".into(),
                     subject: "Contract".into(),
                     body: "Attached.".into(),
                     calendar_ics: Some("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".into()),
                     attachments: vec![file("contract.pdf", &bytes).attachment],
-                    ..crate::model::Draft::default()
+                    ..mail_engine::model::Draft::default()
                 }),
                 vec![file("contract.pdf", &bytes)],
             ))
@@ -1654,9 +1659,9 @@ mod tests {
             locator: "<draft-1@example.test>".into(),
             folder: Folder::Drafts,
         };
-        let config = crate::model::AccountConfig {
+        let config = mail_engine::model::AccountConfig {
             email: "ada@example.test".into(),
-            ..crate::model::AccountConfig::default()
+            ..mail_engine::model::AccountConfig::default()
         };
         let request = EngineRequest::purge(config, Box::new(retired.locate()));
         let Some((target, InvokeArgument::Json(asked))) = asking(&request) else {

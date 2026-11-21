@@ -10,8 +10,8 @@
 use tilo_actions::remote::person_accounts::{FetchMail, MarkMail, ReadMail, SearchMail, SendMail};
 use tilo_mail_session::{Attachment, Leaving, LiveMailSession, MailSession};
 
-use mail::fake_imap::{FakeImap, Layout};
-use mail::fake_servers::{FakeSmtp, server_identity};
+use mail_engine::fake_imap::{FakeImap, Layout};
+use mail_engine::fake_servers::{FakeSmtp, server_identity};
 
 use std::sync::{Arc, Mutex, PoisonError};
 use tilo_actions::remote::person_accounts::FetchedMessage;

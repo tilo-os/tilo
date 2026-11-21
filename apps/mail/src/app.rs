@@ -45,9 +45,9 @@ use ui::widget::{
     TaffyTreeExt, Text, Widget,
 };
 
-use crate::account::AccountStore;
 use crate::actions::{DraftData, Outgoing};
 use crate::i18n::CATALOG;
+use mail_engine::account::AccountStore;
 #[path = "contact_recipients.rs"]
 pub(crate) mod contact_recipients;
 #[path = "peer_copies.rs"]
@@ -55,11 +55,7 @@ mod peer_copies;
 use peer_copies::kept_baseline;
 
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
-use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::list::MessageList;
-use crate::model::{
-    AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
-};
 use crate::notice::{engine_error_text, staged_notice};
 use crate::reader::MessageReader;
 use crate::resource::{Mail, mailbox, read_mail};
@@ -69,6 +65,10 @@ use crate::state::{
     BulkAction, Command, CtxAction, Intent, MailState, Notice, QueuedMessage, Shared,
 };
 use crate::util::format_absolute;
+use mail_engine::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
+use mail_engine::model::{
+    AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
+};
 
 const AUTO_REFRESH_MIN: i64 = 5;
 const SERVER_SEARCH_DEBOUNCE_MS: u64 = 500;
@@ -162,7 +162,7 @@ impl AccountsPersist {
 }
 
 #[cfg(feature = "live")]
-fn wake_through(slot: &Arc<std::sync::Mutex<Option<ui::WakeHandle>>>) -> crate::engine::Wake {
+fn wake_through(slot: &Arc<std::sync::Mutex<Option<ui::WakeHandle>>>) -> mail_engine::engine::Wake {
     let slot = Arc::clone(slot);
     Arc::new(move || {
         if let Some(waker) = slot
@@ -246,7 +246,7 @@ pub struct MailApp {
     /// that keeps the accounts reads and sends here.
     #[cfg(any(test, not(feature = "live")))]
     host_mail: Option<host_mail::HostMail>,
-    ownership: Option<crate::account_secrets::SecretRelease>,
+    ownership: Option<mail_engine::account_secrets::SecretRelease>,
     sender_pictures_seen: Option<(u64, Vec<String>)>,
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
     followed_preferences: crate::resource::MailPreferences,
@@ -304,7 +304,7 @@ pub(crate) struct Mailroom {
     resource_refresh_result: Option<tilo_actions::InvocationUpdate>,
     reveals: Vec<Reveal>,
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
-    store: crate::store::Store,
+    store: mail_engine::store::Store,
     server_search: Option<(String, ui::time::Instant)>,
     server_searched: String,
     last_auto_refresh_min: i64,
@@ -454,7 +454,7 @@ impl MailApp {
             .config_root()
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         // In a session the accounts' secrets are the session's to release;
-        let ownership = crate::account_secrets::SecretRelease::capture();
+        let ownership = mail_engine::account_secrets::SecretRelease::capture();
         let accounts = match (&ownership, persist.root()) {
             (_, None) => AccountStore::new(),
             (Some(_), Some(root)) => AccountStore::load_without_secrets_in(&root),
@@ -466,7 +466,7 @@ impl MailApp {
         ));
         let content = content.unwrap_or_else(ContentStore::memory);
         let waker: Arc<std::sync::Mutex<Option<ui::WakeHandle>>> = Arc::default();
-        let (tx, rx) = crate::engine::spawn(content.clone(), wake_through(&waker));
+        let (tx, rx) = mail_engine::engine::spawn(content.clone(), wake_through(&waker));
         let mut app = Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist);
         app.waker = waker;
         app.ownership = ownership;
@@ -476,11 +476,11 @@ impl MailApp {
             .and_then(|workspace| {
                 let cache_scope = storage.files().paths().cache();
                 let cache = cache_scope.native_path().ok()?;
-                Some(crate::store::Store::at(
+                Some(mail_engine::store::Store::at(
                     cache.join("mail").join(workspace.to_string()),
                 ))
             })
-            .unwrap_or_else(crate::store::Store::nowhere);
+            .unwrap_or_else(mail_engine::store::Store::nowhere);
         app.shared.borrow_mut().kept = store.clone();
         app.state().store = store;
         app.open_kept_mail();
@@ -586,7 +586,7 @@ impl MailApp {
             reveals: Vec::new(),
             effect_replies: Vec::new(),
             last_auto_refresh_min: 0,
-            store: crate::store::Store::nowhere(),
+            store: mail_engine::store::Store::nowhere(),
             server_search: None,
             server_searched: String::new(),
             pending_stage: None,
@@ -678,7 +678,7 @@ impl MailApp {
                 "Seven, if that suits. I will bring the almanac.",
             ),
         ] {
-            self.compose.open_with_draft(&crate::model::Draft {
+            self.compose.open_with_draft(&mail_engine::model::Draft {
                 to: to.into(),
                 subject: subject.into(),
                 body: body.into(),
@@ -899,7 +899,7 @@ impl Mailroom {
         if let EngineRequest::Fetch {
             account,
             folder,
-            want: crate::sync::Want::Latest { known },
+            want: mail_engine::sync::Want::Latest { known },
             ..
         } = &mut request
             && known.is_none()
@@ -909,7 +909,7 @@ impl Mailroom {
                 .passed_over
                 .get(&(account.email.clone(), *folder))
                 .copied();
-            *known = crate::sync::Window::of(&st.mailbox, &account.email, *folder)
+            *known = mail_engine::sync::Window::of(&st.mailbox, &account.email, *folder)
                 .map(|held| held.with(passed))
                 .or(passed);
         }
@@ -1008,7 +1008,8 @@ impl MailApp {
         drop(st);
         accounts.into_iter().any(|email| {
             let known =
-                crate::sync::Window::of(&self.shared.borrow().mailbox, &email, folder).is_some();
+                mail_engine::sync::Window::of(&self.shared.borrow().mailbox, &email, folder)
+                    .is_some();
             known && self.has_older.get(&(email, folder)) != Some(&false)
         })
     }
@@ -1124,7 +1125,7 @@ impl MailApp {
         ))
     }
 
-    pub fn selected_message(&self) -> Option<crate::model::MessageId> {
+    pub fn selected_message(&self) -> Option<mail_engine::model::MessageId> {
         self.shared.borrow().selected
     }
 
@@ -1164,7 +1165,7 @@ impl MailApp {
         } else {
             self.compose_attachment_contents = Some(
                 request
-                    .max_contents_bytes(crate::attachment_store::MAX_ATTACHMENT_BYTES + 1)
+                    .max_contents_bytes(mail_engine::attachment_store::MAX_ATTACHMENT_BYTES + 1)
                     .send_contents(),
             );
         }
@@ -1189,7 +1190,7 @@ impl MailApp {
                     return;
                 }
                 let name = source.display_name().to_string();
-                let result = crate::attachment_store::stage_file(&self.content, source)
+                let result = mail_engine::attachment_store::stage_file(&self.content, source)
                     .and_then(|attachment| self.compose.add_attachment(attachment));
                 Some(staged_notice(name, result))
             }
@@ -1233,9 +1234,12 @@ impl MailApp {
                 }
                 Some(file) => {
                     let name = file.name;
-                    let result =
-                        crate::attachment_store::stage_bytes(&self.content, &file.bytes, &name)
-                            .and_then(|attachment| self.compose.add_attachment(attachment));
+                    let result = mail_engine::attachment_store::stage_bytes(
+                        &self.content,
+                        &file.bytes,
+                        &name,
+                    )
+                    .and_then(|attachment| self.compose.add_attachment(attachment));
                     staged_notice(name, result)
                 }
                 None => Notice::info(CATALOG.t("mail-status-selection-cancelled")),
@@ -1842,7 +1846,7 @@ irrelevant"
         for (index, attachment) in msg.shown_attachments() {
             // Past what one message carries whether it is downloaded or
             // not: said so, and never read or kept for nothing.
-            if attachment.size > crate::attachment_store::MAX_ATTACHMENT_BYTES as u64 {
+            if attachment.size > mail_engine::attachment_store::MAX_ATTACHMENT_BYTES as u64 {
                 too_large.push(attachment.filename.clone());
                 continue;
             }
@@ -1851,7 +1855,7 @@ irrelevant"
                 .attachment_to_save(&msg.id.to_string(), index)
                 .map_err(|_| ())
                 .and_then(|(_, bytes)| {
-                    crate::attachment_store::stage_bytes(
+                    mail_engine::attachment_store::stage_bytes(
                         &self.content,
                         &bytes,
                         &attachment.filename,
@@ -1863,7 +1867,7 @@ irrelevant"
                 Err(()) => not_downloaded.push(attachment.filename.clone()),
             }
         }
-        let carried = crate::attachment_store::bounded(&files);
+        let carried = mail_engine::attachment_store::bounded(&files);
         too_large.extend(
             files
                 .iter()
@@ -1906,7 +1910,7 @@ irrelevant"
             return;
         }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
-        if let Err(e) = crate::transport::check_sendable(&self.content, &from, &draft) {
+        if let Err(e) = mail_engine::transport::check_sendable(&self.content, &from, &draft) {
             self.shared.borrow_mut().status = Some(Notice::error(
                 CATALOG.t_args("mail-status-send-failed", &[("error", ArgValue::Text(e))]),
             ));
@@ -1915,7 +1919,7 @@ irrelevant"
         }
         if [&draft.to, &draft.cc, &draft.bcc]
             .into_iter()
-            .all(|field| crate::transport::parse_addr_list(field).is_empty())
+            .all(|field| mail_engine::transport::parse_addr_list(field).is_empty())
         {
             self.shared.borrow_mut().status =
                 Some(Notice::warning(CATALOG.t("mail-status-no-recipient")));
@@ -2082,8 +2086,8 @@ irrelevant"
             rfc_message_id: None,
             in_reply_to: None,
             from,
-            to: crate::transport::parse_addr_list(&draft.to),
-            cc: crate::transport::parse_addr_list(&draft.cc),
+            to: mail_engine::transport::parse_addr_list(&draft.to),
+            cc: mail_engine::transport::parse_addr_list(&draft.cc),
             subject: if draft.subject.trim().is_empty() {
                 crate::i18n::untitled()
             } else {
@@ -2243,7 +2247,7 @@ impl Mailroom {
             return None;
         }
         let due = self.last_auto_refresh_min + AUTO_REFRESH_MIN;
-        let minutes = (due - crate::state::now_minutes()).max(0);
+        let minutes = (due - mail_engine::model::now_minutes()).max(0);
         let seconds = u64::try_from(minutes).unwrap_or(0) * 60 + 1;
         Some(ui::time::now() + std::time::Duration::from_secs(seconds))
     }
@@ -2319,7 +2323,7 @@ impl MailApp {
         request_id: EngineRequestId,
         account_id: &str,
         folder: Folder,
-        mut synced: crate::sync::Synced,
+        mut synced: mail_engine::sync::Synced,
     ) {
         pass_over_draft_copies(
             st,
@@ -2455,11 +2459,11 @@ impl MailApp {
         }
     }
 
-    fn older_pages_wanted(&self) -> Vec<(AccountConfig, Folder, crate::sync::Window)> {
+    fn older_pages_wanted(&self) -> Vec<(AccountConfig, Folder, mail_engine::sync::Window)> {
         if self.state().engine.is_none() {
             return Vec::new();
         }
-        let wanted: Vec<(AccountConfig, Folder, Option<crate::sync::Window>)> = {
+        let wanted: Vec<(AccountConfig, Folder, Option<mail_engine::sync::Window>)> = {
             let st = self.shared.borrow();
             let accounts: Vec<AccountConfig> = if st.all_inboxes {
                 st.accounts
@@ -2473,7 +2477,8 @@ impl MailApp {
             accounts
                 .into_iter()
                 .map(|account| {
-                    let known = crate::sync::Window::of(&st.mailbox, &account.email, st.folder);
+                    let known =
+                        mail_engine::sync::Window::of(&st.mailbox, &account.email, st.folder);
                     (account, st.folder, known)
                 })
                 .collect()
@@ -2496,7 +2501,7 @@ impl MailApp {
             let posted = self.state().post_engine(EngineRequest::fetch_wanting(
                 account,
                 folder,
-                crate::sync::Want::Older { known },
+                mail_engine::sync::Want::Older { known },
             ));
             if let Some(request) = posted {
                 self.older_pending.insert(key, request);
@@ -2709,12 +2714,12 @@ impl MailApp {
         let message = Message {
             // The id the server's copy will have too, so the copy kept in
             // Sent and the one the server reports are one message.
-            id: crate::transport::stable_message_id(&own_id),
+            id: mail_engine::transport::stable_message_id(&own_id),
             rfc_message_id: Some(own_id),
             in_reply_to: draft.wire.references.first().cloned(),
             from: Addr::new(account.display_name.clone(), account.email.clone()),
-            to: crate::transport::parse_addr_list(&draft.to),
-            cc: crate::transport::parse_addr_list(&draft.cc),
+            to: mail_engine::transport::parse_addr_list(&draft.to),
+            cc: mail_engine::transport::parse_addr_list(&draft.cc),
             subject: draft.subject.clone(),
             body: draft.body.clone(),
             html_body: draft.html_body.clone(),
@@ -2727,14 +2732,16 @@ impl MailApp {
             account: account.email.clone(),
             server: None,
         };
-        let files =
-            match crate::attachment_store::materialize_files(&self.content, &draft.attachments) {
-                Ok(files) => files,
-                Err(reason) => {
-                    done(Err(reason));
-                    return;
-                }
-            };
+        let files = match mail_engine::attachment_store::materialize_files(
+            &self.content,
+            &draft.attachments,
+        ) {
+            Ok(files) => files,
+            Err(reason) => {
+                done(Err(reason));
+                return;
+            }
+        };
         let posted = self
             .state()
             .post_engine(EngineRequest::send(account, Box::new(draft), files));
@@ -2758,11 +2765,11 @@ impl MailApp {
         outgoing: &str,
         sender: &str,
         replying_to: Option<MessageId>,
-    ) -> crate::model::WireIds {
+    ) -> mail_engine::model::WireIds {
         let domain = sender
             .split_once('@')
             .map_or("localhost", |(_, domain)| domain);
-        let mut wire = crate::model::WireIds {
+        let mut wire = mail_engine::model::WireIds {
             message_id: Some(format!("{outgoing}@{domain}")),
             ..Default::default()
         };
@@ -3110,12 +3117,12 @@ impl MailApp {
 }
 
 struct ForwardedFiles {
-    carried: Vec<crate::model::DraftAttachment>,
+    carried: Vec<mail_engine::model::DraftAttachment>,
     not_downloaded: Vec<String>,
     too_large: Vec<String>,
 }
 
-fn attachment_meta(attachment: &crate::model::DraftAttachment) -> Attachment {
+fn attachment_meta(attachment: &mail_engine::model::DraftAttachment) -> Attachment {
     let mut projected = Attachment::projected(
         attachment.filename.clone(),
         attachment.mime.clone(),
@@ -3144,7 +3151,7 @@ fn open_link(url: &str) {
 pub(crate) fn message_read(message: &Message) -> serde_json::Value {
     // Written as a recipient field takes it, so an agent replying with
     // what it read reaches the same people.
-    let person = crate::model::Addr::rfc5322;
+    let person = mail_engine::model::Addr::rfc5322;
     serde_json::json!({
         "id": message.id.to_string(),
         "item": format!("mail.message:{}", message.id),
@@ -3174,7 +3181,7 @@ fn draft_from_message(m: &Message) -> Draft {
     let join = |addrs: &[Addr]| {
         addrs
             .iter()
-            .map(super::model::Addr::rfc5322)
+            .map(mail_engine::model::Addr::rfc5322)
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -3191,24 +3198,23 @@ fn draft_from_message(m: &Message) -> Draft {
         body: m.body.clone(),
         html_body: None,
         calendar_ics: None,
-        attachments: crate::attachment_store::bounded(
+        attachments: mail_engine::attachment_store::bounded(
             &m.attachments
                 .iter()
                 .filter_map(|attachment| {
-                    attachment
-                        .content_id
-                        .clone()
-                        .map(|content_id| crate::model::DraftAttachment {
+                    attachment.content_id.clone().map(|content_id| {
+                        mail_engine::model::DraftAttachment {
                             content_id,
                             filename: attachment.filename.clone(),
                             mime: attachment.mime.clone(),
                             size: attachment.size,
-                        })
+                        }
+                    })
                 })
                 .collect::<Vec<_>>(),
         ),
         in_reply_to: None,
-        wire: crate::model::WireIds::default(),
+        wire: mail_engine::model::WireIds::default(),
     }
 }
 
@@ -3553,7 +3559,7 @@ impl MailApp {
         node
     }
 
-    fn row_title(message: &crate::model::Message) -> String {
+    fn row_title(message: &mail_engine::model::Message) -> String {
         if message.folder == Folder::Drafts {
             return CATALOG.t_args(
                 "mail-draft-subject",
@@ -3825,13 +3831,13 @@ impl Widget for MailApp {
         // refresh cadence read it) and fire a periodic refresh when due. The
         // sample/`--shots` path pins `now_min`, so this only runs live.
         if self.state().engine.is_some() {
-            self.shared.borrow_mut().now_min = crate::state::now_minutes();
+            self.shared.borrow_mut().now_min = mail_engine::model::now_minutes();
             self.state().maybe_auto_refresh();
         } else if self.state().checks.asks {
             // The devices that hold the accounts keep them current; this
             // window asks each to check once as it opens, and reads the
             // clock for the times it shows.
-            self.shared.borrow_mut().now_min = crate::state::now_minutes();
+            self.shared.borrow_mut().now_min = mail_engine::model::now_minutes();
             self.seed_checks();
         }
         let wants_older = self.shared.borrow().wants_older.take();
@@ -4397,7 +4403,7 @@ impl Widget for MailApp {
 fn recipient_line(draft: &crate::actions::DraftData) -> String {
     let mut to = Vec::new();
     for field in [&draft.to, &draft.cc, &draft.bcc] {
-        for address in crate::transport::parse_addr_list(field) {
+        for address in mail_engine::transport::parse_addr_list(field) {
             to.push(address.display());
         }
     }
@@ -5029,7 +5035,7 @@ fn prepare_calendar_invitation_draft(
         calendar_ics: Some(calendar_ics.to_string()),
         attachments: Vec::new(),
         in_reply_to: None,
-        wire: crate::model::WireIds::default(),
+        wire: mail_engine::model::WireIds::default(),
     })
 }
 

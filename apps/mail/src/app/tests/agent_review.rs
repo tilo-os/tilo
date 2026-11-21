@@ -349,7 +349,7 @@ fn each_draft_is_published_as_the_item_its_verbs_name() {
 
 fn drafts_reach_the_server_and_come_back_as_nothing(
     profile: &std::path::Path,
-    imap: &crate::fake_servers::FakeImap,
+    imap: &mail_engine::fake_servers::FakeImap,
 ) {
     const DRAFTS: &str = "[Gmail]/Drafts";
     let mut app = TestApp::<MailShell>::open_data_dir(profile).unwrap();
@@ -411,7 +411,7 @@ fn drafts_reach_the_server_and_come_back_as_nothing(
             mail.shared
                 .borrow()
                 .passed_over
-                .contains_key(&(ME.to_owned(), crate::model::Folder::Drafts))
+                .contains_key(&(ME.to_owned(), mail_engine::model::Folder::Drafts))
         })
         .unwrap(),
         "Drafts was fetched with the copies in it"

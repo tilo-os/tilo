@@ -1,7 +1,7 @@
-//! Pure data model for the Mail app.
+//! Pure data model for Mail.
 //!
 //! Everything here is IO-free, render-free logic. The widgets read these
-//! structs; the mailbox resource ([`crate::resource::Mail`]) holds the
+//! structs; the Mail app's mailbox resource (`mail::resource::Mail`) holds the
 //! *mutable* per-message state (read/unread, starred, current folder) and the
 //! draft. The immutable message corpus (headers + bodies +
 //! attachments) is hydrated from the server in the live app, or from the
@@ -22,6 +22,12 @@ use uuid::Uuid;
 pub use accounts::email::{AccountConfig, AuthMethod};
 
 pub type MessageId = Uuid;
+
+/// Minutes since the Unix epoch, the unit a message's timestamps are kept in.
+#[must_use]
+pub fn now_minutes() -> i64 {
+    (ui::time::unix_now() / 60) as i64
+}
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Model, JsonSchema,

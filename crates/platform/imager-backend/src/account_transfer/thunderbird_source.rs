@@ -355,7 +355,7 @@ fn config(
         .map_err(|_| ConnectionError::InvalidConfiguration)
 }
 
-/// The wire shape `apps/mail` reads, so the app can open what import writes. Mutable flags and
+/// The wire shape `mail-engine` reads, so the app can open what import writes. Mutable flags and
 /// labels belong to the person, so an existing message wins over the imported copy.
 #[derive(Serialize, Deserialize)]
 struct Kept {

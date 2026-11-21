@@ -5,7 +5,6 @@
 use super::*;
 use crate::app::MailApp;
 use crate::message_states::{MessageStates, message_states};
-use crate::model::Folder;
 use crate::resource::{
     MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS, MAX_MESSAGES_PER_ACTION, Mail, MailShell,
     MessageState, OPEN_MESSAGE_LIMIT, mailbox,
@@ -13,6 +12,7 @@ use crate::resource::{
 use crate::sample::sample_mailbox;
 use crate::state::{CtxAction, MailState};
 use automerge::AutoCommit;
+use mail_engine::model::Folder;
 use tilo_actions::ActionRegistry;
 use tilo_actions::{ActionSpec, ResourceSpec};
 use tilo_document::RichTextAction;
@@ -486,7 +486,7 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
         let mut mail = Replica::<Mail>::new();
         let content = tilo_content::ContentStore::memory();
         let attachment =
-            crate::attachment_store::stage_bytes(&content, b"draft blob", "agenda.txt")
+            mail_engine::attachment_store::stage_bytes(&content, b"draft blob", "agenda.txt")
                 .expect("portable attachment");
         let draft = Draft {
             to: "x@y.example".into(),

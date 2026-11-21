@@ -2,8 +2,8 @@
 //! kept apart from a held message in pieces of the mailbox's content, read a piece at a time.
 
 use super::{MailApp, Mailroom};
-use crate::model::MessageId;
 use crate::notice::AttachmentUnavailable;
+use mail_engine::model::MessageId;
 
 /// How an attachment opens in a page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

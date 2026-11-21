@@ -6,10 +6,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::actions::{MailCheck, Outgoing, ServerUpdate};
-use crate::engine::{EngineRequest, EngineRequestId};
 use crate::i18n::CATALOG;
 use crate::resource::{Mail, mailbox, read_mail};
 use crate::state::Notice;
+use mail_engine::engine::{EngineRequest, EngineRequestId};
 
 use super::{DeliveryDone, HeldSend, MailApp, ServerUpdateDone};
 

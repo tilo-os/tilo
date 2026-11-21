@@ -7,7 +7,7 @@ use ui::framework::Chain;
 
 use super::{MessageStates, detached_chain, message_states, owed};
 use crate::actions::{IngestBaseline, ServerUpdate};
-use crate::model::Folder;
+use mail_engine::model::Folder;
 use ui::framework::PART_ITEMS as PART_MESSAGES;
 
 fn id(n: usize) -> String {

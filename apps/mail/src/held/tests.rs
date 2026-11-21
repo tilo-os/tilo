@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
         let id = sample(&mut app);
         let state = crate::resource::TestMail::held_by(&app);
         let message = state.message(&id).expect("its state");
-        assert_eq!(message.folder, crate::model::Folder::Inbox);
+        assert_eq!(message.folder, mail_engine::model::Folder::Inbox);
         assert!(!message.read);
         assert!(message.server.is_none(), "nothing is queued for a server");
         assert!(crate::resource::TestMail::owed_by(&app).is_empty());
@@ -139,7 +139,7 @@ tilo_test_env::scenario! {
         let at = messages(&mut app);
         app.call_on(&at, "archive", json!({ "messages": [&id] })).unwrap();
         app.settle();
-        let message_id: crate::model::MessageId = id.parse().unwrap();
+        let message_id: mail_engine::model::MessageId = id.parse().unwrap();
         let shown = app
             .with_surface(|mail: &mut crate::app::MailApp| {
                 mail.shared
@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
             shown,
             Some((
                 "Quarterly numbers".to_owned(),
-                crate::model::Folder::Archive
+                mail_engine::model::Folder::Archive
             ))
         );
     }
@@ -184,7 +184,7 @@ tilo_test_env::scenario! {
         let held = crate::resource::TestMail::held_by(&app);
         assert_eq!(
             held.message(&id).map(|message| message.folder),
-            Some(crate::model::Folder::Archive)
+            Some(mail_engine::model::Folder::Archive)
         );
     }
 }
@@ -499,7 +499,7 @@ fn a_message_with_large_attachments_is_kept_with_its_parts_apart_and_opens_whole
     assert_eq!(listed, expected);
 
     // The window shows it whole, and each attachment opens with its bytes.
-    let message_id: crate::model::MessageId = id.parse().unwrap();
+    let message_id: mail_engine::model::MessageId = id.parse().unwrap();
     app.with_surface(|mail: &mut crate::app::MailApp| {
         let shown = mail
             .shared
@@ -513,7 +513,7 @@ fn a_message_with_large_attachments_is_kept_with_its_parts_apart_and_opens_whole
             shown
                 .attachments
                 .iter()
-                .all(crate::model::Attachment::is_downloadable)
+                .all(mail_engine::model::Attachment::is_downloadable)
         );
     })
     .unwrap();
@@ -783,19 +783,23 @@ fn opening_a_film_kept_apart_in_a_page_plays_it_from_the_server() {
 }
 
 /// One message, from `from` to `to`, copied to `cc`.
-fn addressed(from: crate::model::Addr, to: &[&str], cc: &[&str]) -> crate::model::Message {
-    crate::model::Message {
+fn addressed(
+    from: mail_engine::model::Addr,
+    to: &[&str],
+    cc: &[&str],
+) -> mail_engine::model::Message {
+    mail_engine::model::Message {
         id: uuid::Uuid::new_v4(),
         rfc_message_id: Some("plan@example.test".into()),
         in_reply_to: None,
         from,
         to: to
             .iter()
-            .map(|&email| crate::model::Addr::bare(email))
+            .map(|&email| mail_engine::model::Addr::bare(email))
             .collect(),
         cc: cc
             .iter()
-            .map(|&email| crate::model::Addr::bare(email))
+            .map(|&email| mail_engine::model::Addr::bare(email))
             .collect(),
         subject: "Fwd: The plan".into(),
         body: "What do you think?".into(),
@@ -804,7 +808,7 @@ fn addressed(from: crate::model::Addr, to: &[&str], cc: &[&str]) -> crate::model
         timestamp_min: 1_000,
         read: false,
         starred: false,
-        folder: crate::model::Folder::Inbox,
+        folder: mail_engine::model::Folder::Inbox,
         labels: Vec::new(),
         account: "ada@work.example".into(),
         server: None,
@@ -814,7 +818,7 @@ fn addressed(from: crate::model::Addr, to: &[&str], cc: &[&str]) -> crate::model
 #[test]
 fn a_reply_goes_to_the_other_people_and_never_to_the_persons_own_addresses() {
     use crate::held::{Drafted, reply_recipients, reply_subject};
-    use crate::model::Addr;
+    use mail_engine::model::Addr;
 
     // Ada sends as her work account, the alias that account sends as, and her
     // home account: all three are hers.

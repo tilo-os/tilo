@@ -7,8 +7,8 @@ license.workspace = true
 description = "The mail origin of tilolang packages: the logic that keeps a package's imap types in step with a mail server, and the connector that speaks IMAP and SMTP, run by the system in a process of its own and reached over a socket."
 
 [dependencies]
-# The IMAP and SMTP protocol code of native Mail, and the settings' account store.
-mail = { path = "../../../apps/mail", optional = true }
+# Mail's model and its IMAP and SMTP engine, and the settings' account store.
+mail-engine = { path = "../mail-engine", optional = true }
 tilolang-tilo = { path = "../tilolang-tilo" }
 tilo-content = { path = "../../system/content", optional = true }
 # Whether the device is online: an unreachable mail server is tried again when the network
@@ -30,17 +30,13 @@ default = ["engine"]
 # connector process's loop and the in-process origin. A tilolang host needs none of it: its
 # origins reach the connector over a socket.
 engine = [
-    "dep:mail",
+    "dep:mail-engine",
     "dep:tilo-content",
     "dep:tilo-net",
     "dep:runtime-portal",
     "dep:settings-store",
     "dep:tokio",
 ]
-
-[dev-dependencies]
-# The test IMAP and SMTP servers the connector's tests run against.
-mail = { path = "../../../apps/mail", features = ["fake-servers"] }
 
 [lints]
 workspace = true

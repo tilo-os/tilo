@@ -12,9 +12,9 @@ use ui::tilo_resource::{self, Effect, JsonSchema, RowBindings};
 
 use ui::framework::LiveRow;
 
-use crate::attachment_store;
-use crate::model::{Draft, DraftAttachment, Folder};
 use crate::resource::{MAX_DRAFT_ADDRESS_CHARS, MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS};
+use mail_engine::attachment_store;
+use mail_engine::model::{Draft, DraftAttachment, Folder};
 
 const MAX_MESSAGE_ID_CHARS: usize = 128;
 const MAX_CALENDAR_ICS_BYTES: usize = 256 * 1024;
@@ -217,7 +217,7 @@ pub enum MailEffect {
         #[param("The words to find anywhere in a message, ignoring case")]
         query: Option<String>,
         #[param("The folder to search; every folder when omitted")]
-        folder: Option<crate::model::Folder>,
+        folder: Option<mail_engine::model::Folder>,
         #[param("Words the sender's name or address holds")]
         from: Option<String>,
         #[param("Words the subject holds")]
@@ -285,7 +285,7 @@ pub enum MailEffect {
         #[param("The id of one held message; every message when omitted")]
         message: Option<String>,
         #[param("The folder whose messages to export")]
-        folder: Option<crate::model::Folder>,
+        folder: Option<mail_engine::model::Folder>,
     },
     /// Open link
     ///
@@ -314,7 +314,7 @@ pub(crate) fn effect_payload(effect: &MailEffect) -> Vec<u8> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default, JsonSchema)]
 pub struct DraftData {
     #[serde(default)]
-    pub sender: Option<crate::model::DraftSender>,
+    pub sender: Option<mail_engine::model::DraftSender>,
     pub to: String,
     pub cc: String,
     pub bcc: String,
@@ -370,7 +370,7 @@ impl DraftData {
                 .map(ToOwned::to_owned),
             attachments: attachment_store::bounded(&self.attachments),
             in_reply_to: None,
-            wire: crate::model::WireIds::default(),
+            wire: mail_engine::model::WireIds::default(),
         }
     }
 }
@@ -498,7 +498,7 @@ impl Outgoing {
     pub fn to_draft(&self) -> Draft {
         Draft {
             in_reply_to: self.in_reply_to.as_deref().and_then(|id| id.parse().ok()),
-            wire: crate::model::WireIds::default(),
+            wire: mail_engine::model::WireIds::default(),
             ..self.draft.to_draft()
         }
     }
@@ -508,7 +508,7 @@ impl Outgoing {
             && self.account.contains('@')
             && [&self.draft.to, &self.draft.cc, &self.draft.bcc]
                 .into_iter()
-                .any(|field| !crate::transport::parse_addr_list(field).is_empty())
+                .any(|field| !mail_engine::transport::parse_addr_list(field).is_empty())
     }
 }
 
@@ -557,7 +557,7 @@ pub struct IngestBaseline {
 
 impl IngestBaseline {
     /// A message that exists only here: a draft, a sent copy, the sample.
-    pub fn from_message(message: &crate::model::Message) -> Self {
+    pub fn from_message(message: &mail_engine::model::Message) -> Self {
         Self {
             id: message.id.to_string(),
             read: Some(message.read),
@@ -572,7 +572,7 @@ impl IngestBaseline {
     /// A message `account`'s server reported, as it reported it. One without
     /// a `Message-ID` cannot be found on the server again, so it is recorded
     /// like a local one.
-    pub fn fetched(message: &crate::model::Message, account: &str) -> Self {
+    pub fn fetched(message: &mail_engine::model::Message, account: &str) -> Self {
         let locator = message
             .rfc_message_id
             .as_deref()
@@ -599,7 +599,7 @@ impl IngestBaseline {
 }
 
 /// A message as people tell it apart: its subject, who sent it and when.
-pub fn message_label_of(message: &crate::model::Message) -> String {
+pub fn message_label_of(message: &mail_engine::model::Message) -> String {
     let subject = if message.subject.trim().is_empty() {
         crate::i18n::untitled()
     } else {
@@ -715,7 +715,7 @@ impl ServerUpdate {
 
     /// The message as the engine finds it on the server: by its
     /// `Message-ID`, in the folder it is in there, with the flags to set.
-    pub fn locate(&self) -> crate::model::Message {
+    pub fn locate(&self) -> mail_engine::model::Message {
         let (locator, folder, read, starred) = match self {
             Self::Flags {
                 locator,
@@ -730,14 +730,16 @@ impl ServerUpdate {
             } => (locator, *folder, false, false),
             Self::SaveDraft { locator, .. } => (locator, Folder::Drafts, true, false),
         };
-        crate::model::Message {
+        mail_engine::model::Message {
             id: match self {
-                Self::SaveDraft { locator, .. } => crate::transport::stable_message_id(locator),
+                Self::SaveDraft { locator, .. } => {
+                    mail_engine::transport::stable_message_id(locator)
+                }
                 _ => self.id().parse().unwrap_or_default(),
             },
             rfc_message_id: Some(locator.clone()),
             in_reply_to: None,
-            from: crate::model::Addr::new("", ""),
+            from: mail_engine::model::Addr::new("", ""),
             to: Vec::new(),
             cc: Vec::new(),
             subject: String::new(),
@@ -802,7 +804,7 @@ pub struct AttachmentRow {
 /// Project exactly one loaded message into the scalar data required to author
 /// its canonical resource, so a lazily resolved message, thread or attachment
 /// row is built without cloning the entire mailbox.
-pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
+pub(crate) fn message_row(message: &mail_engine::model::Message) -> MessageRow {
     MessageRow {
         id: message.id.to_string(),
         subject: message.subject.clone(),

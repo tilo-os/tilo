@@ -18,7 +18,7 @@ use std::path::Path;
 
 use account_credentials::{ClientTable, CredentialStore, OAuthIssuer, Registration};
 use accounts::{AccountId, SecretVault};
-use mail::oauth::{self, OAuthProvider};
+use mail_engine::oauth::{self, OAuthProvider};
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 
 fn registration(issuer: OAuthIssuer) -> Registration {
@@ -278,13 +278,13 @@ tilo_test_env::scenario! {
         let config = OAuthIssuer::Microsoft.mail_config(&email).unwrap();
         let id = AccountId::from("installed-microsoft-mailbox");
         assert_ne!(id.as_str(), email);
-        let mut selected = Account::new(id.clone(), mail::account::TYPE_ID);
+        let mut selected = Account::new(id.clone(), mail_engine::account::TYPE_ID);
         selected.display_name = "Work mailbox".into();
         selected.set_config(&config);
         let mut store = AccountStore::new();
         store.upsert(selected.clone());
         let omitted_id = AccountId::from("unselected-mailbox");
-        let mut omitted = Account::new(omitted_id.clone(), mail::account::TYPE_ID);
+        let mut omitted = Account::new(omitted_id.clone(), mail_engine::account::TYPE_ID);
         omitted.set_config(
             &OAuthIssuer::Microsoft
                 .mail_config("other@hosted.example")
@@ -322,10 +322,10 @@ fn assert_imported_microsoft_mail(
     source: &Path,
     target: &Path,
     id: &AccountId,
-    config: &mail::model::AccountConfig,
+    config: &mail_engine::model::AccountConfig,
     server: &FakeAuthorizationServer,
 ) {
-    let loaded = mail::account::AccountStore::load_in(target);
+    let loaded = mail_engine::account::AccountStore::load_in(target);
     assert_eq!(loaded.accounts.len(), 1);
     let account = loaded.accounts.get(loaded.active).unwrap();
     assert_eq!(account.id, id.as_str());
@@ -337,7 +337,7 @@ fn assert_imported_microsoft_mail(
     assert_eq!(account.config.smtp_host, "smtp.office365.com");
     assert_eq!(account.config.smtp_port, 587);
     assert!(account.config.imap_tls && account.config.smtp_tls);
-    assert_eq!(account.config.auth, mail::model::AuthMethod::OAuth);
+    assert_eq!(account.config.auth, mail_engine::model::AuthMethod::OAuth);
     assert!(!account.config.import_pending);
     assert!(account.config.password.is_empty());
     let provider = OAuthProvider::for_account(&account.config.email, &account.config.imap_host)

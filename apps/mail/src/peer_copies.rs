@@ -6,7 +6,7 @@ use ui::framework::WorkspaceResource;
 
 use super::MailApp;
 use crate::copies::Converted;
-use crate::model::Message;
+use mail_engine::model::Message;
 
 /// How long a window first waits before it looks again at earlier records still arriving; each
 /// look after doubles it, up to [`EARLIER_AT_MOST`].
@@ -171,8 +171,8 @@ mod tests {
 
     use super::super::EngineHandle;
     use super::*;
-    use crate::engine::{EngineEvent, EngineRequest, EngineRequestKind};
-    use crate::model::Folder;
+    use mail_engine::engine::{EngineEvent, EngineRequest, EngineRequestKind};
+    use mail_engine::model::Folder;
     use ui::widget::Widget as _;
 
     fn app() -> (MailApp, AutoCommit) {
@@ -189,9 +189,9 @@ mod tests {
 Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         )
         .into_bytes();
-        let mut message = crate::transport::parse_eml(&raw, at, Folder::Inbox).unwrap();
+        let mut message = mail_engine::transport::parse_eml(&raw, at, Folder::Inbox).unwrap();
         message.account = account.to_owned();
-        message.server = Some(crate::model::ServerPlace {
+        message.server = Some(mail_engine::model::ServerPlace {
             folder: Folder::Inbox,
             uid,
             uid_validity: 7,
@@ -354,7 +354,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             .post_engine(EngineRequest::fetch(config.clone(), Folder::Inbox))
             .unwrap();
         first_requests.try_recv().unwrap();
-        let mut synced = crate::sync::Synced {
+        let mut synced = mail_engine::sync::Synced {
             uid_validity: 7,
             reset: false,
             has_older: Some(false),
@@ -488,7 +488,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         assert_eq!(arrived.account, account);
         assert_eq!(
             arrived.server,
-            Some(crate::model::ServerPlace {
+            Some(mail_engine::model::ServerPlace {
                 folder: Folder::Inbox,
                 uid: 41,
                 uid_validity: 7,
@@ -507,8 +507,8 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         assert!(matches!(
             second_requests.try_recv().unwrap(),
             EngineRequest::Fetch {
-                want: crate::sync::Want::Latest {
-                    known: Some(crate::sync::Window {
+                want: mail_engine::sync::Want::Latest {
+                    known: Some(mail_engine::sync::Window {
                         uid_validity: 7,
                         newest: 42,
                         oldest: 41,

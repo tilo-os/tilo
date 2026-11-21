@@ -13,7 +13,7 @@ use tilo_content::{ContentState, ContentStore};
 use ui::framework::WorkspaceResource;
 use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal, Set};
 
-use crate::model::{Folder, Message, MessageId, ServerPlace};
+use mail_engine::model::{Folder, Message, MessageId, ServerPlace};
 
 /// The largest message retained in workspace storage.
 pub(crate) const MAX_COPY_BYTES: usize = 16 * 1024 * 1024;
@@ -83,7 +83,7 @@ impl KeptCopy {
     /// The message `bytes` hold, filed under `id`: `None` when they are not
     /// a message with the `Message-ID` that id was made from.
     fn message(&self, id: MessageId, bytes: &[u8]) -> Option<Message> {
-        let mut message = crate::transport::parse_fetched(
+        let mut message = mail_engine::transport::parse_fetched(
             bytes,
             self.folder,
             false,
@@ -92,7 +92,7 @@ impl KeptCopy {
             self.minutes,
         )?;
         let named = message.rfc_message_id.as_deref()?;
-        if crate::transport::stable_message_id(named) != id {
+        if mail_engine::transport::stable_message_id(named) != id {
             return None;
         }
         message.id = id;
@@ -200,7 +200,7 @@ impl MailCopies {
             self.copies.push(key, kept);
         }
         for account in accounts {
-            self.keep_newest(&account, crate::store::KEEP);
+            self.keep_newest(&account, mail_engine::store::KEEP);
         }
         Ok(())
     }
@@ -589,7 +589,7 @@ mod tests {
         phase a_kept_message_reads_back_filed_where_its_server_holds_it;
         {
             let bytes = raw("q3", "They are up.");
-            let id = crate::transport::stable_message_id("q3@x.example");
+            let id = mail_engine::transport::stable_message_id("q3@x.example");
             let kept = KeptCopy {
                 account: "me@x.example".into(),
                 content: tilo_content::hash_bytes(&bytes),

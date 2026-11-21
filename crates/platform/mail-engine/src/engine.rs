@@ -3,9 +3,9 @@
 //!
 //! Every round trip runs on a worker thread; the UI posts [`EngineRequest`]s and drains
 //! [`EngineEvent`]s. With the `live` feature the worker uses `async-imap` and `lettre`;
-//! without it, and in the screenshot and test constructors, it answers from the bundled sample
-//! corpus and checks sends by building real MIME, never opening a socket. Both speak the same
-//! [`MailEngine`] trait.
+//! without it, and in the screenshot and test constructors, every request answers that the
+//! live backend is absent, and a send is checked by building real MIME, never opening a
+//! socket. Both speak the same [`MailEngine`] trait.
 
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -1065,7 +1065,7 @@ pub mod live {
     ) -> Result<AuthCreds, String> {
         let user = login_user(account);
         if account.import_pending {
-            return Err(crate::i18n::t("mail-import-sign-in-required"));
+            return Err("this imported account needs its sign-in before it can connect".into());
         }
         match account.auth {
             AuthMethod::Password => {
@@ -1277,7 +1277,7 @@ pub mod live {
         let validity = selected.uid_validity.unwrap_or(0);
         let exists = selected.exists;
         let uid_next = selected.uid_next.unwrap_or(0);
-        let now_min = crate::state::now_minutes();
+        let now_min = crate::model::now_minutes();
         let mut synced = Synced {
             uid_validity: validity,
             ..Synced::default()
@@ -1461,7 +1461,7 @@ pub mod live {
         let Some(quoted) = crate::sync::imap_quoted(text) else {
             return Ok(Vec::new());
         };
-        let now_min = crate::state::now_minutes();
+        let now_min = crate::model::now_minutes();
         let mut found = Vec::new();
         for folder in [Folder::Inbox, Folder::Archive] {
             let mailbox = places.name(folder);

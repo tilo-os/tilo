@@ -11,7 +11,7 @@
 use tilo_sort::CompactSort as _;
 use ui::tilo_resource::{SearchEntry, SearchWeight};
 
-use crate::model::{Folder, Mailbox, Message};
+use mail_engine::model::{Folder, Mailbox, Message};
 
 pub const MAIL_KIND: &str = "Mail";
 pub const FOLDER_KIND: &str = "Mail folders";
@@ -201,11 +201,11 @@ mod tests {
             sent.folder = Folder::Sent;
             sent.subject = "Launch plan".into();
             sent.body = "The plan is attached.".into();
-            sent.to = vec![crate::model::Addr::new(
+            sent.to = vec![mail_engine::model::Addr::new(
                 "Grace Hopper",
                 "grace@navy.example",
             )];
-            sent.cc = vec![crate::model::Addr::bare("ops@navy.example")];
+            sent.cc = vec![mail_engine::model::Addr::bare("ops@navy.example")];
             mailbox.insert(sent);
             for query in ["Grace Hopper", "grace@navy.example", "ops@navy"] {
                 assert!(
@@ -364,7 +364,7 @@ impl MessageQuery {
                 .to
                 .iter()
                 .chain(&message.cc)
-                .map(crate::model::Addr::rfc5322)
+                .map(mail_engine::model::Addr::rfc5322)
                 .collect::<Vec<_>>()
                 .join(", "),
             message.subject,
@@ -415,7 +415,7 @@ pub(crate) fn listed(message: &Message) -> serde_json::Value {
         "item": format!("mail.message:{}", message.id),
         "label": crate::actions::message_label_of(message),
         "from": message.from.rfc5322(),
-        "to": message.to.iter().map(crate::model::Addr::rfc5322).collect::<Vec<_>>(),
+        "to": message.to.iter().map(mail_engine::model::Addr::rfc5322).collect::<Vec<_>>(),
         "subject": message.subject,
         "date": mail_parser::DateTime::from_timestamp(message.timestamp_min.saturating_mul(60)).to_rfc3339(),
         "folder": message.folder.as_key(),

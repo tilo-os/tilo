@@ -13,10 +13,10 @@
 use std::time::Duration;
 
 use crate::actions::MailCheck;
-use crate::engine::EngineRequest;
-use crate::model::Folder;
 use crate::resource::{Mail, mailbox};
 use crate::state::SyncCause;
+use mail_engine::engine::EngineRequest;
+use mail_engine::model::Folder;
 
 use super::MailApp;
 
@@ -236,11 +236,11 @@ mod tests {
     use super::{CheckState, UNANSWERED, check_state};
     use crate::actions::MailCheck;
     use crate::app::{EngineHandle, MailApp};
-    use crate::engine::{EngineEvent, EngineRequest, EngineRequestKind};
-    use crate::model::Folder;
     use crate::resource::{Mail, TestMail, read_mail};
     use crate::state::SyncCause;
     use automerge::AutoCommit;
+    use mail_engine::engine::{EngineEvent, EngineRequest, EngineRequestKind};
+    use mail_engine::model::Folder;
     use ui::tilo_resource::{Id, Settled};
     use ui::widget::{Edits, Widget as _};
 

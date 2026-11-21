@@ -23,9 +23,9 @@ use crate::actions::{
 };
 use crate::app::MailApp;
 use crate::mailbox_migration::{PreviousDraft, PreviousFolder};
-use crate::model::{Draft, DraftAttachment, DraftSender, Folder};
 #[cfg(feature = "samples")]
 use crate::sample::MailFixture;
+use mail_engine::model::{Draft, DraftAttachment, DraftSender, Folder};
 
 /// The most messages one verb acts on at once.
 pub(crate) const MAX_MESSAGES_PER_ACTION: usize = 1024;
@@ -244,7 +244,7 @@ impl DraftState {
         {
             return Err(Refusal::new("the invitation is not a calendar request"));
         }
-        if crate::attachment_store::bounded(&self.attachments) != self.attachments {
+        if mail_engine::attachment_store::bounded(&self.attachments) != self.attachments {
             return Err(Refusal::new(
                 "the attachments are not ones the draft can carry",
             ));
@@ -265,7 +265,7 @@ impl DraftState {
             calendar_ics: self.calendar_ics.clone(),
             attachments: self.attachments.clone(),
             in_reply_to: self.in_reply_to.as_deref().and_then(|id| id.parse().ok()),
-            wire: crate::model::WireIds::default(),
+            wire: mail_engine::model::WireIds::default(),
         }
     }
 
@@ -517,13 +517,13 @@ impl Mail {
             mime: mime.ok_or("the attachment's type is filled in where it is attached")?,
             size: size.ok_or("the attachment's size is filled in where it is attached")?,
         };
-        if !crate::attachment_store::is_valid(&attachment) {
+        if !mail_engine::attachment_store::is_valid(&attachment) {
             return Err(Refusal::new("the attachment is not one a draft can carry"));
         }
         let draft = self.draft_mut(draft.as_deref())?;
         let mut attachments = draft.attachments.clone();
         attachments.push(attachment);
-        if crate::attachment_store::bounded(&attachments) != attachments {
+        if mail_engine::attachment_store::bounded(&attachments) != attachments {
             return Err(Refusal::new(
                 "the draft already carries this file, or as many or as large attachments as \
                  a message can",
@@ -676,7 +676,7 @@ impl Mail {
 fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
     let given = params.content.trim();
     let named = given
-        .strip_prefix(crate::attachment_store::PREFIX)
+        .strip_prefix(mail_engine::attachment_store::PREFIX)
         .unwrap_or(given);
     let reference = ui::tilo_actions::named_reference(named).ok_or_else(|| {
         format!("{given:?} is not a content reference: attach what another step handed over")
@@ -684,11 +684,11 @@ fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
     let bytes =
         tilo_resource::content::read_hash(reference).map_err(|refusal| refusal.to_string())?;
     let staged = if tilo_content::is_sealed(reference) {
-        crate::attachment_store::kept_as(reference, &bytes, &params.name)?
+        mail_engine::attachment_store::kept_as(reference, &bytes, &params.name)?
     } else {
         let store = tilo_resource::content::current()
             .ok_or("this window has no content store to attach from")?;
-        crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?
+        mail_engine::attachment_store::stage_bytes(&store, &bytes, &params.name)?
     };
     params.content = staged.content_id;
     params.name = staged.filename;
@@ -833,7 +833,8 @@ impl Mail {
     /// message of that server deleted for good, which the server is told
     /// as every permanent deletion is.
     fn retire_copy(&mut self, copy: DraftCopy) {
-        let key = Id::from_raw(crate::transport::stable_message_id(&copy.locator).to_string());
+        let key =
+            Id::from_raw(mail_engine::transport::stable_message_id(&copy.locator).to_string());
         if self.retired.contains(&key) {
             return;
         }
@@ -881,7 +882,7 @@ impl Mail {
                 let wanted = draft.wanted_copy(&id).map(|(_, locator, _)| locator);
                 confirmed.into_iter().chain(wanted)
             })
-            .map(|locator| crate::transport::stable_message_id(&locator).to_string())
+            .map(|locator| mail_engine::transport::stable_message_id(&locator).to_string())
             .collect()
     }
 
@@ -908,7 +909,7 @@ impl Mail {
         drafted: &crate::held::Drafted,
     ) -> Result<(), Refusal> {
         let to = bounded_text(&drafted.to, MAX_DRAFT_ADDRESS_CHARS, false);
-        if crate::transport::parse_addr_list(&to).is_empty() {
+        if mail_engine::transport::parse_addr_list(&to).is_empty() {
             return Err(Refusal::new("a draft goes to at least one address"));
         }
         self.create_draft(
@@ -1096,9 +1097,9 @@ pub(crate) fn draft_label(draft: &DraftState) -> String {
     } else {
         subject.to_owned()
     };
-    let to = crate::transport::parse_addr_list(&draft.to)
+    let to = mail_engine::transport::parse_addr_list(&draft.to)
         .iter()
-        .map(crate::model::Addr::display)
+        .map(mail_engine::model::Addr::display)
         .collect::<Vec<_>>()
         .join(", ");
     if to.is_empty() {
@@ -1306,7 +1307,10 @@ impl TestMail {
         Self::mail(doc).outgoing()
     }
 
-    pub(crate) fn apply_flags(st: &crate::state::MailState, mailbox: &mut crate::model::Mailbox) {
+    pub(crate) fn apply_flags(
+        st: &crate::state::MailState,
+        mailbox: &mut mail_engine::model::Mailbox,
+    ) {
         Self::messages(st).apply_flags(mailbox);
     }
 
@@ -1370,7 +1374,7 @@ pub(crate) fn live_extras(app: &crate::app::Mailroom) -> Vec<ui::framework::Live
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MailPreferences {
     #[serde(default)]
-    pub compose_format: crate::model::ComposeFormat,
+    pub compose_format: mail_engine::model::ComposeFormat,
     #[serde(default)]
     pub collapsed_accounts: Vec<String>,
 }
@@ -1643,12 +1647,12 @@ mod tests {
             assert_eq!(attachments[0].filename, "numbers.csv");
             assert_eq!(attachments[0].size, 17);
             assert_eq!(
-                crate::attachment_store::materialize(&app.content(), &attachments[0]).unwrap(),
+                mail_engine::attachment_store::materialize(&app.content(), &attachments[0]).unwrap(),
                 b"quarterly numbers"
             );
             let reference = attachments[0]
                 .content_id
-                .strip_prefix(crate::attachment_store::PREFIX)
+                .strip_prefix(mail_engine::attachment_store::PREFIX)
                 .unwrap();
             assert!(tilo_content::is_sealed(reference), "{reference}");
             let again = app
@@ -1710,7 +1714,7 @@ mod tests {
             let attachment = alice.state().draft.attachments[0].clone();
             let reference = attachment
                 .content_id
-                .strip_prefix(crate::attachment_store::PREFIX)
+                .strip_prefix(mail_engine::attachment_store::PREFIX)
                 .unwrap()
                 .to_owned();
             assert!(tilo_content::is_sealed(&reference), "{reference}");
@@ -1724,10 +1728,10 @@ mod tests {
             assert!(alice.deliver_changes_to(&mut bob).unwrap());
             let shared = bob.state().draft.attachments[0].clone();
             assert_eq!(shared, attachment);
-            assert!(crate::attachment_store::materialize(&bob.content(), &shared).is_err());
+            assert!(mail_engine::attachment_store::materialize(&bob.content(), &shared).is_err());
             bob.content().put_public(&ciphertext).unwrap();
             assert_eq!(
-                crate::attachment_store::materialize(&bob.content(), &shared).unwrap(),
+                mail_engine::attachment_store::materialize(&bob.content(), &shared).unwrap(),
                 file
             );
 
@@ -1737,7 +1741,7 @@ mod tests {
             let carol = TestApp::<MailShell>::with_workspace_resource(&mut later).unwrap();
             carol.content().put_public(&ciphertext).unwrap();
             assert_eq!(
-                crate::attachment_store::materialize(
+                mail_engine::attachment_store::materialize(
                     &carol.content(),
                     &carol.state().draft.attachments[0]
                 )
@@ -1751,12 +1755,12 @@ mod tests {
         phase the_draft_shows_as_one_message_across_restarts;
         {
             use ui::framework::testing::TestApp;
-            fn shown(app: &mut TestApp<MailShell>) -> Vec<crate::model::MessageId> {
+            fn shown(app: &mut TestApp<MailShell>) -> Vec<mail_engine::model::MessageId> {
                 app.with_surface(|mail: &mut MailApp| {
                     mail.shared
                         .borrow()
                         .mailbox
-                        .messages_in(crate::model::Folder::Drafts)
+                        .messages_in(mail_engine::model::Folder::Drafts)
                         .iter()
                         .map(|message| message.id)
                         .collect()
@@ -1801,17 +1805,17 @@ mod tests {
         phase a_loaded_message_reads_as_what_it_says;
         {
             let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
-            let id: crate::model::MessageId = "70c4b1cf-78ef-bd2b-7019-d7c509f29930".parse().unwrap();
+            let id: mail_engine::model::MessageId = "70c4b1cf-78ef-bd2b-7019-d7c509f29930".parse().unwrap();
             app.with_surface(|mail: &mut MailApp| {
                 mail.shared
                     .borrow_mut()
                     .mailbox
-                    .insert(crate::model::Message {
+                    .insert(mail_engine::model::Message {
                         id,
                         rfc_message_id: Some("m7@example.test".into()),
                         in_reply_to: None,
-                        from: crate::model::Addr::new("Sam", "sam@example.test"),
-                        to: vec![crate::model::Addr::new("", "me@example.test")],
+                        from: mail_engine::model::Addr::new("Sam", "sam@example.test"),
+                        to: vec![mail_engine::model::Addr::new("", "me@example.test")],
                         cc: Vec::new(),
                         subject: "Quarterly numbers".into(),
                         body: "They are up.".into(),
@@ -1930,7 +1934,7 @@ mod tests {
         use ui::framework::testing::TestApp;
 
         use super::super::MailShell;
-        use crate::model::Folder;
+        use mail_engine::model::Folder;
 
         /// Every scenario captures through the framework at its own
         /// viewport, from the bundled sample accounts rather than the
@@ -2149,7 +2153,7 @@ mod tests {
             // not change between captures.
             phase the_sample_mailbox_is_the_same_on_every_run;
             {
-                let ids = |mailbox: crate::model::Mailbox| {
+                let ids = |mailbox: mail_engine::model::Mailbox| {
                     let mut ids: Vec<_> = mailbox.messages.keys().copied().collect();
                     ids.sort();
                     ids
@@ -2282,7 +2286,7 @@ mod tests {
             phase the_compose_format_follows_the_person;
             {
                 use super::super::MailPreferences;
-                use crate::model::ComposeFormat;
+                use mail_engine::model::ComposeFormat;
 
                 let mut app = composing();
                 let format = control(&mut app, "format");

@@ -107,7 +107,6 @@ mail-forward-too-large = { $count ->
    *[other] { $files } are more than one message can carry, so they are not attached
 }
 
-mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
 
 ## Reader: an HTML message's remote content, links and format
 mail-remote-blocked = Remote images aren’t loaded

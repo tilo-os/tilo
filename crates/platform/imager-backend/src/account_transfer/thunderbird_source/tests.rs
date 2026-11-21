@@ -172,8 +172,8 @@ fn import_selected(
 
 const BINDING: &[u8] = b"operation-7/target-user-1000";
 
-/// Mirrors `apps/mail/src/model.rs` (`Message`, `Addr`, `Attachment`, `Folder`,
-/// `ServerPlace`) and the `Kept` envelope in `apps/mail/src/store.rs`.
+/// Mirrors `crates/platform/mail-engine/src/model.rs` (`Message`, `Addr`, `Attachment`, `Folder`,
+/// `ServerPlace`) and the `Kept` envelope in `crates/platform/mail-engine/src/store.rs`.
 /// `deny_unknown_fields` makes import fail this test if it writes anything the
 /// Mail app cannot deserialize. The unused variants keep the mirror exact.
 #[expect(

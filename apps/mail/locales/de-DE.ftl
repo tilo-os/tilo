@@ -104,7 +104,6 @@ mail-forward-too-large = { $count ->
    *[other] { $files } sind größer, als eine Nachricht fassen kann, und werden daher nicht angehängt
 }
 
-mail-import-sign-in-required = Importierte Kontoeinstellungen verlangen eine Anmeldung. Melde dich an, bevor du verbindest.
 
 ## Leseansicht: Inhalte aus dem Netz, Links und Format einer HTML-Nachricht
 mail-remote-blocked = Bilder aus dem Netz werden nicht geladen

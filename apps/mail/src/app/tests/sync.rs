@@ -35,7 +35,7 @@ tilo_test_env::scenario! {
             auth: accounts::email::AuthMethod::OAuth,
             ..Default::default()
         };
-        let mut stored = accounts::Account::new("gmail-ada", crate::account::TYPE_ID);
+        let mut stored = accounts::Account::new("gmail-ada", mail_engine::account::TYPE_ID);
         stored.set_config(&config);
         record.invoke(&PersonAccounts::saving(&stored)).unwrap();
         mail.sync(&doc, &automerge::ROOT);
@@ -52,7 +52,7 @@ tilo_test_env::scenario! {
 
         mail.shared.borrow_mut().accounts.toggle_collapsed(0);
         mail.shared.borrow_mut().folder = Folder::Sent;
-        let mut other = accounts::Account::new("gmail-other", crate::account::TYPE_ID);
+        let mut other = accounts::Account::new("gmail-other", mail_engine::account::TYPE_ID);
         let mut other_config = config.clone();
         other_config.email = "other@example.org".into();
         other.set_config(&other_config);
@@ -79,7 +79,7 @@ tilo_test_env::scenario! {
     {
         let (mut app, mut doc) = app();
         let kept = tempfile::tempdir().unwrap();
-        app.state().store = crate::store::Store::at(kept.path().to_path_buf());
+        app.state().store = mail_engine::store::Store::at(kept.path().to_path_buf());
         let (outgoing, requests) = std::sync::mpsc::channel();
         let (incoming, incoming_rx) = std::sync::mpsc::channel();
         app.state().engine = Some(EngineHandle {
@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
             rx: incoming_rx,
         });
         let account = app.shared.borrow().accounts.active_config().email;
-        let sync = |app: &mut MailApp, doc: &mut AutoCommit, synced: crate::sync::Synced| {
+        let sync = |app: &mut MailApp, doc: &mut AutoCommit, synced: mail_engine::sync::Synced| {
             let config = app.shared.borrow().accounts.active_config();
             let request = app
                 .state()
@@ -121,7 +121,7 @@ tilo_test_env::scenario! {
         let posted = sync(
             &mut app,
             &mut doc,
-            crate::sync::Synced {
+            mail_engine::sync::Synced {
                 uid_validity: 9,
                 reset: true,
                 messages: vec![
@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
         assert!(matches!(
             posted,
             EngineRequest::Fetch {
-                want: crate::sync::Want::Latest { known: None },
+                want: mail_engine::sync::Want::Latest { known: None },
                 ..
             }
         ));
@@ -158,7 +158,7 @@ tilo_test_env::scenario! {
         let posted = sync(
             &mut app,
             &mut doc,
-            crate::sync::Synced {
+            mail_engine::sync::Synced {
                 uid_validity: 9,
                 messages: vec![fetched(&account, 4, 9, 400)],
                 flags: vec![(1, false, false), (3, true, false)],
@@ -169,8 +169,8 @@ tilo_test_env::scenario! {
         assert!(matches!(
             posted,
             EngineRequest::Fetch {
-                want: crate::sync::Want::Latest {
-                    known: Some(crate::sync::Window {
+                want: mail_engine::sync::Want::Latest {
+                    known: Some(mail_engine::sync::Window {
                         uid_validity: 9,
                         newest: 3,
                         oldest: 1
@@ -608,7 +608,7 @@ tilo_test_env::scenario! {
         let send = |app: &mut MailApp, doc: &mut AutoCommit| -> Outgoing {
             app.compose.open_blank();
             app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-            app.compose.reattach(&crate::model::Draft {
+            app.compose.reattach(&mail_engine::model::Draft {
                 to: "dest@there.example".into(),
                 subject: "Hi".into(),
                 body: "Hello".into(),
@@ -720,7 +720,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(file.filename, "q3.csv");
         assert_eq!(
-            crate::attachment_store::materialize(&app.content, file).unwrap(),
+            mail_engine::attachment_store::materialize(&app.content, file).unwrap(),
             b"quarter,total\n3,42\n"
         );
         let status = app
@@ -755,7 +755,7 @@ tilo_test_env::scenario! {
         message.id = uuid::Uuid::new_v4();
         message.folder = Folder::Inbox;
         message.subject = "Footage".into();
-        let past_one_message = vec![0_u8; crate::attachment_store::MAX_ATTACHMENT_BYTES + 1];
+        let past_one_message = vec![0_u8; mail_engine::attachment_store::MAX_ATTACHMENT_BYTES + 1];
         message.attachments = vec![
             Attachment::hydrated("notes.txt", "text/plain", b"take two".to_vec()),
             Attachment::hydrated("copy of notes.txt", "text/plain", b"take two".to_vec()),
@@ -799,7 +799,7 @@ tilo_test_env::scenario! {
         let (mut app, mut doc) = app();
         TestMail::store_draft(
             &mut doc,
-            &crate::model::Draft {
+            &mail_engine::model::Draft {
                 to: "dest@there.example".into(),
                 subject: "Ready to go".into(),
                 body: "See you at noon".into(),
@@ -899,7 +899,7 @@ tilo_test_env::scenario! {
                     request_id: request,
                     account_id: account.clone(),
                     folder: Folder::Inbox,
-                    synced: crate::sync::Synced {
+                    synced: mail_engine::sync::Synced {
                         uid_validity: 9,
                         reset: true,
                         messages: vec![fetched(&account, 1, 9, 100), fetched(&account, 2, 9, 200)],
@@ -935,7 +935,7 @@ tilo_test_env::scenario! {
             posted.iter().any(|request| matches!(
                 request,
                 EngineRequest::Fetch {
-                    want: crate::sync::Want::Older { .. },
+                    want: mail_engine::sync::Want::Older { .. },
                     ..
                 }
             )),
@@ -965,7 +965,7 @@ tilo_test_env::scenario! {
                 request_id: request,
                 account_id: account.clone(),
                 folder: Folder::Inbox,
-                synced: crate::sync::Synced {
+                synced: mail_engine::sync::Synced {
                     uid_validity: 9,
                     messages: vec![fetched(&account, 3, 9, 300)],
                     has_older: Some(false),
@@ -997,7 +997,7 @@ fn the_outbox_shows_what_waits_and_why_and_takes_a_message_back() {
     let (mut app, mut doc) = app();
     TestMail::store_draft(
         &mut doc,
-        &crate::model::Draft {
+        &mail_engine::model::Draft {
             to: "dest@there.example".into(),
             subject: "Ready to go".into(),
             body: "See you at noon".into(),
@@ -1101,7 +1101,7 @@ tilo_test_env::scenario! {
             tx: outgoing,
             rx: incoming_rx,
         });
-        let asking = crate::model::AccountConfig {
+        let asking = mail_engine::model::AccountConfig {
             email: "asking@example.test".into(),
             ..Default::default()
         };
@@ -1114,7 +1114,7 @@ tilo_test_env::scenario! {
             "asking@example.test"
         );
         app.shared.borrow_mut().accounts =
-            crate::account::AccountStore::single(crate::model::AccountConfig {
+            mail_engine::account::AccountStore::single(mail_engine::model::AccountConfig {
                 email: "selected@example.test".into(),
                 ..Default::default()
             });
@@ -1242,7 +1242,7 @@ tilo_test_env::scenario! {
                 request_id: again,
                 account_id: account.email,
                 folder: Folder::Inbox,
-                synced: crate::sync::Synced::default(),
+                synced: mail_engine::sync::Synced::default(),
             })
             .unwrap();
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
@@ -1436,7 +1436,7 @@ tilo_test_env::scenario! {
                 request_id: fixture.send_id,
                 account_id: "me@example.test".into(),
                 folder: Folder::Inbox,
-                synced: crate::sync::Synced::default(),
+                synced: mail_engine::sync::Synced::default(),
             });
             fixture.drain();
             assert!(
@@ -1455,7 +1455,7 @@ tilo_test_env::scenario! {
                 request_id: fixture.refresh_id,
                 account_id: "me@example.test".into(),
                 folder: Folder::Inbox,
-                synced: crate::sync::Synced::default(),
+                synced: mail_engine::sync::Synced::default(),
             });
             fixture.send(EngineEvent::Completed {
                 request_id: fixture.refresh_id,

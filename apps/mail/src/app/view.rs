@@ -488,7 +488,7 @@ impl Mailroom {
         &self,
         mail: &MessageStates,
         item: &str,
-    ) -> Option<crate::model::Message> {
+    ) -> Option<mail_engine::model::Message> {
         if let Some(held) = mail.held_shown(item) {
             return Some(held);
         }
@@ -508,7 +508,7 @@ impl Mailroom {
         query: &crate::search::MessageQuery,
     ) -> serde_json::Value {
         let shared = self.shared.borrow();
-        let held: Vec<crate::model::Message> = mail
+        let held: Vec<mail_engine::model::Message> = mail
             .held_all()
             .into_iter()
             .filter(|message| shared.mailbox.get(message.id).is_none())
@@ -527,14 +527,14 @@ impl Mailroom {
         )
     }
 
-    pub(crate) fn sender_for(&self, address: &str) -> Option<crate::model::DraftSender> {
+    pub(crate) fn sender_for(&self, address: &str) -> Option<mail_engine::model::DraftSender> {
         let shared = self.shared.borrow();
         shared
             .accounts
             .accounts
             .iter()
             .find(|account| !address.is_empty() && account.config.email == address)
-            .map(|account| crate::model::DraftSender {
+            .map(|account| mail_engine::model::DraftSender {
                 account: account.id.clone(),
                 email: account.config.email.clone(),
             })
@@ -581,7 +581,7 @@ impl Mailroom {
             .messages
             .values()
             .filter(|message| {
-                message.folder != crate::model::Folder::Trash
+                message.folder != mail_engine::model::Folder::Trash
                     && !shared.workspace_messages.contains(&message.id)
             })
             .map(crate::search::message_entry)
@@ -619,7 +619,7 @@ impl Mailroom {
     }
 
     #[cfg(test)]
-    pub(crate) fn shared_mailbox(&self) -> std::cell::Ref<'_, crate::model::Mailbox> {
+    pub(crate) fn shared_mailbox(&self) -> std::cell::Ref<'_, mail_engine::model::Mailbox> {
         std::cell::Ref::map(self.shared.borrow(), |state| &state.mailbox)
     }
 }

@@ -5,8 +5,8 @@ use automerge::transaction::Transactable;
 use ui::framework::testing::TestApp;
 use ui::widget::Widget as _;
 
-use crate::fake_servers::{FakeImap, FakeSmtp, Layout, server_tls_config};
 use crate::resource::MailShell;
+use mail_engine::fake_servers::{FakeImap, FakeSmtp, Layout, server_tls_config};
 
 const ME: &str = "hiring@studio.example";
 
@@ -24,14 +24,14 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         &[],
     );
     let kept = tempfile::tempdir().unwrap();
-    crate::account::AccountStore::single(crate::model::AccountConfig {
+    mail_engine::account::AccountStore::single(mail_engine::model::AccountConfig {
         display_name: "Studio hiring".into(),
         email: ME.into(),
         username: ME.into(),
         password: "app-password".into(),
         imap_host: "127.0.0.1".into(),
         imap_port: imap.port,
-        auth: crate::model::AuthMethod::Password,
+        auth: mail_engine::model::AuthMethod::Password,
         ..Default::default()
     })
     .persist_in(kept.path())
@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
             .with_surface(|mail: &mut super::MailApp| {
                 mail.older_pending.clear();
                 mail.has_older
-                    .insert((account.clone(), crate::model::Folder::Inbox), true);
+                    .insert((account.clone(), mail_engine::model::Folder::Inbox), true);
                 mail.shared.borrow().wants_older.set(true);
                 let wanted = mail.older_pages_wanted().len();
                 (

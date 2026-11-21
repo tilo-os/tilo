@@ -1,6 +1,4 @@
 [package]
-# tests/*.rs are modules of tests/it.rs, not separate binaries
-autotests = false
 name = "mail"
 version = "0.1.0"
 edition = "2024"
@@ -12,8 +10,8 @@ license.workspace = true
 ignored = ["mail-samples"]
 
 # A page reads the mail its workspace holds and asks a capable device to
-# reach the servers (`src/peer.rs`): it compiles no IMAP/SMTP engine and no
-# account credentials.
+# reach the servers (`src/peer_copies.rs`): it compiles no IMAP/SMTP engine and
+# no account credentials.
 [package.metadata.tilo]
 web-features = []
 
@@ -25,23 +23,18 @@ path = "src/lib.rs"
 name = "mail"
 path = "src/main.rs"
 
-# The integration tests: one binary, its files included as modules by
-# `tests/it.rs` (a file per binary linked the whole app once each).
-[[test]]
-name = "it"
-path = "tests/it.rs"
-
 [dependencies]
+# Mail's model and its IMAP/SMTP engine: what this window draws and asks, with
+# no window of its own. The tilolang Mail origin runs the same engine.
+mail-engine = { path = "../../crates/platform/mail-engine", default-features = false }
 # The page reader displays a web engine's frames through the toolkit; it talks to the engine through this client.
 tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
 # A page builds MIME too (drafts, and the sends a capable device delivers),
 # but has no hostname to read: the `live` build names Message-IDs from it, and
 # Mail names every Message-ID itself.
 mail-builder = { version = "0.4.4", default-features = false }
-tilo-mime = { path = "../../crates/platform/tilo-mime" }
 # A message too large to keep in one piece keeps its large parts apart.
 tilo-mail-parts = { path = "../../crates/platform/mail-parts" }
-tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-sort = { path = "../../crates/platform/tilo-sort" }
 fnv.workspace = true
 hex.workspace = true
@@ -77,8 +70,6 @@ tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-# Account secrets ownership releases are wiped from memory when dropped.
-zeroize.workspace = true
 # A separate config directory keeps sample, shots, and test constructors away
 # from the user's account store.
 tempfile.workspace = true
@@ -86,35 +77,16 @@ tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-# MIME parsing and message construction; both are pure Rust with no native,
-# TLS, or async dependencies.
+# MIME parsing; a message's date row and the kept mail's header are read with
+# it.
 mail-parser = "0.11.4"
 # HTML mail is parsed as an engine parses it (the WHATWG algorithm), for the
 # sealed document the reader's web engine shows and for the styled text it
 # shows without one.
 html5ever = "0.39"
 markup5ever_rcdom = "0.39"
-# The base64 encodings XOAUTH2 and the sandboxed HTML data: URL use.
+# The base64 encoding the sandboxed HTML data: URL uses.
 base64.workspace = true
-# Tilo's one OAuth client registration per provider (with Gmail's and
-# Outlook's mail scopes) and the ownership of Mail's grants: sign-in, sealing
-# and refresh. The credential store and its HTTPS client are compiled with `live`.
-account-credentials = { path = "../../crates/system/account-credentials", default-features = false }
-
-# Live IMAP and SMTP for the account engine. These are optional and guarded by
-# `live`; the default build uses the offline backend.
-async-imap = { workspace = true, optional = true }
-lettre = { version = "0.11.24", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
-# Async runtime and rustls backend used by the live engine; roots come from the
-# Tilo system bundle through `tilo-net`, never OpenSSL.
-tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "time", "macros"] }
-tokio-rustls = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
-tilo-net = { path = "../../crates/platform/tilo-net", optional = true, features = ["blocking"] }
-futures-util = { workspace = true, optional = true }
-# Throwaway certificates for the test servers other crates' tests reach through
-# `fake-servers`.
-rcgen = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -127,60 +99,45 @@ samples = []
 thin = ["dep:runtime-dylib"]
 # Reach account credentials with the IMAP client, and the contact directory,
 # through their engine libraries in the runtime bundle
-# (libtilo_accounts_engine.so and libtilo_contact_directory_engine.so, under
-# crates/runtime/engines/) instead of the runtime. The release collection
+# (libtilo_accounts_engine.so, libtilo_contact_directory_engine.so and
+# libtilo_mail_engine.so) instead of the runtime. The release collection
 # enables it (dist/apps/app-collections.toml); a `thin` build without it
-# (`tilo-app dev`) links account-credentials, async-imap and
-# tilo-contact-directory statically, because an engine library links only
-# through tools/ci/rustc-thin-app-wrapper.sh.
+# (`tilo-app dev`) links mail-engine and tilo-contact-directory statically,
+# because an engine library links only through
+# tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-contact-directory-engine/thin", "tilo-mail-engine/thin"]
-# The default app includes the live account engine; it remains idle without a
-# configured account.
+# The default build includes the live account engine; it remains idle without
+# a configured account.
 default = ["live"]
-# Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
-# stack and a configured account at runtime.
-live = ["account-credentials/store", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util", "mail-builder/gethostname"]
-
-# The test IMAP and SMTP servers (`fake_servers`), for other crates' tests of
-# what talks to mail servers through this engine. Never in a release.
-fake-servers = ["live", "dep:rcgen", "ui/test-support"]
-
-[[example]]
-# A stand-in IMAP and SMTP server holding a few messages, for a rehearsal of connecting a mail
-# account on a local stack.
-name = "mail_server_stand_in"
-required-features = ["fake-servers"]
+# Compile the engine's IMAP/SMTP backend; requires a TLS/async stack and a
+# configured account at runtime.
+live = ["mail-engine/live"]
+# The test IMAP and SMTP servers (`fake_servers`), for this app's tests of what
+# talks to mail servers through the engine. Never in a release.
+fake-servers = ["live", "mail-engine/fake-servers", "ui/test-support"]
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `mail` claims `--features mail/thin` in the
 # collection build, and the app then links the whole runtime statically.
 mail-samples = { package = "mail", path = ".", features = ["samples"] }
-# Turns on the fake IMAP and SMTP servers for this package's tests, so the
-# integration test of the session a host carries can start them. Named apart
-# from `mail` for the same reason as the samples above.
+# Turns on the fake IMAP and SMTP servers for this package's tests, so its
+# window tests can start them. Named apart from `mail` for the same reason as
+# the samples above.
 mail-fixture = { package = "mail", path = ".", features = ["fake-servers"] }
+# A secret release a test can point at a directory of its own.
+mail-engine = { path = "../../crates/platform/mail-engine", features = ["test-support"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-# Test-only self-signed certificates for local IMAP/SMTP TLS servers.
-rcgen.workspace = true
 # The fake authorization server and browser for the Gmail and Outlook
 # sign-in tests.
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
-# Paused time for the connection race and lookup deadlines.
-tokio = { workspace = true, features = ["test-util"] }
-# Cross-app acceptance: drive the real Settings sign-in and consume its store.
+# Cross-app acceptance: the account Settings' sign-in writes is the one Mail
+# adopts, and an attachment handed over as content opens in the PDF viewer.
 settings = { path = "../settings" }
-# Cross-app acceptance: an attachment handed over as content opens in the
-# PDF viewer and reads.
 pdf-viewer = { path = "../pdf-viewer" }
 test-http = { path = "../../crates/dev/test-http" }
-tilo-seal = { path = "../../crates/system/tilo-seal" }
-# The session a host carries for an account it keeps, proved against the
-# fake IMAP and SMTP servers above.
-tilo-mail-session = { path = "../../crates/platform/mail-session" }
-# Messages with large attachments, delivered with their parts kept apart.
-tilo-mail-parts = { path = "../../crates/platform/mail-parts", features = ["fixture"] }
+account-credentials = { path = "../../crates/system/account-credentials", default-features = false }
 
 [lints]
 workspace = true

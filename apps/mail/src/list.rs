@@ -26,9 +26,9 @@ use ui::widget::{
 };
 
 use crate::i18n::CATALOG;
-use crate::model::{Folder, MessageId};
 use crate::state::{CtxAction, Intent, MailState, Shared};
 use crate::util::{format_relative, local_minutes};
+use mail_engine::model::{Folder, MessageId};
 
 pub(crate) struct ZeroState {
     icon: Icon,

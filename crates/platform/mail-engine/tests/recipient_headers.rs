@@ -1,5 +1,5 @@
-use mail::model::{Addr, Draft, Folder};
-use mail::transport::{build_mime, parse_addr_list, parse_eml};
+use mail_engine::model::{Addr, Draft, Folder};
+use mail_engine::transport::{build_mime, parse_addr_list, parse_eml};
 
 tilo_test_env::scenario! {
     /// `parse_addr_list` over the recipient fields a person writes.

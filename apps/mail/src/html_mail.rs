@@ -98,7 +98,7 @@ pub fn links(html: &str) -> Vec<String> {
     sanitizer.links
 }
 
-pub fn message_links(message: &crate::model::Message) -> Vec<String> {
+pub fn message_links(message: &mail_engine::model::Message) -> Vec<String> {
     if let Some(html) = &message.html_body {
         return links(html);
     }

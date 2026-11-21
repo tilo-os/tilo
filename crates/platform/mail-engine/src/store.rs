@@ -20,7 +20,7 @@ use crate::model::Message;
 #[cfg(feature = "live")]
 const VERSION: u32 = 1;
 
-pub(crate) const KEEP: usize = 5_000;
+pub const KEEP: usize = 5_000;
 
 #[cfg(feature = "live")]
 #[derive(Serialize, Deserialize)]
@@ -32,7 +32,7 @@ struct Kept {
 /// The mail this device has fetched, kept in its cache area. A page keeps
 /// none: the workspace's copies resource holds what its person has.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Store {
+pub struct Store {
     #[cfg(feature = "live")]
     root: Option<PathBuf>,
     #[cfg(feature = "live")]
@@ -46,14 +46,14 @@ type Sender<T> = std::sync::mpsc::Sender<T>;
 
 impl Store {
     /// A store that keeps nothing here, for a device with no cache area.
-    pub(crate) fn nowhere() -> Self {
+    pub fn nowhere() -> Self {
         Self::default()
     }
 }
 
 #[cfg(feature = "live")]
 impl Store {
-    pub(crate) fn at(root: PathBuf) -> Self {
+    pub fn at(root: PathBuf) -> Self {
         Self {
             root: Some(root),
             writer: std::sync::Arc::default(),
@@ -105,7 +105,7 @@ impl Store {
         Some(root.join(format!("{}.json", file_stem(account))))
     }
 
-    pub(crate) fn load(&self, account: &str) -> Vec<Message> {
+    pub fn load(&self, account: &str) -> Vec<Message> {
         let Some(path) = self.file(account) else {
             return Vec::new();
         };
@@ -129,7 +129,7 @@ impl Store {
         }
     }
 
-    pub(crate) fn save(
+    pub fn save(
         &self,
         account: &str,
         mut messages: Vec<Message>,
@@ -169,7 +169,7 @@ impl Store {
         Some(folder.join(format!("{message}.{index}")))
     }
 
-    pub(crate) fn attachment(
+    pub fn attachment(
         &self,
         account: &str,
         message: crate::model::MessageId,
@@ -178,7 +178,7 @@ impl Store {
         std::fs::read(self.attachment_file(account, message, index)?).ok()
     }
 
-    pub(crate) fn forget(&self, account: &str) {
+    pub fn forget(&self, account: &str) {
         if let Some(path) = self.file(account)
             && let Some(writer) = self.writer()
         {
@@ -195,11 +195,11 @@ impl Store {
     reason = "a page's store keeps nothing, so no method reads it"
 )]
 impl Store {
-    pub(crate) fn load(&self, _account: &str) -> Vec<Message> {
+    pub fn load(&self, _account: &str) -> Vec<Message> {
         Vec::new()
     }
 
-    pub(crate) fn save(
+    pub fn save(
         &self,
         _account: &str,
         _messages: Vec<Message>,
@@ -207,7 +207,7 @@ impl Store {
         Vec::new()
     }
 
-    pub(crate) fn attachment(
+    pub fn attachment(
         &self,
         _account: &str,
         _message: crate::model::MessageId,
@@ -216,7 +216,7 @@ impl Store {
         None
     }
 
-    pub(crate) fn forget(&self, _account: &str) {}
+    pub fn forget(&self, _account: &str) {}
 }
 
 #[cfg(feature = "live")]

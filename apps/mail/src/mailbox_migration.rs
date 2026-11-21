@@ -185,7 +185,7 @@ fn rekey_attachments(
     source: &ContentStore,
     target: Option<&ContentStore>,
 ) -> Result<bool, String> {
-    use crate::attachment_store::{MAX_ATTACHMENT_BYTES, PREFIX};
+    use mail_engine::attachment_store::{MAX_ATTACHMENT_BYTES, PREFIX};
     if message.attachments.is_empty() {
         return Ok(true);
     }

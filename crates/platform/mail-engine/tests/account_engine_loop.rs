@@ -17,10 +17,10 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use mail::account::AccountStore;
-use mail::engine::{EngineEvent, EngineRequest};
-use mail::model::{AccountConfig, Addr, Draft, Folder};
-use mail::transport::{build_mime, parse_eml, parse_fetched};
+use mail_engine::account::AccountStore;
+use mail_engine::engine::{EngineEvent, EngineRequest};
+use mail_engine::model::{AccountConfig, Addr, Draft, Folder};
+use mail_engine::transport::{build_mime, parse_eml, parse_fetched};
 
 fn unique_root() -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -113,7 +113,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     //    channel — exactly the requests the app posts. The offline stub backend
     //    is used explicitly so the loop is deterministic and network-free
     //    regardless of which backend the default `spawn()` would select.
-    let (tx, rx) = mail::engine::spawn_with(Box::new(mail::engine::StubEngine::new(
+    let (tx, rx) = mail_engine::engine::spawn_with(Box::new(mail_engine::engine::StubEngine::new(
         tilo_content::ContentStore::memory(),
     )));
 
@@ -122,12 +122,12 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     tx.send(connect).unwrap();
     assert!(matches!(
         recv(&rx).expect("engine answered within the timeout"),
-        EngineEvent::Error { request_id, kind: mail::engine::EngineRequestKind::Connect, context, .. }
+        EngineEvent::Error { request_id, kind: mail_engine::engine::EngineRequestKind::Connect, context, .. }
             if request_id == connect_id && context == "offline"
     ));
     assert!(matches!(
         recv(&rx).expect("engine answered within the timeout"),
-        EngineEvent::Completed { request_id, kind: mail::engine::EngineRequestKind::Connect }
+        EngineEvent::Completed { request_id, kind: mail_engine::engine::EngineRequestKind::Connect }
             if request_id == connect_id
     ));
 
@@ -136,12 +136,12 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     tx.send(fetch).unwrap();
     assert!(matches!(
         recv(&rx).expect("engine answered within the timeout"),
-        EngineEvent::Error { request_id, kind: mail::engine::EngineRequestKind::Fetch, context, .. }
+        EngineEvent::Error { request_id, kind: mail_engine::engine::EngineRequestKind::Fetch, context, .. }
             if request_id == fetch_id && context == "offline"
     ));
     assert!(matches!(
         recv(&rx).expect("engine answered within the timeout"),
-        EngineEvent::Completed { request_id, kind: mail::engine::EngineRequestKind::Fetch }
+        EngineEvent::Completed { request_id, kind: mail_engine::engine::EngineRequestKind::Fetch }
             if request_id == fetch_id
     ));
 
@@ -159,12 +159,12 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     tx.send(send).unwrap();
     assert!(matches!(
         recv(&rx).expect("engine answered within the timeout"),
-        EngineEvent::Error { request_id, kind: mail::engine::EngineRequestKind::Send, context, message }
+        EngineEvent::Error { request_id, kind: mail_engine::engine::EngineRequestKind::Send, context, message }
             if request_id == send_id && context == "send" && message.contains("validated") && message.contains("did not send")
     ));
     assert!(matches!(
         recv(&rx).expect("engine answered within the timeout"),
-        EngineEvent::Completed { request_id, kind: mail::engine::EngineRequestKind::Send }
+        EngineEvent::Completed { request_id, kind: mail_engine::engine::EngineRequestKind::Send }
             if request_id == send_id
     ));
     assert_send_builds_real_mime(&loaded, &draft);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{Folder, Message};
+use mail_engine::model::{Folder, Message};
 
 const NEWSLETTER: &[u8] = include_bytes!("../../tests/fixtures/html/newsletter.eml");
 const GITHUB: &[u8] = include_bytes!("../../tests/fixtures/html/github.eml");
@@ -10,7 +10,7 @@ const PLAIN: &[u8] = include_bytes!("../../tests/fixtures/html/plain.eml");
 const HOSTILE: &[u8] = include_bytes!("../../tests/fixtures/html/hostile.eml");
 
 fn message(raw: &[u8]) -> Message {
-    crate::transport::parse_eml(raw, 0, Folder::Inbox).expect("the fixture parses")
+    mail_engine::transport::parse_eml(raw, 0, Folder::Inbox).expect("the fixture parses")
 }
 
 fn html(raw: &[u8]) -> String {

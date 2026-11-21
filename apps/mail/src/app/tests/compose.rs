@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
             assert_eq!(draft.to, to);
             assert_eq!(draft.cc, cc);
             assert_eq!(draft.bcc, bcc);
-            let wire = crate::transport::build_mime(
+            let wire = mail_engine::transport::build_mime(
                 &app.content,
                 &Addr::new(account.display_name, account.email),
                 &draft,
@@ -250,7 +250,7 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
         let before = app.shared.borrow().mailbox.count(Folder::Sent);
         app.compose.open_blank();
         app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        let draft = crate::model::Draft {
+        let draft = mail_engine::model::Draft {
             to: "dest@there.example".into(),
             subject: "Hi".into(),
             body: "Hello".into(),
@@ -389,7 +389,7 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
         let before = app.shared.borrow().mailbox.count(Folder::Drafts);
         app.compose.open_blank();
         app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        let draft = crate::model::Draft {
+        let draft = mail_engine::model::Draft {
             to: "dest@there.example".into(),
             subject: "WIP proposal".into(),
             body: "half written".into(),
@@ -398,7 +398,7 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
         };
         app.compose.reattach(&draft);
         let attachment =
-            crate::attachment_store::stage_bytes(&app.content, b"draft agenda", "agenda.txt")
+            mail_engine::attachment_store::stage_bytes(&app.content, b"draft agenda", "agenda.txt")
                 .expect("stage portable attachment");
         app.compose
             .add_attachment(attachment.clone())
@@ -441,7 +441,7 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
         let (mut app, mut doc) = app();
         app.compose.open_blank();
         app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        app.compose.reattach(&crate::model::Draft {
+        app.compose.reattach(&mail_engine::model::Draft {
             subject: "First".into(),
             body: "one".into(),
             ..Default::default()

@@ -6,7 +6,7 @@
 //! credentials kept out of it and sealed in the encrypted
 //! [`accounts::AccountCredentials`].
 //!
-//! This module keeps the shapes the rest of the app works with, [`Account`] and
+//! This module keeps the shapes the rest of Mail works with, [`Account`] and
 //! [`AccountStore`], and hydrates them from that store and vault
 //! ([`AccountStore::load_in`]). The connection settings are serialised into each account's
 //! opaque `config`; the password is read back from the vault, never from the JSON.

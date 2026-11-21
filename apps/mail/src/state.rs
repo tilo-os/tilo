@@ -20,13 +20,13 @@ use ui::framework::{Dispatcher, Submit, WorkspaceResource};
 use ui::icons::Icon;
 use ui::widget::toast::ToastKind;
 
-use crate::account::AccountStore;
+use mail_engine::account::AccountStore;
 
 use crate::actions::{IngestBaseline, ServerUpdate};
-use crate::engine::EngineRequest;
 use crate::message_states::MessageStates;
-use crate::model::{AccountConfig, Draft, Folder, Mailbox, MessageId, Thread};
 use crate::resource::{Mail, mailbox};
+use mail_engine::engine::EngineRequest;
+use mail_engine::model::{AccountConfig, Draft, Folder, Mailbox, MessageId, Thread};
 
 pub type Shared = Rc<RefCell<MailState>>;
 
@@ -282,14 +282,14 @@ pub struct MailState {
     /// own place to assistive technology rather than the whole list's.
     pub row_bounds: RefCell<HashMap<MessageId, Rect>>,
     pub first_fetch: Option<ui::arriving::ArrivalClock>,
-    pub passed_over: HashMap<(String, Folder), crate::sync::Window>,
+    pub passed_over: HashMap<(String, Folder), mail_engine::sync::Window>,
     pub remote_senders: std::collections::BTreeSet<String>,
     pub(crate) sender_trust:
         Option<ui::framework::ResourceOpener<crate::trusted_senders::TrustedSenders>>,
     pub remote_messages: std::collections::HashSet<MessageId>,
     blocked_remote_messages: std::collections::HashSet<MessageId>,
     pub plain_text: std::collections::HashSet<MessageId>,
-    pub(crate) kept: crate::store::Store,
+    pub(crate) kept: mail_engine::store::Store,
     pub reader_requests: Vec<ReaderChoice>,
 
     pub avatars: crate::avatars::Avatars,
@@ -372,7 +372,7 @@ impl MailState {
         }
     }
 
-    pub fn remote_allowed(&self, message: &crate::model::Message) -> bool {
+    pub fn remote_allowed(&self, message: &mail_engine::model::Message) -> bool {
         !self.blocked_remote_messages.contains(&message.id)
             && (self.remote_messages.contains(&message.id)
                 || self.sender_trusted(&message.from.email))
@@ -458,7 +458,7 @@ impl MailState {
 
     pub fn inline_parts(
         &self,
-        message: &crate::model::Message,
+        message: &mail_engine::model::Message,
     ) -> Vec<crate::html_mail::InlinePart> {
         message
             .attachments
@@ -513,7 +513,12 @@ impl MailState {
     /// The live app: real account list, empty corpus until the engine fetches.
     pub fn new_live(accounts: AccountStore, avatars: crate::avatars::Avatars) -> Self {
         let cfg = accounts.active_config();
-        Self::empty(Mailbox::new(cfg), accounts, now_minutes(), avatars)
+        Self::empty(
+            Mailbox::new(cfg),
+            accounts,
+            mail_engine::model::now_minutes(),
+            avatars,
+        )
     }
 
     fn empty(
@@ -539,7 +544,7 @@ impl MailState {
             remote_messages: std::collections::HashSet::new(),
             blocked_remote_messages: std::collections::HashSet::new(),
             plain_text: std::collections::HashSet::new(),
-            kept: crate::store::Store::default(),
+            kept: mail_engine::store::Store::default(),
             reader_requests: Vec::new(),
             inspection: None,
             status: None,
@@ -699,7 +704,7 @@ impl MailState {
     pub(crate) fn ingest_messages(
         &self,
         doc: &mut ui::widget::Edits<'_>,
-        messages: &[crate::model::Message],
+        messages: &[mail_engine::model::Message],
     ) {
         if messages.is_empty() {
             return;
@@ -714,7 +719,7 @@ impl MailState {
         &self,
         doc: &mut ui::widget::Edits<'_>,
         account: &str,
-        messages: &[crate::model::Message],
+        messages: &[mail_engine::model::Message],
     ) {
         if messages.is_empty() {
             return;
@@ -816,7 +821,7 @@ impl MailState {
             .collect()
     }
 
-    pub fn selected_thread_messages(&self) -> Vec<&crate::model::Message> {
+    pub fn selected_thread_messages(&self) -> Vec<&mail_engine::model::Message> {
         let Some(sel) = self.selected.and_then(|id| self.mailbox.get(id)) else {
             return Vec::new();
         };
@@ -830,7 +835,7 @@ impl MailState {
         let Some(thread) = thread else {
             return vec![sel];
         };
-        let mut messages: Vec<&crate::model::Message> = thread
+        let mut messages: Vec<&mail_engine::model::Message> = thread
             .message_ids
             .iter()
             .filter_map(|id| self.mailbox.get(*id))
@@ -983,7 +988,7 @@ impl MailState {
                         .config
                         .identities
                         .iter()
-                        .flat_map(|identity| crate::transport::parse_addr_list(identity))
+                        .flat_map(|identity| mail_engine::transport::parse_addr_list(identity))
                         .map(|addr| addr.email),
                 )
             })
@@ -1443,11 +1448,11 @@ impl MailState {
                         || self
                             .mailbox
                             .get(sel)
-                            .map(super::model::Message::thread_subject)
+                            .map(mail_engine::model::Message::thread_subject)
                             == self
                                 .mailbox
                                 .get(*id)
-                                .map(super::model::Message::thread_subject)
+                                .map(mail_engine::model::Message::thread_subject)
                 })
             })
             .unwrap_or(0) as i32;
@@ -1465,10 +1470,6 @@ impl MailState {
         self.selected = Some(id);
         self.dirty = true;
     }
-}
-
-pub fn now_minutes() -> i64 {
-    (ui::time::unix_now() / 60) as i64
 }
 
 #[cfg(test)]

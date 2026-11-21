@@ -1,5 +1,5 @@
 //! Mail servers as an outside origin of tilolang packages: the IMAP and SMTP connector over
-//! native Mail's protocol code ([`connector`]) and the origin that keeps a package's `imap`
+//! the mail engine's protocol code ([`connector`]) and the origin that keeps a package's `imap`
 //! types in step with it ([`origin`]).
 //!
 //! The accounts are the workspace's settings' (the account store Settings writes), and their
@@ -35,7 +35,7 @@ pub fn settings_accounts(config_root: Option<std::path::PathBuf>) -> AccountSour
     Box::new(move || {
         config_root
             .as_deref()
-            .map(mail::account::AccountStore::load_in)
+            .map(mail_engine::account::AccountStore::load_in)
             .map(|store| store.accounts.into_iter().map(|a| a.config).collect())
             .unwrap_or_default()
     })
@@ -52,13 +52,13 @@ pub fn live_origin(
     let content = tilo_content::ContentStore::memory();
     let woken = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&woken);
-    let wake: mail::engine::Wake = Arc::new(move || {
+    let wake: mail_engine::engine::Wake = Arc::new(move || {
         flag.store(true, Ordering::Release);
         wake();
     });
     let reconnected = Arc::new(AtomicBool::new(false));
     follow_the_network(Arc::clone(&reconnected), Arc::clone(&wake));
-    let (requests, events) = mail::engine::spawn(content, wake);
+    let (requests, events) = mail_engine::engine::spawn(content, wake);
     Rc::new(RefCell::new(
         ImapOrigin::new(
             Box::new(EngineConnector::new(accounts, requests, events)),
@@ -108,7 +108,7 @@ type Remote = dyn Fn(
 /// Set `reconnected` and wake whenever the device comes online again: what could not reach
 /// its server then is tried again. An event of the platform's network status, never a timer.
 #[cfg(feature = "engine")]
-pub(crate) fn follow_the_network(reconnected: Arc<AtomicBool>, wake: mail::engine::Wake) {
+pub(crate) fn follow_the_network(reconnected: Arc<AtomicBool>, wake: mail_engine::engine::Wake) {
     let spawned = std::thread::Builder::new()
         .name("mail-network".into())
         .spawn(move || {

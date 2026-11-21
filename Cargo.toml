@@ -390,6 +390,7 @@ members = [
 
     # Platform
     "crates/platform/account-probe",
+    "crates/platform/mail-engine",
     "crates/platform/mail-session",
     "crates/platform/migration-sources",
     "crates/platform/pc-keyboard-geometry",
@@ -1577,6 +1578,12 @@ codegen-units = 16
 [profile.thin-app.package.imager-backend]
 codegen-units = 16
 
+# Mail's model and engine are linked into Mail's tapp alone, and build the way
+# the app itself does (build-thin-apps.sh knows only the apps' own crates):
+# optimised for size, in the one codegen unit above.
+[profile.thin-app.package.mail-engine]
+opt-level = "z"
+
 # The thin graph of a developer session (PROFILE=thin-dev to
 # os/scripts/build-thin-apps.sh, from dist/dev/nested-session-build.sh and
 # dist/dev/tilolang-runtime-build.sh together): built for build speed alone,
@@ -1597,6 +1604,11 @@ codegen-units = 256
 
 [profile.thin-dev.package.imager-backend]
 codegen-units = 256
+
+# The published graph's size setting is for a tapp a person downloads; a
+# developer session builds for speed.
+[profile.thin-dev.package.mail-engine]
+opt-level = 1
 
 # The greeter's initramfs build (os/image/compile.sh, phase rust-boot-greeter):
 # release code without its symbol table, since every boot unpacks the

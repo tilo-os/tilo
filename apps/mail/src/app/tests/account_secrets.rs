@@ -6,8 +6,10 @@ use std::sync::Arc;
 
 use ui::framework::testing::TestApp;
 
-use crate::fake_servers::{FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config};
 use crate::resource::MailShell;
+use mail_engine::fake_servers::{
+    FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config,
+};
 use settings::panes::accounts::AccountsEffect;
 
 const ME: &str = "hiring@studio.example";
@@ -52,7 +54,7 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         .get(&accounts::AccountId::from(ME))
         .cloned()
         .expect("the account is the person's");
-    assert_eq!(account.type_id.as_str(), crate::account::TYPE_ID);
+    assert_eq!(account.type_id.as_str(), mail_engine::account::TYPE_ID);
     assert!(!account.config.to_string().contains("app-password"));
 
     // A Mail window opens no vault: ownership releases it the secret. The
@@ -61,16 +63,16 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
     let mut mail = TestApp::<MailShell>::open_data_dir(mail_root.path()).unwrap();
     {
         let app = mail.surface_mut::<crate::app::MailApp>();
-        app.ownership = Some(crate::account_secrets::SecretRelease::kept_under(
+        app.ownership = Some(mail_engine::account_secrets::SecretRelease::kept_under(
             kept.path().to_path_buf(),
         ));
-        let engine = crate::engine::live::LiveEngine::trusting(
+        let engine = mail_engine::engine::live::LiveEngine::trusting(
             tilo_content::ContentStore::memory(),
             Arc::new(|| {}),
             accepting_client_config(),
         )
         .unwrap();
-        let (tx, rx) = crate::engine::spawn_with(Box::new(engine));
+        let (tx, rx) = mail_engine::engine::spawn_with(Box::new(engine));
         app.state().engine = Some(crate::app::EngineHandle { tx, rx });
         app.follow_person_accounts(record);
     }
@@ -151,11 +153,12 @@ fn ownership_releases_nothing_mail_does_not_keep() {
         "dav-password",
     )
     .unwrap();
-    let mut release = crate::account_secrets::SecretRelease::kept_under(kept.path().to_path_buf());
+    let mut release =
+        mail_engine::account_secrets::SecretRelease::kept_under(kept.path().to_path_buf());
     release.ask("dav@example.test");
     let answers = release.poll(None);
     assert!(matches!(
         answers.as_slice(),
-        [crate::account_secrets::Released::Refused { account, .. }] if account == "dav@example.test"
+        [mail_engine::account_secrets::Released::Refused { account, .. }] if account == "dav@example.test"
     ));
 }

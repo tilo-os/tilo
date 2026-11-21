@@ -96,9 +96,9 @@ fn fetched(account: &str, uid: u32, validity: u32, at: i64) -> Message {
         "From: Ada <ada@x.example>\r\nTo: {account}\r\nSubject: S{uid}\r\n\
 Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
     );
-    let mut message = crate::transport::parse_eml(raw.as_bytes(), at, Folder::Inbox).unwrap();
+    let mut message = mail_engine::transport::parse_eml(raw.as_bytes(), at, Folder::Inbox).unwrap();
     message.account = account.to_owned();
-    message.server = Some(crate::model::ServerPlace {
+    message.server = Some(mail_engine::model::ServerPlace {
         folder: Folder::Inbox,
         uid,
         uid_validity: validity,
@@ -154,7 +154,7 @@ impl InterleavedEngineFixture {
         let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
         let outgoing = Outgoing::new(
             "me@example.test",
-            &crate::model::Draft {
+            &mail_engine::model::Draft {
                 to: "you@example.test".into(),
                 ..Default::default()
             },

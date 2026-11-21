@@ -10,9 +10,9 @@ use ui::icons::Icon;
 use ui::num::u32_of_usize;
 use ui::widget::{NavAction, NavItem, NavList, NavSection};
 
-use crate::account::AccountStore;
-use crate::model::Folder;
 use crate::state::{Command, MailState, Shared};
+use mail_engine::account::AccountStore;
+use mail_engine::model::Folder;
 
 const ACCOUNT_SETTINGS: &str = "account-settings";
 

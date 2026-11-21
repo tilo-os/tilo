@@ -1,13 +1,13 @@
-//! The connector over native Mail's engine (`mail::engine`): IMAP and SMTP in native code, where
+//! The connector over Mail's engine (`mail_engine::engine`): IMAP and SMTP in native code, where
 //! the network and the credentials are. It runs in the process the system starts for the app
 //! ([`crate::serve`]), or in a window's own process outside a tilolang host.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::{Receiver, Sender};
 
-use mail::engine::{EngineEvent, EngineRequest, EngineRequestKind};
-use mail::model::{AccountConfig, Draft, Folder, Mailbox, Message};
-use mail::sync::{Want, Window};
+use mail_engine::engine::{EngineEvent, EngineRequest, EngineRequestKind};
+use mail_engine::model::{AccountConfig, Draft, Folder, Mailbox, Message};
+use mail_engine::sync::{Want, Window};
 
 use crate::connector::{
     AccountRef, Changes, Event, ImapMessage, MailConnector, Outgoing, Request, Unmade,
@@ -76,7 +76,7 @@ pub struct EngineConnector {
     /// message's place on the server.
     held: HashMap<String, Mailbox>,
     /// The key of each held message, by account and key, to its engine id.
-    keys: HashMap<(String, String), mail::model::MessageId>,
+    keys: HashMap<(String, String), mail_engine::model::MessageId>,
     /// Every request not answered yet: what it is, the account it is for, and for a move the
     /// mailbox the message went to, whose changes say where the server put it.
     pending: BTreeMap<Request, (EngineRequestKind, String, Option<String>)>,
@@ -409,7 +409,7 @@ impl EngineConnector {
                     .map(|(_, account, _)| account)
                     .unwrap_or_default();
                 match kind {
-                    EngineRequestKind::Send if context == mail::engine::SMTP_UNREACHED => {
+                    EngineRequestKind::Send if context == mail_engine::engine::SMTP_UNREACHED => {
                         out.push(Event::Unsent {
                             request: request_id,
                             reason: message,

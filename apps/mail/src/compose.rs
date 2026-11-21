@@ -35,8 +35,8 @@ use ui::widget::{
 };
 
 use crate::actions::DraftBodySeed;
-use crate::model::{ComposeFormat, Draft, DraftAttachment};
 use crate::resource::{Mail, draft_body_dispatcher, draft_body_object, mailbox};
+use mail_engine::model::{ComposeFormat, Draft, DraftAttachment};
 use ui::widget::DrawChild;
 
 type BodyEditor = RichTextSurface<RichTextField>;
@@ -425,7 +425,7 @@ enum Edge {
 pub struct ComposeWindow {
     pub open: bool,
     draft: Option<String>,
-    replying_to: Option<crate::model::MessageId>,
+    replying_to: Option<mail_engine::model::MessageId>,
     sending_from: Option<String>,
     has_account: bool,
     touched: bool,
@@ -440,7 +440,7 @@ pub struct ComposeWindow {
     has_keys: bool,
     placed: bool,
 
-    sender: Option<crate::model::DraftSender>,
+    sender: Option<mail_engine::model::DraftSender>,
     to: TextInput,
     cc: TextInput,
     bcc: TextInput,
@@ -913,7 +913,7 @@ impl ComposeWindow {
 
     pub fn open_forward(&mut self, subject: &str, quoted: &str, files: &[DraftAttachment]) {
         self.open_reply("", subject, quoted);
-        self.attachments = crate::attachment_store::bounded(files);
+        self.attachments = mail_engine::attachment_store::bounded(files);
         self.heading = "Forward";
     }
 
@@ -1075,7 +1075,7 @@ impl ComposeWindow {
 
     /// Send what is written from `sender`: the account the message it answers came to, kept
     /// with the draft so a saved reply goes out from it too.
-    pub fn send_as(&mut self, sender: crate::model::DraftSender) {
+    pub fn send_as(&mut self, sender: mail_engine::model::DraftSender) {
         self.sending_from = Some(sender.email.clone());
         self.sender = Some(sender);
     }
@@ -1085,7 +1085,7 @@ impl ComposeWindow {
     }
 
     /// The account the draft being written names to send from.
-    pub fn sender(&self) -> Option<&crate::model::DraftSender> {
+    pub fn sender(&self) -> Option<&mail_engine::model::DraftSender> {
         self.sender.as_ref()
     }
 
@@ -1104,10 +1104,10 @@ impl ComposeWindow {
         self.has_account
             && [&self.to, &self.cc, &self.bcc]
                 .into_iter()
-                .any(|field| !crate::transport::parse_addr_list(field.value()).is_empty())
+                .any(|field| !mail_engine::transport::parse_addr_list(field.value()).is_empty())
     }
 
-    pub fn reply_to(&mut self, message: crate::model::MessageId) {
+    pub fn reply_to(&mut self, message: mail_engine::model::MessageId) {
         self.replying_to = Some(message);
     }
 
@@ -1207,7 +1207,7 @@ impl ComposeWindow {
             calendar_ics: None,
             attachments: self.attachments.clone(),
             in_reply_to: self.replying_to,
-            wire: crate::model::WireIds::default(),
+            wire: mail_engine::model::WireIds::default(),
         }
     }
 
@@ -1215,7 +1215,7 @@ impl ComposeWindow {
         self.touched = true;
         let mut next = self.attachments.clone();
         next.push(attachment);
-        let bounded = crate::attachment_store::bounded(&next);
+        let bounded = mail_engine::attachment_store::bounded(&next);
         if bounded.len() != next.len() {
             return Err("Attachment is invalid, duplicated, or exceeds Mail's draft limits".into());
         }

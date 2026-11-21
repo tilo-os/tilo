@@ -7,14 +7,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{Folder, Message, MessageId};
 use crate::state::MailState;
+use mail_engine::model::{Folder, Message, MessageId};
 
 pub(super) fn server_changes(
-    mailbox: &crate::model::Mailbox,
+    mailbox: &mail_engine::model::Mailbox,
     account_id: &str,
     folder: Folder,
-    synced: &crate::sync::Synced,
+    synced: &mail_engine::sync::Synced,
 ) -> (Vec<MessageId>, Vec<Message>) {
     let held_here = |message: &Message| {
         message.account == account_id
@@ -78,7 +78,7 @@ pub(super) fn pass_over_draft_copies(
     mail: &crate::resource::Mail,
     account_id: &str,
     folder: Folder,
-    synced: &mut crate::sync::Synced,
+    synced: &mut mail_engine::sync::Synced,
 ) {
     let copies = draft_copies(mail);
     if copies.is_empty() {
@@ -92,7 +92,7 @@ pub(super) fn pass_over_draft_copies(
         return;
     }
     synced.originals.retain(|(id, _)| !copies.contains(id));
-    if let Some(window) = crate::sync::Window::of_messages(&passed, folder) {
+    if let Some(window) = mail_engine::sync::Window::of_messages(&passed, folder) {
         let key = (account_id.to_owned(), folder);
         let earlier = st.passed_over.get(&key).copied();
         st.passed_over.insert(key, window.with(earlier));

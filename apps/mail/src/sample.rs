@@ -2,15 +2,15 @@
 //! show. Three messages (one with a PDF attachment, one
 
 //! with an HTML part) are authored as raw RFC 5322 `.eml` blobs and hydrated
-//! through [`crate::transport::parse_eml`]; the rest are constructed directly
+//! through [`mail_engine::transport::parse_eml`]; the rest are constructed directly
 //! for breadth across folders, threads, read and unread, and starred state.
 //!
 //! Times are relative to the clock (`ui::clock`), which a capture pins, so a
 //! shot shows the same mailbox on every run.
 
-use crate::account::{Account, AccountStore};
-use crate::model::{AccountConfig, Addr, Attachment, Folder, Mailbox, Message};
-use crate::transport::parse_eml;
+use mail_engine::account::{Account, AccountStore};
+use mail_engine::model::{AccountConfig, Addr, Attachment, Folder, Mailbox, Message};
+use mail_engine::transport::parse_eml;
 
 const OWNER_NAME: &str = "Sam Rivera";
 const OWNER_EMAIL: &str = "sam@rivera.example";
@@ -100,7 +100,7 @@ struct SampleMessage<'a> {
 impl SampleMessage<'_> {
     fn build(self, now: i64) -> Message {
         Message {
-            id: crate::transport::stable_message_id(&format!(
+            id: mail_engine::transport::stable_message_id(&format!(
                 "{}/{}/{}",
                 self.folder.as_key(),
                 self.ago_min,
@@ -161,7 +161,7 @@ fn owner_config() -> AccountConfig {
         smtp_port: 465,
         smtp_tls: true,
         username: OWNER_EMAIL.into(),
-        auth: crate::model::AuthMethod::Password,
+        auth: mail_engine::model::AuthMethod::Password,
         import_pending: false,
         password: "correct-horse-battery".into(),
     }
@@ -402,7 +402,7 @@ pub fn sample_account_store() -> AccountStore {
         smtp_port: 587,
         smtp_tls: true,
         username: "sam@northwind.example".into(),
-        auth: crate::model::AuthMethod::Password,
+        auth: mail_engine::model::AuthMethod::Password,
         import_pending: false,
         password: "correct-horse-battery".into(),
     };

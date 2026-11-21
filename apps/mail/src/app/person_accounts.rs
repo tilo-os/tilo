@@ -92,7 +92,7 @@ impl MailApp {
         {
             return;
         }
-        accounts.upsert(crate::account::Account::new(config));
+        accounts.upsert(mail_engine::account::Account::new(config));
         if let Err(error) = self.persist_accounts(&accounts) {
             self.shared.borrow_mut().status =
                 Some(crate::state::Notice::error(crate::i18n::CATALOG.t_args(
@@ -132,7 +132,9 @@ impl MailApp {
             // in: one kept with no servers on it is bound to the servers
             // its account names now, and joined to no other from then on.
             let store = person.store();
-            let kept = store.list(&accounts::AccountTypeId::from(crate::account::TYPE_ID));
+            let kept = store.list(&accounts::AccountTypeId::from(
+                mail_engine::account::TYPE_ID,
+            ));
             if let Err(error) = vault.bind_first(kept) {
                 tracing::error!(%error, "mail account credentials could not be bound to their servers");
                 *seen = None;
@@ -243,13 +245,13 @@ impl MailApp {
         let mut connect = false;
         for answer in released {
             match answer {
-                crate::account_secrets::Released::Secret { account, password } => {
+                mail_engine::account_secrets::Released::Secret { account, password } => {
                     if let Some(kept) = st.accounts.accounts.iter_mut().find(|a| a.id == account) {
                         password.as_str().clone_into(&mut kept.config.password);
                     }
                     connect |= active.as_deref() == Some(account.as_str());
                 }
-                crate::account_secrets::Released::Refused { account, error } => {
+                mail_engine::account_secrets::Released::Refused { account, error } => {
                     tracing::error!(%account, %error, "the session's account credentials did not release this account's secret");
                     if active.as_deref() == Some(account.as_str()) {
                         // The account cannot sign in until its secret is
@@ -279,13 +281,13 @@ impl MailApp {
 }
 
 fn needs_released_secret(config: &AccountConfig) -> bool {
-    config.auth == crate::model::AuthMethod::Password
+    config.auth == mail_engine::model::AuthMethod::Password
         && !config.import_pending
         && config.password.is_empty()
 }
 
 fn keep_released_secrets(
-    ownership: Option<&mut crate::account_secrets::SecretRelease>,
+    ownership: Option<&mut mail_engine::account_secrets::SecretRelease>,
     adopted: &mut AccountStore,
     shown: &AccountStore,
 ) {
@@ -368,7 +370,7 @@ impl MailApp {
         }
         let (changed, _removed) = {
             let mut st = self.shared.borrow_mut();
-            let shown: Vec<(String, crate::model::AccountConfig)> = st
+            let shown: Vec<(String, mail_engine::model::AccountConfig)> = st
                 .accounts
                 .accounts
                 .iter()

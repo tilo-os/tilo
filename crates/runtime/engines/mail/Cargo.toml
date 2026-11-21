@@ -40,7 +40,7 @@ thin = [
 
 [dependencies]
 runtime-dylib = { path = "../../runtime-dylib", optional = true }
-# The versions and features Mail builds them with (apps/mail/Cargo.toml, its
+# The versions and features Mail builds them with (mail-engine/Cargo.toml, its
 # `live` SMTP client): one copy of each in the thin graph, or the app's
 # symbols would name a crate hash this library does not export.
 mail-parser = { version = "0.11.4", optional = true }

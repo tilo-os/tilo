@@ -11,9 +11,9 @@ use std::path::Path;
 use ui::framework::testing::TestApp;
 
 use crate::app::MailApp;
-use crate::fake_servers::{FakeImap, FakeSmtp, Layout, server_tls_config};
-use crate::model::{AccountConfig, AuthMethod};
 use crate::resource::MailShell;
+use mail_engine::fake_servers::{FakeImap, FakeSmtp, Layout, server_tls_config};
+use mail_engine::model::{AccountConfig, AuthMethod};
 
 pub const ME: &str = "hiring@studio.example";
 
@@ -135,7 +135,7 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nYour invoice.\r\n",
 #[must_use]
 pub fn fetched_into(profile: &Path) -> (FakeImap, FakeSmtp) {
     let (imap, smtp, account) = servers();
-    crate::account::AccountStore::single(account)
+    mail_engine::account::AccountStore::single(account)
         .persist_in(profile)
         .unwrap();
     let mut app = TestApp::<MailShell>::open_data_dir(profile).unwrap();

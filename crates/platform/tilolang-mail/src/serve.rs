@@ -4,7 +4,7 @@
 //! whether or not a window of the app is open. Each instance of the app that runs attaches over
 //! a socket the session hands both ([`crate::remote::RemoteConnector`] at the other end).
 //!
-//! One engine (`mail::engine`) holds the connections. Each attached instance has a connector of
+//! One engine (`mail_engine::engine`) holds the connections. Each attached instance has a connector of
 //! its own over it, which knows what that instance's record holds, so what a server answers goes
 //! to the instance that asked. The connector also watches each account's inbox itself.
 //!
@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 
-use mail::engine::{EngineEvent, EngineRequest};
+use mail_engine::engine::{EngineEvent, EngineRequest};
 
 use crate::connector::{AccountRef, Event, MailConnector, Request};
 use crate::engine::{AccountSource, EngineConnector};
@@ -531,14 +531,14 @@ pub fn serve(
 ) {
     let (woken, wakeups) = std::sync::mpsc::channel::<Wakeup>();
     let engine_woken = woken.clone();
-    let wake: mail::engine::Wake = Arc::new(move || {
+    let wake: mail_engine::engine::Wake = Arc::new(move || {
         if engine_woken.send(Wakeup::Engine).is_err() {
             tracing::debug!("the mail connector ended before its engine");
         }
     });
     let online = Arc::new(AtomicBool::new(false));
     crate::follow_the_network(Arc::clone(&online), Arc::clone(&wake));
-    let (requests, events) = mail::engine::spawn(tilo_content::ContentStore::memory(), wake);
+    let (requests, events) = mail_engine::engine::spawn(tilo_content::ContentStore::memory(), wake);
     let attaching = woken.clone();
     let spawned = std::thread::Builder::new()
         .name("mail-attachments".into())
@@ -567,8 +567,8 @@ mod tests {
     use std::sync::mpsc::channel;
     use std::time::Duration;
 
-    use mail::engine::EngineRequestKind;
-    use mail::model::AccountConfig;
+    use mail_engine::engine::EngineRequestKind;
+    use mail_engine::model::AccountConfig;
 
     use super::*;
     use crate::connector::Outgoing;
@@ -768,7 +768,7 @@ mod tests {
         rig.answer(EngineEvent::Error {
             request_id: sent[0].request_id(),
             kind: EngineRequestKind::Send,
-            context: mail::engine::SMTP_UNREACHED.into(),
+            context: mail_engine::engine::SMTP_UNREACHED.into(),
             message: "connection refused".into(),
         });
         assert_eq!(

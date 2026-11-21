@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .starts_with("Bearer ")
         );
-        let store = mail::account::AccountStore::load_in(dir.path());
+        let store = mail_engine::account::AccountStore::load_in(dir.path());
         assert_eq!(store.accounts.len(), 1);
         let account = &store.accounts[0];
         assert_eq!(account.config.email, "ada@example.org");
@@ -94,10 +94,10 @@ tilo_test_env::scenario! {
         );
         oauth.issue_access_token("gmail-refreshed");
         assert_eq!(
-            mail::oauth::access_token(
+            mail_engine::oauth::access_token(
                 &ownership,
                 &account.id,
-                mail::oauth::OAuthProvider::Google,
+                mail_engine::oauth::OAuthProvider::Google,
                 true
             )
             .unwrap(),
@@ -128,7 +128,7 @@ tilo_test_env::scenario! {
         );
         assert!(!browser.0.lock().unwrap()[0].contains("mail.google.com"));
         assert!(
-            mail::account::AccountStore::load_in(dir.path())
+            mail_engine::account::AccountStore::load_in(dir.path())
                 .accounts
                 .is_empty()
         );
@@ -192,7 +192,7 @@ fn gmail_permission_or_capability_failure_saves_nothing_and_can_retry_files_only
             pane.sign_in_message_for_test()
         );
         assert!(
-            mail::account::AccountStore::load_in(dir.path())
+            mail_engine::account::AccountStore::load_in(dir.path())
                 .accounts
                 .is_empty()
         );
@@ -252,7 +252,7 @@ fn google_granular_consent_requires_both_mail_and_drive() {
         assert!(pane.sign_in_message_for_test().unwrap().contains(message));
         assert!(root.store().is_empty());
         assert!(
-            mail::account::AccountStore::load_in(dir.path())
+            mail_engine::account::AccountStore::load_in(dir.path())
                 .accounts
                 .is_empty()
         );

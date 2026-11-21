@@ -44,7 +44,7 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 tilolang = { path = "../../crates/lang/tilolang" }
 # The test IMAP and SMTP servers Mail's tests run against, and the engine's content store.
-mail = { path = "../mail", features = ["fake-servers"] }
+mail-engine = { path = "../../crates/platform/mail-engine", features = ["fake-servers"] }
 tilo-content = { path = "../../crates/system/content" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`),

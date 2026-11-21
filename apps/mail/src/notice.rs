@@ -101,7 +101,7 @@ pub(crate) fn engine_error_text(context: &str, message: &str) -> Notice {
     let plain =
         |key: &str| crate::i18n::t_args(key, &[("error", ArgValue::Text(message.to_owned()))]);
     match context {
-        "send" | "smtp" | crate::engine::SMTP_UNREACHED => {
+        "send" | "smtp" | mail_engine::engine::SMTP_UNREACHED => {
             Notice::error(plain("mail-status-send-failed"))
         }
         "oauth" => Notice::error(plain("mail-notice-sign-in-unfinished")),

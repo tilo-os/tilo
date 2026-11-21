@@ -10,8 +10,8 @@
 use ui::framework::BarCommands;
 use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
-use crate::model::Folder;
 use crate::state::{BulkAction, Command, CtxAction, MailState};
+use mail_engine::model::Folder;
 
 fn bulk_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAction> {
     let ids = state.selected_bulk_ids();

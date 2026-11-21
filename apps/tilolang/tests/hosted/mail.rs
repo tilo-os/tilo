@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-use ::mail::fake_servers::{
+use ::mail_engine::fake_servers::{
     FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config,
 };
-use ::mail::model::{AccountConfig, AuthMethod};
+use ::mail_engine::model::{AccountConfig, AuthMethod};
 use serde_json::{Value as Json, json};
 use tilolang_mail::serve::{Connector, Wakeup};
 use tilolang_tilo::runtime::store::Store as _;
@@ -158,16 +158,16 @@ impl MailConnector {
         let device = Arc::clone(&online);
         std::thread::spawn(move || {
             let engine_woken = looping.clone();
-            let wake: ::mail::engine::Wake = Arc::new(move || {
+            let wake: ::mail_engine::engine::Wake = Arc::new(move || {
                 let _ = engine_woken.send(Wakeup::Engine);
             });
-            let engine = ::mail::engine::live::LiveEngine::trusting(
+            let engine = ::mail_engine::engine::live::LiveEngine::trusting(
                 tilo_content::ContentStore::memory(),
                 Arc::clone(&wake),
                 accepting_client_config(),
             )
             .expect("the engine starts");
-            let (requests, events) = ::mail::engine::spawn_waking(Box::new(engine), wake);
+            let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
             Connector::new(Box::new(source), requests, events, device).run(&woken, &looping);
         });
         Self { wakeups, online }

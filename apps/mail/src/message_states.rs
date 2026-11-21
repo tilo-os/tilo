@@ -27,11 +27,11 @@ use ui::tilo_resource::{
 };
 
 use crate::actions::{IngestBaseline, ServerUpdate};
-use crate::model::Folder;
 use crate::resource::{
     MAX_MESSAGE_ID_CHARS, MAX_MESSAGES_PER_ACTION, Mail, MessageState, OPEN_MESSAGE_LIMIT,
     ServerCopy,
 };
+use mail_engine::model::Folder;
 
 /// The mailbox's messages the engine keeps in one of its parts: every
 /// message that arrived while it was the newest, and everything done with
@@ -96,7 +96,7 @@ impl MessageStates {
     /// Show the reader's flags, folders and labels on the loaded mail, and
     /// drop what was deleted for good. The mail's content is the engine's;
     /// what the reader did with it is the mailbox's.
-    pub fn apply_flags(&self, mailbox: &mut crate::model::Mailbox) {
+    pub fn apply_flags(&self, mailbox: &mut mail_engine::model::Mailbox) {
         let ids: Vec<_> = mailbox.messages.keys().copied().collect();
         for id in ids {
             if let Some(state) = self.messages.get(&Id::from_raw(id.to_string())) {
@@ -107,9 +107,9 @@ impl MessageStates {
 
     /// [`Self::apply_flags`] for the messages this part keeps: what a part
     /// that changed shows, at the cost of the part rather than the mailbox.
-    pub fn show_own_flags(&self, mailbox: &mut crate::model::Mailbox) {
+    pub fn show_own_flags(&self, mailbox: &mut mail_engine::model::Mailbox) {
         for (id, state) in self.messages.iter() {
-            if let Ok(id) = id.as_str().parse::<crate::model::MessageId>()
+            if let Ok(id) = id.as_str().parse::<mail_engine::model::MessageId>()
                 && mailbox.get(id).is_some()
             {
                 show_flags(mailbox, id, state);
@@ -400,8 +400,8 @@ impl MessageStates {
 /// Only a message that differs is changed, so an unchanged mailbox keeps its
 /// revision and what is derived from it.
 pub(crate) fn show_flags(
-    mailbox: &mut crate::model::Mailbox,
-    id: crate::model::MessageId,
+    mailbox: &mut mail_engine::model::Mailbox,
+    id: mail_engine::model::MessageId,
     state: &MessageState,
 ) {
     if state.purged {

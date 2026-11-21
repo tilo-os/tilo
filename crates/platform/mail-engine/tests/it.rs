@@ -1,4 +1,4 @@
-// One test binary instead of one per file: each tests/*.rs linked the whole app
+// One test binary instead of one per file: each tests/*.rs linked the whole engine
 // separately. #[path] keeps the files where they are, and nextest runs each
 // test in its own process, so the isolation separate binaries gave them stays.
 // The files that drive the live engine keep their own `live` check.

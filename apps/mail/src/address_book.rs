@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
-use crate::model::{Addr, Folder, Mailbox};
+use mail_engine::model::{Addr, Folder, Mailbox};
 
 pub(crate) const OFFERED: usize = 6;
 
@@ -96,11 +96,11 @@ pub(crate) fn complete_with(field: &str, chosen: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Message;
+    use mail_engine::model::Message;
 
     fn message(from: Addr, to: Vec<Addr>, folder: Folder, at: i64) -> Message {
         let raw = format!("From: x@x\r\nSubject: s\r\nMessage-ID: <{at}@x>\r\n\r\nb\r\n");
-        let mut message = crate::transport::parse_eml(raw.as_bytes(), at, folder).unwrap();
+        let mut message = mail_engine::transport::parse_eml(raw.as_bytes(), at, folder).unwrap();
         message.from = from;
         message.to = to;
         message

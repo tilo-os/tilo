@@ -7,7 +7,7 @@ use super::{EngineHandle, MailApp};
 
 impl MailApp {
     /// Reach mail servers through an engine that trusts the test servers'
-    /// certificate ([`crate::fake_servers`]).
+    /// certificate ([`mail_engine::fake_servers`]).
     ///
     /// # Panics
     /// The engine could not start.
@@ -16,13 +16,13 @@ impl MailApp {
         reason = "test servers: an engine that cannot start fails the test"
     )]
     pub fn reach_test_servers(&mut self) {
-        let engine = crate::engine::live::LiveEngine::trusting(
+        let engine = mail_engine::engine::live::LiveEngine::trusting(
             tilo_content::ContentStore::memory(),
             Arc::new(|| {}),
-            crate::fake_servers::accepting_client_config(),
+            mail_engine::fake_servers::accepting_client_config(),
         )
         .expect("the test engine starts");
-        let (tx, rx) = crate::engine::spawn_with(Box::new(engine));
+        let (tx, rx) = mail_engine::engine::spawn_with(Box::new(engine));
         let mut room = self.state();
         // What the window asked the engine it replaces is never answered.
         room.pending_engine_requests.clear();

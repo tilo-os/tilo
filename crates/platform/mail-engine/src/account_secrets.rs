@@ -16,7 +16,7 @@ use ui::collaboration::browser_service_sessions::{
 };
 use zeroize::Zeroizing;
 
-pub(crate) enum Released {
+pub enum Released {
     Secret {
         account: String,
         password: Zeroizing<String>,
@@ -27,7 +27,7 @@ pub(crate) enum Released {
     },
 }
 
-pub(crate) struct SecretRelease {
+pub struct SecretRelease {
     source: Source,
     waiting: VecDeque<String>,
     asking: Option<(String, Pending)>,
@@ -39,12 +39,12 @@ impl SecretRelease {
         not(feature = "live"),
         expect(dead_code, reason = "a page holds no account secrets to release")
     )]
-    pub(crate) fn capture() -> Option<Self> {
+    pub fn capture() -> Option<Self> {
         Client::capture().map(|client| Self::from(Source::Route(Box::new(client))))
     }
 
-    #[cfg(test)]
-    pub(crate) fn kept_under(root: std::path::PathBuf) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn kept_under(root: std::path::PathBuf) -> Self {
         Self::from(Source::Root(root))
     }
 
@@ -60,7 +60,7 @@ impl SecretRelease {
         }
     }
 
-    pub(crate) fn ask(&mut self, account: &str) {
+    pub fn ask(&mut self, account: &str) {
         if self
             .asking
             .as_ref()
@@ -72,14 +72,14 @@ impl SecretRelease {
         self.waiting.push_back(account.to_owned());
     }
 
-    pub(crate) fn awaits(&self, account: &str) -> bool {
+    pub fn awaits(&self, account: &str) -> bool {
         self.asking
             .as_ref()
             .is_some_and(|(asked, _)| asked == account)
             || self.waiting.iter().any(|waiting| waiting == account)
     }
 
-    pub(crate) fn poll(&mut self, wake: Option<&ui::WakeHandle>) -> Vec<Released> {
+    pub fn poll(&mut self, wake: Option<&ui::WakeHandle>) -> Vec<Released> {
         let mut released = Vec::new();
         loop {
             if let Some((account, pending)) = &mut self.asking {
@@ -123,7 +123,7 @@ enum Source {
         expect(dead_code, reason = "a page holds no account secrets to release")
     )]
     Route(Box<Client>),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Root(std::path::PathBuf),
 }
 
@@ -139,13 +139,13 @@ impl Source {
                 Ok(pending) => Asked::Pending(account, pending),
                 Err(error) => Asked::Answered(Released::Refused { account, error }),
             },
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             Self::Root(root) => Asked::Answered(release_under(root, account)),
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn release_under(root: &std::path::Path, account: String) -> Released {
     let store = accounts::AccountStore::load_in(root);
     let released = accounts::AccountCredentials::open_in(root).and_then(|credentials| {

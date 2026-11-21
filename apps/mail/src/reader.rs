@@ -34,9 +34,9 @@ use ui::widget::{
 use ui::{TextKind, TextRole};
 
 use crate::i18n::CATALOG;
-use crate::model::{Message, MessageId};
 use crate::state::{Intent, MailState, ReaderChoice, Shared};
 use crate::util::{format_absolute, local_minutes};
+use mail_engine::model::{Message, MessageId};
 
 pub(crate) use html::is_openable;
 
@@ -199,7 +199,7 @@ type HtmlRuns = (
     bool,
 );
 
-pub(crate) fn attachment_label(attachment: &crate::model::Attachment) -> String {
+pub(crate) fn attachment_label(attachment: &mail_engine::model::Attachment) -> String {
     format!("{} ({})", attachment.filename, attachment.size_human())
 }
 
@@ -208,7 +208,7 @@ fn recipients_line(message: &Message) -> String {
         .to
         .iter()
         .chain(message.cc.iter())
-        .map(crate::model::Addr::display)
+        .map(mail_engine::model::Addr::display)
         .collect();
     if names.is_empty() {
         String::new()
@@ -1709,8 +1709,8 @@ fn paint_queued_body(ctx: &mut PaintCtx<'_>, body: Rect, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Folder;
     use crate::state::MailState;
+    use mail_engine::model::Folder;
     use tilo_webview::test_engine::TestEngine;
 
     fn shared() -> Shared {
@@ -1836,11 +1836,11 @@ mod tests {
             let recipients = {
                 let mut state = shared.borrow_mut();
                 let message = state.mailbox.messages.get_mut(&id).unwrap();
-                message.to = vec![crate::model::Addr::new(
+                message.to = vec![mail_engine::model::Addr::new(
                     "The community garden volunteer coordinators",
                     "volunteers@garden.example",
                 )];
-                message.cc = vec![crate::model::Addr::new(
+                message.cc = vec![mail_engine::model::Addr::new(
                     "The neighbourhood planning and maintenance group",
                     "planning@garden.example",
                 )];
@@ -1932,20 +1932,20 @@ mod tests {
         phase a_refetched_message_is_one_message_in_the_conversation;
         {
             let shared = MailState::shared(MailState::new_live(
-                crate::account::AccountStore::new(),
+                mail_engine::account::AccountStore::new(),
                 crate::avatars::Avatars::new(),
             ));
             let raw = b"From: Maya <maya@x.example>\r\nTo: sam@rivera.example\r\n\
     Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             {
                 let mut st = shared.borrow_mut();
-                let m = crate::transport::parse_eml(raw, 100, Folder::Inbox).unwrap();
+                let m = mail_engine::transport::parse_eml(raw, 100, Folder::Inbox).unwrap();
                 st.selected = Some(m.id);
                 st.mailbox.insert(m);
                 st.mailbox
-                    .insert(crate::transport::parse_eml(raw, 200, Folder::Inbox).unwrap());
+                    .insert(mail_engine::transport::parse_eml(raw, 200, Folder::Inbox).unwrap());
                 st.mailbox
-                    .insert(crate::transport::parse_eml(raw, 300, Folder::Inbox).unwrap());
+                    .insert(mail_engine::transport::parse_eml(raw, 300, Folder::Inbox).unwrap());
             }
             assert_eq!(shared.borrow().mailbox.count(Folder::Inbox), 1);
             assert_eq!(shared.borrow().selected_thread_messages().len(), 1);
@@ -1954,11 +1954,11 @@ mod tests {
         phase the_reader_shows_the_conversation_the_list_shows_and_opens_earlier_messages;
         {
             let shared = MailState::shared(MailState::new_live(
-                crate::account::AccountStore::new(),
+                mail_engine::account::AccountStore::new(),
                 crate::avatars::Avatars::new(),
             ));
             let parse = |bytes: Vec<u8>, at: i64| {
-                let mut message = crate::transport::parse_eml(&bytes, at, Folder::Inbox).unwrap();
+                let mut message = mail_engine::transport::parse_eml(&bytes, at, Folder::Inbox).unwrap();
                 message.read = true;
                 message
             };
@@ -2050,10 +2050,10 @@ mod tests {
             assert!(!split_trailing_quote("No quote.\n").1);
 
             let shared = MailState::shared(MailState::new_live(
-                crate::account::AccountStore::new(),
+                mail_engine::account::AccountStore::new(),
                 crate::avatars::Avatars::new(),
             ));
-            let mut message = crate::transport::parse_eml(
+            let mut message = mail_engine::transport::parse_eml(
                 format!("From: a@x\r\nSubject: S\r\nMessage-ID: <q@x>\r\n\r\n{body}").as_bytes(),
                 100,
                 Folder::Inbox,
@@ -2092,16 +2092,16 @@ mod tests {
         phase unread_earlier_messages_open_with_the_conversation;
         {
             let shared = MailState::shared(MailState::new_live(
-                crate::account::AccountStore::new(),
+                mail_engine::account::AccountStore::new(),
                 crate::avatars::Avatars::new(),
             ));
-            let first = crate::transport::parse_eml(
+            let first = mail_engine::transport::parse_eml(
                 &raw("a@x", "Plan", None, "Unread start."),
                 100,
                 Folder::Inbox,
             )
             .unwrap();
-            let reply = crate::transport::parse_eml(
+            let reply = mail_engine::transport::parse_eml(
                 &raw("c@x", "Re: Plan", Some("a@x"), "Latest."),
                 200,
                 Folder::Inbox,

@@ -19,7 +19,7 @@ use ui::theme::Theme;
 use ui::widget::{WebView, Widget};
 
 use crate::html_mail::{InlinePart, Policy, Prepared};
-use crate::model::MessageId;
+use mail_engine::model::MessageId;
 use ui::widget::DrawChild;
 
 const MIN_FIT: f64 = 0.401_877_572;

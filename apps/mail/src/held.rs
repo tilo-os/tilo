@@ -26,11 +26,11 @@ use ui::tilo_resource::{self, ActionCx, Bytes, Id, JsonSchema, Model, Refusal, S
 
 use crate::actions::bounded_text;
 use crate::message_states::MessageStates;
-use crate::model::{Addr, Folder, Message, MessageId, normalize_subject};
 use crate::resource::{
     MAX_DRAFT_ADDRESS_CHARS, MAX_DRAFT_BODY_CHARS, MAX_DRAFT_SUBJECT_CHARS, Mail, MessageState,
     folder_place_id,
 };
+use mail_engine::model::{Addr, Folder, Message, MessageId, normalize_subject};
 
 /// The most characters a `Message-ID` or conversation key holds.
 const MAX_KEY_CHARS: usize = 256;
@@ -330,7 +330,7 @@ impl HeldMessage {
     fn readable(&self, store: &tilo_content::ContentStore, folder: Folder) -> Option<Message> {
         let rest = self.original.as_ref()?.read(store)?;
         if self.parts.is_empty() {
-            return crate::transport::parse_eml(&rest, self.minutes, folder);
+            return mail_engine::transport::parse_eml(&rest, self.minutes, folder);
         }
         let shown = shown_in_place(&rest);
         // Every part shown in place is read even after one is missing, so all
@@ -355,12 +355,12 @@ impl HeldMessage {
             .zip(&self.parts)
             .filter_map(|(at, part)| Some(((*at)?, part.size)))
             .collect();
-        crate::transport::parse_eml_apart(&raw, self.minutes, folder, &apart)
+        mail_engine::transport::parse_eml_apart(&raw, self.minutes, folder, &apart)
     }
 
     /// The sender as an address.
     fn sender(&self) -> Addr {
-        crate::transport::parse_addr_list(&self.from)
+        mail_engine::transport::parse_addr_list(&self.from)
             .into_iter()
             .next()
             .unwrap_or_else(|| Addr::bare(self.from.clone()))
@@ -455,8 +455,8 @@ impl HeldMessage {
             rfc_message_id: Some(self.message_id.clone()),
             in_reply_to: self.in_reply_to.clone(),
             from: self.sender(),
-            to: crate::transport::parse_addr_list(&self.to),
-            cc: crate::transport::parse_addr_list(&self.cc),
+            to: mail_engine::transport::parse_addr_list(&self.to),
+            cc: mail_engine::transport::parse_addr_list(&self.cc),
             subject: self.subject.clone(),
             body: self.body.clone(),
             html_body: None,
@@ -464,7 +464,7 @@ impl HeldMessage {
                 .attachments
                 .iter()
                 .map(|attachment| {
-                    let mut shown = crate::model::Attachment::projected(
+                    let mut shown = mail_engine::model::Attachment::projected(
                         attachment.filename.clone(),
                         attachment.media_type.clone(),
                         attachment.size,
@@ -584,7 +584,7 @@ fn held_attachments(delivered: &[DeliveredAttachment]) -> Result<Vec<HeldAttachm
                 .map(str::trim)
                 .filter(|media_type| !media_type.is_empty())
                 .map_or_else(
-                    || crate::transport::mime_from_filename(&filename).to_owned(),
+                    || mail_engine::transport::mime_from_filename(&filename).to_owned(),
                     str::to_owned,
                 );
             Ok(HeldAttachment {
@@ -760,7 +760,7 @@ fn delivered_id(delivery: &Delivery) -> MessageId {
         .filter(|d| !d.trim().is_empty())
         .and_then(|date| minutes_of(date).ok());
     match (own, minutes) {
-        (Some(own), _) => crate::transport::stable_message_id(&own),
+        (Some(own), _) => mail_engine::transport::stable_message_id(&own),
         // Without a date it is dated as it lands, which the part reads.
         (None, Some(minutes)) => {
             derived_id(&[&from, &to, &cc, &subject, &body, &minutes.to_string()])
@@ -875,7 +875,7 @@ impl MessageStates {
             .filter(|key| !key.is_empty());
         let id = own_id.as_deref().map_or_else(
             || derived_id(&[&from, &to, &cc, &subject, &body, &minutes.to_string()]),
-            crate::transport::stable_message_id,
+            mail_engine::transport::stable_message_id,
         );
         let original = delivery
             .original
@@ -1226,7 +1226,7 @@ impl MessageStates {
     /// (shown as text until then); `whole` names those shown so.
     pub(crate) fn show_held(
         &self,
-        mailbox: &mut crate::model::Mailbox,
+        mailbox: &mut mail_engine::model::Mailbox,
         store: Option<&tilo_content::ContentStore>,
         whole: &mut std::collections::HashSet<MessageId>,
     ) {
@@ -1343,7 +1343,7 @@ pub(crate) fn draft_summary(id: &str, draft: &crate::resource::DraftState) -> se
 
 /// A held message's label: subject, sender and date, as a fetched one's.
 fn label_of(subject: &str, from: &str, minutes: i64) -> String {
-    let sender = crate::transport::parse_addr_list(from)
+    let sender = mail_engine::transport::parse_addr_list(from)
         .into_iter()
         .next()
         .unwrap_or_else(|| Addr::bare(from.to_owned()));
@@ -1378,7 +1378,7 @@ pub(crate) struct Drafted {
     pub subject: String,
     pub body: String,
     pub in_reply_to: Option<String>,
-    pub sender: Option<crate::model::DraftSender>,
+    pub sender: Option<mail_engine::model::DraftSender>,
     pub notes: String,
 }
 
@@ -1559,7 +1559,7 @@ fn markdown(messages: &[(&Id, &HeldMessage)]) -> String {
 /// One message as an RFC 5322 file.
 fn eml(held: &HeldMessage) -> Result<Box<dyn std::io::Read>, String> {
     fn addresses(list: &str) -> Vec<mail_builder::headers::address::Address<'static>> {
-        crate::transport::parse_addr_list(list)
+        mail_engine::transport::parse_addr_list(list)
             .into_iter()
             .map(|addr| mail_builder::headers::address::Address::new_address(addr.name, addr.email))
             .collect()

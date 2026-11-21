@@ -9,7 +9,7 @@ use ui::tilo_resource::{self, RowBindings, SearchEntry};
 
 use super::{MailApp, Mailroom};
 use crate::actions::MailEffect;
-use crate::model::{Draft, DraftSender};
+use mail_engine::model::{Draft, DraftSender};
 
 /// One exact recipient choice, published as a row of the `mail.contact-draft`
 /// type: every value the draft it prepares takes is the row's own.
@@ -97,7 +97,10 @@ pub(crate) fn contact_draft_status(choice: &Choice, id: &str) -> Vec<EffectStatu
     ]
 }
 
-fn choices(directory: &ContactDirectory, accounts: &[crate::account::Account]) -> Vec<Choice> {
+fn choices(
+    directory: &ContactDirectory,
+    accounts: &[mail_engine::account::Account],
+) -> Vec<Choice> {
     let mut choices = Vec::new();
     for hint in directory.email_hints() {
         for account in accounts {
@@ -270,9 +273,9 @@ mod tests {
         app.shared.borrow_mut().accounts.accounts = ["work@example.test", "personal@example.test"]
             .into_iter()
             .map(|email| {
-                crate::account::Account::new(crate::model::AccountConfig {
+                mail_engine::account::Account::new(mail_engine::model::AccountConfig {
                     email: email.into(),
-                    ..crate::model::AccountConfig::default()
+                    ..mail_engine::model::AccountConfig::default()
                 })
             })
             .collect();
@@ -485,7 +488,7 @@ mod tests {
             app.shared
                 .borrow()
                 .mailbox
-                .count(crate::model::Folder::Drafts),
+                .count(mail_engine::model::Folder::Drafts),
             1
         );
         app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
@@ -500,7 +503,7 @@ mod tests {
             app.shared
                 .borrow()
                 .mailbox
-                .count(crate::model::Folder::Drafts),
+                .count(mail_engine::model::Folder::Drafts),
             1
         );
         app.shared.borrow_mut().accounts.set_active(1);
@@ -518,11 +521,12 @@ mod tests {
         app.shared.borrow_mut().accounts.accounts = ["first-service", "second-service"]
             .into_iter()
             .map(|id| {
-                let mut account = crate::account::Account::new(crate::model::AccountConfig {
-                    email: "same@example.test".into(),
-                    username: id.into(),
-                    ..crate::model::AccountConfig::default()
-                });
+                let mut account =
+                    mail_engine::account::Account::new(mail_engine::model::AccountConfig {
+                        email: "same@example.test".into(),
+                        username: id.into(),
+                        ..mail_engine::model::AccountConfig::default()
+                    });
                 account.id = id.into();
                 account
             })
@@ -550,7 +554,8 @@ mod tests {
             rx: incoming_rx,
         });
         app.deliver(outgoing.clone(), Box::new(|_| {}));
-        let crate::engine::EngineRequest::Send { account, .. } = rx.try_recv().unwrap() else {
+        let mail_engine::engine::EngineRequest::Send { account, .. } = rx.try_recv().unwrap()
+        else {
             panic!("expected the production send request");
         };
         assert_eq!(
@@ -642,7 +647,8 @@ mod tests {
                 .bcc,
             existing.bcc
         );
-        let mut compose = crate::compose::ComposeWindow::new(crate::model::ComposeFormat::Text);
+        let mut compose =
+            crate::compose::ComposeWindow::new(mail_engine::model::ComposeFormat::Text);
         let draft = Draft {
             to: choice.email,
             sender: Some(DraftSender {

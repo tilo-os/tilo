@@ -8,8 +8,10 @@ use std::sync::Arc;
 use ui::framework::testing::TestApp;
 use ui::time::testing::SharedWall;
 
-use crate::fake_servers::{FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config};
 use crate::resource::{MailShell, read_mail};
+use mail_engine::fake_servers::{
+    FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config,
+};
 use settings::panes::accounts::AccountsEffect;
 
 const ME: &str = "office@company.example";
@@ -150,16 +152,16 @@ fn peers() -> Peers {
     let mut device = Window::on_device("laptop").unwrap();
     {
         let app = mail(&mut device);
-        app.ownership = Some(crate::account_secrets::SecretRelease::kept_under(
+        app.ownership = Some(mail_engine::account_secrets::SecretRelease::kept_under(
             vault.path().to_path_buf(),
         ));
-        let engine = crate::engine::live::LiveEngine::trusting(
+        let engine = mail_engine::engine::live::LiveEngine::trusting(
             tilo_content::ContentStore::memory(),
             Arc::new(|| {}),
             accepting_client_config(),
         )
         .unwrap();
-        let (tx, rx) = crate::engine::spawn_with(Box::new(engine));
+        let (tx, rx) = mail_engine::engine::spawn_with(Box::new(engine));
         app.state().engine = Some(crate::app::EngineHandle { tx, rx });
         app.follow_person_accounts(accounts.clone());
     }

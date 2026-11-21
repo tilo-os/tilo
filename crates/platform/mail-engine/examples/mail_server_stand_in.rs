@@ -2,7 +2,7 @@
 //! servers this app's own tests use, on loopback ports, with a few messages in the inbox.
 //!
 //! ```text
-//! cargo build -p mail --features fake-servers --example mail_server_stand_in
+//! cargo build -p mail-engine --features fake-servers --example mail_server_stand_in
 //! target/debug/examples/mail_server_stand_in CERTIFICATE_FILE PORTS_FILE [SUBMISSION_PORT]
 //! ```
 //!
@@ -43,10 +43,10 @@ fn main() {
             std::process::exit(1);
         });
     runtime.block_on(async move {
-        let (tls, certificate) = mail::fake_servers::server_identity();
+        let (tls, certificate) = mail_engine::fake_servers::server_identity();
         let imap =
-            mail::fake_imap::FakeImap::start(mail::fake_imap::Layout::Plain, tls.clone()).await;
-        let smtp = mail::fake_servers::FakeSmtp::start(tls).await;
+            mail_engine::fake_imap::FakeImap::start(mail_engine::fake_imap::Layout::Plain, tls.clone()).await;
+        let smtp = mail_engine::fake_servers::FakeSmtp::start(tls).await;
         for (number, (subject, body)) in INBOX.iter().enumerate() {
             imap.append(
                 "INBOX",
