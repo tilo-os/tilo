@@ -31,8 +31,6 @@ use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
 use crate::file_watch::FileChanges;
 use tilo_lock::MutexRecover as _;
 
-mod legacy;
-
 /// Identifies a version of the file (so an unchanged file costs one `stat`), including the inode since a rename-over-target producer can collide on length + mtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Stamp {
@@ -84,9 +82,8 @@ impl CapabilityFile {
     ///
     /// # Errors
     ///
-    /// Returns [`CapsError::Read`] when `path` cannot be opened or stat'd,
-    /// [`CapsError::Parse`] when its contents are not an [`collab_types::FsAuthority`],
-    /// and [`CapsError::Superseded`] when older fields have no unambiguous equivalent.
+    /// Returns [`CapsError::Read`] when `path` cannot be opened or stat'd, or
+    /// [`CapsError::Parse`] when its contents are not an [`collab_types::FsAuthority`].
     pub fn load(
         path: impl Into<PathBuf>,
         identity: IdentityKey,
@@ -222,22 +219,14 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError
     Ok((authority.capabilities, stamp))
 }
 
-/// The file authority `bytes` hold, also accepting durable capabilities
-/// written by earlier releases.
+/// The file authority `bytes` hold.
 /// # Errors
-/// [`CapsError::Parse`] for a malformed file, or [`CapsError::Superseded`] for
-/// older capabilities with no unambiguous equivalent.
+/// [`CapsError::Parse`] for a malformed file.
 pub fn authority(bytes: &[u8], path: &Path) -> Result<collab_types::FsAuthority, CapsError> {
-    let parse = |source| CapsError::Parse {
+    serde_json::from_slice(bytes).map_err(|source| CapsError::Parse {
         path: path.to_path_buf(),
         source,
-    };
-    let mut value: serde_json::Value = serde_json::from_slice(bytes).map_err(parse)?;
-    legacy::translate(&mut value).map_err(|detail| CapsError::Superseded {
-        path: path.to_path_buf(),
-        detail,
-    })?;
-    serde_json::from_value(value).map_err(parse)
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -254,8 +243,6 @@ pub enum CapsError {
         #[source]
         source: serde_json::Error,
     },
-    #[error("capability list {path} has older data that cannot be translated: {detail}")]
-    Superseded { path: PathBuf, detail: String },
 }
 
 #[cfg(test)]
@@ -435,83 +422,7 @@ mod tests {
                     CapabilityFile::load(&path, ALICE, Vec::new()).expect("an empty list is valid");
                 assert!(!file.handle().permits(&ALICE, "/", Access::Read));
             }
-            {
-                // The old runtime never persisted one-use capabilities. A
-                // leftover one must not renew when the filesystem restarts.
-                let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("caps.json");
-                std::fs::write(
-                    &path,
-                    br#"{"capabilities":[{"grantee":{"member":{"person":"local"}},
-                        "scope":{"FsPath":"/"},"effect":"Grant","access":"Write",
-                        "id":"once","expiry":"AfterUse"}]}"#,
-                )
-                .unwrap();
-                let error = CapabilityFile::load(&path, ALICE, Vec::new())
-                    .expect_err("a one-use capability must not renew on restart");
-                assert!(
-                    matches!(error, CapsError::Superseded { .. }),
-                    "got {error:?}"
-                );
-                let message = error.to_string();
-                assert!(
-                    message.contains("AfterUse"),
-                    "the refusal must identify the unsupported expiry: {message}"
-                );
-            }
         }
-    }
-
-    #[test]
-    fn the_mount_keeps_grants_and_restrictions_from_an_older_image() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("caps.json");
-        let deadline = tilo_clock::unix_now().saturating_add(60);
-        let bytes = serde_json::to_vec(&serde_json::json!({"capabilities": [
-            {
-                "subject": {"Principal": {"Person": "local"}},
-                "scope": {"FsPath": "/"},
-                "effect": "Grant",
-                "access": "Write",
-                "id": "local-session-workspace",
-                "expiry": "Never",
-                "granted_by": null
-            },
-            {
-                "subject": {"Principal": {"Person": "local"}},
-                "scope": {"FsPath": "/private"},
-                "effect": "Restrict",
-                "access": "Read",
-                "id": "private-until",
-                "expiry": {"AtUnix": deadline},
-                "granted_by": {"Person": "local"}
-            },
-            {
-                "grantee": {"member": {"person": "local"}},
-                "scope": {"FsPath": "/expired"},
-                "effect": "Restrict",
-                "access": "Read",
-                "id": "expired",
-                "expiry": {"AtUnix": 1}
-            }
-        ]}))
-        .unwrap();
-        std::fs::write(&path, &bytes).unwrap();
-        let caps = authority(&bytes, &path).unwrap().capabilities;
-        assert_eq!(
-            caps[1].lifetime,
-            tilo_action_policy::Lifetime::Until(deadline.saturating_mul(1000))
-        );
-        assert_eq!(caps[1].granted_by, Some(MemberId::person("local")));
-
-        let file = CapabilityFile::load(&path, ALICE, vec![MemberId::person("local")]).unwrap();
-        let handle = file.handle();
-        assert!(handle.permits(&ALICE, "/shared/file", Access::Write));
-        assert!(handle.permits(&ALICE, "/private/file", Access::Read));
-        assert!(!handle.permits(&ALICE, "/private/file", Access::Write));
-        assert!(handle.permits(&ALICE, "/expired/file", Access::Write));
-        assert!(!handle.permits(&[0xB2; 32], "/shared/file", Access::Read));
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     /// Waits until `holds` is true, which only the file watch can make so.
