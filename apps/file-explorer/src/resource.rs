@@ -194,7 +194,13 @@ fn queue(
     if device.trim().is_empty() {
         return Err(Refusal::new("the device whose files change is named"));
     }
-    ops.push(cx.id(), FileTask { device, op });
+    let id = cx.id();
+    // The change is about the file it changes, which the record holds no
+    // item of: History says which file, not only which folder.
+    if let Some(changed) = op.changed() {
+        cx.named(id.as_str(), changed);
+    }
+    ops.push(id, FileTask { device, op });
     ops.prune(KEPT_OPS);
     Ok(())
 }

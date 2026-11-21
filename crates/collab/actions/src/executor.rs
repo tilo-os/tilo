@@ -432,7 +432,7 @@ fn apply_under_envelope(
     action: &dyn Action,
     env: &ActionEnvelope,
     content: Option<&tilo_content::ContentStore>,
-) -> Result<(), ActionError> {
+) -> Result<Option<crate::entry::ActionItem>, ActionError> {
     let prev_actor = doc.get_actor().clone();
     // `get_heads`/`set_actor` both close any open transaction, so we
     // start from a clean commit boundary and the action's ops land in
@@ -446,11 +446,22 @@ fn apply_under_envelope(
         abort_pinned_change(doc, prev_actor);
         return Err(e);
     }
+    let mut made = None;
     if doc.pending_ops() > 0 {
         // The action produced ops: commit as the pinned actor's single
         // change under the pinned timestamp, content-addressed identical on
-        // origin and every replaying replica.
-        commit_pinned(doc, env);
+        // origin and every replaying replica. A step that said what it did
+        // but named no item made one the document before it lacked: the item
+        // it made is what the change is about, and is read now that it is
+        // written. Only the origin reads it: a replica replays the change
+        // under the entry it was recorded with, so a change older than this
+        // rule keeps the words it was written with.
+        made = env
+            .context
+            .as_ref()
+            .filter(|context| !is_replaying() && context.what.is_some() && context.item.is_none())
+            .and_then(|_| action.made(doc));
+        commit_pinned(doc, env, made.as_ref());
         doc.set_actor(prev_actor);
         crate::content::keep(env, content);
     } else {
@@ -459,21 +470,44 @@ fn apply_under_envelope(
         // function docs). Leave the document exactly as the action found it.
         abort_pinned_change(doc, prev_actor);
     }
-    Ok(())
+    Ok(made)
 }
 
 /// Commit the doc's open transaction as `env`'s change: under its pinned
-/// time, with the message its context writes.
-fn commit_pinned(doc: &mut Doc, env: &ActionEnvelope) {
+/// time, with the message its context writes. `made` is the item the action
+/// made that its description could not name, which the message names.
+fn commit_pinned(doc: &mut Doc, env: &ActionEnvelope, made: Option<&crate::entry::ActionItem>) {
+    let named = made.and_then(|item| {
+        let context = env.context.as_ref()?;
+        Some(
+            context
+                .clone()
+                .with_described(context.described()?.on(item.id.clone(), item.label.clone())),
+        )
+    });
+    let context = named.as_ref().or(env.context.as_ref());
     let mut options = CommitOptions::default().with_time(env.timestamp);
-    if let Some(message) = env
-        .context
-        .as_ref()
-        .and_then(|context| entry_message(doc, &env.actor(), context))
-    {
+    if let Some(message) = context.and_then(|context| entry_message(doc, &env.actor(), context)) {
         options = options.with_message(message);
     }
     doc.commit_with(options);
+}
+
+/// `env` with the item `made` its change names, when it described one it
+/// could not name before it applied: what a caller that replicates or
+/// answers the change reads, as the change itself records it.
+fn named(mut env: ActionEnvelope, made: Option<crate::entry::ActionItem>) -> ActionEnvelope {
+    if let Some(item) = made
+        && let Some(context) = env.context.as_ref()
+        && let Some(described) = context.described()
+    {
+        env.context = Some(
+            context
+                .clone()
+                .with_described(described.on(item.id, item.label)),
+        );
+    }
+    env
 }
 
 /// The message `context` is written with by `actor` on `doc`: as the
@@ -673,8 +707,8 @@ pub fn apply_local_by(
     actor: Option<&[u8]>,
 ) -> Result<ActionEnvelope, ActionError> {
     let env = envelope_for(doc, action, encoded, actor, None, Before::Doc)?;
-    apply_under_envelope(doc, action, &env, None)?;
-    Ok(env)
+    let made = apply_under_envelope(doc, action, &env, None)?;
+    Ok(named(env, made))
 }
 
 /// [`apply_local`], with semantic provenance embedded in the resulting
@@ -692,8 +726,8 @@ pub fn apply_local_with_context(
     context: ActionContext,
 ) -> Result<ActionEnvelope, ActionError> {
     let env = envelope_for(doc, action, encoded, actor, Some(context), Before::Doc)?;
-    apply_under_envelope(doc, action, &env, None)?;
-    Ok(env)
+    let made = apply_under_envelope(doc, action, &env, None)?;
+    Ok(named(env, made))
 }
 
 /// Commit what `action` already wrote, the doc's open transaction under
@@ -732,7 +766,7 @@ pub fn commit_written(
         Some(context),
         Before::Written(described.map(Box::new)),
     )?;
-    commit_pinned(doc, &env);
+    commit_pinned(doc, &env, None);
     Ok(env)
 }
 
@@ -771,7 +805,7 @@ pub fn replay_decoded(
     let base_heads = env.base_change_hashes();
     if doc.get_heads() == base_heads {
         validate_compensation(doc, action, env)?;
-        return apply_under_envelope(doc, action, env, content);
+        return apply_under_envelope(doc, action, env, content).map(drop);
     }
 
     // The live replica may already contain concurrent work made after the
@@ -784,7 +818,7 @@ pub fn replay_decoded(
     // transport can retry once it has the missing base changes.
     let mut replay_base = doc.fork_at(&base_heads)?;
     validate_compensation(&mut replay_base, action, env)?;
-    apply_under_envelope(&mut replay_base, action, env, content)?;
+    apply_under_envelope(&mut replay_base, action, env, content).map(drop)?;
     doc.merge_incoming(&mut replay_base)?;
     Ok(())
 }
@@ -1051,7 +1085,8 @@ fn dispatch_by_maybe_context(
     match action.locus() {
         ExecutionLocus::ClientLocal => {
             let env = envelope_for(doc, action, encoded, actor, context, Before::Doc)?;
-            apply_under_envelope(doc, action, &env, None)?;
+            let made = apply_under_envelope(doc, action, &env, None)?;
+            let env = named(env, made);
             transport.replicate(&env);
             Ok(Dispatched::AppliedLocal(env))
         }

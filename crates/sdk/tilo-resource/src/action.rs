@@ -195,6 +195,21 @@ impl ActionCx {
         uuid
     }
 
+    /// Name the item this change is about, when the record holds no item for
+    /// it: the file a device will write, the entry the action queued. History
+    /// says the change by `label`, which is what a person reads, under `id`:
+    /// the id the change carries, which need not be a resource the app can
+    /// open. A change that makes or edits an item of the record itself says
+    /// so already, and keeps that item.
+    pub fn named(&mut self, id: impl Into<String>, label: impl Into<String>) {
+        NAMED.with(|named| {
+            named.borrow_mut().replace(tilo_actions::ActionItem {
+                id: id.into(),
+                label: label.into(),
+            });
+        });
+    }
+
     /// The name software acting for someone (an agent, an app) acted under, as
     /// the host that admitted it named it; empty for a person.
     #[must_use]
@@ -261,6 +276,11 @@ thread_local! {
     /// collection: the collection map each item's id was made a key of.
     static ENTRIES: std::cell::RefCell<std::collections::HashMap<String, automerge::ObjId>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The item the action applying last on this thread said its change is
+    /// about, when the record holds no item for it (a file on a device): what
+    /// history names the change by.
+    static NAMED: std::cell::RefCell<Option<tilo_actions::ActionItem>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// An action starts applying on this thread: nothing minted or made before
@@ -268,6 +288,7 @@ thread_local! {
 pub(crate) fn start_minting() {
     drop(take_minted());
     ENTRIES.with(|entries| entries.borrow_mut().clear());
+    NAMED.with(|named| named.borrow_mut().take());
 }
 
 /// Note that the action applying on this thread made the entry of the item
@@ -284,6 +305,19 @@ pub(crate) fn note_entry(map: &automerge::ObjId, id: &str) {
 #[must_use]
 pub fn minted_entry(id: &str) -> Option<automerge::ObjId> {
     ENTRIES.with(|entries| entries.borrow().get(id).cloned())
+}
+
+/// The item the action applying last on this thread named as its change's
+/// ([`ActionCx::named`]), if it named one.
+pub(crate) fn named_item() -> Option<tilo_actions::ActionItem> {
+    NAMED.with_borrow(Clone::clone)
+}
+
+/// The ids the action applying last on this thread minted, as it minted
+/// them: for reading what it made, without taking them from whoever answers
+/// its caller ([`take_minted`]).
+pub(crate) fn minted_so_far() -> Vec<String> {
+    MINTED.with_borrow(Clone::clone)
 }
 
 /// Note `id` among the ids the action applying on this thread minted, for
@@ -1666,6 +1700,14 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         }
         let value = crate::__private::json_via_bytes(&self.operation).ok()?;
         crate::describe::verb(doc, shape, O::KIND, &value)
+    }
+
+    /// The item this verb made, read once it wrote: the record's item it
+    /// added (a note, an issue, a message), or the item the app named as it
+    /// ran (a file a device will write). The document before the verb applied
+    /// held neither, so [`Self::describe`] could not name it.
+    fn made(&self, doc: &Doc) -> Option<tilo_actions::ActionItem> {
+        crate::describe::made::<O::Record>(doc)
     }
 }
 

@@ -220,13 +220,13 @@ def steps(story: Story) -> None:
         # Its History lists the workspace's changes. A row of that list is no control the shell
         # names, so what it lists is read from the feed the window draws: the session's
         # `tilo.activity` history of the workspace, each change with its author.
-        # Each of the agent's changes, as History words it: what was done, in which app's
-        # resource. A row names the item where it can (the note's title); where it does not, the
-        # item is said beside the row's words in the failure.
-        changes = {f"the file {FILE}": ("write file", "folder"),
-                   f"the issue “{TASK}”": ("create", "issues"),
-                   f"the note “{NOTE}”": ("new note", "notes"),
-                   "the message": ("post", "messages")}
+        # Each of the agent's changes, as History words it: what was done, naming the item it
+        # changed (the file's name, the issue's title, the note's title, the message's words). A
+        # row that names no item is said in the failure.
+        changes = {f"the file {FILE}": ("write file", FILE),
+                   f"the issue “{TASK}”": ("create", TASK),
+                   f"the note “{NOTE}”": ("new note", NOTE),
+                   "the message": ("post", CHAT)}
 
         def feed() -> list[dict]:
             answer = ada.session.invoke(ACTIVITY_PROVIDER, f"{ACTIVITY_RESOURCE}\u001ffeed",
@@ -240,9 +240,9 @@ def steps(story: Story) -> None:
             return value["entries"]
 
         def about(entry: dict, change: tuple[str, str]) -> bool:
-            done, where = change
-            return (str(entry.get("summary") or "").lower().startswith(done)
-                    and where in str(entry.get("resource") or "").lower())
+            done, item = change
+            summary = str(entry.get("summary") or "").lower()
+            return summary.startswith(done) and item.lower() in summary
 
         def listed():
             entries = feed()

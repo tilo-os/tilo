@@ -1693,4 +1693,47 @@ tilo_test_env::scenario! {
         assert_eq!(change["device"], "laptop", "{read}");
         assert_eq!(change["settled"]["state"], "done", "{read}");
     }
+
+    phase a_write_names_the_file_it_changes;
+    {
+        // The record holds no item for a file on a device: the change names
+        // the file itself, so History says which file was written, not only
+        // which folder.
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().display().to_string();
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let before = app.versions().len();
+        let kind = <FileExplorer as ui::tilo_resource::Resource>::KIND;
+        let agent = ui::tilo_actions::ActionInvoker::agent("claude").acting_for("ada");
+        app.call_by(
+            agent,
+            kind,
+            "write-file",
+            serde_json::json!({
+                "device": "laptop",
+                "folder": folder,
+                "name": "agent-notes.md",
+                "text": "# Notes from your agent\n",
+            }),
+        )
+        .unwrap_or_else(|error| panic!("write-file: {error:?}"));
+        app.settle();
+        let entry = app
+            .versions()
+            .into_iter()
+            .skip(before)
+            .filter_map(|version| version.context)
+            .find(|entry| {
+                matches!(
+                    &entry.what,
+                    Some(ui::tilo_actions::Did::Verb(verb)) if verb.action.action == "write-file"
+                )
+            })
+            .expect("the write is one change");
+        let item = entry
+            .item
+            .as_ref()
+            .expect("the change names the file it writes");
+        assert_eq!(item.label, format!("{folder}/agent-notes.md"));
+    }
 }

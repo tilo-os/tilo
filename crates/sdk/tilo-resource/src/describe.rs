@@ -1,6 +1,7 @@
 //! What a record's actions did, as history records it: read from the
 //! document before the action applies, through the record's stored shape,
-//! without reading the record whole.
+//! without reading the record whole — and, for an item the action makes, from
+//! the document once it wrote it.
 
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_actions::{ActionKey, Described, Did, FieldEdit, PathStep, Scalar};
@@ -468,4 +469,50 @@ fn item_named(
         }
     }
     None
+}
+
+/// The item the action applying last on this thread made, named as a person
+/// reads it: the entry it added to one of the record's collections, with the
+/// label the record gives that item, or the item the app named as it ran
+/// ([`crate::ActionCx::named`]). `None` when it made no such item, or the
+/// item has no name of its own: a change that names nothing keeps the words
+/// its description read before it applied.
+pub(crate) fn made<R: crate::Model>(doc: &Doc) -> Option<tilo_actions::ActionItem> {
+    if let Some(named) = crate::action::named_item() {
+        return Some(named);
+    }
+    for id in crate::action::minted_so_far() {
+        let Some(map) = crate::action::minted_entry(&id) else {
+            continue;
+        };
+        let Some((shape, keyed)) = collection_of::<R>(doc, &map) else {
+            continue;
+        };
+        let item = if keyed {
+            map_at(doc, &map, &id)
+        } else {
+            map_at(doc, &map, &id).and_then(|entry| map_at(doc, &entry, "v"))
+        };
+        let Some(label) = item.and_then(|item| label_of(doc, shape, &item)) else {
+            continue;
+        };
+        return Some(tilo_actions::ActionItem { id, label });
+    }
+    None
+}
+
+/// The collection of the record of type `R` whose map in `doc` is `map`: the
+/// shape its items have, and whether it stores them keyed.
+fn collection_of<R: crate::Model>(doc: &Doc, map: &ObjId) -> Option<(Shape, bool)> {
+    let Shape::Record(fields) = R::SHAPE else {
+        return None;
+    };
+    fields.iter().find_map(|field| {
+        let (item, keyed) = match field.shape {
+            Shape::Collection(item) => (*item, false),
+            Shape::Keyed(item) => (*item, true),
+            _ => return None,
+        };
+        (map_at(doc, &ROOT, field.key).as_ref() == Some(map)).then_some((item, keyed))
+    })
 }

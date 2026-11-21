@@ -256,6 +256,43 @@ fn a_verbs_change_names_its_item_by_one_line() {
     );
 }
 
+/// A verb that makes an item names it, though the record before it applied
+/// held none: the change it commits says which item it made, as History and
+/// every replica read it.
+#[test]
+fn a_verbs_change_names_the_item_it_makes() {
+    let mut shelf = Replica::<Shelf>::new();
+    let made = shelf
+        .apply(Shelf::ADD.with(("Plan the launch".to_owned(), None)))
+        .unwrap();
+    let item = made
+        .context
+        .as_ref()
+        .and_then(|entry| entry.item.as_ref())
+        .expect("the change names the card it made")
+        .clone();
+    assert_eq!(item.label, "Plan the launch");
+    // The change itself records it: what a peer verifies and a History lists.
+    let recorded = shelf
+        .versions()
+        .into_iter()
+        .rev()
+        .find_map(|version| version.context)
+        .and_then(|entry| entry.item)
+        .expect("the committed change names the card");
+    assert_eq!(recorded.id, item.id);
+    assert_eq!(recorded.label, "Plan the launch");
+    assert!(
+        shelf
+            .state()
+            .unwrap()
+            .cards
+            .get(&Id::from_raw(recorded.id))
+            .is_some(),
+        "the item it names is the card the shelf holds"
+    );
+}
+
 fn published(replica: &Replica<Shelf>) -> tilo_actions::ResourceSpec {
     tilo_resource::publish::<Shelf>("shelf", "Shelf", &replica.state().unwrap())
 }

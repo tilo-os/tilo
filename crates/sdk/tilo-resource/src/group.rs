@@ -192,6 +192,14 @@ where
         })
     }
 
+    /// The first item a member made, which the members' descriptions read
+    /// before they applied could not name.
+    fn made(&self, doc: &Doc) -> Option<tilo_actions::ActionItem> {
+        self.members()
+            .into_iter()
+            .find_map(|member| member.made(doc))
+    }
+
     fn locus(&self) -> ExecutionLocus {
         self.actions
             .first()

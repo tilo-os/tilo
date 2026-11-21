@@ -331,6 +331,17 @@ pub trait Action: std::fmt::Debug {
         let _ = doc;
         None
     }
+
+    /// The item this value made, read from `doc` with its writes as an open
+    /// transaction: what history names a change that creates something by
+    /// ("Created ‘Spring plans’"), which `doc` before the value applied could
+    /// not name because the item did not exist yet. `None` when the value
+    /// made no item of its own, or names none itself; the executor then keeps
+    /// the description it read before the value applied.
+    fn made(&self, doc: &Doc) -> Option<crate::entry::ActionItem> {
+        let _ = doc;
+        None
+    }
 }
 
 /// Whether Undo takes back a value with these facts: it changes the document

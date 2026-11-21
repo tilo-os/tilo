@@ -134,6 +134,45 @@ impl Default for FileOp {
     }
 }
 
+impl FileOp {
+    /// The one path this changes, as a person reads it in History: the file
+    /// written, the folder made, extracted into or compressed, the entry
+    /// renamed, trashed, moved or copied. `None` for an operation of several
+    /// entries, or one that changes no path a person names.
+    #[must_use]
+    pub fn changed(&self) -> Option<String> {
+        let in_folder = |folder: &str, name: &str| {
+            let folder = folder.trim_end_matches('/');
+            Some(if folder.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{folder}/{name}")
+            })
+        };
+        match self {
+            Self::NewFolder { parent, name } => in_folder(parent, name),
+            Self::Write { folder, name, .. } | Self::Compress { folder, name, .. } => {
+                in_folder(folder, name)
+            }
+            Self::Rename { path, name } => {
+                let folder = path.rsplit_once('/').map(|(folder, _)| folder)?;
+                in_folder(folder, name)
+            }
+            Self::Trash { paths } | Self::Move { paths, .. } | Self::Copy { paths, .. } => {
+                match paths.as_slice() {
+                    [one] => Some(one.clone()),
+                    _ => None,
+                }
+            }
+            Self::Extract { folder, .. } => Some(folder.clone()),
+            Self::ImportMounted { .. }
+            | Self::CloudImport { .. }
+            | Self::ClipboardReceipt { .. }
+            | Self::Revert { .. } => None,
+        }
+    }
+}
+
 pub type Outcome = Settled<Vec<Change>>;
 
 fn text(path: &Path) -> String {
