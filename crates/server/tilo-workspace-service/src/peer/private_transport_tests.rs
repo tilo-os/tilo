@@ -2,6 +2,8 @@ use super::*;
 
 /// Remote actions: who may still act, and what acting costs.
 mod remote_action_tests;
+/// Invocations run as the key that signed them.
+mod signed_invocation_tests;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,

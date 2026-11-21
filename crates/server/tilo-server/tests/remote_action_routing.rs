@@ -160,7 +160,17 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let b_client = subscribed(addr.clone(), &user, &b).await;
         let c_client = subscribed(addr, &user, &c).await;
 
-        let request = frame(invoke(InvocationId::new()));
+        // Signed by A as its session signs it, so what B reads is A's frame byte for byte.
+        let mut asked = invoke(InvocationId::new());
+        tilo_server_protocol::invocation::sign_message_now(
+            &WS.to_string(),
+            &mut asked,
+            &a.cert,
+            &a.sk,
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        let request = frame(asked);
         a_client
             .send(directed(b.device_pubkey(), request.clone()))
             .unwrap();

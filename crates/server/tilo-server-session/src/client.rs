@@ -69,6 +69,74 @@ pub struct ServerClient {
     /// Who the host had to prove to be, for the entries this device makes on
     /// the session's connection ([`Self::entrance`]).
     server: Option<ExpectedServer>,
+    /// This device's certificate and the key that signs as it, for a session
+    /// that was handed a key that signs at once: each invocation it sends is
+    /// signed here ([`Self::send`]). A session over a key that signs only later
+    /// (a browser's) is handed signed invocations by the session above it.
+    invoker: Option<Invoker>,
+}
+
+/// The key a session signs its invocations with, and its certificate.
+#[derive(Clone)]
+struct Invoker {
+    cert: DeviceCert,
+    signer: Arc<dyn DeviceSigner>,
+}
+
+impl Invoker {
+    /// `env` with the invocation it carries signed by this device, unless it
+    /// carries one this device signed already. Every other envelope goes as
+    /// it is.
+    fn sign(&self, env: Envelope) -> Result<Envelope, Box<Envelope>> {
+        use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+        let Envelope::RemoteAction {
+            workspace_id,
+            version,
+            to_device_public_key,
+            from_device_public_key,
+            from_user_public_key,
+            frame,
+        } = env
+        else {
+            return Ok(env);
+        };
+        let own = self.cert.device_public_key;
+        let signed = match RemoteActionFrame::decode(&frame) {
+            Ok(mut decoded) => match &decoded.message {
+                RemoteActionMessage::Invoke(request)
+                    if request
+                        .signed
+                        .as_ref()
+                        .is_none_or(|signed| signed.statement().signer != own) =>
+                {
+                    tilo_server_protocol::invocation::sign_message_now(
+                        &workspace_id.to_string(),
+                        &mut decoded.message,
+                        &self.cert,
+                        self.signer.as_ref(),
+                        tilo_clock::unix_now_ns(),
+                    )
+                    .ok()
+                    .and_then(|()| decoded.encode().ok())
+                }
+                _ => Some(frame.clone()),
+            },
+            // A frame that does not decode is the host's to refuse.
+            Err(_) => Some(frame.clone()),
+        };
+        let envelope = |frame| Envelope::RemoteAction {
+            workspace_id,
+            version,
+            to_device_public_key,
+            from_device_public_key,
+            from_user_public_key,
+            frame,
+        };
+        match signed {
+            Some(signed) => Ok(envelope(signed)),
+            None => Err(Box::new(envelope(frame))),
+        }
+    }
 }
 
 /// Where a device in a session with its host makes another entry
@@ -605,7 +673,7 @@ impl ServerClient {
         server_addr: EndpointAddr,
         own_user_public_key: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
+        own_sk: impl DeviceSigner + 'static,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_with_server_trust(
@@ -635,7 +703,7 @@ impl ServerClient {
         endpoint: Endpoint,
         server_addr: EndpointAddr,
         own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
+        own_sk: impl DeviceSigner + 'static,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_with_server_trust(
@@ -696,7 +764,7 @@ impl ServerClient {
         expected_server_user: Option<[u8; 32]>,
         expected_server_device: Option<[u8; 32]>,
         own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
+        own_sk: impl DeviceSigner + 'static,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_version(
@@ -708,13 +776,14 @@ impl ServerClient {
                 interactive_scope: None,
             },
             ClientCredentials {
-                cert: own_cert,
+                cert: own_cert.clone(),
                 signer: &own_sk,
                 revocations,
                 entering: None,
             },
         )
         .await
+        .map(|client| client.signing_as(own_cert, own_sk))
     }
 
     /// Dial with the same certificate and endpoint pinning as an enrolled
@@ -726,7 +795,7 @@ impl ServerClient {
         expected_server_user: [u8; 32],
         expected_server_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
+        own_sk: impl DeviceSigner + 'static,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         Self::connect_version(
@@ -738,13 +807,14 @@ impl ServerClient {
                 interactive_scope: None,
             },
             ClientCredentials {
-                cert: own_cert,
+                cert: own_cert.clone(),
                 signer: &own_sk,
                 revocations,
                 entering: None,
             },
         )
         .await
+        .map(|client| client.signing_as(own_cert, own_sk))
     }
 
     /// Connect to `expected_device`, one of this person's own devices
@@ -764,7 +834,7 @@ impl ServerClient {
         own_user: [u8; 32],
         expected_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
+        own_sk: impl DeviceSigner + 'static,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         if own_cert.user_public_key != own_user {
@@ -779,13 +849,14 @@ impl ServerClient {
                 interactive_scope: None,
             },
             ClientCredentials {
-                cert: own_cert,
+                cert: own_cert.clone(),
                 signer: &own_sk,
                 revocations,
                 entering: None,
             },
         )
         .await
+        .map(|client| client.signing_as(own_cert, own_sk))
     }
 
     /// A session over `read`/`write`, a byte stream pair to a host in the
@@ -802,7 +873,7 @@ impl ServerClient {
         mut write: W,
         expected_device: [u8; 32],
         own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
+        own_sk: impl DeviceSigner + 'static,
         revocations: RevocationList,
     ) -> Result<Self, ClientError>
     where
@@ -848,7 +919,8 @@ impl ServerClient {
                 inbound: inbound_rx,
             },
             Box::new(carrier),
-        ))
+        )
+        .signing_as(own_cert, own_sk))
     }
 
     /// Connect to the exact device a verified signed address names for one workspace. The
@@ -860,7 +932,7 @@ impl ServerClient {
         server_addr: EndpointAddr,
         served: tilo_delivery_protocol::workspace_join::ServedWorkspace,
         own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
+        own_sk: impl DeviceSigner + 'static,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
         if *server_addr.id.as_bytes() != served.service_public_key() {
@@ -879,13 +951,14 @@ impl ServerClient {
                 interactive_scope: Some(scope),
             },
             ClientCredentials {
-                cert: own_cert,
+                cert: own_cert.clone(),
                 signer: &own_sk,
                 revocations,
                 entering: None,
             },
         )
         .await
+        .map(|client| client.signing_as(own_cert, own_sk))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1060,7 +1133,19 @@ impl ServerClient {
             carrier,
             handshake: Arc::default(),
             server: None,
+            invoker: None,
         }
+    }
+
+    /// This session, signing each invocation it sends with `signer`, the key
+    /// `cert` certifies.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn signing_as(mut self, cert: DeviceCert, signer: impl DeviceSigner + 'static) -> Self {
+        self.invoker = Some(Invoker {
+            cert,
+            signer: Arc::new(signer),
+        });
+        self
     }
 
     /// Where this device makes another entry on the session's connection
@@ -1085,7 +1170,14 @@ impl ServerClient {
     }
 
     /// Convenience: send an envelope.
+    ///
+    /// An invocation goes signed by this device's key when the session holds
+    /// one that signs at once; one it cannot sign is handed back unsent.
     pub fn send(&self, env: Envelope) -> Result<(), Box<Envelope>> {
+        let env = match &self.invoker {
+            Some(invoker) => invoker.sign(env)?,
+            None => env,
+        };
         if self
             .workspace_scope
             .as_ref()

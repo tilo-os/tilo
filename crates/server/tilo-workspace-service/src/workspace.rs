@@ -264,6 +264,9 @@ pub struct WorkspaceRuntime {
     last_seq: u64,
     /// Recently admitted commits, for de-duplicating resends.
     commits: CommitLog,
+    /// The signed invocations this host admitted within their freshness
+    /// window: one invocation id names one request.
+    pub(crate) invocations: tilo_server_protocol::invocation::InvocationReplay,
     /// Commits being admitted, by author and operation id, each held from
     /// its log check until it is admitted and recorded
     /// ([`Self::claim_commit`]): two copies of one commit cannot both be
@@ -515,6 +518,7 @@ impl WorkspaceRuntime {
             access_changed: Arc::default(),
             last_seq: 0,
             commits,
+            invocations: tilo_server_protocol::invocation::InvocationReplay::default(),
             commit_claims: Arc::default(),
             commit_log_queue: Arc::new(AsyncMutex::new(())),
         })

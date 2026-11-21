@@ -1576,7 +1576,7 @@ impl Task {
     /// it does not hold, and the request it carries is never answered. One
     /// for a workspace this session did not join goes as it is — the host's
     /// refusal is the answer, and the caller need not wait for it.
-    fn remote_action(
+    async fn remote_action(
         &mut self,
         workspace_id: WorkspaceId,
         to: [u8; 32],
@@ -1606,6 +1606,17 @@ impl Task {
             let _ = client.send(Envelope::HostAction { frame });
             return;
         }
+        let frame = match self.signed_frame(workspace_id, frame).await {
+            Ok(frame) => frame,
+            Err(refusal) => {
+                self.reports.emit(&Event::Remote(Heard::Undeliverable {
+                    workspace_id,
+                    to,
+                    refusal,
+                }));
+                return;
+            }
+        };
         if self.admitted_to(workspace_id) == Some(false) {
             let held = HeldAction {
                 workspace_id,
@@ -1627,6 +1638,40 @@ impl Task {
             return;
         }
         self.send_action(client, workspace_id, to, frame);
+    }
+
+    /// `frame` as this device sends it: an invocation in it signed under this
+    /// device's own key, so the host runs it as this device's and anyone can
+    /// check who asked. Whatever an app wrote in its place is replaced; every
+    /// other message goes as it is, and a frame that does not decode is the
+    /// host's to refuse.
+    async fn signed_frame(
+        &self,
+        workspace_id: WorkspaceId,
+        frame: Vec<u8>,
+    ) -> Result<Vec<u8>, tilo_server_protocol::refusal::Refusal> {
+        use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+        use tilo_server_protocol::refusal::Refusal;
+        let Ok(mut decoded) = RemoteActionFrame::decode(&frame) else {
+            return Ok(frame);
+        };
+        if !matches!(decoded.message, RemoteActionMessage::Invoke(_)) {
+            return Ok(frame);
+        }
+        tilo_server_protocol::invocation::sign_message(
+            &workspace_id.to_string(),
+            &mut decoded.message,
+            &self.config.cert,
+            self.signer.as_ref(),
+            tilo_clock::unix_now_ns(),
+        )
+        .await
+        .map_err(|error| {
+            Refusal::Other(format!("this device could not sign the action: {error}"))
+        })?;
+        decoded.encode().map_err(|error| {
+            Refusal::Invalid(format!("the signed action does not encode: {error}"))
+        })
     }
 
     /// Whether the host admitted this session to `workspace_id`: `None` for a
@@ -1757,7 +1802,7 @@ impl Task {
                 true
             }
             Command::Client(Cmd::RemoteAction(workspace_id, to, frame)) => {
-                self.remote_action(workspace_id, to, frame, client);
+                self.remote_action(workspace_id, to, frame, client).await;
                 true
             }
             Command::Client(Cmd::WantContent(workspace_id, request)) => {

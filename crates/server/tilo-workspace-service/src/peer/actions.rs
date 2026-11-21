@@ -102,6 +102,12 @@ pub(super) async fn handle_remote_action(
         ));
     }
     if to == *session.own_device_public_key {
+        // What this host runs for someone it runs as the key that signed it.
+        let invoker = match signed_invoker(peer, session, &mut wr, workspace_id, &frame) {
+            Ok(invoker) => invoker,
+            Err(refusal) => return refuse(refusal),
+        };
+        let peer = &invoker;
         // An action of a window this host serves but does not hold (a Browser
         // whose page runs on a VM host) is handed to the device that holds it,
         // stamped with this sender, or answered by the app action server itself, which may
@@ -180,6 +186,77 @@ fn answered_by_server(
 /// Hand `frame` to the connected device `to` of the workspace, stamped with
 /// the authenticated `peer` as its sender: the server routes what it forwards,
 /// and never runs it.
+/// Who an invocation `frame` carries for this host is run as: its verified
+/// signer, the very device that sent it. The signature, the certificate chain,
+/// its revocation, a grant's reach, the issue time and the invocation id
+/// ([`tilo_server_protocol::invocation::verify_invocation`]) are checked, then
+/// the signer is admitted to the workspace under a fresh membership read as
+/// any acting device is ([`action_peer_admitted`]). A frame that carries no
+/// invocation (an observation, a cancellation, an answer) is the sender's:
+/// those name an invocation the signer started, which the provider holds to
+/// its caller.
+///
+/// # Errors
+///
+/// The refusal of an unsigned or wrongly signed invocation, of one signed by
+/// another key than the sender's, and of a signer the workspace does not
+/// admit.
+fn signed_invoker(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut crate::workspace::WorkspaceRuntime,
+    workspace_id: WorkspaceId,
+    frame: &[u8],
+) -> Result<AuthenticatedPeer, Refusal> {
+    use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    use tilo_server_protocol::invocation::{InvocationError, verify_invocation};
+    // A frame that does not decode is refused where it is served.
+    let Ok(RemoteActionFrame {
+        message: RemoteActionMessage::Invoke(request),
+        ..
+    }) = RemoteActionFrame::decode(frame)
+    else {
+        return Ok(peer.clone());
+    };
+    let now = tilo_clock::unix_now_ns();
+    let refused = |error: InvocationError| match error {
+        InvocationError::Revoked => Refusal::NotAMember(crate::workspace::key_revoked_reason()),
+        other => Refusal::NotAllowed(format!("{}: {other}", other.code())),
+    };
+    let cert = {
+        let revocations = session
+            .revocations
+            .read()
+            .map_err(|_| Refusal::Other("this host cannot read its revocations".into()))?;
+        verify_invocation(&workspace_id.to_string(), &request, &revocations, now)
+            .map_err(refused)?
+    };
+    // The answer goes to the connection that asked: a key that did not sign
+    // the request is never answered what the signer may read.
+    if cert.device_public_key != peer.device_public_key
+        || cert.user_public_key != peer.user_public_key
+    {
+        return Err(Refusal::NotAllowed(
+            "the invocation is signed by another key than the device asking".into(),
+        ));
+    }
+    let invoker = AuthenticatedPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        cert,
+    };
+    session
+        .trust()
+        .cert(&invoker, now)
+        .map_err(|_| not_a_member(wr, &invoker, "the signer may not act in the workspace"))?;
+    action_peer_admitted(wr, &invoker, session)
+        .map_err(|_| not_a_member(wr, &invoker, "the signer may not act in the workspace"))?;
+    if let Some(signed) = &request.signed {
+        wr.invocations.admit(signed, now).map_err(refused)?;
+    }
+    Ok(invoker)
+}
+
 /// Where an app action server routed the frame of `decoded`'s — `frame`, as the caller
 /// wrote it — in `workspace_id`: handed to the device holding the window, as
 /// the caller wrote it or as the app action server wrote it in the caller's place, or
