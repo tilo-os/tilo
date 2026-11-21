@@ -425,7 +425,7 @@ fields = [
 [[resources]]
 kind = "tilo.accounts"
 label = "Accounts"
-version = 2
+version = 3
 fields = [
   { path = "accounts", type = { collection = { named = "PersonAccount" } }, stored = "collection" },
   { path = "accounts.*.type_id", type = "text" },
@@ -433,7 +433,6 @@ fields = [
   { path = "accounts.*.config", type = "any" },
   { path = "accounts.*.enabled", type = "bool" },
   { path = "accounts.*.tint", type = "int" },
-  { path = "active", type = { map = "text" } },
 ]
 
 [[resources.verbs]]
@@ -459,13 +458,6 @@ params = [
 
 [[resources.verbs]]
 id = "remove-account"
-kind = "undoable"
-params = [
-  { name = "account", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "set-active-account"
 kind = "undoable"
 params = [
   { name = "account", type = "text", required = true, schema = { type = "string" } },

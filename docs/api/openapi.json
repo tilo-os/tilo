@@ -6894,18 +6894,6 @@
         ],
         "description": ""
       },
-      "tilo.accounts.set-active-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
       "tilo.contacts.identities.project-contact.Arguments": {
         "type": "object",
         "properties": {
@@ -37730,12 +37718,6 @@
     },
     {
       "app": "so.tilo.calendar",
-      "resource": "tilo.accounts",
-      "action": "set-active-account",
-      "arguments": "#/components/schemas/tilo.accounts.set-active-account.Arguments"
-    },
-    {
-      "app": "so.tilo.calendar",
       "resource": "tilo.contacts.identities",
       "action": "project-contact",
       "arguments": "#/components/schemas/tilo.contacts.identities.project-contact.Arguments"
@@ -39542,12 +39524,6 @@
     },
     {
       "app": "so.tilo.file-explorer",
-      "resource": "tilo.accounts",
-      "action": "set-active-account",
-      "arguments": "#/components/schemas/tilo.accounts.set-active-account.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
       "resource": "files.workspace",
       "action": "up",
       "arguments": "#/components/schemas/files.workspace.up.Arguments"
@@ -39893,12 +39869,6 @@
       "resource": "tilo.accounts",
       "action": "remove-account",
       "arguments": "#/components/schemas/tilo.accounts.remove-account.Arguments"
-    },
-    {
-      "app": "so.tilo.messages",
-      "resource": "tilo.accounts",
-      "action": "set-active-account",
-      "arguments": "#/components/schemas/tilo.accounts.set-active-account.Arguments"
     },
     {
       "app": "so.tilo.messages",
@@ -40919,12 +40889,6 @@
       "resource": "tilo.accounts",
       "action": "remove-account",
       "arguments": "#/components/schemas/tilo.accounts.remove-account.Arguments"
-    },
-    {
-      "app": "so.tilo.settings",
-      "resource": "tilo.accounts",
-      "action": "set-active-account",
-      "arguments": "#/components/schemas/tilo.accounts.set-active-account.Arguments"
     },
     {
       "app": "so.tilo.sheets",

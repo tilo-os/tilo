@@ -54,12 +54,18 @@ bounded-command = { version = "0.1.0", path = "../../../crates/system/bounded-co
 # The person's accounts as a record of their own (`person`): the resource
 # layer, without any UI.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+# The document the record migrates: a version that kept a field drops it.
+automerge = { workspace = true, optional = true }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [features]
-person = ["dep:tilo-resource"]
+person = ["dep:tilo-resource", "dep:automerge"]
 # A stand-in for the session's account sign-ins socket, for the cloud service's tests.
 sign-ins-fixture = []
+
+[dev-dependencies]
+# The record's actions are decided by the workspace's roles and grants.
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 
 [[example]]
 name = "account_storage_probe"

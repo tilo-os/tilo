@@ -353,18 +353,6 @@ impl AccountRoot {
                     .map_err(refused)?;
             }
         }
-        let now = record.get().store();
-        for account in store.all() {
-            let wanted = store.active_id(&account.type_id);
-            if wanted == Some(&account.id) && now.active_id(&account.type_id) != wanted {
-                record
-                    .invoke(
-                        &accounts::person::PersonAccounts::SET_ACTIVE_ACCOUNT
-                            .with(ui::tilo_resource::Id::from_raw(account.id.0.clone())),
-                    )
-                    .map_err(refused)?;
-            }
-        }
         record.get().project_in(&root).map(|_| ())
     }
 

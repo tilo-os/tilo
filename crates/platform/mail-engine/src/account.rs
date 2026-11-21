@@ -217,7 +217,7 @@ impl AccountStore {
         shared.save_in(config_root)
     }
 
-    /// The edits that make the person's accounts hold these mail accounts.
+    /// The edits that make the workspace's accounts hold these mail accounts.
     pub fn edits_for(
         &self,
         person: &PersonAccounts,
@@ -245,11 +245,6 @@ impl AccountStore {
             if held.get(&stored.id) != Some(&stored) {
                 edits.push(PersonAccounts::saving(&stored));
             }
-        }
-        if let Some(active) = self.accounts.get(self.active)
-            && held.active_id(&ty).map(AccountId::as_str) != Some(active.id.as_str())
-        {
-            edits.push(PersonAccounts::SET_ACTIVE_ACCOUNT.with(Id::from_raw(active.id.clone())));
         }
         (edits, removed)
     }

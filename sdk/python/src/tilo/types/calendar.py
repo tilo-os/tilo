@@ -48,7 +48,6 @@ __all__ = [
     "PublishBrowserIdentityArgs",
     "SaveAccountArgs",
     "RemoveAccountArgs",
-    "SetActiveAccountArgs",
     "ProjectContactArgs",
     "RemoveContactArgs",
     "ConfirmEndpointArgs",
@@ -249,11 +248,6 @@ RemoveAccountArgs = TypedDict("RemoveAccountArgs", {
 })
 """The arguments of `remove-account`."""
 
-SetActiveAccountArgs = TypedDict("SetActiveAccountArgs", {
-    "account": "str",
-})
-"""The arguments of `set-active-account`."""
-
 ProjectContactArgs = TypedDict("ProjectContactArgs", {
     "person": "str",
     "label": "str",
@@ -329,7 +323,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Calendar(Resource):
     """Calendar — `calendar.calendar`."""
-    __surface__ = "so.tilo.calendar@633cec10992fb756"
+    __surface__ = "so.tilo.calendar@3f27f7e33fab1547"
     projects: list[Entry[Project]]
     events: list[Entry[Event]]
     tasks: list[Entry[Task]]
@@ -489,9 +483,8 @@ class Calendar(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.calendar@633cec10992fb756"
+    __surface__ = "so.tilo.calendar@3f27f7e33fab1547"
     accounts: list[Entry[PersonAccount]]
-    active: dict[str, str]
 
     def publish_browser_identity(self,
         *,
@@ -530,22 +523,14 @@ class Accounts(Resource):
         """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-account", items)
 
-    def set_active_account(self, *, account: str) -> None:
-        """Runs the app's action."""
-        return self.action("set-active-account", account=account)
-
-    def set_active_account_many(self, items: list[SetActiveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-active-account", items)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many", "set_active_account", "set_active_account_many"})
+    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many"})
 
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.calendar@633cec10992fb756"
+    __surface__ = "so.tilo.calendar@3f27f7e33fab1547"
     people: list[Entry[Person]]
 
     def project_contact(self,

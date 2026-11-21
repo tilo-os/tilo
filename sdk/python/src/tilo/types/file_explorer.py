@@ -40,7 +40,6 @@ __all__ = [
     "PublishBrowserIdentityArgs",
     "SaveAccountArgs",
     "RemoveAccountArgs",
-    "SetActiveAccountArgs",
 ]
 
 class Bookmark(TypedDict):
@@ -140,14 +139,9 @@ RemoveAccountArgs = TypedDict("RemoveAccountArgs", {
 })
 """The arguments of `remove-account`."""
 
-SetActiveAccountArgs = TypedDict("SetActiveAccountArgs", {
-    "account": "str",
-})
-"""The arguments of `set-active-account`."""
-
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@35a96fa4fa78055e"
+    __surface__ = "so.tilo.file-explorer@a60404f9d4b9ee48"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -369,7 +363,7 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@35a96fa4fa78055e"
+    __surface__ = "so.tilo.file-explorer@a60404f9d4b9ee48"
     def new_folder(self,
         *,
         parent: Any,
@@ -463,9 +457,8 @@ class Tree(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.file-explorer@35a96fa4fa78055e"
+    __surface__ = "so.tilo.file-explorer@a60404f9d4b9ee48"
     accounts: list[Entry[PersonAccount]]
-    active: dict[str, str]
 
     def publish_browser_identity(self,
         *,
@@ -504,22 +497,14 @@ class Accounts(Resource):
         """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-account", items)
 
-    def set_active_account(self, *, account: str) -> None:
-        """Runs the app's action."""
-        return self.action("set-active-account", account=account)
-
-    def set_active_account_many(self, items: list[SetActiveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-active-account", items)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many", "set_active_account", "set_active_account_many"})
+    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many"})
 
 
 class Workspace(Resource):
     """Files window — `files.workspace`."""
-    __surface__ = "so.tilo.file-explorer@35a96fa4fa78055e"
+    __surface__ = "so.tilo.file-explorer@a60404f9d4b9ee48"
     def up(self) -> None:
         """Runs the app's action."""
         return self.action("up")

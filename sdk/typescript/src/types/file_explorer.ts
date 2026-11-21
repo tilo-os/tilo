@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@35a96fa4fa78055e";
+export const SURFACE = "so.tilo.file-explorer@a60404f9d4b9ee48";
 
 export interface Bookmark {
   place: string;
@@ -122,11 +122,6 @@ export interface SaveAccountArgs {
 
 /** The arguments of `remove-account`. */
 export interface RemoveAccountArgs {
-  account: string;
-}
-
-/** The arguments of `set-active-account`. */
-export interface SetActiveAccountArgs {
   account: string;
 }
 
@@ -298,7 +293,6 @@ export function tree(ws: tilo.Workspace, path: string): Tree {
 /** Accounts — `tilo.accounts`. */
 export interface Accounts extends tilo.Resource {
   accounts: Array<tilo.Entry<PersonAccount>>;
-  active: Record<string, string>;
   publishBrowserIdentity(args: {
     root: string;
     origin: string;
@@ -321,16 +315,11 @@ export interface Accounts extends tilo.Resource {
   }): Promise<void>;
   /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeAccountMany(items: RemoveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
-  setActiveAccount(args: {
-    account: string;
-  }): Promise<void>;
-  /** Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setActiveAccountMany(items: SetActiveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Accounts` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ACCOUNTS_ACTIONS = ["publishBrowserIdentity", "publishBrowserIdentityMany", "saveAccount", "saveAccountMany", "removeAccount", "removeAccountMany", "setActiveAccount", "setActiveAccountMany"] as const;
+export const ACCOUNTS_ACTIONS = ["publishBrowserIdentity", "publishBrowserIdentityMany", "saveAccount", "saveAccountMany", "removeAccount", "removeAccountMany"] as const;
 
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {

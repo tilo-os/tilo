@@ -3,19 +3,16 @@
 //! workspace reads as the workspace's grants allow. Their secrets are never
 //! in it.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use tilo_resource::{
-    ActionCx, Collection, Id, Invoke, Model, ModelError, Refusal, SharedResource, resource,
-};
+use tilo_resource::{Collection, Id, Invoke, Model, ModelError, Refusal, SharedResource, resource};
 
 use crate::{Account, AccountId, AccountStore, AccountTypeId};
 
-/// The app that keeps the person's accounts.
+/// The app that keeps the workspace's accounts.
 pub use tilo_app_id::apps::SETTINGS as ACCOUNTS_OWNER;
 
-/// The other apps that change the person's accounts: Mail adds the mail
+/// The other apps that change the workspace's accounts: Mail adds the mail
 /// accounts its provider sign-in sets up.
 pub const ACCOUNTS_EDITORS: &[&str] = &["so.tilo.mail"];
 
@@ -29,13 +26,13 @@ pub const TILO_IDENTITY_TYPE: &str = "tilo.identity";
 pub struct BrowserAccount {
     /// The shared account's stable id.
     pub id: String,
-    /// The person's chosen account name.
+    /// The chosen account name.
     pub display_name: String,
     /// Public root key matching the profile that holds the account record.
     pub user_public_key: String,
 }
 
-/// One account of the person's, without its secret.
+/// One account of the workspace's, without its secret.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct PersonAccount {
     /// The kind of account (`"email"`, `"caldav"`, …).
@@ -46,43 +43,50 @@ pub struct PersonAccount {
     /// shapes its own; the record keeps them as the JSON they are, a map of
     /// settings, so two devices changing different settings both keep theirs.
     pub config: serde_json::Value,
-    /// Whether the person uses it now.
+    /// Whether it is in use.
     pub enabled: bool,
     /// Tints the account's avatar so several read as distinct.
     pub tint: u8,
 }
 
-/// Every account the person configured, and the one each type uses.
+/// Every account the workspace has. Which one a member's window shows is
+/// that member's own preference, kept beside their Mail settings.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct PersonAccounts {
     /// Keyed by the account's id, the id its secret is kept under.
     pub accounts: Collection<PersonAccount>,
-    /// The active account id per type; a type without one uses its first.
-    pub active: BTreeMap<String, String>,
 }
 
-/// Bring the person's accounts of version 1 up to this one: an account's
-/// connection settings were one JSON string, and are the JSON value itself
-/// now. Every account and every setting is kept.
+/// Bring the workspace's accounts of an older version up to this one: what
+/// an account's connection settings are, and the account each member's
+/// window showed, which is their own preference now. Every account and every
+/// setting is kept.
 ///
 /// # Errors
 /// Returns why a stored account's settings do not read as JSON.
 pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    use automerge::transaction::Transactable as _;
     use tilo_resource::evolution::{collection_items, retype_json};
-    if from != 1 {
+    if from == 1 {
+        // Version 1 kept an account's connection settings as one JSON
+        // string; version 2 keeps the JSON value itself.
+        for account in collection_items(doc, &tilo_resource::__private::ROOT, "accounts")? {
+            retype_json::<serde_json::Value>(doc, &account, "config")?;
+        }
+    } else if from != 2 {
         return Err(ModelError::invalid(format!(
             "no accounts migration from {from}"
         )));
     }
-    for account in collection_items(doc, &tilo_resource::__private::ROOT, "accounts")? {
-        retype_json::<serde_json::Value>(doc, &account, "config")?;
-    }
+    // Version 2 also kept, per account type, the account a window showed:
+    // one member's choice, which changed for every member. It is gone, and
+    // each member's Mail preferences keep their own.
+    doc.delete(&tilo_resource::__private::ROOT, "active")?;
     Ok(())
 }
 
 impl PersonAccounts {
-    /// What the record holds: the accounts the person configured, without their secrets, and
-    /// the one each type uses.
+    /// What the record holds: the accounts the workspace has, without their secrets.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -93,7 +97,7 @@ impl PersonAccounts {
 
 #[resource(
     kind = "tilo.accounts",
-    version = 2,
+    version = 3,
     migrate = upgrade,
     read_content = PersonAccounts::read_document
 )]
@@ -194,19 +198,11 @@ impl PersonAccounts {
 
     /// Save an account: add it, or replace the one with its id.
     ///
-    /// What an account that is kept is, and how it connects, is its person's
-    /// own to change, at a device of theirs. Its secret is kept under its id
-    /// and follows it to whatever server its settings name, and a calendar
-    /// account connected for reading only says so in those settings. So
-    /// whoever acts for them gives an account another name and turns one off
-    /// or on, and is refused anything else of an account that is kept
-    /// ([`theirs_alone`]). It adds none either: under the id of an account
-    /// that was removed a secret may still be kept, which the accounts do not
-    /// know.
+    /// Whoever the workspace's policy lets change its accounts, a person or
+    /// an agent acting for one, may save an account or remove it.
     #[action]
     pub fn save_account(
         &mut self,
-        cx: &mut ActionCx,
         #[param("The account's id, which its secret is kept under")] id: String,
         #[param("The kind of account, such as email or caldav")] type_id: String,
         #[param("The name shown for it")] display_name: String,
@@ -214,20 +210,11 @@ impl PersonAccounts {
         #[param("Whether it is in use")] enabled: bool,
         #[param("Avatar tint")] tint: u8,
     ) -> Result<(), Refusal> {
-        if acts_for_its_person(cx) {
-            let refused = match self.accounts.get(&Id::from_raw(id.clone())) {
-                Some(kept) => theirs_alone(kept, &type_id, &config),
-                None => Some(ADDED_BY_ITS_PERSON),
-            };
-            if let Some(why) = refused {
-                return Err(Refusal::from(why));
-            }
-        }
         self.keep_account(id, type_id, display_name, config, enabled, tint)
     }
 
     /// Keep an account as [`Self::save_account`] does once it may: for code
-    /// of this device that fills the person's accounts itself.
+    /// of this device that fills the workspace's accounts itself.
     ///
     /// # Errors
     /// The account names no id or no kind.
@@ -243,9 +230,9 @@ impl PersonAccounts {
         if id.trim().is_empty() || type_id.trim().is_empty() {
             return Err(Refusal::from("an account needs an id and a type"));
         }
-        let key = Id::from_raw(id.clone());
+        let key = Id::from_raw(id);
         let account = PersonAccount {
-            type_id: type_id.clone(),
+            type_id,
             display_name,
             config,
             enabled,
@@ -256,106 +243,17 @@ impl PersonAccounts {
         } else {
             self.accounts.push(key, account);
         }
-        self.active.entry(type_id).or_insert(id);
         Ok(())
     }
 
     /// Remove account.
-    ///
-    /// An account that is kept is its person's own to remove, at a device of
-    /// theirs: removed and saved anew it would be another account under the
-    /// id its secret is kept under.
     #[action]
-    pub fn remove_account(&mut self, cx: &mut ActionCx, account: Id) -> Result<(), Refusal> {
-        if acts_for_its_person(cx) && self.accounts.contains(&account) {
-            return Err(Refusal::from(REMOVED_BY_ITS_PERSON));
-        }
-        let removed = self
-            .accounts
+    pub fn remove_account(&mut self, account: Id) -> Result<(), Refusal> {
+        self.accounts
             .remove(&account)
-            .ok_or_else(|| Refusal::from("there is no such account"))?;
-        if self.active.get(&removed.type_id).map(String::as_str) == Some(account.as_str()) {
-            match self
-                .accounts
-                .iter()
-                .find(|(_, other)| other.type_id == removed.type_id)
-            {
-                Some((next, _)) => {
-                    self.active
-                        .insert(removed.type_id.clone(), next.as_str().to_owned());
-                }
-                None => {
-                    self.active.remove(&removed.type_id);
-                }
-            }
-        }
-        Ok(())
+            .map(|_| ())
+            .ok_or_else(|| Refusal::from("there is no such account"))
     }
-
-    /// Use an account for its type.
-    #[action]
-    pub fn set_active_account(&mut self, account: Id) -> Result<(), Refusal> {
-        let type_id = self
-            .accounts
-            .get(&account)
-            .ok_or_else(|| Refusal::from("there is no such account"))?
-            .type_id
-            .clone();
-        self.active.insert(type_id, account.as_str().to_owned());
-        Ok(())
-    }
-}
-
-/// What whoever acts for a person is told when it would change what an
-/// account of theirs is or how it connects.
-const THEIRS_ALONE: &str = "What an account is and how it connects is its person's own to change, \
-                            at a device of theirs. Whoever acts for them names one anew or turns \
-                            one off";
-/// What it is told when it would add an account.
-const ADDED_BY_ITS_PERSON: &str = "An account is its person's own to add, at a device of theirs: a \
-                                   secret may still be kept under its id";
-/// What it is told when that would lift an account's reading only.
-const READING_ONLY: &str = "This account is connected for reading only, which is its person's \
-                            own to change: only they, at a device of theirs, save it without \
-                            that word or remove it";
-/// What it is told when it would remove an account.
-const REMOVED_BY_ITS_PERSON: &str =
-    "An account is its person's own to remove, at a device of theirs";
-
-/// Whether the action applying now was invoked by somebody acting for the
-/// person (an agent, a bot, an automation, a device that is not theirs) and
-/// not by the person themselves at a device of theirs. An action nobody
-/// invoked is this device's own code filling the person's accounts, and is
-/// not.
-fn acts_for_its_person(cx: &ActionCx) -> bool {
-    cx.invoked_by()
-        .is_some_and(|by| by.direct_person().is_none())
-}
-
-/// Whether `config` says its account is connected for reading only: at the
-/// account, or under its calendar settings.
-fn reading_only(config: &serde_json::Value) -> bool {
-    ["/read_only", "/calendar/read_only"]
-        .iter()
-        .any(|at| config.pointer(at).and_then(serde_json::Value::as_bool) == Some(true))
-}
-
-/// Why making the account `kept` one of `type_id` with `config` is its
-/// person's own to do, where it is: none for a change that leaves what the
-/// account is and how it connects as they are.
-fn theirs_alone(
-    kept: &PersonAccount,
-    type_id: &str,
-    config: &serde_json::Value,
-) -> Option<&'static str> {
-    if kept.type_id == type_id && kept.config == *config {
-        return None;
-    }
-    Some(if reading_only(&kept.config) && !reading_only(config) {
-        READING_ONLY
-    } else {
-        THEIRS_ALONE
-    })
 }
 
 impl SharedResource for PersonAccounts {
@@ -365,11 +263,10 @@ impl SharedResource for PersonAccounts {
 
 impl PersonAccounts {
     /// The edits that take in the accounts of `device`, a store this device
-    /// kept before the record did: each account the record lacks, and the
-    /// active one of a type the record has none of. Once the file is the
-    /// record's projection it brings nothing back — an account removed on
-    /// another device stays removed — except into a copy of the record that
-    /// holds no account yet, which takes what this device shows.
+    /// kept before the record did: each account the record lacks. Once the
+    /// file is the record's projection it brings nothing back — an account
+    /// removed on another device stays removed — except into a copy of the
+    /// record that holds no account yet, which takes what this device shows.
     #[must_use]
     pub fn taking_in(&self, device: &AccountStore) -> Vec<Invoke<Self>> {
         if device.is_projection() && !self.accounts.is_empty() {
@@ -379,14 +276,6 @@ impl PersonAccounts {
         for account in device.all() {
             if !self.accounts.contains(&Id::from_raw(account.id.0.clone())) {
                 edits.push(Self::saving(account));
-            }
-        }
-        for account in device.all() {
-            let type_id = account.type_id.as_str();
-            if !self.active.contains_key(type_id)
-                && device.active_id(&account.type_id) == Some(&account.id)
-            {
-                edits.push(Self::SET_ACTIVE_ACCOUNT.with(Id::from_raw(account.id.0.clone())));
             }
         }
         edits
@@ -407,12 +296,6 @@ impl PersonAccounts {
                 tint: account.tint,
                 owner: None,
             });
-        }
-        for (type_id, id) in &self.active {
-            store.set_active(
-                &AccountTypeId::new(type_id.clone()),
-                &AccountId::new(id.clone()),
-            );
         }
         store.as_projection()
     }
@@ -438,8 +321,8 @@ impl PersonAccounts {
     }
 
     /// Keep this device's account file under `config_root` the projection
-    /// of the person's accounts, for the services that read it. Writes only
-    /// when it differs. Whether it wrote.
+    /// of the workspace's accounts, for the services that read it. Writes
+    /// only when it differs. Whether it wrote.
     pub fn project_in(&self, config_root: &Path) -> std::io::Result<bool> {
         let store = self.store();
         if AccountStore::load_in(config_root) == store {
@@ -455,7 +338,7 @@ mod tests {
     use super::*;
     use tilo_resource::Replica;
 
-    /// The person's accounts as version 1 kept them, each account's
+    /// The workspace's accounts as version 1 kept them, each account's
     /// connection settings one JSON string, open with every account and
     /// every setting as it was.
     #[test]
@@ -516,13 +399,61 @@ mod tests {
         assert_eq!(mail.tint, 3);
         let dav = accounts.accounts.get(&Id::from_raw("dav-1")).unwrap();
         assert_eq!(dav.config, serde_json::Value::Null);
-        assert_eq!(
-            accounts.active.get("email").map(String::as_str),
-            Some("mail-1")
+        assert!(
+            evolution::map_at(&old, &root, "active").unwrap().is_none(),
+            "the account a window showed is each member's preference now"
         );
         assert_eq!(
             accounts.store().get(&"mail-1".into()).unwrap().config["port"],
             993
+        );
+    }
+
+    /// The workspace's accounts as version 2 kept them: each account's
+    /// connection settings the JSON value itself, and the account a window
+    /// showed per type. Each account and setting stays; the shown account
+    /// is gone, each member's Mail preferences keeping their own.
+    #[test]
+    fn accounts_of_version_two_keep_every_account_and_setting() {
+        use tilo_resource::{Slot, evolution};
+        let root = tilo_resource::__private::ROOT;
+        let config = serde_json::json!({"host": "imap.example", "port": 993});
+        let mut replica = Replica::<PersonAccounts>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &root,
+            &serde_json::json!({
+                "accounts": {
+                    "mail-1": {
+                        "k": "a",
+                        "v": {
+                            "type_id": {"$text": "email"},
+                            "display_name": {"$text": "Work"},
+                            "config": config,
+                            "enabled": true,
+                            "tint": 3,
+                        },
+                    },
+                },
+                "active": {"email": {"$text": "mail-1"}},
+            }),
+        )
+        .unwrap();
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .put_scalar(doc, tilo_resource::__private::ScalarValue::Uint(2))
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::migrate::<PersonAccounts>(&mut old).unwrap());
+        assert_eq!(evolution::stored_version(&old), 3);
+        let accounts = evolution::read_checked::<PersonAccounts>(&old).unwrap();
+        assert_eq!(accounts.accounts.len(), 1);
+        let mail = accounts.accounts.get(&Id::from_raw("mail-1")).unwrap();
+        assert_eq!(mail.config, config);
+        assert!(
+            evolution::map_at(&old, &root, "active").unwrap().is_none(),
+            "the shown account is each member's preference now"
         );
     }
 
@@ -671,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn accounts_are_saved_by_id_and_each_type_keeps_an_active_one() {
+    fn accounts_are_saved_by_id_and_removed() {
         let mut replica = Replica::<PersonAccounts>::new();
         save(&mut replica, "a@x.example", "email", "imap.x");
         save(&mut replica, "b@y.example", "email", "imap.y");
@@ -688,32 +619,16 @@ mod tests {
             store.get(&"a@x.example".into()).unwrap().config["host"],
             "imap.new"
         );
-        assert_eq!(
-            store.active(&"email".into()).unwrap().id,
-            "a@x.example".into()
-        );
 
-        replica
-            .apply(PersonAccounts::SET_ACTIVE_ACCOUNT.with(Id::from_raw("b@y.example")))
-            .unwrap();
-        assert_eq!(
-            replica
-                .state()
-                .unwrap()
-                .store()
-                .active(&"email".into())
-                .unwrap()
-                .id,
-            "b@y.example".into()
-        );
         replica
             .apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("b@y.example")))
             .unwrap();
         let store = replica.state().unwrap().store();
+        assert!(store.get(&"b@y.example".into()).is_none());
         assert_eq!(
-            store.active(&"email".into()).unwrap().id,
-            "a@x.example".into(),
-            "removing the active account falls back to another"
+            store.list(&"email".into()).len(),
+            1,
+            "the other account stays"
         );
         assert!(
             replica
@@ -766,10 +681,6 @@ mod tests {
         let person = replica.state().unwrap().store();
         assert!(person.get(&"local@x.example".into()).is_some(), "taken in");
         assert_eq!(
-            person.active(&"email".into()).unwrap().id,
-            "local@x.example".into()
-        );
-        assert_eq!(
             person.get(&"roamed".into()).unwrap().config["host"],
             "dav.example",
             "the record's own account is kept as it is"
@@ -782,17 +693,6 @@ mod tests {
         let projected = person;
         assert!(projected.is_projection());
         assert!(replica.state().unwrap().taking_in(&projected).is_empty());
-    }
-
-    /// A calendar account as its person keeps it for reading only.
-    fn reading_only(more: &[(&str, serde_json::Value)]) -> serde_json::Value {
-        let mut config = serde_json::json!({
-            "server_url": "https://dav.example/", "username": "ada", "read_only": true,
-        });
-        for (name, value) in more {
-            config[*name] = value.clone();
-        }
-        config
     }
 
     /// The edit that saves the account `id` of `type_id` with `config`.
@@ -818,96 +718,49 @@ mod tests {
             .map(|account| account.config.clone())
     }
 
-    /// An account connected for reading only stays so against whoever acts
-    /// for its person. An agent on a device of theirs does not save it again
-    /// without that word, at the account or under its calendar settings, and
-    /// does not remove it, which would be the same once it saved it anew.
-    /// The person themselves, at a device of theirs, does both.
+    /// Whoever acts for a member, an agent included, changes the workspace's
+    /// accounts as the member may: what an account is, where it signs in, a
+    /// new account, a removal, and an account no longer connected for
+    /// reading only.
     #[test]
-    fn only_its_person_lifts_reading_only_or_removes_such_an_account() {
+    fn an_agent_acting_for_a_member_changes_the_workspaces_accounts() {
         let person = "ab".repeat(32);
-        let mut hers = Replica::<PersonAccounts>::new().as_invoker(&person);
-        hers.apply(saving("work", "caldav", reading_only(&[])))
-            .unwrap();
-        hers.apply(saving(
-            "cloud",
-            "nextcloud",
-            serde_json::json!({
-                "server_url": "https://cloud.example/",
-                "calendar": {"read_only": true, "calendars": []},
-            }),
-        ))
-        .unwrap();
-
-        // An agent on a device of hers, acting for her.
-        let mut agent = Replica::<PersonAccounts>::load(&hers.save())
+        let mut theirs = workspace_accounts(&person);
+        let mut agent = Replica::<PersonAccounts>::load(&theirs.save())
             .unwrap()
             .as_agent_for("helper", &person);
-        let said = agent
+        let elsewhere = "imap.elsewhere.example";
+        agent
+            .apply(saving("ada@example.test", "email", mail(elsewhere)))
+            .unwrap();
+        assert_eq!(kept(&agent, "ada@example.test"), Some(mail(elsewhere)));
+        agent
             .apply(saving(
                 "work",
-                "caldav",
-                serde_json::json!({"server_url": "https://dav.example/", "username": "ada"}),
+                "webdav",
+                calendar("https://dav.elsewhere.example/"),
             ))
-            .err()
-            .map(|refusal| format!("{refusal:?}"));
-        let said = said.expect("an agent saved a read-only account again without the word");
-        assert!(
-            said.contains("reading only"),
-            "it is refused in words: {said}"
-        );
-        let unsaid = agent.apply(saving(
-            "work",
-            "caldav",
-            reading_only(&[("read_only", serde_json::json!(false))]),
-        ));
-        assert!(unsaid.is_err(), "nor with the word said to be false");
-        let under = agent.apply(saving(
-            "cloud",
-            "nextcloud",
-            serde_json::json!({
-                "server_url": "https://cloud.example/",
-                "calendar": {"calendars": []},
-            }),
-        ));
-        assert!(
-            under.is_err(),
-            "nor where the word stands under its calendar settings"
-        );
-        let removed = agent.apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("work")));
-        assert!(
-            removed.is_err(),
-            "an agent removed a read-only account, to save it anew without the word"
-        );
-        assert_eq!(kept(&agent, "work"), Some(reading_only(&[])));
+            .unwrap();
         assert_eq!(
-            kept(&agent, "cloud").unwrap()["calendar"]["read_only"],
-            true
+            kept(&agent, "work"),
+            Some(calendar("https://dav.elsewhere.example/"))
         );
-        // What keeps the word, it may save: the name shown.
         agent
-            .apply(PersonAccounts::SAVE_ACCOUNT.with((
-                "work".into(),
-                "caldav".into(),
-                "Work calendar".into(),
-                reading_only(&[]),
-                true,
-                0,
-            )))
+            .apply(saving("news@example.test", "email", mail(elsewhere)))
             .unwrap();
-
-        // She herself, at a device of hers, saves it without the word, and
-        // removes it.
-        hers.apply(saving(
-            "work",
-            "caldav",
-            serde_json::json!({"server_url": "https://dav.example/", "username": "ada"}),
-        ))
-        .unwrap();
-        assert_eq!(kept(&hers, "work").unwrap().get("read_only"), None);
-        hers.apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("cloud")))
+        assert_eq!(kept(&agent, "news@example.test"), Some(mail(elsewhere)));
+        agent
+            .apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("ada@example.test")))
             .unwrap();
-        assert_eq!(kept(&hers, "cloud"), None);
+        assert_eq!(kept(&agent, "ada@example.test"), None);
+        let reading_only = serde_json::json!({
+            "server_url": "https://dav.example/", "username": "ada", "read_only": true,
+        });
+        agent.apply(saving("read", "caldav", reading_only)).unwrap();
+        agent
+            .apply(saving("read", "caldav", calendar("https://dav.example/")))
+            .unwrap();
+        assert_eq!(kept(&agent, "read"), Some(calendar("https://dav.example/")));
     }
 
     /// A mail account's settings, reading at `incoming`.
@@ -920,120 +773,32 @@ mod tests {
         serde_json::json!({"server_url": address, "username": "ada"})
     }
 
-    /// Her accounts as she keeps them at a device of hers: a mail account,
-    /// a calendar account, and one she added and removed again. Whether a
-    /// secret is still kept under that one's id is not her accounts' to
-    /// know.
-    fn her_accounts(person: &str) -> Replica<PersonAccounts> {
-        let mut hers = Replica::<PersonAccounts>::new().as_invoker(person);
-        hers.apply(saving("ada@example.test", "email", mail("imap.example")))
+    /// The workspace's accounts as a member's device keeps them: a mail
+    /// account, a calendar account, and one added and removed again.
+    fn workspace_accounts(person: &str) -> Replica<PersonAccounts> {
+        let mut theirs = Replica::<PersonAccounts>::new().as_invoker(person);
+        theirs
+            .apply(saving("ada@example.test", "email", mail("imap.example")))
             .unwrap();
-        hers.apply(saving("work", "caldav", calendar("https://dav.example/")))
+        theirs
+            .apply(saving("work", "caldav", calendar("https://dav.example/")))
             .unwrap();
-        hers.apply(saving("old@example.test", "email", mail("imap.example")))
+        theirs
+            .apply(saving("old@example.test", "email", mail("imap.example")))
             .unwrap();
-        hers.apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("old@example.test")))
+        theirs
+            .apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("old@example.test")))
             .unwrap();
-        hers
+        theirs
     }
 
-    /// What an account is and where it signs in is its person's own to
-    /// change. Its password is kept under its id and follows it, so an agent
-    /// on a device of theirs that saved a mail or a calendar account whole
-    /// with another server under the same id would have that password sent
-    /// there. It is refused that, another kind under the same id, the
-    /// removal that would let it save the account anew, and adding an
-    /// account at all: under the id of an account that was removed a secret
-    /// may still be kept.
+    /// The device's own code, with nobody invoking, and a member at their
+    /// device change the workspace's accounts as before.
     #[test]
-    fn only_its_person_changes_what_an_account_is_and_where_it_signs_in() {
+    fn a_members_own_device_changes_the_accounts_as_before() {
         let person = "ab".repeat(32);
-        let mut hers = her_accounts(&person);
-        // An agent on a device of hers, acting for her.
-        let mut agent = Replica::<PersonAccounts>::load(&hers.save())
-            .unwrap()
-            .as_agent_for("helper", &person);
-        let elsewhere = "imap.elsewhere.example";
-        let mut taken = Vec::new();
-        for (what, id, edit) in [
-            (
-                "a mail account saved whole with another server",
-                "ada@example.test",
-                saving("ada@example.test", "email", mail(elsewhere)),
-            ),
-            (
-                "a calendar account saved whole with another address",
-                "work",
-                saving("work", "caldav", calendar("https://dav.elsewhere.example/")),
-            ),
-            (
-                "an account saved as another kind",
-                "work",
-                saving("work", "webdav", calendar("https://dav.example/")),
-            ),
-            (
-                "an account added under the id of one she removed",
-                "old@example.test",
-                saving("old@example.test", "email", mail(elsewhere)),
-            ),
-            (
-                "an account added under a new id",
-                "news@example.test",
-                saving("news@example.test", "email", mail(elsewhere)),
-            ),
-            (
-                "an account removed",
-                "ada@example.test",
-                PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("ada@example.test")),
-            ),
-        ] {
-            let refused = agent
-                .apply(edit)
-                .err()
-                .map(|refusal| format!("{refusal:?}"));
-            match refused {
-                Some(said) => assert!(said.contains("its person's own"), "{what}: {said}"),
-                None => taken.push(format!("{what}, and it then keeps {:?}", kept(&agent, id))),
-            }
-        }
-        assert!(
-            taken.is_empty(),
-            "an agent acting for her changed her accounts: {taken:#?}"
-        );
-        assert_eq!(kept(&agent, "ada@example.test"), Some(mail("imap.example")));
-        assert_eq!(kept(&agent, "work"), Some(calendar("https://dav.example/")));
-        assert_eq!(kept(&agent, "old@example.test"), None);
-    }
-
-    /// Whoever acts for a person gives an account another name and turns
-    /// one off. The device's own code, with nobody invoking, and the person
-    /// themselves, at a device of theirs, change their accounts as before.
-    #[test]
-    fn a_name_is_anyones_to_give_and_the_person_changes_their_accounts_as_before() {
-        let person = "ab".repeat(32);
-        let mut hers = her_accounts(&person);
-        let mut agent = Replica::<PersonAccounts>::load(&hers.save())
-            .unwrap()
-            .as_agent_for("helper", &person);
-        agent
-            .apply(PersonAccounts::SAVE_ACCOUNT.with((
-                "work".into(),
-                "caldav".into(),
-                "Team calendar".into(),
-                calendar("https://dav.example/"),
-                false,
-                3,
-            )))
-            .unwrap();
-        let renamed = agent.state().unwrap();
-        let work = renamed.accounts.get(&Id::from_raw("work")).unwrap();
-        assert_eq!(
-            (work.display_name.as_str(), work.enabled),
-            ("Team calendar", false)
-        );
-
-        // The device's own code, with nobody invoking.
-        let mut device = Replica::<PersonAccounts>::load(&agent.save()).unwrap();
+        let mut theirs = workspace_accounts(&person);
+        let mut device = Replica::<PersonAccounts>::load(&theirs.save()).unwrap();
         device
             .apply(saving("news@example.test", "email", mail("imap.example")))
             .unwrap();
@@ -1047,20 +812,75 @@ mod tests {
         device
             .apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("news@example.test")))
             .unwrap();
+        assert_eq!(kept(&device, "news@example.test"), None);
 
-        // She herself, at a device of hers.
-        hers.apply(saving(
-            "ada@example.test",
-            "email",
-            mail("imap.moved.example"),
-        ))
-        .unwrap();
+        theirs
+            .apply(saving(
+                "ada@example.test",
+                "email",
+                mail("imap.moved.example"),
+            ))
+            .unwrap();
         assert_eq!(
-            kept(&hers, "ada@example.test"),
+            kept(&theirs, "ada@example.test"),
             Some(mail("imap.moved.example"))
         );
-        hers.apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("work")))
+        theirs
+            .apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("work")))
             .unwrap();
-        assert_eq!(kept(&hers, "work"), None);
+        assert_eq!(kept(&theirs, "work"), None);
+    }
+
+    /// The workspace's roles decide who changes its accounts, as they decide
+    /// any workspace action: an Editor, whether their own device or an agent
+    /// they grant Mail, adds and removes accounts; a Viewer is refused.
+    #[test]
+    fn an_editor_changes_the_accounts_and_a_viewer_is_refused() {
+        use tilo_action_policy::{
+            Acting, ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, Role,
+            TreePath, WorkspacePolicy,
+        };
+        use tilo_resource::Resource as _;
+        const WORKSPACE: &str = "w";
+        let editor = "ab".repeat(32);
+        let viewer = "cd".repeat(32);
+        let mut policy = WorkspacePolicy::new(WORKSPACE, &editor);
+        policy.members.insert(editor.clone(), Role::Editor);
+        policy.members.insert(viewer.clone(), Role::Viewer);
+        // Mail publishes the accounts record, so its actions are Mail's.
+        let accounts = TreePath::workspace(WORKSPACE)
+            .app(tilo_app_id::apps::MAIL)
+            .kind(PersonAccounts::KIND);
+        let cx = Context::at_secs(1);
+        let answer = |acting: &Acting, granted: &[Grant]| {
+            Authority::of_acting(acting, &policy, granted)
+                .decide(&accounts, ActionKind::Undoable, &cx)
+                .answer
+        };
+        assert_eq!(answer(&Acting::person(&editor), &[]), Answer::Allow);
+        assert_eq!(answer(&Acting::person(&viewer), &[]), Answer::Deny);
+        // The grant an agent's turn gives it, on Mail.
+        let mail = [Grant::new(
+            "turn:helper:0",
+            Grantee::agent("helper"),
+            TreePath::workspace(WORKSPACE).app(tilo_app_id::apps::MAIL),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Grantee::person(&editor),
+        )];
+        assert_eq!(
+            answer(
+                &Acting::agent("helper").acting_for(Acting::person(&editor)),
+                &mail
+            ),
+            Answer::Allow
+        );
+        assert_eq!(
+            answer(
+                &Acting::agent("helper").acting_for(Acting::person(&viewer)),
+                &mail
+            ),
+            Answer::Deny
+        );
     }
 }
