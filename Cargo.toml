@@ -407,6 +407,7 @@ members = [
     "crates/platform/tilolang-youtube",
     "crates/platform/tilo-failure",
     "crates/platform/tilo-lock",
+    "crates/platform/tilo-socket",
     "crates/platform/tilo-sort",
     "crates/platform/tilo-selector",
     "crates/platform/tilo-face",

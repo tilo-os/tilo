@@ -25,6 +25,10 @@ tracing = { workspace = true, optional = true }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
+[target.'cfg(unix)'.dependencies]
+# The app's side of the service socket is reached by path.
+tilo-files = { path = "../tilo-files" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 

@@ -132,6 +132,8 @@ third-party = [
 #   onboarding depend on it without taking on the unified set.
 # - tilo-local (`cargo desktop`, `cargo headless`, `cargo web`) is standard
 #   library only, so those commands compile it in seconds before their build.
+# - tilo-socket is standard library only: tilo-files re-exports it, and tilo-local
+#   takes it to bind its traps without taking on tilo-files' dependency graph.
 workspace-members = [
     # resolves the others' features and builds nothing (tools/ci/workspace_unify.py)
     "workspace-unify",
@@ -161,6 +163,7 @@ workspace-members = [
     # standard library only
     "onboarding-walk",
     "tilo-local",
+    "tilo-socket",
     # The [patch.crates-io] replacement for rustls-native-certs sits below
     # third-party crates the hack itself depends on (rustls-platform-verifier),
     # so depending on the hack would be a cycle.

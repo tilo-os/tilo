@@ -49,7 +49,7 @@ pub(crate) fn connect(
         None => x11rb::connect(Some(&format!(":{display}"))).map_err(|error| error.to_string()),
         Some(cookie) => {
             let socket = format!("/tmp/.X11-unix/X{display}");
-            let (stream, _) = std::os::unix::net::UnixStream::connect(socket)
+            let (stream, _) = tilo_files::native::socket::connect(std::path::Path::new(&socket))
                 .and_then(DefaultStream::from_unix_stream)
                 .map_err(|error| ConnectError::from(error).to_string())?;
             let conn = RustConnection::connect_to_stream_with_auth_info(

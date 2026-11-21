@@ -205,14 +205,14 @@ mod backend {
 
         fn bind(&self) -> io::Result<UnixListener> {
             match self {
-                Self::Path(path) => UnixListener::bind(path),
+                Self::Path(path) => tilo_files::native::socket::bind(path),
                 Self::Beside { directory, name } => relative::bind(directory, name),
             }
         }
 
         fn connect(&self) -> io::Result<UnixStream> {
             match self {
-                Self::Path(path) => UnixStream::connect(path),
+                Self::Path(path) => tilo_files::native::socket::connect(path),
                 Self::Beside { directory, name } => relative::connect(directory, name),
             }
         }
@@ -245,11 +245,11 @@ mod backend {
         }
 
         pub fn bind(directory: &Directory, name: &Path) -> io::Result<UnixListener> {
-            UnixListener::bind(directory.through(name))
+            tilo_files::native::socket::bind(&directory.through(name))
         }
 
         pub fn connect(directory: &Directory, name: &Path) -> io::Result<UnixStream> {
-            UnixStream::connect(directory.through(name))
+            tilo_files::native::socket::connect(&directory.through(name))
         }
     }
 
@@ -295,11 +295,11 @@ mod backend {
         }
 
         pub fn bind(directory: &Directory, name: &Path) -> io::Result<UnixListener> {
-            directory.through(name, UnixListener::bind)
+            directory.through(name, |short| tilo_files::native::socket::bind(&short))
         }
 
         pub fn connect(directory: &Directory, name: &Path) -> io::Result<UnixStream> {
-            directory.through(name, UnixStream::connect)
+            directory.through(name, |short| tilo_files::native::socket::connect(&short))
         }
     }
 

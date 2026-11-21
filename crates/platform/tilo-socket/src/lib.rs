@@ -6,6 +6,11 @@
 //! fit. A path that fits is used as it is. Elsewhere than Linux and Android a path that
 //! does not fit is refused with [`io::ErrorKind::InvalidInput`] naming the limit, never
 //! silently.
+//!
+//! The crate is std-only: `tilo_files::native::socket` re-exports it, and a tool that
+//! must stay small to start quickly (the `cargo desktop` launcher) can bind and connect
+//! through the same code without taking on a dependency graph.
+#![cfg(unix)]
 
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -37,7 +42,6 @@ fn reach<T>(path: &Path, act: impl FnOnce(&Path) -> io::Result<T>) -> io::Result
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn through_directory<T>(path: &Path, act: impl FnOnce(&Path) -> io::Result<T>) -> io::Result<T> {
-    use rustix::fs::{CWD, Mode, OFlags};
     use std::os::fd::AsRawFd as _;
 
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
@@ -48,17 +52,12 @@ fn through_directory<T>(path: &Path, act: impl FnOnce(&Path) -> io::Result<T>) -
     } else {
         parent
     };
-    let directory = rustix::fs::openat(
-        CWD,
-        parent,
-        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| {
-        io::Error::new(
-            io::Error::from(error).kind(),
-            format!("{}: {error}", parent.display()),
-        )
+    // The directory is held open read-only while the socket call runs, so the
+    // kernel resolves `/proc/self/fd/<fd>` to it and only the socket's own name
+    // has to fit.
+    let directory = std::fs::File::open(parent).map_err(|error| {
+        let kind = error.kind();
+        io::Error::new(kind, format!("{}: {error}", parent.display()))
     })?;
     let short = Path::new("/proc/self/fd")
         .join(directory.as_raw_fd().to_string())

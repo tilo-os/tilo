@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / "tools/policy/socket_paths_baseline.txt"
 SCANNED = ("apps", "crates")
 # The one place that binds and connects by path.
-HELPER = "crates/platform/tilo-files/src/native/socket.rs"
+HELPER = "crates/platform/tilo-socket/src/lib.rs"
 CALL = re.compile(r"\bUnix(?:Listener::bind|Stream::connect)\s*\(")
 RULE = "SocketPath"
 

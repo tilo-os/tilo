@@ -109,7 +109,7 @@ impl Connection {
     }
 
     pub fn connect(socket: &std::path::Path, app_id: &str) -> std::io::Result<Arc<Self>> {
-        let mut stream = UnixStream::connect(socket)?;
+        let mut stream = tilo_files::native::socket::connect(socket)?;
         write_handoff(&mut stream, app_id)?;
         Self::over(stream)
     }

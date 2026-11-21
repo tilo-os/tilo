@@ -3028,6 +3028,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-files",
  "tilo-paths",
  "tilo-test-env",
  "tracing",
@@ -6424,6 +6425,7 @@ name = "greetd-client"
 version = "0.1.0"
 dependencies = [
  "greetd_ipc",
+ "tilo-files",
  "tilo-lock",
  "tracing",
  "workspace-hack",
@@ -9685,6 +9687,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-files",
  "tilo-test-env",
  "wire-frame",
  "workspace-hack",
@@ -19030,6 +19033,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+ "tilo-files",
  "tilo-paths",
  "workspace-hack",
 ]
@@ -19843,6 +19847,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-platform-caps",
+ "tilo-socket",
  "tilo-test-env",
  "url",
  "wasm-bindgen",
@@ -20006,6 +20011,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-advisory-lock",
+ "tilo-files",
  "tilo-paths",
  "tilo-test-env",
  "tokio",
@@ -20108,6 +20114,7 @@ dependencies = [
  "objc2-core-spotlight",
  "objc2-foundation 0.3.2",
  "tempfile",
+ "tilo-files",
  "tracing",
  "workspace-hack",
 ]
@@ -20363,6 +20370,9 @@ dependencies = [
 [[package]]
 name = "tilo-local"
 version = "0.1.0"
+dependencies = [
+ "tilo-socket",
+]
 
 [[package]]
 name = "tilo-locale"
@@ -20534,6 +20544,7 @@ dependencies = [
  "serde_json",
  "tilo-app-id",
  "tilo-contact-directory",
+ "tilo-files",
  "tilo-resource",
  "tokio",
  "tracing",
@@ -21409,6 +21420,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-copy-lint",
+ "tilo-files",
  "tilo-lock",
  "tilo-service",
  "tokio",
@@ -21515,6 +21527,7 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-clock",
+ "tilo-files",
  "tilo-paths",
  "tilo-platform-caps",
  "tilo-test-env",
@@ -22824,6 +22837,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-socket"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "tilo-test-env",
+]
+
+[[package]]
 name = "tilo-sort"
 version = "0.1.0"
 
@@ -22992,6 +23013,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
+ "tilo-files",
  "tilo-test-env",
  "tracing",
  "wire-frame",
@@ -24031,6 +24053,7 @@ dependencies = [
 name = "tilo-x11-transfer"
 version = "0.1.0"
 dependencies = [
+ "tilo-files",
  "tilo-mime",
  "tilo-test-env",
  "tracing",
@@ -29835,6 +29858,7 @@ dependencies = [
  "tilo-settings-service",
  "tilo-sheets",
  "tilo-shell-surface",
+ "tilo-socket",
  "tilo-sort",
  "tilo-speaker-service",
  "tilo-spellcheck",

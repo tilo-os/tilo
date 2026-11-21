@@ -1,0 +1,25 @@
+[package]
+name = "tilo-socket"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Local Unix-domain sockets named by a path of any length: bind and connect where the kernel's fixed path buffer would refuse a deep profile or state root."
+
+[lib]
+name = "tilo_socket"
+path = "src/lib.rs"
+
+# A std-only leaf: `tilo_files::native::socket` re-exports it, and tools that stay
+# dependency-free (the `cargo desktop` launcher) bind and connect through it too.
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

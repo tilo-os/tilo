@@ -8,11 +8,9 @@
 //! removes an allowance makes the hit count again, which fails the ratchet in
 //! the run that sees it. Editing a comment can never move an exemption.
 //!
-//! The same table holds the two inline exemptions the Python policy checks
-//! read: a dimension compared to a literal that is not a breakpoint
-//! ([`Rule::Breakpoint`]) and a socket bound by a path that is short by
-//! construction ([`Rule::SocketPath`]). `tools/policy/rust_source.py` parses
-//! this file for those, so keep each entry one `allowance(...)` call.
+//! The table also holds the inline exemption the breakpoint policy check
+//! reads ([`Rule::Breakpoint`]). `tools/policy/rust_source.py` parses this file
+//! for it, so keep each entry one `allowance(...)` call.
 
 /// What an allowance lets through: one ratchet pattern, or one of the inline
 /// policy checks.
@@ -49,9 +47,8 @@ pub enum Rule {
     AllCapsLabel,
     MiddleDotJoin,
     ToUppercase,
-    // The inline policy checks.
+    // The inline policy check.
     Breakpoint,
-    SocketPath,
 }
 
 impl Rule {
@@ -88,14 +85,13 @@ impl Rule {
             Self::MiddleDotJoin => "middle_dot_join",
             Self::ToUppercase => "to_uppercase",
             Self::Breakpoint => "breakpoint",
-            Self::SocketPath => "socket_path",
         }
     }
 
     /// Whether a design ratchet counts this rule (rather than an inline check).
     #[must_use]
     pub const fn is_ratchet(self) -> bool {
-        !matches!(self, Self::Breakpoint | Self::SocketPath)
+        !matches!(self, Self::Breakpoint)
     }
 }
 
@@ -422,20 +418,6 @@ pub const ALLOWANCES: &[Allowance] = &[
         "parse_image_data",
         Rule::Breakpoint,
         "an icon's pixel bound, not a layout width",
-    ),
-    // A fixed path in the check's own directory, short by construction.
-    allowance(
-        "crates/dev/tilo-local/src/check.rs",
-        "trap",
-        Rule::SocketPath,
-        "the check's own directory, kept short by construction",
-    ),
-    // The X11 display socket is `/tmp/.X11-unix/X<display>`, short by construction.
-    allowance(
-        "crates/session/x11-transfer/src/bridge.rs",
-        "connect",
-        Rule::SocketPath,
-        "the X server's socket lives at a fixed short path under /tmp",
     ),
 ];
 

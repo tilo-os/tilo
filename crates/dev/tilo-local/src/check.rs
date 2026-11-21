@@ -8,7 +8,6 @@
 //! to a trap fails the check. The desktop's window opens on a throwaway headless Tilo session
 //! in place of the host desktop, so the windowed session is checked without a display.
 
-use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -85,7 +84,7 @@ impl Traps {
         // The traps are this check's own: `socket_dir` keeps their paths short
         // enough for the kernel, and a bind that still fails is reported here.
         let listener =
-            UnixListener::bind(path).map_err(|error| format!("{}: {error}", path.display()))?;
+            tilo_socket::bind(path).map_err(|error| format!("{}: {error}", path.display()))?;
         let hits = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&hits);
         std::thread::spawn(move || {

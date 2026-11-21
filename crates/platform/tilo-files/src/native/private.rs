@@ -301,7 +301,6 @@ fn publish(path: &Path, bytes: &[u8], replace: bool) -> io::Result<bool> {
 #[cfg(unix)]
 pub fn bind_socket(path: &Path) -> io::Result<std::os::unix::net::UnixListener> {
     use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
-    use std::os::unix::net::UnixListener;
 
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_socket() => {
@@ -317,7 +316,7 @@ pub fn bind_socket(path: &Path) -> io::Result<std::os::unix::net::UnixListener> 
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let listener = UnixListener::bind(path)?;
+    let listener = super::socket::bind(path)?;
     if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
         let _ = std::fs::remove_file(path);
         return Err(error);

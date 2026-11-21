@@ -38,7 +38,7 @@ pub mod nofollow;
 pub mod private;
 pub mod retained_home;
 #[cfg(unix)]
-pub mod socket;
+pub use tilo_socket as socket;
 pub mod tree;
 #[cfg(unix)]
 pub mod x11_authority;

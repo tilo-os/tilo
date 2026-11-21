@@ -1,7 +1,6 @@
 //! The runtime's side of the native socket this crate speaks.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
@@ -14,7 +13,7 @@ const ANSWER: Duration = Duration::from_secs(5);
 pub fn open(native_socket: &Path, entry: &str) -> io::Result<()> {
     let mut request = request_line(entry)?;
     request.push('\n');
-    let mut stream = UnixStream::connect(native_socket)?;
+    let mut stream = tilo_files::native::socket::connect(native_socket)?;
     stream.set_read_timeout(Some(ANSWER))?;
     stream.set_write_timeout(Some(ANSWER))?;
     stream.write_all(request.as_bytes())?;

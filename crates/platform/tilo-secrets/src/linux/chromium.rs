@@ -3,14 +3,12 @@ use super::{
     Connection, HashMap, OwnedObjectPath, OwnedValue, Proxy, SERVICE, SERVICE_PATH, Secret,
     SecretError, Value, WireSecret, on_bus,
 };
-use std::{
-    os::{fd::AsRawFd, unix::net::UnixStream},
-    time::Duration,
-};
+use std::{os::fd::AsRawFd, path::Path, time::Duration};
 
 pub(super) fn owner_bus(uid: u32) -> Result<Connection, SecretError> {
+    let path = format!("/run/user/{uid}/bus");
     let socket =
-        UnixStream::connect(format!("/run/user/{uid}/bus")).map_err(|_| SecretError::Denied)?;
+        tilo_files::native::socket::connect(Path::new(&path)).map_err(|_| SecretError::Denied)?;
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
     let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
         .map_err(|_| SecretError::Denied)?;

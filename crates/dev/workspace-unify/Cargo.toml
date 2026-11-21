@@ -1378,6 +1378,7 @@ doc = false
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-shell-surface" = { path = "../../../crates/session/shell-surface", default-features = false, features = [] }
+"tilo-socket" = { path = "../../../crates/platform/tilo-socket", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-speaker-service" = { path = "../../../crates/session/speaker-service", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }
@@ -2542,6 +2543,7 @@ doc = false
 "tilo-server-session" = { path = "../../../crates/server/tilo-server-session", default-features = false, features = [] }
 "tilo-session-actions" = { path = "../../../crates/session/session-actions", default-features = false, features = [] }
 "tilo-session-client" = { path = "../../../crates/session/client", default-features = false, features = ["default", "toolkit"] }
+"tilo-socket" = { path = "../../../crates/platform/tilo-socket", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
@@ -4069,6 +4071,7 @@ doc = false
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-shell-surface" = { path = "../../../crates/session/shell-surface", default-features = false, features = [] }
+"tilo-socket" = { path = "../../../crates/platform/tilo-socket", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-speaker-service" = { path = "../../../crates/session/speaker-service", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }

@@ -7,6 +7,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# The X server's socket is reached by path.
+tilo-files = { path = "../../platform/tilo-files" }
 # Text's names, shared with the clipboard a Wayland program publishes.
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 tracing.workspace = true
