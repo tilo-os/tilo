@@ -227,8 +227,35 @@ try {
   })()`));
   step('00-home people', people);
   if (!people.rows.length) problems.push('the workspace page lists no people');
-  if (!people.rows.some(row => row.present)) problems.push('the workspace page shows nobody as here');
-  if (!/\d+ here/.test(people.count ?? '')) problems.push(`the workspace page counts nobody here (${JSON.stringify(people.count)})`);
+  // Who is here is the live session's to say, and a page that says "0 here"
+  // while someone reads it is wrong: the count stands only when it counts
+  // someone, and it counts what the rows mark.
+  const counted = /^\d+ here$/.exec(people.count ?? '');
+  const marked = people.rows.filter(row => row.present).length;
+  if (people.count !== 'People' && (!counted || Number(counted[0].split(' ')[0]) !== marked)) {
+    problems.push(`the workspace page says ${JSON.stringify(people.count)} of ${marked} people marked here`);
+  }
+
+  // The system's search, as the workspace answers it: a field that takes the
+  // caret, every app under it, and the apps narrowing as a person types. The
+  // page keeps no index of its own.
+  await openPage('search', 'search');
+  const searching = await look('00b-search');
+  if (searching.refused) problems.push(`search: refused (${searching.refused})`);
+  if (!searching.headings.includes('Apps')) problems.push(`the search page offers no apps (${JSON.stringify(searching.headings)})`);
+  const searchField = `document.querySelector('#tilo-page .tilo-search-field')`;
+  if (await until(`document.activeElement === ${searchField}`, 15_000) === null) problems.push('the search field did not take the caret');
+  const appsBefore = await tab.evaluate(`document.querySelectorAll('#tilo-page .tilo-search-group[aria-label="Apps"] .tilo-search-row').length`);
+  await type('set');
+  const narrowed = await until(
+    `(() => { const rows = [...document.querySelectorAll('#tilo-page .tilo-search-group[aria-label="Apps"] .tilo-search-row')];
+      return rows.length > 0 && rows.length < ${appsBefore} && rows.some(row => (row.innerText || '').includes('Settings')); })()`,
+    30_000,
+  );
+  step('00b-search typed', {appsBefore, rows: await tab.evaluate(`[...document.querySelectorAll('#tilo-page .tilo-search-row')].map(a => (a.innerText || '').replace(/\\s+/g, ' ').trim()).slice(0, 8)`)});
+  if (appsBefore === 0) problems.push('the search page lists no apps with nothing typed');
+  if (narrowed === null) problems.push('typing did not narrow the search to Settings');
+  await look('00c-search-narrowed');
 
   await openPage('first open');
   await look('01-notes-wide');
@@ -311,11 +338,9 @@ try {
   // of its own, so a word finds what the person's records hold and a row opens
   // the page that shows it.
   await openPage('search', 'search');
-  const searching = await look('14-search');
-  if (searching.refused) problems.push(`search: refused (${searching.refused})`);
-  if (!searching.headings.includes('Apps')) problems.push(`the search page offers no apps (${JSON.stringify(searching.headings)})`);
-  const searchField = `document.querySelector('#tilo-page .tilo-search-field')`;
-  if (await until(`document.activeElement === ${searchField}`, 15_000) === null) problems.push('the search field did not take the caret');
+  const later = await look('14-search');
+  if (later.refused) problems.push(`search: refused (${later.refused})`);
+  if (await until(`document.activeElement === ${searchField}`, 15_000) === null) problems.push('the search field did not take the caret on the way back');
   await type('Groceries');
   const found = await until(
     `[...document.querySelectorAll('#tilo-page .tilo-search-row')].some(a => (a.innerText || '').includes('Groceries'))`,

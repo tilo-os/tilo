@@ -12,7 +12,10 @@ use super::{
     ActionCallError, Caller, DocumentRoute, HashMap, Job, Needs, Worker, WorkspaceActions,
     WorkspaceId, bounded, catch_up, pending,
 };
-use tilo_actions::remote::{CatalogueQuery, Completer, FOUND_FILE, Pending, Within};
+use tilo_actions::remote::{
+    CatalogueQuery, Completer, FOUND_FILE, InvokeRequest, Pending, RemoteActionTarget, Within,
+};
+use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::{
     OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
 };
@@ -89,7 +92,48 @@ pub(super) enum HeldPage {
         workspace_id: WorkspaceId,
         caller: Caller,
         needle: String,
+        /// The rows the page shows now, each naming what it opens or runs.
+        rows: Vec<SearchRow>,
+        /// What could not be searched here, when something could not.
+        notes: Option<String>,
+        /// The action a row ran and the page still waits on: its answer is
+        /// what the page shows next.
+        pending: Option<PendingRun>,
+        /// What the last run answered, as the person reads it.
+        notice: Option<String>,
     },
+}
+
+/// One row of a search page: what it says, the page it opens, or the action
+/// it runs.
+pub(super) struct SearchRow {
+    /// The row's element number (`data-p`): what the page's act names it by.
+    id: u32,
+    label: String,
+    secondary: String,
+    /// The page the row opens.
+    href: Option<String>,
+    /// The action the row runs, when it runs one.
+    run: Option<RowRun>,
+    /// Whether the row stands under the apps.
+    app: bool,
+}
+
+/// The action a search row runs: the target a caller invokes, as the
+/// catalogue named it.
+struct RowRun {
+    provider: String,
+    resource: String,
+    action: String,
+    /// The catalogue revision the row was listed at: what an action whose
+    /// contract asks for confirmation is shown and refused at.
+    revision: Option<String>,
+}
+
+/// The action a search page ran and waits on.
+pub(super) struct PendingRun {
+    invocation: InvocationId,
+    label: String,
 }
 
 /// The pages the service holds, by number.
@@ -348,6 +392,10 @@ impl Worker {
 
     /// The workspace's front page: who is in it and who of them is here, and
     /// the apps a member opens, each a link to its own page.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one page read top to bottom: the people, then the apps"
+    )]
     fn open_home(&mut self, workspace_id: WorkspaceId) -> Result<OpenedPage, PageRefusal> {
         // The workspace has to be readable here, as an app's page does.
         let state = self
@@ -383,9 +431,17 @@ impl Worker {
             "<a class=\"tilo-home-search\" href=\"/w/{workspace_id}/{SEARCH_APP}\" \
              aria-label=\"Search the workspace\">Search apps, actions and records</a>"
         );
+        // Who is here is said only when the live session says someone is: a
+        // page that claims "0 here" of a workspace someone is reading is
+        // wrong about the one person it can see.
+        let count = if here == 0 {
+            "People".to_owned()
+        } else {
+            format!("{here} here")
+        };
         let _ = write!(
             body,
-            "<section class=\"tilo-people\" aria-label=\"People\"><h2 class=\"tilo-people-count\">{here} here</h2><ul class=\"tilo-people-list\">"
+            "<section class=\"tilo-people\" aria-label=\"People\"><h2 class=\"tilo-people-count\">{count}</h2><ul class=\"tilo-people-list\">"
         );
         let mut rows = roster;
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -475,7 +531,8 @@ impl Worker {
             .refresh(workspace_id, Needs::Workspace)
             .map_err(refused)?;
         state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
-        let results = self.search_results(workspace_id, caller, needle);
+        let (rows, notes) = self.search_rows(workspace_id, caller, needle);
+        let body = search_body(needle, &results_html(&rows, None, notes.as_deref()));
         self.pages.next = self.pages.next.wrapping_add(1);
         let page = self.pages.next;
         self.pages.held.insert(
@@ -484,6 +541,10 @@ impl Worker {
                 workspace_id,
                 caller: caller.clone(),
                 needle: needle.to_owned(),
+                rows,
+                notes,
+                pending: None,
+                notice: None,
             },
         );
         Ok(OpenedPage {
@@ -493,16 +554,23 @@ impl Worker {
                 + ui::composition::page::PAGE_CSS
                 + HOME_CSS
                 + SEARCH_CSS,
-            body: search_body(needle, &results),
+            body,
         })
     }
 
-    /// What the workspace's search answers `needle` with, as the page shows
-    /// it: the apps it names, the actions its records offer, and the records
-    /// whose text holds it. Each is a link to the page that shows it.
-    fn search_results(&mut self, workspace_id: WorkspaceId, caller: &Caller, needle: &str) -> String {
+    /// What the workspace's search answers `needle` with, as the page's rows:
+    /// the apps it names, the records whose text holds it, and the actions
+    /// their catalogue offers. The second answer says what could not be
+    /// searched here, when something could not.
+    fn search_rows(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        needle: &str,
+    ) -> (Vec<SearchRow>, Option<String>) {
         let typed = needle.trim();
         let query = typed.to_lowercase();
+        let mut rows: Vec<SearchRow> = Vec::new();
         // The apps stand first and always: with nothing typed the page is the
         // way in to all of them.
         let mut apps: Vec<(String, String)> = self
@@ -517,33 +585,32 @@ impl Worker {
             .map(|app| (app.title().to_owned(), page_app_name(app.app_id()).to_owned()))
             .collect();
         apps.sort_by(|(a, _), (b, _)| a.cmp(b));
-        let mut out = String::new();
-        if !apps.is_empty() {
-            out.push_str("<section class=\"tilo-search-group\" aria-label=\"Apps\"><h2>Apps</h2><ul>");
-            for (title, name) in apps {
-                let _ = write!(
-                    out,
-                    "<li><a class=\"tilo-search-row\" href=\"/w/{workspace_id}/{name}\">\
-                     <span class=\"tilo-search-row-label\">{}</span></a></li>",
-                    escape(&title)
-                );
-            }
-            out.push_str("</ul></section>");
+        for (title, name) in apps {
+            let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+            rows.push(SearchRow {
+                id,
+                label: title,
+                secondary: String::new(),
+                href: Some(format!("/w/{workspace_id}/{name}")),
+                run: None,
+                app: true,
+            });
         }
         if typed.is_empty() {
-            return out;
+            return (rows, None);
         }
+        let mut notes: Vec<&str> = Vec::new();
         // What the workspace holds, by the words in it: the records the
-        // search finds, and the actions their catalogue offers. A result both
-        // of them name is one row.
-        let mut rows: Vec<(String, String, String)> = Vec::new();
+        // search finds. A record is a page the row opens.
         match self.search(workspace_id, caller, (typed, &Within::default())) {
             Ok(found) => {
                 for found in found.into_iter().filter(|found| found.kind != FOUND_FILE) {
                     let Some(app) = found.app.as_deref() else {
                         continue;
                     };
-                    let Some(app) = self.page_app(app) else { continue };
+                    let Some(app) = self.page_app(app) else {
+                        continue;
+                    };
                     if !app.keeps_workspace_resource() {
                         continue;
                     }
@@ -552,13 +619,25 @@ impl Worker {
                         page_app_name(app.app_id()),
                         sub = encode_part(&found.resource),
                     );
-                    push_row(&mut rows, (found.label, app.title().to_owned(), href));
+                    if rows.iter().any(|row| row.href.as_deref() == Some(href.as_str())) {
+                        continue;
+                    }
+                    let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+                    rows.push(SearchRow {
+                        id,
+                        label: found.label,
+                        secondary: app.title().to_owned(),
+                        href: Some(href),
+                        run: None,
+                        app: false,
+                    });
                 }
             }
-            Err(_) => out.push_str(
-                "<p class=\"tilo-search-note\">The workspace's records could not be searched here.</p>",
-            ),
+            Err(_) => notes.push("The workspace's records could not be searched here."),
         }
+        // The actions the workspace's records offer, which the row runs: the
+        // same invocation an agent or a script makes, decided for this person
+        // by the same admission, and answered as the action alone answers.
         let asked = CatalogueQuery {
             needle: typed.to_owned(),
             max_results: 40,
@@ -567,76 +646,219 @@ impl Worker {
         match self.catalogue_page(workspace_id, caller, &asked) {
             Ok(page) => {
                 for row in page.rows {
-                    // A row is an action on a resource; the resource is what
-                    // the page shows, so the row opens it.
                     let Some(action) = row.action else { continue };
-                    let Some(app) = self.page_app(&row.app_id) else { continue };
-                    if !app.keeps_workspace_resource() {
-                        continue;
-                    }
-                    let href = format!(
-                        "/w/{workspace_id}/{}/{sub}",
-                        page_app_name(app.app_id()),
-                        sub = encode_part(&row.resource.id),
-                    );
-                    push_row(&mut rows, (action.action_label, row.resource.label, href));
+                    let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+                    rows.push(SearchRow {
+                        id,
+                        label: action.action_label,
+                        secondary: row.resource.label,
+                        href: None,
+                        run: Some(RowRun {
+                            provider: row.provider,
+                            resource: row.resource.id,
+                            action: action.address.action,
+                            revision: Some(page.revision.clone()),
+                        }),
+                        app: false,
+                    });
                 }
             }
-            Err(_) => out.push_str(
-                "<p class=\"tilo-search-note\">The workspace's actions could not be searched here.</p>",
-            ),
+            Err(_) => notes.push("The workspace's actions could not be searched here."),
         }
-        if !rows.is_empty() {
-            out.push_str("<section class=\"tilo-search-group\" aria-label=\"Actions and records\"><h2>Actions and records</h2><ul>");
-            for (label, secondary, href) in rows {
-                let _ = write!(
-                    out,
-                    "<li><a class=\"tilo-search-row\" href=\"{href}\">\
-                     <span class=\"tilo-search-row-label\">{label}</span>\
-                     <span class=\"tilo-search-row-kind\">{secondary}</span></a></li>",
-                    label = escape(&label),
-                    secondary = escape(&secondary),
-                );
-            }
-            out.push_str("</ul></section>");
-        } else if out.contains("could not be searched") {
-            // What failed says so above; what merely found nothing says that.
-        } else {
-            out.push_str(
-                "<p class=\"tilo-search-note\">Nothing here matches. Press Enter on a page to search everywhere from there.</p>",
-            );
+        if rows.iter().all(|row| row.app) && notes.is_empty() {
+            notes.push("Nothing here matches.");
         }
-        out
+        (rows, (!notes.is_empty()).then(|| notes.join(" ")))
     }
 
-    /// Act on the search page `page`: the field's text is the question, and
-    /// its answer is the results, which are the one thing that changes.
+    /// Act on the search page `page`: typing narrows it, and a row runs its
+    /// action. A row naming a page is a link the browser follows, which asks
+    /// nothing here.
     fn act_on_search(
         &mut self,
         page: u64,
-        (workspace_id, caller, needle): (WorkspaceId, Caller, String),
+        (workspace_id, caller, _needle): (WorkspaceId, Caller, String),
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
-        let typed = match act {
-            Some((_, _, PageAction::Value(text))) => text,
-            // The rows are links the browser follows; nothing else on the
-            // page acts, so a pass over it answers what changed elsewhere,
-            // which is nothing.
-            Some(_) | None => needle,
+        let Some((id, _, action)) = act else {
+            // A pass over the page: an action it ran that has settled says so.
+            return Ok(self.settled_search(page));
         };
+        match action {
+            PageAction::Value(text) => {
+                self.pages.held.insert(
+                    page,
+                    HeldPage::Search {
+                        workspace_id,
+                        caller,
+                        needle: text.clone(),
+                        rows: Vec::new(),
+                        notes: None,
+                        pending: None,
+                        notice: None,
+                    },
+                );
+                self.search_again(page, workspace_id, &text)
+            }
+            PageAction::Activate => self.run_search_row(page, workspace_id, &caller, id),
+            PageAction::Toggle | PageAction::Focus | PageAction::Select { .. } => Ok(Vec::new()),
+        }
+    }
+
+    /// What the field now says, answered with the rows it narrows to.
+    fn search_again(
+        &mut self,
+        page: u64,
+        workspace_id: WorkspaceId,
+        needle: &str,
+    ) -> Result<Vec<PagePatch>, PageRefusal> {
         let state = self
             .refresh(workspace_id, Needs::Workspace)
             .map_err(refused)?;
         state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
-        let results = self.search_results(workspace_id, &caller, &typed);
-        if let Some(HeldPage::Search { needle, .. }) = self.pages.held.get_mut(&page) {
-            *needle = typed;
+        let caller = match self.pages.held.get(&page) {
+            Some(HeldPage::Search { caller, .. }) => caller.clone(),
+            _ => return Err(unavailable("the page was closed")),
+        };
+        let (rows, notes) = self.search_rows(workspace_id, &caller, needle);
+        if let Some(HeldPage::Search {
+            rows: held,
+            notes: held_notes,
+            notice,
+            ..
+        }) = self.pages.held.get_mut(&page)
+        {
+            *held = rows;
+            *held_notes = notes;
+            *notice = None;
         }
+        self.patch_search(page)
+    }
+
+    /// Run the action the row numbered `id` names, as a caller of the
+    /// workspace runs one: logged for the person, admitted where every
+    /// invocation is, and answered with what the action answers.
+    fn run_search_row(
+        &mut self,
+        page: u64,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        id: u32,
+    ) -> Result<Vec<PagePatch>, PageRefusal> {
+        let running = match self.pages.held.get(&page) {
+            Some(HeldPage::Search {
+                rows, pending, ..
+            }) => {
+                if pending.is_some() {
+                    return self.patch_search(page);
+                }
+                rows.iter().find(|row| row.id == id).and_then(|row| {
+                    row.run.as_ref().map(|run| (row.label.clone(), run))
+                })
+            }
+            _ => return Err(unavailable("the page was closed")),
+        };
+        let Some((label, run)) = running else {
+            return Ok(Vec::new());
+        };
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: run.provider.clone(),
+                address: ActionAddress::new(run.resource.clone(), run.action.clone()),
+            },
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: run.revision.clone(),
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let invocation = request.invocation;
+        let logged = self.log().insert(caller, request);
+        let (notice, pending) = if logged {
+            // The invocation runs here as any caller's does; one that waits
+            // for a part of what it changes ends on a later pass
+            // (`settled_search`).
+            let _ = self.invoke(workspace_id, invocation);
+            (format!("Running {label}…"), Some(PendingRun { invocation, label }))
+        } else {
+            (
+                "The workspace is running as many actions as it keeps track of: ask again in a moment."
+                    .to_owned(),
+                None,
+            )
+        };
+        if let Some(HeldPage::Search { notice: held, pending: held_pending, .. }) =
+            self.pages.held.get_mut(&page)
+        {
+            *held = Some(notice);
+            *held_pending = pending;
+        }
+        self.patch_search(page)
+    }
+
+    /// A pass over the search page: what the action it ran answered, once it
+    /// has. Nothing while it runs.
+    fn settled_search(&mut self, page: u64) -> Vec<PagePatch> {
+        let Some(HeldPage::Search { pending, .. }) = self.pages.held.get(&page) else {
+            return Vec::new();
+        };
+        let Some(run) = pending else {
+            return Vec::new();
+        };
+        let invocation = run.invocation;
+        let label = run.label.clone();
+        let settled = self
+            .log()
+            .entries
+            .get(&invocation)
+            .map(|entry| entry.update.clone());
+        let notice = match settled {
+            Some(InvocationUpdate::Succeeded { output, .. }) => {
+                Some(said_of(&label, &output))
+            }
+            Some(InvocationUpdate::Failed { error, .. }) => {
+                Some(format!("{label}: {}", error.message))
+            }
+            Some(InvocationUpdate::Cancelled { message, .. }) => Some(match message {
+                Some(message) => format!("{label}: {message}"),
+                None => format!("{label}: stopped."),
+            }),
+            Some(InvocationUpdate::Accepted { .. } | InvocationUpdate::Progress { .. } | InvocationUpdate::Item { .. })
+            | None => None,
+        };
+        let Some(notice) = notice else {
+            return Vec::new();
+        };
+        if let Some(HeldPage::Search {
+            notice: held,
+            pending,
+            ..
+        }) = self.pages.held.get_mut(&page)
+        {
+            *held = Some(notice);
+            *pending = None;
+        }
+        self.patch_search(page).unwrap_or_default()
+    }
+
+    /// The search page `page` as it stands, as the patch that shows it.
+    fn patch_search(&self, page: u64) -> Result<Vec<PagePatch>, PageRefusal> {
+        let Some(HeldPage::Search {
+            rows,
+            notes,
+            notice,
+            ..
+        }) = self.pages.held.get(&page)
+        else {
+            return Err(unavailable("the page was closed"));
+        };
+        let html = results_div(&results_html(rows, notice.as_deref(), notes.as_deref()));
         Ok(vec![PagePatch {
             id: SEARCH_RESULTS,
-            html: format!(
-                "<div class=\"tilo-search-results\" data-p=\"{SEARCH_RESULTS}\">{results}</div>"
-            ),
+            html,
         }])
     }
 
@@ -664,6 +886,7 @@ impl Worker {
                 workspace_id,
                 caller,
                 needle,
+                ..
             }) => (
                 None,
                 None,
@@ -816,6 +1039,10 @@ const SEARCH_RESULTS: u32 = 2;
 /// thing, not for reading the workspace whole.
 const MOST_ROWS: usize = 40;
 
+/// The element number the first result row stands at; the field and the
+/// results stand before it.
+const SEARCH_FIRST_ROW: u32 = 10;
+
 /// An app's page name: the last part of its id (`notes` for `so.tilo.notes`).
 fn page_app_name(app_id: &str) -> &str {
     app_id
@@ -823,14 +1050,90 @@ fn page_app_name(app_id: &str) -> &str {
         .map_or(app_id, |(_, last)| last)
 }
 
-/// `row` added to `rows` unless a row already says the same thing of the same
-/// resource, and not past [`MOST_ROWS`]: what a search finds and what its
-/// catalogue lists may name one resource.
-fn push_row(rows: &mut Vec<(String, String, String)>, (label, secondary, href): (String, String, String)) {
-    if rows.len() >= MOST_ROWS || rows.iter().any(|(_, _, kept)| *kept == href) {
-        return;
+/// The rows of the search page as HTML, grouped: the apps, then what the
+/// workspace holds and what its actions offer. `notice` says what the last
+/// action answered, and `notes` what could not be searched here.
+fn results_html(rows: &[SearchRow], notice: Option<&str>, notes: Option<&str>) -> String {
+    let mut out = String::new();
+    if let Some(notice) = notice {
+        let _ = write!(
+            out,
+            "<p class=\"tilo-search-notice\" role=\"status\">{}</p>",
+            escape(notice)
+        );
     }
-    rows.push((label, secondary, href));
+    if let Some(notes) = notes {
+        let _ = write!(out, "<p class=\"tilo-search-note\">{}</p>", escape(notes));
+    }
+    for (app, heading) in [(true, "Apps"), (false, "Actions and records")] {
+        let group: Vec<&SearchRow> = rows
+            .iter()
+            .filter(|row| row.app == app)
+            .take(MOST_ROWS)
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        let _ = write!(
+            out,
+            "<section class=\"tilo-search-group\" aria-label=\"{heading}\"><h2>{heading}</h2><ul>"
+        );
+        for row in group {
+            let secondary = if row.secondary.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<span class=\"tilo-search-row-kind\">{}</span>",
+                    escape(&row.secondary)
+                )
+            };
+            match &row.href {
+                Some(href) => {
+                    let _ = write!(
+                        out,
+                        "<li><a class=\"tilo-search-row\" href=\"{}\">\
+                         <span class=\"tilo-search-row-label\">{}</span>{secondary}</a></li>",
+                        escape(href),
+                        escape(&row.label)
+                    );
+                }
+                None => {
+                    let _ = write!(
+                        out,
+                        "<li><button class=\"tilo-search-row\" type=\"button\" data-a=\"activate\" \
+                         data-p=\"{}\"><span class=\"tilo-search-row-label\">{}</span>{secondary}\
+                         </button></li>",
+                        row.id,
+                        escape(&row.label)
+                    );
+                }
+            }
+        }
+        out.push_str("</ul></section>");
+    }
+    out
+}
+
+/// The results element, holding `contents`: the one element a search page
+/// patches.
+fn results_div(contents: &str) -> String {
+    format!("<div class=\"tilo-search-results\" data-p=\"{SEARCH_RESULTS}\">{contents}</div>")
+}
+
+/// What the action `label` answered, as a person reads it: the value it
+/// answered with, when it names something readable, or that it is done.
+fn said_of(label: &str, output: &ActionOutput) -> String {
+    let said = match &output.value {
+        Some(serde_json::Value::String(text)) => Some(text.clone()),
+        Some(serde_json::Value::Object(fields)) => ["link", "url", "text", "message"]
+            .iter()
+            .find_map(|key| fields.get(*key).and_then(serde_json::Value::as_str))
+            .map(str::to_owned),
+        _ => None,
+    };
+    let said = said.unwrap_or_else(|| "Done.".to_owned());
+    let said: String = said.chars().take(600).collect();
+    format!("{label}: {said}")
 }
 
 /// The search page `needle` reached with and the results it answers with: a
@@ -842,9 +1145,9 @@ fn search_body(needle: &str, results: &str) -> String {
          <div class=\"tilo-search-bar\">\
          <input class=\"tilo-search-field\" type=\"search\" data-a=\"value\" data-t=\"search\" \
          data-p=\"1\" value=\"{needle}\" placeholder=\"Search apps, actions and records\" \
-         aria-label=\"Search\"></div>\
-         <div class=\"tilo-search-results\" data-p=\"{SEARCH_RESULTS}\">{results}</div></div>",
-        needle = escape(needle)
+         aria-label=\"Search\"></div>{results}</div>",
+        needle = escape(needle),
+        results = results_div(results),
     )
 }
 
