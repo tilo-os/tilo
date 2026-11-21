@@ -350,6 +350,53 @@ tilo_test_env::scenario! {
         assert!(package.actions.iter().all(|spec| spec.id != scenario.id));
     }
 
+    phase a_file_parameter_publishes_the_form_a_caller_writes;
+    // A `File` is no form's value, so a caller outside the window names the content it already
+    // put in the workspace: the surface publishes that form, which is the one the runtime
+    // decodes (`tilolang_runtime::blob::file_from_json`).
+    {
+        let source = format!(
+            "{TODO}\naction import(l: TodoList, file: File) {{ l.title = file.name }}\n"
+        );
+        let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(&source, "")]);
+        let meta = &packages[0].meta;
+        let action = meta
+            .actions
+            .iter()
+            .find(|action| action.name == "import")
+            .expect("the package declares it");
+        let surfaces = package_surfaces(meta, &SourceWords);
+        let list = surfaces
+            .iter()
+            .find(|surface| surface.kind == "tl.so.tilo.todo.TodoList")
+            .expect("the file's action is on the list's kind");
+        assert!(list.verb(&action.id).is_some(), "the surface offers it");
+        let verb = list
+            .verbs
+            .iter()
+            .find(|verb| verb.id == action.id)
+            .expect("the verb is on the surface");
+        let param = verb
+            .params
+            .iter()
+            .find(|param| param.name == "file")
+            .expect("the file is a parameter");
+        let schema = &param.schema;
+        assert_eq!(
+            schema.pointer("/properties/file/required"),
+            Some(&json!(["content", "name"])),
+            "{schema}"
+        );
+        let content = schema
+            .pointer("/properties/file/properties/content")
+            .expect("the content is named");
+        assert_eq!(content["type"], "string");
+        assert_eq!(
+            content[tilo_actions::params::CONTENT_ANNOTATION],
+            json!(true)
+        );
+    }
+
     phase a_read_actions_answer_is_typed_by_the_surface;
     // A native app's read action is an action of its document in the catalogue,
     // typed by the value the surface publishes it answers with.

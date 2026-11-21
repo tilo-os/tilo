@@ -156,6 +156,9 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
         // An account of some service, as its URI (`mailto:jane@x.com`).
         Ty::Identifier => json!({"type": "string", "format": "uri"}),
         Ty::Actor => actor_schema(),
+        // A file a caller outside the window names: the content it put in the workspace, as a
+        // put answered it, and what the file is.
+        Ty::File => file_schema(),
         Ty::Record(key) => tilo_actions::picked_resource_schema(&resource_type(key)),
         Ty::Enum(key) => match plain_cases(meta, key) {
             Some(cases) => {
@@ -187,6 +190,49 @@ fn schema_of(meta: &Meta, ty: &Ty) -> Json {
         Ty::Map(inner) => json!({"type": "object", "additionalProperties": schema_of(meta, inner)}),
         _ => json!({}),
     }
+}
+
+/// The schema a `File` parameter publishes: the file as a caller outside the window names it —
+/// the content it already put in the workspace, by the reference a put answered
+/// (`tilo.content:<reference>`), and the name, media type and size the file has.
+///
+/// A window asks the person with the chooser instead; this is the form an agent, a script or a
+/// client writes, and the one a read answers back.
+#[must_use]
+pub fn file_schema() -> Json {
+    json!({
+        "type": "object",
+        "required": ["file"],
+        "additionalProperties": false,
+        "properties": {
+            "file": {
+                "type": "object",
+                "required": ["content", "name"],
+                "additionalProperties": false,
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        tilo_actions::params::CONTENT_ANNOTATION: true,
+                        "description": "The `tilo.content:<reference>` a put answered.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "What the file is called, extension included.",
+                    },
+                    "media": {
+                        "type": "string",
+                        "description": "Its media type, read from its name when left out.",
+                    },
+                    "size": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How many bytes it is, read from the content when left out.",
+                    },
+                },
+            },
+        },
+    })
 }
 
 /// The schema of a workspace's actor as `tilo_action_policy::Grantee` writes it: a person by
