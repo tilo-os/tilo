@@ -36,10 +36,10 @@ files git tracks, tests included, measured on `main` at `d81cc1750ff`
 
 A resource is a thing a person or an agent can name, share, link to and
 open: a note, a task, a mailbox, a calendar, the workspace's folder, its
-member list. It has a kind, which an app declares (a `Note` has a title and
+member list. It has a resource type, which an app declares (a `Note` has a title and
 a body), and a stable id. Resources nest: a task can hold tasks, a mailbox
 holds messages, and the folder holds folders and files. There is no second
-level of "items" inside a resource; a kind is a property of a resource, not a
+level of "items" inside a resource; its type is a property of a resource, not a
 level of the tree. Every resource, at any depth, can be shared, granted,
 linked and shown on its own.
 
@@ -69,17 +69,20 @@ one resource to everyone.
 
 ### Addresses
 
-An address is the path to a resource, ending in an action:
-`acme/notes/<note>/update`, `acme/tasks/<task>/<sub-task>/done`,
-`acme/files/projects/plan.md/move`. People and agents use names, and they
-resolve to stable ids, so renaming something keeps links and grants. One
-resolver in `tilo_actions` walks the published tree for every caller.
+An address is the path to a resource, with an action after `#`:
+`acme/notes/<note>#update`, `acme/tasks/<task>/<sub-task>#done`,
+`acme/files/projects/plan.md#move`. Resource names are user text, so `#` is
+the only separator of an action and a name can never be mistaken for one.
+People and agents use names, which resolve to stable ids, so renaming
+something keeps links and grants. One resolver in `tilo_actions::tree` walks
+the published tree from the workspace root for every caller, and grants
+use the same addresses.
 
 ### Permissions
 
 - One rule. A grant gives a person, a role or an agent Allow, Ask or Deny on a
-  pattern over addresses (`acme/notes/*/update`, `acme/tasks/<list>/**`,
-  `acme/files/projects/**/read`), optionally limited to a kind. The most
+  pattern over addresses (`acme/notes/*#update`, `acme/tasks/<list>/**`,
+  `acme/files/projects/**#read`), optionally limited to a resource type. The most
   specific grant wins, a person's own grant beats their role's, and no grant
   means no. Roles are named sets of grants.
 - Membership and grants are a resource of the workspace, changed by signed
@@ -105,8 +108,8 @@ resolver in `tilo_actions` walks the published tree for every caller.
 
 ### Apps
 
-An app is a tilolang package installed in a workspace. It declares kinds of
-resource, actions (verbs with a typed input, a typed result and a kind:
+An app is a tilolang package installed in a workspace. It declares resource
+types, actions (verbs with a typed input, a typed result and a kind:
 read, edit or privileged) and views (functions from a resource to UI whose
 controls name fields and actions). Installing it publishes all three into the
 workspace's tree. That tree is the only registry.
@@ -118,7 +121,7 @@ means opening a view of a resource, in a window, a chat or a web page.
 Storage, sync, permissions, history, undo, search, notifications, presence,
 windows and outside effects (sending a mail, calling an API, declared by the
 action and carried out by the system under the workspace's grants) are the
-system's. An app is its kinds, its actions' code and its views.
+system's. An app is its resource types, its actions' code and its views.
 
 ### Agents
 
