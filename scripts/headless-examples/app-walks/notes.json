@@ -197,9 +197,7 @@
         ],
         "tl": [
           {
-            "press_any": [
-              "Trip to Lisbon"
-            ]
+            "select_row": "Trip to Lisbon"
           },
           {
             "wait_for": {
@@ -207,7 +205,7 @@
             }
           },
           {
-            "right_click": "Trip to Lisbon"
+            "row_menu": "Trip to Lisbon"
           },
           {
             "wait_for": "Tag…"
@@ -305,12 +303,14 @@
             }
           },
           {
-            "press_any": [
+            "click_any": [
               "File"
             ]
           },
           {
-            "wait_for": "Import Markdown…"
+            "wait_for": {
+              "shown": "Import Markdown…"
+            }
           },
           {
             "click_any": [

@@ -190,6 +190,30 @@ def control(session: Session, selector) -> dict | None:
     return None
 
 
+def drawn(target: dict) -> bool:
+    """Whether `target` is drawn anywhere: a control a window holds open but does
+    not show — a menu's items while its menu is closed — stands nowhere, and a
+    press aimed at it lands on nothing."""
+    x, y, w, h = target["rect"]
+    return w > 0 and h > 0 and x >= 0 and y >= 0
+
+
+def row_of(session: Session, window: dict | None, name: str) -> dict | None:
+    """The row `name` in the app window's own sidebar: a control with those words
+    drawn in the window's leading column, below its header — never the desktop's
+    tab of a window named by the same words."""
+    if window is None or window.get("rect") is None:
+        return None
+    x, y, w, _h = window["rect"]
+    for target in session.targets():
+        if target.get("name") != name or not drawn(target):
+            continue
+        tx, ty, _tw, _th = target["rect"]
+        if ty > y + 30 and tx < x + min(320.0, w / 2):
+            return target
+    return None
+
+
 def press(session: Session, selector, verb: str = "activate") -> dict:
     """Press the control `selector` names, as a person's pointer does; `verb`
     opens its context menu where the control offers one."""
@@ -417,15 +441,37 @@ class Walk:
 
     def op_click_any(self, value) -> dict:
         """Click the first of `selectors` the version offers, and say which: a
-        field takes the keyboard from a click where its action does not."""
+        field takes the keyboard from a click where its action does not. A
+        control a window holds but does not show — a menu's items while its menu
+        is closed — stands nowhere, and is not one to click."""
         offered = [s for s in map(lambda o: alternative(o, self.variant), value) if s]
         for selector in offered:
             target = control(self.session, selector)
-            if target is not None:
+            if target is not None and drawn(target):
                 x, y, w, h = target["rect"]
                 self.session.click_at(x + w / 2, y + h / 2)
                 return {"clicked": selector, "rect": target["rect"]}
         return {"clicked": None, "offered_none": offered}
+
+    def op_select_row(self, value) -> dict:
+        """Press the row `name` in the app window's own sidebar, where a person
+        picks the note their window turns to."""
+        name = pick(value, self.variant)
+        target = until_value(f"the row {name!r} in the window",
+                             lambda: row_of(self.session, self.window_of(), name), 30)
+        x, y, w, h = target["rect"]
+        self.session.click_at(x + w / 2, y + h / 2)
+        return {"selected_row": name, "rect": target["rect"]}
+
+    def op_row_menu(self, value) -> dict:
+        """Open the menu of the row `name` in the app window's own sidebar, the
+        way a person opens it: a second-button press on the row."""
+        name = pick(value, self.variant)
+        target = until_value(f"the row {name!r} in the window",
+                             lambda: row_of(self.session, self.window_of(), name), 30)
+        x, y, w, h = target["rect"]
+        self.session.right_click_at(x + w / 2, y + h / 2)
+        return {"menu_of_row": name, "rect": target["rect"]}
 
     def op_right_click(self, value) -> dict:
         """A second-button press where the control `selector` names is drawn: a
@@ -543,6 +589,16 @@ class Walk:
             until_value(f"the window to name {wanted!r}",
                         lambda: (self.window_of() or {}).get("title") == wanted, 30)
             return {"title": wanted}
+        if isinstance(value, dict) and "shown" in value:
+            # A control the window draws: a menu's item stands nowhere until its
+            # menu opens, and a press aimed at it before then lands on nothing.
+            wanted = value["shown"]
+            until_value(
+                f"the control {wanted!r} to be drawn",
+                lambda: (lambda target: target if target is not None and drawn(target) else None)(
+                    control(self.session, wanted)),
+                30)
+            return {"shown": wanted}
         selector = pick(value, self.variant)
         until_value(f"the control {selector!r}", lambda: control(self.session, selector), 30)
         return {"control": selector}
@@ -554,15 +610,15 @@ class Walk:
         that the child stands indented under the parent — the note an action
         made under the note it was made in. A row that is not drawn is the
         finding: the app may hold what its window does not show."""
-        def drawn(name: str) -> dict:
+        def row(name: str) -> dict:
             return until_value(
                 f"the row {name!r} in the window",
-                lambda: control(self.session, name), 30)
+                lambda: row_of(self.session, self.window_of(), name), 30)
 
         if "under" in value:
             child_name, parent_name = value["under"]
-            child = drawn(child_name)
-            parent = drawn(parent_name)
+            child = row(child_name)
+            parent = row(parent_name)
             cx, cy = child["rect"][0], child["rect"][1]
             px, py = parent["rect"][0], parent["rect"][1]
             if not (cx > px and cy > py):
@@ -570,13 +626,13 @@ class Walk:
                     f"{child_name!r} is not drawn indented under {parent_name!r}: "
                     f"its row stands at {child['rect']}, the note's at {parent['rect']}")
             return {"under": value["under"], "child": child["rect"], "parent": parent["rect"]}
-        rows = [drawn(name) for name in value["rows"]]
-        lefts = sorted({round(row["rect"][0]) for row in rows})
+        rows = [row(name) for name in value["rows"]]
+        lefts = sorted({round(found["rect"][0]) for found in rows})
         if len(lefts) != 1:
             raise Failed(
                 f"the rows {value['rows']!r} are not drawn at one leading edge: "
-                f"{[(row.get('name'), row['rect']) for row in rows]}")
-        return {"rows": value["rows"], "left": lefts[0], "rects": [row["rect"] for row in rows]}
+                f"{[(found.get('name'), found['rect']) for found in rows]}")
+        return {"rows": value["rows"], "left": lefts[0], "rects": [found["rect"] for found in rows]}
 
     def op_form(self, value) -> dict:
         """Answer the form the window shows, as a person does: `{"field": "Tag", "text":
