@@ -106,23 +106,6 @@ test('a page whose early compile failed has init fetch the module itself', async
   release();
 });
 
-test('a desktop’s first-layout modules are asked for once the entry’s code is in, the app listing at once', async () => {
-  const {release} = fixture();
-  const {prefetchDesktop, FIRST_LAYOUT_MODULES} = await loadHost();
-  release();
-  const steps = [];
-  let peerIn;
-  const after = () => new Promise(resolve => { peerIn = () => { steps.push('peer'); resolve(); }; });
-  const fetch = async url => { steps.push(`fetch ${String(url).split('/').pop()}`); return {ok: true, json: async () => ({applications: []})}; };
-  const load = async () => ({prefetch: name => { steps.push(`prefetch ${name}`); return Promise.resolve(true); }});
-  prefetchDesktop({fetch, load, after});
-  await settle();
-  assert.deepEqual(steps, ['fetch apps.json']);
-  peerIn();
-  await settle();
-  assert.deepEqual(steps, ['fetch apps.json', 'peer', ...FIRST_LAYOUT_MODULES.map(name => `prefetch ${name}`)]);
-});
-
 test('a split module downloads beside the shared code it needs, not after it', async () => {
   const source = readFileSync(new URL('../../../../tools/web/wasm-split/src/main.rs', web), 'utf8');
   const template = /const LOADER: &str = r#"([\s\S]*?)"#;/.exec(source)?.[1];

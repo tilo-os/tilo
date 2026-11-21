@@ -121,7 +121,7 @@ export function parseMessages(text) {
  * that step runs. Anything else in `#status` is said in the line's place,
  * apart from the bar's steps. */
 export const STEP_NOTES = new Set([
-  'Loading Tilo…', 'Opening the workspace…', 'Opening the app…', 'Starting graphics…',
+  'Loading Tilo…', 'Opening the workspace…', 'Opening the app…',
   'Connecting…', 'Asking to join…', 'Joining…', 'Asking to pair this device…',
 ]);
 

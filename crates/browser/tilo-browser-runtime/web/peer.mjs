@@ -24,18 +24,13 @@
  * that key itself instead of waiting for an approver.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
-import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
-import {backoffDelay} from './reconnect.mjs';
-import {createSpeakers} from './live-speakers.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 import {memberText} from './json-text.mjs';
 import {changed as pageChanged} from './changes.mjs';
-import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceKey, rememberBrowserDevice} from './device-key.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
-import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
 import {siteServer, STALE_SITE_SERVER, staleSiteServer, staleSiteServerReport} from './site-host.mjs';
 import {deviceLabel} from './pairing.mjs';
 
@@ -157,29 +152,9 @@ const hostNamespace = (serverCert, index, cert = undefined, current = undefined)
 };
 /** The wasm runtime, loaded through the page host. */
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
-/** Ask for a new live grant this long before the current one expires. */
-const GRANT_RENEW_MS = 60_000;
-/** Rejoining the live session: the first wait and the longest, exponential
- * between, each jittered by `reconnect.mjs` (`backoffDelay`) so the members
- * of a workspace whose server restarted do not all come back in the same tick. */
-const LIVE_RETRY = {firstMs: 250, factor: 4, capMs: 10_000, jitter: 0.2};
-/** A member's track may be announced a moment after the member: retry a
- * subscription that ended while the member is still present. */
-const SUBSCRIBE_RETRY_MS = [100, 250, 1000, 3000];
 
-/** How long a recovery waits for its evidence: a newly presented frame, the
- * host's shared state. */
-const RECOVERY_TIMEOUT_MS = 10_000;
 const REFRESH_TIMEOUT_MS = 30_000;
 
-/** The `FailureCode` of a mount's renderer error. */
-export function rendererFailureCode(error) {
-  const text = String(error ?? '');
-  if (/device lost/i.test(text)) return 'gpu-device-lost';
-  if (/WebGPU (unavailable|is required)/i.test(text)) return 'gpu-unavailable';
-  if (text.includes(WEBKIT_WEBGPU_REFUSAL)) return 'gpu-unavailable';
-  return 'renderer-initialization-failed';
-}
 /** The `FailureCode` of a failed durable commit. */
 export function storageFailureCode(error) {
   const text = String(error ?? '');
@@ -187,24 +162,6 @@ export function storageFailureCode(error) {
   if (/SecurityError/i.test(text)) return 'storage-denied';
   return 'storage-transaction-failed';
 }
-/** The failed or recovered asset a mount status names, as
- * `{assetId, failed, message}`: images by their loader id, fonts as
- * `font:NAME`, application data as `data:NAME`. */
-export function statusAsset(status) {
-  if (status.asset === 'unavailable' || status.asset === 'ready') {
-    return {assetId: String(status.assetId), failed: status.asset === 'unavailable', message: 'An image could not be loaded.'};
-  }
-  if (status.font === 'unavailable' || status.font === 'available') {
-    return {assetId: `font:${status.fontAsset}`, failed: status.font === 'unavailable', message: 'A font could not be loaded.'};
-  }
-  if (status.data === 'unavailable' || status.data === 'available') {
-    return {assetId: `data:${status.dataAsset}`, failed: status.data === 'unavailable', message: 'Application data could not be loaded.'};
-  }
-  return undefined;
-}
-
-const recordKey = record => `${record.app}\u0000${record.record}`;
-const unhex = text => Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));
 const hexKey = key => (typeof key === 'string' ? key : Array.from(key ?? [], byte => byte.toString(16).padStart(2, '0')).join(''));
 
 /** `InvokeArgument` for a JavaScript value: nothing, a prompted text, or a typed object. */
@@ -392,8 +349,7 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.workspace           workspace uuid to join, optional
  * @param options.device key        from `openDeviceKey`
  * @param options.profile        profile whose durable storage keeps the peer's
- *                               certificates and outbox (with `device`); its
- *                               desktop mounts share that storage
+ *                               certificates and outbox (with `device`)
  * @param options.device         device namespace of `profile`
  * @param options.store          `{get, put, delete}` for public peer state;
  *                               defaults to the profile's storage
@@ -401,7 +357,7 @@ export function createLiveLayer(peer, runtime, workspace, {
  * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec);
  *                               defaults to the page host's (`desktop`'s)
  * @param options.fetch          defaults to `globalThis.fetch`
- * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
+ * @param options.desktop        `{loadRuntime, openProfileStorage}`; defaults to `host.mjs`
  * @param options.live           `false`: join no live session
  * @param options.onPairingCode  shown while an approver decides
  * @param options.identity       an unlocked root (`identity.mjs`): the
@@ -589,11 +545,6 @@ async function connect({
     });
   };
   let siteServerCheck;
-  // Desktop surfaces mounted through this peer, by surface id: their failures
-  // are reported into SessionHealth and recovered through `recover`.
-  const surfaces = new Map();
-  let surfaceCount = 0;
-
   const publish = () => {
     if (!peer) return;
     snapshot = JSON.parse(peer.snapshot());
@@ -656,64 +607,9 @@ async function connect({
   };
   const watchStorage = () => storage?.subscribe?.(status => { if (status.persistence === 'failed') reportStorage(status.error); });
   let unsubscribeStorage = watchStorage();
-  function observeSurface(entry, status) {
-    if (status.phase === 'closed') { dropSurface(entry); return; }
-    if (Number.isSafeInteger(status.gpuGeneration)) entry.generation = status.gpuGeneration;
-    if (status.persistence === 'failed') reportStorage(status.error);
-    if (status.phase === 'presented') entry.presented = true;
-    // A mount that never presented rejects its mount call instead.
-    if (!entry.presented || !peer) return;
-    const asset = statusAsset(status);
-    if (asset?.failed) {
-      try { peer.reportFailure(entry.id, asset.assetId, 'asset-unavailable', asset.message); } catch {}
-    } else if (asset) {
-      peer.clearFailure(entry.id, asset.assetId);
-    }
-    if (status.phase === 'failed' && status.error) {
-      try { peer.reportFailure(entry.id, undefined, rendererFailureCode(status.error), 'The desktop could not be displayed. Your work is retained.'); } catch {}
-      for (const waiter of [...entry.waiters]) if (entry.generation > waiter.after) waiter.reject(new Error('Desktop recovery failed'));
-    } else if (status.phase === 'presented') {
-      for (const waiter of [...entry.waiters]) {
-        if (entry.generation > waiter.after) { peer.clearFailure(entry.id, undefined); waiter.resolve(); }
-      }
-    }
-  }
-  function dropSurface(entry) {
-    if (surfaces.get(entry.id) !== entry) return;
-    surfaces.delete(entry.id);
-    for (const waiter of [...entry.waiters]) waiter.reject(new Error('Desktop surface closed'));
-    try { peer?.clearSurface(entry.id); } catch {}
-  }
-  function surfaceOf(surfaceId) {
-    const entry = surfaces.get(surfaceId);
-    if (!entry?.mount) throw new Error('Unknown desktop surface');
-    return entry;
-  }
-
-  /** Recreate the surface's GPU device, surface and renderer; resolves once a
-   * frame of the new GPU generation is presented. Documents stay. */
-  function retryDesktop(surfaceId) {
-    const entry = surfaceOf(surfaceId);
-    entry.recovering ??= new Promise((resolve, reject) => {
-      const timer = setTimeout(() => waiter.reject(new Error('Desktop recovery timed out')), RECOVERY_TIMEOUT_MS);
-      const settle = done => value => { clearTimeout(timer); entry.waiters.delete(waiter); done(value); };
-      const waiter = {after: entry.generation, resolve: settle(resolve), reject: settle(reject)};
-      entry.waiters.add(waiter);
-      try { entry.mount.recover(); } catch (error) { waiter.reject(error); }
-    }).finally(() => { entry.recovering = undefined; });
-    return entry.recovering;
-  }
-  /** Fetch and verify the asset again; resolves once it is presented. */
-  async function retryAsset(surfaceId, assetId) {
-    const entry = surfaceOf(surfaceId);
-    if (typeof entry.mount.retryAsset !== 'function') throw new Error('Asset recovery is unavailable');
-    await entry.mount.retryAsset(assetId);
-    peer.clearFailure(surfaceId, assetId);
-  }
-  /** Commit the store's failed writes again, then every mount's. */
+  /** Commit the store's failed writes again. */
   async function retrySaving() {
     await storage?.flush();
-    for (const entry of [...surfaces.values()]) await entry.mount?.flush?.();
     peer.clearFailure(undefined, undefined);
   }
   /** Subscribe the workspaces anew; resolves once the host admitted them again. */
@@ -869,23 +765,6 @@ async function connect({
   }
   function stopLive() {
     live?.stop();
-  }
-  // Every mount publishes through its own view of a layer, so the mount
-  // acted in last speaks for the person (or the agent), never an idle one.
-  const speakers = createSpeakers();
-  function mountLive(target, options) {
-    const speaker = speakers.mount();
-    const layer = () => live;
-    const input = new AbortController();
-    for (const type of ['pointerdown', 'keydown', 'focusin']) {
-      target?.addEventListener?.(type, () => { const current = layer(); if (current) speaker.claim(current); },
-        {capture: true, passive: true, signal: input.signal});
-    }
-    return {
-      live: () => { const current = layer(); return current && speaker.view(current); },
-      acted() { speaker.acted(); },
-      release() { input.abort(); speaker.release(); },
-    };
   }
   const hasRecord = (app, record) => Boolean(peer?.hasRecord?.(app, record));
 
@@ -1161,7 +1040,6 @@ async function connect({
     // settlement, installed before teardown can call back into dispose.
     (async () => {
       for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
-      for (const entry of [...surfaces.values()]) dropSurface(entry);
       unsubscribeStorage?.();
       actions?.dispose();
       voice?.dispose();
@@ -1249,15 +1127,6 @@ async function connect({
     /** Issue an invitation to the workspace (`workspaces.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
-    /** Answer what this person's agents on the host ask them, over this
-     * session (`agent-questions.mjs`): as the root device key `root` where the
-     * page holds it, else with this session's own device key, as a device
-     * paired to the person answers. */
-    answerAgentQuestions: root => peer.answerAgentQuestions(root ?? deviceKeyForWasm),
-    /** The key the host pushes with, and keeping this browser's push
-     * subscription there (`web-push.mjs`), as `root` or this session's key. */
-    pushKey: root => peer.pushKey(root ?? deviceKeyForWasm),
-    notifyAt: (root, endpoint, p256dh, auth) => peer.notifyAt(root ?? deviceKeyForWasm, endpoint, p256dh, auth),
     /** This person's new devices waiting at the host, paired with the root
      * the page holds over this session (`PairingHost`: `pending`, `answer`). */
     pairing: () => peer.pairing(),
@@ -1313,107 +1182,18 @@ async function connect({
       profileMs = stamp;
       publishMember();
     },
-    /** The host's fetch proxy for this page's apps (`fetch-proxy.mjs`):
-     * `{endpoint, session}` while the host serves one over the current
-     * session, else `null`. Read for each request: the session follows
-     * reconnects. */
-    fetchProxy() {
-      const session = disposed ? undefined : peer?.fetchProxySession?.();
-      return session ? {endpoint: new URL(FETCH_PROXY_PATH, origin).href, session} : null;
-    },
     /** The workspace's app actions (`actions.mjs`), or `undefined` without a workspace. */
     get actions() { return actions; },
-    /** Bind feedback before mounting the desktop. The destination only selects
-     * an existing text channel: Rust obtains identity and current capabilities
-     * from the authenticated owner. This creates no membership or grant.
-     * Whether the channel's chat exists is the owner's to say, in the
-     * admission it answers with: a workspace that sends its records when
-     * they are opened sends this page no chat until someone opens Chat. */
-    async configureFeedback(destination) {
-      if (!workspace || destination?.workspace !== workspace || disposed) throw new Error('Feedback needs this existing workspace');
-      if (typeof peer?.configureFeedback !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
-      peer.configureFeedback(JSON.stringify(destination));
-      await untilSnapshot(() => {
-        if (disposed) throw new Error('Feedback connection closed');
-        const status = peer.feedbackStatus();
-        if (status === 'ready') return true;
-        if (status !== 'awaiting authenticated admission') throw new Error(status);
-        return false;
-      }, 30_000, 'Feedback owner admission timed out');
-    },
-    feedbackStatus: () => peer?.feedbackStatus?.() ?? 'unconfigured',
-    /** Send this workspace's reports through `carrier`, the page's peer in the
-     * workspace whose channel takes them (a web host's home workspace): reports
-     * reach it from whichever workspace the page is in. */
-    sendFeedbackThrough(carrier) {
-      const id = carrier?.runtimeId;
-      if (disposed || typeof id !== 'number') throw new Error('Feedback needs a connected peer to send through');
-      if (typeof peer?.sendFeedbackThrough !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
-      peer.sendFeedbackThrough(id);
-    },
-
     /** Public address of this admitted session; it conveys no authority. */
     get resourceScope() {
       if (disposed || snapshot.phase !== 'ready' || !actions || !workspace) return undefined;
       return {origin: new URL(origin).origin, workspace,
         hostDevice: hexKey(host.hostCert?.device_public_key)};
     },
-    /** Fresh permission-filtered metadata for a record-local shared resource.
-     * The host-issued source provider is required; this never joins a workspace,
-     * grants access, follows a peer or navigates as a side effect. */
-    resolveResource(reference, provider) {
-      const connection = actions;
-      return resolveResourceReference({reference, provider, actions: connection,
-        scope: certifiedPeer.resourceScope,
-        current: () => !disposed && snapshot.phase === 'ready' && actions === connection});
-    },
-    /** Open an exact shared resource through a standalone app's current view
-     * entry. Calling this is explicit navigation; it never joins or grants. */
-    openResource(target, reference, provider, action, {signal} = {}) {
-      const connection = actions;
-      return openResourceReference({reference, provider, action, actions: connection, signal,
-        scope: certifiedPeer.resourceScope,
-        current: () => !disposed && snapshot.phase === 'ready' && actions === connection,
-        waitRecord: (app, record) => certifiedPeer.whenRecord(app, record, {signal}),
-        mount: ({app, record}) => certifiedPeer.mountDesktop(target, {app, record, signal})});
-    },
     /** The workspace's calls (`voice-peer.mjs`), or `undefined` without a workspace. */
     get voice() { return voice; },
     /** This peer in the wasm runtime, for mounts that replicate through it. */
     get runtimeId() { return peer?.id ?? pageId; },
-    /** The desktop mount (`host.mjs`) in this peer's profile and workspace.
-     * `options.surfaceId` names the surface in SessionHealth failures and
-     * `retry-desktop`/`retry-asset` requests (default `surface-N`); the
-     * mount carries it as `surfaceId`. */
-    async mountDesktop(target, options = {}) {
-      const surface = await surfaceModule();
-      if (typeof surface.mountDesktop !== 'function') throw new Error('desktop mount is unavailable');
-      const scope = {...(profile ? {profile, device} : {}), ...(workspace ? {workspace} : {})};
-      const {surfaceId = `surface-${++surfaceCount}`, onStatus: forward, ...rest} = options;
-      if (surfaces.has(surfaceId)) throw new Error(`desktop surface ${surfaceId} is already mounted`);
-      const entry = {id: surfaceId, mount: undefined, generation: 0, presented: false, waiters: new Set(), recovering: undefined};
-      surfaces.set(surfaceId, entry);
-      const presence = mountLive(target, rest);
-      let mount;
-      try {
-        mount = await surface.mountDesktop(target, {...scope, ...rest, peer: certifiedPeer, live: presence.live, onStatus: status => {
-          observeSurface(entry, status);
-          forward?.(status);
-        }});
-      } catch (error) {
-        presence.release();
-        dropSurface(entry);
-        throw error;
-      }
-      if (surfaces.get(surfaceId) !== entry) { presence.release(); return mount; }
-      entry.mount = mount;
-      mount.surfaceId = surfaceId;
-      const cleanup = mount.cleanup;
-      mount.cleanup = async () => { presence.release(); dropSurface(entry); return cleanup?.(); };
-      const invokeAction = mount.invokeAction;
-      if (invokeAction) mount.invokeAction = (...args) => { presence.acted(); return invokeAction(...args); };
-      return mount;
-    },
     /** Resolves once the host admitted the workspace (`phase === 'ready'`);
      * rejects when it refused this device. With `shown`, resolves as soon
      * as this page holds the workspace's shared desktop record: the host
@@ -1525,20 +1305,12 @@ async function connect({
     flush: async () => { await peer.flush(); await storage?.flush(); },
     async reconnect() { peer.reconnect(); },
     /** `SessionHealth` v1 recovery: `retry-connection`, `reauthenticate`,
-     * `retry-saving`, `refresh-checkpoint`, `retry-desktop` or
-     * `retry-asset`. Resolves once the recovery took effect. */
+     * `retry-saving` or `refresh-checkpoint`. Resolves once the recovery
+     * took effect. */
     async recover(request) {
       if (request?.kind === 'retry-connection') { peer.reconnect(); return {operationId: 'retry-connection'}; }
       if (request?.kind === 'retry-saving') { await retrySaving(); return {operationId: 'retry-saving'}; }
       if (request?.kind === 'refresh-checkpoint') { await refreshCheckpoint(); return {operationId: 'refresh-checkpoint'}; }
-      if (request?.kind === 'retry-desktop') {
-        await retryDesktop(request.surfaceId);
-        return {operationId: `retry-desktop:${request.surfaceId}`};
-      }
-      if (request?.kind === 'retry-asset') {
-        await retryAsset(request.surfaceId, request.assetId);
-        return {operationId: `retry-asset:${request.surfaceId}:${request.assetId}`};
-      }
       if (request?.kind === 'reauthenticate') {
         if (requireExistingCertificate) throw Error('Sign in through the identity flow before reopening this resource');
         // What the page learnt of the host at load may be stale (a new
@@ -1760,8 +1532,7 @@ function hostUnreached(origin, snapshot) {
 
 /** What a page says of itself once it let its session go and could not start
  * the one that was to replace it: `failed`, `not-connected`, in words a person
- * reads (`connection-status.mjs` says it in the bar), with the cause beside
- * them for the console. */
+ * reads, with the cause beside them for the console. */
 export function notConnected(error) {
   return {
     phase: 'failed', errorCode: 'not-connected',

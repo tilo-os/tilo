@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withDeviceKey, withStartFields} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, storageFailureCode, withDeviceKey, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
 import {forgetSiteServers, nameSiteServer, STALE_SITE_SERVER, staleSiteServer} from './site-host.mjs';
@@ -808,7 +808,6 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.deepEqual(handles.map(handle => [handle.device, handle.released]),
     [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [fresh, 0]]);
   assert.equal(new Set(runtime.calls.vaults).size, 2, 'the new namespace seals its channel state with a vault of its own');
-  assert.equal((await peer.mountDesktop('target', {app: 'desktop'})).device, fresh, 'its desktops mount there too');
   await peer.dispose();
 
   // The next visit reconnects there, with no new admission.
@@ -973,12 +972,6 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   assert.equal(runtime.peer.config.displayName, 'Ada');
   assert.ok(values.has('work/laptop/certificate'), 'the certificate is kept in the profile');
 
-  await peer.mountDesktop('target', {app: 'desktop'});
-  assert.equal(mounts[0].profile, 'work');
-  assert.equal(mounts[0].device, 'laptop');
-  assert.equal(mounts[0].workspace, WORKSPACE);
-  assert.equal(mounts[0].peer, peer);
-
   await peer.flush();
   assert.equal(opened[0].flushed, 1);
   await peer.dispose();
@@ -1014,78 +1007,13 @@ function fakeDesktop() {
   return desktop;
 }
 
-test('failure codes follow the mount and store errors', () => {
-  assert.equal(rendererFailureCode('WebGPU device lost: Destroyed: gone; call recover'), 'gpu-device-lost');
-  assert.equal(rendererFailureCode('WebGPU unavailable: no adapter'), 'gpu-unavailable');
-  assert.equal(rendererFailureCode('WebGPU error: Validation Error: buffer too large; call recover'), 'renderer-initialization-failed');
+test('storage failure codes follow the store errors', () => {
   assert.equal(storageFailureCode('QuotaExceededError: full'), 'storage-quota');
   assert.equal(storageFailureCode('SecurityError: denied'), 'storage-denied');
   assert.equal(storageFailureCode('AbortError'), 'storage-transaction-failed');
-  assert.deepEqual(statusAsset({asset: 'unavailable', assetId: 3}), {assetId: '3', failed: true, message: 'An image could not be loaded.'});
-  assert.equal(statusAsset({font: 'available', fontAsset: 'Noto.ttf'}).assetId, 'font:Noto.ttf');
-  assert.equal(statusAsset({data: 'unavailable', dataAsset: 'typst/a.otf'}).assetId, 'data:typst/a.otf');
-  assert.equal(statusAsset({phase: 'presented'}), undefined);
 });
 
-test('retry-desktop recreates a lost renderer and resolves on a frame of the new GPU generation', async () => {
-  const runtime = fakeRuntime();
-  const desktop = fakeDesktop();
-  const peer = await connect(options(runtime, memoryStore(), {desktop}));
-  const seen = [];
-  const mount = await peer.mountDesktop('target', {surfaceId: 'tilo-desktop-1', onStatus: status => seen.push(status.phase)});
-  assert.equal(mount.surfaceId, 'tilo-desktop-1');
-  assert.equal(mount.options.surfaceId, undefined, 'the surface id is not mount configuration');
-  assert.deepEqual(seen, ['gpu-pending', 'presented'], 'statuses still reach the caller');
-
-  mount.status({phase: 'failed', error: 'WebGPU device lost: Destroyed: ; call recover', gpuGeneration: 1});
-  assert.deepEqual(runtime.peer.failures.map(f => [f.surface, f.asset, f.code]), [['tilo-desktop-1', undefined, 'gpu-device-lost']]);
-
-  mount.onRecover = () => queueMicrotask(() => {
-    mount.status({phase: 'failed', error: 'WebGPU device lost: Destroyed: ; call recover', gpuGeneration: 1});
-    mount.status({phase: 'presented', gpuGeneration: 2, frames: 9});
-  });
-  const result = await peer.recover({kind: 'retry-desktop', surfaceId: 'tilo-desktop-1'});
-  assert.equal(result.operationId, 'retry-desktop:tilo-desktop-1');
-  assert.equal(mount.recovered, 1);
-  assert.deepEqual(runtime.peer.failures, [], 'a presented frame of the new generation clears the failure');
-
-  mount.onRecover = () => queueMicrotask(() => mount.status({phase: 'failed', error: 'WebGPU unavailable: no adapter', gpuGeneration: 3}));
-  await assert.rejects(peer.recover({kind: 'retry-desktop', surfaceId: 'tilo-desktop-1'}), /Desktop recovery failed/);
-  assert.equal(runtime.peer.failures[0].code, 'gpu-unavailable');
-  await assert.rejects(peer.recover({kind: 'retry-desktop', surfaceId: 'nope'}), /Unknown desktop surface/);
-
-  await mount.cleanup();
-  assert.equal(mount.closed, true);
-  assert.deepEqual(runtime.peer.failures, [], 'closing a surface clears its failures');
-  await assert.rejects(peer.recover({kind: 'retry-desktop', surfaceId: 'tilo-desktop-1'}), /Unknown desktop surface/);
-  await peer.dispose();
-});
-
-test('retry-asset fetches an image, font or data file again and clears its failure', async () => {
-  const runtime = fakeRuntime();
-  const desktop = fakeDesktop();
-  const peer = await connect(options(runtime, memoryStore(), {desktop}));
-  const mount = await peer.mountDesktop('target');
-  assert.equal(mount.surfaceId, 'surface-1');
-  mount.status({asset: 'unavailable', assetId: '4', assetUrl: 'https://example.com/a.png', error: 'asset HTTP 404'});
-  mount.status({font: 'unavailable', fontAsset: 'Noto-COLRv1.ttf', fontError: 'SHA-256 mismatch'});
-  mount.status({data: 'unavailable', dataAsset: 'typst/fonts.bin'});
-  assert.deepEqual(runtime.peer.failures.map(f => f.asset), ['4', 'font:Noto-COLRv1.ttf', 'data:typst/fonts.bin']);
-  assert.ok(runtime.peer.failures.every(f => f.surface === 'surface-1' && f.code === 'asset-unavailable'));
-
-  await peer.recover({kind: 'retry-asset', surfaceId: 'surface-1', assetId: 'font:Noto-COLRv1.ttf'});
-  assert.deepEqual(mount.retried, ['font:Noto-COLRv1.ttf']);
-  assert.deepEqual(runtime.peer.failures.map(f => f.asset), ['4', 'data:typst/fonts.bin']);
-  mount.status({asset: 'ready', assetId: '4'});
-  assert.deepEqual(runtime.peer.failures.map(f => f.asset), ['data:typst/fonts.bin'], 'a ready status clears it too');
-
-  mount.assetFails = true;
-  await assert.rejects(peer.recover({kind: 'retry-asset', surfaceId: 'surface-1', assetId: 'data:typst/fonts.bin'}), /still unavailable/);
-  assert.equal(runtime.peer.failures.length, 1, 'a failed retry keeps the failure');
-  await peer.dispose();
-});
-
-test('retry-saving commits the store again, then every mount, and clears the storage failure', async () => {
+test('retry-saving commits the store again and clears the storage failure', async () => {
   const runtime = fakeRuntime();
   runtime.profile_value = () => undefined;
   runtime.set_profile_value = () => {};
@@ -1098,10 +1026,9 @@ test('retry-saving commits the store again, then every mount, and clears the sto
     async release() {}};
   desktop.openProfileStorage = async () => storage;
   const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
-  const mount = await peer.mountDesktop('target');
 
   storageListener({persistence: 'failed', pendingWrites: 2, error: 'QuotaExceededError: the quota has been exceeded'});
-  mount.status({persistence: 'failed', pendingWrites: 2, error: 'AbortError: commit aborted'});
+  storageListener({persistence: 'failed', pendingWrites: 2, error: 'AbortError: commit aborted'});
   assert.deepEqual(runtime.peer.failures.map(f => [f.surface, f.code]), [[undefined, 'storage-transaction-failed']], 'one storage failure, the newest');
 
   await assert.rejects(peer.recover({kind: 'retry-saving'}), /commit aborted/);
@@ -1109,7 +1036,6 @@ test('retry-saving commits the store again, then every mount, and clears the sto
   flushFails = false;
   assert.equal((await peer.recover({kind: 'retry-saving'})).operationId, 'retry-saving');
   assert.equal(storage.flushed, 2);
-  assert.equal(mount.flushed, 1);
   assert.deepEqual(runtime.peer.failures, []);
   await peer.dispose();
   assert.equal(storageListener, undefined, 'dispose stops listening to the store');
@@ -1267,65 +1193,6 @@ test('a page whose workspace sent no desktop yet shows once the host has replaye
   assert.equal(shown, false, 'a desktop mounted now would start a record of its own');
   runtime.peer.emit('ready');
   await showing;
-  await peer.dispose();
-});
-
-test('mounts publish through their own view: the one acted in speaks', async () => {
-  const runtime = fakeRuntime();
-  const desktop = fakeDesktop();
-  const peer = await connect(options(runtime, memoryStore(), {desktop}));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const target = () => {
-    const handlers = new Map();
-    return {handlers, addEventListener: (type, handler) => handlers.set(type, handler), fire: type => handlers.get(type)()};
-  };
-  const writerTarget = target();
-  const helperTarget = target();
-  const writer = await peer.mountDesktop(writerTarget, {app: 'so.tilo.word-processor'});
-  const helper = await peer.mountDesktop(helperTarget, {app: 'so.tilo.chat'});
-  await tick();
-  const selections = () => runtime.peer.published.map(value => value.selection?.anchor ?? null);
-  const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
-  writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
-  await sent('w1');
-  // A hidden helper's caret never overwrites the person's: it never
-  // reaches the layer.
-  assert.equal(helper.options.live().publishPresence({selection: {anchor: 'h1', head: 'h1'}}), false);
-  assert.equal(selections().at(-1), 'w1');
-  assert.ok(!selections().includes('h1'));
-  helperTarget.fire('pointerdown');
-  helper.options.live().publishPresence({selection: {anchor: 'h2', head: 'h2'}});
-  await sent('h2');
-  // Back in the writer: its unchanged caret is said again.
-  writerTarget.fire('keydown');
-  await sent('w1');
-  await helper.cleanup();
-  await peer.dispose();
-});
-
-test('an action through a mount speaks for the person only if it moved that mount\'s caret', async () => {
-  const runtime = fakeRuntime();
-  const desktop = fakeDesktop();
-  const peer = await connect(options(runtime, memoryStore(), {desktop}));
-  await until(() => peer.live.state === 'live', 'the live layer');
-  const writer = await peer.mountDesktop(undefined, {app: 'so.tilo.word-processor'});
-  const chat = await peer.mountDesktop(undefined, {app: 'so.tilo.chat'});
-  await tick();
-  const selections = () => runtime.peer.published.map(value => value.selection?.anchor ?? null);
-  const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
-  writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
-  await sent('w1');
-  chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}});
-  // Posting leaves Chat's caret where it was: the person stays in the writer.
-  let posted;
-  chat.onInvoke = () => { posted = chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}}); };
-  assert.deepEqual(chat.invokeAction('chat.channel:general', 'post', {value: 'hi'}), {state: 'completed'});
-  assert.equal(posted, false, 'Chat\'s unchanged caret never reaches the layer');
-  assert.ok(!selections().includes('c1'));
-  // Selecting a message moves it: Chat speaks now.
-  chat.onInvoke = () => chat.options.live().publishPresence({selection: {anchor: 'c2', head: 'c2'}});
-  chat.invokeAction('chat.message:1', 'select');
-  await sent('c2');
   await peer.dispose();
 });
 
@@ -1524,44 +1391,6 @@ test('leaving, cancelling and timing out pending workspace admission settle brow
   await assert.rejects(leaving, /closed/);
 });
 
-
-test('a workspace’s reports go through the page’s peer in the destination’s workspace, by its runtime id', async () => {
-  const runtime = fakeRuntime();
-  const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));
-  const named = [];
-  runtime.peer.id = 7;
-  runtime.peer.sendFeedbackThrough = id => named.push(id);
-  peer.sendFeedbackThrough({runtimeId: 9});
-  assert.deepEqual(named, [9]);
-  assert.throws(() => peer.sendFeedbackThrough({}), /connected peer/);
-  await peer.dispose();
-  assert.throws(() => peer.sendFeedbackThrough({runtimeId: 9}), /connected peer/);
-});
-
-test('feedback startup waits for owner admission and never joins another workspace', async () => {
-  const runtime = fakeRuntime();
-  const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));
-  // A workspace that sends its records when they are opened has sent this
-  // page no chat yet: the owner's admission, not the page's copy, says the
-  // channel is there, so nothing waits for the chat to arrive.
-  runtime.peer.hasRecord = () => false;
-  let status = 'awaiting authenticated admission';
-  let configured;
-  runtime.peer.configureFeedback = value => { configured = JSON.parse(value); };
-  runtime.peer.feedbackStatus = () => status;
-  const destination = {workspace: WORKSPACE, provider: 'record:so.tilo.chat:', channel: 'feedback'};
-  const waiting = peer.configureFeedback(destination);
-  await settle();
-  assert.deepEqual(configured, destination);
-  assert.equal(peer.feedbackStatus(), 'awaiting authenticated admission');
-  status = 'ready';
-  runtime.peer.emit();
-  await waiting;
-  assert.equal(runtime.peer.workspace, WORKSPACE);
-  await assert.rejects(peer.configureFeedback({...destination, workspace: 'another-workspace'}), /existing workspace/);
-  status = 'owner refused current certified admission';
-  await assert.rejects(peer.configureFeedback(destination), /owner refused/);
-});
 
 for (const attachSignal of [false, true]) test(`leaving a page joins peer storage release (signal=${attachSignal})`, async () => {
   const runtime = fakeRuntime();

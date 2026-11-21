@@ -1,5 +1,5 @@
 import {requestResult} from './storage-inline.mjs';
-import {transactionComplete} from './host-core.mjs';
+import {transactionComplete} from './idb-transaction.mjs';
 
 /** Inspect canonical storage keys, fetching only Settings' personal accounts.
  * No credential/device key database, writer lease, or profile registry is opened.

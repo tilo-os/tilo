@@ -76,7 +76,6 @@ arrival-sign-in-unknown = That passkey doesn’t open a Tilo identity this site 
 arrival-sign-in-failed = Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.
 arrival-sign-in-no-passkeys = Passkeys can’t be used here. On a device where you are signed in, choose “Pair a new device” and paste its link here.
 arrival-invite-toggle = Have an invite or pairing link?
-arrival-own = Or try Tilo on your own
 
 ## The reconnect screen: the page was not let in yet and tries again
 # { $time } is how long until the next try, such as "40 s" or "2 min 05 s".

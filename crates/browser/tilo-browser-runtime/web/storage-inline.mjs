@@ -1,4 +1,4 @@
-import {transactionComplete} from './host-core.mjs';
+import {transactionComplete} from './idb-transaction.mjs';
 import {createTransferStaging,captureTransferHandle,commitTransfer} from './transfer-staging.mjs';
 export const requestResult=request=>new Promise((resolve,reject)=>{
   request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);

@@ -528,11 +528,6 @@ final class WorkspaceGoneTests: XCTestCase {
             XCTAssertTrue(TiloEngine.answered(failure: name), name)
         }
         XCTAssertFalse(TiloEngine.answered(failure: ""), "a page that has not named its case says nothing of its site")
-        // An open page says how its connection to its server stands on its root, and calls one that is cut by this name.
-        XCTAssertTrue(entry.contains("document.documentElement.dataset.connection = reading.state;"),
-                      "an open page no longer says on its root how its connection stands")
-        let connection = try String(contentsOf: web.appendingPathComponent("connection-status.mjs"), encoding: .utf8)
-        XCTAssertTrue(connection.contains("kind: '\(TiloEngine.cut)',"), "web/connection-status.mjs calls a connection that is cut by another name")
         // What says nothing of a workspace that is gone.
         for name in ["", "refused", "removed", "no-access", "invitation-only", "unreachable", "stopped"] {
             XCTAssertFalse(TiloEngine.gone(failure: name, status: "Couldn’t open Lounge. The workspace did not let you in."), name)

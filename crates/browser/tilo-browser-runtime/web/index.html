@@ -233,15 +233,6 @@ document.addEventListener('click',function(e){
 },true);
 })();
 </script>
-<script>
-// The page's first graphics adapter request starts the browser's GPU
-// process, which takes seconds. It is asked for here, while the modules
-// load, and the renderer check (webgpu-safety.mjs) takes the answer.
-// It asks for the GPU the renderer asks for first: the one driving the
-// display (src/gpu_recovery.rs).
-// ?unsafeWebKitGPU=0 asks for nothing: the check may refuse WebGPU then.
-if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis.__tiloAdapter=navigator.gpu.requestAdapter({powerPreference:'low-power'}).catch(function(){return null;});
-</script>
   <style>
     /* The entry's colours, in the person's light or dark: the browser's until the desktop says
        which it draws in (data-look, src/page_theme.rs), so the entry and the desktop behind it
@@ -286,16 +277,11 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       --entry-focus: #2a3fd1;
     }
     html, body { margin: 0; height: 100%; overscroll-behavior: none; background: var(--e-ground); color: var(--e-ink); font: 14px system-ui, sans-serif; }
-    #surface { height: 100%; }
     /* Until the desktop is up, #status is placed by the arrival rules below;
        after, it speaks to screen readers only, and the desktop is the whole
        page. */
     #bar { display: contents; }
     [data-arrival=done] #bar { display: block; position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    /* A page that holds no connection to its workspace any more says so where
-       the person sees it: nothing brings it back by itself, and reloading is
-       what to do (connection-status.mjs, `disconnected`). */
-    [data-arrival=done][data-connection=disconnected] #bar { left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 4; box-sizing: border-box; width: max-content; max-width: calc(100vw - 32px); height: auto; overflow: visible; clip-path: none; white-space: normal; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--e-line); background: var(--e-sheet); color: var(--e-text); box-shadow: 0 8px 28px rgb(0 0 0 / 35%); line-height: 1.5; }
     .tilo-entry-card { position: fixed; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); box-sizing: border-box; width: min(360px, calc(100vw - 32px)); display: grid; gap: 20px; padding: 24px; border-radius: 14px; background: var(--e-sheet); border: 1px solid var(--e-line); box-shadow: 0 12px 40px rgb(0 0 0 / 45%); }
     .tilo-entry-card p { margin: 0; line-height: 1.5; color: var(--e-text); }
     .tilo-entry-card button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--e-edge); background: transparent; color: var(--e-button-ink); cursor: pointer; }
@@ -394,12 +380,11 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival > p.shown { opacity: 1; }
     #arrival-bar { position: fixed; left: 50%; top: calc(50% + 58px); width: 96px; margin-left: -48px; height: 2px; border-radius: 1px; background: var(--e-track); overflow: hidden; }
     #arrival-bar > span { display: block; height: 100%; background: var(--e-dim); transform-origin: left; transform: scaleX(var(--progress, 0)); transition: transform 200ms linear; }
-    #arrival-retry, #arrival-own { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
-    #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 2px; }
+    #arrival-retry { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
+    #arrival-retry:focus-visible { outline: 2px solid var(--e-focus); outline-offset: 2px; }
     [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]):not([data-failure]) #arrival-retry { display: block; }
     /* A step that does not move on: Try again beside the wait (arrival.mjs, stall.inline.js). */
     [data-arrival-stalled]:not([data-arrival=done]):not([data-arrival=stopped]) body:not(:has(.tilo-entry-card)) #arrival-retry { display: block; }
-    [data-arrival=stopped][data-entry=refused][data-own-desktop]:not([data-failure]) #arrival-own { display: block; }
     /* Turned away for coming without an invitation: an entry of its own
        (entry-page.mjs `offerRefusal`). One calm group, its top fixed a little
        above the middle so nothing it reveals moves what is above: the mark,
@@ -470,9 +455,6 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     [data-refusal=invite] #arrival-invite { margin-top: 0; }
     [data-refusal=invite] .refusal-alt { margin-top: 24px; }
     .refusal-foot { margin-top: auto; padding: 32px 0 24px; }
-    #arrival-refusal #arrival-own { display: block; visibility: hidden; position: static; transform: none; padding: 0; border: 0; border-radius: 2px; background: none; font-size: 13px; color: var(--e-faint); text-decoration: underline; text-decoration-color: var(--e-faint-line); text-underline-offset: 3px; }
-    #arrival-refusal #arrival-own:hover { color: var(--e-soft); }
-    [data-own-desktop] #arrival-refusal #arrival-own { visibility: visible; }
     @media (max-width: 480px) {
       :is([data-front], [data-arrival=stopped][data-entry=refused])[data-refusal] #arrival-refusal { padding-top: max(32px, calc(42vh - 230px)); }
       #arrival-refusal h1 { font-size: 20px; }
@@ -481,7 +463,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .tilo-entry-card { z-index: 3; }
     /* A workspace that turned this browser away for good: only its card shows. */
-    [data-refusal] #surface, [data-refusal] #bar { visibility: hidden; }
+    [data-refusal] #bar { visibility: hidden; }
     /* Stopped (failure-screen.mjs): the one failure screen, in the
        reconnect screen's language. What stopped the page as a heading,
        its cause and what to do in one paragraph, the action that gets the
@@ -491,7 +473,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        for screen readers. */
     #arrival-failure { display: none; }
     [data-failure] #arrival-failure { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 190px)) 24px 32px; overflow-y: auto; text-align: center; background: var(--e-ground); }
-    [data-failure] :is(#arrival, #arrival-note, #arrival-retry, #arrival-own, #arrival-reconnect, .tilo-entry-card) { display: none; }
+    [data-failure] :is(#arrival, #arrival-note, #arrival-retry, #arrival-reconnect, .tilo-entry-card) { display: none; }
     [data-failure] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .failure-main { display: flex; flex-direction: column; align-items: center; width: min(420px, 100%); }
     .failure-main > svg { display: block; margin-bottom: 24px; }
@@ -531,7 +513,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
        beside it says each change once. */
     #arrival-reconnect { display: none; }
     [data-reconnect] #arrival-reconnect { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 170px)) 24px 32px; overflow-y: auto; text-align: center; background: var(--e-ground); }
-    [data-reconnect] :is(#arrival, #arrival-note, #arrival-retry, #arrival-own, #status) { display: none; }
+    [data-reconnect] :is(#arrival, #arrival-note, #arrival-retry, #status) { display: none; }
     .reconnect-main { display: flex; flex-direction: column; align-items: center; width: min(400px, 100%); }
     .reconnect-main > svg { display: block; margin-bottom: 24px; animation: tilo-breathe 5s ease-in-out infinite; }
     #arrival-reconnect h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: var(--e-heading); text-wrap: balance; }
@@ -818,11 +800,9 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <!-- The first screen works as soon as this small module is in, not after
        the entry page's modules: `async` runs it the moment it arrives. -->
   <script type="module" async src="./first-screen.mjs"></script>
-  <div id="surface"></div>
   <div id="arrival" aria-hidden="true"><svg viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
-  <button id="arrival-own" type="button">Open your own desktop</button>
   <section id="arrival-refusal" aria-labelledby="arrival-refusal-heading"><div class="refusal-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-refusal-heading"></h1><p id="arrival-refusal-body"></p><form id="arrival-wait" class="refusal-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="refusal-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="refusal-link" type="button"></button></p><p id="arrival-wait-off" class="refusal-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="refusal-link" type="button"></button></p><p id="arrival-wait-note" class="refusal-note"></p><p id="arrival-wait-contact" class="refusal-note"></p><div class="refusal-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <span class="refusal-ways"><button id="arrival-sign-in-agent" class="refusal-link" type="button">Sign in with your agent</button><span class="refusal-or" aria-hidden="true"> · </span><button id="arrival-sign-in-button" class="refusal-link" type="button">Use a passkey</button></span></p><p id="arrival-sign-in-note" role="alert"></p><p><button id="arrival-invite-toggle" class="refusal-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite or pairing link?</button></p><form id="arrival-invite" class="refusal-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite or pairing link" aria-label="Invite or pairing link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="refusal-foot"></div></section>
   <section id="arrival-failure" aria-labelledby="arrival-failure-heading"><div class="failure-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-failure-heading"></h1><p id="arrival-failure-body"></p><div class="failure-actions"><button id="arrival-failure-host" type="button" hidden></button><button id="arrival-failure-retry" type="button" hidden>Try again</button></div><div id="arrival-failure-elsewhere" hidden><p id="arrival-failure-others-heading"></p><ul id="arrival-failure-others"></ul></div><details id="arrival-failure-details" hidden><summary id="arrival-failure-summary">Technical details</summary><pre id="arrival-failure-text"></pre><button id="arrival-failure-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><a id="arrival-reconnect-host" class="reconnect-copy" target="_blank" rel="noopener" hidden></a><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>

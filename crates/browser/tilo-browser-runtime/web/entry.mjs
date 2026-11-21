@@ -1,101 +1,28 @@
 /**
- * Boot of the web entry pages: `index.html` (desktop mode) and
- * `app/index.html` (one app, full tab). The page:
+ * Boot of the web entry pages: `index.html` and `app/index.html`. The page:
  * 1. takes the secrets the inline scrubber moved out of the address bar
  *    (a machine to set up, `install`, is handed back for the page to offer);
  * 2. parses the link with the runtime's Rust grammar under its entry (a bare
  *    entry under a home workspace needs no grammar, so admission starts
  *    while the runtime still loads)
- *    (`entry.json` beside the desktop page, written by the web host: `home`
- *    is the workspace a bare entry opens instead of the person's own desktop,
- *    `tickets` names where guest tickets are redeemed; absent, a bare entry
- *    is the person's own desktop and takes no tickets; under a home, a bare
- *    desktop entry reopens the workspace the person last chose instead,
- *    `deps.chosenWorkspace`);
- * 3. gets into the workspace (`admission.mjs`);
- * 4. mounts the desktop or the one app, and shows the target through the
- *    view entry (`open-target.mjs`);
- * 5. hands `location` and `history` to the router.
+ *    (`entry.json` beside the page, written by the web host: `home` is the
+ *    workspace a bare entry opens, `tickets` names where guest tickets are
+ *    redeemed; under a home, a bare entry reopens the workspace the person
+ *    last chose instead, `deps.chosenWorkspace`);
+ * 3. gets into the workspace (`admission.mjs`), which makes this browser a
+ *    device of it;
+ * 4. hands the browser to the page the server renders of that workspace
+ *    (`/w/<workspace>/<app>`).
  */
 import {admit} from './admission.mjs';
-import {wireFetchProxy} from './fetch-proxy.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
-import {UNAVAILABLE, openTarget} from './open-target.mjs';
-import {followDisplayMode} from './app-window.mjs';
-import {createLeaveGuard} from './leave-guard.mjs';
-import {bareEntry, startRouter} from './router.mjs';
-import {createTabAttention} from './tab-attention.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
 import {nameSiteServer} from './site-host.mjs';
-import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
+import {listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
-const PRIMARY_RECORD = '@tilo:package-primary';
-/** The mount's record option: `-` is the app's workspace document, no record
- * at all is the app's own default. */
-const recordOption = record => (record === undefined ? {} : {record: record || PRIMARY_RECORD});
-
-/** The web links among `about`'s `notify`, `source` and `community`, or
- * `null` without any: the desktop's About sheet offers only these. */
-function aboutLinks(about) {
-  const links = {};
-  for (const key of ['notify', 'source', 'community']) {
-    const url = about?.[key];
-    if (typeof url !== 'string') continue;
-    try {
-      if (['https:', 'http:'].includes(new URL(url).protocol)) links[key] = url;
-    } catch {
-      // Not a URL: not offered.
-    }
-  }
-  return Object.keys(links).length ? links : null;
-}
-
-/** Where a workspace scope is hosted (`workspaces.example`), as the desktop says it
- * ("Hosted by …"); `null` on the person's own desktop. A workspace on the site the
- * page was opened from, or on one of its machines (`eu1.tilo.sh` behind
- * `tilo.sh`), is hosted by that site: the name people reached it by, not
- * the machine's. Ports are how a machine splits its services, not a name
- * anyone knows a host by, so a workspace on another port of the page's machine
- * (a local copy's workspace service beside its web entry) is that site too. */
-export function scopeHost(scope, site = globalThis.location?.host) {
-  if (scope.kind !== 'workspace') return null;
-  let url;
-  try {
-    url = new URL(scope.host);
-  } catch {
-    return null;
-  }
-  const name = site ? hostname(site) : '';
-  const host = url.hostname;
-  return name && (host === name || host.endsWith(`.${name}`)) ? name : url.host;
-}
-
-/** `site`'s host name without its port (`localhost` for `localhost:8411`). */
-function hostname(site) {
-  try {
-    return new URL(`http://${site}`).hostname;
-  } catch {
-    return site;
-  }
-}
-
-/** `onStatus` that also titles the tab after the workspace in front
- * (`tab`, `tab-attention.mjs`) and tells `guard` what this browser has yet to
- * save (`leave-guard.mjs`). */
-function titled(tab, guard, forward) {
-  return status => {
-    tab.setWorkspace(status?.workspaceName);
-    if (typeof status?.pendingWrites === 'number') guard.update({pendingWrites: status.pendingWrites});
-    forward?.(status);
-  };
-}
-
-/** The entry this page is served under: `{base, home?, tickets?, about?,
- * embedder?, layout?}`; `about` holds the web host's links for the desktop's
- * About sheet, `embedder` the origin of the site that embeds the page, if
- * any, and `layout` how the desktop is laid out when it is not the full
- * desktop: `console`, the console a person who has agents work for them
- * starts in. */
+/** The entry this page is served under: `{base, home?, tickets?,
+ * embedder?}`; `embedder` is the origin of the site that embeds the page, if
+ * any. */
 export async function readEntry({mode, location, fetch = globalThis.fetch}) {
   // A sealed invitation's link opens the page at `/i/<handle>`, whose files
   // and configuration are the site's own: the page names the site, not the
@@ -111,45 +38,10 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
     // No configuration: a plain bundle's entry.
   }
   const home = typeof config.home?.host?.origin === 'string' ? config.home : null;
-  const about = aboutLinks(config.about);
   const embedder = embedderOrigin(config.embedder);
-  const layout = config.layout === 'console' ? config.layout : null;
   return {base: base.href, ...(home ? {home} : {}),
     ...(typeof config.tickets === 'string' ? {tickets: config.tickets} : {}),
-    ...(about ? {about} : {}), ...(embedder ? {embedder} : {}), ...(layout ? {layout} : {})};
-}
-
-/** Send problem reports to the channel the entry's home workspace names,
- * from whichever workspace the page is in: through the workspace's own peer where it
- * is the home workspace, else through a peer of the page's in the home
- * workspace (`homePeer()`, resolving to one or `null`), which carries the
- * desktop's reports there. A bridge may mirror that one channel elsewhere,
- * so reports from the person's own desktop or another workspace reach the
- * same people. The desktop does not wait for it: the owner's admission is
- * a round trip of its own, and the desktop takes reports up once it is in. */
-export function configureFeedback(peer, home, admittedWorkspace = null, {homePeer} = {}) {
-  const channel = home?.feedback?.channel;
-  if (!peer?.workspace || typeof channel !== 'string') return;
-  const destination = workspace => ({workspace, provider: 'record:so.tilo.chat:', channel});
-  const warn = error => console.warn('feedback:', error?.message ?? error);
-  if (listedAt([home], {kind: 'workspace', host: peer.origin, workspace: peer.workspace}, admittedWorkspace)) {
-    peer.configureFeedback?.(destination(peer.workspace))?.catch(warn);
-    return;
-  }
-  // Another workspace has no such channel: the home workspace's peer carries them.
-  if (typeof homePeer !== 'function' || typeof peer.sendFeedbackThrough !== 'function') return;
-  (async () => {
-    const carrier = await homePeer();
-    if (!carrier) return;
-    if (!carrier.workspace || typeof carrier.configureFeedback !== 'function') {
-      await carrier.dispose?.();
-      return;
-    }
-    // Named first, so a desktop already waiting takes the startup up the
-    // moment the home workspace's owner admits this page.
-    peer.sendFeedbackThrough(carrier);
-    await carrier.configureFeedback(destination(carrier.workspace));
-  })().catch(warn);
+    ...(embedder ? {embedder} : {})};
 }
 
 /** The embedding site's origin, when `value` is exactly an https origin. */
@@ -176,7 +68,10 @@ export function grammar(runtime, entry) {
   };
 }
 
-/** A bare entry's address (`bareEntry`, router.mjs) as the grammar reads one:
+/** Whether `location` is a bare entry: one whose fragment names no route. */
+export const bareEntry = location => ['', '#', '#/'].includes(location.hash);
+
+/** A bare entry's address (`bareEntry`) as the grammar reads one:
  * without its empty fragment, since `#/` alone reads there as a route with an
  * empty part. */
 const bareHref = location => location.href.replace(/#\/?$/, '');
@@ -200,14 +95,6 @@ export function chosenRoute({location, mode, home = null, chosen = null}) {
   const bare = bareEntry(location);
   if (!bare || !home || mode !== 'desktop' || !chosen?.workspace) return null;
   return {mode, target: {scope: {kind: 'workspace', host: new URL(chosen.origin).origin, workspace: chosen.workspace}}};
-}
-
-/** Whether `a` and `b` name the same workspace (or both the person's own desktop). */
-function sameScope(a, b) {
-  if (a?.kind !== b?.kind) return false;
-  if (a.kind !== 'workspace') return true;
-  const origin = host => { try { return new URL(host).origin; } catch { return host; } };
-  return origin(a.host) === origin(b.host) && (a.workspace ?? null) === (b.workspace ?? null);
 }
 
 /** `route` with a workspace its link names no server for at the server the site names
@@ -251,64 +138,6 @@ export function initialRoute({link, location, mode, home = null}) {
   return link.parse(bare ? bareHref(location) : location.href);
 }
 
-/** How long a link to an app's workspace document waits for it before the
- * app opens without it: one nobody wrote yet never arrives. */
-export const WORKSPACE_DOCUMENT_WAIT_MS = 8_000;
-
-/** Wait for the record a one-app link names to reach the page. An app's
- * workspace document (`''`) that does not come opens empty, as on the
- * desktop, and is founded with its first write; any other record that does
- * not come is not there, or not this person's, and the link says so in the
- * words every link uses. */
-async function recordArrived(peer, {app, record}) {
-  const primary = record === '';
-  try {
-    await peer.whenRecord?.(app, record, primary ? {timeoutMs: WORKSPACE_DOCUMENT_WAIT_MS} : undefined);
-  } catch (error) {
-    if (error?.code !== 'no-record') throw error;
-    if (!primary) throw new Error(UNAVAILABLE);
-  }
-}
-
-/** The apps this page shows as HTML (`mountDesktop({dom: true})`): every
- * widget of their windows renders as its own elements (`Widget::html`), so
- * the page holds real text, fields, lists and buttons that the browser lays
- * out, finds, selects and reads out. Any other app is drawn on the canvas
- * until its widgets render as HTML too; which renderer shows an app is this
- * page's choice, never the link's. */
-export const HTML_APPS = new Set(['so.tilo.notes']);
-
-/** The apps whose window shows what only the desktop keeps: Activity reads
- * the workspace's history, which the desktop's session gathers from every
- * window and record. A page showing one app alone mounts no session, so a
- * link opening one of these alone opens it on the desktop instead. */
-export const DESKTOP_APPS = new Set(['so.tilo.activity']);
-
-/** Mount what `route` shows, then show its target. `directory` is what the
- * desktop's workspace directory browses (`deps.directory`), handed to
- * whichever mount draws the shell: the page's own, or a peer's. */
-export async function present({route, peer, surface, mountDesktop, directory = null, diagnostics = {}, onStatus, onNavigation, onAttention}) {
-  const {target, mode} = route;
-  const mount = peer ? (element, options) => peer.mountDesktop(element, options) : mountDesktop;
-  const shown = {...(directory ? {directory} : {}), ...diagnostics};
-  let navigation;
-  if (mode === 'app') {
-    if (!target.app) throw new Error('This link opens a whole workspace, so it opens on the desktop');
-    if (peer && target.record !== undefined) await recordArrived(peer, target);
-    const html = HTML_APPS.has(target.app) ? {dom: true} : {};
-    const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), ...html, onStatus});
-    await openTarget({mount: mounted, target, mode});
-    return {mount: mounted};
-  }
-  const mounted = await mount(surface, {...shown, onStatus, ...(onAttention ? {onAttention} : {}), onNavigation: controller => {
-    navigation = controller;
-    onNavigation?.(controller);
-  }});
-  navigation ??= mounted.navigation;
-  await openTarget({mount: mounted, navigation, target, mode});
-  return {mount: mounted, navigation};
-}
-
 /** What the page says while the host replays the workspace to it: how many
  * of its records are here (`records`). */
 export function receivingNote(records) {
@@ -316,29 +145,19 @@ export function receivingNote(records) {
 }
 
 /**
- * The desktop link that says what is in front of the person: the app's
- * window, and the view of its resource a link opened (`{scope, app,
- * record?, view?}`). Secrets left the address before any module ran.
+ * Boot an entry page. `deps` supplies the runtime (`loadRuntime`) and the
+ * admission entries; the page wires the real ones. `onStep` hears the steps
+ * of getting in: `join` while a host's entry is asked, `open` once admitted.
+ * Resolves to `null` once the page the server renders took over (or, in an
+ * embed, while nothing joined yet).
  */
-export function shownLink(target) {
-  const {scope, app, record, view} = target ?? {};
-  if (!scope || app === undefined || app === null) return {mode: 'desktop', target: {scope}};
-  return {mode: 'desktop', target: {scope, app, ...(record ? {record} : {}), ...(view ? {view} : {})}};
-}
-/**
- * Boot an entry page. `deps` supplies the page host (`loadRuntime`,
- * `mountDesktop`) and the admission entries; the page wires the real ones.
- * `onStep` hears the steps of getting in: `join` while a host's entry is
- * asked, `open` once admitted (until the desktop draws).
- */
-export async function boot({mode, window = globalThis, surface, status, deps, diagnostics = {}, onStep = () => {}}) {
+export async function boot({mode, window = globalThis, status, deps, onStep = () => {}}) {
   const say = text => { if (status) status.textContent = text; };
   // The page's own loading note, which admission progress replaces only
-  // while it lasts: once in, the note is back until the desktop draws.
+  // while it lasts.
   const loading = status?.textContent ?? '';
-  // A machine to set up is not admission: the page offers it once open.
-  // Nor is a Discord account to link: the desktop offers it once open.
-  const {install, link: linkOffer, ...secrets} = takeLinkSecrets(window);
+  // A machine to set up, or an account to link, is not admission.
+  const {install: _install, link: _link, ...secrets} = takeLinkSecrets(window);
   // A site's sealed invitation (`https://<site>/i/<handle>#<key>`): the
   // workspace is the invitation's to name, so the page learns it on the way
   // in and reads no route from the address.
@@ -363,16 +182,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     say(error?.message ?? String(error));
     throw error;
   }
-  // Activity alone would have no history to show: the desktop page opens
-  // it, before this page asks the workspace to let it in.
-  if (route.mode === 'app' && DESKTOP_APPS.has(route.target.app)) {
-    window.location.replace((await linked).format({...route, mode: 'desktop'}));
-    return null;
-  }
   // A link whose workspace reads but whose document (or item, or view) is
-  // damaged names that workspace: it opens, and the page says what of the
-  // link it did not use.
-  const {damaged = null, ...named} = route;
+  // damaged names that workspace: it opens without the damaged part.
+  const {damaged: _damaged, ...named} = route;
   route = named;
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   // The page hears which workspace it is getting into, under which entry,
@@ -410,35 +222,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   if (admittedElsewhere) {
     route = {...route, target: {...route.target, scope: {...route.target.scope, host: new URL(peer.origin).origin}}};
   }
-  // A link that names no workspace is let in through its server's entry: the workspace
-  // the entry admits to is that server's listed workspace. Not the person's
-  // own one, which a wait-list invitation opened in its place.
-  const admittedWorkspace = peer && !ownFirst && route.target.scope.kind === 'workspace' && (sealedAdmitted || !route.target.scope.workspace)
-    ? peer.workspace : null;
-  configureFeedback(peer, entry.home, admittedWorkspace, {
-    homePeer: entry.home && deps.homePeer
-      ? () => deps.homePeer(workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home) : null,
-  });
-  // The apps in the page read sites without CORS headers through the
-  // host it got into, when that host serves a fetch proxy.
-  wireFetchProxy(peer, window);
   say(loading);
   onStep('open');
-  const link = await linked;
-  // An installed app window is handed the keys a tab's browser keeps.
-  followDisplayMode({runtime: await loaded, window});
-  // The address names what opened, not the damaged part the page left out.
-  if (damaged) window.history.replaceState(window.history.state, '', link.format(route));
+  // A link that named no workspace is in the one its server's entry admitted to.
   if (peer && route.target.scope.kind === 'workspace' && (sealedAdmitted || admittedElsewhere || !route.target.scope.workspace)) {
-    // The workspace is known now: show its canonical link, in place of the
-    // address the link reached the page at. Not while the first screen of a
-    // setup covers it (first-screen.mjs): this workspace is not in front of
-    // the person then, and a reload or Back must not take its link for one
-    // they opened.
     route = {...route, target: {...route.target, scope: {...route.target.scope, workspace: peer.workspace}}};
-    if (window.document?.documentElement?.dataset?.firstScreen === undefined) {
-      window.history.replaceState(window.history.state, '', link.format(route));
-    }
   }
   // The web version is the page the server renders of a workspace: this
   // browser is a device of it now, and the page takes over from here. What
@@ -454,69 +242,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     window.location.replace(`${entry.base}w/${route.target.scope.workspace}${app}${show}`);
     return null;
   }
-  // A listed workspace is shown under its listed name, not its workspace id.
-  const scope = route.target.scope;
-  const listed = listedAt(workspaces, scope, admittedWorkspace);
-  // The name the workspace answered this page's admission with, for one no
-  // directory of the page's lists: a workspace a link's invitation admits
-  // into, or the person's own. Without it the shell it starts has no name and
-  // the tab never says which workspace it is.
-  const workspaceName = listed?.name || peer?.workspaceName || null;
-  // The desktop shows its invite sheet in a workspace the page can invite
-  // to, made and listed through the workspace's host.
-  const invite = deps.invite?.({peer, entry}) ?? null;
-  const host = scopeHost(scope, window.location?.host);
-  // Asked beside the entry, not before it (`deps.rendererUnavailable`): a
-  // browser that cannot draw opens no window, and the page says what to
-  // change instead. The answer is the browser's GPU process starting, which
-  // nothing admission needs waits on.
-  const unsupported = await deps.rendererUnavailable?.();
-  if (unsupported) return {peer, rendererUnavailable: unsupported};
-  // What the tab says while the person is elsewhere: the workspace, and what
-  // needs them there.
-  const tab = createTabAttention({window});
-  // Closing the tab asks first only while that would cut work short.
-  const guard = createLeaveGuard({window});
-  const unsent = () => guard.update({outgoingPending: peer?.getSnapshot?.()?.outgoingPending ?? 0});
-  peer?.subscribe?.(unsent);
-  const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop, directory: deps.directory?.() ?? null,
-    diagnostics: {...(workspaceName ? {workspaceName} : {}), ...(host ? {host} : {}),
-      ...(entry.about ? {about: entry.about} : {}),
-      ...(entry.layout ? {layout: entry.layout} : {}),
-      ...(linkOffer ? {linkOffer} : {}),
-      ...(invite ? {invite} : {}), ...diagnostics,
-      // The offer of the browser's notifications is the tab's own ask on the shell.
-      onHostAction: (id, value) => (tab.handles(id) ? tab.perform(id) : diagnostics.onHostAction?.(id, value))},
-    onStatus: titled(tab, guard, diagnostics.onStatus),
-    onAttention: attention => { tab.update(attention); guard.update({jobs: attention.working ?? []}); }});
-  tab.attach(shown.mount);
-  // `show` reads the router it was given, so the address can name what a
-  // link opened once it is shown.
-  let router;
-  router = startRouter({window, link, initial: route, navigation: shown.navigation,
-    show: next => {
-      // Another workspace is another peer and another desktop (Back or Forward
-      // across a switch of workspace, a hand-edited fragment): load it anew,
-      // never inside the mount of the workspace in front.
-      if (!sameScope(next.target.scope, route.target.scope)) {
-        window.location.reload();
-        return Promise.resolve();
-      }
-      // One app full tab mounts one app and record; another is another mount.
-      if (mode === 'app' && (next.target.app !== route.target.app || next.target.record !== route.target.record)) {
-        window.location.reload();
-        return Promise.resolve();
-      }
-      return openTarget({mount: shown.mount, navigation: shown.navigation, target: next.target, mode: next.mode})
-        .then(() => {
-          // The resource a link opened is in front now: the address names it,
-          // as a link to that view would, until focus moves to another
-          // window (the router then writes that window instead).
-          if (!next.target.resource) return;
-          router.replace(shownLink({...next.target, view: next.target.view ?? null}));
-        });
-    },
-    onError: error => say(error?.message ?? String(error))});
-  if (damaged) say(`${damaged}, so the workspace opened without it.`);
-  return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry, ...(install ? {install} : {})};
+  // A link that opens no workspace (the person's own desktop, a peer that
+  // names none) has no page to hand over to.
+  throw new Error('This link opens no workspace. Open one of your workspaces to use Tilo on the web.');
 }

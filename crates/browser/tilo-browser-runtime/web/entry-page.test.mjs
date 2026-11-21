@@ -155,12 +155,10 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
-    .replace("import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchApplications, prefetchDesktop, prepareGpu, reportPageErrors} from './host.mjs';", 'const applicationName = async () => null, loadRuntime = async () => globalThis.__entryPageFixture.runtime, mountDesktop = (...args) => globalThis.__entryPageFixture.mounted.push(args), prefetchApplication = () => {}, prefetchApplications = apps => globalThis.__entryPageFixture.prefetched.push(apps), prefetchDesktop = () => {}, prepareGpu = () => globalThis.__entryPageFixture.prepareGpu(), reportPageErrors = () => {};')
+    .replace("import {loadRuntime, reportPageErrors} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime, reportPageErrors = () => {};')
     .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
-    .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
-    .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
-    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, keptIdentity, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst signInWithPasskey = (...args) => globalThis.__entryPageFixture.signIn(...args);\nconst fetchEnvelope = async () => null;')
-    .replace('hostToReconnect, joinGranted, joinViaHost,', 'hostToReconnect, joinGranted,')
+    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, keptIdentity, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst signInWithPasskey = (...args) => globalThis.__entryPageFixture.signIn(...args);\nconst fetchEnvelope = async () => null;')
+    .replace('hostToReconnect, joinViaHost,', 'hostToReconnect,')
     .replace('identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, invitedServer, openInvitation,')
     .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), findProfile: (...args) => globalThis.__entryPageFixture.findProfile(...args), origin,')
     .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst joinWorkspace = (...args) => globalThis.__entryPageFixture.joinWorkspace(...args);\nconst PAGE_BUILD')
@@ -212,77 +210,6 @@ const studioLink = ({reconnected = []} = {}) => async ({deps, onStep}, booted) =
     reconnect: async options => { reconnected.push(options); return {...booted.peer, workspace: STUDIO}; }}});
   return peer ? booted : null;
 };
-
-test('a signed-out browser at a link to a workspace is asked to sign in, and comes back to that link signed in', async () => {
-  globalThis.location = undefined;
-  const before = {credential: Object.getOwnPropertyDescriptor(globalThis, 'PublicKeyCredential'), navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator')};
-  Object.defineProperty(globalThis, 'PublicKeyCredential', {value: function PublicKeyCredential() {}, configurable: true});
-  Object.defineProperty(globalThis, 'navigator', {value: {credentials: {get() {}}, language: 'en'}, configurable: true});
-  try {
-    const joins = [];
-    const {failure, screen, calls} = await fixture({identity: null, kept: null, entryParts: true,
-      join: async () => { joins.push('joinViaHost'); throw new Error('nothing joins'); }, boot: studioLink()});
-    // Nothing failed and nothing joined: the page asks for a sign-in.
-    assert.equal(failure, null, 'no failure is thrown on to the console');
-    assert.deepEqual(joins, []);
-    const root = document.documentElement.dataset;
-    assert.equal(root.entry, 'refused');
-    assert.equal(root.failure, undefined, 'never the failure screen');
-    assert.equal(screen['arrival-refusal-heading'].textContent, 'Sign in to open this workspace');
-    assert.match(screen['arrival-refusal-body'].textContent, /Sign in as one of them/);
-    assert.doesNotMatch(screen['arrival-refusal-heading'].textContent, /Lounge/, 'not under the site’s own workspace’s name');
-    // Signing in with a passkey loads the same link again, as the person: not their own workspace.
-    const parts = {};
-    for (const id of ['arrival-sign-in', 'arrival-sign-in-ask', 'arrival-sign-in-agent', 'arrival-sign-in-button', 'arrival-sign-in-note']) {
-      parts[id] = screen[id] ?? Object.assign(new Element(id), {hidden: false, textContent: '', classList: {add() {}, remove() {}}});
-    }
-    const {module, session: kept} = await fixture({identity: null, kept: null, boot: async () => null});
-    document.getElementById = id => parts[id] ?? null;
-    globalThis.location = {href: `https://web.example/#/@node.example/w/${STUDIO}/so.tilo.chat`, pathname: '/', reload: () => calls.push('reload')};
-    globalThis.__entryPageFixture.signIn = async () => ({userPublicKey: USER});
-    module.offerSignIn({workspace: {name: null, host: {origin: ORIGIN}, workspace: STUDIO}, named: null, messages: null, runtime: null,
-      link: null, stay: true});
-    await parts['arrival-sign-in-button'].listeners.get('click')();
-    assert.ok(calls.includes('reload'), 'the link loads again');
-    assert.equal(globalThis.location.href, `https://web.example/#/@node.example/w/${STUDIO}/so.tilo.chat`, 'at the place it named');
-    assert.equal(kept.get('tilo-open-own-workspace'), undefined, 'not sent to a workspace of their own');
-    // Loaded again, signed in: the page comes back as the person into the linked workspace, and opens it.
-    const reconnected = [];
-    const signedIn = await fixture({boot: studioLink({reconnected})});
-    assert.equal(signedIn.failure, null);
-    assert.deepEqual(reconnected.map(asked => [asked.origin, asked.workspace]), [[ORIGIN, STUDIO]]);
-    assert.equal(document.documentElement.dataset.entry, 'open', 'the linked workspace opens');
-    // Signed in with their agent instead, the browser keeps no person, only
-    // that it became their device on the host: that counts as signed in too.
-    const agentReconnected = [];
-    const asDevice = await fixture({identity: null, kept: null, boot: studioLink({reconnected: agentReconnected}),
-      local: {'tilo-host-memberships': JSON.stringify({[ORIGIN]: {origin: ORIGIN, workspace: STUDIO, userPublicKey: USER, paired: true}})}});
-    assert.equal(asDevice.failure, null);
-    assert.deepEqual(agentReconnected.map(asked => [asked.origin, asked.workspace]), [[ORIGIN, STUDIO]]);
-    assert.equal(document.documentElement.dataset.entry, 'open', 'the linked workspace opens for the agent-signed-in device');
-  } finally {
-    for (const [name, descriptor] of [['PublicKeyCredential', before.credential], ['navigator', before.navigator]]) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name];
-    }
-  }
-});
-
-test('a signed-out browser at a link to a public workspace is let in through that workspace’s own entry, not asked to sign in', async () => {
-  const before = globalThis.fetch;
-  const joins = [];
-  try {
-    globalThis.fetch = directories({[ORIGIN]: [{workspace: STUDIO, name: 'Studio', entry: `directory/${STUDIO}/`, invitationOnly: false}]});
-    const {failure} = await fixture({identity: null, kept: null, entryParts: true, boot: studioLink(),
-      join: async options => { joins.push(options); return {workspace: STUDIO}; }});
-    assert.equal(failure, null);
-    assert.deepEqual(joins.map(({workspace}) => [workspace.workspace, workspace.admission, workspace.name]),
-      [[STUDIO, `${ORIGIN}/peer/v1/directory/${STUDIO}/`, 'Studio']], 'its own entry, never the site’s listed one');
-    assert.equal(document.documentElement.dataset.refusal, undefined, 'no sign-in screen');
-    assert.equal(document.documentElement.dataset.entry, 'open', 'the linked workspace opens');
-  } finally {
-    globalThis.fetch = before;
-  }
-});
 
 test('the sign-in screen at a closed workspace offers someone with no Tilo identity the site’s wait list, as its front page does', async () => {
   const before = globalThis.fetch;
@@ -359,33 +286,6 @@ test('the entry says what works where passkeys cannot be used, and nothing when 
       if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name];
     }
   }
-});
-
-test('the GPU device opens as the page starts, while the host is asked, once', async () => {
-  const steps = [];
-  const {prepared, failure} = await fixture({boot: async ({onStep}, page) => {
-    steps.push(globalThis.__entryPageFixture.prepared.length);
-    onStep('join');
-    onStep('open');
-    onStep('open');
-    return page;
-  }});
-  assert.deepEqual(steps, [1], 'the device was asked for before the page asked the host');
-  assert.equal(prepared.length, 1, 'and only once, however the page moves on');
-  assert.equal(failure, null);
-  assert.equal(document.documentElement.dataset.entry, 'open');
-});
-
-test('a page the host refuses mounts nothing, so it compiles no renderer for the next page to wait on', async () => {
-  const {prepared, failure, mounted} = await fixture({boot: async ({onStep}) => {
-    onStep('join');
-    throw new AdmissionError('no-access', 'You don’t have access to this workspace.');
-  }});
-  assert.equal(failure?.code, 'no-access');
-  assert.equal(document.documentElement.dataset.entry, 'refused');
-  // The device alone: the renderer's pipelines compile as a mount draws.
-  assert.equal(prepared.length, 1);
-  assert.deepEqual(mounted, []);
 });
 
 test('a page that cannot open its workspace shows one failure screen: the cause, Try again, and the other workspaces in it', async () => {
@@ -613,151 +513,6 @@ test('an invitation from someone the workspace has not named reads their profile
   assert.equal(new URL(asked[0]).pathname, '/peer/v1/profile/fetch', asked.join());
 });
 
-test('a wait-list invitation is the short link its site keeps, not the invitation’s text', async () => {
-  const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1_000};
-  const {calls, diagnostics} = await fixture({member: {
-    createInvitation: async () => 'SIGNED-invitation',
-    membership: {list: async () => ({name: 'Current', members: []}),
-      mayInvite: async () => true, waitList: async () => [ed], unlist: async () => {}, mailInvite: async () => { throw new Error('this entry sends no mail'); }},
-  }});
-  diagnostics.onHostAction('waiting-to-join');
-  await tick();
-  const waiting = document.body.children.find(form => form.dataset.card === 'waiting');
-  assert.ok(waiting, 'the wait list is shown');
-  // The listed section’s rows: one per address, each Invite then Remove.
-  const row = waiting.children[1].children[2].children[0];
-  assert.equal(row.children[1].textContent, 'Invite');
-  row.children[1].listeners.get('click')();
-  await tick();
-  // The link kept ready for the one-press copy is sealed the same way as the
-  // row's: both are the site's short link, naming the host they admit into.
-  assert.deepEqual(calls.filter(call => Array.isArray(call) && call[0] === 'sealed').at(-1),
-    ['sealed', 'https://web.example/', ORIGIN, 'SIGNED-invitation'],
-    'the invitation is sealed onto the page’s own site, naming the host it admits into');
-  const share = document.body.children.find(form => form.dataset.card === 'share');
-  assert.ok(share, 'an entry that sends no mail shares the link instead');
-  assert.equal(share.children.find(child => child.name === 'link').value, SEALED,
-    'what the inviter sends is the short link, not the invitation’s text');
-  assert.match(share.children[1].textContent, /as an editor/);
-});
-
-test('workspaces another host held at the origin of the page host are no longer offered', async () => {
-  // The host at ORIGIN was set up again on fresh state twice since this
-  // browser entered workspaces there; both workspaces went with the hosts before.
-  const {shown} = await fixture({remembered: [
-    {origin: ORIGIN, workspace: 'gone-1', hostDevice: 'e1'.repeat(32), name: 'Other'},
-    {origin: ORIGIN, workspace: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
-    {origin: 'https://elsewhere.example', workspace: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
-  ]});
-  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace']);
-  assert.deepEqual(enteredWorkspaces().map(entry => entry.workspace), ['current', 'other', 'away']);
-});
-
-test('the person’s workspaces come from their host when this browser remembers none', async () => {
-  // This browser's kept list is unreadable (an older spelling), so it offers
-  // nothing of its own; the host still lists the person's workspaces, and the
-  // switcher fills them in once it answers.
-  const {shown} = await fixture({remembered: null, local: {'tilo-entered-workspaces': '[{"room":"old spelling"}]'},
-    member: {personalWorkspaces: async () => [
-      {workspace: 'current', name: 'Lounge', role: 'member', host: {name: 'node.example'}},
-      {workspace: 'mine', name: 'My workspace', role: 'owner', host: {name: 'node.example'}},
-    ]}});
-  await tick();
-  const titles = shown.at(-1).map(action => action.title);
-  assert.ok(titles.includes('Open My workspace'), titles.join(', '));
-  assert.ok(!titles.includes('Open Lounge'), 'the workspace in front is not offered back');
-});
-
-test('a bare home entry, which names no workspace until admitted, does not offer the one in front back to itself', async () => {
-  const {shown} = await fixture({scope: {kind: 'workspace', host: ORIGIN, workspace: null},
-    member: {personalWorkspaces: async () => [
-      {workspace: 'current', name: 'Lounge', role: 'member', host: {name: 'node.example'}},
-      {workspace: 'mine', name: 'My workspace', role: 'owner', host: {name: 'node.example'}},
-    ]}});
-  await tick();
-  const titles = shown.map(actions => actions.map(action => action.title)).at(-1);
-  assert.ok(titles.includes('Open My workspace'), titles.join(', '));
-  assert.ok(!titles.includes('Open Lounge'), 'the workspace in front is not offered back');
-});
-
-test('the page keeps switch actions together and dispatches them', async () => {
-  const {calls, shown, diagnostics} = await fixture();
-  const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace']);
-  diagnostics.onHostAction(actions.find(action => action.title === 'Open Other').id);
-  await tick();
-  assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
-  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'other'});
-});
-
-test('leaving a workspace opens another of the person’s in its place, never the one left', async () => {
-  const {calls, diagnostics} = await fixture();
-  choose(diagnostics, 'left-workspace:current');
-  await settled();
-  assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
-  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'other'});
-});
-
-test('a workspace offers the way back to the person’s own desktop, and their own desktop does not offer itself', async () => {
-  const {calls, shown, diagnostics, page} = await fixture();
-  page.link.format = route => `https://web.example/#/${route.target.scope.kind === 'own' ? 'me' : route.target.scope.workspace}`;
-  chooseWorkspace({origin: ORIGIN, workspace: 'other'});
-  const back = shown.at(-1).find(action => action.title === 'Open your desktop');
-  assert.ok(back, 'a workspace is no dead end');
-  const urls = [];
-  globalThis.history.pushState = (_state, _title, url) => { urls.push(url); calls.push('history'); };
-  diagnostics.onHostAction(back.id);
-  await tick();
-  assert.deepEqual(calls.slice(-6), ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
-  assert.deepEqual(urls, ['https://web.example/#/me']);
-  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'other'}, 'the workspace a bare entry reopens stays');
-  const {shown: ownShown} = await fixture({own: true});
-  assert.ok(!ownShown.flat().some(action => action.title === 'Open your desktop'));
-});
-
-test('creating a workspace stays in the current workspace when pending work cannot be saved', async () => {
-  const {calls, diagnostics, page} = await fixture();
-  page.mount.flush = async () => { calls.push('flush'); throw new Error('storage unavailable'); };
-  diagnostics.onHostAction('new-workspace');
-  await tick();
-  const form = document.body.children.at(-1);
-  form.children.find(child => child.tag === 'label').children[0].value = 'Created';
-  await form.listeners.get('submit')({preventDefault() {}});
-  await tick();
-  assert.deepEqual(calls, ['flush']);
-  assert.equal(chosenWorkspace(), null);
-  const failure = document.body.children.at(-1);
-  assert.match(failure.children[0].textContent, /not saved yet/);
-  failure.children.flatMap(child => [child, ...(child.children ?? [])]).find(child => child.tag === 'button').listeners.get('click')();
-  await tick();
-});
-
-test('creating a workspace remembers it and uses the existing save-and-close switch path', async () => {
-  const {calls, diagnostics} = await fixture();
-  diagnostics.onHostAction('new-workspace');
-  await tick();
-  const form = document.body.children.at(-1);
-  form.children.find(child => child.tag === 'label').children[0].value = 'Created';
-  await form.listeners.get('submit')({preventDefault() {}});
-  await tick();
-  assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
-  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'created'});
-  assert.equal(enteredWorkspaces().find(entry => entry.workspace === 'created').name, 'Created');
-});
-
-
-test('the person’s own desktop writes as their root identity and shows them unnamed until they give a name', async () => {
-  let mountOwn;
-  const {calls} = await fixture({own: true, boot: async (options, page) => { mountOwn = options.deps.mountDesktop; return page; }});
-  // No workspace's peer certifies who writes there: the browser's root identity does.
-  await mountOwn('surface', {onStatus() {}});
-  const [[, options]] = globalThis.__entryPageFixture.mounted;
-  assert.equal(options.author, USER);
-  const own = calls.find(call => call[0] === 'own');
-  assert.ok(own, 'the desktop is told who its person is');
-  assert.equal(own[1].user, USER);
-  assert.equal(own[1].label, '', 'a person without a name is shown as one, never by a made-up name');
-});
 
 test('the home workspace’s peer that carries reports from another workspace joins it without calls or a live session', async () => {
   let homePeer;
@@ -908,102 +663,10 @@ test('an uncaught page error reaches the entry the site names', async () => {
   globalThis.fetch = before;
 });
 
-test('a page that stops, on any screen, tells the host it could not open its workspace, and why', async () => {
-  const reports = [];
-  const before = globalThis.fetch;
-  globalThis.fetch = async (url, init) => {
-    if (String(url).endsWith('/errors')) { reports.push(JSON.parse(init.body)); return {ok: true}; }
-    return before(url, init);
-  };
-  try {
-    // A browser that cannot draw: its own screen, and the host hears it.
-    await fixture({boot: async ({deps}, booted) => {
-      deps.onScope({scope: booted.router.route.target.scope, entry: {base: 'https://home.example/', home: LOUNGE}});
-      return {...booted, rendererUnavailable: {reason: 'Tilo draws with WebGPU, which is turned off in this browser.', steps: []}};
-    }});
-    assert.equal(document.documentElement.dataset.entry, 'unsupported');
-    assert.deepEqual(reports.map(report => [report.kind, report.message]),
-      [['failed', 'unsupported: Tilo draws with WebGPU, which is turned off in this browser.']]);
-    // A join that failed: the failure screen's cause.
-    reports.length = 0;
-    await fixture({boot: async ({deps, onStep}, booted) => {
-      deps.onScope({scope: booted.router.route.target.scope, entry: {base: 'https://home.example/', home: LOUNGE}});
-      onStep('join');
-      throw Object.assign(new Error('that workspace is not public'), {name: 'HostAdmissionError', code: 'refused'});
-    }});
-    assert.equal(document.documentElement.dataset.failure, 'no-access');
-    assert.deepEqual(reports.map(report => report.kind), ['failed']);
-    assert.match(reports[0].message, /^no-access: HostAdmissionError: that workspace is not public/);
-  } finally {
-    globalThis.fetch = before;
-  }
-});
-
 // A session's own status, as the peer publishes it (PeerSnapshot).
 function sessionOf({phase = 'ready', transport = 'connected', admission = 'ready'} = {}) {
   return {phase, outgoingPending: 0, health: {version: 1, transport: {phase: transport}, admission: {phase: admission}, records: [], failures: []}};
 }
-
-test("the page fetches the apps the workspace's windows show, and nothing else", async () => {
-  const r = await fixture();
-  const {diagnostics, prefetched} = r;
-  // A desktop still drawing asks for nothing: there is no window yet.
-  diagnostics.onStatus({phase: 'gpu-pending', frames: 0, openApps: []});
-  assert.deepEqual(prefetched, [], 'no fetch before the first frame is up');
-  diagnostics.onStatus({phase: 'presented', frames: 1, openApps: ['so.tilo.notes', 'so.tilo.tasks']});
-  assert.deepEqual(
-    prefetched,
-    [['so.tilo.notes', 'so.tilo.tasks']],
-    "one fetch, for the apps the windows show",
-  );
-});
-
-test('the bar follows the session after the mount, not the mount alone', async () => {
-  const statuses = [];
-  let session = sessionOf();
-  const r = await fixture({boot: async (options, booted) => {
-    booted.peer = {...booted.peer, mountDesktop: async () => booted.mount,
-      getSnapshot: () => session, subscribe: () => () => {}, onStatus: listener => statuses.push(listener)};
-    return booted;
-  }});
-  const {diagnostics} = r;
-  const root = document.documentElement.dataset;
-  assert.equal(statuses.length, 1, 'the page follows the session, not only the mount it made');
-  diagnostics.onStatus({phase: 'presented', frames: 1});
-  assert.equal(root.connection, undefined, 'a session that is well has nothing to say');
-  // Nothing unmounted: the desktop is still there, the session is not.
-  session = sessionOf({phase: 'incomplete', transport: 'offline'});
-  statuses[0]();
-  assert.equal(root.connection, 'offline', 'a transport that dropped after the mount is not connected');
-  // The mount never changed: the line comes from the session alone.
-  session = sessionOf();
-  statuses[0]();
-  assert.notEqual(root.connection, 'offline', 'and it clears once the transport is back');
-});
-
-test('an invited newcomer on an invite-only site stays in the site’s home workspace their invitation let them into, loading the page once', async () => {
-  // A fresh browser that opened an invitation keeps its setup for later
-  // (index.html) and joins the shared home workspace. The bare site shows the
-  // first screen only to a browser that has joined nothing, and an invite-only
-  // site holds it behind its entry: sending the newcomer there only opened
-  // the home workspace again, which sent them back, without end.
-  const before = globalThis.fetch;
-  try {
-    globalThis.fetch = directories({[ORIGIN]: [{workspace: 'current', name: 'Lounge', entry: 'directory/current/', invitationOnly: true,
-      waitList: {contact: null, mail: true}}]});
-    const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
-    const {calls, failure, at} = await fixture({entry: {base: 'https://web.example/', home},
-      local: {'tilo-setup': JSON.stringify({step: 'later', at: 1}),
-        'tilo-host-memberships': JSON.stringify({[ORIGIN]: {origin: ORIGIN, workspace: 'current', userPublicKey: USER}})}});
-    assert.equal(failure, null);
-    assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), [], 'the page is not loaded again');
-    assert.notEqual(at(), 'https://web.example/', 'not sent to the bare site');
-    assert.equal(document.documentElement.dataset.entry, 'open', 'the home workspace opens');
-    assert.equal(JSON.parse(localStorage.getItem('tilo-setup')).step, 'later', 'their own setup still waits for later');
-  } finally {
-    globalThis.fetch = before;
-  }
-});
 
 /** A page opened at a site's short invitation link into the Lounge, through
  * the real admission with the page's own deps: the invitation sent off the
@@ -1029,36 +692,6 @@ const shortInvitation = ({waitList, steps}) => async ({deps, onStep}, booted) =>
   return booted;
 };
 const OWN = '0b1d8f52-5d0e-4a8e-9c1b-6f3e2a7d4c19';
-
-test('a person invited off the wait list opens their own workspace, made as they come in, loading the page once', async () => {
-  // Someone the Lounge let in off its wait list is new here: their own
-  // workspace is where they start, and the Lounge stays one switch away.
-  // Where to land is decided while they are let in, so nothing loads twice.
-  const steps = [];
-  const {calls, failure, at} = await fixture({remembered: [], boot: shortInvitation({waitList: true, steps}),
-    local: {'tilo-setup': JSON.stringify({step: 'later', at: 1})}});
-  assert.equal(failure, null);
-  assert.deepEqual(steps, ['join lounge', 'make own', 'dispose lounge', ['enter', OWN]],
-    'joined the Lounge, then their own workspace made and entered in its place');
-  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), [], 'the page is not loaded again');
-  assert.equal(at(), null, 'the page goes nowhere');
-  assert.equal(document.documentElement.dataset.entry, 'open', 'their own workspace opens');
-  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: OWN}, 'a bare entry reopens it');
-  assert.equal(enteredWorkspaces().find(kept => kept.workspace === OWN)?.name, 'Ada’s workspace', 'remembered under its own name');
-  assert.ok(!enteredWorkspaces().some(kept => kept.workspace === OWN && kept.name === 'Lounge'), 'never under the Lounge’s');
-});
-
-test('a person invited into the Lounge by a short link opens the Lounge, loading the page once', async () => {
-  // An ordinary invitation names its place, and the person stays there.
-  const steps = [];
-  const {calls, failure} = await fixture({remembered: [], boot: shortInvitation({waitList: false, steps}),
-    local: {'tilo-setup': JSON.stringify({step: 'later', at: 1})}});
-  assert.equal(failure, null);
-  assert.deepEqual(steps, ['join lounge'], 'no workspace of their own is made');
-  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), [], 'the page is not loaded again');
-  assert.equal(document.documentElement.dataset.entry, 'open', 'the Lounge opens');
-  assert.equal(chosenWorkspace(), null, 'a bare entry opens the site’s home');
-});
 
 test('a person already set up keeps the workspace a link into the site’s own home opened', async () => {
   const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
@@ -1092,23 +725,6 @@ test('a new device the host turns away for its clock is told so, not that its li
   assert.equal(document.documentElement.dataset.entry, 'refused');
   assert.equal(screen['arrival-failure-body'].textContent, PAIRING_CLOCK);
   assert.doesNotMatch(screen['arrival-failure-body'].textContent, /expired|used already/);
-});
-
-test('a device that came in by pairing is set up: it stays in its workspace and is never sent to the first screen', async () => {
-  // A pairing link shows no first screen, so nothing marked a paired browser
-  // as set up, and the page it opened handed itself to the bare site: which
-  // opened the same workspace as the same device, and handed itself on again,
-  // for as long as the tab was open.
-  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
-  const paired = {[ORIGIN]: {origin: ORIGIN, workspace: 'current', userPublicKey: USER, paired: true}};
-  const {calls, failure, at} = await fixture({entry: {base: 'https://web.example/', home},
-    local: {'tilo-host-memberships': JSON.stringify(paired)}});
-  assert.equal(failure, null);
-  assert.deepEqual(calls.filter(call => call === 'reload' || call === 'assign'), [],
-    'the page stays in the workspace its link opened');
-  assert.notEqual(at(), 'https://web.example/');
-  assert.equal(JSON.parse(localStorage.getItem('tilo-setup'))?.step, 'done',
-    'and the bare site, opened later, shows it no first screen either');
 });
 
 test('a pairing link opened in the browser that made it says this browser is that person already, and asks no host', async () => {
@@ -1536,195 +1152,9 @@ const ownDesktop = ({identity = rootHolder(), server, chosen = null, entry = HOM
     return page;
   }});
 
-test('on a person’s own desktop Add a device opens the pairing sheet, with a link another device of theirs joins with', async () => {
-  // Settings' Add a device asks the session for the sheet, and the desktop
-  // hands the page the action `pair-device`. On a person's own desktop
-  // no workspace's peer is in front, and the page offered no pairing there:
-  // the press opened nothing and said nothing. A device joins the person, not
-  // a workspace: their home server carries the request, and their root answers.
-  const timers = heldTimers();
-  try {
-    let waiting = [];
-    const server = homeServer(() => waiting);
-    const {diagnostics, shown, failure} = await ownDesktop({server, chosen: 'mine'});
-    assert.equal(failure, null);
-    assert.ok(shown.flat().some(action => action.id === 'pair-device'), 'the own desktop offers pairing, in search and on the person’s card');
-    choose(diagnostics, 'pair-device');
-    await settled();
-    assert.equal(card('pair-link')?.children[0].textContent, 'Pair a new device', 'the sheet opens');
-    const named = namedBy(pairingLinkOf(card('pair-link')));
-    assert.deepEqual({origin: named.origin, workspace: named.workspace, userPublicKey: named.userPublicKey},
-      {origin: ORIGIN, workspace: 'mine', userPublicKey: USER}, 'the link opens the person’s workspace on their home server, as them');
-    assert.match(named.invite, /^[0-9a-f]{32}$/, 'and names a fresh invite');
-    assert.deepEqual(server.asked, [['reach', JSON.stringify({id: 'home-server'})], ['pending', USER]],
-      'the root asks its home server who waits, at the address that server publishes');
-
-    // The device that opened the link waits there under its invite: this page
-    // asks its person, with the code the device shows, and answers nothing itself.
-    waiting = [waitingDevice('d1', named.invite)];
-    await timers.poll(PAIR_POLL);
-    const ask = card('pair-ask');
-    assert.ok(ask, 'the person is asked about the device that answered the link');
-    assert.ok(cardAndButtons(ask).includes('123456'), 'with the six digits the device shows');
-    assert.equal(server.count('answer'), 0, 'nothing is let in before the person approves');
-    const approve = ask.children.find(part => part.className === 'tilo-entry-actions').children.find(button => button.textContent === 'Approve 123456');
-    await approve.listeners.get('click')();
-    assert.deepEqual(server.asked.filter(([what]) => what === 'answer'), [['answer', USER, 'd1', true]], 'the root this page holds answers, once');
-    assert.ok(cardAndButtons(card('pair-ask')).includes('Safari on iPhone is now one of your devices'));
-
-    // Another device of theirs follows that link: the page's own way in pairs
-    // it through the server the link names, as the person and invite it names.
-    const joined = [];
-    const device = await fixture({identity: null, pair: async options => { joined.push(options); return {workspace: named.workspace}; },
-      boot: following(named)});
-    assert.equal(device.failure, null);
-    assert.deepEqual(joined.map(options => [options.origin, options.workspace, options.userPublicKey, options.invite]),
-      [[ORIGIN, 'mine', USER, named.invite]]);
-  } finally {
-    timers.release();
-  }
-});
-
-test('the own desktop’s pairing link opens a workspace of the home server this browser knows, and where it knows none no sheet opens', async () => {
-  const timers = heldTimers();
-  try {
-    for (const [remembered, entry, workspace] of [
-      // The one this browser entered on that server.
-      [[], HOME_ENTRY, 'other'],
-      // Else the site's home workspace itself.
-      [null, HOME_ENTRY, 'lounge'],
-      // A site that names no workspace of its home, in a browser that kept none: nowhere for a device to land.
-      [null, {base: 'https://web.example/', home: HOME_AT_ORIGIN}, null],
-    ]) {
-      const server = homeServer();
-      const {diagnostics} = await ownDesktop({server, remembered, entry});
-      choose(diagnostics, 'pair-device');
-      await settled();
-      assert.equal(card('pair-link') ? namedBy(pairingLinkOf(card('pair-link'))).workspace : null, workspace);
-      if (!workspace) assert.deepEqual(server.asked, [], 'and the server is asked nothing');
-    }
-  } finally {
-    timers.release();
-  }
-});
-
-test('a page that is not one of the person’s root-holding devices opens no pairing sheet', async () => {
-  // Only the root signs a new device's certificate. A browser that was itself
-  // paired holds no root, on the person's own desktop as in a workspace, and
-  // a browser that holds another person's root is not this person: neither
-  // shows a link, and neither asks the server who waits.
-  const timers = heldTimers();
-  try {
-    for (const page of [
-      {own: true, identity: {userPublicKey: USER}},
-      {own: false, identity: {userPublicKey: USER}},
-      {own: false, identity: rootHolder(ELSEWHERE)},
-    ]) {
-      const server = homeServer(() => [waitingDevice('d1', '0f'.repeat(16))]);
-      const {diagnostics, shown} = await fixture({...page, entry: HOME_ENTRY, runtime: server.runtime,
-        member: {pairing: () => server.session()}});
-      assert.ok(!shown.flat().some(action => action.id === 'pair-device'), 'pairing is not offered');
-      choose(diagnostics, 'pair-device');
-      await settled();
-      assert.equal(card('pair-link'), null, 'no sheet, no link');
-      assert.equal(card('pair-ask'), null, 'and nobody is asked about a device');
-      assert.deepEqual(server.asked, [], 'the server is asked nothing');
-    }
-  } finally {
-    timers.release();
-  }
-});
-
-test('a spent invitation and an ended one let nobody in from the own desktop: no device naming either is asked about', async () => {
-  const timers = heldTimers();
-  try {
-    let waiting = [];
-    const server = homeServer(() => waiting);
-    const {diagnostics} = await ownDesktop({server, chosen: 'mine'});
-    choose(diagnostics, 'pair-device');
-    await settled();
-    const spent = namedBy(pairingLinkOf(card('pair-link'))).invite;
-    waiting = [waitingDevice('d1', spent)];
-    await timers.poll(PAIR_POLL);
-    const decline = card('pair-ask').children.find(part => part.className === 'tilo-entry-actions').children.find(button => button.textContent === 'Decline');
-    await decline.listeners.get('click')();
-    assert.deepEqual(server.asked.filter(([what]) => what === 'answer'), [['answer', USER, 'd1', false]]);
-    // Answered, the invite is spent, approved or not: a second device naming it is never put to the person.
-    waiting = [waitingDevice('d2', spent)];
-    const before = server.count('pending');
-    await timers.poll(PAIR_POLL);
-    await timers.poll(PAIR_POLL);
-    assert.equal(server.count('pending'), before, 'the server is not even asked who waits: no invite of this page is open');
-    assert.equal(server.count('answer'), 1, 'and nothing more is answered');
-    assert.ok(cardAndButtons(card('pair-ask')).includes('Declined. Safari on iPhone was not let in.'), 'no new ask took the first one’s place');
-
-    // A link nobody answered ends ten minutes after it was made: its sheet
-    // closes, and a device that names it afterwards is not asked about either.
-    choose(diagnostics, 'pair-device');
-    await settled();
-    const ended = namedBy(pairingLinkOf(card('pair-link'))).invite;
-    assert.notEqual(ended, spent, 'each press makes a fresh invite');
-    timers.later(10 * 60 * 1000);
-    waiting = [waitingDevice('d3', ended)];
-    const asks = server.count('pending');
-    await timers.poll(PAIR_POLL);
-    assert.equal(card('pair-link'), null, 'the ended link’s sheet closes');
-    assert.equal(server.count('pending'), asks);
-    assert.equal(server.count('answer'), 1);
-  } finally {
-    timers.release();
-  }
-});
-
-test('a device approved through the own desktop’s link is the device of the person that link names, and of nobody else', async () => {
-  const timers = heldTimers();
-  try {
-    let waiting = [];
-    const server = homeServer(() => waiting);
-    const {diagnostics} = await ownDesktop({server, chosen: 'mine'});
-    choose(diagnostics, 'pair-device');
-    await settled();
-    const named = namedBy(pairingLinkOf(card('pair-link')));
-    // A device waiting under an invite this page never made (another person's
-    // link, or none) is not this page's to approve, whatever the server lists.
-    waiting = [waitingDevice('d9', '0e'.repeat(16)), {...waitingDevice('d8', null)}];
-    await timers.poll(PAIR_POLL);
-    assert.equal(card('pair-ask'), null);
-    assert.equal(server.count('answer'), 0);
-    assert.ok(server.asked.every(([what, root]) => !['pending', 'answer'].includes(what) || root === USER),
-      'every question to the server came with this person’s root and no other');
-    // The browser that follows the link keeps itself as that person's device alone.
-    await fixture({identity: null, pair: async () => ({workspace: named.workspace}), boot: following(named)});
-    const kept = keptMembership(HOME_AT_ORIGIN);
-    assert.deepEqual([kept?.userPublicKey, kept?.paired], [USER, true]);
-  } finally {
-    timers.release();
-  }
-});
-
 /** The link a signed-in tab formats for the workspace it opens. */
 const signedInLink = {format: ({target}) => `https://web.example/#/@node.example/w/${target.scope.workspace}`};
 const INVITE = 'e'.repeat(32);
-
-test('a tab an agent signs in pairs on its own page and loads, once, the workspace the person last used', async () => {
-  globalThis.fetch = async () => ({ok: false});
-  const {module, calls, at, session, signed} = await fixture();
-  const before = calls.length;
-  await module.signInAs({user: USER, invite: INVITE}, {origin: ORIGIN, home: 'lounge'}, signedInLink, signed());
-  const made = calls.slice(before);
-  assert.deepEqual(made.filter(call => Array.isArray(call) && call[0] === 'pair'), [['pair', USER, INVITE]],
-    'the tab pairs itself as the person the claim names, with the invite it named');
-  assert.ok(!made.some(call => Array.isArray(call) && call[0] === 'own'),
-    'a workspace this browser remembers is not asked of the host again');
-  assert.deepEqual(made.filter(call => call === 'dispose'), ['dispose'],
-    'the pairing session is let go before the page loads');
-  assert.equal(made.filter(call => call === 'reload').length, 1, 'the sign-in loads one page');
-  assert.ok(!made.includes('assign'), 'and has nothing to navigate to a second time');
-  assert.equal(at(), 'https://web.example/#/@node.example/w/current',
-    'the workspace the person last used, not the home workspace it paired through');
-  assert.equal(session.get('tilo-open-own-workspace'), undefined,
-    'the loaded page has no workspace of its own to open after drawing this one');
-});
 
 test('a tab an agent signs in with only the home remembered loads the person’s own workspace, never the home', async () => {
   globalThis.fetch = async () => ({ok: false});

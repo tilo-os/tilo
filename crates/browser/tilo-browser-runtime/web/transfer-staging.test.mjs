@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createInlineStorage,requestResult} from './storage-inline.mjs';
 import {createStorageAccess} from './storage.mjs';
-import {transactionComplete} from './host-core.mjs';
+import {transactionComplete} from './idb-transaction.mjs';
 import {fakeIndexedDB,fakeLocks,fakeWorkers} from './testing/fake-storage.mjs';
 const CHUNK=240*1024,MAX=256*1024*1024;
 const descriptor=(n=1,totalBytes=4)=>({id:n.toString(16).padStart(32,'0'),scope:'verified scope',cutToken:'opaque cut',totalBytes,maxItemBytes:Math.min(totalBytes,64*1024*1024)});

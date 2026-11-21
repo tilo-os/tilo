@@ -1,4 +1,4 @@
-import {transactionComplete} from './host-core.mjs';
+import {transactionComplete} from './idb-transaction.mjs';
 
 // Private device key, not authority: only Rust validates manifests, digests, native
 // admission and the cut. These rows must never be document hydration inputs.

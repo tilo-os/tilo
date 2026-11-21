@@ -214,13 +214,13 @@ test('the screen shows one action first and the other workspaces under it, in th
 test('while the failure screen shows, nothing else of the page shows beside or over it', () => {
   const html = readFileSync(here('index.html'), 'utf8');
   const hidden = html.match(/\[data-failure\] :is\(([^)]*)\) \{ display: none; \}/)?.[1] ?? '';
-  for (const part of ['#arrival', '#arrival-note', '#arrival-retry', '#arrival-own', '#arrival-reconnect', '.tilo-entry-card']) {
+  for (const part of ['#arrival', '#arrival-note', '#arrival-retry', '#arrival-reconnect', '.tilo-entry-card']) {
     assert.ok(hidden.split(',').map(item => item.trim()).includes(part), part);
   }
-  // The older rules that show the page's own Try again and own-desktop
-  // buttons on a stop are more specific than the one above: each leaves
-  // the failure screen out itself.
-  for (const rule of html.match(/^.*#arrival-(retry|own) \{ display: block; \}$/gm) ?? []) {
+  // The older rules that show the page's own Try again button on a stop
+  // are more specific than the one above: each leaves the failure screen
+  // out itself.
+  for (const rule of html.match(/^.*#arrival-retry \{ display: block; \}$/gm) ?? []) {
     if (/^\s*\[data-arrival=stopped\]/.test(rule)) assert.match(rule, /:not\(\[data-failure\]\)/, rule);
   }
   assert.match(html, /\[data-failure\] #status \{ position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset\(50%\)/);

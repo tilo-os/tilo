@@ -1,4 +1,4 @@
-import {transactionComplete} from './host-core.mjs';
+import {transactionComplete} from './idb-transaction.mjs';
 import {createInlineStorage,requestResult,storageRevision} from './storage-inline.mjs';
 import {STORAGE_UNSUPPORTED,STORAGE_WORKER_FAILED,packBinary,reviveError,workerFailure} from './persistence-protocol.mjs';
 import {captureTransferHandle,captureTransferRequest} from './transfer-staging.mjs';
