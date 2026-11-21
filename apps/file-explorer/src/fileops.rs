@@ -155,10 +155,6 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
-pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
-    host_fs::trash::delete(paths)
-}
-
 pub fn move_to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
     host_fs::trash::trash(path)
 }
@@ -445,8 +441,7 @@ mod tests {
             );
             let source = trash.parent().expect("data directory").join("notes.txt");
             fs::write(&source, b"keep private contents").expect("refused deletion source");
-            let error = delete_to_trash(std::slice::from_ref(&source))
-                .expect_err("deletion must refuse nonprivate Trash");
+            let error = move_to_trash(&source).expect_err("deletion must refuse nonprivate Trash");
             assert!(error.contains("not a private directory owned by this user"));
             assert_eq!(
                 fs::read(&source).expect("source retained"),
@@ -466,27 +461,6 @@ mod tests {
                         & 0o777,
                     0o755
                 );
-            }
-        }
-
-        phase legacy_delete_creates_owner_only_trash_metadata_and_payload_directories;
-        {
-            use std::os::unix::fs::MetadataExt as _;
-            let home = tilo_test_env::TestHome::new().expect("private test home");
-            let source = home.home().join("notes.txt");
-            fs::write(&source, b"private notes").expect("source contents");
-            delete_to_trash(std::slice::from_ref(&source)).expect("production legacy delete");
-            assert!(!source.exists());
-            let files = trash_dir().expect("test Trash path");
-            let data = files
-                .parent()
-                .and_then(Path::parent)
-                .expect("data directory");
-            for directory in ["Trash", "Trash/files", "Trash/info"] {
-                let path = data.join(directory);
-                let metadata = fs::symlink_metadata(&path).expect("created Trash directory");
-                assert!(metadata.is_dir());
-                assert_eq!(metadata.mode() & 0o777, 0o700, "{}", path.display());
             }
         }
 
