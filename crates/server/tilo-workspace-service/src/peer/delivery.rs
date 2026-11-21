@@ -298,7 +298,8 @@ async fn retire_written(
         let Some(path) = delivery.cleanup.clone() else {
             continue;
         };
-        owner.read(1, move |_| {
+        owner
+            .read_wait(1, move |_| {
             if !delivery.live.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(());
             }
@@ -307,7 +308,8 @@ async fn retire_written(
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(e) => Err(e.into()),
             }
-        })?;
+        })
+            .await?;
     }
     Ok(())
 }

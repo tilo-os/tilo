@@ -1479,6 +1479,9 @@ impl Persistence {
         Ok(rx)
     }
 
+    /// A read that fails at once when the owner has no room for it: what a test of the bounds
+    /// asks.
+    #[cfg(test)]
     pub(crate) fn read<T: Send + 'static>(
         &self,
         bytes: usize,
@@ -1487,6 +1490,24 @@ impl Persistence {
         // Counted: how many of the owner's normal jobs are reads.
         crate::timing::window("owner.read_jobs", crate::timing::start());
         self.submit(bytes, operation, |result| async { result })
+    }
+
+    /// A read in the owner's order, once the owner has room for it: a session's own work waits
+    /// its turn behind everyone else's rather than ending the session when the owner is busy.
+    pub(crate) async fn read_wait<T: Send + 'static>(
+        &self,
+        bytes: usize,
+        operation: impl FnOnce(&mut State) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError> {
+        // Counted: how many of the owner's normal jobs are reads.
+        crate::timing::window("owner.read_jobs", crate::timing::start());
+        self.submit_prepared_wait(
+            bytes,
+            async { Ok(()) },
+            move |state, ()| operation(state),
+            |result| async { result },
+        )
+        .await
     }
 }
 

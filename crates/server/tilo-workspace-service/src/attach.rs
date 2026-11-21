@@ -750,10 +750,13 @@ impl Session<'_> {
         let owner = crate::persistence::handle(&workspace).await;
         let outbound = self.client.outbound.clone();
         let source = self.source.clone();
+        // Asked in the owner's order once it has room: a busy owner delays the request, never
+        // ends the link that asks it.
         owner
-            .submit(
+            .submit_prepared_wait(
                 1,
-                |state| Ok(state.heads()),
+                async { Ok(()) },
+                |state, ()| Ok(state.heads()),
                 move |result| async move {
                     let result = async {
                         let heads = result?;
@@ -778,6 +781,7 @@ impl Session<'_> {
                     result
                 },
             )
+            .await
             .map_err(|error| error.to_string())?;
         Ok(())
     }
