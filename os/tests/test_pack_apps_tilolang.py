@@ -6,7 +6,8 @@ signs into a `.tapp`; it executes the tilolang runtime bundle
 tools/apps/tilolang_packages.sh and required by `tilo-install` before it installs
 a package naming it. The image's packing must install the packages its app set
 planned (`tools/apps/app_release.py`), through the same `tilo-install` a Rust
-tapp goes through, and only those.
+tapp goes through, and only those. The payload stage packs from the tree
+`compile.sh --apps` hands it, so that tree carries the binaries both steps run.
 """
 import json
 import os
@@ -219,6 +220,58 @@ mkdir -p "$(python3 -c 'import sys; a=sys.argv[1:]; print(a[a.index("--out") + 1
         self.assertEqual(child.returncode, 0, child.stderr)
         manifest = (REPO / 'apps/tilolang/tilo-runtime.toml').read_text()
         self.assertIn(f'provides = "tilolang/{child.stdout.strip()}"', manifest)
+
+
+class PayloadTreeTests(unittest.TestCase):
+    """`compile.sh --apps`: the tree the payload stage bakes and packs from."""
+
+    def compile_tree(self, root, tilolang_packages, with_tilolang=True):
+        source = root / 'compiled'
+        for name in ('libruntime_dylib.so', 'tilo-runtime-account-capability', 'runtime-engines',
+                     'tilo-runtime-bundle', 'tilo-app-package', 'tilo-install', 'tilo-cli-shim',
+                     'tilolang-process'):
+            (source / name).parent.mkdir(parents=True, exist_ok=True)
+            (source / name).write_text('')
+        for name in ('apps', 'language-packs'):
+            (source / name).mkdir()
+        (source / 'apps/tilolang').mkdir()
+        (source / 'apps/tilolang/tilo-runtime.toml').write_text(
+            (REPO / 'apps/tilolang/tilo-runtime.toml').read_text())
+        (source / 'app-plan.json').write_text(json.dumps({
+            'tilolang': [{'app': 'tl-notes', 'dir': 'apps/tl/notes', 'id': NOTES,
+                          'version': '0.1.0', 'runtime': TILOLANG_RUNTIME}]
+        } if tilolang_packages else {'tilolang': []}))
+        if with_tilolang:
+            (source / 'tilolang').write_text('')
+        return subprocess.run(
+            ['bash', str(REPO / 'os/image/compile.sh'), '--apps', str(source),
+             str(root / 'compiled-apps')],
+            env={'PATH': os.defpath, 'HOME': str(root), 'TMPDIR': str(root)},
+            capture_output=True, text=True)
+
+    def test_the_tree_carries_the_binaries_the_bake_and_the_packing_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = self.compile_tree(root, tilolang_packages=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in ('tilolang', 'tilolang-process', 'app-plan.json'):
+                self.assertTrue((root / 'compiled-apps' / name).exists(), name)
+
+    def test_a_plan_naming_tilolang_packages_without_the_compiler_is_refused(self):
+        # The payload stage would bake the runtime and then fail to build a
+        # package: the tree is checked where it is made.
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.compile_tree(Path(directory), tilolang_packages=True,
+                                       with_tilolang=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('has no tilolang', result.stderr)
+
+    def test_a_tree_that_ships_no_tilolang_package_needs_no_compiler(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = self.compile_tree(root, tilolang_packages=False, with_tilolang=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((root / 'compiled-apps' / 'tilolang').exists())
 
 
 if __name__ == '__main__':

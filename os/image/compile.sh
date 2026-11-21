@@ -118,6 +118,17 @@ if [[ ${1:-} == --apps ]]; then
   done
   for f in "$from"/libstd-*.so; do [[ ! -e $f ]] || cp -a "$f" "$out/"; done
   for f in "${files[@]}"; do [[ -e $out/$f ]] || { echo "compile.sh --apps: $from has no $f" >&2; exit 1; }; done
+  # The plan says whether the payload packs any tilolang package, so a tree that
+  # names one without the compiler that builds it is refused here rather than at
+  # the packing, a whole payload build later.
+  if [[ -f $out/app-plan.json ]] \
+      && python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("tilolang") else 1)' \
+           "$out/app-plan.json"; then
+    for f in tilolang tilolang-process; do
+      [[ -e $out/$f ]] \
+        || { echo "compile.sh --apps: $from has no $f, which the app plan's tilolang packages are built and run with" >&2; exit 1; }
+    done
+  fi
   exit 0
 fi
 out=${1:?usage: compile.sh OUT | --dev OUT | --apps FROM OUT}
