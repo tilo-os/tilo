@@ -947,10 +947,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The first phase pins the field layout of the wire bytes by their digest.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn signed_op_wire_and_signing_bytes_cover_exactly_the_signed_fields;
 
         phase signed_op_field_layout;

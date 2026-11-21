@@ -407,10 +407,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_build_id_is_read_from_the_gnu_note;
 
         phase the_build_id_is_found_after_other_notes;

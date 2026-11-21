@@ -278,10 +278,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_capability_file_is_enforced_live_and_fails_closed;
 
         phase capability_file_changes_take_effect_during_the_mount;

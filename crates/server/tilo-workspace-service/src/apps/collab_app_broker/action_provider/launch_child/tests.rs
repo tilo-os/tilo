@@ -88,10 +88,6 @@ fn parent() -> InvokeRequest {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, end to end, reads as one test"
-    )]
     fn a_child_launch_follows_its_signed_admission;
 
     phase failed_child_barrier_never_calls_launcher;

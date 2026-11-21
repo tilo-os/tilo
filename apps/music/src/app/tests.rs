@@ -19,10 +19,6 @@ fn app_with_doc() -> (Music, AutoCommit) {
 tilo_test_env::scenario! {
     /// Edits of this device's queue through the player's reducers: the playing song, its source
     /// and the shuffle history stay.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn queue_edits_keep_the_playing_song_and_what_was_already_heard;
 
     phase transport_effects_preserve_the_existing_shuffle_history;

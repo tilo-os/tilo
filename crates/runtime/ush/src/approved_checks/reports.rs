@@ -240,10 +240,6 @@ mod tests {
     }
     tilo_test_env::scenario! {
         /// `ReportParser`: the frames a check's report may carry.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn the_report_parser_labels_bounds_and_refuses_frames;
 
         phase host_phase_vocabulary_obeys_wire_bounds_and_rejects_duplicate_ids;

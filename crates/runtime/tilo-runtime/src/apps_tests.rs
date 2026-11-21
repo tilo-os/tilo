@@ -501,10 +501,6 @@ fn a_payload_that_does_not_verify_is_refused() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn a_launched_process_is_attested_and_named_by_its_own_launch;
 
     phase attestation_holds_only_for_the_launched_process_itself;

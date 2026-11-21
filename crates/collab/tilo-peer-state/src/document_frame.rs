@@ -646,7 +646,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn frames_and_segments_reassemble_only_as_they_were_sent;
 
         phase coalesce_keeps_snapshots_apart_and_joins_incremental_runs;

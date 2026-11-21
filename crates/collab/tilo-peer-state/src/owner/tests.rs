@@ -771,7 +771,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_committed_document_is_read_by_members_at_the_revision_they_hold;
 
     phase a_member_reads_the_admitted_document_and_a_stranger_does_not;
@@ -1025,7 +1024,6 @@ fn sent(owner: &NativeWorkspaceOwner, workspace: WorkspaceId, now: SystemTime) -
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn sealed_history_is_published_and_read_through_its_keys;
 
     phase native_sealed_checkpoint_is_classified_like_browser;

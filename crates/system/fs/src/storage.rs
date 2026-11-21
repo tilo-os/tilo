@@ -885,10 +885,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn storage_is_attributed_and_reclaimed_fail_closed;
 
         phase local_bytes_are_split_by_what_losing_the_device_costs;

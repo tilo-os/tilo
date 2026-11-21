@@ -173,10 +173,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn policy_digests_names_and_signed_messages_match_the_tpm;
 
         phase policy_digests_bind_every_operation_operand_and_index;

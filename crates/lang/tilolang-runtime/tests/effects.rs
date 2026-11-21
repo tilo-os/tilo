@@ -88,10 +88,6 @@ action start(b: demo.Board) -> Time uses time {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn an_actions_effects_are_journaled_beside_its_change;
 
         phase an_actions_journal_is_kept_beside_its_change;

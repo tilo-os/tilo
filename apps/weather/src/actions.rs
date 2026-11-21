@@ -73,10 +73,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn the_places_resource_publishes_changes_and_converges;
 
         phase each_place_publishes_its_verbs_and_its_row_offers_its_effects;

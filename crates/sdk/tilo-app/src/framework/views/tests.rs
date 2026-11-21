@@ -823,10 +823,6 @@ fn shelf() -> Vec<Item> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn prose_and_an_apps_own_index_are_searched_with_the_items;
 
     phase a_match_in_prose_is_a_hit_at_its_passage;

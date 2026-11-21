@@ -1889,10 +1889,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn build_produces_deterministic_verifiable_bundles_per_layout;
 
         phase sdk_font_catalog_is_signed_and_corruption_does_not_change_a_retained_sdk;
@@ -2485,10 +2481,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn verify_rejects_modified_unlisted_and_malformed_payloads;
 
         phase verify_detects_a_modified_byte;
@@ -2636,10 +2628,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn bundle_signatures_bind_the_publisher_and_domain;
 
         phase signed_bundle_roundtrips_and_verify_accepts;

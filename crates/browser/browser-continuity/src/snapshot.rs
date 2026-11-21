@@ -316,10 +316,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_capture_takes_the_selected_files_as_they_are_or_refuses;
 
         phase actual_selected_files_are_captured_readonly_without_cookies_or_shm;

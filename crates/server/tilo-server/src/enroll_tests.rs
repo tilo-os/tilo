@@ -531,10 +531,6 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn enrollment_responses_are_signed_encrypted_and_certificate_bound;
 
     phase expired_device_certificate_is_not_projected_into_personal_state;
@@ -1168,10 +1164,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn pairing_exchange_is_private_single_use_and_resumable;
 
     phase automatic_pair_offer_is_private_to_the_soliciting_server;
@@ -1499,10 +1491,6 @@ fn sample_request() -> Request {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn pairing_envelopes_are_step_bound;
 
     phase v2_request_gets_a_v2_response_only_the_requester_opens;

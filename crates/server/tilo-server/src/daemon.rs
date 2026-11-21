@@ -2022,10 +2022,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn startup_validation_and_workspace_authority_admit_only_signed_hosts;
 
         phase valid_host_identity_passes_startup_validation;

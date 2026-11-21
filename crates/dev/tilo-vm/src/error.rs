@@ -1100,10 +1100,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn errors_name_the_fix_and_when_a_rerun_helps;
 
         phase every_error_carries_a_hint_that_names_the_fix;

@@ -548,10 +548,6 @@ view note_page(n: Note) {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_page_places_its_dots_and_a_bar_its_toggle;
 
         phase a_page_whose_item_offers_nothing_shows_no_dots;

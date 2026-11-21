@@ -273,7 +273,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn the_firing_queue_orders_bounds_retries_and_dead_letters;
 
         phase firings_run_one_at_a_time_in_order;

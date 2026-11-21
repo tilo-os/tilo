@@ -1181,10 +1181,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-        )]
         fn the_tile_layer_addresses_fetches_caches_and_refuses;
 
         phase tile_addressing_decoding_and_label_free_styles;

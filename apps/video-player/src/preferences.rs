@@ -349,10 +349,6 @@ mod tests {
             clippy::float_cmp,
             reason = "a fallback or clamp yields exactly the named constant, so equality is the assertion"
         )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn device_settings_and_resume_points_are_kept;
 
         phase settings_round_trip_and_fall_back_per_key;

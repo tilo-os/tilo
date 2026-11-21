@@ -403,10 +403,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn fusing_what_the_microphones_heard;
 
         phase the_seat_alone_is_its_raw_readings;

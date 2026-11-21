@@ -64,7 +64,6 @@ fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
     (peer, cert.device_public_key, now)
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_devices_current_membership_decides_what_it_may;
 
     phase current_member_rechecks_removal;

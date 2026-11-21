@@ -664,10 +664,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-        )]
         fn drive_inventories_parse_and_survive_projection;
 
         phase linux_lsblk_inventory_parses_and_may_authoritatively_be_empty;

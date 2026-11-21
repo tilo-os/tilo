@@ -174,7 +174,6 @@ fn acknowledge(fixture: &mut Fixture, message: NeighbourMsg, at: SystemTime) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_sealed_write_is_renewed_only_for_its_current_author_by_the_key_holder;
 
     phase an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_retires_with_it;

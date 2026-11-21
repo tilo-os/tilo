@@ -151,10 +151,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn a_proposal_is_shown_whole_before_anything_is_sent;
 
     phase the_proposal_declares_every_part_it_sends;

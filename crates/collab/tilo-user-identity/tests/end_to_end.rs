@@ -24,10 +24,6 @@ use tilo_user_identity::{
 };
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn enrollment_and_directory_sync_work_end_to_end_only_for_one_user;
 
     phase full_enrollment_and_directory_sync_flow;

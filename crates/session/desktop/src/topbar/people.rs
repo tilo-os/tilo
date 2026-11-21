@@ -1088,10 +1088,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_phone_bar_keeps_its_people_and_the_followed_face;
 
         phase a_phone_bar_shows_whoever_did_something_last;

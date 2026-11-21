@@ -246,10 +246,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn an_effect_handler_answers_within_what_it_declared;
 
     phase what_an_effect_submits_continues_its_invocation;

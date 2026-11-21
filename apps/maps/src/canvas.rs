@@ -1092,10 +1092,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-        )]
         fn the_canvas_places_labels_markers_and_tiles;
 
         phase labels_try_clear_alternatives_and_never_cover_markers_or_names;

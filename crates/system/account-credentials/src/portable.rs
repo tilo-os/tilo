@@ -508,10 +508,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The password-sealed bundle of accounts an install carries over.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn portable_account_bundles_are_authenticated_before_anything_is_written;
 
         phase canonical_roundtrip_selects_and_reseals_without_changing_source;

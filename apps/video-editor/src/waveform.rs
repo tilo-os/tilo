@@ -380,10 +380,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn waveforms_decode_and_settle_for_every_kind_of_source;
 
         phase wav_peaks_decode_every_format_and_prefix_safely;

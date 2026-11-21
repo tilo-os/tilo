@@ -975,10 +975,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one signing session checked against every route, payload and role binding"
-        )]
         fn what_the_service_signs;
 
         phase collaboration_signing_binds_route_payload_and_live_action_role;
@@ -1394,10 +1390,6 @@ params = []
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one runtime client session checked against each request it may and may not make"
-        )]
         fn broker_clients;
 
         phase negotiated_photo_uses_actual_selected_record_and_refuses_wrong_root_and_invalid_pixels;

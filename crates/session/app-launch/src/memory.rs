@@ -642,7 +642,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn the_watch_reads_what_an_apps_cgroup_says_of_it;
 
         phase an_app_the_watch_closed_says_why_once_and_the_kernels_kill_says_so_too;

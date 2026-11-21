@@ -463,7 +463,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_banner_arrives_is_answered_and_goes;
 
     phase an_arrival_with_pixels_reaches_the_banners_and_the_centre;

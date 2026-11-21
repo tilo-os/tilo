@@ -79,7 +79,6 @@ fn received(peer: &StatePeer) -> crate::workspace::WorkspaceGovernance {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_device_is_admitted_only_by_who_may_admit_it;
 
     phase an_administrator_admits_an_owners_invitation_and_an_editor_does_not;

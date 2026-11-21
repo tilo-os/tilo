@@ -1088,10 +1088,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn sync_playout_drift_roles_and_queue;
 
         phase the_drift_loop_absorbs_an_output_device_running_off_its_clock;

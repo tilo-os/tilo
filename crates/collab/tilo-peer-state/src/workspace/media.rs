@@ -964,7 +964,6 @@ mod workspace_media_tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_media_policy_value_is_canonical_governed_and_bounded;
 
         phase canonical_policy_round_trips_and_bound_route_is_exact;

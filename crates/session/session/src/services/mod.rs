@@ -802,10 +802,6 @@ mod data_usage {
         const NOON: i64 = 1_773_489_600;
 
         tilo_test_env::scenario! {
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-            )]
             fn a_connections_readings_are_counted_and_sent_as_the_verbs_arguments;
 
             phase readings_are_counted_on_their_own_connection;

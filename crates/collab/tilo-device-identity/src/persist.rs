@@ -1868,10 +1868,6 @@ mod tests {
         /// Replacing a signing key keeps it private; a round trip enforces 0600; world-readable,
         /// symlinked or multiply-named key files are rejected; secret-key owner policies are distinct; a
         /// wrong-length key is rejected.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn signing_keys_are_private_single_named_files_of_the_right_length;
 
         phase replacing_a_signing_key_preserves_private_readability;
@@ -2174,14 +2170,6 @@ mod tests {
         /// user-scoped secret still refuses group read; the device key is created once then reloaded,
         /// simultaneous creation persists one key, an unreadable key raises instead of rotating, and
         /// adopting a key seeds a new device but never replaces one.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn device_keys_are_group_private_created_once_and_never_rotated_silently;
 
         phase device_key_permits_the_trust_group_and_nobody_else;

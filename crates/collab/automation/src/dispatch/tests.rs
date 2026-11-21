@@ -196,7 +196,6 @@ fn housekeeping_fires_only_a_trigger_that_names_its_action() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
     fn an_invocation_never_fires_itself_again;
 
     phase a_bot_never_fires_on_its_own_change;

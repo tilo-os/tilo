@@ -72,14 +72,6 @@ fn load(app_dir: &Path) -> Manifest {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the lint exempts a test function's body, not the closure a phase is"
-    )]
     fn the_shipped_fleets_manifests_validate_and_declare_consistent_metadata_and_policy;
 
     phase every_shipped_manifest_exists_validates_and_round_trips;

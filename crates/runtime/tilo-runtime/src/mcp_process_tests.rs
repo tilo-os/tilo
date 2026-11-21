@@ -80,10 +80,6 @@ tilo_test_env::scenario! {
         clippy::naive_bytecount,
         reason = "counts the newlines of one short test reply"
     )]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn the_stdio_host_frames_bounded_lines_and_answers_as_requests_finish;
 
     phase bounded_framing_recovers_after_an_oversized_line;

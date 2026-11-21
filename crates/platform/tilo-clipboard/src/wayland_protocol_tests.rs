@@ -1086,10 +1086,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn a_copy_is_published_with_keyboard_focus_and_settles_as_the_compositor_answers;
 
     phase image_copy_acknowledgement_follows_server_selection;

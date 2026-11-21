@@ -28,10 +28,6 @@ fn captured(sequence: u64, at: Instant) -> CapturedOpus {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the lint exempts a test function's body, not the closure a phase is"
-    )]
     fn capture_queue_and_timeline;
 
     phase capture_restarts_keep_a_monotonic_timeline_and_preserve_source_gaps;
@@ -94,10 +90,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the lint exempts a test function's body, not the closure a phase is"
-    )]
     fn the_receiver_and_its_jitter_buffer;
 
     phase receiver_uses_timestamps_for_loss_and_sequence_only_for_object_order;
@@ -242,10 +234,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the lint exempts a test function's body, not the closure a phase is"
-    )]
     fn mixing_and_voice_slots;
 
     phase mixing_sums_independent_publishers_then_saturates;

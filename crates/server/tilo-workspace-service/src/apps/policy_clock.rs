@@ -207,7 +207,6 @@ mod tests {
     use std::time::Duration;
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn the_owner_policy_clock_never_runs_backwards_or_outlives_its_origin;
 
         phase owner_policy_clock_retained_sampling_uses_same_controlled_clock;

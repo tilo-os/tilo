@@ -187,10 +187,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_typo_is_a_whole_word_within_a_bounded_edit_distance;
 
         phase edits_and_transpositions_count_one_each;

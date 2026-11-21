@@ -1538,7 +1538,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn a_journal_restart_or_failed_barrier_never_reissues_an_admission;
 
         phase a_journal_barrier_never_returns_effect_permission_on_failure;

@@ -82,10 +82,6 @@ fn full_id(path: &Path) -> [u8; 32] {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn capture_epochs_follow_a_live_tree_through_edits_moves_rescans_and_skips;
 
     phase capture_epochs_hash_whole_trees_and_only_changed_extents;

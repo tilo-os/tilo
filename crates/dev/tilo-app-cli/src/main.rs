@@ -3044,10 +3044,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// add commands expose safe repeatable generation options and explicit, scoped component mount
         /// options, and the reusable list, table and advanced text templates.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn add_commands_expose_safe_explicit_generation_options_and_templates;
 
         phase add_commands_expose_safe_repeatable_generation_options;
@@ -3463,10 +3459,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// UI builder commands require unambiguous node sources; ui set accepts one typed property edit;
         /// ui apply reads and publishes one complete batch.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn ui_builder_commands_take_unambiguous_sources_and_whole_edits;
 
         phase ui_builder_commands_require_unambiguous_node_sources;
@@ -3689,10 +3681,6 @@ mod tests {
         /// shot and inspect expose direct artifact workflows; scenario run selects a case and viewport;
         /// check composes tests, audited scenarios and artifacts; dev exposes a bounded restart loop; package
         /// exposes reproducible build and signing options.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn workflow_commands_expose_bounded_reproducible_options;
 
         phase shot_and_inspect_expose_direct_artifact_workflows;

@@ -36,10 +36,6 @@ fn rank(index: &SearchIndex, query: &str) -> Option<i32> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn hits_come_ordered_by_tier_then_weight_then_key;
 
     phase tiers_rank_exact_prefix_word_prefix_and_infix_matches;
@@ -401,10 +397,6 @@ impl BodySource for Paragraphs {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn loose_matching_finds_typos_and_spread_words_but_no_word_merely_alike;
 
     phase loose_matching_finds_spread_words_and_typos_below_substrings;
@@ -642,10 +634,6 @@ fn keyword_first(tier: MatchTier, weight: FieldWeight) -> Option<i32> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn ranks_both_engines_and_highlights_answer_as_one_search_does;
 
     phase a_rank_per_record_is_what_a_search_over_every_record_answers;

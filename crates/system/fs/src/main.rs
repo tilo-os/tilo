@@ -2201,10 +2201,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn the_shipped_units_launch_and_serve_with_their_seeded_capability_lists;
 
         phase host_files_unit_runs_the_primary_launch_check;

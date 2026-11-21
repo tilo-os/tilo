@@ -1953,10 +1953,6 @@ pub(crate) mod tests {
 
     tilo_test_env::scenario! {
         /// Host commands: what the broker runs on the base for a guest, and how it bounds and ends them.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn host_commands_run_on_the_base_one_at_a_time_and_bounded;
 
         phase host_management_commands_run_on_the_base_and_nothing_else;

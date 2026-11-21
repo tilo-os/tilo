@@ -354,10 +354,6 @@ view deck(d: Deck) {
 "#;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_change_re_runs_only_the_boundaries_that_read_it;
 
         phase what_a_host_shows_beside_what_the_view_read_runs_it_again;
@@ -905,10 +901,6 @@ view deck(d: Deck) {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn lazy_rows_are_built_when_shown_and_keep_their_places;
 
         phase a_closed_rows_document_reads_nothing;

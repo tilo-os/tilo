@@ -552,10 +552,6 @@ mod tests {
     const BOB: IdentityKey = [2u8; 32];
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn the_acl_decides_reads_writes_visibility_and_peers_fail_closed;
 
         phase normal_files_mount_scope_preserves_policy_and_deny_bias;

@@ -29,7 +29,6 @@ fn revocation(target: [u8; 32]) -> tilo_user_identity::RevocationEntry {
     entry
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn native_publication_keeps_original_authors_and_rechecks_who_publishes;
 
     phase native_publication_retained_bootstrap_preserves_server_live_freshness_distinction;
@@ -344,7 +343,6 @@ fn native_publication_deferred_packet_rechecks_governor() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn native_publication_streaming_cut_is_taken_whole_or_rolled_back;
 
     phase native_publication_streaming_cut_accepts_complete_out_of_order_original_packets;

@@ -225,7 +225,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
     fn rendering_gives_white_paper_with_ink_exact_regions_and_quarter_turns;
 
     phase renders_white_pages_with_ink_and_crops_regions_from_the_full_render;

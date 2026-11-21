@@ -970,7 +970,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_branch_takes_the_workspaces_records_and_leaves_its_chat;
 
         phase chat_and_what_names_other_people_stay_behind_and_the_rest_comes_along;

@@ -1062,10 +1062,6 @@ impl ResourceApp for NestedSurfaceApp {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn views_surfaces_and_windows_answer_the_effects_they_host;
 
     phase nested_surface_dispatch_and_publication_retire_only_the_removed_child;

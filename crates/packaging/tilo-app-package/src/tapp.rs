@@ -447,10 +447,6 @@ type = "gui"
     tilo_test_env::scenario! {
         /// An archive is read at the format it names, when that is one a device
         /// reads, and otherwise refused saying what to do.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn tapp_archives_are_read_or_refused_by_their_format;
 
         phase a_newer_format_fails_closed_and_says_to_update;
@@ -506,10 +502,6 @@ type = "gui"
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn tapp_archives_carry_verified_blobs_and_fail_closed;
 
         phase a_full_archive_carries_each_distinct_blob_once;

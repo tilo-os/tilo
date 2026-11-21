@@ -146,10 +146,6 @@ fn the_project_publishes_its_verbs_and_the_editor_binds_the_playhead_edits() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_projects_verbs_edit_the_document;
 
     phase edits_bound_to_the_playhead_follow_it_and_the_markers_near_it;
@@ -807,10 +803,6 @@ fn clipped_mix(over_db: f64) -> (Project, crate::audio::MixSnapshot, Vec<Uuid>) 
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn peers_replay_and_converge;
 
     phase verbs_replay_to_the_same_document_on_a_peer;

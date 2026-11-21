@@ -989,10 +989,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_strip_navigator_reads_shows_and_controls_the_strips;
 
         phase it_reads_the_strips_and_the_shown_strips_windows;

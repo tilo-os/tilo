@@ -74,10 +74,6 @@ impl BlobFetcher for CountingFetcher<'_> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn installs_materialise_and_verify;
 
     phase installs_materialise_the_tree_and_share_unchanged_blobs;
@@ -762,10 +758,6 @@ fn make_writable(path: &std::path::Path) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn eviction_by_last_use;
 
     phase sweep_removes_lru_until_under_cap_in_one_gc;

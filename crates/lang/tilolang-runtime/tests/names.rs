@@ -157,10 +157,6 @@ view when(m: Meeting) {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_name_word_or_clock_runs_again_only_the_boundary_that_shows_it;
 
         phase a_name_from_the_window_runs_again_only_the_boundary_that_shows_it;

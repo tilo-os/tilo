@@ -611,10 +611,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn retained_resize_and_preflight_hold_the_exact_geometry;
 
         phase resize_requires_exact_filesystem_and_geometry;

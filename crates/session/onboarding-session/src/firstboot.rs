@@ -772,10 +772,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn host_pointer_settings_import_once_without_overwriting_tilo_choices;
 
         phase host_pointer_speed_maps_libinput_range_to_tilo_range;

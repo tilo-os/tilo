@@ -225,10 +225,6 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     /// Typing builds structured nodes: fractions, superscripts, radicals, calls,
     /// `pi` → π, `*` → `·`, auto-paired parens.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn typed_characters_build_structured_nodes;
 
     phase slash_builds_fraction_and_enters_denominator;
@@ -709,10 +705,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn the_field_lays_out_scrolls_and_draws_its_formula;
 
     phase field_layout_maps_carets_to_measured_glyph_positions;

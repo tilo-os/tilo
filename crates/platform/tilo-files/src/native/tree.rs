@@ -315,10 +315,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_tree_copy_is_whole_separate_and_never_mixed_in;
 
         phase a_copy_holds_what_the_tree_holds_and_shares_nothing_with_it;

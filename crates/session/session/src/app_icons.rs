@@ -599,10 +599,6 @@ mod tests {
     const SQUARE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#ff0000"/></svg>"##;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn an_icon_is_rasterised_and_picked_at_the_size_asked_for;
 
         phase an_icons_pixels_are_rasterised_at_the_size_asked_for;

@@ -957,10 +957,6 @@ fn deliver(inbox: &Inbox, id: u64, address: &tilo_actions::ActionAddress, actor:
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_instance_answers_what_every_app_is_asked_on_its_connection;
 
     phase the_instance_publishes_and_answers_the_history_verbs_every_app_does;

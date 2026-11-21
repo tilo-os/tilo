@@ -112,7 +112,6 @@ impl NotificationHost for TestHost {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_banner_answers_clicks_keys_swipes_and_replies;
 
     phase clicking_a_painted_close_rect_dismisses_only_that_notification;
@@ -496,7 +495,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_banner_arrives_in_motion_and_asks_for_its_frames;
 
     phase the_frame_a_banner_arrives_differs_from_the_one_before;
@@ -670,7 +668,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn banners_stand_clear_of_bars_and_edges_at_every_size;
 
     phase scaled_attributed_banner_reserves_text_above_real_action_controls;
@@ -968,7 +965,6 @@ fn draw(stack: &mut NotificationStack, host: &TestHost, theme: &Theme) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn banners_fold_into_a_more_card_and_hold_under_the_pointer;
 
     phase banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age;

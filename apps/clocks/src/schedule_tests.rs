@@ -239,10 +239,6 @@ fn shell_activity_shows_the_floating_clock_first() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn an_alarm_rings_once_at_each_occurrence_it_is_due;
 
     phase alarms_ring_once_per_device_and_survive_restarts;

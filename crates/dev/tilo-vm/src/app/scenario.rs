@@ -2116,10 +2116,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn install_scenario_plans_and_their_runtime;
 
         phase runtime_scrubbing_and_stop_keep_the_pid_until_cleanup_succeeds;

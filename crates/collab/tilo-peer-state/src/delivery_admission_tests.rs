@@ -32,7 +32,6 @@ fn restore(peer: &StatePeer, now: SystemTime) -> StatePeer {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn delivery_admission_admits_a_write_once_and_its_exact_retry;
 
     phase delivery_admission_selection_is_explicit_and_exact_retry_survives_restore;
@@ -309,7 +308,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn delivery_admission_keeps_pending_retained_and_sealed_history_in_their_place;
 
     phase delivery_admission_primary_is_separate_from_pending_drain;

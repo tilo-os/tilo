@@ -71,10 +71,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn a_compressed_twin_decompresses_only_within_its_signed_bound;
 
         phase a_twin_round_trips_within_its_bound;

@@ -136,10 +136,6 @@ bin = "bin/app"
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn manifests_declare_what_they_open;
 
         phase shipped_manifests_declare_what_they_need_to_open;

@@ -118,10 +118,6 @@ fn is_value_error<T: std::fmt::Debug>(result: &Result<T>) -> bool {
 
 tilo_test_env::scenario! {
     /// `select` and the documents it verifies.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn a_successor_is_selected_only_through_exact_signed_fresh_provenance;
 
     phase exact_signature_source_generation_and_freshness_select_immutable_digest;

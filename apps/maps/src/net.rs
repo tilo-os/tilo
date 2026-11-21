@@ -603,10 +603,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-        )]
         fn responses_parse_into_clocks_places_legs_and_categories;
 
         phase text_parsers_extract_clocks_regions_steps_and_place_labels;

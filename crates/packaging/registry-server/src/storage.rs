@@ -2016,10 +2016,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn registry_storage;
 
         phase served_objects_are_checked_once_per_stored_file;

@@ -312,7 +312,6 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn an_agent_is_admitted_and_withdrawn_only_as_an_agent;
 
     phase admit_agent_refuses_a_bot_delegation;

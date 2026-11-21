@@ -36,7 +36,6 @@ fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
     (a, ac, b, bc, now)
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn permission_queries_reuse_what_admission_already_verified;
 
     phase unchanged_permission_queries_share_policy_data_across_peer_clones;
@@ -215,7 +214,6 @@ tilo_test_env::scenario! {
     }
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_governance_change_is_its_writers_role_and_converges;
 
     phase app_waits_for_governance_then_signed_state_converges_without_reexecuting_action;
@@ -491,7 +489,6 @@ tilo_test_env::scenario! {
     }
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_checkpoint_installs_only_with_its_governed_coverage;
 
     phase source_workspace_signature_and_aged_checkpoint_fail_closed;
@@ -1493,7 +1490,6 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn an_invitation_admits_one_person_once;
 
     phase concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation;
@@ -1940,7 +1936,6 @@ tilo_test_env::scenario! {
     }
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn the_roster_admits_only_identities_the_governance_names;
 
     phase self_issued_identity_presence_cannot_expand_the_admitted_roster;

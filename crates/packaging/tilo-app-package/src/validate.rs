@@ -1137,10 +1137,6 @@ mode = "off"
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn runtime_and_provider_manifests_validate_their_kind;
 
         phase a_language_pack_is_one_locales_catalogues_and_nothing_else;

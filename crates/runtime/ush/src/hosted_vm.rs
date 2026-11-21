@@ -1285,10 +1285,6 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
 
     tilo_test_env::scenario! {
         /// A command that needs a Linux machine the account or the host cannot give yet.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_command_the_account_cannot_run_yet_is_held_refused_or_cancelled;
 
         phase a_persons_command_without_a_card_waits_for_one_then_runs;

@@ -149,10 +149,6 @@ mod tests {
     const DAY: u64 = 86_400;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn usage_boosts_what_is_chosen_often_and_lately_and_keeps_the_most_used;
 
         phase frequent_and_recent_choices_earn_a_bigger_boost;

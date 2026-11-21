@@ -480,10 +480,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn snapping_lines_a_display_up_with_nearby_edges_and_centres;
 
         phase snapping_pulls_an_edge_onto_a_nearby_edge_only;

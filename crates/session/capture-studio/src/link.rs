@@ -515,7 +515,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn the_link_carries_scenes_and_asks_between_session_and_studio;
 
         phase a_published_scene_is_new_once_and_asks_are_taken_in_order;

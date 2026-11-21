@@ -391,7 +391,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn a_frame_is_sealed_for_one_key_sender_stream_track_and_sequence;
 
         phase frames_with_one_sequence_under_one_key_never_share_a_keystream;

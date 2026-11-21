@@ -1117,7 +1117,6 @@ mod tests {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "arithmetic on a test's fixed values")]
         #[cfg(target_os = "linux")]
         fn seccomp_profiles_compile_to_the_rules_their_grants_allow;
 

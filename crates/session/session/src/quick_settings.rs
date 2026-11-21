@@ -738,7 +738,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn the_quick_settings_panel_keeps_its_config_and_comes_from_its_corner;
 
         phase the_config_is_published_by_the_session_and_kept;

@@ -1562,10 +1562,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn the_playback_renderer;
 
         phase a_block_is_scheduled_when_it_leaves_the_speaker;
@@ -1769,10 +1765,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn a_scheduled_buffer;
 
         phase a_scheduled_buffer_starts_on_its_frame;
@@ -1809,10 +1801,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn captured_audio_timeline_and_windows;
 
         phase a_continuous_capture_stays_sample_continuous_through_jitter;
@@ -1861,10 +1849,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn device_timing_and_frame_conversions;
 
         phase raw_time_converts_graph_ticks_and_stream_frames;

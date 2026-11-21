@@ -213,10 +213,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_boot_join_waits_for_its_host_only_as_long_as_it_must;
 
         phase a_session_the_host_administers_waits_for_that_before_it_serves_agents;

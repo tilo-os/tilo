@@ -132,10 +132,6 @@ fn round_trip(
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn directory_pages_round_trip_and_refuse_what_is_malformed;
 
     phase a_directory_row_round_trips_typed;

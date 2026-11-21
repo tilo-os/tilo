@@ -134,10 +134,6 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
 
 tilo_test_env::scenario! {
     /// What a finished sync does to the document.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn a_sync_reconciles_by_href_and_leaves_an_unread_calendar_alone;
 
     phase caldav_reconciliation_keeps_stable_resources_by_href;

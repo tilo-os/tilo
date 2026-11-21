@@ -446,10 +446,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_prepared_handoff_is_read_only_as_the_exact_sidecar_and_package;
 
         phase the_sidecar_must_name_the_exact_package_bytes;

@@ -263,10 +263,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// A document import: the proposal's bounds and the decision that answers one signed proposal.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_document_import_proposal_is_bounded_and_decided_exactly;
 
         phase a_decision_answers_one_exact_signed_proposal;

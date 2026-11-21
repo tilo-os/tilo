@@ -33,7 +33,6 @@ pub(super) fn data() -> SearchData {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
     fn the_palette_lists_what_is_now_and_what_kinds_sources_and_scope_leave;
 
     phase the_empty_card_names_its_groups;
@@ -1268,7 +1267,6 @@ fn with_notes(scope: Scope) -> SearchData {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "arithmetic the lint skips in a #[test]")]
     fn the_rows_and_the_selection_hold_as_answers_arrive_and_groups_are_cut_short;
 
     phase typing_refreshes_the_rows_once_per_query;

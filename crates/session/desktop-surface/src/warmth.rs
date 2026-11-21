@@ -155,7 +155,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_windows_warmth_follows_its_workspace_and_moves_only_with_appearance;
 
         phase each_window_takes_its_own_workspace_and_your_colour;

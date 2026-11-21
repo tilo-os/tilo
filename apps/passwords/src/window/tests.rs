@@ -106,10 +106,6 @@ fn clipboard_fixture(accepts: bool) -> ui::process::ProcessScope {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_vault_list_shows_and_changes_real_vault_state;
 
     phase the_window_is_the_shared_shell_and_follows_the_chosen_place;
@@ -310,10 +306,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_window_gives_out_a_secret_only_briefly_and_on_request;
 
     phase nothing_the_window_publishes_or_reads_out_holds_a_secret;

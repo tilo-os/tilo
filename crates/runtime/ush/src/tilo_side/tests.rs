@@ -115,10 +115,6 @@ impl Fixture {
 
 tilo_test_env::scenario! {
     /// Tilo's own commands and redirects in a session: under the grants, as actions, with no guest started.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn the_shell_reads_and_writes_under_its_grants_with_no_guest;
 
     phase ls_cat_and_grep_read_the_granted_files_with_no_guest_started;

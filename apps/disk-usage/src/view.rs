@@ -986,7 +986,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn the_view_words_counts_titles_and_recent_places;
 
         phase counts_are_grouped_and_the_chart_groups_small_folders;

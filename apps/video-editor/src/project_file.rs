@@ -370,10 +370,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn project_files_refuse_bad_headers_and_track_names_and_sources;
 
         phase project_header_refuses_foreign_truncated_newer_or_damaged_files;

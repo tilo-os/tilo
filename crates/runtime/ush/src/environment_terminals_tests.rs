@@ -160,10 +160,6 @@ fn wait_until(what: &str, done: impl Fn() -> bool) {
 tilo_test_env::scenario! {
     /// A hosted workspace's shell on a terminal, carried as a stream: keys, sizes, Ctrl+C
     /// and the exit, and the session kept for a stream that comes back.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn a_workspace_shell_runs_on_a_terminal_its_stream_carries;
 
     phase a_command_typed_at_the_prompt_commits_as_the_person_at_it;

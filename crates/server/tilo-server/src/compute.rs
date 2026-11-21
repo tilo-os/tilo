@@ -1538,10 +1538,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn compute_jobs_are_admitted_and_launched_fail_closed;
 
         phase compute_jobs_are_admitted_exactly_and_move_monotonically;

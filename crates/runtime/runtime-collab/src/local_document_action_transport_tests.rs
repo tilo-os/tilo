@@ -103,10 +103,6 @@ fn report() -> LocalDocumentActionReport {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn local_document_action_reports_and_evidence;
 
     phase closed_report_is_bounded_and_debug_does_not_disclose_payload;

@@ -1399,10 +1399,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn an_export_is_refused_or_planned_before_any_frame_is_encoded;
 
         phase exporting_over_source_media_is_refused_without_changing_its_bytes;

@@ -208,10 +208,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn strip_indicators_show_on_navigation_and_fade;
 
         phase hidden_at_rest_shown_on_navigation_then_faded_and_settled;

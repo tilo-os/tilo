@@ -163,7 +163,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn stored_notification_history_reloads_within_its_bounds;
 
         phase real_retained_history_survives_reload_without_stale_actions;

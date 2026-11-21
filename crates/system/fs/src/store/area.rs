@@ -2341,10 +2341,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_file_area_gives_up_bytes_in_order_and_finds_resident_chunks;
 
         phase the_budget_drops_a_fetchable_entrys_bytes_and_keeps_where_they_came_from;

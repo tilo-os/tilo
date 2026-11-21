@@ -193,10 +193,6 @@ action unpin(item: DockItem) {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_changed_field_reaches_the_views_that_read_it;
 
         phase a_root_field_read_through_a_function_call_reaches_the_view;

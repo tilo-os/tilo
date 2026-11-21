@@ -455,10 +455,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// Music's searchable types: their descriptors and deep links, the library's hits and the
         /// indexed provider's bounds.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-        )]
         fn platform_search_finds_what_the_library_holds_and_nothing_else;
 
         phase search_descriptors_deep_links_and_subtitles_are_stable_and_safe;

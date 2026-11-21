@@ -411,10 +411,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// `PrivateHistory`, on a thread that waits for its store.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn private_history_keeps_actors_apart_and_checkpoints_durably;
 
         phase colliding_actors_never_recover_each_others_intents_or_receipts;

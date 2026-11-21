@@ -42,10 +42,6 @@ fn annotate(library: &mut Replica<Library>, media_ref: &str, time_ms: u64, text:
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the lint exempts a test function's body, not the closure a phase is"
-    )]
     fn the_shared_library_resource_changes_and_converges;
 
     phase playlists_and_annotations_change_through_verbs_and_field_edits;

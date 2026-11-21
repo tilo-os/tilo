@@ -596,10 +596,6 @@ mod received_rights_tests {
         );
     }
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn received_rights_are_closed_and_a_cancelled_challenge_is_refused;
 
         phase managed_received_rights_are_cloexec_while_cleanup_guard_is_alive;

@@ -478,10 +478,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one labelled phase per original scenario, each with its own fresh fixture"
-        )]
         fn target_starts_media_only_after_fresh_capture_consent;
 
         phase accept_needs_fresh_capture_and_media_ready_is_a_separate_edge;

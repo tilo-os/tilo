@@ -9,10 +9,6 @@ mod tree;
 
 tilo_test_env::scenario! {
     #[cfg(target_os = "linux")]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn managed_kernel_prerequisites_hold_on_this_machine;
 
     phase managed_kernel_identity_tracks_exact_child_lifetime;

@@ -589,7 +589,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn workspace_read_adapter_governance_reads_valid_fields_and_conflict_winners;
 
         phase workspace_read_adapter_governance_ignores_list_and_text_but_reads_later_valid_fields;

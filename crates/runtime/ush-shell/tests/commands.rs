@@ -217,10 +217,6 @@ fn run_broken(host: &MemoryHost, stdin: Input, name: &str, args: &[&str]) -> Ran
 
 tilo_test_env::scenario! {
     /// `head` and `tail`.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn head_and_tail_take_the_ends_of_their_input;
 
     phase yes_feeds_head_through_a_pipe_until_head_is_done;
@@ -1385,10 +1381,6 @@ tilo_test_env::scenario! {
 
 tilo_test_env::scenario! {
     /// The table of commands: names, refusals and the options completion offers.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn every_command_is_named_and_takes_the_options_it_offers;
 
     phase unsupported_flags_are_refused_by_name;

@@ -916,10 +916,6 @@ mod tests {
     use tilo_app_package::pack::{SigningIdentity, pack};
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn artifact_review_binds_what_is_signed;
 
         phase review_fetch_policy_refuses_before_network_io;

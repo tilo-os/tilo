@@ -438,10 +438,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn the_client_preserves_routes_and_maps_every_broker_error;
 
         phase connected_io_metadata_and_signatures_preserve_all_route_fields;
@@ -575,10 +571,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_wire_is_pinned_bounded_and_fails_closed;
 
         phase wire_bytes_are_pinned;

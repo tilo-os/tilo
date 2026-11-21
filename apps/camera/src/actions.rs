@@ -805,10 +805,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn provided_resources_tell_what_the_camera_can_do_now;
 
         phase disconnected_camera_keeps_stop_recording_available;

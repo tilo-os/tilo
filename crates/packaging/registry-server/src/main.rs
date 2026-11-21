@@ -2209,10 +2209,6 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn bounded_parallel_map_orders_bounds_and_stops_on_error;
 
         phase bounded_parallel_map_preserves_order_and_respects_the_bound;

@@ -113,7 +113,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn the_feed_follows_the_workspace_in_front_and_a_switch_is_no_news;
 
         phase a_workspace_switch_reads_no_change_and_shows_the_workspace_in_front;
@@ -1538,7 +1537,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn the_feeds_filters_narrow_the_real_history;
 
         phase date_range_filter_partitions_the_real_history;
@@ -1828,7 +1826,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_persons_revert_or_named_band_is_a_change_in_the_workspace_document;
 
         phase reverting_an_unknown_row_is_a_no_op;
@@ -2842,7 +2839,6 @@ mod morning_source_tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn morning_sources_are_chosen_bounded_and_kept_to_their_workspace;
 
         phase morning_source_choice_is_a_semantic_action_on_real_resource_history;

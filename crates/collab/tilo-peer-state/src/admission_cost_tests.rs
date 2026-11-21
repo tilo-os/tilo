@@ -119,7 +119,6 @@ pub(crate) fn crowd(members: u32) -> (StatePeer, SigningKey, SystemTime) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_crowded_workspaces_governance_is_read_and_stored_by_what_changed;
 
     phase every_change_reads_the_same_narrowed_as_whole;

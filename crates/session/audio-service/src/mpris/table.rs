@@ -465,7 +465,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn the_player_table_follows_the_bus;
 
         phase appear_change_vanish_updates_the_players;

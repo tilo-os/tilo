@@ -66,7 +66,6 @@ pub(crate) fn incremental(
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn admission_copies_and_saves_only_what_a_message_changed;
 
     phase admitting_one_document_copies_and_saves_only_that_document;

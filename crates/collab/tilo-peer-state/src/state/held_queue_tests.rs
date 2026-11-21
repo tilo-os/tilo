@@ -50,7 +50,6 @@ fn value(peer: &StatePeer, name: &str) -> Option<String> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_held_message_is_let_go_applied_or_asked_for_again;
 
     phase a_held_message_whose_prerequisite_never_comes_is_let_go_with_why_and_the_workspace_goes_on;

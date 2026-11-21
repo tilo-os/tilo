@@ -76,6 +76,13 @@ use tilo_lock::MutexRecover as _;
 macro_rules! scenario {
     ($(#[$meta:meta])* fn $name:ident; $($rest:tt)*) => {
         #[test]
+        // Clippy exempts a test function's body from arithmetic_side_effects but not the
+        // closure each phase runs in, and a scenario is its phases one after another.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            clippy::too_many_lines,
+            reason = "an overflow in a phase fails the test, and a scenario's length is its phases"
+        )]
         $(#[$meta])*
         fn $name() {
             $crate::__scenario! {

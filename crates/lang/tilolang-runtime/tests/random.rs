@@ -75,10 +75,6 @@ action start(b: board.Board) -> Int uses random {
     const ID_BITS: i64 = 1 << 32;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn draws_stay_in_bounds_and_are_kept_with_the_run;
 
         phase an_actions_draws_are_kept_beside_its_change;

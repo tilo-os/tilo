@@ -704,10 +704,6 @@ mod tests {
     };
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_brokers_wire_carries_only_whole_requests_and_bounded_records;
 
         phase requests_survive_the_wire_and_nothing_else_parses;

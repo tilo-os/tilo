@@ -42,10 +42,6 @@ where
 
 tilo_test_env::scenario! {
     /// The canonical encoding of every wire type: round trips, trailing or truncated bytes, and tampering.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn canonical_encoding_round_trips_and_refuses_altered_bytes;
 
     phase every_wire_type_round_trips_deterministically;

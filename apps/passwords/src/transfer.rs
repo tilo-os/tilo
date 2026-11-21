@@ -376,10 +376,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn transfers_keep_credentials_whole_and_refuse_what_is_out_of_bounds;
 
         phase backup_envelope_format_is_versioned_and_cannot_be_downgraded;

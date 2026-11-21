@@ -494,10 +494,6 @@ impl crate::ChannelHandle {
 #[cfg(test)]
 mod tests {
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn browser_service_session_wire;
 
         phase forget_wire_requires_exact_selection_and_reply_binding;

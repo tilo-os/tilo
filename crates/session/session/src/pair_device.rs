@@ -549,7 +549,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn the_pairing_sheet_shows_one_link_and_counts_it_down;
 
         phase the_sheet_shows_one_link_until_it_runs_out;

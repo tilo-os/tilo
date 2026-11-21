@@ -312,10 +312,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// Redact payloads round-trip and reject a wrong op class, an over-long reason and a redactor
         /// mismatch; the redacted marker and redact request round-trip canonically.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn redaction_payloads_round_trip_and_reject_what_they_cannot_honour;
 
         phase parse_redact_payload_round_trip;

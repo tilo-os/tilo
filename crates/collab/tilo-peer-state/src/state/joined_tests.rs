@@ -22,7 +22,6 @@ fn certificate(root: &SigningKey, device: &SigningKey, expires_at_ns: Option<u64
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_joined_replica_decides_by_the_governance_it_was_given;
 
     phase a_joined_replica_keeps_a_guest_whose_certificate_expired_and_refuses_it_still;

@@ -189,10 +189,6 @@ mod tests {
     use crate::compile::{WorldParts, compile_source};
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn pages_render_their_tiles_and_keep_untouched_looks;
 
         phase a_tile_shows_its_region_of_the_page;

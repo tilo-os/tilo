@@ -5,7 +5,6 @@
 use super::*;
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn the_panes_readings_of_a_time_keep_their_boundaries;
 
     phase away_recap_requires_the_full_threshold_and_fails_closed_on_clock_rollback;

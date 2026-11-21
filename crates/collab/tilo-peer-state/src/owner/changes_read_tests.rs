@@ -79,7 +79,6 @@ fn topic(document: &AutoCommit) -> Option<String> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_changes_read_completes_a_held_revision_as_a_whole_read_would;
 
     phase the_changes_since_a_held_revision_complete_it_to_the_current_read;

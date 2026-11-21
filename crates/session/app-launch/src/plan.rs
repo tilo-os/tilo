@@ -583,7 +583,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn a_package_launch_is_planned_through_the_launcher_or_starts_nothing;
 
         phase a_package_launches_through_the_launcher_with_its_workspace_and_the_sessions_displays;

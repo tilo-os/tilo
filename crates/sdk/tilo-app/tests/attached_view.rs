@@ -39,10 +39,6 @@ fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> Attached
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn an_agent_acts_through_the_view_and_is_recorded_as_itself;
 
     phase an_agent_acts_through_the_view_and_the_window_sees_it;

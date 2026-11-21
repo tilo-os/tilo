@@ -238,17 +238,11 @@ mod tracker_listing;
 #[path = "workspace_actions/update_reads_older_writes.rs"]
 mod update_reads_older_writes;
 #[cfg(test)]
-
-#[cfg(test)]
-
-#[cfg(test)]
 #[path = "workspace_actions/person_before_agent.rs"]
 mod person_before_agent;
 #[cfg(test)]
 #[path = "workspace_actions/slow_read.rs"]
 mod slow_read;
-#[cfg(test)]
-
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;

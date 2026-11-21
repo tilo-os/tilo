@@ -31,10 +31,6 @@ tilo_test_env::scenario! {
     /// What a catalog loads from its root or from bytes: the declared faces, verified, under their
     /// families.
     /// Each phase was a test of its own and builds its own fixture.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn the_catalog_loads_only_the_faces_it_declares_and_verifies;
 
     phase the_controlled_catalog_admits_only_manifest_and_named_host_faces;

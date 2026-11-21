@@ -604,10 +604,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Running a program within bounds: its input, output, time, stderr and environment.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_bounded_command_keeps_its_limits_and_its_child_to_itself;
 
         phase a_file_given_as_stdin_is_what_the_program_reads;

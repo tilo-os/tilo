@@ -228,7 +228,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn the_signer_keeps_a_device_key_only_while_its_trust_stands;
 
         phase unchanged_trust_loads_one_key_and_signs_each_payload;

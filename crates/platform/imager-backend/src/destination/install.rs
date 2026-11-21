@@ -909,10 +909,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn install_commands_bind_identities_options_and_factors_in_argv;
 
         phase install_command_binds_every_storage_identity_without_credentials;

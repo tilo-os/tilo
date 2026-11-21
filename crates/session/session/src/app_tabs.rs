@@ -2107,10 +2107,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn what_an_app_and_its_launcher_send_is_read_as_they_sent_it;
 
         phase an_ask_is_named_as_the_app_sent_it;

@@ -154,7 +154,6 @@ fn actual_redemption_at(
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn native_enrollment_retains_exactly_what_it_verified;
 
     phase native_enrollment_retains_actual_verified_redemption_and_governance;

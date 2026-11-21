@@ -222,7 +222,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn the_owner_and_every_member_role_are_answered_until_removed;
 
     phase the_owner_s_own_device_is_answered_the_strongest_member_role;

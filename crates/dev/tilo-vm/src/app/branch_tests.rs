@@ -221,10 +221,6 @@ impl Fixture {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario: the branch, then each property it must have"
-    )]
     fn a_libvirt_vm_branches_onto_a_frozen_base;
 
     phase a_stopped_vm_branches_into_children_of_one_frozen_base;

@@ -1070,10 +1070,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_pairings_final_look_is_bounded_and_takes_only_what_its_watcher_verified;
 
         phase pairing_final_look_has_a_bounded_grace;

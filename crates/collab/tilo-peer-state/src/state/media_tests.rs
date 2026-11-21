@@ -70,7 +70,6 @@ fn message(doc: &mut AutoCommit) -> NeighbourMsg {
     }
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn workspace_media_policy_is_published_only_whole_by_its_current_governor;
 
     phase workspace_media_native_rejects_malformed_policy_before_any_mutation;

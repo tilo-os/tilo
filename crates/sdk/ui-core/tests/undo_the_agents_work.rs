@@ -146,10 +146,6 @@ fn directory() -> AuthorDirectory {
 // ---------------------------------------------------------------------------
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-    )]
     fn an_agents_run_is_undone_through_the_document;
 
     phase agent_work_is_undone_through_the_document_not_the_peer_stack;

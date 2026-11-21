@@ -416,14 +416,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// Tokens mint and verify, expiry and issuance/maximum lifetime are enforced, tampered
         /// capabilities fail, and a different issuer fails.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn enrollment_tokens_verify_only_untampered_live_and_from_their_issuer;
 
         phase a_personal_device_link_signs_its_scope;

@@ -250,10 +250,6 @@ impl Reply {
 mod tests {
     use super::*;
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn committed_document_wire;
 
         phase busy_is_a_tag_of_its_own_after_every_earlier_reply;

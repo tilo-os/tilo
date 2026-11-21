@@ -50,10 +50,6 @@ fn body(store: &ResourceStore, want: &DocumentCheckout) -> String {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-    )]
     fn a_canonical_record_owner_shares_history_and_keeps_bytes_and_pending_edits;
 
     phase one_canonical_owner_shares_history_and_reserves_exactly_once;

@@ -1280,10 +1280,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn an_exact_audio_source;
 
         phase exact_audio_source_rejects_plugins_without_required_binding_properties;
@@ -1786,10 +1782,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn playout_of_received_voice;
 
         phase stalled_decoder_and_plc_share_the_same_ten_frame_capacity;

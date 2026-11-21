@@ -185,10 +185,6 @@ fn first(updates: &[FsUpdate]) -> &runtime_fs::operations::ItemOutcome {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn conflicts_preserve_both_bytes;
 
     phase rename_conflict_preserves_both_bytes;
@@ -233,10 +229,6 @@ tilo_test_env::scenario! {
     }
 }
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn operations_publish_exact_bytes_and_durable_reports;
 
     phase missing_operation_store_prevents_effect;

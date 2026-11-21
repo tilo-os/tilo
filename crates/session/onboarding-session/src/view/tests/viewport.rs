@@ -21,10 +21,6 @@ fn every_codecs_visual_state_builds_a_layout() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
     fn every_screen_lays_out_inside_the_viewport;
 
     phase every_screen_builds_a_layout;

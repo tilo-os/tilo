@@ -668,7 +668,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn a_want_answered_with_nothing_is_asked_again_until_the_content_arrives;
 
     phase a_holder_that_keeps_the_bytes_after_saying_it_lacks_is_asked_again;

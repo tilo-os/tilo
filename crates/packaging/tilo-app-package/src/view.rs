@@ -607,10 +607,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn the_shipped_apps_manifests_decode_with_names_kinds_and_keywords;
 
         phase shipped_system_apps_carry_their_german_names;

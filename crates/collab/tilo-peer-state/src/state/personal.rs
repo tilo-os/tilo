@@ -2254,7 +2254,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_persons_devices_are_learned_only_from_certificates_that_stand;
 
         phase a_passed_on_certificate_is_admitted_only_as_a_shown_one_would_be;

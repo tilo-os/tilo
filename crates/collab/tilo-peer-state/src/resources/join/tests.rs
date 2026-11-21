@@ -138,7 +138,6 @@ fn limits() -> OuterLimits {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn join_responses_cross_the_wire_bounded_and_byte_exact;
 
     phase bounded_join_response_all_seven_real_variants_preserve_exact_original_bytes;

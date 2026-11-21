@@ -280,10 +280,6 @@ fn shown(app: &mut TestApp<BoardApp>) -> String {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn every_change_knows_its_member_and_whose_undo_step_it_is;
 
     phase views_surfaces_and_actions_know_who_is_editing;

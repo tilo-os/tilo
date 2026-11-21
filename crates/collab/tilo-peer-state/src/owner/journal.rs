@@ -845,7 +845,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_journal_delta_carries_what_changed_and_ends_at_a_torn_entry;
 
         phase a_delta_carries_only_what_changed;

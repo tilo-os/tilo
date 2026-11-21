@@ -822,10 +822,6 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
 
 tilo_test_env::scenario! {
     /// Titles, ranges and the event form at the widths and text sizes a person has.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn text_fits_its_place_at_every_size;
 
     phase titles_elide_to_fit_and_week_ranges_keep_both_endpoints;
@@ -2565,10 +2561,6 @@ impl Harness {
 
 tilo_test_env::scenario! {
     /// Pointer gestures on the calendar itself.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn drags_and_swipes_on_the_calendar_move_events_and_periods;
 
     phase week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule;

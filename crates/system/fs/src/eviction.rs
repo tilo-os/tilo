@@ -1196,10 +1196,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn eviction_is_planned_accounted_and_queued_fail_closed;
 
         phase eviction_plans_protect_shared_blobs_and_fail_closed;

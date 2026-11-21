@@ -117,10 +117,6 @@ fn minimal_generated_graph_app(root: &Path) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn the_add_wizards_review_and_offer_every_template;
 
     phase the_add_wizard_reviews_before_building_screens_and_components;
@@ -721,14 +717,6 @@ fn ui_graph_context_body(registry: &str) -> Vec<&str> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn generated_components_keep_their_registry_models_and_translations;
 
     phase component_registry_returns_the_last_registration_directly;
@@ -1365,10 +1353,6 @@ fn scenario_build_gets_the_callers_environment() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn add_screen_and_artifacts_publish_whole_valid_work_inside_the_app;
 
     phase add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring;
@@ -2212,10 +2196,6 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn ui_graphs_are_edited_whole_and_their_builder_is_planned;
 
     phase ui_graph_edits_are_typed_atomic_and_roll_back_together;
@@ -3346,10 +3326,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn templates_generate_valid_apps_that_teach_the_toolkit;
 
     phase each_template_composes_the_toolkit_patterns_it_teaches;
@@ -4716,10 +4692,6 @@ fn wait_for_file(path: &Path) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn doctor_reads_an_apps_framework_manifest_and_surface;
 
     phase doctor_recognises_the_framework_by_its_parsed_items;
@@ -5485,10 +5457,6 @@ fn ui_path_accepts_either_sdk_crate() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn in_place_reload_is_planned_staged_and_given_a_runtime_host;
 
     phase staging_a_reload_library_keeps_only_the_current_and_previous;
@@ -5741,10 +5709,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_dev_loop_restarts_only_for_source_edits_it_watches;
 
     phase source_snapshot_sees_source_edits_and_leaves_build_output_out;

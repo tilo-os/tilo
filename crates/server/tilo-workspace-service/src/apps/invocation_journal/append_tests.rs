@@ -122,7 +122,6 @@ fn append_journal_invocation_costs_one_data_barrier_per_durable_transition() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn an_appended_store_restarts_into_what_was_durable;
 
     phase append_journal_crash_between_admission_and_dispatch_never_redispatches;

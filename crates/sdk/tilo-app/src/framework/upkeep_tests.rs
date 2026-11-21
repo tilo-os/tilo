@@ -16,10 +16,6 @@ fn kept(upkeep: Upkeep) -> Element {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn a_views_upkeep_is_met_by_its_window;
 
     phase the_view_takes_in_its_work_and_says_what_it_owes_the_window;

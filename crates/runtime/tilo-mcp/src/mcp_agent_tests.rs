@@ -1544,10 +1544,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one test walks every tool's typed answer in one place, so a missing one is caught"
-    )]
     fn the_agents_tools_answer_typed_when_a_call_asks;
 
     phase a_host_that_does_not_serve_yet_answers_typed;
@@ -1819,10 +1815,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn tilo_ls_lists_what_an_app_holds_by_the_names_its_paths_take;
 
     phase an_app_lists_its_pages_and_actions_by_the_names_a_person_uses;
@@ -2056,10 +2048,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn tilo_read_answers_a_resource_as_markdown_typed_and_in_pages;
     phase a_page_reads_as_markdown_with_the_ids_edits_take;
     {

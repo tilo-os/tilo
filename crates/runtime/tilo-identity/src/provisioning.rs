@@ -1708,10 +1708,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn throwaway_identities_keep_apart_from_real_trust;
 
         phase throwaway_refuses_the_shared_device_tree_before_writing_any_identity;
@@ -2117,10 +2113,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn concurrent_and_multi_user_provisioning_keeps_one_device_owner;
 
         phase multiple_os_users_share_one_device_without_replacing_its_owner;

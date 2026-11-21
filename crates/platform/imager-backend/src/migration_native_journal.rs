@@ -751,10 +751,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-        )]
         fn native_journal_keeps_its_budgets_and_history;
 
         phase native_journal_budgets_refuse_before_exceeding_limits;

@@ -481,10 +481,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn a_host_launch_is_planned_from_its_entry_and_the_display_handoff;
 
         phase a_flatpak_is_given_the_x11_bridge_it_would_otherwise_drop;

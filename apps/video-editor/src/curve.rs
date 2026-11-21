@@ -428,10 +428,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn curves_bake_and_interpolate;
 
         phase curve_bake_shapes_channels_master_and_mix;
@@ -578,10 +574,6 @@ mod tests {
         #[expect(
             clippy::float_cmp,
             reason = "the points are stored as given and read straight back"
-        )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
         )]
         fn curve_points_and_names_are_kept_exactly;
 

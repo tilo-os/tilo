@@ -696,10 +696,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn room_correction;
 
         phase responses_rebuild_from_their_db_values_and_average_by_weight;
@@ -790,10 +786,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn sweep_measurement;
 
         phase the_inverse_filter_turns_the_sweep_into_a_flat_impulse;

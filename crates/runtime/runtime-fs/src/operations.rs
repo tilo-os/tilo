@@ -1809,10 +1809,6 @@ pub(super) mod tests {
         }
     }
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn recovery_state_is_durable_before_and_after_every_effect;
 
         phase recovery_storage_failure_prevents_first_effect;
@@ -1956,10 +1952,6 @@ pub(super) mod tests {
         }
     }
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn cancellation_revocation_and_teardown_keep_committed_work;
 
         phase worker_teardown_joins_after_last_owner;
@@ -1985,10 +1977,6 @@ pub(super) mod tests {
         }
     }
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn queue_item_and_candidate_limits_precede_effects;
 
         phase worker_queue_and_item_limits_precede_effects;
@@ -2077,10 +2065,6 @@ pub(super) mod tests {
         }
     }
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn stages_are_published_or_cleaned_only_when_owned_and_accounted;
 
         phase replaced_stage_is_never_published_or_cleaned_as_owned;
@@ -2222,10 +2206,6 @@ pub(super) mod tests {
         }
     }
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn restore_binds_fresh_separate_grants_and_reports_its_commit;
 
         phase restore_rejects_unbound_changed_and_revoked_stages;

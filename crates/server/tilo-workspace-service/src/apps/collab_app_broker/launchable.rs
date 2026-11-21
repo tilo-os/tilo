@@ -1142,10 +1142,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, end to end, reads as one test"
-        )]
         fn an_agents_launchable_action_asks_and_is_attributed;
 
         phase a_field_edit_asks_only_when_it_removes_from_a_loud_collection;

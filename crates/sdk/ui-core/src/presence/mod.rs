@@ -2103,10 +2103,6 @@ mod string_id_wrapper_tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn each_pointer_is_painted_by_exactly_the_layer_that_owns_its_space;
 
         phase a_desktop_pointer_is_the_compositors_to_paint_and_not_this_layers;

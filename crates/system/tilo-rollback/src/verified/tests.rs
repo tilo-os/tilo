@@ -82,10 +82,6 @@ impl Firmware {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn a_pin_less_slot_opens_only_on_a_verified_boot_whose_anchors_were_recorded;
 
     phase a_boot_is_verified_only_with_secure_boot_a_readable_db_and_lockdown;

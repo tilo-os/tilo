@@ -1039,10 +1039,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_selected_runtime_is_bound_read_only_where_the_app_looks;
 
         phase selected_runtime_fonts_are_private_readonly_and_follow_the_selected_sdk;
@@ -1199,10 +1195,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_sandbox_argv_carries_only_validated_layout_and_metadata;
 
         phase hardening_policy_decides_allocator_and_shadow_stacks;
@@ -1685,10 +1677,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn buses_and_service_sockets_reach_the_sandbox_only_as_planned;
 
         phase wayland_bind_exposes_only_the_normalised_public_socket;
@@ -2063,10 +2051,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn filesystem_grants_decide_what_crosses_into_the_sandbox;
 
         phase workspace_roots_cross_only_where_granted;

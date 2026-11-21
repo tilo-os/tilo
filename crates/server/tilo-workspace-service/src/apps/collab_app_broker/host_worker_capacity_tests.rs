@@ -57,7 +57,6 @@ fn retain(state: &AppBrokerState, peer: u64, record: usize) -> Result<(), Broker
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn host_workers_are_kept_per_connection_and_withdrawn_with_it;
 
     phase host_worker_connect_disconnect_cycles_do_not_grow_the_registry;

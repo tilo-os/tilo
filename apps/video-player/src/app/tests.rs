@@ -1038,10 +1038,6 @@ fn shared(state: media::TransportState) -> crate::shared::SharedTransport {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the lint exempts a test function's body, not the closure a phase is"
-    )]
     fn watching_together_steps_follow_publish_or_stay;
 
     phase watching_together_follows_moves_and_says_its_own_once;

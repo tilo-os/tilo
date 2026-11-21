@@ -315,10 +315,6 @@ fn exchange(a: &mut AutoCommit, b: &mut AutoCommit) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn two_members_converge_on_messages_and_edits;
 
     phase messages_channels_and_reactions_converge_across_two_members;

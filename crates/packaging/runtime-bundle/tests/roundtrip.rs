@@ -202,14 +202,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the lint exempts a test function's body, not the closure a phase is"
-    )]
     fn unsigned_bundles_round_trip_over_every_host_layout;
 
     phase build_verify_roundtrip_over_fake_host_x86_64;

@@ -2724,10 +2724,6 @@ mod key_and_mask_tests {
             clippy::float_cmp,
             reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
         )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn keys_and_masks_cover_animate_and_despill;
 
         phase chroma_key_removes_the_key_hue_with_soft_edges_and_despill;
@@ -3174,10 +3170,6 @@ mod tests {
         #[expect(
             clippy::float_cmp,
             reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
-        )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
         )]
         fn a_clip_keeps_exact_values_through_speed_keys_trims_and_effects;
 
@@ -3680,10 +3672,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_timeline_marks_orders_places_and_mutes_its_clips;
 
         phase markers_merge_navigate_and_split_with_their_clips;
@@ -4153,14 +4141,6 @@ mod link_tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "merged scenario: each former test is a labelled case block with its own fixture"
-        )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_linked_shot_is_one_group_through_every_edit;
 
         phase linking_and_splitting_sound_forms_a_two_clip_group;

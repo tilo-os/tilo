@@ -5,10 +5,6 @@ fn h(b: u8) -> Hash {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn the_tree_and_its_record_indexes_follow_every_local_and_remote_change;
 
     phase tree_operations_create_move_trash_and_persist;
@@ -546,14 +542,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "The signed two-record fixture verifies source replacement, victim tombstoning, emitted namespace delta, and idempotent replay together."
-    )]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn signed_records_bind_exactly_and_fail_closed;
 
     phase signed_bindings_and_replacements_are_verified_exact_and_fail_closed;

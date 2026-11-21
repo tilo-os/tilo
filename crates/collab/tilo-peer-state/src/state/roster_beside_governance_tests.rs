@@ -49,7 +49,6 @@ fn replica(
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_roster_beside_governance_certifies_as_the_whole_roster_does;
 
     phase a_replica_from_the_roster_beside_governance_holds_what_the_whole_roster_gives;

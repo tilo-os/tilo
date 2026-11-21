@@ -425,10 +425,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn doctor_checks_and_explains_the_host;
 
         phase doctor_checks_tools_hypervisors_and_vm_registration;

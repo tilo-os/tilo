@@ -64,10 +64,6 @@ ext  = []
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn cli_pack_inspect_unpack_and_verify_round_trip;
 
     phase cli_pack_then_verify;

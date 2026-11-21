@@ -171,10 +171,6 @@ system = "required@2"
 "#;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn interface_versions_are_judged;
 
         phase a_package_fits_only_the_versions_the_image_serves;

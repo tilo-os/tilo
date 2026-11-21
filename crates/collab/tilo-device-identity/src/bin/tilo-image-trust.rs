@@ -950,10 +950,6 @@ mod tests {
         /// The artifact writer refuses output the reader cannot accept; the canonical reader rejects
         /// symlinks; the live trust reader rejects exposed or aliased artifacts; the required marker must
         /// be exact, private and unaliased.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn trust_artifacts_are_written_and_read_only_as_exact_private_files;
 
         phase artifact_writer_refuses_output_the_reader_cannot_accept;
@@ -1233,10 +1229,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// External signers complete a grant and endorsement without key files, and trust rotation
         /// cannot roll back the root or revocations.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn trust_changes_are_signed_externally_and_never_roll_back;
 
         phase external_signers_complete_grant_and_endorsement_without_key_files;

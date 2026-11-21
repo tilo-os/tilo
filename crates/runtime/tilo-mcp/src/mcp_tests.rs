@@ -2,10 +2,6 @@ use super::rows::{browsed_row_json, row_json};
 use super::*;
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn a_page_says_each_row_once_and_whole;
 
     phase container_rows_preserve_their_canonical_visibility_contract;

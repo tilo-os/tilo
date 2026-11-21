@@ -287,10 +287,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_host_approval_binds_its_host_window_and_arguments;
 
         phase a_host_s_approval_verifies_for_its_window_and_arguments;

@@ -651,10 +651,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn reads_and_entry_names_are_bounded_and_validated;
 
     phase read_at_caps_chunks_and_handles_boundaries;
@@ -782,10 +778,6 @@ fn selected_write_file(
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn held_file_effects_need_the_selected_descriptor_and_its_rights;
 
     phase selected_regular_file_write_changes_original_bytes_on_same_inode;

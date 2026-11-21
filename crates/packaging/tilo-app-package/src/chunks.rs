@@ -648,10 +648,6 @@ type = "gui"
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn a_full_package_splits_into_objects_that_reassemble_or_fail_closed;
 
         phase split_writes_whole_and_chunked_objects_that_reassemble;

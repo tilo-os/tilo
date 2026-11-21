@@ -152,10 +152,6 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
 tilo_test_env::scenario! {
     /// Mark boundaries avoid per-character resolution and merge equal styles, and their runs match the
     /// per-character reference.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn mark_boundary_runs_merge_equal_styles_and_match_the_reference;
 
     phase mark_boundaries_avoid_per_character_resolution_and_merge_equal_styles;

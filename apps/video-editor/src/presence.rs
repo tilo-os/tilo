@@ -411,10 +411,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn presence_keys_round_trip_and_the_publisher_is_fair;
 
         phase presence_keys_and_times_round_trip_exactly;

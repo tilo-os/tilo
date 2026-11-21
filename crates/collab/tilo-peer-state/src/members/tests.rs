@@ -63,7 +63,6 @@ fn holding(doc: &AutoCommit, ops: &[&SignedMembershipOp]) -> AutoCommit {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn membership_is_what_the_held_operations_make_it;
 
     phase a_workspace_with_no_operations_is_its_owners_alone;

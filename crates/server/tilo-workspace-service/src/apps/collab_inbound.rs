@@ -382,7 +382,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn a_host_replay_is_admitted_as_history_and_redelivered;
 
         phase a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not;

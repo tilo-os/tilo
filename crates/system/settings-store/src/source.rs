@@ -527,10 +527,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_host_document_stores_what_its_persist_accepts;
 
         phase host_document_merges_persists_then_publishes;

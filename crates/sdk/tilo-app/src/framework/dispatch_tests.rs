@@ -53,10 +53,6 @@ impl Resource for Paragraph {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn the_dispatcher_applies_edits_at_once_and_queues_the_rest;
 
     phase a_child_resource_anchors_its_text_to_the_record_that_holds_it;

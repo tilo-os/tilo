@@ -423,10 +423,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn approvals_bind_their_target_and_follow_the_enrolled_generations;
 
         phase approvals_bind_one_target_index_and_machine;

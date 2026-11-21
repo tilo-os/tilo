@@ -446,10 +446,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_full_replica_holds_its_liveness_lock_and_validates_its_topology;
 
         phase a_replica_is_running_while_it_holds_its_liveness_lock;

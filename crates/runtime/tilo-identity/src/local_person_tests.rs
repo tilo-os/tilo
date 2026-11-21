@@ -45,10 +45,6 @@ fn signer(account: &Account) -> crate::store::SigningIdentity {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_local_person_of_a_device;
 
     phase the_account_holding_the_devices_key_is_its_person_and_claims_are_ignored;

@@ -1857,10 +1857,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn whpx_runs_qemu_with_its_own_defaults;
 
         phase whpx_monitor_keeps_command_arguments_in_a_literal;
@@ -2174,10 +2170,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn libvirt_domains_are_defined_from_the_entry;
 
         phase libvirt_domain_xml_matches_the_architecture_and_escapes_values;

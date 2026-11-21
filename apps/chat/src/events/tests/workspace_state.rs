@@ -6,10 +6,6 @@ use super::*;
 // --- the workspace's channels, one place -------------------------------
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn visible_controls_publish_unique_accessible_semantics;
 
     phase accessibility_names_contextual_navigation_and_conversation_content;
@@ -616,10 +612,6 @@ fn present(app: &mut ChatApp) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn reading_position_drives_unread_state_and_the_return_to_latest_control;
 
     phase opening_a_channel_marks_it_read_and_clears_unread;

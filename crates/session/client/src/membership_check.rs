@@ -603,7 +603,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_connection_sends_what_is_in_ownership_once;
 
         phase a_connection_sends_each_write_once_and_a_new_one_sends_it_again;

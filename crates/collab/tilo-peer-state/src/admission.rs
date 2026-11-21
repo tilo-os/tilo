@@ -768,7 +768,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn the_admission_index_keeps_one_exact_ordered_encoding;
 
         phase the_admission_index_kept_here_reads_and_writes_as_it_is;

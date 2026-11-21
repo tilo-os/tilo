@@ -176,10 +176,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_agent_render_is_a_reproducible_mp4;
 
     phase the_agent_pipeline_encodes_with_openh264_single_threaded_into_mp4;

@@ -280,10 +280,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn frame_cache_buckets_read_ahead_and_eviction;
 
         phase bucket_space_and_read_ahead_stay_in_bounds;

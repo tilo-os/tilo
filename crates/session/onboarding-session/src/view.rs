@@ -5778,10 +5778,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn the_codecs_step_installs_skips_and_reports_what_the_person_chose;
 
         phase the_codecs_step_is_one_install_button_with_nothing_chosen;

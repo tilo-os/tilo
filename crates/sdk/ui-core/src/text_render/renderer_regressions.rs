@@ -110,10 +110,6 @@ fn assert_plain_weight(renderer: &mut TextRenderer, style: &TextStyle, expected:
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn runs_paint_with_their_shaped_weight_and_axis_order;
 
     phase plain_paint_uses_named_and_rounded_explicit_shaped_weights;
@@ -318,10 +314,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn clipped_rich_text_preserves_pixels_and_culls_only_invisible_glyphs;
 
     phase clipped_rich_text_reduces_encoded_glyphs_and_preserves_exact_pixels;
@@ -705,10 +697,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn painted_glyphs_match_the_reference_output_and_shaped_offsets;
 
     phase uniform_rich_runs_borrow_glyphs_with_exact_reference_output;

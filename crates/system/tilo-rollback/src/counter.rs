@@ -704,10 +704,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_floor_counter_maps_and_counts_forward_without_wrapping;
 
         phase floors_map_counters_through_the_base_without_wrapping;

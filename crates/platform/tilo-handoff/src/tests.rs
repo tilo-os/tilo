@@ -82,10 +82,6 @@ fn package_digest_other() -> [u8; 32] {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn proofs_codes_and_receipts_bind_exactly_what_was_approved;
 
     phase a_certified_device_proof_binds_operation_package_person_and_ephemeral;

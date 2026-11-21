@@ -132,10 +132,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// `AuditLog`: what it keeps, and how it is read back.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn the_audit_log_keeps_tails_and_rotates_its_records;
 
         phase the_log_keeps_every_grant_and_refusal_it_is_given;

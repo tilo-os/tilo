@@ -88,10 +88,6 @@ fn activate_context_menu_action(
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn channel_context_menu_delete_through_the_palette_action;
 
     phase delete_channel_affordance_matches_palette_spec;
@@ -218,10 +214,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn composer_edits_the_draft_and_sends_through_the_action_route;
 
     phase send_affordance_sends_what_the_draft_holds_to_the_channel;
@@ -535,10 +527,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn attachments_are_picked_imported_and_posted_as_real_portable_cards;
 
     phase attachment_image_decodes_through_the_image_store;
@@ -1300,10 +1288,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn flaps_and_detail_views_open_reflow_and_unwind;
 
     phase members_pill_reveals_the_roster_not_a_blank_column;
@@ -1628,10 +1612,6 @@ fn settle_picker_until(app: &mut ChatApp) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn own_messages_are_edited_in_place_and_commit_only_on_save;
 
     phase edit_via_menu_writes_through_edit_message;
@@ -1837,10 +1817,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the floating-surface regression deliberately follows the complete app-to-shell presentation lifecycle"
-    )]
     fn call_tiles_and_controls_stay_honest_and_live_when_detached;
 
     phase host_call_tile_has_no_fabricated_video_frame;

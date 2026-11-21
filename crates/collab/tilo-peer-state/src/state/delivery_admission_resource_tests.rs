@@ -1,6 +1,5 @@
 use super::*;
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn delivery_admission_refuses_what_exceeds_its_resources_and_changes_nothing;
 
     phase delivery_admission_local_snapshot_quota_failure_leaves_governance_unchanged;

@@ -980,10 +980,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_tree_watch_reports_what_happens_below_it;
 
         phase a_tree_watch_reports_writes_in_subdirectories_old_and_new;
@@ -1087,10 +1083,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_directory_watch_reports_only_what_it_asked_for;
 
         phase two_watches_of_one_directory_are_independent;

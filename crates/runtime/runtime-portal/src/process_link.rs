@@ -631,10 +631,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn messages_across_the_process_link;
 
         phase a_window_request_arrives_with_its_own_connections;

@@ -712,10 +712,6 @@ pub mod tests {
 </capabilities>";
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn host_facts_decide_the_adapter_and_toolchain;
 
         phase host_capabilities_and_session_checks_decide_emulation;

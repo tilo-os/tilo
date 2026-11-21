@@ -195,10 +195,6 @@ impl Harness {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn blob_reads_are_confined_to_one_actor_and_scope;
 
     phase a_second_connection_of_the_same_scope_reads_what_the_first_put;
@@ -324,10 +320,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn blob_content_streams_verifies_and_refuses_bad_input_early;
 
     phase content_larger_than_one_message_streams_and_verifies;
@@ -590,10 +582,6 @@ impl io::Read for Watched {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn put_reader_streams_one_chunk_at_a_time_and_checks_the_reference;
 
     phase content_larger_than_a_piece_reaches_the_store_piece_by_piece;
@@ -741,10 +729,6 @@ fn await_abandoned(backend: &MemoryBackend, count: usize) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_upload_server_streams_pieces_and_stores_nothing_unfinished;
 
     phase an_upload_reaches_the_backend_in_bounded_pieces;

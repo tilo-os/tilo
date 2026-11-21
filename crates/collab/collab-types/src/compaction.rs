@@ -595,10 +595,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The contract of a sealed and of a segmented compaction: what it covers, what parses and what is refused.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_sealed_compaction_names_exactly_what_it_supersedes;
 
         phase sealed_compaction_covers_exactly_its_writes;

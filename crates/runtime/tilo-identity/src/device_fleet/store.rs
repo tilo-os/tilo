@@ -878,14 +878,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_device_fleet_store;
 
         phase an_agent_grant_is_certified_into_the_fleet_and_revoked_as_a_device;

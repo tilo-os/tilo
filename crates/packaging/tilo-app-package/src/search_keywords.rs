@@ -103,10 +103,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn search_messages_give_an_apps_keywords_and_tagline;
 
         phase the_tagline_is_its_own_message_and_optional;

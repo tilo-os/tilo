@@ -6,10 +6,6 @@ use tilo_desktop_model::{
 use ui::widget::DrawChild;
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_bar_keeps_time_and_its_status_cluster;
 
     phase compact_workspace_identity_outranks_redundant_position;
@@ -1344,10 +1340,6 @@ fn scene_fingerprint(bar: &mut TopBarChrome) -> (Vec<u32>, usize, usize) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn the_bars_centre_area_holds_the_time_and_the_activity;
 
     phase long_workspace_name_yields_to_the_center_area;

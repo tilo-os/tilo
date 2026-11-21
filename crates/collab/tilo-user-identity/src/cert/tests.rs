@@ -26,10 +26,6 @@ tilo_test_env::scenario! {
         clippy::similar_names,
         reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
     )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-    )]
     fn device_certificates_sign_verify_expire_and_round_trip;
 
     phase sign_and_verify;
@@ -289,10 +285,6 @@ const GOLDEN_V1_POSTCARD: &str = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d9412
 const GOLDEN_V1_DIGEST: &str = "0d8271d3aadb5438af000ff5f96b6355102b57a271885ed26142fb698884e623";
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn certificate_markers_keep_their_encodings;
 
     phase native_certificates_keep_their_v1_encoding_and_digest;
@@ -430,10 +422,6 @@ fn binary_capabilities_refuse_the_cleared_flags() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn agent_grants_keep_their_scope_and_what_they_mint_stays_within_them;
 
     phase agent_grants_carry_their_scope_and_expire;

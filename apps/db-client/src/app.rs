@@ -2303,10 +2303,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Resource queries stay pending until the worker finishes; the live rows cover schema, results and transactions without secrets and stay schema-qualified.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-        )]
         fn resource_tree_and_queries_are_schema_qualified_and_secret_free;
 
         phase resource_query_is_pending_until_the_database_worker_finishes;

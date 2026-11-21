@@ -2726,7 +2726,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_centre_row_opens_scrolls_and_offers_its_own_actions;
 
         phase opening_a_retained_notification_without_a_sender_opens_its_app;

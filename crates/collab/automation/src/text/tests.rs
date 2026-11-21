@@ -520,7 +520,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
     fn text_that_does_not_read_is_refused_at_its_line;
 
     phase a_tab_indent_is_refused_by_line;

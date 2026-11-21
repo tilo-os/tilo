@@ -29,10 +29,6 @@ action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
 "#;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_native_view_presents_an_action_and_reads_the_clock_once;
 
         phase the_presentation_view_of_an_action_shows_its_targets_state;

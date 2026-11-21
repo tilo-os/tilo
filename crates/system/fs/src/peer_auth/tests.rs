@@ -39,10 +39,6 @@ fn verifier() -> PendingPeerChallenges {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn peer_auth_certifies_the_observed_endpoint_through_one_use_challenges;
 
     phase peer_auth_establishes_certified_identity_for_the_observed_endpoint;

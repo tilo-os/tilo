@@ -224,7 +224,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_receipt_names_its_invitation_only_whole_and_untampered;
 
         phase a_receipt_keeps_its_own_bytes_and_puts_its_invitation_back_together;

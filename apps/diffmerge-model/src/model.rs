@@ -876,10 +876,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "case table: every row is one original merge case, kept verbatim"
-        )]
         fn diffs_classify_their_rows_and_merges_resolve_or_conflict;
 
         phase diff_classifies_rows_counts_and_blocks;

@@ -630,7 +630,6 @@ mod retention_tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn removed_and_pruned_identities_stay_told_apart;
 
         phase a_removed_members_device_is_told_apart;

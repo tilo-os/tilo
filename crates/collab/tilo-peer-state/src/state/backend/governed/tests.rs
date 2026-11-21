@@ -56,7 +56,6 @@ fn row(cert: DeviceCert) -> GovernedIdentity {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn governed_import_keeps_what_the_signed_workspace_proves;
 
     phase governed_import_preserves_real_signed_identity_admission_and_certificate_failures;

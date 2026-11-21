@@ -1591,10 +1591,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_relay_that_did_not_admit_says_why_and_is_asked_again;
 
         phase a_relay_that_refuses_is_told_apart_from_one_that_is_away;

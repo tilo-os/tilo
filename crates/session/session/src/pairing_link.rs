@@ -155,7 +155,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_pairing_code_carries_a_link_a_scanner_reads;
 
         phase the_code_carries_the_person_and_the_invite_it_was_made_with;

@@ -40,7 +40,6 @@ fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn bounded_pending_counts_and_bounds_what_waits;
 
     phase bounded_pending_counts_actual_signed_deferred_message;

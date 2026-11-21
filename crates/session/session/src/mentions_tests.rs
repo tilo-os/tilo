@@ -348,10 +348,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn a_mention_is_told_once_and_withdrawn_with_its_mark;
 
     phase reopening_or_reloading_tells_nothing_again;

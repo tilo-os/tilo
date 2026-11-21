@@ -300,10 +300,6 @@ mod tests {
         /// Scrolling back prefetches near the edge and stops when exhausted; opening an old version pages
         /// until it is loaded; unsolicited or foreign pages change nothing; an empty non-final page is
         /// asked again.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn history_paging_fetches_only_what_the_view_needs;
 
         phase scrolling_back_prefetches_near_the_edge_and_stops_when_exhausted;

@@ -584,10 +584,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn certification_issues_only_what_root_policy_and_revocation_allow;
 
         phase root_issues_a_clamped_expiring_certificate;
@@ -781,10 +777,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn certification_allows_the_clock_difference_real_devices_have;
 
         phase a_pairing_passes_clocks_twenty_milliseconds_apart;

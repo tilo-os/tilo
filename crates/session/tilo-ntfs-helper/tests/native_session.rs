@@ -85,14 +85,6 @@ fn bytes(r: &Value) -> TestResult<Vec<u8>> {
     Ok(result)
 }
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn native_manifest_scopes_metadata_and_completions_over_the_real_image;
 
     phase metadata_manifest_and_twelve_native_chunks_preserve_real_image;
@@ -336,10 +328,6 @@ tilo_test_env::scenario! {
     }
 }
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
     fn standard_information_times_are_exact_or_typed_unavailable;
 
     phase native_standard_information_times_preserve_exact_signed_100ns_values;

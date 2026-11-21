@@ -1090,10 +1090,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn probe_reads_headers_and_refuses_what_is_not_media;
 
         phase probe_refuses_non_media_and_never_panics;

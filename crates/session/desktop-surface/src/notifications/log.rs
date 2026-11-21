@@ -318,7 +318,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn banners_are_capped_and_age_only_on_screen;
 
         phase the_stack_caps_banners_and_hands_back_the_oldest;
@@ -384,7 +383,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_cleared_history_is_restorable_and_bounded;
 
         phase clear_undo_restores_exact_order_before_new_arrivals;

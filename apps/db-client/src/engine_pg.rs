@@ -716,10 +716,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-        )]
         fn postgres_values_and_profiles_map_faithfully;
 
         phase pg_binary_values_preserve_numeric_and_array_semantics;

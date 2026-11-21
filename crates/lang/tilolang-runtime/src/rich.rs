@@ -780,10 +780,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_change_to_a_text_reads_as_words_marked_and_struck;
 
         phase a_change_shows_its_insertions_marked_and_its_deletions_struck;

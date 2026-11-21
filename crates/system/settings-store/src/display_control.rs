@@ -320,10 +320,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_host_executes_display_commands_through_its_own_transaction;
 
         phase host_identify_uses_the_existing_request_section_without_creating_a_preview;

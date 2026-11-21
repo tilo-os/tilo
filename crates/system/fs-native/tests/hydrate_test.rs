@@ -36,10 +36,6 @@ fn start(fetcher: &Arc<PatternFetcher>, granule: u64) -> Hydrator {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn a_hydrator_serves_placeholders_shares_fetches_and_adopts_what_it_finds;
 
     phase placeholders_look_exact_and_reads_fill_only_touched_granules;

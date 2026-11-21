@@ -204,10 +204,6 @@ echo "$x $(pwd)"
 
 tilo_test_env::scenario! {
     /// An interactive session on the script interface.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn an_interactive_session_marks_runs_and_asks_for_more;
 
     phase an_interactive_session_marks_each_run_for_terminal;

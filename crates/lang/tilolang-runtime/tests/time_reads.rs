@@ -135,10 +135,6 @@ view recent(b: Board) {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_view_on_the_clock_runs_again_when_its_reading_changes;
 
         phase a_view_on_today_runs_again_at_the_persons_midnight_and_no_other_view_does;

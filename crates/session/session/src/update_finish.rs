@@ -637,7 +637,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_staged_update_is_finished_when_the_person_or_the_machine_allows;
 
         phase the_desktop_restarts_onto_the_update_once_the_person_is_away;

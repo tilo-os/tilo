@@ -391,14 +391,6 @@ mod tests {
         /// A complete chain verifies and digest tampering fails; generation zero is rejected on both
         /// ends; signing refuses an invalid or not-yet-valid device certificate; old endorsements cannot
         /// extend a registry freeze; a revoked signer is rejected even when it backdates.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn image_trust_chains_verify_only_valid_current_signers;
 
         phase complete_chain_verifies_and_digest_tampering_fails;

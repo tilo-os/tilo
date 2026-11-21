@@ -369,10 +369,6 @@ tilo_test_env::scenario! {
 
 tilo_test_env::scenario! {
     /// Export: the file a calendar is written as, and what reading it back gives.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn calendars_export_as_rfc_5545_and_read_back;
 
     phase an_events_notes_are_exported_as_its_description;

@@ -373,10 +373,6 @@ writes = ["document", "comments.*"]
 
     tilo_test_env::scenario! {
         /// An app's surface file: the committed ones parse, and one named by hash decides claims.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_surface_file_parses_and_decides_claims_by_hash;
 
         phase a_surface_named_by_hash_decides_claims;

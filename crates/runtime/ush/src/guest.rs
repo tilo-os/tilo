@@ -700,10 +700,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The guest's `bwrap` command line: what is mounted and bound, and where.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn the_guest_command_line_binds_images_home_and_grants;
 
         phase approved_check_mounts_source_read_only_target_writeable_and_no_broker;
@@ -1013,10 +1009,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The guest's `bwrap` command line: who the guest is, its namespaces, its resolver and how the line ends.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn the_guest_command_line_sets_identity_namespaces_and_resolver;
 
         phase the_guest_has_its_own_uts_namespace_without_renaming_it;

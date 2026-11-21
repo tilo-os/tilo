@@ -7255,10 +7255,6 @@ mod tests {
     mod input_commands;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn machines_images_and_layers_are_checked_before_use;
 
         phase daemon_import_receipt_refuses_wrong_layer_architecture_and_unknown_source;
@@ -7786,10 +7782,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn the_cli_explains_itself_and_its_errors;
 
         phase commands_describe_their_consequence_and_redirect_where_needed;
@@ -8499,10 +8491,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn targets_accounts_and_generations_are_resolved_and_shown;
 
         phase explicit_target_refuses_unknown_and_conflicting_targets;

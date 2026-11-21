@@ -485,10 +485,6 @@ tilo_test_env::scenario! {
     }
 }
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn a_managed_runtime_lease_ends_with_shutdown_and_rechecks_its_bytes;
 
     phase managed_runtime_lease_cannot_survive_shutdown_or_mint_a_second_attempt;
@@ -550,10 +546,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn managed_descriptors_and_claims_are_consumed_once;
 
     phase managed_descriptors_are_bound_and_consumed_once;

@@ -2743,10 +2743,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn shortcut_tables_keep_their_defaults_migrate_and_stay_conflict_free;
 
         phase tab_chords_default_to_super_and_leave_the_ctrl_chords_to_apps;
@@ -3154,10 +3150,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_publisher_is_live_only_while_it_holds_its_lease;
 
         phase publisher_liveness_is_its_held_lease_not_its_proc_entry;

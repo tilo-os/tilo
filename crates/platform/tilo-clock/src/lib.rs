@@ -751,10 +751,6 @@ mod scoped_monotonic_tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_held_clock_is_the_holding_threads_alone_and_ends_with_its_scope;
 
         phase a_shared_wall_pins_the_threads_following_it_until_released;
@@ -1338,10 +1334,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn clocks_read_units_that_agree_and_a_hold_ends_with_its_scope;
 
         phase a_frozen_wall_clock_holds_while_the_monotonic_clock_runs;

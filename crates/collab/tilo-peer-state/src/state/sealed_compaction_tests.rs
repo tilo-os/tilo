@@ -431,7 +431,6 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_writer_mints_a_compaction_of_the_history_it_holds;
 
     phase a_minted_compaction_after_a_rotation_opens_as_a_current_write_with_every_change;
@@ -1171,7 +1170,6 @@ tilo_test_env::scenario! {
 const LOUNGE_CHAT_GAP: &str = include_str!("fixtures/lounge-chat-gap.hex");
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_replica_admits_only_a_whole_current_verified_compaction;
 
     phase forged_compactions_are_refused;
@@ -1599,7 +1597,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_history_falls_due_and_the_governor_compacts_behind_its_receipt;
 
     phase a_history_near_its_bound_is_due_for_compaction;
@@ -1785,7 +1782,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn captured_history_replays_only_what_was_admitted;
 
     phase captured_history_replays_causal_order_and_continues_the_original_writer;
@@ -2155,7 +2151,6 @@ pub(super) fn sealer(
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn the_key_holder_seals_a_record_and_it_stays_sealed;
 
     phase the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on;

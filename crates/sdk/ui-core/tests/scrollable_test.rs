@@ -6,10 +6,6 @@
 use tilo_ui::widget::Scrollable;
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn a_bare_scrollable_clamps_reveals_and_glides_to_rest;
 
     phase scrollable_offset_clamps_reveals_and_decays;

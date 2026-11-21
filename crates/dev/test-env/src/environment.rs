@@ -250,10 +250,6 @@ mod tests {
     use crate::scenario;
 
     scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn the_clock_and_the_fixture_tree_are_the_environments_own;
 
         phase a_clock_starts_at_the_capture_moment_and_moves_only_when_the_test_moves_it;

@@ -583,7 +583,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_local_write_is_admitted_with_exact_evidence_or_a_fresh_successor;
 
         phase a_new_local_write_is_admitted_once_with_exact_evidence;

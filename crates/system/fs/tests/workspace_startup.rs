@@ -140,10 +140,6 @@ fn assert_not_ready(output: &std::process::Output) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn a_primary_launch_checks_its_saved_authority_before_it_serves;
 
     phase primary_launch_without_a_saved_namespace_creates_nothing;

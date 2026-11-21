@@ -495,10 +495,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// Docks when wide, floats as a drawer when narrow, re-docks when widened,
         /// and keeps its row buttons apart.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario, one labelled phase per merged case"
-        )]
         fn functions_panel_docks_wide_floats_narrow_and_keeps_row_targets;
 
         phase wide_docks_the_functions_panel;

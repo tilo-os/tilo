@@ -15,14 +15,6 @@ fn grant(app: &str, scope: Scope, access: Access, lifetime: Lifetime) -> CapOver
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
     fn capability_grants_start_empty_and_round_trip;
 
     phase a_new_workspace_holds_no_capabilities_and_grants_nothing;

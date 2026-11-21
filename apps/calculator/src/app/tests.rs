@@ -1059,10 +1059,6 @@ fn the_bars_angle_unit_changes_trig_output() {
 tilo_test_env::scenario! {
     /// Drag pans or orbits and the wheel zooms, the narrow Functions drawer opens
     /// from its toggle, and a row's visibility and delete buttons act on its row.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn graph_pointer_path_drives_views_drawer_and_row_controls;
 
     phase graph2d_drag_pans_the_view;

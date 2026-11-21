@@ -534,10 +534,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn promotion_recovers_what_was_deferred;
 
     phase selected_partial_inventory_recovers_without_consuming_deferred_requests;

@@ -137,10 +137,6 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     // The group submitted now comes first: it applies outside any app, on a thread no app has left
     // its open undo step and its strict bindings on, as the test it was did.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn what_one_gesture_or_one_submission_changes_is_one_undo_step;
 
     phase a_group_submitted_now_is_one_change;

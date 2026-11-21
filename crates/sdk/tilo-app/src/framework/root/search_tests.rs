@@ -95,10 +95,6 @@ impl ResourceApp for ViewQueryApp {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn a_views_own_search_gets_the_latest_query_and_waits_for_its_server;
 
     phase platform_search_delivers_only_the_latest_bounded_query_to_a_view;

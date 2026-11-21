@@ -1635,10 +1635,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// Every account command takes the account flag, every argument says what it is, ages read like durations,
         /// every subcommand has a purpose and examples, and only state-changing or long commands write receipts.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn every_command_documents_its_arguments_purpose_and_receipts;
 
         phase every_account_command_takes_the_account_flag;
@@ -1808,10 +1804,6 @@ mod tests {
         /// Swap usage shows the account as an option and swap takes an optional account; the install scenario takes
         /// a medium, a layout and an unlock; upgrade takes one source and base options only with local; vm ssh
         /// takes the VM like every other VM command.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-        )]
         fn command_shapes_take_exactly_their_documented_options;
 
         phase swap_usage_shows_the_account_as_an_option;

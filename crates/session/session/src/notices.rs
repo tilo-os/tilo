@@ -1270,7 +1270,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn what_a_workspace_did_not_take_is_said_in_whole_words;
 
         phase a_device_on_another_version_is_named_and_told_what_to_do;

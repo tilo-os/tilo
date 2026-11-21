@@ -1714,10 +1714,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_strip_switcher_opens_its_labels_for_a_resting_pointer;
 
         phase a_pointer_coming_to_rest_on_the_ribbon_opens_the_labels;
@@ -1853,10 +1849,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_strip_switchers_labels_switch_rename_and_add_strips;
 
         phase a_click_on_a_label_switches_to_its_strip;

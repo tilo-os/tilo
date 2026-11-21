@@ -612,10 +612,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_shortcut_catalogue_lists_every_action_once_with_its_chords;
 
         phase ids_are_unique_and_round_trip;

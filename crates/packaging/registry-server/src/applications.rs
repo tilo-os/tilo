@@ -494,10 +494,6 @@ pub(crate) mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn publisher_application_review;
 
         phase a_replacement_during_proof_checks_is_not_overwritten_by_approval;

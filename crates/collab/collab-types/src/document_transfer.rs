@@ -925,10 +925,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// Transfers from different authors or routes never mix, and memory stays bounded with
         /// abandonment reported.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn transfers_stay_isolated_and_bounded;
 
         phase transfers_from_different_authors_or_routes_never_mix;

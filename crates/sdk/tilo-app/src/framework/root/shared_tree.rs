@@ -1085,10 +1085,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-        )]
         fn the_kept_tree_is_the_one_built_from_scratch_and_shares_what_an_edit_left;
 
         phase the_kept_tree_is_the_one_built_from_scratch_after_any_edit;

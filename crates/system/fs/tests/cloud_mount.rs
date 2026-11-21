@@ -146,10 +146,6 @@ fn dropbox_mount_syncs_remote_edits_and_local_writes() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn oauth_drives_sync_both_ways_and_export_native_office_files;
 
     phase drive_mount_syncs_remote_edits_and_local_writes;
@@ -283,10 +279,6 @@ fn pattern(len: usize) -> Vec<u8> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn a_webdav_volume_mirrors_reads_and_writes_through_its_cache;
 
     phase listing_mirrors_the_server_tree;

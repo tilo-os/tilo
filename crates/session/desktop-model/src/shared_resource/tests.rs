@@ -75,10 +75,6 @@ fn merge(into: &mut AutoCommit, from: &mut AutoCommit) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn a_desktop_reads_back_from_the_record_as_written;
 
     phase a_desktop_reads_back_as_written_and_an_unchanged_one_writes_nothing;

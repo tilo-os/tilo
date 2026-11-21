@@ -221,10 +221,6 @@ fn every_scenario_stages_its_scene_through_actions_and_view_state() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn the_clocks_resource_changes_only_through_its_actions;
 
     phase every_edit_is_an_action_stamped_with_its_own_time;

@@ -2,10 +2,6 @@ use super::*;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn what_crosses_the_host_protocol_is_encoded_decoded_and_bounded;
 
     phase fullscreen_protocol_decodes_valid_edges_and_rejects_malformed_known_events;
@@ -1991,10 +1987,6 @@ tilo_test_env::scenario! {
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn a_real_host_process_is_supervised_until_it_is_reaped;
 
     phase private_helper_gets_incognito_flag_and_owned_root_is_removed_after_exit;

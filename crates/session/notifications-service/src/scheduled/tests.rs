@@ -208,10 +208,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-    )]
     fn a_rung_alarm_is_snoozed_and_dismissed_through_its_occurrence;
 
     phase a_ringing_occurrence_carries_its_workspace;

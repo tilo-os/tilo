@@ -1036,10 +1036,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_availability_projection_round_trips_and_is_bounded;
 
         phase projection_round_trips_every_ui_dimension;

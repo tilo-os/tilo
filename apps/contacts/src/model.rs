@@ -114,10 +114,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-        )]
         fn the_contact_model_reads_birthdays_names_and_the_books_order;
 
         phase birthday_parses_formats_and_round_trips;

@@ -495,14 +495,6 @@ mod tests {
     use crate::seed::sample_project;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "merged scenario: each former test is a labelled case block with its own fixture"
-        )]
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_preview_composites_clips_and_plans_transitions;
 
         phase preview_composite_picks_clips_and_applies_grade_and_effects;

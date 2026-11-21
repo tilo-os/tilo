@@ -1130,10 +1130,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// `DocWriter` and the `DocOwner` it writes through.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_document_writer_stores_through_its_owner;
 
         phase a_flush_its_store_commits_on_its_own_thread_is_written_not_failed;

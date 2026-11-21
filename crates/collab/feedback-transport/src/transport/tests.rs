@@ -748,7 +748,6 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
     fn the_reporter_side_refuses_what_admission_and_receipts_do_not_cover;
 
     phase startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_a_denied_grant;

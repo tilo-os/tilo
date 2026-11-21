@@ -475,10 +475,6 @@ mod tests {
     use crate::model::{MediaItem, MediaKind, Project};
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn a_media_frame_source_indexes_asks_and_samples;
 
         phase a_still_is_asked_for_its_one_picture_wherever_its_clip_is;

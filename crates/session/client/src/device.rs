@@ -1395,7 +1395,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_returning_device_keeps_or_renews_its_certificate;
 
         phase a_device_comes_back_with_what_it_kept_from_that_host_alone;

@@ -457,10 +457,6 @@ fn native_tmp_alias_is_traversed_forward_and_fully_flushed() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
     fn provisioning_flushes_every_barrier_and_keeps_what_a_failure_left;
 
     phase wrappers_flush_entire_complete_tree_before_staging_on_every_call;

@@ -135,10 +135,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn windows_is_found_only_in_firmware_boot_option_variables;
 
         phase firmware_boot_entries_identify_windows_by_its_loader_path;

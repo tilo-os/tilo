@@ -971,10 +971,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn capture_leases_are_authorized_once_scoped_renewed_and_revoked_exactly;
 
         phase capture_authorization_is_one_shot_exact_and_broker_scoped;

@@ -158,10 +158,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn speculation_needs_a_good_network_battery_and_storage;
 
         phase network_allows_requires_full_and_unmetered_primary;

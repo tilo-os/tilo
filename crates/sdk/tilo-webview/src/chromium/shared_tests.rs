@@ -25,10 +25,6 @@ fn lingering_fixture() -> (tempfile::TempDir, PathBuf) {
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn one_host_per_profile_serves_every_engine_and_process_that_opens_it;
 
     phase engines_on_one_profile_share_one_host;

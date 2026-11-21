@@ -242,10 +242,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_settings_workers_display_request_is_read_admitted_and_bounded;
 
         phase a_settings_worker_reads_the_displays_it_stands_on;

@@ -1133,10 +1133,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// `DocStore` opened at an explicit place, without the environment.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
-        )]
         fn a_doc_store_refuses_what_is_unsafe_and_keeps_its_load_hint;
 
         phase canonical_and_complete_loads_refuse_truncated_documents;

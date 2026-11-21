@@ -20,7 +20,6 @@ fn fixture() -> VoiceObject {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
     fn a_voice_object_is_exactly_its_wire_bytes;
 
     phase golden_object_matches_browser_wire_bytes;
@@ -134,7 +133,6 @@ fn sequences(bundle: &[u8]) -> Vec<u64> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
     fn a_hop_rebundles_with_the_redundancy_its_loss_asks_for;
 
     phase a_clean_hop_forwards_each_object_once_even_from_a_triple_redundant_publisher;

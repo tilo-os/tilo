@@ -628,10 +628,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "the lint exempts a test function's body, not the closure a phase is"
-        )]
         fn launches_and_holds_keep_a_bundle_from_collection_and_purge;
 
         phase launches_started_side_by_side_all_hold_their_runtime;

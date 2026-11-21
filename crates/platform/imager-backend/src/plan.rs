@@ -738,10 +738,6 @@ pub(crate) mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-        )]
         fn linux_plans_use_one_extent_and_supported_btrfs_facts;
 
         phase linux_plan_uses_one_aligned_free_extent;

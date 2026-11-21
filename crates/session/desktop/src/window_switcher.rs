@@ -1079,10 +1079,6 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-        )]
         fn the_window_switchers_panel_and_cards;
 
         phase a_window_without_a_picture_shows_its_apps_symbol;

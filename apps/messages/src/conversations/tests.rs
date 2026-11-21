@@ -268,10 +268,6 @@ fn the_conversations_are_read_only_to_field_edits() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the folded tests were outside this lint as test functions; their sums are test data"
-    )]
     fn conversations_normalise_keys_and_dates_and_offer_agents_their_operations;
 
     phase conversation_keys_normalise_numbers_names_and_item_addresses;
