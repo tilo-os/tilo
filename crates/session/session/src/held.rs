@@ -59,8 +59,7 @@ impl Session {
     /// What a held workspace has of the app `app`'s document `record`, as
     /// the workspace last admitted it: what it shows of it, and what it held
     /// before this computer joined. The workspace's copy is the one this
-    /// device's service holds, where the session's own writes reach it; one
-    /// only this device's replica holds reads from there. A document the
+    /// device's service holds, where the session's own writes reach it. A document the
     /// workspace's hosts send only once asked (an on-demand one, or a part
     /// of a chain behind its head) reads as nothing until it is here, and is
     /// asked for on its first read.
@@ -73,15 +72,6 @@ impl Session {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        // What the workspace holds is what this device's service holds of it, which is where the
-        // session's own writes reach it. One only this device's replica holds reads from there.
-        if let Some(bytes) = self.shared.records.held_document(workspace, app, record) {
-            return Ok(Some(bytes));
-        }
-        self.shared
-            .engine
-            .as_ref()
-            .ok_or_else(|| "this session holds no workspaces".to_owned())?
-            .record(workspace, app, record)
+        self.shared.records.whole(workspace, app, record)
     }
 }

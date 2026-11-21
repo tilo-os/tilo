@@ -412,127 +412,8 @@ pub(crate) mod testing {
     /// The kind of every app's own record in these tests: the record that keeps its index.
     const OWN: &str = "notes.notebook";
 
-    /// A test's stand-in for this device's workspace service: the engine's own copy of its
-    /// workspaces, read as the service reads the documents it holds. The service itself holds
-    /// them in production; these tests have no endpoint to open it on.
-    pub(crate) struct EngineDocuments(pub(crate) Arc<Engine>);
-
-    impl tilo_peer_state::workspace_documents::DeviceDocuments for EngineDocuments {
-        fn read(
-            &self,
-            workspace: &str,
-            app: &str,
-            resource: &str,
-            since: Option<&[[u8; 32]]>,
-        ) -> Result<tilo_peer_state::workspace_documents::DocumentRead, String> {
-            use tilo_peer_state::workspace_documents::DocumentRead;
-            let held = tilo_desktop_model::WorkspaceId::parse(workspace)
-                .is_some_and(|workspace| self.0.holds(workspace));
-            // A workspace that holds nothing of a document answers that, as the service does: a
-            // read of it is no empty document.
-            if held && !self.holds(workspace, app, resource) {
-                return Ok(DocumentRead::Absent);
-            }
-            match self.0.document_update(workspace, app, resource, since)? {
-                crate::engine::ResourceReading::Captured {
-                    revision,
-                    heads,
-                    bytes,
-                } => Ok(DocumentRead::Whole {
-                    revision,
-                    heads,
-                    bytes,
-                }),
-                crate::engine::ResourceReading::Changes {
-                    revision,
-                    heads,
-                    bytes,
-                } => Ok(DocumentRead::Changes {
-                    revision,
-                    heads,
-                    bytes,
-                }),
-                crate::engine::ResourceReading::Unchanged(revision) => {
-                    Ok(DocumentRead::Unchanged(revision))
-                }
-                crate::engine::ResourceReading::Pending => Ok(DocumentRead::Pending),
-            }
-        }
-
-        fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-            self.0.documents(workspace)
-        }
-
-        fn own_records(
-            &self,
-            workspace: &str,
-        ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-            self.0
-                .documents(workspace)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(app, record)| {
-                    let own = self.0.own_resource(workspace, &app, &record)?;
-                    Some(((app, record), own.owner))
-                })
-                .collect()
-        }
-
-        fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
-            // What this device wrote of the document and the copy has not taken in yet is held
-            // here too, as the service holds a write it took.
-            self.0.holds_resource(workspace, app, resource)
-                || self.0.held_writes().lock().keys().any(|route| {
-                    route.cluster_id == workspace
-                        && route.app_id == app
-                        && route.document == resource
-                })
-        }
-
-        fn workspaces(&self) -> Vec<String> {
-            self.0
-                .workspaces()
-                .into_iter()
-                .map(|workspace| workspace.to_string())
-                .collect()
-        }
-    }
-
-    /// A test's stand-in for this device's workspace service, writing the engine's own copy of a
-    /// workspace's documents as the service writes the ones it holds. The service itself holds
-    /// them in production; these tests have no endpoint to open it on.
-    pub(crate) struct EngineWrites(pub(crate) Arc<Engine>);
-
-    impl tilo_peer_state::workspace_documents::DeviceWrites for EngineWrites {
-        fn write(
-            &self,
-            workspace: &str,
-            app: &str,
-            document: &str,
-            changes: &[u8],
-            founding: bool,
-            sealed: Option<&key_group::ContentKeys>,
-        ) -> tilo_peer_state::workspace_documents::DocumentWrite {
-            let engine = Arc::clone(&self.0);
-            let workspace = workspace.to_owned();
-            let (app, document) = (app.to_owned(), document.to_owned());
-            let changes = changes.to_vec();
-            let sealed = sealed.cloned();
-            Box::pin(async move {
-                let id = tilo_desktop_model::WorkspaceId::parse(&workspace).ok_or_else(|| {
-                    tilo_peer_state::owner::WriteRefusal::Refused(format!(
-                        "{workspace} is not a workspace"
-                    ))
-                })?;
-                engine
-                    .write_resource(id, (&app, &document), &changes, founding, sealed.as_ref())
-                    .await
-            })
-        }
-    }
-
     pub(crate) struct Device {
-        engine: Arc<Engine>,
+        service: crate::founding_fixture::TestService,
         records: EngineRecords,
         /// Search's records of this device, until a test takes them.
         found: std::cell::RefCell<Option<super::Records>>,
@@ -540,7 +421,7 @@ pub(crate) mod testing {
     }
 
     impl Device {
-        /// A device holding each of `workspaces` , with their keys.
+        /// A device holding each of `workspaces` on its own workspace service, with their keys.
         pub(crate) fn holding(workspaces: &[&str]) -> Self {
             let state = tempfile::tempdir().expect("a state directory");
             let root = SigningKey::from_bytes(&[0x30; 32]);
@@ -548,41 +429,32 @@ pub(crate) mod testing {
             let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
             let engine = Arc::new(
                 Engine::open(
-                    tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key.clone()),
+                    tilo_identity::identity_store::DeviceIdentity::kept(cert, key),
                     Some(state.path()),
                     std::iter::empty(),
                     crate::platform::membership_check::of_this_session(),
                 )
                 .expect("this device's engine opens"),
             );
+            let service = crate::founding_fixture::serve(&engine);
             for workspace in workspaces {
                 let id = tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace");
-                tilo_peer_state::owner::testing::enroll_interactive_governor_in(
-                    engine.owner(),
-                    &key,
-                    &cert,
-                    workspace,
-                )
-                .expect("the workspace is held here");
-                engine.bind(id);
-                let keys = key_group::KeyGroup::create(
-                    id,
-                    key_group::MemberKey::generate("owner").expect("a member key"),
-                )
-                .expect("the workspace's group")
-                .content_keys()
-                .expect("the workspace's keys");
-                engine.hand_keys(id, keys);
+                service.found(&engine, id, workspace);
             }
             let found = super::Records::of(state.path().join("data"));
             let changes = found.changes();
-            let reads = Arc::new(EngineDocuments(Arc::clone(&engine)));
-            let writes = Arc::new(EngineWrites(Arc::clone(&engine)));
+            let reads = service.reads();
             let records = EngineRecords::new(Arc::new(|| {}));
-            records.attach(Arc::clone(&engine), reads.clone(), writes, &changes, None);
+            records.attach(
+                Arc::clone(&engine),
+                Arc::clone(&reads),
+                service.writes(),
+                &changes,
+                None,
+            );
             found.read_from(reads, records.clone(), PERSON.to_owned());
             Self {
-                engine,
+                service,
                 records,
                 found: std::cell::RefCell::new(Some(found)),
                 _state: state,
@@ -598,9 +470,11 @@ pub(crate) mod testing {
                 .expect("search's records, taken once")
         }
 
-        /// The engine this device keeps its workspaces in.
-        pub(crate) fn engine(&self) -> &Arc<Engine> {
-            &self.engine
+        /// What reads the documents of the workspaces this device's service holds.
+        pub(crate) fn reads(
+            &self,
+        ) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> {
+            self.service.reads()
         }
 
         /// `app`'s index of `workspace` names `rows` (id, kind, name) and nothing else, written as
@@ -642,8 +516,8 @@ pub(crate) mod testing {
 
         /// The records `app`'s index of `workspace` names, as the workspace holds it.
         pub(crate) fn names(&self, app: &str, workspace: &str) -> Vec<String> {
-            let Ok(crate::engine::ResourceReading::Captured { bytes, .. }) =
-                self.engine.document_update(workspace, app, "", None)
+            let Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) =
+                self.service.reads().read(workspace, app, "", None)
             else {
                 return Vec::new();
             };
@@ -675,7 +549,7 @@ pub(crate) mod testing {
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
-    use super::testing::{Device, EngineDocuments};
+    use super::testing::Device;
     use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
     const NOTES: &str = ui::apps::NOTES;
@@ -688,10 +562,10 @@ mod tests {
     /// workspace keeps.
     #[test]
     fn a_document_the_workspace_holds_nothing_of_reads_as_absent() {
-        use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
+        use tilo_peer_state::workspace_documents::DocumentRead;
 
         let device = Device::holding(&[KITCHEN]);
-        let reads = EngineDocuments(std::sync::Arc::clone(device.engine()));
+        let reads = device.reads();
         assert!(
             matches!(
                 reads.read(KITCHEN, NOTES, "", None),

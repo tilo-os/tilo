@@ -1044,7 +1044,7 @@ mod tests {
                 // A workspace with environments asks the runtime, and there is none here.
                 runtime: None,
             };
-            let branched = branch(None, places, from, to);
+            let branched = branch(places, from, to);
             assert_eq!(
                 branched.missing,
                 vec!["the Terminal environments: no runtime here".to_owned()],
@@ -1184,20 +1184,13 @@ mod tests {
         {
             let state = tempfile::tempdir().unwrap();
             let identity = identity();
-            let engine = reopened(&state, &identity);
+            let device = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
-            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
-            let keys = key_group::KeyGroup::create(
-                collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
-                key_group::MemberKey::generate("owner").unwrap(),
-            )
-            .unwrap()
-            .content_keys()
-            .unwrap();
+            device.found(from, "Research");
+            device.found(to, "Research branch");
             let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
             let mut party = record(FROM, "party-parrot");
-            write(&engine, &keys, from, (CHAT, &emoji), &mut party);
+            device.write(from, (CHAT, &emoji), &mut party);
             let home = tempfile::tempdir().unwrap();
             let workspaces = home.path().join("data/tilo-workspaces");
             // Where an app directory `app` keeps `owner`'s record `record` of `workspace`.
@@ -1227,14 +1220,11 @@ mod tests {
                 files: None,
                 runtime: None,
             };
-            let branched = branch(Some(&engine), places, from, to);
+            let branched = device.branch(places, from, to);
             assert!(branched.missing.is_empty(), "{:?}", branched.missing);
 
             let mut engines = AutoCommit::load(
-                &engine
-                    .record(TO, CHAT, &emoji)
-                    .unwrap()
-                    .expect("the branch holds the emoji"),
+                &device.record(TO, CHAT, &emoji).expect("the branch holds the emoji"),
             )
             .unwrap();
             for app in [CHAT, TERMINAL] {
@@ -1269,17 +1259,10 @@ mod tests {
             const EMOJI: &str = "tilo.workspace.emoji";
             let state = tempfile::tempdir().unwrap();
             let identity = identity();
-            let engine = reopened(&state, &identity);
+            let device = reopened(&state, &identity);
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
-            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
-            let keys = key_group::KeyGroup::create(
-                collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
-                key_group::MemberKey::generate("owner").unwrap(),
-            )
-            .unwrap()
-            .content_keys()
-            .unwrap();
+            device.found(from, "Research");
+            device.found(to, "Research branch");
             // An app's window of `workspace` opening the emoji, in a store of its own.
             let opened = |workspace: &str| {
                 ui::resource::workspace::WorkspaceResources::in_workspace(
@@ -1304,16 +1287,13 @@ mod tests {
                 .unwrap();
             let emoji = collab_types::workspace_document_id(EMOJI);
             let mut held = source.read(AutoCommit::clone).unwrap();
-            write(&engine, &keys, from, (CHAT, &emoji), &mut held);
+            device.write(from, (CHAT, &emoji), &mut held);
 
-            let branched = branch(Some(&engine), Places::default(), from, to);
+            let branched = device.branch(Places::default(), from, to);
             assert!(branched.missing.is_empty(), "{:?}", branched.missing);
 
             let mut engines = AutoCommit::load(
-                &engine
-                    .record(TO, CHAT, &emoji)
-                    .unwrap()
-                    .expect("the branch holds the emoji"),
+                &device.record(TO, CHAT, &emoji).expect("the branch holds the emoji"),
             )
             .unwrap();
             let mut met = opened(TO).read(AutoCommit::clone).unwrap();
@@ -1367,7 +1347,7 @@ mod tests {
         {
             let state = tempfile::tempdir().unwrap();
             let identity = identity();
-            let engine = reopened(&state, &identity);
+            let device = reopened(&state, &identity);
             let from = ids().0;
             let targets = [
                 "7a6b5c4d-0000-4000-8000-000000000003",
@@ -1375,28 +1355,13 @@ mod tests {
                 "7a6b5c4d-0000-4000-8000-000000000005",
             ]
             .map(|id| WorkspaceId::parse(id).unwrap());
-            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
-            let channel = collab_types::WorkspaceId::parse(FROM).unwrap();
-            let keys =
-                key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
-                    .unwrap()
-                    .content_keys()
-                    .unwrap();
-            for held in targets {
-                engine.hand_keys(held, keys.clone());
-            }
+            device.found(from, "Research");
             let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
-            write(
-                &engine,
-                &keys,
-                from,
+            device.write(from,
                 ("so.tilo.notes", "uuid-plan"),
                 &mut record(FROM, "plan"),
             );
-            write(
-                &engine,
-                &keys,
-                from,
+            device.write(from,
                 (CHAT, &emoji),
                 &mut record(FROM, "party-parrot"),
             );
@@ -1425,9 +1390,8 @@ mod tests {
             };
 
             for (n, to) in targets.into_iter().enumerate() {
-                pollster::block_on(engine.found(to, &format!("Question {n}")))
-                    .expect("the branch is founded");
-                let branched = branch(Some(&engine), places.clone(), from, to);
+                device.found(to, &format!("Question {n}"));
+                let branched = device.branch(places.clone(), from, to);
                 assert!(
                     branched.missing.is_empty(),
                     "branch {n} is not complete: {:?}",
@@ -1452,46 +1416,32 @@ mod tests {
             let state = tempfile::tempdir().unwrap();
             let identity = identity();
             let person = hex::encode(identity.device_cert.user_public_key);
-            let engine = reopened(&state, &identity);
+            let device = reopened(&state, &identity);
+            let engine = &device.engine;
             let (from, to) = ids();
-            pollster::block_on(engine.found(from, "Research")).expect("the source is founded");
-            pollster::block_on(engine.found(to, "Research branch")).expect("the branch is founded");
+            device.found(from, "Research");
+            device.found(to, "Research branch");
             assert!(engine.holds(from) && engine.holds(to));
-            let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
-            let keys =
-                key_group::KeyGroup::create(channel, key_group::MemberKey::generate("owner").unwrap())
-                    .unwrap()
-                    .content_keys()
-                    .unwrap();
             let notes = ("so.tilo.notes", "uuid-plan");
             let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
             let mut plan = record(FROM, "plan");
-            write(&engine, &keys, from, notes, &mut plan);
-            write(
-                &engine,
-                &keys,
-                from,
+            device.write(from, notes, &mut plan);
+            device.write(from,
                 (CHAT, &emoji),
                 &mut record(FROM, "party-parrot"),
             );
-            write(
-                &engine,
-                &keys,
-                from,
+            device.write(from,
                 (CHAT, "messages"),
                 &mut record(FROM, "see you at nine"),
             );
 
-            let branched = branch(Some(&engine), Places::default(), from, to);
+            let branched = device.branch(Places::default(), from, to);
             assert!(branched.missing.is_empty(), "{:?}", branched.missing);
             assert_eq!((branched.records, branched.left), (2, 1));
 
             let read = |workspace: &str, route| {
                 AutoCommit::load(
-                    &engine
-                        .record(workspace, notes.0, route)
-                        .unwrap()
-                        .expect("the record is held"),
+                    &device.record(workspace, notes.0, route).expect("the record is held"),
                 )
                 .unwrap()
             };
@@ -1504,7 +1454,7 @@ mod tests {
                     "the branch holds the record's history"
                 );
             }
-            let routes = engine.documents(TO).unwrap();
+            let routes = device.documents(TO);
             assert!(routes.contains(&(CHAT.to_owned(), emoji)), "{routes:?}");
             assert!(
                 !routes
@@ -1531,20 +1481,19 @@ mod tests {
             assert_eq!(ui::resource::workspace_scope(&source).as_deref(), Some(FROM));
             assert_ne!(source.get_heads(), copied.get_heads());
             assert!(
-                engine
-                    .documents(FROM)
-                    .unwrap()
+                device.documents(FROM)
                     .contains(&(CHAT.to_owned(), "messages".to_owned()))
             );
 
-            drop(engine);
-            let engine = reopened(&state, &identity);
+            drop(device);
+            let device = reopened(&state, &identity);
+            let engine = &device.engine;
             assert!(
                 engine.holds(to),
                 "the branch is this device's after a restart"
             );
             assert_eq!(engine.owner_of(TO), Ok(person));
-            assert_eq!(engine.documents(TO).unwrap().len(), 2);
+            assert_eq!(device.documents(TO).len(), 2);
         }
     }
 
@@ -1629,23 +1578,14 @@ mod tests {
         }
     }
 
-    /// `from` branched into `to` , with everything this device holds here.
-    fn branch(
-        held: Option<&Arc<Engine>>,
-        places: Places,
-        from: WorkspaceId,
-        to: WorkspaceId,
-    ) -> Branched {
-        let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = match held {
-            Some(engine) => Arc::new(crate::records::testing::EngineDocuments(Arc::clone(engine))),
-            None => Arc::new(NoDocuments),
-        };
-        let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> = match held {
-            Some(engine) => Arc::new(crate::records::testing::EngineWrites(Arc::clone(engine))),
-            None => Arc::new(NoWrites),
-        };
+    /// `from` branched into `to` on a device that holds nothing.
+    fn branch(places: Places, from: WorkspaceId, to: WorkspaceId) -> Branched {
+        let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> =
+            Arc::new(NoDocuments);
+        let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
+            Arc::new(NoWrites);
         pollster::block_on(copy(
-            held.map(std::convert::AsRef::as_ref),
+            None,
             &writes,
             &reads,
             places,
@@ -1655,12 +1595,76 @@ mod tests {
         ))
     }
 
+    /// This device's engine and the workspace service it holds its workspaces on.
+    struct Device {
+        engine: Arc<Engine>,
+        service: crate::founding_fixture::TestService,
+    }
+
+    impl Device {
+        fn found(&self, workspace: WorkspaceId, name: &str) {
+            self.service.found(&self.engine, workspace, name);
+        }
+
+        /// `from` branched into `to` , with everything this device holds here, on the app runtime
+        /// a session branches on: the service's writes run on it.
+        fn branch(&self, places: Places, from: WorkspaceId, to: WorkspaceId) -> Branched {
+            tilo_rt::try_app()
+                .expect("the app runtime")
+                .block_on(copy(
+                    Some(self.engine.as_ref()),
+                    &self.service.writes(),
+                    &self.service.reads(),
+                    places,
+                    from,
+                    to,
+                    Instant::now(),
+                ))
+                .expect("the app runtime runs the branch")
+        }
+
+        /// The whole document the workspace service holds as `record` of `app` in `workspace`.
+        fn record(&self, workspace: &str, app: &str, record: &str) -> Option<Vec<u8>> {
+            match self.service.reads().read(workspace, app, record, None) {
+                Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }) => {
+                    Some(bytes)
+                }
+                _ => None,
+            }
+        }
+
+        /// Every record the service holds in `workspace`.
+        fn documents(&self, workspace: &str) -> Vec<(String, String)> {
+            self.service
+                .reads()
+                .listing(workspace)
+                .expect("the service lists the workspace")
+        }
+
+        /// Write `doc` into `workspace` as `record` of `app` , sealed, as an app's first write is.
+        fn write(&self, workspace: WorkspaceId, (app, record): (&str, &str), doc: &mut AutoCommit) {
+            let keys = self.service.keys_of(workspace);
+            tilo_rt::try_app()
+                .expect("the app runtime")
+                .block_on(self.service.writes().write(
+                    &workspace.to_string(),
+                    app,
+                    record,
+                    &doc.save_after(&[]),
+                    true,
+                    Some(&keys),
+                ))
+                .expect("the app runtime runs the write")
+                .expect("the workspace takes the record");
+        }
+    }
+
     /// A device of a person, certified for their root, that owns workspaces.
     /// This device's engine, opened again under `state` as a session that starts afresh does.
     fn reopened(
         state: &tempfile::TempDir,
         identity: &tilo_identity::identity_store::DeviceIdentity,
-    ) -> Arc<Engine> {
+    ) -> Device {
         let engine = Arc::new(
             Engine::open(
                 identity.clone(),
@@ -1670,8 +1674,8 @@ mod tests {
             )
             .expect("this device's engine opens"),
         );
-        crate::founding_fixture::serve(&engine);
-        engine
+        let service = crate::founding_fixture::serve(&engine);
+        Device { engine, service }
     }
 
     fn identity() -> tilo_identity::identity_store::DeviceIdentity {
@@ -1691,30 +1695,6 @@ mod tests {
         tilo_identity::identity_store::DeviceIdentity::kept(cert, device)
     }
 
-    /// Write `doc` into `workspace` as `record` of `app` , sealed, as an app's first write is.
-    fn write(
-        engine: &Arc<Engine>,
-        keys: &key_group::ContentKeys,
-        workspace: WorkspaceId,
-        (app, record): (&str, &str),
-        doc: &mut AutoCommit,
-    ) {
-        use tilo_peer_state::workspace_documents::DeviceWrites as _;
-        // The keys of the source and of the branch, as the key service hands them to a member.
-        for held in [ids().0, ids().1] {
-            engine.hand_keys(held, keys.clone());
-        }
-        let writes = crate::records::testing::EngineWrites(Arc::clone(engine));
-        pollster::block_on(writes.write(
-            &workspace.to_string(),
-            app,
-            record,
-            &doc.save_after(&[]),
-            true,
-            Some(keys),
-        ))
-        .expect("the workspace takes the record");
-    }
     /// An agent branches the workspace it works in, by any name the session knows it by, and no
     /// other: what it would copy of another is not its to read.
     #[test]

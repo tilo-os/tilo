@@ -263,6 +263,27 @@ pub struct TestGroupKeys {
     held: Mutex<BTreeMap<String, ContentKeys>>,
 }
 
+impl TestGroupKeys {
+    /// Hand the fixture `keys` as every member's keys of `workspace`: keys that reach a device
+    /// after it opened.
+    ///
+    /// # Panics
+    ///
+    /// `workspace` is no workspace's id.
+    pub fn hand(&self, workspace: &str, keys: ContentKeys) {
+        let group = collab_types::reader_group(
+            collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
+            collab_types::EVERY_MEMBER,
+        )
+        .expect("every member's group")
+        .to_string();
+        self.held
+            .lock()
+            .expect("the fixture's keys")
+            .insert(group, keys);
+    }
+}
+
 impl GroupKeys for TestGroupKeys {
     fn group_keys<'a>(
         &'a self,

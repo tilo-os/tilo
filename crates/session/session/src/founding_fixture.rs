@@ -12,17 +12,88 @@ use tilo_workspace_service::workspaces::fixtures::TestGroupKeys;
 
 use crate::engine::{Engine, Founder, ServiceAnswer};
 
+/// This device's own workspace service as a test opens it: the real service over the engine's
+/// state, the keys of the workspaces' channels the test makes, and the reads and writes the
+/// session's roles make through it.
+pub(crate) struct TestService {
+    reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+    writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
+    keys: Arc<TestGroupKeys>,
+}
+
+impl TestService {
+    /// What reads the documents of the workspaces the service holds, as the session's roles read
+    /// them.
+    pub(crate) fn reads(&self) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> {
+        Arc::clone(&self.reads)
+    }
+
+    /// What writes those documents, as the session's roles write them.
+    pub(crate) fn writes(&self) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> {
+        Arc::clone(&self.writes)
+    }
+
+    /// The keys every member of `workspace` seals its records with, as the service holds them:
+    /// what this device's key service hands it once the workspace's group admits it.
+    #[expect(
+        clippy::expect_used,
+        reason = "the fixture makes every channel's keys it is asked for"
+    )]
+    pub(crate) fn keys_of(&self, workspace: WorkspaceId) -> key_group::ContentKeys {
+        use tilo_workspace_service::workspaces::GroupKeys as _;
+        let workspace = workspace.to_string();
+        pollster::block_on(
+            self.keys
+                .group_keys(&workspace, collab_types::EVERY_MEMBER, true),
+        )
+        .expect("the fixture answers for every channel")
+        .expect("the workspace's keys")
+    }
+
+    /// Hand the service and `engine` `keys` as `workspace`'s, as the key service hands a member
+    /// the keys of a channel that admitted it.
+    pub(crate) fn hand_keys(
+        &self,
+        engine: &Engine,
+        workspace: WorkspaceId,
+        keys: key_group::ContentKeys,
+    ) {
+        self.keys.hand(&workspace.to_string(), keys.clone());
+        engine.hand_keys(workspace, keys);
+    }
+
+    /// Found `workspace` as `name` on the service, held here as its member, and hand `engine` the
+    /// keys of its channel.
+    #[expect(
+        clippy::expect_used,
+        reason = "a test whose workspace is not founded cannot go on"
+    )]
+    pub(crate) fn found(&self, engine: &Engine, workspace: WorkspaceId, name: &str) {
+        pollster::block_on(engine.found(workspace, name)).expect("the workspace is founded");
+        engine.hand_keys(workspace, self.keys_of(workspace));
+    }
+}
+
 /// Open this device's own workspace service for `engine`'s state, and found what it makes there.
-pub(crate) fn serve(engine: &Arc<Engine>) {
+pub(crate) fn serve(engine: &Arc<Engine>) -> TestService {
+    let slot = tilo_workspace_service::service::ServiceSlot::default();
+    let keys = Arc::new(TestGroupKeys::default());
     crate::sync::serve_alone(
         engine,
-        tilo_workspace_service::service::ServiceSlot::default(),
+        slot.clone(),
         Some(DeviceKeyGroups {
-            keys: Arc::new(TestGroupKeys::default()),
+            keys: Arc::clone(&keys) as Arc<dyn tilo_workspace_service::workspaces::GroupKeys>,
             sink: None,
         }),
         |founder| Arc::new(OnRuntime(founder)),
     );
+    TestService {
+        reads: Arc::new(
+            tilo_workspace_service::apps::service_reads::ServiceDocuments::on(slot.clone()),
+        ),
+        writes: Arc::new(tilo_workspace_service::apps::service_writes::ServiceWrites::on(slot)),
+        keys,
+    }
 }
 
 /// A founder that founds on the app runtime, where a session founds: a test that calls

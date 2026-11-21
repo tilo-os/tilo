@@ -261,21 +261,29 @@ impl EngineRecords {
         true
     }
 
-    /// What this device's service holds of `app`'s document `resource` in `workspace`, whole: the
-    /// workspace's own copy, where the session's own writes reach it and where its own reads answer
-    /// from. `None` where the service holds nothing of it, cannot read it yet (its keys are on the
-    /// way), or the session opened no service: one only this device's replica holds reads from there.
-    pub(crate) fn held_document(
+    /// `app`'s `resource` of `workspace` whole, as this device's service holds it: nothing while
+    /// the service holds nothing of it or it is on its way.
+    ///
+    /// # Errors
+    ///
+    /// This session reaches no service, the service holds no such workspace, or this device may
+    /// not read it.
+    pub(crate) fn whole(
         &self,
         workspace: &str,
         app: &str,
         resource: &str,
-    ) -> Option<Vec<u8>> {
+    ) -> Result<Option<Vec<u8>>, String> {
         use tilo_peer_state::workspace_documents::DocumentRead;
-        let reads = self.0.reads.borrow().clone()?;
-        match reads.read(workspace, app, resource, None) {
-            Ok(DocumentRead::Whole { bytes, .. }) => Some(bytes),
-            _ => None,
+        let reads = self
+            .0
+            .reads
+            .borrow()
+            .clone()
+            .ok_or_else(|| "this session holds no workspaces".to_owned())?;
+        match reads.read(workspace, app, resource, None)? {
+            DocumentRead::Whole { bytes, .. } => Ok(Some(bytes)),
+            _ => Ok(None),
         }
     }
 

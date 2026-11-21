@@ -435,11 +435,10 @@ impl collab_types::signer::DeviceSigner for HeldSigner {
     }
 }
 
-/// A device's workspace service as these tests stand it in: every write waits on `hold` and
-/// answers as the workspace took it. A layout's write reaches its workspace through the service.
+/// A device's workspace service whose every write waits on `hold` before the service takes it.
 struct HeldWrites {
     hold: Arc<Hold>,
-    person: String,
+    inner: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
 }
 
 impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
@@ -448,14 +447,19 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
         workspace: &str,
         app: &str,
         document: &str,
-        _changes: &[u8],
-        _founding: bool,
-        _sealed: Option<&key_group::ContentKeys>,
+        changes: &[u8],
+        founding: bool,
+        sealed: Option<&key_group::ContentKeys>,
     ) -> tilo_peer_state::workspace_documents::DocumentWrite {
         let hold = Arc::clone(&self.hold);
-        let person = self.person.clone();
-        let (workspace, app, document) =
-            (workspace.to_owned(), app.to_owned(), document.to_owned());
+        let inner = Arc::clone(&self.inner);
+        let (workspace, app, document, changes, sealed) = (
+            workspace.to_owned(),
+            app.to_owned(),
+            document.to_owned(),
+            changes.to_vec(),
+            sealed.cloned(),
+        );
         Box::pin(async move {
             std::future::poll_fn(move |context| {
                 if hold.held() {
@@ -470,38 +474,17 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
                 std::task::Poll::Ready(())
             })
             .await;
-            Ok(write_of(&workspace, &app, &document, &person))
+            inner
+                .write(
+                    &workspace,
+                    &app,
+                    &document,
+                    &changes,
+                    founding,
+                    sealed.as_ref(),
+                )
+                .await
         })
-    }
-}
-
-/// The write a workspace took, as this device's apps hear it: what the stand-in service answers.
-fn write_of(
-    workspace: &str,
-    app: &str,
-    document: &str,
-    person: &str,
-) -> tilo_peer_state::owner::AppWrite {
-    tilo_peer_state::owner::AppWrite {
-        peer: 1,
-        app_id: app.to_owned(),
-        cluster_id: workspace.to_owned(),
-        document_id: document.to_owned(),
-        author: tilo_action_policy::MemberAccess::person(
-            tilo_action_policy::WorkspacePolicy::new(workspace, person),
-            person.to_owned(),
-        ),
-        replayed: false,
-        envelope: collab_types::SignedOp::new_unsigned(
-            Vec::new(),
-            collab_types::ArtifactId::new(),
-            collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-            collab_types::AttestationId::new(),
-            collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
-            0,
-        ),
-        own: None,
     }
 }
 
@@ -537,7 +520,6 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
     let state = tempfile::tempdir().expect("a state directory");
     let root = SigningKey::from_bytes(&[0x30; 32]);
     let key = SigningKey::from_bytes(&[0x31; 32]);
-    let signing = key.clone();
     let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
     let hold = Arc::new(Hold::default());
     let theirs = Arc::clone(&hold);
@@ -555,7 +537,9 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
     );
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
     let person = hex::encode(cert.user_public_key);
-    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    pollster::block_on(engine.found(workspace, "Layout"))
         .expect("the layout's workspace is founded");
     engine.bind(workspace);
     assert!(
@@ -603,21 +587,12 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
     );
     let writes = Arc::new(HeldWrites {
         hold: Arc::clone(&hold),
-        person: person.clone(),
+        inner: service.writes(),
     }) as Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>;
-    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = Arc::new(
-        crate::records::testing::EngineDocuments(Arc::clone(&engine)),
-    );
+    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = service.reads();
     desktops.attach(&engine, &reads, &writes);
     // The workspace's keys, as the key service hands them to this device.
-    let keys = key_group::KeyGroup::create(
-        workspace,
-        key_group::MemberKey::generate("owner").expect("a member key"),
-    )
-    .expect("the workspace's group")
-    .content_keys()
-    .expect("the workspace's keys");
-    engine.hand_keys(workspace, keys);
+    service.hand_keys(&engine, workspace, service.keys_of(workspace));
     let layout = (workspace, Route::layout());
     // The write's signature waits for the test: it is under way, so nothing of it can have been
     // taken in here.
@@ -718,7 +693,6 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     let state = tempfile::tempdir().expect("a state directory");
     let root = SigningKey::from_bytes(&[0x40; 32]);
     let key = SigningKey::from_bytes(&[0x41; 32]);
-    let signing = key.clone();
     let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
     let engine = Arc::new(
         Engine::open(
@@ -731,8 +705,9 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     );
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
     let person = hex::encode(cert.user_public_key);
-    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
-        .expect("the workspace is founded");
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    pollster::block_on(engine.found(workspace, "Layout")).expect("the workspace is founded");
     engine.bind(workspace);
 
     // One workspace, one strip, one group of two windows: the person brings the second to the
@@ -781,11 +756,8 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     );
     let (wake, _heard) = woken();
     let desktops = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
-    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
-        Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)));
-    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = Arc::new(
-        crate::records::testing::EngineDocuments(Arc::clone(&engine)),
-    );
+    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> = service.writes();
+    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = service.reads();
     desktops.attach(&engine, &reads, &writes);
     let mut shown = layout.clone();
     desktops.follow(&engine, "", &mut shown);
@@ -812,11 +784,8 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     // are here.
     let (wake, _heard) = woken();
     let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
-    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
-        Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)));
-    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = Arc::new(
-        crate::records::testing::EngineDocuments(Arc::clone(&engine)),
-    );
+    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> = service.writes();
+    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = service.reads();
     next.attach(&engine, &reads, &writes);
     assert!(
         !next.held(&view_key, |held| held.pending_view.is_empty()),
@@ -826,14 +795,7 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
         !next.held(&layout_key, |held| held.pending_steps.is_empty()),
         "and so is the layout"
     );
-    let keys = key_group::KeyGroup::create(
-        workspace,
-        key_group::MemberKey::generate("owner").expect("a member key"),
-    )
-    .expect("the workspace's group")
-    .content_keys()
-    .expect("the workspace's keys");
-    engine.hand_keys(workspace, keys);
+    service.hand_keys(&engine, workspace, service.keys_of(workspace));
     let mut shown = layout.clone();
     next.follow(&engine, "", &mut shown);
     next.capture(&engine, &shown);
@@ -891,7 +853,6 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     let state = tempfile::tempdir().expect("a state directory");
     let root = SigningKey::from_bytes(&[0x50; 32]);
     let key = SigningKey::from_bytes(&[0x51; 32]);
-    let signing = key.clone();
     let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
     let engine = Arc::new(
         Engine::open(
@@ -904,17 +865,11 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     );
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
     let person = hex::encode(cert.user_public_key);
-    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
-        .expect("the workspace is founded");
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    pollster::block_on(engine.found(workspace, "Layout")).expect("the workspace is founded");
     engine.bind(workspace);
-    let keys = key_group::KeyGroup::create(
-        workspace,
-        key_group::MemberKey::generate("owner").expect("a member key"),
-    )
-    .expect("the workspace's group")
-    .content_keys()
-    .expect("the workspace's keys");
-    engine.hand_keys(workspace, keys);
+    service.hand_keys(&engine, workspace, service.keys_of(workspace));
 
     // The shell the person shows: a strip of two groups, and a strip of one window of their own.
     let mut ids = tilo_desktop_model::IdMinter::new(salt);
@@ -979,7 +934,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     let layout_key = (workspace, Route::layout());
     let (wake, _heard) = woken();
     let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
-    attach_through_engine(&before, &engine);
+    attach_through_service(&before, &engine, &service);
     let mut shown = layout.clone();
     before.follow(&engine, "", &mut shown);
     // The step the session keeps while its workspace cannot hold the layout yet: the whole shell.
@@ -1001,7 +956,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     // was.
     let (wake, _heard) = woken();
     let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
-    attach_through_engine(&next, &engine);
+    attach_through_service(&next, &engine, &service);
     let mut reopened = Layout {
         workspaces: vec![Workspace::new(workspace, "Home")],
         active: workspace,
@@ -1037,7 +992,6 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
     let state = tempfile::tempdir().expect("a state directory");
     let root = SigningKey::from_bytes(&[0x60; 32]);
     let key = SigningKey::from_bytes(&[0x61; 32]);
-    let signing = key.clone();
     let hold = Arc::new(Hold::default());
     let theirs = Arc::clone(&hold);
     let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
@@ -1055,17 +1009,11 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
     );
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
     let person = hex::encode(cert.user_public_key);
-    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
-        .expect("the workspace is founded");
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    pollster::block_on(engine.found(workspace, "Layout")).expect("the workspace is founded");
     engine.bind(workspace);
-    let keys = key_group::KeyGroup::create(
-        workspace,
-        key_group::MemberKey::generate("owner").expect("a member key"),
-    )
-    .expect("the workspace's group")
-    .content_keys()
-    .expect("the workspace's keys");
-    engine.hand_keys(workspace, keys);
+    service.hand_keys(&engine, workspace, service.keys_of(workspace));
 
     // One strip of one window of the person's own: what the workspace's layout never holds.
     let mut ids = tilo_desktop_model::IdMinter::new(salt);
@@ -1110,7 +1058,7 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
         person.clone(),
         Some(state.path()),
     );
-    attach_through_engine(&desktops, &engine);
+    attach_through_service(&desktops, &engine, &service);
     let mut shown = layout.clone();
     desktops.follow(&engine, "", &mut shown);
     let view_key = (workspace, Route::view(&person));
@@ -1136,14 +1084,14 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
     hold.open();
 }
 
-/// Attach `layouts` to read and write the workspaces' documents through `engine`'s own copy, as the
-/// device's workspace service holds them in a session.
-fn attach_through_engine(layouts: &Layouts, engine: &Arc<crate::engine::Engine>) {
-    let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
-        Arc::new(crate::records::testing::EngineWrites(Arc::clone(engine)));
-    let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> =
-        Arc::new(crate::records::testing::EngineDocuments(Arc::clone(engine)));
-    layouts.attach(engine, &reads, &writes);
+/// Attach `layouts` to read and write the workspaces' documents through `service`, as a session
+/// reads and writes them through the device's workspace service.
+fn attach_through_service(
+    layouts: &Layouts,
+    engine: &Arc<crate::engine::Engine>,
+    service: &crate::founding_fixture::TestService,
+) {
+    layouts.attach(engine, &service.reads(), &service.writes());
 }
 
 /// A layout whose write does not answer before the session ends is kept for the session after,
@@ -1162,7 +1110,6 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
     let state = tempfile::tempdir().expect("a state directory");
     let root = SigningKey::from_bytes(&[0x70; 32]);
     let key = SigningKey::from_bytes(&[0x71; 32]);
-    let signing = key.clone();
     let hold = Arc::new(Hold::default());
     let theirs = Arc::clone(&hold);
     let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
@@ -1180,17 +1127,11 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
     );
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
     let person = hex::encode(cert.user_public_key);
-    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
-        .expect("the workspace is founded");
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    pollster::block_on(engine.found(workspace, "Layout")).expect("the workspace is founded");
     engine.bind(workspace);
-    let keys = key_group::KeyGroup::create(
-        workspace,
-        key_group::MemberKey::generate("owner").expect("a member key"),
-    )
-    .expect("the workspace's group")
-    .content_keys()
-    .expect("the workspace's keys");
-    engine.hand_keys(workspace, keys);
+    service.hand_keys(&engine, workspace, service.keys_of(workspace));
 
     // One strip of one window: the person names the strip.
     let mut ids = tilo_desktop_model::IdMinter::new(salt);
@@ -1235,7 +1176,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         person.clone(),
         Some(state.path()),
     );
-    attach_through_engine(&desktops, &engine);
+    attach_through_service(&desktops, &engine, &service);
     let mut shown = layout.clone();
     desktops.follow(&engine, "", &mut shown);
     let layout_key = (workspace, Route::layout());
@@ -1276,7 +1217,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         person,
         Some(state.path()),
     );
-    attach_through_engine(&next, &engine);
+    attach_through_service(&next, &engine, &service);
     assert!(
         !next.held(&layout_key, |held| held.pending_steps.is_empty()),
         "the layout is back"
@@ -1332,7 +1273,6 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
     let state = tempfile::tempdir().expect("a state directory");
     let root = SigningKey::from_bytes(&[0x80; 32]);
     let key = SigningKey::from_bytes(&[0x81; 32]);
-    let signing = key.clone();
     let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
     let engine = Arc::new(
         Engine::open(
@@ -1345,20 +1285,14 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
     );
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
     let person = hex::encode(cert.user_public_key);
-    let home = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
-        .expect("the first workspace is founded");
-    let studio = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
-        .expect("the second workspace is founded");
+    let service = crate::founding_fixture::serve(&engine);
+    let home = WorkspaceId::new();
+    pollster::block_on(engine.found(home, "Home")).expect("the first workspace is founded");
+    let studio = WorkspaceId::new();
+    pollster::block_on(engine.found(studio, "Studio")).expect("the second workspace is founded");
     for workspace in [home, studio] {
         engine.bind(workspace);
-        let keys = key_group::KeyGroup::create(
-            workspace,
-            key_group::MemberKey::generate("owner").expect("a member key"),
-        )
-        .expect("the workspace's group")
-        .content_keys()
-        .expect("the workspace's keys");
-        engine.hand_keys(workspace, keys);
+        service.hand_keys(&engine, workspace, service.keys_of(workspace));
     }
 
     // The window of the app of the person's own, and a window of a workspace's behind it.
@@ -1426,7 +1360,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             person.clone(),
             Some(state.path()),
         );
-        attach_through_engine(&before, &engine);
+        attach_through_service(&before, &engine, &service);
         let mut shown = layout.clone();
         before.follow(&engine, "", &mut shown);
         before.capture(&engine, &shown);
@@ -1450,11 +1384,9 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
         let writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites> =
             Arc::new(HeldWrites {
                 hold: Arc::clone(&hold),
-                person: person.clone(),
+                inner: service.writes(),
             });
-        let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = Arc::new(
-            crate::records::testing::EngineDocuments(Arc::clone(&engine)),
-        );
+        let reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> = service.reads();
         before.attach(&engine, &reads, &writes);
         let mut shown = Layout {
             workspaces: vec![
@@ -1511,7 +1443,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
     // The session after opens on the workspaces and shows the window where the person put it.
     let (wake, _heard) = woken();
     let next = Layouts::new(notes_seen, wake, person.clone(), Some(state.path()));
-    attach_through_engine(&next, &engine);
+    attach_through_service(&next, &engine, &service);
     let mut reopened = Layout {
         workspaces: vec![
             Workspace::new(home, "Home"),
@@ -1589,7 +1521,6 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     let state = tempfile::tempdir().expect("a state directory");
     let root = SigningKey::from_bytes(&[0x50; 32]);
     let key = SigningKey::from_bytes(&[0x51; 32]);
-    let signing = key.clone();
     let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
     let open = || {
         Arc::new(
@@ -1605,16 +1536,11 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     let engine = open();
     let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
     let person = hex::encode(cert.user_public_key);
-    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
-        .expect("the workspace is founded");
+    let service = crate::founding_fixture::serve(&engine);
+    let workspace = WorkspaceId::new();
+    pollster::block_on(engine.found(workspace, "Layout")).expect("the workspace is founded");
     engine.bind(workspace);
-    let keys = key_group::KeyGroup::create(
-        workspace,
-        key_group::MemberKey::generate("owner").expect("a member key"),
-    )
-    .expect("the workspace's group")
-    .content_keys()
-    .expect("the workspace's keys");
+    let keys = service.keys_of(workspace);
     engine.hand_keys(workspace, keys.clone());
 
     // The session before saves one window in the workspace.
@@ -1652,7 +1578,7 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     let notes = Arc::new(crate::continuations::Continuations::default());
     let (wake, _heard) = woken();
     let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
-    attach_through_engine(&before, &engine);
+    attach_through_service(&before, &engine, &service);
     let mut shown = saved;
     before.follow(&engine, "", &mut shown);
     before.capture(&engine, &shown);
@@ -1662,15 +1588,17 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
         "the session before saved its layout"
     );
     drop(before);
+    drop(service);
     drop(engine);
     crate::kept::flush(Some(state.path()));
 
     // The login after: its engine holds the workspace, and the keys have not reached it yet.
     let engine = open();
+    let service = crate::founding_fixture::serve(&engine);
     engine.bind(workspace);
     let (wake, _heard) = woken();
     let after = Layouts::new(notes, wake, person, Some(state.path()));
-    attach_through_engine(&after, &engine);
+    attach_through_service(&after, &engine, &service);
     let layout_key = (workspace, Route::layout());
     let mut login = Layout {
         workspaces: vec![Workspace::new(workspace, "Layout")],
@@ -1695,7 +1623,7 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     );
 
     // The keys arrive, and the next look lays the saved window out.
-    engine.hand_keys(workspace, keys);
+    service.hand_keys(&engine, workspace, keys);
     after.follow(&engine, "", &mut login);
     assert_eq!(
         windows_of(&login.workspaces[0]),
