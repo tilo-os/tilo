@@ -24,7 +24,6 @@ use notes::{NoteList, NotesShell, PageId};
 use ui::collaboration::DocumentMutation;
 use ui::framework::testing::TestApp;
 use ui::framework::{AttachedView, definition};
-use ui::tilo_resource::Resource as _;
 use ui::tilo_resource::profiling::Sample;
 
 /// Paragraphs of the long note: thousands of lines of outline, far more
@@ -76,7 +75,13 @@ fn held(app: &TestApp<NotesShell>) -> AttachedView {
 /// The view of note `page`, as an agent reads it, how long that and the
 /// listing after it took, and what they did.
 fn view_of(view: &mut AttachedView, page: PageId) -> (serde_json::Value, Duration, Vec<Sample>) {
-    let address = tilo_actions::ActionAddress::new(notes::Notebook::KIND, "outline");
+    // The address the view's notebook publishes, so an action it stopped
+    // publishing fails here rather than at a name of our own.
+    let address = view
+        .published()
+        .iter()
+        .find_map(|resource| resource.action_address("outline"))
+        .expect("the notebook publishes the outline of a note");
     let mut arguments = serde_json::Map::new();
     let anchor = ui::tilo_resource::items::item_resource_id::<NoteList>(
         "pages",

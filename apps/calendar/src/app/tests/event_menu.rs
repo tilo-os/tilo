@@ -56,28 +56,33 @@ fn an_events_menu_opens_it_and_offers_what_its_resource_does() {
         "away from an event there is no event menu"
     );
 
-    // A verb that asks for nothing is invoked at the event's address, as the palette invokes it.
+    // A verb that asks for nothing is invoked at the address its resource
+    // publishes, as the palette invokes it.
     let resource = crate::actions::event_resource_id(event.id);
+    let published =
+        <crate::model::Calendar as ui::tilo_resource::Resource>::child(&h.app.model, &resource)
+            .expect("the event's resource is published");
+    let address = published
+        .action_address("delete-event")
+        .expect("the event's resource publishes delete-event");
     h.app.act_on_event(EventAction {
-        resource: resource.clone(),
+        address: address.clone(),
         label: event.title.clone(),
-        action: "delete-event".into(),
         asks: false,
     });
     let invoked = h
         .app
         .take_control_invocation()
         .expect("the row invokes its action");
-    assert_eq!(
-        invoked.address,
-        tilo_actions::ActionAddress::new(&resource, "delete-event")
-    );
+    assert_eq!(invoked.address, address);
 
     // One that asks opens the palette on it, to ask for its values.
+    let reschedule = published
+        .action_address("reschedule")
+        .expect("the event's resource publishes reschedule");
     h.app.act_on_event(EventAction {
-        resource,
+        address: reschedule,
         label: event.title,
-        action: "reschedule".into(),
         asks: true,
     });
     assert!(

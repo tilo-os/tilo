@@ -9,12 +9,10 @@ use super::{Action, CalendarApp, Id, Sel, store::Ask};
 /// What a row of an event's menu asks of the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EventAction {
-    /// The event's resource.
-    pub resource: String,
+    /// The event's resource and the action it publishes under its id.
+    pub address: tilo_actions::ActionAddress,
     /// What the event is called, which a palette asking for the action's values names.
     pub label: String,
-    /// The action's id on that resource.
-    pub action: String,
     /// Whether it asks for values first: then the palette opens on it to ask.
     pub asks: bool,
 }
@@ -63,11 +61,10 @@ impl CalendarApp {
         };
         let store = self.shared();
         let opens = std::rc::Rc::clone(&store);
-        let open_resource = resource.clone();
         let mut entries = vec![MenuEntry::new(
             crate::resource::t("calendar-event-open"),
             move || {
-                opens.borrow_mut().ask(Ask::OpenItem(open_resource.clone()));
+                opens.borrow_mut().ask(Ask::OpenItem(resource.clone()));
             },
         )];
         let actions: Vec<_> = published
@@ -81,10 +78,14 @@ impl CalendarApp {
             entries.push(MenuEntry::separator());
         }
         for spec in actions {
+            // The address the resource publishes: an action it stopped
+            // publishing offers no row rather than an address of our own.
+            let Some(address) = published.action_address(&spec.id) else {
+                continue;
+            };
             let act = EventAction {
-                resource: resource.clone(),
+                address,
                 label: published.label.clone(),
-                action: spec.id.clone(),
                 asks: spec.params().iter().any(|param| param.required),
             };
             let store = std::rc::Rc::clone(&store);
@@ -110,13 +111,13 @@ impl CalendarApp {
     pub(super) fn act_on_event(&mut self, act: EventAction) {
         if act.asks {
             self.search_opener.open(ui::search::SearchRequest::asking(
-                ui::search::ScopeDecl::new(act.resource, act.label),
-                act.action,
+                ui::search::ScopeDecl::new(act.address.resource, act.label),
+                act.address.action,
             ));
         } else {
             self.menu_invocations
                 .push_back(tilo_actions::ControlInvocation {
-                    address: tilo_actions::ActionAddress::new(&act.resource, &act.action),
+                    address: act.address,
                     arguments: serde_json::Map::new(),
                 });
         }
