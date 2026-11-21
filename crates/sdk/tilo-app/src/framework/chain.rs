@@ -1538,17 +1538,29 @@ impl ChainCore {
         Ok(())
     }
 
-    /// Open a legacy queue already held on this device.
-    fn open_unsent(&self) -> bool {
+    /// Open the record of waiting writes this device holds, starting it when
+    /// `create` and this chain keeps no device queue to write them to.
+    fn open_unsent(&self, create: bool) -> bool {
         let store = &self.workspace.store;
         if store.is_ready(&self.waiting_resource.id) {
             return true;
         }
-        if self.unsent_looked.replace(true) {
+        if self.unsent_looked.replace(true) && !create {
             return false;
         }
         match store.open_if_held(&self.waiting_resource) {
             Ok(_) => true,
+            // Nothing of it here, or a store that keeps no canonical records
+            // (a test's): started as every record is.
+            Err(ResourceOpenError::MissingResource | ResourceOpenError::IdentityMismatch)
+                if create =>
+            {
+                self.create(&self.waiting_resource, |_| Ok(()))
+                    .map_err(|error| {
+                        tracing::warn!(kind = self.part.kind, %error, "the record of waiting writes cannot be started");
+                    })
+                    .is_ok()
+            }
             Err(ResourceOpenError::MissingResource | ResourceOpenError::IdentityMismatch) => false,
             // Read by whatever runs now: looked for again at the next refresh.
             Err(ResourceOpenError::Busy) => {
@@ -1583,7 +1595,7 @@ impl ChainCore {
     }
 
     fn legacy_unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
-        if !self.open_unsent() {
+        if !self.open_unsent(false) {
             return Vec::new();
         }
         let kind = self.part.kind;
@@ -1857,7 +1869,7 @@ impl ChainState {
     fn follow_unsent(&self) -> bool {
         let heads = self
             .core
-            .open_unsent()
+            .open_unsent(false)
             .then(|| {
                 self.core.workspace.store.read(
                     &self.core.waiting_resource.id,

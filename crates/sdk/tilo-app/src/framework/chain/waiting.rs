@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_actions::{ActionError, ActionInvoker};
+use ui_core::automerge::transaction::Transactable as _;
+use ui_core::automerge::{ObjType, ROOT, ReadDoc as _, Value};
 
 use super::{ChainCore, ChainState, PART_ARRIVING, Write, answer};
 
@@ -79,28 +81,43 @@ impl ChainCore {
         action: serde_json::Value,
         invoker: &ActionInvoker,
     ) -> Result<String, ActionError> {
-        let settings = self
-            .workspace
-            .device_queue
-            .as_ref()
-            .ok_or_else(|| ActionError::Refused(PART_ARRIVING.into()))?;
-        let id = format!("local:{}", tilo_resource::action::fresh_uuid());
-        settings
-            .update(|queue| {
-                queue
-                    .workspaces
-                    .entry(self.workspace_key.clone())
-                    .or_default()
-                    .entry(self.chain.as_str().to_owned())
-                    .or_default()
-                    .push(QueuedWrite {
-                        id: id.clone(),
-                        action,
-                        invoker: invoker.clone(),
-                    });
-            })
-            .map_err(|error| ActionError::Refused(error.to_string()))?;
-        Ok(id)
+        if let Some(settings) = &self.workspace.device_queue {
+            let id = format!("local:{}", tilo_resource::action::fresh_uuid());
+            settings
+                .update(|queue| {
+                    queue
+                        .workspaces
+                        .entry(self.workspace_key.clone())
+                        .or_default()
+                        .entry(self.chain.as_str().to_owned())
+                        .or_default()
+                        .push(QueuedWrite {
+                            id: id.clone(),
+                            action,
+                            invoker: invoker.clone(),
+                        });
+                })
+                .map_err(|error| ActionError::Refused(error.to_string()))?;
+            return Ok(id);
+        }
+        // A chain with no device queue (an import's, a tool's, a test's) keeps
+        // the waiting write in the app's record of them, as every chain did
+        // before the queue was kept on the device.
+        if !self.open_unsent(true) {
+            return Err(ActionError::Refused(PART_ARRIVING.into()));
+        }
+        let entry = serde_json::to_string(&(action, invoker)).map_err(ActionError::Encode)?;
+        let chain = self.chain.as_str().to_owned();
+        self.edit_unsent(move |doc| {
+            let list = match doc.get(ROOT, chain.as_str())? {
+                Some((Value::Object(ObjType::List), list)) => list,
+                _ => doc.put_object(ROOT, chain.as_str(), ObjType::List)?,
+            };
+            doc.insert(&list, doc.length(&list), entry)?;
+            let kept = doc.get(&list, doc.length(&list).saturating_sub(1))?;
+            Ok(kept.map(|(_, id)| id.to_string()).unwrap_or_default())
+        })
+        .map_err(ActionError::Refused)
     }
 }
 
