@@ -194,6 +194,23 @@ impl Instance {
         front: Option<ui::Front>,
         press: u64,
     ) {
+        if self.show_in_place(target) {
+            if let Some(front) = front {
+                self.out.push(ToUi::Front {
+                    front,
+                    shows: Some((press, wire::resource(target))),
+                });
+            }
+            return;
+        }
+        self.open_detail(target, None, front);
+    }
+
+    /// Show `target` where the window's list shows it: what the root view answers for an item of
+    /// its type (`on show`) in its own state, so a list opens the item's row where it stands and
+    /// the window follows the item to the place it belongs to. Whether the view opened it there;
+    /// an item of a kind it does not list opens nowhere.
+    pub(super) fn show_in_place(&mut self, target: &ResourceRef) -> bool {
         let shown = self
             .root
             .as_ref()
@@ -204,19 +221,10 @@ impl Instance {
                     false
                 }
             });
-        if shown {
-            if let Some(root) = self.root.as_mut() {
-                root.in_place = Some(target.clone());
-            }
-            if let Some(front) = front {
-                self.out.push(ToUi::Front {
-                    front,
-                    shows: Some((press, wire::resource(target))),
-                });
-            }
-            return;
+        if shown && let Some(root) = self.root.as_mut() {
+            root.in_place = Some(target.clone());
         }
-        self.open_detail(target, None, front);
+        shown
     }
 
     /// Close the detail level: Back.

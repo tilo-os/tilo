@@ -2508,11 +2508,15 @@ impl Hosted {
         let opens_what_it_made = self.is_primary(&address);
         match self.invoke(&address, argument.as_deref(), invoker, None) {
             Ok(output) => {
-                // Choosing what a press of a primary action does asks for the same: what it
-                // made opens beside the list.
-                if opens_what_it_made {
-                    for anchor in output.resources {
+                // What a press made shows, as the person asked for it: a primary action's opens
+                // beside the list as a page of its own where the window has no place for its
+                // kind, and any other action's where the window shows what it made — a note made
+                // under the open one, or a page imported, opens in the notebook's tree.
+                for anchor in output.resources {
+                    if opens_what_it_made {
                         self.instance.opens_what_it_made(anchor);
+                    } else {
+                        self.instance.shows_what_it_made(anchor);
                     }
                 }
             }
@@ -2524,8 +2528,8 @@ impl Hosted {
         true
     }
 
-    /// Whether the app declares the action `address` names `primary`: what it made opens when
-    /// a person runs it, whether from a press or from the palette.
+    /// Whether the app declares the action `address` names `primary`: what it made opens as a
+    /// page of its own when a person runs it, whether from a press or from the palette.
     fn is_primary(&self, address: &ActionAddress) -> bool {
         self.instance
             .host()

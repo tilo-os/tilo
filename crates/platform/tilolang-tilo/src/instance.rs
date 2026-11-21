@@ -407,6 +407,10 @@ pub struct Instance {
     opens_to_place: Vec<(ResourceRef, Option<String>, bool)>,
     /// What a person's press of a primary action made, to open as they asked for it.
     pressed_opens: Vec<(u64, String)>,
+    /// What another action a person chose made, to show where the window shows what it made: a
+    /// note an action made opens in the notebook's tree beside it. A kind the window has no place
+    /// for is left where it was, never opened as a page of its own.
+    pressed_shows: Vec<(u64, String)>,
     ask: Option<Suggestion>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
@@ -523,6 +527,7 @@ impl Instance {
             place_opens: false,
             opens_to_place: Vec::new(),
             pressed_opens: Vec::new(),
+            pressed_shows: Vec::new(),
             ask: None,
             settle_due: false,
             sink: Some(
@@ -666,6 +671,14 @@ impl Instance {
     /// comes to the front as their input does, and takes the keyboard.
     pub fn opens_what_it_made(&mut self, anchor: String) {
         self.pressed_opens.push((self.taken_press, anchor));
+    }
+
+    /// Show what another action the person chose made, where the window shows the kind of thing
+    /// it is: a note an action made opens in the notebook's tree it stands in. The window's view
+    /// decides; a kind it has no place for is left as it was, since only a primary action opens
+    /// what it made as a page of its own.
+    pub fn shows_what_it_made(&mut self, anchor: String) {
+        self.pressed_shows.push((self.taken_press, anchor));
     }
 
     /// The commits waiting for the API.
@@ -1318,7 +1331,8 @@ impl Instance {
                         .map(|open| (open, ui::Front::Action, self.last_fire)),
                 )
                 .collect();
-        if anchors.is_empty() {
+        let shows = std::mem::take(&mut self.pressed_shows);
+        if anchors.is_empty() && shows.is_empty() {
             return false;
         }
         let Some(host) = self.host() else {
@@ -1347,6 +1361,32 @@ impl Instance {
                 Err(error) => {
                     tracing::warn!(%error, "a search hit named nothing in the workspace");
                     self.notice(Words::phrase("tilolang-open-failed"), ui::NoticeKind::Error);
+                }
+            }
+        }
+        // What a chosen action made shows where the window shows its kind, and nowhere else: a
+        // kind the window has no place for leaves the window as it was.
+        for (press, anchor) in shows {
+            let anchor = anchor
+                .strip_prefix("tl:")
+                .and_then(|rest| rest.split_once(':'))
+                .map_or(anchor.as_str(), |(_, id)| id);
+            match host.open_plan(anchor, None) {
+                Ok(plan) => {
+                    if let Some(target) = plan.target
+                        && plan.app == self.app
+                        && plan.view.is_none()
+                        && self.show_in_place(&target)
+                    {
+                        self.out.push(ToUi::Front {
+                            front: ui::Front::Input,
+                            shows: Some((press, wire::resource(&target))),
+                        });
+                    }
+                    self.commit_planned();
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "what an action made named nothing in the workspace");
                 }
             }
         }

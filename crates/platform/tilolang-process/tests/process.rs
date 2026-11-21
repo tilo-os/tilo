@@ -2859,3 +2859,67 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
     );
     drop(sent);
 }
+
+/// The note `target` names stands under, as the instance's runtime reads it.
+fn parent_of(host: &TilolangProcess, target: &patch::ResourceRef) -> Option<String> {
+    let instance = host.instances().next().unwrap().instance();
+    let resource = tilolang_tilo::instance::wire::runtime_resource(target).unwrap();
+    match instance
+        .host()
+        .unwrap()
+        .runtime()
+        .read(&resource, "parent")
+        .unwrap()
+    {
+        Value::Opt(Some(held)) => match *held {
+            Value::Ref(note) => Some(note.target.id_string()),
+            other => panic!("a parent is a note, not {other:?}"),
+        },
+        Value::Opt(None) => None,
+        other => panic!("a note's parent is {other:?}"),
+    }
+}
+
+/// A note an action the person chose makes opens where the window shows it: the window's own
+/// "New sub-note" makes a note under the one open, and the window turns to the note it made — its
+/// page beside the tree — as a press of the action that made it.
+#[test]
+fn a_note_an_action_made_opens_where_the_window_shows_it() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", NOTES, notes());
+    settle(&mut host, &mut window);
+    press_new_note(&mut window);
+    settle(&mut host, &mut window);
+    let above = window
+        .in_place
+        .clone()
+        .expect("the first note shows beside the tree");
+    // The action the window's bar and palette offer: a note under the note the window shows.
+    let address = host
+        .instances()
+        .next()
+        .expect("the instance runs")
+        .published()
+        .iter()
+        .find(|action| action.action_label == "New sub-note")
+        .expect("New sub-note is published")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
+    }]);
+    settle(&mut host, &mut window);
+    let made = window
+        .in_place
+        .clone()
+        .expect("the note the action made shows beside the tree");
+    assert_ne!(
+        made.id, above.id,
+        "the window turns to the note the action made"
+    );
+    assert_eq!(
+        parent_of(&host, &made).as_deref(),
+        Some(above.id.as_str()),
+        "the note made stands under the note that was open"
+    );
+}
