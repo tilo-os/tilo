@@ -290,9 +290,23 @@ pub(crate) fn role_refusal(
     if let neighbour_wire::NeighbourMsg::AppDocument {
         app_id,
         document_id,
+        own,
         ..
     } = &message
     {
+        // A person's own record — their view of the layout, or a kind the app keeps each
+        // member's own — is theirs to write whatever their role, and no one else's.
+        if !person.is_empty()
+            && tilo_desktop_model::shared_resource::guard::own_person(
+                app_id,
+                document_id,
+                own.as_ref(),
+            )
+            .as_deref()
+                == Some(person)
+        {
+            return None;
+        }
         let node = collab_types::document_node(access.workspace(), app_id, document_id);
         if access.allows(
             &node,
@@ -382,6 +396,19 @@ pub(crate) fn refusal(
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     if let Some(refusal) = document_group_refusal(&route, &envelope, device_access, &cx) {
         return Some(refusal);
+    }
+    // A person's own record — their view of the layout — is decided as theirs: they write it
+    // whatever their role, and nobody else does.
+    let own_owner = tilo_desktop_model::shared_resource::guard::own_person(
+        &route.app_id,
+        &route.document_id,
+        route.own.as_ref(),
+    );
+    let mut cx = cx;
+    if let Some(owner) = own_owner.as_deref()
+        && person.is_some_and(|key| hex::encode(key) == owner)
+    {
+        cx = cx.with_own_resource(&route.document_id, owner);
     }
     let allows = |invoker: Option<&tilo_action_policy::Acting>,
                   node: &tilo_action_policy::TreePath,
