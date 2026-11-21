@@ -368,6 +368,7 @@ impl AddDeviceState {
             shown.set(device.clone());
         }
         *self.shown.borrow_mut() = device;
+        self.presentation.wake();
     }
 
     /// What the sheet shows now.

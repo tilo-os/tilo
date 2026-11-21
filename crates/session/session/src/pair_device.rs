@@ -284,23 +284,6 @@ fn next_count_in(until_ms: u64, now_ms: u64) -> Duration {
 
 const MINUTE_MS: u64 = 60_000;
 
-/// Serve the sheet for one pass: what it shows at `now_ms`, while it is up.
-pub(crate) fn follow(
-    state: Option<&AddDeviceState>,
-    adding: &Adding,
-    answer: impl Fn(&str, bool),
-    device: impl FnOnce() -> AddDevice,
-) {
-    let Some(state) = state else {
-        return;
-    };
-    adding.take(state, answer);
-    if !state.presentation().is_open() {
-        return;
-    }
-    state.show(device());
-}
-
 impl crate::Shared {
     /// Add a device: the sheet showing the link a new device of this person's becomes one of
     /// theirs, up over the shell.
@@ -309,9 +292,7 @@ impl crate::Shared {
             return;
         };
         state.presentation().open(false);
-        self.follow_enrolling();
-        state.show(self.pairing_device(ui::time::unix_now_ms()));
-        self.wait_for_new_device();
+        self.follow_pair_device();
     }
 
     pub(crate) fn pair_device_open(&self) -> bool {
@@ -323,10 +304,8 @@ impl crate::Shared {
     /// Keep the sheet current while it is up: the link that admits a device, renewed once the one
     /// shown ran out, and what its presses do.
     pub(crate) fn follow_pair_device(&self) {
-        crate::pair_device::follow(
-            self.pair_device.as_ref(),
-            &self.adding,
-            |ask, approve| {
+        if let Some(state) = self.pair_device.as_ref() {
+            self.adding.take(state, |ask, approve| {
                 if let Some(questions) = self.asker.questions() {
                     let handle = crate::enrollment::question_handle(ask);
                     if approve {
@@ -335,10 +314,16 @@ impl crate::Shared {
                         questions.decline(&handle);
                     }
                 }
-            },
-            || self.pairing_device(ui::time::unix_now_ms()),
-        );
+            });
+        }
+        // The store's wake must put the request on screen in this pass, even when the
+        // owner leaves the sheet idle and no further input wakes the shell.
         self.follow_enrolling();
+        if let Some(state) = self.pair_device.as_ref()
+            && state.presentation().is_open()
+        {
+            state.show(self.pairing_device(ui::time::unix_now_ms()));
+        }
         self.wait_for_new_device();
     }
 
@@ -661,19 +646,6 @@ mod tests {
             let later = adding.device(Ok(place()), START + 60_000);
             assert_eq!(later.lasting, AddDevice::of(&first.link, 9).lasting);
         }
-
-        phase the_device_shows_the_link_the_session_made;
-        // The sheet the session hands the state is the one it shows: a press copies exactly the link
-        // on screen, never one that was replaced under it.
-        {
-            let (adding, _) = adding();
-            let state = AddDeviceState::default();
-            state.presentation().open(false);
-            follow(Some(&state), &adding, |_, _| {}, || adding.device(Ok(place()), START));
-            let shown = state.device();
-            assert_eq!(shown, adding.device(Ok(place()), START));
-            assert!(shown.link.contains("?pair="));
-        }
     }
 
     /// The person approves the machine they planned, and the session carries the
@@ -688,6 +660,7 @@ mod tests {
         reason = "one test walks an identity, a session, its own workspace service and the person's approval"
     )]
     fn the_persons_approval_takes_a_planned_machine_into_its_entry() {
+        let _settled = ui::motion::testing::settled();
         let root = tempfile::tempdir().expect("a directory for the identity");
         let xdg = root.path().join("config");
         let system = root.path().join("system");
@@ -706,6 +679,7 @@ mod tests {
             crate::Options {
                 presentation: ui::headless::fixture_runner_inputs,
                 collab: true,
+                shell: true,
                 state: Some(state),
                 ..crate::Options::default()
             },
@@ -754,6 +728,14 @@ mod tests {
         // The person's approval, as their device keeps it: the machine's ask
         // carries the plan's nonce, so the session knows which entry it is.
         let ask = "ef".repeat(16);
+        session.shared.open_pair_device();
+        for _ in 0..5 {
+            session
+                .step(Duration::from_millis(16))
+                .expect("the sheet opens");
+        }
+        let idle = tilo_sheets::word("pair-device-waiting-nothing");
+        assert!(session.accessible_labels().contains(&idle));
         {
             let personal = session
                 .shared
@@ -779,7 +761,18 @@ mod tests {
         // The person answers the machine through the same question surface an
         // agent uses: the ask is a question while it waits, and answering it
         // approves the machine.
-        session.shared.follow_enrolling();
+        session.shared.follow_pair_device();
+        session
+            .step(Duration::from_millis(16))
+            .expect("a pass without input");
+        let controls = session.controls();
+        assert!(
+            controls
+                .iter()
+                .any(|control| control.name == "Approve cupboard with code 123-456"),
+            "the request appears on the idle sheet: {controls:?}",
+        );
+        assert!(!session.accessible_labels().contains(&idle));
         let questions = session
             .shared
             .asker
@@ -792,7 +785,7 @@ mod tests {
             .expect("the machine asking to join is a question");
         assert_eq!(question.label, "cupboard");
         assert!(questions.answer(&question.handle, tilo_service::Answer::default()));
-        session.shared.follow_enrolling();
+        session.shared.follow_pair_device();
 
         // The entry is the machine's under its device key once the session
         // carried the approval out: the plan's own id names the entry before
