@@ -30,30 +30,28 @@ use tilo_session_client::device::{Device, DeviceRefusal};
 /// How long entering a workspace may take.
 const ENTERING: Duration = Duration::from_secs(30);
 
-/// A workspace as the account lists it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+/// A workspace as the account lists it: what `/v1` answers, and what an MCP
+/// client and the desktop read of the person's workspaces.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Workspace {
-    /// The workspace's id (a UUID): what every action names it by.
+    /// What every route names it by.
     pub id: String,
     pub name: String,
-    /// The host serving it, named as hosts are: a server's name
-    /// (`eu1.tilo.sh`), or the person's device that hosts it. `None` while
-    /// none of their devices said where it is hosted.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The host that keeps it: a server's name, or the person's device that
+    /// hosts it; absent while none of their devices said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
-    /// The part the person takes in it: `owner` for a workspace of their own,
-    /// else the role they hold there (`viewer`, `commenter`, `editor`,
-    /// `moderator`). `None` when the answer did not say.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `owner` for one of the person's own, else the role they hold there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// What its owner labelled it with (`customer_id` → `cus_8121`): only a
-    /// key of its owner's reads them.
-    #[serde(skip_serializing_if = "WorkspaceLabels::is_empty")]
+    /// What the person labelled it with when they made it (`customer_id` →
+    /// `cus_8121`), read by their own keys alone.
+    #[serde(default, skip_serializing_if = "WorkspaceLabels::is_empty")]
     pub labels: WorkspaceLabels,
-    /// Whether its owner let keys made for it alone run commands in its
-    /// machine without asking them each time: only a key of its owner's reads
-    /// it.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    /// Keys made for this workspace alone run commands in its Linux machine
+    /// without asking the person each time; absent while they are asked, as
+    /// every workspace starts. Read by the owner's keys alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unattended: bool,
     /// Where the device keeping it is reached, as the person's list says.
     #[serde(skip)]

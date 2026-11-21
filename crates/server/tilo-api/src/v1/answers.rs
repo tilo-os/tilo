@@ -67,28 +67,7 @@ pub struct ApiInfo {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Account(pub Map<String, Value>);
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Workspace {
-    /// What every route names it by.
-    pub id: String,
-    pub name: String,
-    /// The host that keeps it: a server's name, or the person's device that
-    /// hosts it; absent while none of their devices said.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
-    /// `owner` for one of the person's own, else the role they hold there.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    /// What the person labelled it with when they made it (`customer_id` →
-    /// `cus_8121`), read by their own keys alone.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub labels: BTreeMap<String, String>,
-    /// Keys made for this workspace alone run commands in its Linux machine
-    /// without asking the person each time; absent while they are asked, as
-    /// every workspace starts. Read by the owner's keys alone.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub unattended: bool,
-}
+pub use crate::server::Workspace;
 
 /// Whether keys made for a workspace alone run commands in its machine
 /// without asking the person each time.
