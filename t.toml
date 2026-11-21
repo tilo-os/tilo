@@ -783,7 +783,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "dnf install -y --setopt=install_weak_deps=False skopeo openssl >/dev/null\npython3 -I tools/signing/release_trust.py check-committed\npython3 os/tests/release_trust_chain_native.py\n"
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch", "idle"]
+on = ["main", "dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -3287,7 +3287,7 @@ name = "desktop-preflight"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "set -eu\n# dist/rpm/test-signing-contract.sh runs from dist/ci/run-payload-contract-tests.sh below.\npython3 scripts/check-install-contract.py\nbash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD\ncc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c\ntest \"$(cat dist/VERSION)\" = \"$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)\"\ngrep -Fxq \"%{!?tilo_version:%global tilo_version $(cat dist/VERSION)}\" dist/rpm/tilo-session.spec\npython3 -m unittest discover -s tools/tests -p test_rpm_broker.py\ndist/ci/run-payload-contract-tests.sh\nos/tests/portal_config_validity.sh\n"
 git = true
-on = ["dispatch", "idle"]
+on = ["main", "dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -4082,7 +4082,7 @@ run = "bash tools/ci/install-packages.sh tools/ci/packages/kernel-smoke.txt && b
 cache = false
 timeout_secs = 1800
 default = false
-on = ["dispatch", "idle"]
+on = ["main", "dispatch", "idle"]
 
 # The shipped launcher's sandbox on the built kernel: a diskless initramfs boots the kernel from
 # image-kernel, and the launcher writes under /tmp only where its Landlock rule allows one
@@ -6226,7 +6226,7 @@ run = "bash os/tests/build-windows-dxvk-load.sh /target/windows-dxvk-load /"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False mingw32-gcc mingw64-gcc && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
 requires = ["arch=x86_64"]
 outputs = ["/target/windows-dxvk-load/**"]
-on = ["dispatch"]
+on = ["main", "dispatch"]
 
 # The Windows VM's domain XML, rendered for both architectures by the windows-vm example, against
 # the schema of the libvirt release the VM host ships: an element or attribute that release refuses
@@ -6987,7 +6987,7 @@ setup = { run = "dnf install -y --setopt=install_weak_deps=False podman && dnf c
 env = { DOCKER = "podman" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch"]
+on = ["main", "dispatch"]
 
 [[check]]
 name = "tilo-sh-binaries"
@@ -8088,7 +8088,7 @@ python3 os/tests/installed_material_audit.py
 '''
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch"]
+on = ["main", "dispatch"]
 
 # The NTFS helper's staged archive: the real binary sealed with its parser-free source and tested
 # from the archive alone, which the crate's own tests never see.

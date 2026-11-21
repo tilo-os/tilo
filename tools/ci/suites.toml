@@ -1742,7 +1742,7 @@ reason = "installs and verifies the built Arch package in an Arch userspace; des
 
 [[unrequired]]
 suite = "dist/ci/run-dev-session-test.sh"
-reason = "needs Docker to create and start a container, and pulls its digest-pinned Ubuntu from Docker Hub, so it runs in a VM of its own; the dev-session-test check does that on dispatch. release-desktop.yml's quality runner runs it too"
+reason = "needs Docker to create and start a container, and pulls its digest-pinned Ubuntu from Docker Hub, so it runs in a VM of its own; the dev-session-test check does that on every main commit. release-desktop.yml's quality runner runs it too"
 check = "dev-session-test"
 workflow = "release-desktop.yml"
 
@@ -1764,7 +1764,7 @@ reason = "installs and verifies the built RPMs in a Fedora userspace; desktop-pa
 [[unrequired]]
 suite = "dist/rpm/test-signing-contract.sh"
 check = "desktop-preflight"
-reason = "needs a gpg-agent and release-artifact parsers, which the ci-fast image cannot provide reliably; desktop-preflight runs it when dispatched or on idle"
+reason = "needs a gpg-agent and release-artifact parsers, which the ci-fast image cannot provide reliably; desktop-preflight runs it on every main commit"
 
 [[unrequired]]
 suite = "os/dev/test-encrypted-install.sh"
@@ -1829,7 +1829,7 @@ check = "secureboot-enrolment-x86_64"
 
 [[unrequired]]
 suite = "os/kernel/tests/test-boot-smoke-compressed.sh"
-reason = "hermetic: the test stands a script in for qemu-system, so it boots no VM and needs no KVM; it runs on dispatch and main's idle rather than on every change"
+reason = "hermetic: the test stands a script in for qemu-system, so it boots no VM and needs no KVM; it runs on every main commit rather than on every change"
 check = "kernel-boot-smoke-compressed"
 
 [[covered]]
@@ -1873,7 +1873,7 @@ check = "os-acceptance-{arch}"
 
 [[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"
-reason = "build helper: links both architectures' PE fixtures against the MinGW import libraries, which dnf installs; the windows-dxvk-load check compiles them on dispatch"
+reason = "build helper: links both architectures' PE fixtures against the MinGW import libraries, which dnf installs; the windows-dxvk-load check compiles them on every main commit"
 check = "windows-dxvk-load"
 
 [[unrequired]]
@@ -1908,7 +1908,7 @@ reason = "the development-source fixture builds and runs it in a privileged cont
 
 [[unrequired]]
 suite = "os/tests/release_trust_chain_native.py"
-reason = "needs skopeo and the OpenSSL CLI, which the hermetic ci-fast image lacks"
+reason = "needs skopeo and the OpenSSL CLI, which the hermetic ci-fast image lacks; release-trust runs it on every main commit"
 check = "release-trust"
 
 [[unrequired]]
@@ -1954,7 +1954,7 @@ check = "os-acceptance-{arch}"
 [[unrequired]]
 suite = "os/tests/installed_material_audit.py"
 check = "installed-material-audit"
-reason = "needs squashfs-tools, absent from the ci-fast image; installed-material-audit installs it when dispatched"
+reason = "needs squashfs-tools, absent from the ci-fast image; installed-material-audit installs it on every main commit"
 
 [[unrequired]]
 suite = "os/tests/installed-admin-actions.sh"
