@@ -1,135 +1,155 @@
 //! One provider's grant, kept in the workspace's vault.
 //!
 //! A provider that signs a person in on its own page leaves a grant: the
-//! access token mail, calendar and models read with, the token that renews
-//! it, when it expires and the scopes it was given. It is sealed as the
-//! shared `oauth_secret` shape, so every reader of a workspace's accounts reads
-//! it the same way, and it is renewed through the one credential store,
+//! access token mail and calendar read with, the token that renews it, when
+//! it expires and the scopes it was given. It is kept as an entry of the
+//! workspace's vault in the shared `oauth_secret` shape, the account's own
+//! sign-in ([`super::kept_sign_ins`]), and it is renewed through the one
+//! shared renewal ([`account_credentials::CredentialStore::renew_grant`]),
 //! behind a lock so two readers of one grant never renew it at once.
 //!
 //! Renewal needs the registration the grant was given to, which for a server
-//! is the provider's web client, read from the server's environment: the
-//! vault store below is the one place that pairs them.
+//! is the provider's web client, read from the server's environment
+//! ([`renewal`]).
 
 use std::path::Path;
-use std::sync::Mutex;
 
-use account_credentials::{Capability, CredentialError, CredentialStore, OAuthIssuer, OAuthUse};
+use account_credentials::{
+    Capability, CredentialError, CredentialStore, OAuthIssuer, OAuthUse, RenewedGrant,
+};
+use accounts::vault_items::ItemKind;
 use tilo_oauth::{Registration, TokenSet};
+use zeroize::Zeroizing;
+
+use super::super::vault::VaultAt;
+use super::kept_sign_ins::{SIGN_IN, places_of, sign_in_of};
 
 /// What an account whose provider will not renew its grant is told: the
 /// person signs in again, which is all that helps.
 const SIGN_IN_AGAIN: &str = "That account's sign-in needs renewing. Sign in again";
 
-/// One provider's grant for one of a person's accounts.
-#[allow(
-    dead_code,
-    reason = "where every provider's grant is kept and read: mail and calendar renew it, and a model provider's sign-in reads it next"
-)]
-pub(crate) struct ProviderGrant {
-    /// The account it was signed in for, as the person's store names it.
-    pub account: String,
-    pub issuer: OAuthIssuer,
-    pub tokens: TokenSet,
-}
-
-impl ProviderGrant {
-    /// Keep `tokens` as `account`'s grant, typed for the servers its settings
-    /// name, in the person's vault.
-    pub(crate) fn seal(
-        root: &Path,
-        account: &accounts::Account,
-        tokens: &TokenSet,
-    ) -> Result<(), String> {
-        let mut vault = super::credentials(root)?;
-        vault.put_for(account, &account_credentials::oauth_secret(tokens));
-        vault.try_save()
-    }
-
-    /// The grant kept for `account`, when there is one.
-    #[cfg_attr(
-        not(feature = "agents"),
-        allow(
-            dead_code,
-            reason = "the calendar reader that reads a grant back is built with the agents feature"
+/// Keep `tokens` as `account`'s grant, an entry of the workspace's vault that belongs to the
+/// servers its settings name, in place of the grant it kept before; `account`'s settings name it
+/// from then on, for whoever keeps the account to save.
+///
+/// # Errors
+/// The account names no server, or the vault did not keep the grant.
+pub(crate) async fn seal(
+    vault: VaultAt<'_>,
+    account: &mut accounts::Account,
+    tokens: &TokenSet,
+) -> Result<(), String> {
+    let grant = account_credentials::oauth_secret(tokens)
+        .token
+        .ok_or_else(|| "the grant could not be kept".to_owned())?;
+    let places = places_of(account)?;
+    let username = account
+        .config
+        .get("email")
+        .or_else(|| account.config.get("username"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let reference = vault
+        .keep_sign_in(
+            account.id.as_str(),
+            (ItemKind::Login, places),
+            &username,
+            Zeroizing::new(grant),
+            sign_in_of(&account.config).as_ref(),
         )
-    )]
-    pub(crate) fn load(root: &Path, account: &str) -> Result<Option<Self>, String> {
-        let vault = super::credentials(root)?;
-        let Some(secret) = vault.get(&accounts::AccountId::from(account.to_owned())) else {
-            return Ok(None);
-        };
-        let Some(tokens) = account_credentials::oauth_tokens(&secret) else {
-            return Ok(None);
-        };
-        let issuer = issuer_of_account(root, account)?;
-        Ok(Some(Self {
-            account: account.to_owned(),
-            issuer,
-            tokens,
-        }))
-    }
+        .await?;
+    accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
+    Ok(())
+}
 
-    /// The access token to use now, renewed through the one shared path when
-    /// it expired. The renewal holds the grant's lock, so two readers never
-    /// renew the same grant at once.
-    ///
-    /// A provider that will not renew the grant again (it was revoked, or
-    /// the refresh token is no good) takes the dead grant out of the vault:
-    /// the account then lists as one whose person signs in again, in plain
-    /// words. A provider that was merely not reached keeps the grant, and the
-    /// refusal says so, because asking again may end.
-    pub(crate) fn access_token(
-        root: &Path,
-        account: &str,
-        use_: OAuthUse,
-    ) -> Result<String, String> {
-        // Renewal is rare and short, and one at a time: a second reader
-        // waits here and then finds the fresh token.
-        let _renewing = RENEWING
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let id = accounts::AccountId::from(account.to_owned());
-        match vault_store(root).oauth_access_token(&id, use_, false) {
-            Ok(token) => Ok(token.to_string()),
-            Err(CredentialError::NeedsAuthentication) => {
-                forget_dead_grant(root, &id);
-                Err(SIGN_IN_AGAIN.to_string())
+/// The access token `account`, kept under `root`, signs in with now for `use_`, for `by`:
+/// its grant read from the workspace's vault (the use written down), renewed through the one
+/// shared path when it expired, and kept renewed. The renewal holds one lock, so two readers
+/// never renew a grant at once.
+///
+/// A provider that will not renew the grant again (it was revoked, or the refresh token is no
+/// good) takes the dead grant out of the vault and the account's settings: the account then
+/// lists as one whose person signs in again, in plain words. A provider that was merely not
+/// reached keeps the grant, and the refusal says so, because asking again may end.
+///
+/// # Errors
+/// The account names no grant, the vault does not hand it out, or it could not be renewed.
+pub(crate) async fn access_token(
+    vault: VaultAt<'_>,
+    root: &Path,
+    account: &accounts::Account,
+    use_: OAuthUse,
+    by: &str,
+) -> Result<String, String> {
+    // Renewal is rare and short, and one at a time: a second reader waits
+    // here and then finds the fresh token.
+    let _renewing = RENEWING.lock().await;
+    let reference = sign_in_of(&account.config).ok_or_else(|| SIGN_IN_AGAIN.to_owned())?;
+    let places = places_of(account)?;
+    let released = vault
+        .use_sign_in(&reference, (ItemKind::Login, &places), by, SIGN_IN)
+        .await?;
+    let secret = accounts::Secret {
+        password: String::new(),
+        token: Some(released.secret.to_string()),
+    };
+    let renewing = renewal(root);
+    let renewed = tokio::task::spawn_blocking(move || renewing.renew_grant(&secret, use_, false))
+        .await
+        .map_err(|_| "That account's sign-in was not renewed to the end".to_owned())?;
+    match renewed {
+        Ok(RenewedGrant {
+            tokens: Some(tokens),
+            keep,
+        }) => {
+            if let Some(renewed) = keep.and_then(|keep| keep.token) {
+                vault
+                    .renew_sign_in(&reference, Zeroizing::new(renewed))
+                    .await?;
             }
-            Err(CredentialError::Offline) => Err(format!(
-                "{} could not be reached to renew that account's sign-in. Try again",
-                use_.issuer.label()
-            )),
-            Err(error) => Err(format!(
-                "That account's sign-in could not be renewed: {error}"
-            )),
+            Ok(tokens.access_token)
         }
+        Ok(RenewedGrant { tokens: None, .. }) | Err(CredentialError::NeedsAuthentication) => {
+            forget_dead_grant(vault, root, account).await;
+            Err(SIGN_IN_AGAIN.to_owned())
+        }
+        Err(CredentialError::Offline) => Err(format!(
+            "{} could not be reached to renew that account's sign-in. Try again",
+            use_.issuer.label()
+        )),
+        Err(error) => Err(format!(
+            "That account's sign-in could not be renewed: {error}"
+        )),
     }
 }
 
-/// Take a grant the provider will not renew out of the vault, so the account
-/// lists as one that needs its person to sign in again.
-fn forget_dead_grant(root: &Path, id: &accounts::AccountId) {
-    let removed = super::credentials(root).and_then(|mut vault| {
-        vault.remove(id);
-        vault.try_save()
-    });
-    if let Err(error) = removed {
-        tracing::warn!(
-            %error,
-            "oauth: a grant the provider will not renew could not be taken out of the vault"
-        );
+/// Take a grant the provider will not renew out of the vault and out of `account`'s settings
+/// under `root`, so the account lists as one that needs its person to sign in again.
+async fn forget_dead_grant(vault: VaultAt<'_>, root: &Path, account: &accounts::Account) {
+    if let Some(reference) = sign_in_of(&account.config)
+        && let Err(error) = vault.forget_sign_in(account.id.as_str(), &reference).await
+    {
+        tracing::warn!(%error, "oauth: a grant the provider will not renew stays in the workspace's vault");
+    }
+    let mut store = accounts::AccountStore::load_in(root);
+    let Some(mut kept) = store.get(&account.id).cloned() else {
+        return;
+    };
+    accounts::email::set_password_item(&mut kept.config, None);
+    store.upsert(kept);
+    if let Err(error) = store.save_in(root) {
+        tracing::warn!(%error, "oauth: an account whose grant went still names it");
     }
 }
 
 /// The grants being renewed now: one at a time, so two readers never renew
 /// one grant at once.
-static RENEWING: Mutex<()> = Mutex::new(());
+static RENEWING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// The person's vault as a reader of a web sign-in's grants: each use of an
-/// issuer is renewed with the web client it was signed in with, never with
-/// another registration.
-pub(super) fn vault_store(root: &Path) -> CredentialStore {
+/// What renews a web sign-in's grants: each use of an issuer is renewed with the web client it
+/// was signed in with, never with another registration.
+fn renewal(root: &Path) -> CredentialStore {
     let mut store = CredentialStore::for_root(Some(root.to_path_buf()));
     for issuer in [OAuthIssuer::Google, OAuthIssuer::Microsoft] {
         let Some(client) = account_credentials::web_client(issuer) else {

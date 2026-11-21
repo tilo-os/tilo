@@ -653,6 +653,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
             },
             true,
         )
+        .await
         .unwrap();
 
     // What the server's events hand a look's instruction to, and the look in front of it.

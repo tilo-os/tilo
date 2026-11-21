@@ -96,7 +96,7 @@ fn keeping_what_was_judged(at_ms: i64) -> installed::InstalledBot {
 
 /// The provider `workspace` keeps for itself, with its own key, choosing its
 /// small model for judging; it answers as `replies` script it.
-fn their_own_model(
+async fn their_own_model(
     workspaces: &Workspaces,
     workspace: &str,
     replies: Vec<Reply>,
@@ -115,6 +115,7 @@ fn their_own_model(
             },
             true,
         )
+        .await
         .unwrap();
     workspaces
         .choose_model_for(
@@ -177,7 +178,7 @@ fn said(call: &Asked, message: usize) -> String {
 async fn a_judgement_is_answered_by_its_workspaces_own_model_with_its_own_key() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
@@ -191,7 +192,8 @@ async fn a_judgement_is_answered_by_its_workspaces_own_model_with_its_own_key() 
             Reply::text("It is.").costing(100),
             Reply::text(r#"{"result": true}"#).costing(150),
         ],
-    );
+    )
+    .await;
 
     let (runner, reports) = judged_once(
         (&workspaces, &workspace, &cert),
@@ -248,7 +250,7 @@ async fn a_judgement_is_answered_by_its_workspaces_own_model_with_its_own_key() 
 async fn a_judgements_cost_is_on_its_persons_assistants_day_and_a_refusal_is_said_in_words() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let at_ms = i64::try_from(FIRST_TICK_MS).unwrap();
@@ -260,7 +262,8 @@ async fn a_judgements_cost_is_on_its_persons_assistants_day_and_a_refusal_is_sai
         &workspaces,
         &workspace,
         vec![Reply::text(r#"{"result": true}"#).costing(250)],
-    );
+    )
+    .await;
     keeps_an_assistant(&workspaces, &workspace, &cert, &owner, Some(250)).await;
     let set = (&workspaces, workspace.as_str(), &cert);
 

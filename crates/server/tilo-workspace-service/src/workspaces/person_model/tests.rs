@@ -21,7 +21,7 @@ use agent_provider_config::protocol::{Content, Message, Role, StreamStatus, Tool
 use super::scripted::{Linking, Reply, ScriptedProvider};
 use super::*;
 use crate::workspaces::person_settings::save_provider_config;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
 
 const ADA: WorkspaceId = WorkspaceId::from_u128(7);
 const BO: WorkspaceId = WorkspaceId::from_u128(9);
@@ -120,6 +120,11 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([
         Reply::text("main thread"),
@@ -130,9 +135,11 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
 
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let parts = workspaces
         .link_model_for(&ADA.to_string(), &ANTHROPIC, false)
+        .await
         .unwrap();
     workspaces
         .choose_model_for(
@@ -150,7 +157,12 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
         ..GOOGLE
     };
     workspaces
+        .create_workspace("Bo", Some(&BO.to_string()))
+        .await
+        .unwrap();
+    workspaces
         .link_model_for(&BO.to_string(), &bo, true)
+        .await
         .unwrap();
 
     let main = workspaces
@@ -209,14 +221,21 @@ async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("the default")]);
     workspaces.answer_models_with(scripted.clone());
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let parts = workspaces
         .link_model_for(&ADA.to_string(), &ANTHROPIC, false)
+        .await
         .unwrap();
     workspaces
         .choose_model_for(&ADA.to_string(), Interaction::Task, &parts, "claude-parts")
@@ -270,6 +289,11 @@ async fn a_provider_without_its_key_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let keyless = Linking {
         key: None,
@@ -277,6 +301,7 @@ async fn a_provider_without_its_key_is_refused() {
     };
     workspaces
         .link_model_for(&ADA.to_string(), &keyless, true)
+        .await
         .unwrap();
 
     let refused = workspaces
@@ -304,6 +329,11 @@ async fn an_address_off_the_public_internet_needs_the_operators_word() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     for (workspace, endpoint) in [
         (WorkspaceId::from_u128(1), "http://127.0.0.1:8000/v1"),
@@ -320,6 +350,7 @@ async fn an_address_off_the_public_internet_needs_the_operators_word() {
         };
         workspaces
             .link_model_for(&workspace.to_string(), &local, true)
+            .await
             .unwrap();
         let model = workspaces.workspace_model(workspace, Interaction::Request);
         assert_eq!(
@@ -356,6 +387,11 @@ async fn the_answer_streams_and_says_what_it_cost() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([
         Reply::text("Good morning, Ada. Two things wait for you.").costing(1_250),
@@ -364,6 +400,7 @@ async fn the_answer_streams_and_says_what_it_cost() {
     workspaces.answer_models_with(scripted);
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Request);
 
@@ -410,6 +447,11 @@ async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let of_the_key = [
         (
@@ -437,6 +479,7 @@ async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider
     ));
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Request);
 
@@ -473,10 +516,16 @@ async fn a_host_that_speaks_to_no_provider_answers_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     workspaces.answer_models_with(Arc::new(NoProvider));
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let refused = workspaces
         .workspace_model(ADA, Interaction::Request)
@@ -496,11 +545,17 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::never(), Reply::never(), Reply::never()]);
     workspaces.answer_models_with(scripted.clone());
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Task);
 
@@ -562,11 +617,17 @@ async fn a_plain_question_is_answered_in_words() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("yes").costing(12)]);
     workspaces.answer_models_with(scripted.clone());
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Classifier);
 
@@ -603,11 +664,17 @@ async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("A receipt.")]);
     workspaces.answer_models_with(scripted.clone());
     let provider = workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Request);
     let mut pictured = asking("What is this?");
@@ -670,11 +737,17 @@ async fn nothing_printed_carries_the_key() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let printing = Arc::new(Printing::default());
     workspaces.answer_models_with(printing.clone());
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Request);
     let refused = model
@@ -722,7 +795,16 @@ fn scout(day: &str, limit_micros: Option<u64>) -> Spender {
 async fn the_days_limit_stops_a_run() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
+    // The device's keys stay its own across the restart, as its key service keeps them.
+    let keys = std::sync::Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
+    let server =
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &owner, keys.clone())
+            .await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering(std::iter::repeat_n(
         Reply::text("a step").costing(1_200_000),
@@ -731,6 +813,7 @@ async fn the_days_limit_stops_a_run() {
     workspaces.answer_models_with(scripted.clone());
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let today = scout("2026-11-17", Some(2_000_000));
     let model = workspaces
@@ -777,7 +860,7 @@ async fn the_days_limit_stops_a_run() {
     // The host restarts: the day is still spent.
     let server = {
         server.shutdown().await;
-        test_host(dir.path(), &key, &owner).await
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &owner, keys).await
     };
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("a new day").costing(10_000)]);
@@ -810,6 +893,11 @@ async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering(std::iter::repeat_n(
         Reply::text("a step").costing(400_000),
@@ -818,6 +906,7 @@ async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
     workspaces.answer_models_with(scripted.clone());
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let agent = scout("2026-11-17", Some(1_200_000));
     let watching = Spender {
@@ -891,12 +980,18 @@ async fn calls_at_once_are_each_counted_on_the_day() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     workspaces.answer_models_with(ScriptedProvider::answering(
         (0..=CALLS).map(|_| Reply::text("a part").costing(1_000)),
     ));
     workspaces
         .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .await
         .unwrap();
     let model = workspaces
         .workspace_model(ADA, Interaction::Subtask)
@@ -925,9 +1020,9 @@ async fn calls_at_once_are_each_counted_on_the_day() {
     assert_eq!(after.unwrap().spent_today_micros, Some((CALLS + 1) * 1_000));
 }
 
-/// A workspace's settings under `root`: one provider with its key and two
-/// models, the first chosen for each of `kinds`, the second the default
-/// where `default` says so.
+/// A workspace's settings under `root`: one provider naming its key in the workspace's vault
+/// and two models, the first chosen for each of `kinds`, the second the default where
+/// `default` says so. Which model answers is read from the settings alone.
 fn chose(root: &Path, kinds: &[Interaction], default: bool) {
     let mut config = provider_config(root);
     config.profiles.push(ProviderProfile {
@@ -940,6 +1035,9 @@ fn chose(root: &Path, kinds: &[Interaction], default: bool) {
             ModelDescriptor::new("made-up-default"),
         ],
         default_model: default.then(|| "made-up-default".to_owned()),
+        credential: Some(agent_provider_config::SecretReference::workspace_vault(
+            "vault.item:0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        )),
         ..ProviderProfile::default()
     });
     if default {
@@ -953,26 +1051,11 @@ fn chose(root: &Path, kinds: &[Interaction], default: bool) {
         config.set_interaction_model(*kind, Some(chosen)).unwrap();
     }
     save_provider_config(root, &config).unwrap();
-    crate::workspaces::person_settings::set_key(
-        root,
-        tilo_actions::remote::person_models::SetKey {
-            provider: "made-up".into(),
-            key: "sk-made-up-for-this-test".into(),
-        },
-    )
-    .unwrap();
 }
 
 /// The model `kind` of work is answered by under `root`, or why by none.
 fn answered_by(root: &Path, kind: Interaction) -> Result<String, ModelRefusal> {
-    resolve(
-        root,
-        &kept::Key::default(),
-        (kind, None),
-        false,
-        &NoProvider,
-    )
-    .map(|resolved| resolved.model.id)
+    resolve(root, (kind, None), false, &NoProvider).map(|resolved| resolved.model.id)
 }
 
 /// A workspace's main thread is one choice kept as two kinds: what answers

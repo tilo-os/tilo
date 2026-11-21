@@ -147,7 +147,7 @@ impl Drop for LetsGo {
 
 /// Link the workspace a provider of its own that answers `calls`, each as its steps, and have
 /// the server ask it for their agent's turns.
-fn writing(
+async fn writing(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     calls: impl IntoIterator<Item = Vec<Next>>,
@@ -172,6 +172,7 @@ fn writing(
             },
             true,
         )
+        .await
         .unwrap();
     (theirs.clone(), LetsGo(theirs))
 }
@@ -249,7 +250,8 @@ async fn a_reply_grows_while_its_model_writes_it() {
             Waits,
             Writes("The cake is ordered."),
         ]],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -302,7 +304,7 @@ async fn a_reply_grows_while_its_model_writes_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answer_written_fast_is_few_changes() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let (_theirs, _lets_go) = writing(&workspaces, &workspace, [vec![Writes("word "); 300]]);
+    let (_theirs, _lets_go) = writing(&workspaces, &workspace, [vec![Writes("word "); 300]]).await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -338,7 +340,8 @@ async fn words_before_a_tool_stay_and_the_answer_stands_below_them() {
             vec![Writes("I look through the workspace first. "), Looks],
             vec![Waits, Writes("The plan is "), Writes("ready.")],
         ],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -389,7 +392,8 @@ async fn a_stop_ends_the_models_call_and_the_reply_keeps_what_came() {
         &workspaces,
         &workspace,
         [vec![Writes("The launch is "), Waits, Writes("never read")]],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -438,7 +442,8 @@ async fn an_answer_that_breaks_off_keeps_what_came_and_says_why() {
         &workspaces,
         &workspace,
         [vec![Writes("The launch is "), Breaks]],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -475,7 +480,8 @@ async fn the_answer_of_a_call_asked_again_stands_below_what_came() {
             Writes("The launch is planned "),
             Writes("for May."),
         ]],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -510,7 +516,8 @@ async fn a_reply_that_grew_on_a_server_that_stopped_gets_its_answer_below() {
             vec![Writes("The launch is "), Waits, Writes("never read")],
             vec![Writes("The launch is planned for May.")],
         ],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -565,7 +572,8 @@ async fn a_sub_agents_reply_grows_in_its_own_conversation() {
                 Writes("I file them next."),
             ],
         ],
-    );
+    )
+    .await;
     let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
     starts(
         &workspaces,
@@ -706,7 +714,8 @@ async fn a_reply_whose_end_chat_refused_is_not_taken_for_answered() {
             vec![Writes("The plan is ready."), Waits],
             vec![Writes("The plan is ready. The cake is ordered.")],
         ],
-    );
+    )
+    .await;
     let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
     let going = begin!(agents, workspace);
     let grown = reads(&workspaces, &workspace, &asked, "The plan is ready.").await;

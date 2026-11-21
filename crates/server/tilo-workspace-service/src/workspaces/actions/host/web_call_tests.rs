@@ -27,9 +27,8 @@ use super::super::tests::{admit, caller, governed};
 use super::turn_use_tests::on_turn;
 use super::vault_tests::{ask, files_holding};
 use crate::workspaces::Workspaces;
-use crate::workspaces::fixtures::test_server_keeping_keys_apart;
 use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnUse, UseAnswer};
-use crate::workspaces::tests::governor;
+use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
 
 /// A made-up key: no service ever issued it, and it opens nothing.
 const KEY: &str = "made-up-key-for-tests-0123456789abcdef";
@@ -43,9 +42,8 @@ const MOST: usize = 256 * 1024;
 macro_rules! stage {
     ($dir:ident, $workspaces:ident, $workspace:ident, $workspace_id:ident, $service:ident, $owner:ident, $ada:ident, $as_ada:ident) => {
         let $dir = tempfile::tempdir().unwrap();
-        let keys = tempfile::tempdir().unwrap();
         let (key, $owner) = governor();
-        let server = test_server_keeping_keys_apart($dir.path(), keys.path(), &key, &$owner).await;
+        let server = test_host($dir.path(), &key, &$owner).await;
         let $workspaces = server.workspaces();
         $workspaces.call_private_model_addresses(true);
         let ($workspace, $workspace_id, $service) = governed($workspaces).await;

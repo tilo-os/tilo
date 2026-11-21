@@ -20,7 +20,9 @@ use tilo_lock::MutexRecover as _;
 
 use super::{Events, Interaction, ModelProvider, ProviderCall, ProviderFuture};
 use crate::workspaces::Workspaces;
-use crate::workspaces::person_settings::{provider_config, save_provider_config, set_key};
+use crate::workspaces::person_settings::{
+    ProviderKeys, provider_config, save_provider_config, set_key,
+};
 
 /// What a scripted provider says to one call.
 #[derive(Clone, Debug)]
@@ -298,9 +300,12 @@ pub struct Linking<'a> {
 
 impl Workspaces {
     /// Keep `linking` for `workspace` as its settings keep a provider, its
-    /// key in its vault, and answer its id. With `default`, it is the provider
-    /// its work runs on when no kind of work names another.
-    pub fn link_model_for(
+    /// key an entry of the workspace's vault, and answer its id. With `default`, it is the
+    /// provider its work runs on when no kind of work names another.
+    ///
+    /// # Errors
+    /// The settings or the key were not kept.
+    pub async fn link_model_for(
         &self,
         workspace: &str,
         linking: &Linking<'_>,
@@ -329,12 +334,14 @@ impl Workspaces {
         save_provider_config(&root, &config)?;
         if let Some(key) = linking.key {
             set_key(
-                &root,
+                (ProviderKeys::of(self.vault_at(workspace), ""), &root),
                 SetKey {
                     provider: id.clone(),
                     key: key.to_owned(),
                 },
-            )?;
+                None,
+            )
+            .await?;
         }
         Ok(id)
     }

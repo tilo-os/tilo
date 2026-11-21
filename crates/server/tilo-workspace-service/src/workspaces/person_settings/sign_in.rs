@@ -5,14 +5,15 @@
 //! the sign-in with a proof key and a `state` bound to the person who asked
 //! ([`BEGIN_SIGN_IN`]), sends their browser to the provider, and finishes it
 //! when the provider sends the browser back to `GET /accounts/return`
-//! ([`Workspaces::accounts_return`]). The grant it gets is sealed in the
-//! workspace's vault the way a device's own sign-in seals it
-//! ([`account_credentials::oauth_secret`]), so one refresh path renews it for
-//! mail, calendar and every reader.
+//! ([`Workspaces::accounts_return`]). The grant it gets is kept in the
+//! workspace's vault in the shape a device's own sign-in seals it
+//! ([`account_credentials::oauth_secret`]), the account's own entry there
+//! ([`super::kept_sign_ins`]), so one refresh path renews it for mail,
+//! calendar and every reader.
 //!
 //! Nextcloud signs in by its own login flow: the server starts the flow,
 //! shows its page, and polls in the background until the person approved
-//! access there or the flow ran out. The app password it mints is sealed the
+//! access there or the flow ran out. The app password it mints is kept the
 //! same way.
 //!
 //! What is begun is kept in memory alone, one entry per sign-in, expiring;
@@ -36,6 +37,8 @@ use tilo_net::Url;
 use tilo_oauth::client::OAuthClient;
 use tilo_oauth::{AuthorizationRequest, Pkce, Registration, TokenSet};
 
+use super::super::vault::VaultAt;
+use super::kept_sign_ins::{SIGN_IN, places_of, sign_in_of};
 use crate::workspaces::Workspaces;
 
 /// How long a person has to come back from a provider's page.
@@ -64,7 +67,8 @@ static ORIGIN: Mutex<Option<String>> = Mutex::new(None);
 struct Begun {
     id: String,
     person: [u8; 32],
-    /// The workspace's store this sign-in keeps its account in.
+    /// The workspace this sign-in keeps its account in, and its store.
+    workspace: String,
     root: PathBuf,
     until_ms: u64,
     failed: Option<String>,
@@ -245,7 +249,7 @@ impl Workspaces {
     }
 
     /// Begin signing in on `asking`'s provider page for `person`, into the
-    /// workspace store `root`, answering where their browser goes. What
+    /// workspace `workspace`, answering where their browser goes. What
     /// reaches the store is what
     /// [`BEGIN_SIGN_IN`] says: nothing yet.
     ///
@@ -257,7 +261,7 @@ impl Workspaces {
     /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_accounts::BEGIN_SIGN_IN
     pub(super) async fn begin_sign_in(
         &self,
-        (person, root): ([u8; 32], PathBuf),
+        (person, workspace): ([u8; 32], &str),
         asking: &BeginSignIn,
         reach: &tilo_account_probe::imap::Reach,
     ) -> Result<SignInStep, String> {
@@ -268,9 +272,9 @@ impl Workspaces {
             return Err("Too many sign-ins are open here. Finish or cancel one first".into());
         }
         if let Some(issuer) = issuer_of(provider) {
-            Self::begin_web((person, root), issuer, services, asking)
+            self.begin_web((person, workspace), issuer, services, asking)
         } else if provider == Provider::Nextcloud {
-            self.begin_nextcloud((person, root), services, asking, reach)
+            self.begin_nextcloud((person, workspace), services, asking, reach)
                 .await
         } else {
             Err(format!(
@@ -281,7 +285,8 @@ impl Workspaces {
     }
 
     fn begin_web(
-        (person, root): ([u8; 32], PathBuf),
+        &self,
+        (person, workspace): ([u8; 32], &str),
         issuer: OAuthIssuer,
         services: Services,
         asking: &BeginSignIn,
@@ -315,7 +320,8 @@ impl Workspaces {
             Begun {
                 id: id.clone(),
                 person,
-                root,
+                workspace: workspace.to_owned(),
+                root: self.workspace_root(workspace),
                 until_ms: now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES)),
                 failed: None,
                 kind: Kind::Web {
@@ -332,7 +338,7 @@ impl Workspaces {
 
     async fn begin_nextcloud(
         &self,
-        (person, root): ([u8; 32], PathBuf),
+        (person, workspace): ([u8; 32], &str),
         services: Services,
         asking: &BeginSignIn,
         reach: &tilo_account_probe::imap::Reach,
@@ -361,7 +367,8 @@ impl Workspaces {
             Begun {
                 id: id.clone(),
                 person,
-                root: root.clone(),
+                workspace: workspace.to_owned(),
+                root: self.workspace_root(workspace),
                 until_ms: now_ms().saturating_add(minutes_ms(NEXTCLOUD_MINUTES)),
                 failed: None,
                 kind: Kind::Nextcloud {
@@ -371,20 +378,32 @@ impl Workspaces {
             },
         );
         let workspaces = self.clone();
+        let workspace = workspace.to_owned();
+        let root = self.workspace_root(&workspace);
         let kept_id = id.clone();
         let cancelled_at = now_ms().saturating_add(minutes_ms(NEXTCLOUD_MINUTES));
         tokio::spawn(async move {
             let waited = tokio::task::spawn_blocking(move || {
-                let login = flow
-                    .wait(
-                        &cancelled,
-                        POLL_EVERY,
-                        Duration::from_secs(minutes_ms(NEXTCLOUD_MINUTES) / 1000),
-                    )
-                    .map_err(|error| error.to_string())?;
-                keep_nextcloud(&root, &login, services, &account)
+                flow.wait(
+                    &cancelled,
+                    POLL_EVERY,
+                    Duration::from_secs(minutes_ms(NEXTCLOUD_MINUTES) / 1000),
+                )
+                .map_err(|error| error.to_string())
             })
             .await;
+            let waited = match waited {
+                Ok(Ok(login)) => Ok(keep_nextcloud(
+                    workspaces.vault_at(&workspace),
+                    &root,
+                    &login,
+                    services,
+                    &account,
+                )
+                .await),
+                Ok(Err(reason)) => Ok(Err(reason)),
+                Err(error) => Err(error),
+            };
             match waited {
                 Ok(Ok(())) => {
                     begun().remove(&kept_id);
@@ -401,11 +420,13 @@ impl Workspaces {
     /// the accounts once it is listed.
     pub(super) async fn begin_account_sign_in(
         &self,
-        (person, root): ([u8; 32], PathBuf),
+        (person, workspace): ([u8; 32], &str),
         asking: &BeginSignIn,
     ) -> Result<SignInStep, String> {
         let reach = self.inner.models.mail_reach();
-        let step = self.begin_sign_in((person, root), asking, &reach).await;
+        let step = self
+            .begin_sign_in((person, workspace), asking, &reach)
+            .await;
         if step.is_ok() {
             self.person_settings_changed();
         }
@@ -439,14 +460,14 @@ impl Workspaces {
             .map(str::to_owned)
             .unwrap_or_default();
         let id = hex::encode(Sha256::digest(state.as_bytes()));
-        let (person, root) = begun()
+        let (person, workspace) = begun()
             .get(&id)
             .filter(|entry| entry.until_ms > now_ms())
-            .map(|entry| (entry.person, entry.root.clone()))
+            .map(|entry| (entry.person, entry.workspace.clone()))
             .ok_or_else(|| {
                 "That sign-in was not begun here or took too long. Begin it again".to_string()
             })?;
-        finish(&root, &id, person, query).await?;
+        finish(self, &workspace, &id, person, query).await?;
         self.person_settings_changed();
         Ok(())
     }
@@ -474,7 +495,7 @@ fn keep_failed(id: &str, reason: &str, until_ms: u64) {
 pub(super) async fn accounts_sign_in(
     workspaces: &Workspaces,
     person: [u8; 32],
-    root: &Path,
+    workspace: &str,
     request: &tilo_actions::remote::InvokeRequest,
 ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
     use tilo_actions::remote::person_accounts::{BEGIN_SIGN_IN, CANCEL_SIGN_IN};
@@ -484,13 +505,17 @@ pub(super) async fn accounts_sign_in(
             let asking: BeginSignIn = super::argument(request, "a provider to sign in with")?;
             super::answer(
                 &workspaces
-                    .begin_account_sign_in((person, root.to_path_buf()), &asking)
+                    .begin_account_sign_in((person, workspace), &asking)
                     .await,
             )
         }
         CANCEL_SIGN_IN => {
             let stopping: CancelSignIn = super::argument(request, "a sign-in to stop")?;
-            super::answer(&workspaces.cancel_account_sign_in(person, &stopping, root))
+            super::answer(&workspaces.cancel_account_sign_in(
+                person,
+                &stopping,
+                &workspaces.workspace_root(workspace),
+            ))
         }
         _ => Err(tilo_actions::remote::ActionCallError::UnknownAction),
     }
@@ -521,7 +546,14 @@ pub(super) fn cancel(person: &[u8; 32], cancel: &CancelSignIn) -> Result<(), Str
 
 /// Finish the sign-in the browser came back from, keeping the account on
 /// success and saying why nothing was kept otherwise.
-async fn finish(root: &Path, id: &str, person: [u8; 32], query: &str) -> Result<(), String> {
+async fn finish(
+    workspaces: &Workspaces,
+    workspace: &str,
+    id: &str,
+    person: [u8; 32],
+    query: &str,
+) -> Result<(), String> {
+    let root = &workspaces.workspace_root(workspace);
     let fields = query_fields(query);
     let waiting = {
         let mut entries = begun();
@@ -563,7 +595,7 @@ async fn finish(root: &Path, id: &str, person: [u8; 32], query: &str) -> Result<
     };
     let profile = client.profile.clone();
     let root_owned = root.to_path_buf();
-    let kept = tokio::task::spawn_blocking(move || {
+    let granted = tokio::task::spawn_blocking(move || {
         let http = OAuthClient::new().map_err(|error| error.to_string())?;
         let tokens = http
             .exchange_code(
@@ -579,10 +611,23 @@ async fn finish(root: &Path, id: &str, person: [u8; 32], query: &str) -> Result<
             identity_of(&root_owned, issuer, &profile, services, &tokens).map_err(|_| {
                 "The provider did not confirm which mailbox signed in. Try again".to_string()
             })?;
-        keep_oauth(&root_owned, issuer, &address, services, &tokens, &account)
+        Ok::<_, String>((address, tokens))
     })
     .await
     .map_err(|_| "The provider's answer was not read to the end".to_string())?;
+    let kept = match granted {
+        Ok((address, tokens)) => {
+            keep_oauth(
+                workspaces.vault_at(workspace),
+                root,
+                (issuer, &address, services),
+                &tokens,
+                &account,
+            )
+            .await
+        }
+        Err(said) => Err(said),
+    };
     if let Err(said) = kept {
         let mut entries = begun();
         entries.insert(
@@ -590,6 +635,7 @@ async fn finish(root: &Path, id: &str, person: [u8; 32], query: &str) -> Result<
             Begun {
                 id: id.to_owned(),
                 person,
+                workspace: workspace.to_owned(),
                 root: root.to_path_buf(),
                 until_ms: now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES)),
                 failed: Some(said.clone()),
@@ -675,26 +721,34 @@ fn issuer_for(account: &accounts::Account) -> Result<OAuthIssuer, String> {
     }
 }
 
-/// The sign-in a mail account reads and sends with: its bearer token, kept
-/// fresh through the one shared renewal path, or its password.
-pub(super) fn mail_secret(
+/// The sign-in a mail account reads and sends with, for `by`: its bearer token, kept fresh
+/// through the one shared renewal path, or its password, each read from the entry of the
+/// workspace's vault the account names, at the account's two servers.
+pub(super) async fn mail_secret(
+    vault: VaultAt<'_>,
     root: &Path,
     account: &accounts::Account,
+    by: &str,
 ) -> Result<accounts::Secret, String> {
-    let vault = super::credentials(root)?;
-    let secret = vault
-        .get_for(account)
-        .ok_or_else(|| "That account has no sign-in yet".to_string())?;
-    if !signed_in_with_oauth(account) {
-        return Ok(secret);
+    if signed_in_with_oauth(account) {
+        let issuer = issuer_for(account)?;
+        let token =
+            super::oauth_grant::access_token(vault, root, account, OAuthUse::mail(issuer), by)
+                .await?;
+        return Ok(accounts::Secret::password(token));
     }
-    let issuer = issuer_for(account)?;
-    let token = super::oauth_grant::ProviderGrant::access_token(
-        root,
-        account.id.as_str(),
-        OAuthUse::mail(issuer),
-    )?;
-    Ok(accounts::Secret::password(token))
+    let reference =
+        sign_in_of(&account.config).ok_or_else(|| super::kept_sign_ins::NO_SIGN_IN.to_owned())?;
+    let places = places_of(account)?;
+    let released = vault
+        .use_sign_in(
+            &reference,
+            (accounts::vault_items::ItemKind::Login, &places),
+            by,
+            SIGN_IN,
+        )
+        .await?;
+    Ok(accounts::Secret::password(released.secret.to_string()))
 }
 
 /// Which address the grant belongs to: what the account is kept as, shown
@@ -736,14 +790,13 @@ fn identity_of(
     }
 }
 
-/// Keep the grant `tokens` as `address`'s account, in the person's own store
+/// Keep the grant `tokens` as `address`'s account, in the workspace's store
 /// and vault: the account a page's Mail reads, and, for Google with
 /// calendar, the calendar server the same grant opens.
-fn keep_oauth(
+async fn keep_oauth(
+    vault: VaultAt<'_>,
     root: &Path,
-    issuer: OAuthIssuer,
-    address: &str,
-    services: Services,
+    (issuer, address, services): (OAuthIssuer, &str, Services),
     tokens: &TokenSet,
     account: &str,
 ) -> Result<(), String> {
@@ -760,6 +813,11 @@ fn keep_oauth(
         "services".into(),
         serde_json::to_value(services).map_err(|error| error.to_string())?,
     );
+    let kept_before = |id: &str| {
+        accounts::AccountStore::load_in(root)
+            .get(&accounts::AccountId::from(id.to_owned()))
+            .cloned()
+    };
     let id = if account.trim().is_empty() {
         address.to_owned()
     } else {
@@ -781,22 +839,36 @@ fn keep_oauth(
         }
         existing.id.to_string()
     };
-    let mut kept = accounts::Account::new(accounts::AccountId::from(id), accounts::email::TYPE_ID);
+    let mut kept = accounts::Account::new(
+        accounts::AccountId::from(id.clone()),
+        accounts::email::TYPE_ID,
+    );
     address.clone_into(&mut kept.display_name);
     kept.config = Value::Object(config);
-    super::oauth_grant::ProviderGrant::seal(root, &kept, tokens)?;
+    // A sign-in again keeps the grant in place of the one the account named.
+    let before = kept_before(&id).and_then(|before| sign_in_of(&before.config));
+    accounts::email::set_password_item(
+        &mut kept.config,
+        before.as_ref().map(ToString::to_string).as_deref(),
+    );
+    super::oauth_grant::seal(vault, &mut kept, tokens).await?;
     let mut store = accounts::AccountStore::load_in(root);
     store.upsert(kept);
     store.save_in(root).map_err(|error| error.to_string())?;
     if issuer == OAuthIssuer::Google && services.calendar {
-        keep_google_calendar(root, address, tokens)?;
+        keep_google_calendar(vault, root, address, tokens).await?;
     }
     Ok(())
 }
 
 /// Keep the calendar server the same Google grant opens, beside the mail
 /// account, so Calendar reads it where a calendar account is read.
-fn keep_google_calendar(root: &Path, address: &str, tokens: &TokenSet) -> Result<(), String> {
+async fn keep_google_calendar(
+    vault: VaultAt<'_>,
+    root: &Path,
+    address: &str,
+    tokens: &TokenSet,
+) -> Result<(), String> {
     let mut base =
         Url::parse(GOOGLE_CALDAV).map_err(|_| "invalid Google calendar endpoint".to_string())?;
     base.path_segments_mut()
@@ -812,7 +884,13 @@ fn keep_google_calendar(root: &Path, address: &str, tokens: &TokenSet) -> Result
         "username": address,
         "calendar_provider": "google",
     });
-    super::oauth_grant::ProviderGrant::seal(root, &kept, tokens)?;
+    if let Some(before) = accounts::AccountStore::load_in(root)
+        .get(&kept.id)
+        .and_then(|before| sign_in_of(&before.config))
+    {
+        accounts::email::set_password_item(&mut kept.config, Some(&before.to_string()));
+    }
+    super::oauth_grant::seal(vault, &mut kept, tokens).await?;
     let mut store = accounts::AccountStore::load_in(root);
     store.upsert(kept);
     store.save_in(root).map_err(|error| error.to_string())?;
@@ -822,7 +900,8 @@ fn keep_google_calendar(root: &Path, address: &str, tokens: &TokenSet) -> Result
 /// Keep the Nextcloud account a finished login flow made, its app password in
 /// the vault, and the calendar server of the same sign-in when the person
 /// asked for calendars.
-fn keep_nextcloud(
+async fn keep_nextcloud(
+    vault: VaultAt<'_>,
     root: &Path,
     login: &nextcloud::NextcloudLogin,
     services: Services,
@@ -865,24 +944,43 @@ fn keep_nextcloud(
         "use_calendar": services.calendar,
         "use_mail": false,
     });
-    let mut vault = super::credentials(root)?;
-    vault.put_for(
-        &kept,
-        &accounts::Secret::password(login.app_password.to_string()),
-    );
-    let mut store = accounts::AccountStore::load_in(root);
-    store.upsert(kept);
-    store.save_in(root).map_err(|error| error.to_string())?;
-    vault.try_save()?;
+    keep_app_password(vault, root, &mut kept, login).await?;
     if services.calendar {
-        keep_nextcloud_calendar(root, &server, &site, login)?;
+        keep_nextcloud_calendar(vault, root, &server, &site, login).await?;
     }
     Ok(())
 }
 
+/// Keep the app password `login` minted as `kept`'s own sign-in, in place of the one it named
+/// before, and the account with it.
+async fn keep_app_password(
+    vault: VaultAt<'_>,
+    root: &Path,
+    kept: &mut accounts::Account,
+    login: &nextcloud::NextcloudLogin,
+) -> Result<(), String> {
+    let before = accounts::AccountStore::load_in(root)
+        .get(&kept.id)
+        .and_then(|before| sign_in_of(&before.config));
+    let reference = vault
+        .keep_sign_in(
+            kept.id.as_str(),
+            (accounts::vault_items::ItemKind::Login, places_of(kept)?),
+            &login.login_name,
+            zeroize::Zeroizing::new(login.app_password.to_string()),
+            before.as_ref(),
+        )
+        .await?;
+    accounts::email::set_password_item(&mut kept.config, Some(&reference.to_string()));
+    let mut store = accounts::AccountStore::load_in(root);
+    store.upsert(kept.clone());
+    store.save_in(root).map_err(|error| error.to_string())
+}
+
 /// Keep the `CalDAV` account of a Nextcloud server at its own DAV address,
 /// signed in with the app password the flow minted.
-fn keep_nextcloud_calendar(
+async fn keep_nextcloud_calendar(
+    vault: VaultAt<'_>,
     root: &Path,
     server: &str,
     site: &str,
@@ -898,16 +996,7 @@ fn keep_nextcloud_calendar(
         "username": login.login_name.clone(),
         "calendar_provider": "nextcloud",
     });
-    let mut vault = super::credentials(root)?;
-    vault.put_for(
-        &kept,
-        &accounts::Secret::password(login.app_password.to_string()),
-    );
-    let mut store = accounts::AccountStore::load_in(root);
-    store.upsert(kept);
-    store.save_in(root).map_err(|error| error.to_string())?;
-    vault.try_save()?;
-    Ok(())
+    keep_app_password(vault, root, &mut kept, login).await
 }
 
 /// The name a server's address answers to, without its scheme, port or

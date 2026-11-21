@@ -302,6 +302,7 @@ async fn an_agent_on_the_host_works_with_its_workspaces_own_model() {
             },
             true,
         )
+        .await
         .unwrap();
 
     let unasked = Arc::new(Mutex::new(Vec::new()));
@@ -435,6 +436,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
             },
             true,
         )
+        .await
         .unwrap();
     let unasked = Arc::new(Mutex::new(Vec::new()));
     let agents = ServerAgents::for_test(
@@ -1216,6 +1218,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
             },
             true,
         )
+        .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(1100)).await;
     long_notes(&actions, &workspaces, &workspace, written, "Later note").await;

@@ -32,7 +32,7 @@ use super::turn_use_tests::{not_her_agents_turns, on_turn};
 use crate::workspaces::hosted_use::{AskedSend, HostedTurn, SEND_CARRIER, TurnMail};
 use crate::workspaces::mail_watch::testing::{Watched, keep};
 use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
-use crate::workspaces::tests::{governor, test_host as test_server};
+use crate::workspaces::tests::{governor, test_host_taking_part as test_server};
 use crate::workspaces::{RemoveMemberRequest, WorkspaceId, Workspaces};
 
 const ACCOUNT: &str = "ada@example.test";
@@ -61,11 +61,7 @@ impl Mail {
         workspaces.carry_mail_through(servers.clone());
         let (workspace, workspace_id, service) = governed(workspaces).await;
         let ada = admit(workspaces, &workspace, owner, 1).await;
-        keep(
-            &workspaces.workspace_root(&workspace_id.to_string()),
-            ACCOUNT,
-            PASSWORD,
-        );
+        keep(&workspaces, &workspace_id.to_string(), ACCOUNT, PASSWORD).await;
         Self {
             servers,
             workspaces: workspaces.clone(),
@@ -603,7 +599,11 @@ async fn only_what_its_person_was_shown_leaves_and_once() {
 async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let server = test_server(dir.path(), &key, &owner).await;
+    // The device's keys stay its own across the restart, as its key service keeps them.
+    let keys = Arc::<crate::workspaces::fixtures::TestGroupKeys>::default();
+    let server =
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &owner, keys.clone())
+            .await;
     let mail = Mail::on(server.workspaces(), &owner).await;
     let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
     let turn = mail.turn(&scout, &keeper, None);
@@ -625,7 +625,8 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
     drop(mail);
 
     server.shutdown().await;
-    let server = test_server(dir.path(), &key, &owner).await;
+    let server =
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &owner, keys).await;
     let workspaces = server.workspaces();
     let servers = Arc::new(Watched::answering());
     workspaces.carry_mail_through(servers.clone());

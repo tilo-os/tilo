@@ -135,7 +135,7 @@ async fn her_accounts(hosted: &mut Hosted) -> Vec<serde_json::Value> {
         .clone()
 }
 
-/// The items her vault keeps, as her own device lists them.
+/// The items her vault keeps beside the workspace model's key, as her own device lists them.
 async fn her_vault(hosted: &mut Hosted) -> Vec<serde_json::Value> {
     let kept = hosted
         .on_device(
@@ -147,10 +147,25 @@ async fn her_vault(hosted: &mut Hosted) -> Vec<serde_json::Value> {
             serde_json::Value::Null,
         )
         .await;
-    kept["items"]
+    // The workspace's model is called with a key of the vault's own ([`Hosted`] links it), which
+    // is no sign-in of hers.
+    let model_key = |item: &serde_json::Value| {
+        item["kind"] == "key"
+            && item["belongsTo"] == serde_json::json!(["https://generativelanguage.googleapis.com"])
+    };
+    let items = kept["items"]
         .as_array()
-        .unwrap_or_else(|| panic!("her vault: {kept}"))
-        .clone()
+        .unwrap_or_else(|| panic!("her vault: {kept}"));
+    assert_eq!(
+        items.iter().filter(|item| model_key(item)).count(),
+        1,
+        "the model's key is the vault's: {kept}"
+    );
+    items
+        .iter()
+        .filter(|item| !model_key(item))
+        .cloned()
+        .collect()
 }
 
 /// `typed` reached her calendar server's sign-in and nothing else: no request a model was sent,

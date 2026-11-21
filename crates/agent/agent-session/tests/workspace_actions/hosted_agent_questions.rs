@@ -107,6 +107,7 @@ impl Hosted {
                 },
                 true,
             )
+            .await
             .unwrap();
         let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
         Self {

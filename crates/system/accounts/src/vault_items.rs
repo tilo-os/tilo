@@ -414,6 +414,9 @@ fn kept_word(text: &str, most: usize) -> String {
 pub const KIND_FIELD: &str = "tilo.vault.kind";
 /// The field of a key's entry that says how it rides in a request ([`KeyIn`]).
 pub const SENT_IN_FIELD: &str = "tilo.vault.sent-in";
+/// The field of an entry kept as one account's own sign-in, which goes when the account goes:
+/// the account it was kept for (a mail or calendar account's id, or a model provider's).
+pub const ACCOUNT_FIELD: &str = "tilo.vault.account";
 
 /// One entry of the vault, as an item reads it.
 struct Sealed {
@@ -423,6 +426,9 @@ struct Sealed {
     /// How a key rides in a request to its service, where it is no bearer
     /// token ([`KeyIn`]).
     sent_in: String,
+    /// The account it was kept for as that account's own sign-in, or empty for an entry a
+    /// member keeps ([`ACCOUNT_FIELD`]).
+    account: String,
     secret: String,
     added_unix: u64,
     last_used_unix: Option<u64>,
@@ -494,6 +500,7 @@ impl Sealed {
             places,
             username,
             sent_in: String::new(),
+            account: String::new(),
             secret,
             added_unix: unix_now(),
             last_used_unix: None,
@@ -527,6 +534,7 @@ impl Sealed {
             places,
             username: entry.username.clone(),
             sent_in: entry.fields.get(SENT_IN_FIELD).cloned().unwrap_or_default(),
+            account: entry.fields.get(ACCOUNT_FIELD).cloned().unwrap_or_default(),
             secret: entry.password.clone(),
             added_unix: entry.created_unix,
             last_used_unix: uses.iter().map(|used| used.at_unix).max(),
@@ -553,6 +561,9 @@ impl Sealed {
         }
         if !self.sent_in.is_empty() {
             fields.insert(SENT_IN_FIELD.to_owned(), self.sent_in.clone());
+        }
+        if !self.account.is_empty() {
+            fields.insert(ACCOUNT_FIELD.to_owned(), self.account.clone());
         }
         let title = self
             .places
@@ -789,6 +800,71 @@ impl VaultItems {
         let id = ItemId::new();
         self.write(&id, &sealed);
         Ok(sealed.facts(id))
+    }
+
+    /// Keep `item` as the own sign-in of `account` (a mail or calendar account's id, or a model
+    /// provider's), answering what is safe to say of it. Where `replacing` names an entry kept
+    /// for that same account, the item takes its place under the same id, with the uses it
+    /// remembers; any other entry (one a member keeps, which the account was added with) stays
+    /// as it is, and the item is kept as a new one.
+    pub fn keep_for(
+        &mut self,
+        account: &str,
+        item: NewItem,
+        replacing: Option<&ItemId>,
+    ) -> Result<ItemFacts, ItemError> {
+        if account.trim().is_empty() {
+            return Err(ItemError::Invalid("An account's sign-in names its account"));
+        }
+        let mut sealed = Sealed::checked(item)?;
+        account.clone_into(&mut sealed.account);
+        let id = match replacing.filter(|id| self.kept_for(id) == Some(account)) {
+            Some(id) => {
+                if let Ok(before) = self.sealed(id) {
+                    sealed.added_unix = before.added_unix;
+                    sealed.last_used_unix = before.last_used_unix;
+                    sealed.uses.clone_from(&before.uses);
+                }
+                id.clone()
+            }
+            None => ItemId::new(),
+        };
+        self.write(&id, &sealed);
+        Ok(sealed.facts(id))
+    }
+
+    /// The account the entry `id` names was kept for as its own sign-in ([`Self::keep_for`]),
+    /// or `None` for an entry a member keeps, and for none.
+    #[must_use]
+    pub fn kept_for(&self, id: &ItemId) -> Option<&str> {
+        self.entries
+            .get(id)
+            .and_then(|(entry, _)| entry.fields.get(ACCOUNT_FIELD))
+            .map(String::as_str)
+            .filter(|account| !account.is_empty())
+    }
+
+    /// Forget the entry `id` names where it was kept as `account`'s own sign-in, answering
+    /// whether it was: an entry a member keeps stays when an account that signed in with it
+    /// goes.
+    pub fn forget_for(&mut self, id: &ItemId, account: &str) -> bool {
+        self.kept_for(id) == Some(account) && self.remove(id)
+    }
+
+    /// Put `secret` in place of the secret the item `id` names, keeping where it belongs, the
+    /// name it signs in with and the uses it remembers: a provider's grant, renewed.
+    pub fn renew(&mut self, id: &ItemId, secret: &str) -> Result<(), ItemError> {
+        if secret.is_empty() {
+            return Err(ItemError::Invalid("An item's secret cannot be empty"));
+        }
+        if secret.len() > MAX_SECRET_BYTES {
+            return Err(ItemError::Invalid("That secret is too long to keep"));
+        }
+        let mut sealed = self.sealed(id)?;
+        sealed.secret.zeroize();
+        secret.clone_into(&mut sealed.secret);
+        self.write(id, &sealed);
+        Ok(())
     }
 
     /// Forget the item `id` names, answering whether one was kept.
@@ -1068,6 +1144,70 @@ mod tests {
             Some(ItemError::NotFound)
         );
         assert!(VaultItems::of_entries(items.kept()).facts().is_empty());
+    }
+
+    /// An account's own sign-in is an entry that names its account: kept again it takes the
+    /// place of the one before with the uses it remembers, renewed it keeps where it belongs,
+    /// and it goes only with its own account. A member's entry the account signed in with
+    /// stays, and is never replaced in place.
+    #[test]
+    fn an_accounts_own_sign_in_goes_with_its_account_alone() {
+        let mut items = VaultItems::default();
+        let kept = items
+            .keep_for(
+                "ada@example.test",
+                login(&["imap://mail.example.test:993"]),
+                None,
+            )
+            .unwrap();
+        assert_eq!(items.kept_for(&kept.id), Some("ada@example.test"));
+        let place = place("imap://mail.example.test:993");
+        items.use_at(&kept.id, &place, "").unwrap();
+
+        // Kept again for the same account, the new password takes the old one's place.
+        let mut again = login(&["imap://mail.example.test:993"]);
+        again.secret = Zeroizing::new("a new one".into());
+        let replaced = items
+            .keep_for("ada@example.test", again, Some(&kept.id))
+            .unwrap();
+        assert_eq!(replaced.id, kept.id);
+        assert!(replaced.last_used_unix.is_some(), "its uses stay");
+        assert_eq!(
+            items.use_at(&kept.id, &place, "").unwrap().secret.as_str(),
+            "a new one"
+        );
+
+        // Renewed, it keeps its place and its name.
+        items.renew(&kept.id, "renewed").unwrap();
+        let renewed = items.use_at(&kept.id, &place, "").unwrap();
+        assert_eq!(renewed.secret.as_str(), "renewed");
+        assert_eq!(renewed.username, "ada@example.test");
+        assert_eq!(
+            VaultItems::of_entries(items.kept()).kept_for(&kept.id),
+            Some("ada@example.test"),
+            "the account it is kept for reads back from the entry"
+        );
+
+        // A member's own entry is never taken over: keeping for an account beside it is a new
+        // entry, and the account going leaves it.
+        let theirs = items.add(login(&["imap://mail.example.test:993"])).unwrap();
+        let beside = items
+            .keep_for(
+                "ada@example.test",
+                login(&["imap://mail.example.test:993"]),
+                Some(&theirs.id),
+            )
+            .unwrap();
+        assert_ne!(beside.id, theirs.id);
+        assert!(!items.forget_for(&theirs.id, "ada@example.test"));
+        assert!(!items.forget_for(&kept.id, "bob@example.test"));
+        assert!(items.forget_for(&kept.id, "ada@example.test"));
+        assert_eq!(items.facts().len(), 2);
+        assert!(
+            items
+                .keep_for(" ", login(&["imap://mail.example.test:993"]), None)
+                .is_err()
+        );
     }
 
     /// What is said of an item carries neither its secret nor its name, in a listing or in a

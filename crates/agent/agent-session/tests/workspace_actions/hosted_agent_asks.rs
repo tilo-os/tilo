@@ -624,6 +624,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
             },
             true,
         )
+        .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let second = write_to_agent(

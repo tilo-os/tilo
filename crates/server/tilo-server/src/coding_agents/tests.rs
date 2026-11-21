@@ -191,11 +191,17 @@ pub(super) async fn host_of_ada(
     replies: impl IntoIterator<Item = Reply>,
 ) -> (crate::workspaces::fixtures::TestHost, Arc<ScriptedProvider>) {
     let (key, cert) = governor();
-    let host = fixtures::test_host(state, &key, &cert).await;
+    let host = fixtures::test_host_taking_part(state, &key, &cert).await;
     let scripted = ScriptedProvider::answering(replies);
     host.workspaces().answer_models_with(scripted.clone());
+    // Her workspace, whose vault keeps her key.
+    host.workspaces()
+        .create_workspace("Ada's", Some(WORKSPACE))
+        .await
+        .unwrap();
     host.workspaces()
         .link_model_for(WORKSPACE, &ANTHROPIC, true)
+        .await
         .unwrap();
     (host, scripted)
 }

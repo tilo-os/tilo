@@ -603,9 +603,10 @@ impl Workspaces {
         .await
     }
 
-    /// Add `adding` to `workspace`'s mail accounts, kept under `root`, with the sign-in its vault
-    /// item keeps, once its server accepted it. The item must be a login that belongs to both
-    /// servers the account names: a server it does not belong to is never sent it.
+    /// Add `adding` to `workspace`'s mail accounts, kept under `root`, signing in with the vault
+    /// item it names, once its server accepted it. The item must be a login that belongs to both
+    /// servers the account names: a server it does not belong to is never sent it. The account
+    /// names the item from then on, and nothing copies its password.
     pub(super) async fn mail_with_item(
         &self,
         (workspace, root): (&str, &Path),
@@ -637,9 +638,10 @@ impl Workspaces {
             .or_else(|| {
                 Some(std::mem::take(&mut sign_in.username)).filter(|name| !name.is_empty())
             });
+        let kept = adding.password.clone();
         super::person_settings::add_mail_with(
             self.account_tester(),
-            root,
+            (self.vault_at(workspace), root),
             AddMailAccount {
                 address: adding.address,
                 display_name: adding.display_name,
@@ -652,14 +654,16 @@ impl Workspaces {
                 identities: Vec::new(),
                 services: person_accounts::Services::default(),
             },
+            Some(kept),
         )
         .await
     }
 
-    /// Keep the key the vault item `setting` names as its provider's API key. The item must be
-    /// a key that belongs to the provider's endpoint, as the person set it: a key is never kept
-    /// for an endpoint it does not belong to. Where the provider keeps a key already, the item's
-    /// key takes its place only once the provider took it ([`super::person_models::take_key`]).
+    /// Name the key the vault item `setting` names as its provider's API key. The item must be
+    /// a key that belongs to the provider's endpoint, as the person set it: a key is never sent
+    /// to an endpoint it does not belong to. Where the provider names a key already, the item
+    /// takes its place only once the provider took it ([`super::person_models::take_key`]); the
+    /// provider names the item from then on, and nothing copies the key.
     pub(super) async fn key_from_item(
         &self,
         (workspace, root): (&str, &Path),
@@ -689,6 +693,13 @@ impl Workspaces {
             provider: setting.provider.clone(),
             key: key.secret.to_string(),
         };
-        super::person_models::take_key(root, keeping, &self.model_reach()).await
+        let keys = super::person_settings::ProviderKeys::of(self.vault_at(workspace), by);
+        super::person_models::take_key(
+            (keys, root),
+            keeping,
+            Some(&setting.key),
+            &self.model_reach(),
+        )
+        .await
     }
 }

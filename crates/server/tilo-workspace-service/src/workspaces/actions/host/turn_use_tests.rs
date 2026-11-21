@@ -878,9 +878,17 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     )
     .await
     .unwrap();
-    assert_eq!(kept["uses"].as_array().unwrap().len(), 2, "{kept}");
+    // Both turns kept the key, and the host then called the provider with it: the entry is
+    // read where it is, and that call is a use of it too.
+    assert_eq!(kept["uses"].as_array().unwrap().len(), 3, "{kept}");
     assert_eq!(kept["uses"][0]["allowed"], "always", "{kept}");
     assert_eq!(kept["uses"][1]["allowed"], "always", "{kept}");
+    assert_eq!(kept["uses"][2]["using"], "model-call", "{kept}");
+    assert_eq!(
+        kept["uses"][2]["places"],
+        json!(["https://models.example"]),
+        "{kept}"
+    );
     assert_eq!(kept["always"][0]["using"], "tilo.models/set-key-from-item");
     server.shutdown().await;
 }

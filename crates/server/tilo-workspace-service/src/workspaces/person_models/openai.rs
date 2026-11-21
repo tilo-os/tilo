@@ -36,7 +36,9 @@ use zeroize::Zeroizing;
 
 use super::super::Workspaces;
 use super::super::person_model::{ModelRefusal, Models};
-use super::super::person_settings::{ProviderKeys, provider_config, save_provider_config, view_of};
+use super::super::person_settings::{
+    ProviderKeys, key_kept, provider_config, save_named_key, save_provider_config, view_of,
+};
 use super::{Reach, listing, merged};
 
 /// Codex's public client, the one `OpenAI` signs a `ChatGPT` plan in to.
@@ -257,10 +259,10 @@ impl Workspaces {
         let state = tell.subscribe();
         let workspaces = self.clone();
         let device = code.clone();
-        let root = self.workspace_root(workspace);
+        let workspace = workspace.to_owned();
         let task = tokio::spawn(async move {
             let outcome = workspaces
-                .signed_in(&root, &openai, &device, beginning.using, &reach)
+                .signed_in(&workspace, &openai, &device, beginning.using, &reach)
                 .await;
             let state = match outcome {
                 Ok(provider) => {
@@ -351,12 +353,15 @@ impl Workspaces {
     /// keep the provider it answers on: what one sign-in does from its code on.
     async fn signed_in(
         &self,
-        root: &Path,
+        workspace: &str,
         openai: &OpenAiSignIn,
         code: &UserCode,
         using: AccountUse,
         reach: &Reach,
     ) -> Result<ProviderView, String> {
+        let root = &self.workspace_root(workspace);
+        // The person signs in themselves: the use of what is kept is theirs.
+        let keys = ProviderKeys::of(self.vault_at(workspace), "");
         let granted = tokio::time::timeout(SIGN_IN_LIFETIME, entered(openai, code, reach))
             .await
             .map_err(|_| "The code expired before it was entered. Begin again.".to_owned())??;
@@ -389,15 +394,17 @@ impl Workspaces {
                     refresh_token,
                     id_token,
                 };
-                let profile = kept_provider(root, openai, using)?;
-                ProviderKeys::of(root).put(&profile, &grant.sealed())?;
+                let mut profile = kept_provider(root, openai, using)?;
+                keys.put(&mut profile, &grant.sealed()).await?;
+                save_named_key(root, &profile)?;
                 listed_and_chosen(root, profile, &grant.access(), reach).await
             }
             AccountUse::ApiUsage => {
                 drop((access_token, refresh_token));
                 let key = api_key(openai, &id_token, reach).await?;
-                let profile = kept_provider(root, openai, using)?;
-                ProviderKeys::of(root).put(&profile, &key)?;
+                let mut profile = kept_provider(root, openai, using)?;
+                keys.put(&mut profile, &key).await?;
+                save_named_key(root, &profile)?;
                 listed_and_chosen(root, profile, &key, reach).await
             }
         }
@@ -412,12 +419,12 @@ impl Models {
             .clone()
     }
 
-    /// The access token of the grant the vault under `root` keeps for
+    /// The access token of the grant the workspace's vault (`keys`) keeps for
     /// `profile`, refreshed first when it expires soon, or with `force`
     /// when the backend just turned it away.
     pub(in super::super) async fn fresh_access(
         &self,
-        root: &Path,
+        (keys, root): (ProviderKeys<'_>, &Path),
         profile: &ProviderProfile,
         force: bool,
     ) -> Result<Zeroizing<String>, ModelRefusal> {
@@ -425,14 +432,17 @@ impl Models {
             provider: profile.display_label().to_owned(),
         };
         let _one = self.sign_ins.refreshing.lock().await;
-        let read_root = root.to_owned();
-        let read_profile = profile.clone();
-        let kept =
-            tokio::task::spawn_blocking(move || ProviderKeys::of(&read_root).get(&read_profile))
-                .await
-                .map_err(|_| ModelRefusal::SettingsUnreadable)?
-                .map_err(|_| ModelRefusal::SettingsUnreadable)?
-                .ok_or_else(signed_out)?;
+        // The settings are read again: what `profile` named may have been replaced since.
+        let profile = &provider_config(root)
+            .profiles
+            .into_iter()
+            .find(|kept| kept.id == profile.id)
+            .ok_or_else(signed_out)?;
+        let kept = keys
+            .get(profile)
+            .await
+            .map_err(|_| ModelRefusal::SettingsUnreadable)?
+            .ok_or_else(signed_out)?;
         let grant = Grant::read(&kept).ok_or_else(signed_out)?;
         if !force && !grant.stale(now_secs()) {
             return Ok(grant.access());
@@ -475,17 +485,15 @@ impl Models {
                 .unwrap_or_else(|| grant.id_token.clone()),
         };
         let sealed = renewed.sealed();
-        let write_root = root.to_owned();
-        let write_profile = profile.clone();
-        tokio::task::spawn_blocking(move || {
-            ProviderKeys::of(&write_root).put(&write_profile, &sealed)
-        })
-        .await
-        .map_err(|_| ModelRefusal::SettingsUnreadable)?
-        .map_err(|error| {
-            tracing::warn!(%error, "a refreshed ChatGPT sign-in was not kept");
-            ModelRefusal::SettingsUnreadable
-        })?;
+        let reference =
+            super::super::person_settings::key_reference(profile).ok_or_else(signed_out)?;
+        keys.vault()
+            .renew_sign_in(&reference, sealed)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "a refreshed ChatGPT sign-in was not kept");
+                ModelRefusal::SettingsUnreadable
+            })?;
         Ok(renewed.access())
     }
 }
@@ -643,8 +651,7 @@ async fn listed_and_chosen(
         .await
         .unwrap_or_default();
     let mut config = provider_config(root);
-    let keys = ProviderKeys::of(root);
-    let none_chosen = !default_answers(&config, &keys);
+    let none_chosen = !default_answers(&config);
     let kept = config
         .profiles
         .iter_mut()
@@ -668,17 +675,17 @@ async fn listed_and_chosen(
         .cloned()
         .ok_or_else(|| "That provider is not kept here".to_owned())?;
     save_provider_config(root, &config)?;
-    Ok(view_of(&kept, &keys))
+    Ok(view_of(&kept))
 }
 
 /// Whether the default model is one that can answer: its provider is kept
 /// and reached with a key or a grant.
-fn default_answers(config: &ProviderConfig, keys: &ProviderKeys) -> bool {
+fn default_answers(config: &ProviderConfig) -> bool {
     config
         .default_profile
         .as_ref()
         .and_then(|id| config.profiles.iter().find(|profile| profile.id == *id))
-        .is_some_and(|profile| profile.default_model.is_some() && keys.kept(profile))
+        .is_some_and(|profile| profile.default_model.is_some() && key_kept(profile))
 }
 
 /// Why a request to `OpenAI`'s sign-in got no answer it could use.

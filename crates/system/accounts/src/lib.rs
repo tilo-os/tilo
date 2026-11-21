@@ -401,15 +401,6 @@ pub fn vault_dir_in(config_root: &Path) -> PathBuf {
     accounts_dir_in(config_root).join("vault")
 }
 
-/// Keep the key of every sealed store under `stores` under `keys`, at the
-/// same place below it, instead of beside its sealed file: what a machine
-/// that keeps many people's stores under one folder names once, so that a
-/// copy of that folder alone opens none of them
-/// ([`secret_vault::keep_keys_apart`]).
-pub fn keep_vault_keys_apart(stores: &Path, keys: &Path) {
-    secret_vault::keep_keys_apart(stores, keys);
-}
-
 pub fn store_path() -> Option<PathBuf> {
     config_root().map(|r| store_path_in(&r))
 }

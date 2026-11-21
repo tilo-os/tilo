@@ -145,12 +145,32 @@ pub struct SecretReference {
 
 settings_store::read_through_json_value!(SecretReference);
 
+/// The namespace of a [`SecretReference`] that names an entry of the workspace's vault.
+pub const WORKSPACE_VAULT: &str = "tilo.vault";
+
 impl SecretReference {
     pub fn provider_api_key(profile_id: &str) -> Self {
         Self {
             vault: "tilo.secret-service".to_string(),
             locator: format!("agent-provider/{profile_id}/api-key"),
         }
+    }
+
+    /// The entry of the workspace's vault a provider's key is, by the entry's reference
+    /// (`vault.item:<entry id>`): what a host that keeps a workspace's providers names, so the
+    /// key lives in the workspace's one vault and is read from it at each call.
+    pub fn workspace_vault(reference: &str) -> Self {
+        Self {
+            vault: WORKSPACE_VAULT.to_owned(),
+            locator: reference.to_owned(),
+        }
+    }
+
+    /// The reference of the workspace vault's entry this names, where it names one
+    /// ([`Self::workspace_vault`]).
+    #[must_use]
+    pub fn workspace_vault_item(&self) -> Option<&str> {
+        (self.vault == WORKSPACE_VAULT && self.is_valid()).then_some(self.locator.as_str())
     }
 
     pub fn is_valid(&self) -> bool {
@@ -232,6 +252,11 @@ pub struct SignInCredential {
     /// Google sign-ins only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing_project: Option<String>,
+    /// Where the grant is kept when it is not in this device's vault: an entry of the
+    /// workspace's vault, as a host that keeps a workspace's providers names it
+    /// ([`SecretReference::workspace_vault`]). Absent on a device, which keeps its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<SecretReference>,
 }
 
 settings_store::read_through_json_value!(SignInCredential);
@@ -242,6 +267,7 @@ impl SignInCredential {
         Self {
             issuer: issuer.id().to_string(),
             billing_project: None,
+            kept: None,
         }
     }
 
@@ -2010,6 +2036,7 @@ mod tests {
             invalid.sign_in = Some(SignInCredential {
                 issuer: issuer.into(),
                 billing_project: project.map(Into::into),
+                kept: None,
             });
             let config = ProviderConfig {
                 profiles: vec![invalid],

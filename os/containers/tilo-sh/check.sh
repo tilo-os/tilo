@@ -309,10 +309,8 @@ bring_up=$(cat "$state/bring-up-seconds")
 tilo=$(find_tilo)
 echo "the tilo command: $tilo"
 
-# The stack that came up keeps the keys of people's sealed stores apart from
-# its state, or what the people of the steps below seal would lie beside its
-# key (stack.sh keys).
-keys_apart || fail "the stack does not keep people's keys apart from its state"
+# The server that came up keeps no sealed store of its own (stack.sh vaults).
+host_keeps_no_vault || fail "the server keeps a sealed store of its own beside its workspaces' vaults"
 
 # The Lounge's moderation bot is the operator's grant, written once when a
 # fresh stack first brings the workspace up. A person who governs may turn it
@@ -708,8 +706,9 @@ fi
 
 passkey_round
 
-# And where the keys lie, now that the steps' people have been here.
-keys_apart || fail "a person's key lies in the stack's state, or a sealed store has no key apart from it"
+# And still none, now that the steps' people signed in, kept keys and connected
+# accounts: each of those is an entry of their workspace's vault.
+host_keeps_no_vault || fail "the server kept a sealed store of its own beside its workspaces' vaults"
 
 python3 - "$report" "$bring_up" "$visa_seconds" "${TILO_SH_SEED:-0}" "${entries[@]}" <<'EOF'
 import json, os, statistics, sys

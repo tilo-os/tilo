@@ -25,7 +25,9 @@ use super::{
     ServiceWorkspaceActions, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
-use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
+use crate::workspaces::tests::{
+    governor, guest_device, signed_pre_admission, test_host_taking_part as test_host,
+};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
@@ -1143,15 +1145,9 @@ pub(super) async fn ask_own(
     }
 }
 
-/// Every file under `dir` whose bytes hold `needle`, and how many files sit
-/// under `within`.
-fn files_holding(
-    dir: &std::path::Path,
-    needle: &[u8],
-    within: &std::path::Path,
-) -> (Vec<std::path::PathBuf>, usize) {
+/// Every file under `dir` whose bytes hold `needle`.
+fn files_holding(dir: &std::path::Path, needle: &[u8]) -> Vec<std::path::PathBuf> {
     let mut holding = Vec::new();
-    let mut inside = 0_usize;
     let mut waiting = vec![dir.to_path_buf()];
     while let Some(next) = waiting.pop() {
         for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
@@ -1164,15 +1160,12 @@ fn files_holding(
             } else if metadata.is_file() {
                 let bytes = std::fs::read(&path).unwrap();
                 if bytes.windows(needle.len()).any(|w| w == needle) {
-                    holding.push(path.clone());
-                }
-                if path.starts_with(within) {
-                    inside = inside.saturating_add(1);
+                    holding.push(path);
                 }
             }
         }
     }
-    (holding, inside)
+    holding
 }
 
 /// Every request of a person's model providers, the ones that name a
@@ -1315,33 +1308,35 @@ async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
     reaches_none_of_it(&host, elsewhere_id, &cy, &provider).await;
 
-    let (reference, authorization) =
-        accounts::provider_api_key(&provider, "https://models.example/v1").unwrap();
-    let theirs = workspaces.workspace_root(&elsewhere_id.to_string());
+    // The key is an entry of the workspace's own vault, the one its
+    // provider names; the host keeps no vault of its own beside it, and the
+    // key is nowhere on the host's disk in the clear.
+    let own = workspaces.workspace_root(&workspace_id.to_string());
+    let named = crate::workspaces::person_settings::provider_config(&own)
+        .profiles
+        .iter()
+        .find(|profile| profile.id == provider)
+        .and_then(crate::workspaces::person_settings::key_reference)
+        .expect("the provider names its key");
+    let ours = workspaces
+        .open_vault(&workspace_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(
+        ours.entry(named.id()).map(|entry| entry.password.as_str()),
+        Some(SECRET)
+    );
+    let theirs = workspaces
+        .open_vault(&elsewhere_id.to_string())
+        .await
+        .unwrap();
     assert!(
-        !accounts::vault_dir_in(&theirs).exists()
-            || !accounts::ServiceCredentials::open_in(&theirs)
-                .status(&reference, &authorization)
-                .unwrap(),
+        theirs.entry(named.id()).is_none(),
         "another workspace's vault holds this workspace's key"
     );
-
-    // The key is sealed in the workspace's own vault, which sits in its own
-    // store with its key file, and is nowhere on the host's disk in the
-    // clear.
-    let own = workspaces.workspace_root(&workspace_id.to_string());
-    let sealed = accounts::ServiceCredentials::open_in(&own)
-        .resolve(&reference, &authorization)
-        .unwrap()
-        .expect("the key is in the workspace's vault");
-    assert_eq!(sealed.as_str(), SECRET);
-    let (clear, vault_files) =
-        files_holding(dir.path(), SECRET.as_bytes(), &accounts::vault_dir_in(&own));
+    assert!(!accounts::vault_dir_in(&own).exists());
+    let clear = files_holding(dir.path(), SECRET.as_bytes());
     assert!(clear.is_empty(), "the key in the clear: {clear:?}");
-    assert!(
-        vault_files > 0,
-        "the workspace's vault keeps its sealed file in its store"
-    );
 }
 
 /// An agent no device of a member's stands behind reaches nothing of the

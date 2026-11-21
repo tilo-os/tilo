@@ -55,12 +55,10 @@ the browser's "function signature mismatch" — fails there, and never in the
 page. It prints what the restart cost; `--no-change` measures the same loop
 with nothing changed.
 
-The keys of people's sealed stores (their sign-ins, provider keys and vault
-items on the server) are kept in a folder beside the stack's state, never in
-it: the state's path with `-keys` after it, or the folder `TILO_SH_PEOPLE_KEYS`
-names. A copy of the state alone then opens nobody's vault. The server says in
-its log, every time it starts, where it keeps them, and as a warning when that
-is in its state. `stack.sh` hands a service only variables its image sets, and
+The server keeps no sealed store of its own: every sign-in, provider key and
+vault item is an entry of its workspace's vault, the document Passwords keeps,
+and `stack.sh vaults` fails where a store of the server's own lies in its
+state. `stack.sh` hands a service only variables its image sets, and
 stops the start at one the image does not set instead of leaving it out.
 
 `TILO_SH_REMOTE=0` runs everything here instead, which is what the end-to-end

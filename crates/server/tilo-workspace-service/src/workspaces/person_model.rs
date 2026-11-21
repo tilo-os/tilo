@@ -5,7 +5,8 @@
 //! filter, a summary. It asks for a person and a kind of work
 //! ([`Interaction`]). The host reads that person's own choice (the model they
 //! chose for the kind, else their default), takes the provider's key from
-//! their vault, asks the provider, and hands the answer back as it streams,
+//! the entry of the workspace's vault the provider names, at that moment and
+//! with the use written down, asks the provider, and hands the answer back as it streams,
 //! with what it cost ([`ModelResponse::cost_micros`]).
 //!
 //! The key is read in here and goes to the provider's request alone
@@ -38,7 +39,7 @@ use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 use super::Workspaces;
-use super::person_settings::provider_config;
+use super::person_settings::{ProviderKeys, key_kept, provider_config};
 
 mod kept;
 #[cfg(feature = "agents")]
@@ -500,6 +501,7 @@ impl Workspaces {
     pub fn workspace_model(&self, workspace: WorkspaceId, kind: Interaction) -> PersonModel {
         PersonModel {
             models: Arc::clone(&self.inner.models),
+            workspaces: Arc::downgrade(&self.inner),
             root: self.workspace_root(&workspace.to_string()),
             kept: Arc::default(),
             kind,
@@ -579,6 +581,8 @@ impl Workspaces {
 #[derive(Clone)]
 pub struct PersonModel {
     models: Arc<Models>,
+    /// The workspaces this host keeps, whose vault the key is read from at each call.
+    workspaces: std::sync::Weak<super::WorkspacesInner>,
     /// The workspace's store on this host.
     root: PathBuf,
     /// The key this work last took from the workspace's vault (`person_model/kept.rs`).
@@ -674,9 +678,9 @@ impl PersonModel {
         self.models.spend.spent(&self.root, spender)
     }
 
-    /// What would answer now, or why nothing can. It reads the person's
-    /// settings and vault from disk, so an asynchronous caller asks it off
-    /// the runtime's workers.
+    /// What would answer now, or why nothing can. It reads the workspace's
+    /// settings from disk, so an asynchronous caller asks it off the
+    /// runtime's workers; whether a key is kept is what the settings name.
     pub fn linked(&self) -> Result<Linked, ModelRefusal> {
         self.resolve().map(|resolved| resolved.linked())
     }
@@ -703,13 +707,33 @@ impl PersonModel {
         let mut resolved = resolved;
         resolved.takes(request)?;
         may_send(self.workspace.as_ref(), &resolved.profile)?;
+        let workspaces = self
+            .workspaces
+            .upgrade()
+            .map(|inner| Workspaces { inner })
+            .ok_or(ModelRefusal::SettingsUnreadable)?;
+        let workspace = self
+            .workspace
+            .as_ref()
+            .map(ToString::to_string)
+            .ok_or(ModelRefusal::SettingsUnreadable)?;
+        // The work's own model calls are this host's, for the work's agent.
+        let keys = ProviderKeys::of(workspaces.vault_at(&workspace), "");
         let signed_in = resolved.profile.sign_in.is_some();
         if signed_in {
             resolved.key = Some(
                 self.models
-                    .fresh_access(&self.root, &resolved.profile, false)
+                    .fresh_access((keys, &self.root), &resolved.profile, false)
                     .await?,
             );
+        } else {
+            resolved.key = self.kept.of(keys, &resolved.profile).await?;
+            // Only a server on the operator's own network may take no key.
+            if resolved.key.is_none() && self.provider().reaches(&resolved.profile.endpoint) {
+                return Err(ModelRefusal::NoKey {
+                    provider: resolved.profile.display_label().to_owned(),
+                });
+            }
         }
         let provider = self.provider();
         let mut answered = self
@@ -723,7 +747,7 @@ impl PersonModel {
         {
             resolved.key = Some(
                 self.models
-                    .fresh_access(&self.root, &resolved.profile, true)
+                    .fresh_access((keys, &self.root), &resolved.profile, true)
                     .await?,
             );
             answered = self
@@ -876,7 +900,6 @@ impl PersonModel {
     fn resolve(&self) -> Result<Resolved, ModelRefusal> {
         resolve(
             &self.root,
-            &self.kept,
             (self.kind, self.named.as_deref()),
             self.models.private_addresses.load(Ordering::Acquire),
             &*self.provider(),
@@ -1018,7 +1041,6 @@ const fn beside_in_main_thread(kind: Interaction) -> Option<Interaction> {
 /// person did choose, not told that none is linked.
 fn resolve(
     root: &Path,
-    kept: &kept::Key,
     (kind, named): (Interaction, Option<&str>),
     private_addresses: bool,
     provider: &dyn ModelProvider,
@@ -1071,24 +1093,18 @@ fn resolve(
         if profile.sign_in_issuer() != Some(agent_provider_config::SignInIssuer::ChatGpt) {
             return Err(ModelRefusal::NoKey { provider: named() });
         }
-        let granted = kept
-            .of(root, profile)?
-            .and_then(|kept| super::person_models::Grant::read(&kept))
-            .ok_or_else(|| ModelRefusal::SignedOut { provider: named() })?;
-        return Ok(Resolved {
-            profile: profile.clone(),
-            model: model.clone(),
-            key: Some(granted.access()),
-        });
-    }
-    let key = kept.of(root, profile)?;
-    // Only a server on the operator's own network may take no key.
-    if key.is_none() && public {
+        if !key_kept(profile) {
+            return Err(ModelRefusal::SignedOut { provider: named() });
+        }
+    } else if !key_kept(profile) && public {
+        // Only a server on the operator's own network may take no key.
         return Err(ModelRefusal::NoKey { provider: named() });
     }
+    // The key itself is read from the workspace's vault for the call
+    // ([`PersonModel::answer`]).
     Ok(Resolved {
         profile: profile.clone(),
         model: model.clone(),
-        key,
+        key: None,
     })
 }

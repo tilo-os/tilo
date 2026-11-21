@@ -4,8 +4,7 @@
 # environment the image does not honor instead of starting with part of it.
 #
 # No container: it starts the entrypoint with a tilo-server on PATH that prints
-# its arguments and keeps what it was told of the folder for people's keys, so
-# the whole interface is asserted in a second.
+# its arguments, so the whole interface is asserted in a second.
 #
 # usage: test-entrypoint.sh
 set -euo pipefail
@@ -18,9 +17,6 @@ cat > "$work/bin/tilo-server" <<'STUB'
 #!/bin/sh
 set -eu
 for argument in "$@"; do printf '%s\n' "$argument"; done
-# What it was told of the folder for the keys of people's sealed stores, which
-# the server reads from its environment and from no flag.
-printf '%s\n' "${TILO_PEOPLE_KEYS-not set}" > "$(dirname "$0")/../people-keys"
 STUB
 chmod +x "$work/bin/tilo-server"
 
@@ -220,18 +216,6 @@ grep -Fqx -- --members-only "$work/args" && fail "invite admission unlisted the 
 pair --listing-description Lounge || fail "the description did not default to the workspace's name"
 pair --persistent lounge || fail "the workspace is not the one eu1 names"
 pair --public-origin https://eu1.tilo.sh || fail "eu1's origin did not reach the host"
-
-# The folder for the keys of people's sealed stores is the server's own
-# setting, read from its environment: what the image or the deployment set
-# reaches the program the entry point starts, unchanged, and the entry point
-# names none of its own.
-lounge TILO_PEOPLE_KEYS=/var/lib/tilo-people-keys >"$work/args" \
-  || fail "a deployment naming a folder for people's keys did not start"
-[[ $(cat "$work/people-keys") == /var/lib/tilo-people-keys ]] \
-  || fail "the folder for people's keys did not reach the server: $(cat "$work/people-keys")"
-lounge >"$work/args" || fail "the plain deployment did not start a second time"
-[[ $(cat "$work/people-keys") == 'not set' ]] \
-  || fail "the entry point named a folder for people's keys that nobody set: $(cat "$work/people-keys")"
 
 # An admission the image does not honor stops the start, as any other setting
 # it does not read does.

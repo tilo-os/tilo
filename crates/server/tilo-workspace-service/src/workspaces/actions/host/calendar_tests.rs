@@ -578,11 +578,11 @@ async fn a_calendar_on_the_persons_own_server_is_kept_read_and_filed_by_their_ho
         .expect("the list reads");
     assert!(!listed.to_string().contains(PASSWORD));
     let root = ada.root();
-    let vault = accounts::vault_dir_in(&root);
-    let kept: Vec<PathBuf> = files_under(&root)
-        .into_iter()
-        .filter(|file| !file.starts_with(&vault))
-        .collect();
+    assert!(
+        !accounts::vault_dir_in(&root).exists(),
+        "the host keeps no vault of its own beside the workspace's"
+    );
+    let kept: Vec<PathBuf> = files_under(&root);
     assert!(
         kept.iter()
             .any(|file| file.to_string_lossy().contains("calendars")),

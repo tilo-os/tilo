@@ -19,7 +19,7 @@ use tilo_actions::remote::{
 };
 
 use super::super::tests::{admit, caller, governed, settled};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
 
 /// A request of one of the accounts actions, with `argument` when it has one.
 pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {
@@ -153,10 +153,12 @@ async fn a_member_asks_what_arrived_and_the_host_watches_from_then_on() {
     let (workspace, workspace_id, host) = governed(&workspaces).await;
     let ada = admit(&workspaces, &workspace, &owner, 1).await;
     keep_signed_in(
-        &workspaces.workspace_root(&workspace_id.to_string()),
+        &workspaces,
+        &workspace_id.to_string(),
         "ada@example.test",
         "adas-password",
-    );
+    )
+    .await;
     let page = host.in_workspace_as(workspace_id, &ada);
     let ada = caller(&ada);
     assert!(servers.running().is_empty(), "nobody asked yet");
@@ -168,6 +170,7 @@ async fn a_member_asks_what_arrived_and_the_host_watches_from_then_on() {
     );
     assert!(first.arrivals.is_empty());
     assert_eq!(first.newest, 0);
+    workspaces.mail_watches_settled().await;
     assert_eq!(servers.running().len(), 1, "asking is listening");
 
     servers.heard("ada@example.test").arrived(
@@ -197,6 +200,7 @@ async fn a_member_asks_what_arrived_and_the_host_watches_from_then_on() {
         json!("jonas@northzone.example")
     );
     assert_eq!(then.newest, 1);
+    workspaces.mail_watches_settled().await;
     assert_eq!(
         servers.running().len(),
         1,

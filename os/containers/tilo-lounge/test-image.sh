@@ -43,8 +43,6 @@ grep -Fqx "TILO_SOURCE_REVISION=$revision" <<<"$environment" \
   || fail "TILO_SOURCE_REVISION is not the image's revision"
 grep -Fqx 'TILO_SECRETS_DIR=/run/tilo-workspaces/secrets' <<<"$environment" \
   || fail "the host is not told where its sealed secrets live"
-grep -Fqx 'TILO_PEOPLE_KEYS=/var/lib/tilo-people-keys' <<<"$environment" \
-  || fail "the image does not say where the volume for the keys of people's sealed stores is mounted"
 
 container=$(b from --pull=never --quiet "$image")
 cleanup() { b umount "$container" >/dev/null 2>&1 || true; b rm "$container" >/dev/null 2>&1 || true; }

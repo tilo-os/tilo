@@ -62,16 +62,6 @@
 # gigabytes per person as the operator says:
 #   TILO_WORKSPACES_PERSON_STORAGE_GB  gigabytes per person (default 10)
 #
-# The keys of people's sealed stores (their sign-ins, provider keys and vault
-# items) are kept apart from the state when the deployment mounts a volume of
-# its own for them. The server reads the setting itself, from its environment,
-# so it passes through here unchanged:
-#   TILO_PEOPLE_KEYS          the folder those keys are kept under (the image
-#                             names where its volume is mounted). With no
-#                             folder there the server keeps each key in the
-#                             state, beside what it opens, and says so in its
-#                             log at every start
-#
 # Everything else has the default below. Any other TILO_WORKSPACES_* variable stops
 # the start: this host does not read it, and a deployment that still sets what
 # the host no longer honors must not start believing it does.

@@ -94,18 +94,6 @@ root is kept sealed. The server's session limits
 `TILO_SERVER_MAX_WORKSPACE_GRANTS`) are the image's defaults and the deployment's to
 raise.
 
-`TILO_PEOPLE_KEYS` (the image's default: `/var/lib/tilo-people-keys`) is where
-the keys of people's sealed stores are kept: a volume of its own, apart from
-the state volume, so that a copy or a backup of the state alone opens nobody's
-sign-ins, provider keys or vault items. The server keeps them there only when
-a volume is mounted at that path, and makes no folder itself. With none it
-keeps each key on the state volume, beside what it opens, and says so in its
-log as a warning every time it starts. A key that lies on the state volume
-from before moves to the keys' volume the first time its vault is opened.
-Whoever reads both volumes, or the machine itself, opens every vault: the
-second volume keeps the keys out of copies of the state, not from the machine
-that uses them.
-
 ## State on the volume
 
 ```

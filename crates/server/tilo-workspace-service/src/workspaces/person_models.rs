@@ -165,6 +165,8 @@ impl Workspaces {
         let here = reach.workspace.to_string();
         let root = self.workspace_root(&here);
         let person = reach.person;
+        let by = reach.by();
+        let keys = ProviderKeys::of(self.vault_at(&here), &by);
         let reach = self.model_reach();
         if let Some(answered) = self
             .sign_in_invoke(action, person, &here, &reach, request)
@@ -184,19 +186,19 @@ impl Workspaces {
             }
             person_models::SET_KEY => {
                 let setting: SetKey = argument(request, "a key to keep")?;
-                answer(&take_key(&root, setting, &reach).await)
+                answer(&take_key((keys, &root), setting, None, &reach).await)
             }
             person_models::REMOVE_KEY => {
                 let provider = provider_argument(request)?;
-                answer(&remove_key(&root, &provider))
+                answer(&remove_key((keys, &root), &provider).await)
             }
             person_models::REMOVE_PROVIDER => {
                 let provider = provider_argument(request)?;
-                answer(&remove_provider(&root, &provider))
+                answer(&remove_provider((keys, &root), &provider).await)
             }
             person_models::REFRESH_MODELS => {
                 let provider = provider_argument(request)?;
-                answer(&refresh_models(&root, &provider, &reach).await)
+                answer(&refresh_models((keys, &root), &provider, &reach).await)
             }
             person_models::ADD_MODEL => {
                 let adding: AddModel = argument(request, "a model to add")?;
@@ -330,7 +332,7 @@ fn add_preset(root: &Path, adding: &AddPreset) -> Result<ProviderView, String> {
         .ok_or_else(|| "That provider is not one this host adds by name".to_owned())?;
     let profile = preset.profile();
     let mut config = provider_config(root);
-    let view = view_of(&profile, &ProviderKeys::of(root));
+    let view = view_of(&profile);
     config.profiles.push(profile);
     save_provider_config(root, &config)?;
     Ok(view)
@@ -364,8 +366,9 @@ enum Said {
 /// new one is kept as typed, since nothing else could ever replace a key
 /// there. No refusal carries a key.
 pub(super) async fn take_key(
-    root: &Path,
+    (keys, root): (ProviderKeys<'_>, &Path),
     setting: SetKey,
+    kept_as: Option<&tilo_actions::remote::person_vault::ItemRef>,
     reach: &Reach,
 ) -> Result<ProviderView, String> {
     let profile = provider_config(root)
@@ -379,7 +382,7 @@ pub(super) async fn take_key(
             profile.display_label()
         ));
     }
-    let kept = ProviderKeys::of(root).get(&profile)?;
+    let kept = keys.get(&profile).await?;
     let replacing = kept.is_some();
     // The kept key typed again replaces nothing and asks nobody. The two
     // are compared by their hashes, which compare in constant time.
@@ -405,7 +408,7 @@ pub(super) async fn take_key(
             }
         }
     }
-    set_key(root, setting)
+    set_key((keys, root), setting, kept_as).await
 }
 
 /// Where `profile`'s provider is asked with a key so that its answer says of
@@ -447,7 +450,7 @@ async fn asked_about(profile: &ProviderProfile, key: &str, reach: &Reach) -> Sai
 /// list it answers. A list that cannot be read is an answer too: it says
 /// why, and what was kept stays.
 async fn refresh_models(
-    root: &Path,
+    (keys, root): (ProviderKeys<'_>, &Path),
     provider: &str,
     reach: &Reach,
 ) -> Result<ListedModels, String> {
@@ -456,7 +459,7 @@ async fn refresh_models(
         .into_iter()
         .find(|profile| profile.id == provider)
         .ok_or_else(not_kept)?;
-    let mut key = ProviderKeys::of(root).get(&profile)?;
+    let mut key = keys.get(&profile).await?;
     // A signed-in account's models are asked for with its access token.
     if profile.sign_in.is_some() {
         key = key
@@ -467,7 +470,7 @@ async fn refresh_models(
         Ok(listed) => listed,
         Err(problem) => {
             return Ok(ListedModels {
-                provider: view_of(&profile, &ProviderKeys::of(root)),
+                provider: view_of(&profile),
                 problem: Some(problem),
             });
         }
@@ -486,7 +489,7 @@ async fn refresh_models(
     let kept = kept.clone();
     save_provider_config(root, &config)?;
     Ok(ListedModels {
-        provider: view_of(&kept, &ProviderKeys::of(root)),
+        provider: view_of(&kept),
         problem: None,
     })
 }
@@ -634,7 +637,7 @@ fn add_model(root: &Path, adding: &AddModel) -> Result<ProviderView, String> {
     }
     let profile = profile.clone();
     save_provider_config(root, &config)?;
-    Ok(view_of(&profile, &ProviderKeys::of(root)))
+    Ok(view_of(&profile))
 }
 
 /// Keep how hard `setting`'s provider is asked to think, or with no level,
@@ -684,7 +687,7 @@ fn set_reasoning(root: &Path, setting: &SetReasoning) -> Result<ProviderView, St
     };
     let profile = profile.clone();
     save_provider_config(root, &config)?;
-    Ok(view_of(&profile, &ProviderKeys::of(root)))
+    Ok(view_of(&profile))
 }
 
 fn set_default(root: &Path, choosing: &SetDefault) -> Result<ModelProviders, String> {
@@ -743,6 +746,11 @@ mod tests {
     use test_http::{Reply, Responder};
     use tilo_actions::remote::person_models::Protocol;
 
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    use super::super::vault::VaultAt;
     use super::*;
 
     const KEY: &str = "sk-fake-provider-key";
@@ -800,14 +808,29 @@ mod tests {
         .id
     }
 
-    fn keep_key(root: &Path, provider: &str, key: &str) {
+    /// The workspace at `root` with the vault it keeps: one for each root, as each workspace
+    /// keeps one of its own.
+    fn at(root: &Path) -> (ProviderKeys<'static>, &Path) {
+        type Vaults = BTreeMap<PathBuf, &'static Mutex<accounts::vault_items::VaultItems>>;
+        static VAULTS: Mutex<Vaults> = Mutex::new(BTreeMap::new());
+        let vault = *VAULTS
+            .lock()
+            .unwrap()
+            .entry(root.to_owned())
+            .or_insert_with(|| Box::leak(Box::default()));
+        (ProviderKeys::of(VaultAt::Held(vault), ""), root)
+    }
+
+    async fn keep_key(root: &Path, provider: &str, key: &str) {
         set_key(
-            root,
+            at(root),
             SetKey {
                 provider: provider.into(),
                 key: key.into(),
             },
+            None,
         )
+        .await
         .expect("the key is kept");
     }
 
@@ -916,9 +939,9 @@ mod tests {
             &format!("{}/v1", fake.url()),
             Destinations::Any,
         );
-        keep_key(root.path(), &id, KEY);
+        keep_key(root.path(), &id, KEY).await;
 
-        let listed = refresh_models(root.path(), &id, &any())
+        let listed = refresh_models(at(root.path()), &id, &any())
             .await
             .expect("the provider is kept here");
         assert_eq!(listed.problem, None);
@@ -950,8 +973,8 @@ mod tests {
             &fake.url(),
             Destinations::Any,
         );
-        keep_key(root.path(), &id, KEY);
-        let listed = refresh_models(root.path(), &id, &any()).await.unwrap();
+        keep_key(root.path(), &id, KEY).await;
+        let listed = refresh_models(at(root.path()), &id, &any()).await.unwrap();
         assert_eq!(listed.problem, None);
         assert_eq!(ids(&listed.provider), ["large", "small"]);
         let asked = fake.next_request();
@@ -972,17 +995,17 @@ mod tests {
             Destinations::Any,
         );
         // No key is kept: the provider is not asked at all.
-        let unasked = refresh_models(root.path(), &id, &any()).await.unwrap();
+        let unasked = refresh_models(at(root.path()), &id, &any()).await.unwrap();
         assert_eq!(unasked.problem, Some(ListingProblem::NoKey));
         assert!(fake.drain_requests().is_empty());
 
-        keep_key(root.path(), &id, KEY);
-        let listed = refresh_models(root.path(), &id, &any()).await.unwrap();
+        keep_key(root.path(), &id, KEY).await;
+        let listed = refresh_models(at(root.path()), &id, &any()).await.unwrap();
         assert_eq!(listed.problem, None);
 
         // The provider turns a wrong key away.
-        keep_key(root.path(), &id, "sk-not-the-key");
-        let refused = refresh_models(root.path(), &id, &any()).await.unwrap();
+        keep_key(root.path(), &id, "sk-not-the-key").await;
+        let refused = refresh_models(at(root.path()), &id, &any()).await.unwrap();
         assert_eq!(refused.problem, Some(ListingProblem::KeyRefused));
         assert_eq!(ids(&refused.provider), ["large", "small"]);
         assert_eq!(
@@ -997,8 +1020,8 @@ mod tests {
             &format!("{}/elsewhere", fake.url()),
             Destinations::Any,
         );
-        keep_key(root.path(), &listless, KEY);
-        let none = refresh_models(root.path(), &listless, &any())
+        keep_key(root.path(), &listless, KEY).await;
+        let none = refresh_models(at(root.path()), &listless, &any())
             .await
             .unwrap();
         assert_eq!(none.problem, Some(ListingProblem::NoList));
@@ -1011,8 +1034,8 @@ mod tests {
             &other.url(),
             Destinations::Any,
         );
-        keep_key(root.path(), &odd, KEY);
-        let unreadable = refresh_models(root.path(), &odd, &any()).await.unwrap();
+        keep_key(root.path(), &odd, KEY).await;
+        let unreadable = refresh_models(at(root.path()), &odd, &any()).await.unwrap();
         assert_eq!(unreadable.problem, Some(ListingProblem::Unreadable));
 
         // One that is not there.
@@ -1026,13 +1049,15 @@ mod tests {
             &gone,
             Destinations::Any,
         );
-        keep_key(root.path(), &absent, KEY);
-        let unreachable = refresh_models(root.path(), &absent, &any()).await.unwrap();
+        keep_key(root.path(), &absent, KEY).await;
+        let unreachable = refresh_models(at(root.path()), &absent, &any())
+            .await
+            .unwrap();
         assert_eq!(unreachable.problem, Some(ListingProblem::Unreachable));
 
         // And one nobody added is a refusal, not a list.
         assert!(
-            refresh_models(root.path(), "nobody's", &any())
+            refresh_models(at(root.path()), "nobody's", &any())
                 .await
                 .is_err()
         );
@@ -1127,7 +1152,7 @@ mod tests {
             &format!("{}/v1", fake.url()),
             Destinations::Any,
         );
-        keep_key(root.path(), &id, KEY);
+        keep_key(root.path(), &id, KEY).await;
         for model in ["retired", "stray"] {
             add_model(
                 root.path(),
@@ -1148,7 +1173,7 @@ mod tests {
         )
         .expect("the model is chosen");
 
-        let listed = refresh_models(root.path(), &id, &any()).await.unwrap();
+        let listed = refresh_models(at(root.path()), &id, &any()).await.unwrap();
         assert_eq!(listed.problem, None);
         assert_eq!(ids(&listed.provider), ["large", "retired", "small"]);
     }
@@ -1195,8 +1220,8 @@ mod tests {
             &format!("{}/v1", fake.url()),
             Destinations::Any,
         );
-        keep_key(root.path(), &inside, KEY);
-        let uncalled = refresh_models(root.path(), &inside, &public())
+        keep_key(root.path(), &inside, KEY).await;
+        let uncalled = refresh_models(at(root.path()), &inside, &public())
             .await
             .unwrap();
         assert_eq!(uncalled.problem, Some(ListingProblem::NotAllowed));
@@ -1207,11 +1232,11 @@ mod tests {
             &format!("https://models.example:{}/v1", fake.port()),
             Destinations::Public,
         );
-        keep_key(root.path(), &named, KEY);
+        keep_key(root.path(), &named, KEY).await;
         let resolves_inside: Lookup =
             Arc::new(|_| Box::pin(async { Ok(vec![IpAddr::from([127, 0, 0, 1])]) }));
         let undialled = refresh_models(
-            root.path(),
+            at(root.path()),
             &named,
             &Reach {
                 destinations: Destinations::Public,
@@ -1385,8 +1410,8 @@ mod tests {
     /// exist, and half a choice changes nothing. One cleared follows the
     /// default again, and a provider removed takes the choices that named
     /// it.
-    #[test]
-    fn half_a_choice_changes_nothing_and_a_cleared_one_follows_the_default() {
+    #[tokio::test]
+    async fn half_a_choice_changes_nothing_and_a_cleared_one_follows_the_default() {
         let root = temp_root();
         let (first, second) = chosen(root.path());
         let read = providers(root.path());
@@ -1419,7 +1444,9 @@ mod tests {
         assert_eq!(runs_on(&following, "task"), None);
         assert!(runs_on(&following, "subtask").is_some());
 
-        let remaining = remove_provider(root.path(), &second).expect("the provider is removed");
+        let remaining = remove_provider(at(root.path()), &second)
+            .await
+            .expect("the provider is removed");
         assert!(remaining.assignments.is_empty(), "{remaining:?}");
         assert_eq!(remaining.default_provider.as_deref(), Some(first.as_str()));
     }

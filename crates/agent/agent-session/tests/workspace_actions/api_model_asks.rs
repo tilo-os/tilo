@@ -71,6 +71,7 @@ async fn a_computers_model_asks_stream_from_its_workspaces_server_over_its_held_
             },
             true,
         )
+        .await
         .unwrap();
     let holder = Holder::start(&on_server, &ada, &workspace, "Claude Code").await;
 

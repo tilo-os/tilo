@@ -298,6 +298,7 @@ impl Hosted {
                 },
                 true,
             )
+            .await
             .unwrap();
         let proved = Arc::new(Mutex::new(Vec::new()));
         let kept = Arc::clone(&proved);

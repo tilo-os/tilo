@@ -7,18 +7,14 @@
 # stand-ins; the server's image entry point is then started with exactly what
 # was written, in front of a tilo-server that says what it was told. Held:
 #
-#   - the folder for the keys of people's sealed stores reaches the server,
-#     lies outside the state folder and is there when the server starts. A
-#     server that is not told it keeps each key in its state, beside what the
-#     key opens, and then a copy of the state alone opens people's vaults;
+#   - the server starts with the environment the stack wrote for it;
 #   - a variable the stack hands a service whose image does not set it stops
 #     the start, instead of being left out without a word;
 #   - the web entry's image sets the two folders its start hands it, so it is
 #     still told both;
-#   - stack.sh keys, which judges a stack that is up, fails when the server did
-#     not say where it keeps people's keys, when it says they are in the state,
-#     when a key lies there, or when a sealed store has no key apart, and tells
-#     a stack on which nobody sealed anything from one whose keys it saw.
+#   - stack.sh vaults, which judges a stack that is up, fails when a sealed
+#     store of the server's own, or its key, lies under the server's state, and
+#     passes where every secret is in a workspace's vault.
 #
 # usage: test-native-env.sh
 set -euo pipefail
@@ -35,7 +31,7 @@ fault() {
 # The stack's own addresses and functions, on a state of this test's own.
 # Nothing of it is built, fetched or started.
 export TILO_SH_STATE=$work/state TILO_SH_REMOTE=0
-unset TILO_SH_PEOPLE_KEYS TILO_SH_LOUNGE
+unset TILO_SH_LOUNGE
 # shellcheck source=stack.sh
 . "$here/stack.sh"
 told=$runs
@@ -48,12 +44,7 @@ mkdir -p "$lounge"/{bin,surfaces,fonts}
 cp "$repo/os/containers/tilo-lounge/entrypoint.sh" "$lounge/entrypoint.sh"
 cat > "$lounge/bin/tilo-server" <<'STAND_IN'
 #!/bin/sh
-if [ -n "${TILO_PEOPLE_KEYS+set}" ]; then
-  printf 'TILO_PEOPLE_KEYS=%s\n' "$TILO_PEOPLE_KEYS"
-  if [ -d "$TILO_PEOPLE_KEYS" ]; then echo 'the folder is there'; else echo 'no folder is there'; fi
-else
-  echo 'TILO_PEOPLE_KEYS is not set'
-fi
+printf 'TILO_WORKSPACES_STATE=%s\n' "${TILO_WORKSPACES_STATE-}"
 STAND_IN
 chmod +x "$lounge/bin/tilo-server"
 
@@ -79,28 +70,15 @@ run_native() {
 # -- the server ---------------------------------------------------------------
 
 (start_native_server) || fault "stack.sh did not start the server: $(cat "$work/server.said" 2>/dev/null)"
-named=$(grep -c '^TILO_PEOPLE_KEYS=' "$told/server.env" || true)
-if [[ $named != 1 ]]; then
-  fault "stack.sh tells the server it starts no folder for the keys of people's sealed stores ($named lines of its environment name TILO_PEOPLE_KEYS), so each key lies in the state, beside what it opens"
-elif ! grep -Fqx "TILO_PEOPLE_KEYS=$people_keys" "$told/server.env"; then
-  fault "stack.sh tells the server another folder than its own $people_keys: $(grep '^TILO_PEOPLE_KEYS=' "$told/server.env")"
-fi
-case $people_keys/ in
-  "$state"/*) fault "the folder for people's keys, $people_keys, lies inside the state folder $state" ;;
-esac
-grep -Fqx "TILO_PEOPLE_KEYS=$people_keys" "$work/server.said" 2>/dev/null \
-  || fault "the program the entry point started was not told the folder for people's keys: $(cat "$work/server.said" 2>/dev/null)"
-grep -Fqx 'the folder is there' "$work/server.said" 2>/dev/null \
-  || fault "the folder for people's keys was not there when the server started"
-[[ ! -d $people_keys || $(stat -c %a "$people_keys") == 700 ]] \
-  || fault "the folder for people's keys is open to others: mode $(stat -c %a "$people_keys")"
+grep -Fqx "TILO_WORKSPACES_STATE=$state/server" "$work/server.said" 2>/dev/null \
+  || fault "the program the entry point started was not told its state: $(cat "$work/server.said" 2>/dev/null)"
 
 # -- a variable the image does not set ----------------------------------------
 
 status=0
 (image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
   "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets" \
-  "TILO_PEOPLE_KEYS=$people_keys" "TILO_NOT_OF_THIS_IMAGE=$work/nowhere") \
+  "TILO_NOT_OF_THIS_IMAGE=$work/nowhere") \
   > "$work/placed" 2> "$work/refused" || status=$?
 if [[ $status == 0 ]]; then
   fault "stack.sh handed the server TILO_NOT_OF_THIS_IMAGE, which the Lounge image does not set, and left it out without a word ($(grep -c TILO_NOT_OF_THIS_IMAGE "$work/placed" || true) lines of what it printed name it)"
@@ -127,43 +105,34 @@ for pair in "XDG_DATA_HOME=$work/web/data" "XDG_CONFIG_HOME=$work/web/config"; d
   grep -Fqx "$pair" "$work/web.env" 2>/dev/null || fault "the web entry was not told $pair"
 done
 
-# -- stack.sh keys ------------------------------------------------------------
+# -- stack.sh vaults ----------------------------------------------------------
 
-# A state as a stack that is up leaves it: the server's log, and under the
-# server's state one workspace's sealed store. What the server says, and where
-# that store's key lies, is set for each case.
-log=$state/logs/server.log
-person=lounge/server/server/workspaces/workspaces/0f1e2d3c/accounts/vault
-apart_line="2026-01-01T00:00:00.000000Z  INFO tilo_server::people_keys: the keys of people's sealed stores are kept apart from the state folder keys=$people_keys state=$state/server/lounge/server/server"
-state_line="2026-01-01T00:00:00.000000Z  WARN tilo_server::people_keys: the keys of people's sealed stores are kept in the state folder, each beside what it opens, so a copy of the state opens them: TILO_PEOPLE_KEYS names no folder state=$state/server/lounge/server/server"
-# judged WANT WHAT [SAID]: keys_apart ends as WANT (0 or 1), and what it says
-# holds SAID.
+# A state as a stack that is up leaves it, with one workspace's store under
+# the server's state: whether a sealed store of the server's own lies in it is
+# set for each case.
+store=lounge/server/server/workspaces/workspaces/0f1e2d3c/accounts
+# judged WANT WHAT [SAID]: host_keeps_no_vault ends as WANT (0 or 1), and what
+# it says holds SAID.
 judged() {
   local want=$1 what=$2 said=${3:-} status=0
-  keys_apart > "$work/keys.said" 2>&1 || status=$?
-  [[ $status == "$want" ]] || fault "stack.sh keys answered $status, not $want, for $what: $(cat "$work/keys.said")"
-  [[ -z $said ]] || grep -Fq -- "$said" "$work/keys.said" \
-    || fault "stack.sh keys did not say '$said' for $what: $(cat "$work/keys.said")"
+  host_keeps_no_vault > "$work/vaults.said" 2>&1 || status=$?
+  [[ $status == "$want" ]] || fault "stack.sh vaults answered $status, not $want, for $what: $(cat "$work/vaults.said")"
+  [[ -z $said ]] || grep -Fq -- "$said" "$work/vaults.said" \
+    || fault "stack.sh vaults did not say '$said' for $what: $(cat "$work/vaults.said")"
 }
-rm -rf "${people_keys:?}" "$state/server/lounge"
-: > "$log"
-judged 1 'a server that said nothing of where it keeps the keys' 'did not say'
-printf '%s\n' "$state_line" > "$log"
-judged 1 'a server that says it keeps the keys in its state' 'does not keep'
-printf '%s\n' "$state_line" "$apart_line" > "$log"
-judged 0 'a server that says so since its last start, with nothing sealed yet' 'nobody has sealed anything'
-mkdir -p "$state/server/$person" "$people_keys/workspaces/0f1e2d3c/accounts/vault"
-: > "$state/server/$person/vault.enc"
-judged 1 'a sealed store with no key under the folder for the keys' 'only 0 keys'
-: > "$state/server/$person/vault.key"
-judged 1 'a key that lies in the state' "$person/vault.key"
-mv "$state/server/$person/vault.key" "$people_keys/workspaces/0f1e2d3c/accounts/vault/vault.key"
-judged 0 'a sealed store whose key lies apart' '1 sealed stores in it, 1 keys under'
-printf '%s\n' "$apart_line" "$state_line" > "$log"
-judged 1 'a server that kept the keys apart before and now says it does not' 'does not keep'
+rm -rf "$state/server/lounge"
+mkdir -p "$state/server/$store"
+: > "$state/server/$store/store.json"
+judged 0 'a workspace whose accounts name their sign-ins in its vault' 'keeps no sealed store'
+mkdir -p "$state/server/$store/vault"
+: > "$state/server/$store/vault/vault.enc"
+judged 1 "a sealed store of the server's own" "$store/vault/vault.enc"
+rm "$state/server/$store/vault/vault.enc"
+: > "$state/server/$store/vault/vault.key"
+judged 1 "a key of a store of the server's own" "$store/vault/vault.key"
 
 if ((faults)); then
   echo "FAIL: $faults things stack.sh tells the services it starts did not hold" >&2
   exit 1
 fi
-echo "ok: the server stack.sh starts is told the folder for people's keys ($people_keys, outside $state), a variable its image does not set stops the start, the web entry's image sets what it is handed, and stack.sh keys tells a stack that keeps people's keys apart from one that does not"
+echo "ok: the server stack.sh starts is told what its image says, a variable its image does not set stops the start, the web entry's image sets what it is handed, and stack.sh vaults tells a server that keeps no sealed store of its own from one that does"

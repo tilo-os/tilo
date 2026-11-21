@@ -96,6 +96,7 @@ impl KeptBefore {
                 places,
                 username,
                 sent_in,
+                account: String::new(),
                 secret: secret.to_string(),
                 added_unix,
                 last_used_unix,

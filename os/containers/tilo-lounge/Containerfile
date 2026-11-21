@@ -49,17 +49,9 @@ USER 10001
 # and 2000 watching pages at 122 MiB and 1.1 cores, plus the handshakes and
 # grants those hold. They are the server's own variables, so the deployment may
 # still raise them without a new image.
-# TILO_PEOPLE_KEYS is where the keys of people's sealed stores (their
-# sign-ins, provider keys and vault items) are kept: a volume of its own,
-# apart from the state volume, so that a copy or a backup of the state alone
-# opens none of them. The server keeps them there only when a volume is
-# mounted at that path. With none it keeps each key in the state, beside what
-# it opens, as before there was the setting, and says so in its log at every
-# start.
 ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
     TILO_WORKSPACES_STATE=/run/tilo-workspaces \
     TILO_SECRETS_DIR=/run/tilo-workspaces/secrets \
-    TILO_PEOPLE_KEYS=/var/lib/tilo-people-keys \
     TILO_SERVER_MAX_WEB_SESSIONS=2164 \
     TILO_SERVER_MAX_HANDSHAKES=1024 \
     TILO_SERVER_MAX_WORKSPACE_GRANTS=34624

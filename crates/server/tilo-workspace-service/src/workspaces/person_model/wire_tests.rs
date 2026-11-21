@@ -25,7 +25,7 @@ use test_http::{Reply, Responder};
 use super::scripted::Linking;
 use super::*;
 use crate::workspaces::fixtures::TestHost;
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
 
 const ADA: WorkspaceId = WorkspaceId::from_u128(7);
 const KEY: &str = "sk-ada-wire-secret";
@@ -72,6 +72,11 @@ async fn linked(
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     server.workspaces().call_private_model_addresses(true);
     server
         .workspaces()
@@ -86,6 +91,7 @@ async fn linked(
             },
             true,
         )
+        .await
         .unwrap();
     (dir, server)
 }
@@ -166,10 +172,10 @@ fn keyed_only_in(request: &test_http::Request, header: &str, value: &str) {
 /// id in its settings.
 fn scripted_for_ada(
     workspaces: &Workspaces,
-    said: [&str; 3],
+    said: impl IntoIterator<Item = &'static str>,
 ) -> (std::sync::Arc<super::scripted::ScriptedProvider>, String) {
     use super::scripted::{Reply as Said, ScriptedProvider};
-    let scripted = ScriptedProvider::answering(said.map(Said::text));
+    let scripted = ScriptedProvider::answering(said.into_iter().map(Said::text));
     workspaces.answer_models_with(scripted.clone());
     let root = workspaces.workspace_root(&ADA.to_string());
     let provider = crate::workspaces::person_settings::provider_config(&root)
@@ -187,14 +193,14 @@ const HERS: (&str, &str) = (
     "gemini-main",
 );
 
-/// One piece of work asks its model many times one after the other: the
-/// workspace's vault is opened for the first ask and not again while it is
-/// the file it was. Other work opens it for itself.
+/// One piece of work asks its model many times one after the other: the key is
+/// taken from the workspace's vault, its use written, for the first ask and not
+/// again while its entry holds what it held. Other work takes it for itself.
 #[tokio::test]
-async fn the_asks_of_one_piece_of_work_open_the_vault_once() {
+async fn the_asks_of_one_piece_of_work_take_the_key_once() {
     let (_dir, server) = linked(("Google", OPENAI), HERS.0, HERS.1).await;
     let workspaces = server.workspaces();
-    let (scripted, _) = scripted_for_ada(workspaces, ["one", "two", "three"]);
+    let (scripted, _) = scripted_for_ada(workspaces, ["one", "two", "three", "four"]);
 
     let model = workspaces.workspace_model(ADA, Interaction::Task);
     model.linked().unwrap();
@@ -211,14 +217,18 @@ async fn the_asks_of_one_piece_of_work_open_the_vault_once() {
         "{asked:?}"
     );
     assert_eq!(
-        model.kept.opened(),
+        model.kept.taken(),
         1,
-        "the vault is opened once for what the work is linked to and its three asks"
+        "the key is taken once for the work's three asks"
     );
 
     let other = workspaces.workspace_model(ADA, Interaction::Task);
     other.linked().unwrap();
-    assert_eq!(other.kept.opened(), 1);
+    other
+        .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(other.kept.taken(), 1, "other work takes the key for itself");
 }
 
 /// A key its members replace or remove while work goes on is new, or gone,
@@ -226,7 +236,7 @@ async fn the_asks_of_one_piece_of_work_open_the_vault_once() {
 /// asked at all once the key is removed.
 #[tokio::test]
 async fn a_key_replaced_or_removed_between_two_asks_is_not_used_by_the_next() {
-    use crate::workspaces::person_settings::{remove_key, set_key};
+    use crate::workspaces::person_settings::{ProviderKeys, remove_key, set_key};
     use tilo_actions::remote::person_models::SetKey;
 
     let (_dir, server) = linked(("Google", OPENAI), HERS.0, HERS.1).await;
@@ -240,29 +250,33 @@ async fn a_key_replaced_or_removed_between_two_asks_is_not_used_by_the_next() {
         .await
         .unwrap();
 
+    let workspace = ADA.to_string();
+    let keys = ProviderKeys::of(workspaces.vault_at(&workspace), "");
     set_key(
-        &root,
+        (keys, &root),
         SetKey {
             provider: provider.clone(),
             key: "sk-ada-replaced".into(),
         },
+        None,
     )
+    .await
     .unwrap();
     model
         .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
         .await
         .unwrap();
-    let keys: Vec<Option<String>> = scripted
+    let asked_with: Vec<Option<String>> = scripted
         .asked()
         .into_iter()
         .map(|asked| asked.key)
         .collect();
     assert_eq!(
-        keys,
+        asked_with,
         [Some(KEY.to_owned()), Some("sk-ada-replaced".to_owned())]
     );
 
-    remove_key(&root, &provider).unwrap();
+    remove_key((keys, &root), &provider).await.unwrap();
     let refused = model
         .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
         .await
@@ -343,6 +357,86 @@ async fn an_openai_compatible_provider_streams_its_answer_and_its_cost() {
     assert!(
         sent["messages"].to_string().contains("Good morning"),
         "{sent}"
+    );
+}
+
+/// Every file under `dir` whose bytes hold `needle`.
+fn files_holding(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf> {
+    let mut holding = Vec::new();
+    let mut waiting = vec![dir.to_path_buf()];
+    while let Some(next) = waiting.pop() {
+        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => waiting.push(path),
+                Ok(metadata) if metadata.is_file() => {
+                    let bytes = std::fs::read(&path).unwrap();
+                    if bytes
+                        .windows(needle.len())
+                        .any(|window| window == needle.as_bytes())
+                    {
+                        holding.push(path);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    holding
+}
+
+/// An agent's turn asks its workspace's model with the key the provider names in the
+/// workspace's vault, read from the vault at the ask: the provider's settings name the entry
+/// and hold no key, the host keeps no vault of its own beside the workspace's, and no file on
+/// the host's disk holds the key.
+#[tokio::test]
+async fn a_turn_asks_with_the_key_only_the_workspaces_vault_holds() {
+    let model = "gpt-4o-mini";
+    let responder = Responder::start(vec![openai_stream(&[
+        chunk(
+            model,
+            &json!({"role": "assistant", "content": "Sorted."}),
+            &Value::Null,
+        ),
+        chunk(model, &json!({}), &json!("stop")),
+    ])]);
+    let (dir, server) = linked(
+        ("A provider", OPENAI),
+        &format!("{}/v1", responder.url()),
+        model,
+    )
+    .await;
+    let workspaces = server.workspaces();
+
+    let answer = workspaces
+        .workspace_model(ADA, Interaction::Task)
+        .answer(&asking("Sort my inbox", Vec::new()), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(answer.text(), "Sorted.");
+    keyed_only_in(
+        &responder.next_request(),
+        "authorization",
+        &format!("Bearer {KEY}"),
+    );
+
+    let workspace = ADA.to_string();
+    let root = workspaces.workspace_root(&workspace);
+    let profiles = super::super::person_settings::provider_config(&root).profiles;
+    let named = super::super::person_settings::key_reference(&profiles[0])
+        .expect("the provider names an entry of the workspace's vault");
+    let vault = workspaces.open_vault(&workspace).await.unwrap();
+    assert_eq!(
+        vault.entry(named.id()).map(|entry| entry.password.as_str()),
+        Some(KEY)
+    );
+    assert!(
+        !accounts::vault_dir_in(&root).exists(),
+        "the host keeps a vault of its own"
+    );
+    assert_eq!(
+        files_holding(dir.path(), KEY),
+        Vec::<std::path::PathBuf>::new()
     );
 }
 
@@ -703,6 +797,11 @@ async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
+    server
+        .workspaces()
+        .create_workspace("Ada", Some(&ADA.to_string()))
+        .await
+        .unwrap();
     let workspaces = server.workspaces();
     for endpoint in [
         format!("{}/v1", responder.url()),
@@ -718,6 +817,10 @@ async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
         first.copy_from_slice(&hashed.as_bytes()[..16]);
         let workspace = WorkspaceId::from_u128(u128::from_le_bytes(first));
         workspaces
+            .create_workspace("Inside", Some(&workspace.to_string()))
+            .await
+            .unwrap();
+        workspaces
             .link_model_for(
                 &workspace.to_string(),
                 &Linking {
@@ -729,6 +832,7 @@ async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
                 },
                 true,
             )
+            .await
             .unwrap();
         let refused = workspaces
             .workspace_model(workspace, Interaction::Request)

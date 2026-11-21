@@ -69,7 +69,7 @@ impl Spenders for OneAssistant {
 }
 
 /// The workspace's model, which answers as the test scripts it.
-fn linked(setup: &Setup) -> Arc<ScriptedProvider> {
+async fn linked(setup: &Setup) -> Arc<ScriptedProvider> {
     let scripted = ScriptedProvider::answering(Vec::<Reply>::new());
     setup.workspaces.answer_models_with(scripted.clone());
     setup
@@ -85,14 +85,15 @@ fn linked(setup: &Setup) -> Arc<ScriptedProvider> {
             },
             true,
         )
+        .await
         .unwrap();
     scripted
 }
 
 /// The workspace's model judges, counted on the day of the assistant Ada
 /// keeps, which may spend `limit` a day.
-fn judge(setup: &Setup, limit: Option<u64>) -> Arc<ScriptedProvider> {
-    let scripted = linked(setup);
+async fn judge(setup: &Setup, limit: Option<u64>) -> Arc<ScriptedProvider> {
+    let scripted = linked(setup).await;
     setup
         .workspaces
         .count_judgements_with(Arc::new(OneAssistant { limit }));
@@ -217,7 +218,7 @@ fn said(message: &Message) -> String {
 async fn the_rule_decides_alone_where_it_can_and_the_persons_own_model_is_asked_once_where_it_cannot()
  {
     let setup = Setup::new().await;
-    let model = judge(&setup, None);
+    let model = judge(&setup, None).await;
     let ada = setup.ada.user_public_key;
 
     // Nobody said what is important: the mail is told and marked, reaches
@@ -397,7 +398,7 @@ async fn the_rule_decides_alone_where_it_can_and_the_persons_own_model_is_asked_
 #[tokio::test]
 async fn a_judgement_is_counted_on_the_assistants_day_and_none_is_made_past_its_limit() {
     let setup = Setup::new().await;
-    let model = judge(&setup, Some(50));
+    let model = judge(&setup, Some(50)).await;
     setup
         .ada(person_telling::SAY, json!({"words": LANDLORD}))
         .await
@@ -429,7 +430,7 @@ async fn no_judgement_is_made_that_no_assistants_day_counts() {
     let setup = Setup::new().await;
     // She linked a model, and nothing on this host says whose day a call
     // for her would be counted on.
-    let model = linked(&setup);
+    let model = linked(&setup).await;
     setup
         .ada(person_telling::SAY, json!({"words": LANDLORD}))
         .await
@@ -1095,7 +1096,7 @@ async fn a_thing_may_break_do_not_disturb_only_where_its_person_let_its_kind_thr
 #[tokio::test]
 async fn an_agent_that_names_a_reminder_or_a_brief_is_judged_by_its_persons_rule() {
     let setup = Setup::new().await;
-    let model = judge(&setup, None);
+    let model = judge(&setup, None).await;
     setup
         .ada(person_telling::SAY, json!({"words": LANDLORD}))
         .await

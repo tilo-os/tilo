@@ -13,7 +13,9 @@
 //! shared account and settings formats, so a device that reads them keeps
 //! reading the same files.
 
-/// One provider's grant, kept in the person's vault and renewed behind one
+/// The sign-ins of the accounts and providers, as entries of the workspace's vault.
+pub(in crate::workspaces) mod kept_sign_ins;
+/// One provider's grant, kept in the workspace's vault and renewed behind one
 /// lock.
 mod oauth_grant;
 mod sending;
@@ -49,8 +51,10 @@ use tilo_net::proxy::host::Destinations;
 use tilo_user_identity::DeviceCert;
 
 use super::person_models::kept_location;
+use super::vault::VaultAt;
 use super::workspace_stores::Store;
 use super::{Workspaces, system_time};
+use kept_sign_ins::{Signing, places_of, sign_in_of};
 
 mod person_mail;
 #[cfg(feature = "agents")]
@@ -129,21 +133,38 @@ impl Workspaces {
     /// # Errors
     /// The account or its sign-in could not be kept.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn keep_mail_account_as_added(&self, workspace: &str, address: &str) -> Result<(), String> {
+    pub async fn keep_mail_account_as_added(
+        &self,
+        workspace: &str,
+        address: &str,
+    ) -> Result<(), String> {
         let root = self.workspace_root(workspace);
         let id = accounts::AccountId::from(address.to_owned());
         let mut account = accounts::Account::new(id, accounts::email::TYPE_ID);
-        // Where its servers are is not kept: the stand-in is every server.
-        account.config = serde_json::json!({"email": address, "username": address});
+        // The stand-in is every server: the account names one of its own, which its password
+        // belongs to as an added account's does.
+        account.config = serde_json::json!({
+            "email": address,
+            "username": address,
+            "imap_host": "imap.stand-in.test",
+            "imap_port": 993,
+            "smtp_host": "smtp.stand-in.test",
+            "smtp_port": 465,
+        });
+        let reference = self
+            .vault_at(workspace)
+            .keep_sign_in(
+                address,
+                (accounts::vault_items::ItemKind::Login, places_of(&account)?),
+                address,
+                zeroize::Zeroizing::new("kept-for-a-test".to_owned()),
+                None,
+            )
+            .await?;
+        accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
         let mut store = accounts::AccountStore::load_in(&root);
-        store.upsert(account.clone());
+        store.upsert(account);
         store.save_in(&root).map_err(|error| format!("{error:?}"))?;
-        let mut vault =
-            accounts::AccountCredentials::open_in(&root).map_err(|error| format!("{error:?}"))?;
-        // Added with its password: bound to the servers it names, as an
-        // added account is.
-        vault.put_for(&account, &accounts::Secret::password("kept-for-a-test"));
-        vault.try_save().map_err(|error| format!("{error:?}"))?;
         self.person_settings_changed();
         Ok(())
     }
@@ -310,17 +331,12 @@ impl Workspaces {
         };
         let here = reach.workspace.to_string();
         let root = self.workspace_root(&here);
-        if signs_in(action) {
-            // A sign-in kept with no servers on it is bound to the servers
-            // its account names now by a person signing in; an agent's call
-            // under its own name binds none.
-            let bound = if reach.agent.is_some() {
-                Ok(())
-            } else {
-                bind_kept_first(&root)
-            };
-            bound.map_err(|reason| ActionCallError::Refused { reason })?;
-        }
+        let by = reach.by();
+        let signing = Signing {
+            vault: self.vault_at(&here),
+            root: &root,
+            by: &by,
+        };
         let agent = reach.agent.is_some();
         // Signing in on a provider's own page: begun, stopped, and the
         // accounts as they are.
@@ -328,19 +344,18 @@ impl Workspaces {
             action,
             person_accounts::BEGIN_SIGN_IN | person_accounts::CANCEL_SIGN_IN
         ) {
-            return sign_in::accounts_sign_in(self, reach.person, &root, request).await;
+            return sign_in::accounts_sign_in(self, reach.person, &here, request).await;
         }
         // What changes the accounts the workspace keeps is answered before
         // the rest: finding servers, adding an account, saying what it feeds
         // and removing it.
-        if let Some(answered) = self.person_mail_action(&root, request).await? {
+        if let Some(answered) = self.person_mail_action(signing, request).await? {
             return Ok(answered);
         }
         match action {
             person_accounts::SEND => {
                 let sending: SendId = argument(request, "a message to send")?;
                 let (dir, beginning) = begun_for(&root, &sending.send)?;
-                may_use(&root, agent, &beginning.message.account)?;
                 // The message is read once, here. Where its person is asked,
                 // they are shown that reading, and that reading is what
                 // leaves on their yes: nothing is read again from what was
@@ -362,29 +377,33 @@ impl Workspaces {
                 }
                 answer(
                     &self
-                        .send_in_workspace(Some(&here), self.mail_session(), &root, staged)
+                        .send_in_workspace(Some(&here), self.mail_session(), signing, staged)
                         .await,
                 )
             }
             person_accounts::MARK => {
                 let marking: MarkMail = argument(request, "what changed about a message")?;
-                answer(&mark_with(self.mail_session(), &root, marking).await)
+                answer(&mark_with(self.mail_session(), signing, marking).await)
             }
-            _ => self.mail_read_or_draft(&root, &here, request, agent).await,
+            _ => {
+                self.mail_read_or_draft(signing, &here, request, agent)
+                    .await
+            }
         }
     }
 
-    /// Answer what reads the workspace's mail kept under `root` or drafts
+    /// Answer what reads the workspace's mail kept where `signing` says or drafts
     /// in it, for an agent (`agent`) or a person: listing the accounts,
     /// reading a folder or a message, searching, reading what arrived, and
     /// beginning a message and keeping it as a draft.
     pub(super) async fn mail_read_or_draft(
         &self,
-        root: &Path,
+        signing: Signing<'_>,
         workspace: &str,
         request: &InvokeRequest,
         agent: bool,
     ) -> Result<Value, ActionCallError> {
+        let root = signing.root;
         match request.target.address.action.as_str() {
             person_accounts::LIST => answer(&mail_accounts(root).map(|mut listed| {
                 if agent {
@@ -395,18 +414,15 @@ impl Workspaces {
             })),
             person_accounts::FETCH => {
                 let asking: FetchMail = argument(request, "a folder to read")?;
-                may_use(root, agent, &asking.account)?;
-                answer(&fetch_with(self.mail_session(), root, asking).await)
+                answer(&fetch_with(self.mail_session(), signing, asking).await)
             }
             person_accounts::READ => {
                 let reading: ReadMail = argument(request, "a message to read")?;
-                may_use(root, agent, &reading.account)?;
-                answer(&read_with(self.mail_session(), root, reading).await)
+                answer(&read_with(self.mail_session(), signing, reading).await)
             }
             person_accounts::SEARCH => {
                 let searching: SearchMail = argument(request, "what to search for")?;
-                may_use(root, agent, &searching.account)?;
-                answer(&search_with(self.mail_session(), root, searching).await)
+                answer(&search_with(self.mail_session(), signing, searching).await)
             }
             person_accounts::ARRIVED => {
                 let asking = arrived_argument(request)?;
@@ -416,40 +432,19 @@ impl Workspaces {
             }
             person_accounts::BEGIN_SEND => {
                 let beginning: BeginSend = argument(request, "a message to begin")?;
-                may_use(root, agent, &beginning.message.account)?;
                 answer(&begin_send(root, &beginning))
             }
             person_accounts::SEND_PIECE => {
                 let piece: SendPiece = argument(request, "a piece of a message's file")?;
-                may_use(
-                    root,
-                    agent,
-                    &begun_for(root, &piece.send)?.1.message.account,
-                )?;
+                begun_for(root, &piece.send)?;
                 answer(&send_piece(root, &piece))
             }
             person_accounts::SAVE_DRAFT => {
                 let keeping: SendId = argument(request, "a draft to keep")?;
-                may_use(
-                    root,
-                    agent,
-                    &begun_for(root, &keeping.send)?.1.message.account,
-                )?;
-                answer(&save_staged_draft_with(self.mail_session(), root, keeping).await)
+                answer(&save_staged_draft_with(self.mail_session(), signing, keeping).await)
             }
             _ => Err(ActionCallError::UnknownAction),
         }
-    }
-}
-
-/// Whether `account`'s sign-in may be used now: by a person always, and by
-/// an agent's call (`agent`) once the sign-in says the servers it was typed
-/// for, since a call an agent makes under its own name binds none.
-fn may_use(root: &Path, agent: bool, account: &str) -> Result<(), ActionCallError> {
-    if agent {
-        bound_for_an_agent(root, account).map_err(refused_with)
-    } else {
-        Ok(())
     }
 }
 
@@ -534,22 +529,40 @@ pub(crate) fn expire_sign_in(id: &str) {
     sign_in::expire(id);
 }
 
-/// The sign-in a mail account reads with, as the session would be given it.
+/// The sign-in a mail account of `workspace` reads with, as the session would be given it.
 #[cfg(test)]
-pub(crate) fn account_secret_for_test(root: &Path, id: &str) -> Result<accounts::Secret, String> {
-    account_with_secret(root, id).map(|(_, secret)| secret)
+pub(crate) async fn account_secret_for_test(
+    workspaces: &Workspaces,
+    workspace: &str,
+    id: &str,
+) -> Result<accounts::Secret, String> {
+    let root = workspaces.workspace_root(workspace);
+    let signing = Signing {
+        vault: workspaces.vault_at(workspace),
+        root: &root,
+        by: "",
+    };
+    account_with_secret(signing, id)
+        .await
+        .map(|(_, secret)| secret)
 }
 
-/// Keep `tokens` as `account`'s sign-in, as a sign-in on its provider's page
-/// does: a test's hand on a grant it cannot fetch through a browser. Only the calendar tests
-/// take it, and they build with the agents.
+/// Keep `tokens` as `account`'s sign-in in `workspace`, as a sign-in on its provider's page
+/// does, and the account with it: a test's hand on a grant it cannot fetch through a browser.
+/// Only the calendar tests take it, and they build with the agents.
 #[cfg(all(test, feature = "agents"))]
-pub(crate) fn seal_grant_for_test(
-    root: &Path,
+pub(crate) async fn seal_grant_for_test(
+    workspaces: &Workspaces,
+    workspace: &str,
     account: &accounts::Account,
     tokens: &tilo_oauth::TokenSet,
 ) -> Result<(), String> {
-    oauth_grant::ProviderGrant::seal(root, account, tokens)
+    let root = workspaces.workspace_root(workspace);
+    let mut account = account.clone();
+    oauth_grant::seal(workspaces.vault_at(workspace), &mut account, tokens).await?;
+    let mut store = accounts::AccountStore::load_in(&root);
+    store.upsert(account);
+    store.save_in(&root).map_err(|error| error.to_string())
 }
 
 /// The `provider` a removing action names.
@@ -563,19 +576,17 @@ pub(super) fn provider_argument(request: &InvokeRequest) -> Result<String, Actio
         .ok_or_else(|| invalid("the provider is named by its id"))
 }
 
-/// The person's own vault, every sign-in and key of theirs sealed in it.
-pub(super) fn credentials(root: &Path) -> Result<accounts::AccountCredentials, String> {
-    accounts::AccountCredentials::open_in(root)
-}
-
 /// Add `adding` once `tester` saw its server accept its sign-in: the secret
-/// into the person's vault first, then the account into the shared store, so
-/// an account never shows without the sign-in it needs. A test's tester
-/// proves the store's side without a server.
+/// into the workspace's vault first, then the account into the shared store, so
+/// an account never shows without the sign-in it needs. Where the sign-in is an
+/// entry the vault keeps already (`kept`), the account names that entry and the
+/// password `adding` carries is only what is proved; nothing is kept twice. A
+/// test's tester proves the store's side without a server.
 pub(super) async fn add_mail_with(
     tester: Arc<dyn AccountTester>,
-    root: &Path,
+    (vault, root): (VaultAt<'_>, &Path),
     adding: AddMailAccount,
+    kept: Option<tilo_actions::remote::person_vault::ItemRef>,
 ) -> Result<MailAccount, String> {
     let config = accounts::email::AccountConfig {
         display_name: adding.display_name.trim().to_owned(),
@@ -627,15 +638,41 @@ pub(super) async fn add_mail_with(
     }
     account.config = settings;
 
+    let before = accounts::AccountStore::load_in(root)
+        .get(&account.id)
+        .and_then(|before| sign_in_of(&before.config));
     if !adding.password.is_empty() {
         let checking = account.clone();
         let secret = accounts::Secret::password(adding.password.clone());
         tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
             .await
             .map_err(|_| "the mail server check did not finish".to_string())??;
-        let mut vault = credentials(root)?;
-        vault.put_for(&account, &accounts::Secret::password(adding.password));
-        vault.try_save()?;
+        let reference = match kept {
+            Some(kept) => {
+                // An account kept before with a sign-in of its own lets that one go.
+                if let Some(before) = &before
+                    && before != &kept
+                {
+                    vault.forget_sign_in(account.id.as_str(), before).await?;
+                }
+                kept
+            }
+            None => {
+                vault
+                    .keep_sign_in(
+                        account.id.as_str(),
+                        (accounts::vault_items::ItemKind::Login, places_of(&account)?),
+                        &config.username,
+                        zeroize::Zeroizing::new(adding.password),
+                        before.as_ref(),
+                    )
+                    .await?
+            }
+        };
+        accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
+    } else if let Some(before) = &before {
+        // Kept again without a password, it keeps the sign-in it had.
+        accounts::email::set_password_item(&mut account.config, Some(&before.to_string()));
     }
     let mut store = accounts::AccountStore::load_in(root);
     store.upsert(account.clone());
@@ -643,23 +680,26 @@ pub(super) async fn add_mail_with(
     kept_mail(root, account.id.as_str())
 }
 
-/// Remove `account` and its secret together, and the calendar account kept
-/// as its service where it has one.
-fn remove_mail(root: &Path, account: &str) -> Result<MailAccounts, String> {
+/// Remove `account` and its own sign-in together, and the calendar account kept
+/// as its service where it has one. A member's entry it signed in with stays theirs.
+async fn remove_mail(
+    (vault, root): (VaultAt<'_>, &Path),
+    account: &str,
+) -> Result<MailAccounts, String> {
     let mut store = accounts::AccountStore::load_in(root);
     let id = accounts::AccountId::from(account.to_owned());
     let linked = store.get(&id).and_then(|kept| linked_calendar(root, kept));
+    let sign_in = store.get(&id).and_then(|kept| sign_in_of(&kept.config));
     if !store.remove(&id) {
         return Err("That account is not kept here".into());
     }
     store.save_in(root).map_err(|error| error.to_string())?;
-    let mut vault = credentials(root)?;
-    if vault.remove(&id) {
-        vault.try_save()?;
+    if let Some(sign_in) = &sign_in {
+        vault.forget_sign_in(account, sign_in).await?;
     }
     // The calendars kept as its service go with it.
     if let Some(calendar) = &linked
-        && let Err(why) = remove_calendar(root, calendar)
+        && let Err(why) = remove_calendar((vault, root), calendar).await
     {
         tracing::warn!(
             calendar = %calendar,
@@ -671,13 +711,14 @@ fn remove_mail(root: &Path, account: &str) -> Result<MailAccounts, String> {
     mail_accounts(root)
 }
 
-/// The account `id` names, with the sign-in its vault keeps: what a page
-/// cannot read for itself, and what the host opens the server's session
-/// with.
-fn account_with_secret(
-    root: &Path,
+/// The account `id` names, with the sign-in the workspace's vault keeps for it, the use
+/// written down: what a page cannot read for itself, and what the host opens the server's
+/// session with.
+async fn account_with_secret(
+    signing: Signing<'_>,
     id: &str,
 ) -> Result<(accounts::Account, accounts::Secret), String> {
+    let root = signing.root;
     let store = accounts::AccountStore::load_in(root);
     let account = store
         .get(&accounts::AccountId::from(id.to_owned()))
@@ -686,50 +727,10 @@ fn account_with_secret(
         .ok_or_else(|| "That account is not kept here".to_owned())?;
     // An account a provider signed in on its own page reads with its bearer
     // token, kept fresh through the one shared renewal path; any other with
-    // the sign-in its vault keeps, while its settings name the servers that
-    // sign-in was typed for.
-    let secret = sign_in::mail_secret(root, &account)?;
+    // the entry it names, while its settings name the servers that entry
+    // belongs to.
+    let secret = sign_in::mail_secret(signing.vault, root, &account, signing.by).await?;
     Ok((account, secret))
-}
-
-/// Whether `action`, asked by a person themselves, signs in to one of their
-/// mail accounts.
-fn signs_in(action: &str) -> bool {
-    matches!(
-        action,
-        person_accounts::FETCH
-            | person_accounts::READ
-            | person_accounts::SEARCH
-            | person_accounts::SEND
-            | person_accounts::SAVE_DRAFT
-            | person_accounts::MARK
-    )
-}
-
-/// Bind each mail sign-in kept under `root` with no servers on it to the
-/// servers its account names now. Asked by the keeper of the accounts when
-/// it signs in: for the person themselves, and for this server's own
-/// watching of their inboxes. Never on a call an agent makes under its own
-/// name ([`bound_for_an_agent`]).
-pub(super) fn bind_kept_first(root: &Path) -> Result<(), String> {
-    let store = accounts::AccountStore::load_in(root);
-    credentials(root)?
-        .bind_first(store.list(&accounts::AccountTypeId::from(accounts::email::TYPE_ID)))
-}
-
-/// Whether the sign-in kept for `account` says the servers it was typed
-/// for, so that an agent's call may use it: a call an agent makes under its
-/// own name binds none.
-fn bound_for_an_agent(root: &Path, account: &str) -> Result<(), String> {
-    let vault = credentials(root)?;
-    let id = accounts::AccountId::from(account.to_owned());
-    if vault.get(&id).is_some() && vault.typed_for(&id).is_none() {
-        return Err(
-            "That account's sign-in is not bound to its server yet: it is bound when its person reads their mail themselves"
-                .to_owned(),
-        );
-    }
-    Ok(())
 }
 
 /// Where a begun message waits between its pieces and its send: one
@@ -931,7 +932,7 @@ impl Workspaces {
         &self,
         workspace: Option<&str>,
         session: Session,
-        root: &Path,
+        signing: Signing<'_>,
         staged: Staged,
     ) -> Result<SentMail, String> {
         let message = staged
@@ -941,7 +942,7 @@ impl Workspaces {
             .clone()
             .filter(|message| !message.is_empty());
         let Some((workspace, message)) = workspace.zip(message) else {
-            return send_staged(session, root, staged).await;
+            return send_staged(session, signing, staged).await;
         };
         if let Some(sent) = self.recorded_mail_send(Some(workspace), &staged).await {
             return Ok(sent);
@@ -974,7 +975,7 @@ impl Workspaces {
                 .await;
             return Ok(sent);
         }
-        let outcome = send_staged(session, root, staged).await;
+        let outcome = send_staged(session, signing, staged).await;
         if let Ok(sent) = &outcome {
             let answer = serde_json::to_value(sent).map_err(|error| error.to_string())?;
             if let Err(error) = self
@@ -1044,17 +1045,21 @@ impl Workspaces {
 #[cfg(test)]
 async fn send_staged_with(
     session: Session,
-    root: &Path,
+    signing: Signing<'_>,
     sending: SendId,
 ) -> Result<SentMail, String> {
-    let (dir, beginning) = begun_send(root, &sending.send)?;
-    send_staged(session, root, Staged::read(dir, beginning)?).await
+    let (dir, beginning) = begun_send(signing.root, &sending.send)?;
+    send_staged(session, signing, Staged::read(dir, beginning)?).await
 }
 
 /// Send `staged` through `session`, as it was read.
-async fn send_staged(session: Session, root: &Path, staged: Staged) -> Result<SentMail, String> {
+async fn send_staged(
+    session: Session,
+    signing: Signing<'_>,
+    staged: Staged,
+) -> Result<SentMail, String> {
     let files = staged_files(&staged.dir, &staged.files)?;
-    let outcome = send_leaving(session, root, staged.leaving, files, staged.invitation).await;
+    let outcome = send_leaving(session, signing, staged.leaving, files, staged.invitation).await;
     if outcome.is_ok() {
         let _ = std::fs::remove_dir_all(&staged.dir);
     }
@@ -1065,16 +1070,14 @@ async fn send_staged(session: Session, root: &Path, staged: Staged) -> Result<Se
 /// folder instead of sending it, and forget what was staged of it.
 async fn save_staged_draft_with(
     session: Session,
-    root: &Path,
+    signing: Signing<'_>,
     keeping: SendId,
 ) -> Result<(), String> {
-    let (dir, beginning) = begun_send(root, &keeping.send)?;
+    let (dir, beginning) = begun_send(signing.root, &keeping.send)?;
     let files = staged_files(&dir, &beginning.files)?;
-    let account_id = beginning.message.account.clone();
+    let (account, secret) = account_with_secret(signing, &beginning.message.account).await?;
     let (draft, invitation) = (beginning.message, beginning.calendar_ics);
-    let root = root.to_path_buf();
     let outcome = tokio::task::spawn_blocking(move || {
-        let (account, secret) = account_with_secret(&root, &account_id)?;
         session.save_draft(&account, &secret, &draft, &files, invitation.as_deref())
     })
     .await
@@ -1115,105 +1118,87 @@ pub type Session = Arc<dyn tilo_mail_session::MailSession + Send + Sync>;
 /// Read one folder of one account as its server holds it, through `session`.
 async fn fetch_with(
     session: Session,
-    root: &Path,
+    signing: Signing<'_>,
     asking: FetchMail,
 ) -> Result<FetchedMail, String> {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let (account, secret) = account_with_secret(&root, &asking.account)?;
-        session.fetch(&account, &secret, &asking)
-    })
-    .await
-    .map_err(|_| "the mail session did not finish".to_string())?
+    let (account, secret) = account_with_secret(signing, &asking.account).await?;
+    tokio::task::spawn_blocking(move || session.fetch(&account, &secret, &asking))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 /// Read one message of one account as its server holds it.
 async fn read_with(
     session: Session,
-    root: &Path,
+    signing: Signing<'_>,
     reading: ReadMail,
 ) -> Result<FetchedMessage, String> {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let (account, secret) = account_with_secret(&root, &reading.account)?;
-        session.read(&account, &secret, &reading)
-    })
-    .await
-    .map_err(|_| "the mail session did not finish".to_string())?
+    let (account, secret) = account_with_secret(signing, &reading.account).await?;
+    tokio::task::spawn_blocking(move || session.read(&account, &secret, &reading))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 /// Ask one account's server which messages it holds that match.
 async fn search_with(
     session: Session,
-    root: &Path,
+    signing: Signing<'_>,
     searching: SearchMail,
 ) -> Result<FoundMail, String> {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let (account, secret) = account_with_secret(&root, &searching.account)?;
-        session.search(&account, &secret, &searching)
-    })
-    .await
-    .map_err(|_| "the mail session did not finish".to_string())?
+    let (account, secret) = account_with_secret(signing, &searching.account).await?;
+    tokio::task::spawn_blocking(move || session.search(&account, &secret, &searching))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 #[cfg(test)]
 async fn send_with(
     session: Session,
-    root: &Path,
+    signing: Signing<'_>,
     sending: SendMail,
     files: Vec<Attachment>,
     invitation: Option<String>,
 ) -> Result<SentMail, String> {
-    send_leaving(session, root, Leaving::read(sending)?, files, invitation).await
+    send_leaving(session, signing, Leaving::read(sending)?, files, invitation).await
 }
 
 /// Hand `leaving` to its account's server through `session`: to the
 /// recipients it was read with, and to nobody else.
 async fn send_leaving(
     session: Session,
-    root: &Path,
+    signing: Signing<'_>,
     leaving: Leaving,
     files: Vec<Attachment>,
     invitation: Option<String>,
 ) -> Result<SentMail, String> {
-    let root = root.to_path_buf();
+    let (account, secret) = account_with_secret(signing, &leaving.message().account).await?;
     tokio::task::spawn_blocking(move || {
-        let (account, secret) = account_with_secret(&root, &leaving.message().account)?;
         session.send(&account, &secret, &leaving, &files, invitation.as_deref())
     })
     .await
     .map_err(|_| "the mail session did not finish".to_string())?
 }
 
-async fn mark_with(session: Session, root: &Path, marking: MarkMail) -> Result<(), String> {
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let (account, secret) = account_with_secret(&root, &marking.account)?;
-        session.mark(&account, &secret, &marking)
-    })
-    .await
-    .map_err(|_| "the mail session did not finish".to_string())?
+async fn mark_with(
+    session: Session,
+    signing: Signing<'_>,
+    marking: MarkMail,
+) -> Result<(), String> {
+    let (account, secret) = account_with_secret(signing, &marking.account).await?;
+    tokio::task::spawn_blocking(move || session.mark(&account, &secret, &marking))
+        .await
+        .map_err(|_| "the mail session did not finish".to_string())?
 }
 
 /// The providers the person keeps, their models and what runs where.
 pub(super) fn providers(root: &Path) -> ModelProviders {
-    let config = provider_config(root);
-    providers_of(&config, &ProviderKeys::of(root))
+    providers_of(&provider_config(root))
 }
 
-/// `config`'s providers as the pane reads them, with `keys` saying which
-/// keys are kept.
-fn providers_of(
-    config: &agent_provider_config::ProviderConfig,
-    keys: &ProviderKeys,
-) -> ModelProviders {
+/// `config`'s providers as the pane reads them, each saying whether it names a key.
+fn providers_of(config: &agent_provider_config::ProviderConfig) -> ModelProviders {
     ModelProviders {
-        providers: config
-            .profiles
-            .iter()
-            .map(|profile| view_of(profile, keys))
-            .collect(),
+        providers: config.profiles.iter().map(view_of).collect(),
         default_provider: config.default_profile.clone(),
         assignments: config
             .interaction_models
@@ -1228,10 +1213,7 @@ fn providers_of(
 }
 
 /// One provider as the pane reads it.
-pub(super) fn view_of(
-    profile: &agent_provider_config::ProviderProfile,
-    keys: &ProviderKeys,
-) -> ProviderView {
+pub(super) fn view_of(profile: &agent_provider_config::ProviderProfile) -> ProviderView {
     ProviderView {
         id: profile.id.clone(),
         name: profile.label.clone(),
@@ -1244,7 +1226,7 @@ pub(super) fn view_of(
             }
         },
         endpoint: profile.endpoint.clone(),
-        configured: keys.kept(profile),
+        configured: key_kept(profile),
         signs_in: profile.sign_in.is_some(),
         models: profile
             .models
@@ -1277,73 +1259,157 @@ pub(super) fn save_provider_config(
     config.save_in(&*store).map_err(|error| error.to_string())
 }
 
-/// The person's provider keys in their vault, each kept as a Tilo computer
-/// keeps it: bound to its provider's endpoint origin
-/// ([`accounts::provider_api_key`]), so a key is only ever sent where it was
-/// entered for.
-pub(super) struct ProviderKeys(accounts::ServiceCredentials);
+/// The entry of the workspace's vault `profile` names as its key, or as the grant its
+/// sign-in left.
+pub(super) fn key_reference(
+    profile: &agent_provider_config::ProviderProfile,
+) -> Option<tilo_actions::remote::person_vault::ItemRef> {
+    let named = match &profile.sign_in {
+        Some(sign_in) => sign_in.kept.as_ref(),
+        None => profile.credential.as_ref(),
+    };
+    named
+        .and_then(agent_provider_config::SecretReference::workspace_vault_item)
+        .and_then(tilo_actions::remote::person_vault::ItemRef::parse)
+}
 
-impl ProviderKeys {
-    /// The keys in the person's vault under `root`.
-    pub(super) fn of(root: &Path) -> Self {
-        Self(accounts::ServiceCredentials::open_in(root))
+/// Whether `profile` names a key, or a grant, in the workspace's vault.
+pub(super) fn key_kept(profile: &agent_provider_config::ProviderProfile) -> bool {
+    key_reference(profile).is_some()
+}
+
+/// Name `reference` as `profile`'s key, or as its sign-in's grant, or with `None` name none.
+fn name_key(
+    profile: &mut agent_provider_config::ProviderProfile,
+    reference: Option<&tilo_actions::remote::person_vault::ItemRef>,
+) {
+    let named = reference.map(|reference| {
+        agent_provider_config::SecretReference::workspace_vault(&reference.to_string())
+    });
+    match &mut profile.sign_in {
+        Some(sign_in) => sign_in.kept = named,
+        None => profile.credential = named,
+    }
+}
+
+/// The place a provider's key is sent to: its endpoint's origin.
+fn key_place(
+    profile: &agent_provider_config::ProviderProfile,
+) -> Result<accounts::vault_items::Place, String> {
+    accounts::vault_items::Place::parse(&profile.endpoint)
+        .ok()
+        .filter(accounts::vault_items::Place::is_web)
+        .ok_or_else(|| "A provider's endpoint is a URL".to_owned())
+}
+
+/// The workspace's provider keys: entries of its vault, each named by its provider's settings
+/// ([`key_reference`]) and bound to the origin of its provider's endpoint, so a key is only
+/// ever sent where it was entered for. Each key read is a use the entry writes down, for `by`.
+#[derive(Clone, Copy)]
+pub(super) struct ProviderKeys<'a> {
+    vault: VaultAt<'a>,
+    by: &'a str,
+}
+
+impl<'a> ProviderKeys<'a> {
+    /// The keys in `vault`, read for `by` (empty for a person or this host itself).
+    pub(super) const fn of(vault: VaultAt<'a>, by: &'a str) -> Self {
+        Self { vault, by }
     }
 
-    /// The key `profile` is asked with: none where none is kept for its
-    /// endpoint's origin.
-    pub(super) fn get(
+    /// The vault the keys are entries of.
+    pub(super) const fn vault(&self) -> VaultAt<'a> {
+        self.vault
+    }
+
+    /// The key `profile` is asked with, the use written down: none where it names none, or
+    /// where the entry it names is gone or belongs to another origin than its endpoint's, which
+    /// it is never sent to.
+    pub(super) async fn get(
         &self,
         profile: &agent_provider_config::ProviderProfile,
     ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
-        let (reference, authorization) = binding(profile)?;
-        match self.0.resolve(&reference, &authorization) {
-            Ok(key) => Ok(key.filter(|key| !key.is_empty())),
-            // Kept for another origin: never sent here.
-            Err(accounts::secrets::BrokerError::Denied) => Ok(None),
-            Err(error) => Err(key_error(&error)),
-        }
+        let Some(reference) = key_reference(profile) else {
+            return Ok(None);
+        };
+        let place = key_place(profile)?;
+        let used = self
+            .vault
+            .try_sign_in(
+                &reference,
+                (
+                    accounts::vault_items::ItemKind::Key,
+                    std::slice::from_ref(&place),
+                ),
+                self.by,
+                PROVIDER_CALL,
+            )
+            .await?;
+        Ok(used.map(|released| released.secret))
     }
 
-    /// Whether a key is kept for `profile`.
-    pub(super) fn kept(&self, profile: &agent_provider_config::ProviderProfile) -> bool {
-        self.get(profile).is_ok_and(|key| key.is_some())
-    }
-
-    pub(super) fn put(
+    /// Keep `key` as `profile`'s own key (or its sign-in's grant) in place of the one it kept
+    /// before, and name it in `profile` for whoever keeps the settings to save.
+    pub(super) async fn put(
         &self,
-        profile: &agent_provider_config::ProviderProfile,
+        profile: &mut agent_provider_config::ProviderProfile,
         key: &str,
     ) -> Result<(), String> {
-        let (reference, authorization) = binding(profile)?;
-        self.0
-            .store(&reference, &authorization, key)
-            .map_err(|error| key_error(&error))
+        let place = key_place(profile)?;
+        let reference = self
+            .vault
+            .keep_sign_in(
+                &kept_sign_ins::provider_owner(&profile.id),
+                (accounts::vault_items::ItemKind::Key, vec![place]),
+                "",
+                zeroize::Zeroizing::new(key.to_owned()),
+                key_reference(profile).as_ref(),
+            )
+            .await?;
+        name_key(profile, Some(&reference));
+        Ok(())
     }
 
-    fn remove(&self, profile: &agent_provider_config::ProviderProfile) -> Result<(), String> {
-        let (reference, authorization) = binding(profile)?;
-        self.0
-            .remove(&reference, &authorization)
-            .map(drop)
-            .map_err(|error| key_error(&error))
-    }
-}
-
-fn binding(
-    profile: &agent_provider_config::ProviderProfile,
-) -> Result<(accounts::CredentialRef, accounts::ServiceAuthorization), String> {
-    accounts::provider_api_key(&profile.id, &profile.endpoint)
-        .map_err(|_| "A provider's endpoint is a URL".to_owned())
-}
-
-fn key_error(error: &accounts::secrets::BrokerError) -> String {
-    match error {
-        accounts::secrets::BrokerError::Denied => {
-            "A key kept for this provider belongs to another address".to_owned()
+    /// Name the entry `reference` a member keeps as `profile`'s key: the key stays theirs, and
+    /// the key the provider kept of its own before goes.
+    pub(super) async fn name(
+        &self,
+        profile: &mut agent_provider_config::ProviderProfile,
+        reference: &tilo_actions::remote::person_vault::ItemRef,
+    ) -> Result<(), String> {
+        if let Some(before) = key_reference(profile)
+            && &before != reference
+        {
+            self.vault
+                .forget_sign_in(&kept_sign_ins::provider_owner(&profile.id), &before)
+                .await?;
         }
-        _ => "The vault cannot be read".to_owned(),
+        name_key(profile, Some(reference));
+        Ok(())
+    }
+
+    /// Let `profile`'s key go: its own entry is forgotten, a member's stays theirs, and
+    /// `profile` names none.
+    pub(super) async fn remove(
+        &self,
+        profile: &mut agent_provider_config::ProviderProfile,
+    ) -> Result<(), String> {
+        if let Some(before) = key_reference(profile) {
+            self.vault
+                .forget_sign_in(&kept_sign_ins::provider_owner(&profile.id), &before)
+                .await?;
+        }
+        name_key(profile, None);
+        Ok(())
     }
 }
+
+/// What a provider's key is used for: calling the provider.
+const PROVIDER_CALL: accounts::vault_items::UsedFor<'static> = accounts::vault_items::UsedFor {
+    using: "model-call",
+    what: "",
+    allowed: None,
+};
 
 /// Keep the provider `adding` names, at an address this host calls
 /// (`destinations`, [`kept_location`]).
@@ -1375,55 +1441,79 @@ pub(super) fn add_provider(
         enabled: true,
         ..Default::default()
     };
-    let view = view_of(&profile, &ProviderKeys::of(root));
+    let view = view_of(&profile);
     config.profiles.push(profile);
     save_provider_config(root, &config)?;
     Ok(view)
 }
 
-pub(super) fn set_key(root: &Path, setting: SetKey) -> Result<ProviderView, String> {
+/// Keep `setting`'s key as its provider's: typed, its own entry of the workspace's vault; or,
+/// where `kept` names a member's entry it was read from, that entry, which is not copied.
+pub(super) async fn set_key(
+    (keys, root): (ProviderKeys<'_>, &Path),
+    setting: SetKey,
+    kept: Option<&tilo_actions::remote::person_vault::ItemRef>,
+) -> Result<ProviderView, String> {
     let SetKey { provider, key } = setting;
     let key = zeroize::Zeroizing::new(key);
     if key.trim().is_empty() {
         return Err("An API key cannot be empty".into());
     }
+    let mut profile = provider_config(root)
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == provider)
+        .ok_or_else(|| "That provider is not kept here".to_owned())?;
+    match kept {
+        Some(kept) => keys.name(&mut profile, kept).await?,
+        None => keys.put(&mut profile, key.trim()).await?,
+    }
+    save_named_key(root, &profile)
+}
+
+/// Keep the key `profile` names now in the settings under `root`, read again after the vault
+/// was written so a change made to them meanwhile stays, answering the provider as kept.
+pub(super) fn save_named_key(
+    root: &Path,
+    profile: &agent_provider_config::ProviderProfile,
+) -> Result<ProviderView, String> {
     let mut config = provider_config(root);
-    let profile = config
+    let named = config
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == provider)
+        .find(|kept| kept.id == profile.id)
         .ok_or_else(|| "That provider is not kept here".to_owned())?;
-    profile.credential = Some(agent_provider_config::SecretReference::provider_api_key(
-        &profile.id,
-    ));
-    let profile = profile.clone();
-    let keys = ProviderKeys::of(root);
-    keys.put(&profile, key.trim())?;
+    named.credential.clone_from(&profile.credential);
+    named.sign_in.clone_from(&profile.sign_in);
+    let view = view_of(named);
     save_provider_config(root, &config)?;
-    Ok(view_of(&profile, &keys))
+    Ok(view)
 }
 
-pub(super) fn remove_key(root: &Path, provider: &str) -> Result<ProviderView, String> {
-    let config = provider_config(root);
-    let profile = config
+pub(super) async fn remove_key(
+    (keys, root): (ProviderKeys<'_>, &Path),
+    provider: &str,
+) -> Result<ProviderView, String> {
+    let mut profile = provider_config(root)
         .profiles
-        .iter()
+        .into_iter()
         .find(|profile| profile.id == provider)
         .ok_or_else(|| "That provider is not kept here".to_owned())?;
-    let keys = ProviderKeys::of(root);
-    keys.remove(profile)?;
-    Ok(view_of(profile, &keys))
+    keys.remove(&mut profile).await?;
+    save_named_key(root, &profile)
 }
 
-pub(super) fn remove_provider(root: &Path, provider: &str) -> Result<ModelProviders, String> {
+pub(super) async fn remove_provider(
+    (keys, root): (ProviderKeys<'_>, &Path),
+    provider: &str,
+) -> Result<ModelProviders, String> {
+    let mut removed = provider_config(root)
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == provider)
+        .ok_or_else(|| "That provider is not kept here".to_owned())?;
+    keys.remove(&mut removed).await?;
     let mut config = provider_config(root);
-    let removed = config
-        .profiles
-        .iter()
-        .find(|profile| profile.id == provider)
-        .cloned()
-        .ok_or_else(|| "That provider is not kept here".to_owned())?;
-    ProviderKeys::of(root).remove(&removed)?;
     config.profiles.retain(|profile| profile.id != provider);
     if config.default_profile.as_deref() == Some(provider) {
         config.default_profile = None;
@@ -1492,11 +1582,51 @@ mod tests {
         files
     }
 
-    /// A provider key is kept in the person's vault, never in the settings
-    /// document, and the read back says only that one is kept.
-    #[test]
-    fn a_provider_key_is_kept_in_the_vault_and_never_read_back() {
+    /// A workspace's vault held for one test: what the vault document keeps on a host.
+    pub(super) fn held() -> &'static std::sync::Mutex<accounts::vault_items::VaultItems> {
+        Box::leak(Box::default())
+    }
+
+    /// Every entry `vault` keeps: its password and the places it belongs to.
+    pub(super) fn entries_of(
+        vault: &std::sync::Mutex<accounts::vault_items::VaultItems>,
+    ) -> Vec<(String, Vec<String>)> {
+        vault
+            .lock()
+            .unwrap()
+            .kept()
+            .into_iter()
+            .map(|(entry, _)| {
+                (
+                    entry.password.clone(),
+                    entry.origins.iter().cloned().collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Whether any file under `root` holds `secret` as it is.
+    fn files_holding(root: &Path, secret: &str) -> Vec<PathBuf> {
+        files_under(root)
+            .into_iter()
+            .filter(|file| {
+                std::fs::read(file).is_ok_and(|bytes| {
+                    bytes
+                        .windows(secret.len())
+                        .any(|window| window == secret.as_bytes())
+                })
+            })
+            .collect()
+    }
+
+    /// A provider key is an entry of the workspace's vault, bound to its endpoint's origin,
+    /// never in the settings document or any other file the host keeps, and the read back says
+    /// only that one is kept.
+    #[tokio::test]
+    async fn a_provider_key_is_kept_in_the_vault_and_never_read_back() {
         let root = temp_root();
+        let vault = held();
+        let keys = ProviderKeys::of(VaultAt::Held(vault), "");
         let added = add_provider(
             root.path(),
             &person_models::AddProvider {
@@ -1510,39 +1640,47 @@ mod tests {
         assert!(!added.configured);
 
         let kept = set_key(
-            root.path(),
+            (keys, root.path()),
             SetKey {
                 provider: added.id.clone(),
                 key: "sk-live-secret".into(),
             },
+            None,
         )
+        .await
         .expect("the key is kept");
         assert!(kept.configured);
-
-        // No file the host keeps in the clear carries the key: the settings
-        // documents hold a reference to it, the vault holds it sealed.
-        for file in files_under(root.path()) {
-            let bytes = std::fs::read(&file).expect("a file the host keeps");
-            assert!(
-                !bytes.windows(13).any(|window| window == b"sk-live-secret"),
-                "{} carries the key in the clear",
-                file.display()
-            );
-        }
+        assert_eq!(
+            entries_of(vault),
+            [(
+                "sk-live-secret".to_owned(),
+                vec!["https://api.openai.com".to_owned()]
+            )]
+        );
+        assert_eq!(
+            files_holding(root.path(), "sk-live-secret"),
+            Vec::<PathBuf>::new(),
+            "the settings name the key; no file the host keeps holds it"
+        );
         let listed = providers(root.path());
         let json = serde_json::to_string(&listed).unwrap();
         assert!(!json.contains("sk-live-secret"), "{json}");
         assert!(json.contains("\"configured\":true"), "{json}");
 
-        remove_key(root.path(), &added.id).expect("the key is removed");
+        remove_key((keys, root.path()), &added.id)
+            .await
+            .expect("the key is removed");
         assert!(!providers(root.path()).providers[0].configured);
+        assert!(entries_of(vault).is_empty(), "the key's entry went with it");
     }
 
     /// A provider removed takes its key with it, and its model choices stop
     /// naming it.
-    #[test]
-    fn removing_a_provider_takes_its_key_and_choices() {
+    #[tokio::test]
+    async fn removing_a_provider_takes_its_key_and_choices() {
         let root = temp_root();
+        let vault = held();
+        let keys = ProviderKeys::of(VaultAt::Held(vault), "");
         let added = add_provider(
             root.path(),
             &person_models::AddProvider {
@@ -1554,30 +1692,30 @@ mod tests {
         )
         .expect("a provider is added");
         set_key(
-            root.path(),
+            (keys, root.path()),
             SetKey {
                 provider: added.id.clone(),
                 key: "sk-ant-secret".into(),
             },
+            None,
         )
+        .await
         .expect("the key is kept");
-        let remaining = remove_provider(root.path(), &added.id).expect("the provider is removed");
+        assert_eq!(entries_of(vault).len(), 1);
+        let remaining = remove_provider((keys, root.path()), &added.id)
+            .await
+            .expect("the provider is removed");
         assert!(remaining.providers.is_empty());
-        let (reference, authorization) =
-            accounts::provider_api_key(&added.id, "https://api.anthropic.com").unwrap();
-        assert!(
-            !accounts::ServiceCredentials::open_in(root.path())
-                .status(&reference, &authorization)
-                .expect("the vault")
-        );
+        assert!(entries_of(vault).is_empty());
     }
 
     /// A key is kept for its provider's endpoint origin, as a Tilo computer
     /// keeps it: pointed elsewhere, the provider has no key until one is
     /// entered for the new address, and the old one is never sent there.
-    #[test]
-    fn a_key_does_not_follow_an_edited_endpoint() {
+    #[tokio::test]
+    async fn a_key_does_not_follow_an_edited_endpoint() {
         let root = temp_root();
+        let keys = ProviderKeys::of(VaultAt::Held(held()), "");
         let added = add_provider(
             root.path(),
             &person_models::AddProvider {
@@ -1589,22 +1727,31 @@ mod tests {
         )
         .expect("a provider is added");
         let kept = set_key(
-            root.path(),
+            (keys, root.path()),
             SetKey {
                 provider: added.id,
                 key: "sk-for-example".into(),
             },
+            None,
         )
+        .await
         .expect("the key is kept");
         assert!(kept.configured);
+        let at_home = provider_config(root.path()).profiles[0].clone();
+        assert_eq!(
+            keys.get(&at_home)
+                .await
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("sk-for-example")
+        );
 
         let mut config = provider_config(root.path());
         config.profiles[0].endpoint = "https://elsewhere.example.net/v1".into();
         save_provider_config(root.path(), &config).unwrap();
         let moved = &provider_config(root.path()).profiles[0];
-        assert_eq!(ProviderKeys::of(root.path()).get(moved).unwrap(), None);
-        let listed = providers(root.path());
-        assert!(!listed.providers[0].configured, "{listed:?}");
+        assert_eq!(keys.get(moved).await.unwrap(), None);
     }
 
     /// A provider without a name or a URL is refused before anything is
@@ -1627,44 +1774,79 @@ mod tests {
         assert!(providers(root.path()).providers.is_empty());
     }
 
-    /// A mail account's stored metadata never holds its password; a removal
-    /// takes the secret with the account.
-    #[test]
-    fn a_mail_account_keeps_its_secret_out_of_the_store() {
+    /// A mail account's stored settings never hold its password, only the entry of the
+    /// workspace's vault that does. A removal takes the account's own entry with it, and leaves
+    /// a member's entry another account signed in with.
+    #[tokio::test]
+    async fn a_mail_account_keeps_its_secret_out_of_the_store() {
         let root = temp_root();
+        let vault = held();
+        let at = VaultAt::Held(vault);
         // The server check needs a server; keeping and removing are what the
         // store and vault do, so they are proven without one.
         let mut store = accounts::AccountStore::load_in(root.path());
-        let mut account = accounts::Account::new("ada@example.test", accounts::email::TYPE_ID);
-        account.config = serde_json::json!({
-            "email": "ada@example.test",
-            "imap_host": "imap.example.test",
-            "imap_port": 993,
-            "smtp_host": "smtp.example.test",
-            "smtp_port": 465,
-        });
-        store.upsert(account);
+        let mut kept = Vec::new();
+        for (address, own) in [("ada@example.test", true), ("bo@example.test", false)] {
+            let mut account = accounts::Account::new(address, accounts::email::TYPE_ID);
+            account.config = serde_json::json!({
+                "email": address,
+                "imap_host": "imap.example.test",
+                "imap_port": 993,
+                "smtp_host": "smtp.example.test",
+                "smtp_port": 465,
+            });
+            let places = kept_sign_ins::places_of(&account).unwrap();
+            let password = format!("{}-hunter2", &address[..2]);
+            let reference = if own {
+                at.keep_sign_in(
+                    address,
+                    (accounts::vault_items::ItemKind::Login, places),
+                    address,
+                    zeroize::Zeroizing::new(password),
+                    None,
+                )
+                .await
+                .unwrap()
+            } else {
+                let added = vault
+                    .lock()
+                    .unwrap()
+                    .add(accounts::vault_items::NewItem::new(
+                        accounts::vault_items::ItemKind::Login,
+                        places,
+                        address.to_owned(),
+                        password,
+                    ))
+                    .unwrap();
+                tilo_actions::remote::person_vault::ItemRef::from_id(added.id.as_str()).unwrap()
+            };
+            accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
+            kept.push(account.clone());
+            store.upsert(account);
+        }
         store.save_in(root.path()).expect("the store saves");
-        let mut vault = credentials(root.path()).expect("the vault");
-        vault.put(
-            &accounts::AccountId::from("ada@example.test"),
-            &accounts::Secret::password("hunter2"),
-        );
-        vault.try_save().expect("the secret is kept");
 
         let listed = mail_accounts(root.path()).expect("the accounts read back");
-        assert_eq!(listed.accounts.len(), 1);
-        assert!(listed.accounts[0].has_secret);
+        assert_eq!(listed.accounts.len(), 2);
+        assert!(listed.accounts.iter().all(|account| account.has_secret));
         let json = serde_json::to_string(&listed).unwrap();
         assert!(!json.contains("hunter2"), "{json}");
+        assert_eq!(files_holding(root.path(), "hunter2"), Vec::<PathBuf>::new());
 
-        let removed = remove_mail(root.path(), "ada@example.test").expect("the account is removed");
-        assert!(removed.accounts.is_empty());
-        assert!(
-            credentials(root.path())
-                .expect("the vault")
-                .get(&accounts::AccountId::from("ada@example.test"))
-                .is_none()
+        let removed = remove_mail((at, root.path()), "ada@example.test")
+            .await
+            .expect("the account is removed");
+        assert_eq!(removed.accounts.len(), 1);
+        remove_mail((at, root.path()), "bo@example.test")
+            .await
+            .expect("the other is removed");
+        assert_eq!(
+            entries_of(vault)
+                .into_iter()
+                .map(|(password, _)| password)
+                .collect::<Vec<_>>(),
+            ["bo-hunter2"],
+            "the account's own sign-in went with it, and the member's entry stays theirs"
         );
     }
 }
@@ -1837,33 +2019,18 @@ mod mail_session_tests {
     fn a_page_reads_and_sends_through_the_accounts_the_person_keeps() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let mut account = accounts::Account::new(
-            accounts::AccountId::from("ada@example.test"),
-            accounts::email::TYPE_ID,
-        );
-        account.config = serde_json::json!({
-            "email": "ada@example.test",
-            "username": "ada@example.test",
-            "imap_host": "imap.example.test",
-            "imap_port": 993,
-            "smtp_host": "smtp.example.test",
-            "smtp_port": 465
-        });
-        let mut store = accounts::AccountStore::load_in(root);
-        store.upsert(account);
-        store.save_in(root).unwrap();
-        let mut vault = accounts::AccountCredentials::open_in(root).unwrap();
-        vault.put(
-            &accounts::AccountId::from("ada@example.test"),
-            &accounts::Secret::password("fixture-password"),
-        );
-        vault.try_save().unwrap();
-
+        let vault = super::tests::held();
+        let signing = Signing {
+            vault: VaultAt::Held(vault),
+            root,
+            by: "",
+        };
         let fixture = Arc::new(Fixture::default());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
+        runtime.block_on(account_with_sign_in(signing));
         let listing = mail_accounts(root).unwrap();
         assert_eq!(listing.accounts.len(), 1);
         assert!(listing.accounts[0].has_secret);
@@ -1871,7 +2038,7 @@ mod mail_session_tests {
         let fetched = runtime
             .block_on(fetch_with(
                 fixture.clone(),
-                root,
+                signing,
                 FetchMail {
                     account: "ada@example.test".into(),
                     folder: "inbox".into(),
@@ -1885,7 +2052,7 @@ mod mail_session_tests {
         runtime
             .block_on(send_with(
                 fixture.clone(),
-                root,
+                signing,
                 SendMail {
                     account: "ada@example.test".into(),
                     from_address: "ada@example.test".into(),
@@ -1899,7 +2066,7 @@ mod mail_session_tests {
         runtime
             .block_on(mark_with(
                 fixture.clone(),
-                root,
+                signing,
                 MarkMail {
                     account: "ada@example.test".into(),
                     folder: "inbox".into(),
@@ -1924,7 +2091,7 @@ mod mail_session_tests {
         let unknown = runtime
             .block_on(fetch_with(
                 fixture,
-                root,
+                signing,
                 FetchMail {
                     account: "eve@example.test".into(),
                     folder: "inbox".into(),
@@ -1941,17 +2108,22 @@ mod mail_session_tests {
     fn a_page_reads_one_message_searches_and_keeps_a_draft_through_the_host() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        account_with_sign_in(root);
+        let signing = Signing {
+            vault: VaultAt::Held(super::tests::held()),
+            root,
+            by: "",
+        };
         let fixture = Arc::new(Fixture::default());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
+        runtime.block_on(account_with_sign_in(signing));
 
         let read = runtime
             .block_on(read_with(
                 fixture.clone(),
-                root,
+                signing,
                 ReadMail {
                     account: "ada@example.test".into(),
                     folder: "inbox".into(),
@@ -1964,7 +2136,7 @@ mod mail_session_tests {
         let found = runtime
             .block_on(search_with(
                 fixture.clone(),
-                root,
+                signing,
                 SearchMail {
                     account: "ada@example.test".into(),
                     text: Some("hello".into()),
@@ -1991,7 +2163,7 @@ mod mail_session_tests {
         runtime
             .block_on(save_staged_draft_with(
                 session,
-                root,
+                signing,
                 SendId {
                     send: began.send.clone(),
                 },
@@ -2012,9 +2184,10 @@ mod mail_session_tests {
         );
     }
 
-    /// An account and its sign-in, as a test keeps them: the files the host
-    /// reads to send for a page.
-    fn account_with_sign_in(root: &Path) {
+    /// An account and its sign-in, as a test keeps them: the account in the
+    /// workspace's store, naming its entry of the workspace's vault.
+    async fn account_with_sign_in(signing: Signing<'_>) {
+        let root = signing.root;
         let mut account = accounts::Account::new(
             accounts::AccountId::from("ada@example.test"),
             accounts::email::TYPE_ID,
@@ -2027,15 +2200,24 @@ mod mail_session_tests {
             "smtp_host": "smtp.example.test",
             "smtp_port": 465
         });
+        let reference = signing
+            .vault
+            .keep_sign_in(
+                "ada@example.test",
+                (
+                    accounts::vault_items::ItemKind::Login,
+                    places_of(&account).unwrap(),
+                ),
+                "ada@example.test",
+                zeroize::Zeroizing::new("fixture-password".to_owned()),
+                None,
+            )
+            .await
+            .unwrap();
+        accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
         let mut store = accounts::AccountStore::load_in(root);
         store.upsert(account);
         store.save_in(root).unwrap();
-        let mut vault = accounts::AccountCredentials::open_in(root).unwrap();
-        vault.put(
-            &accounts::AccountId::from("ada@example.test"),
-            &accounts::Secret::password("fixture-password"),
-        );
-        vault.try_save().unwrap();
     }
 
     /// A page begins the message, hands its file over in pieces, and sends
@@ -2045,12 +2227,17 @@ mod mail_session_tests {
     fn a_page_hands_a_messages_files_over_in_pieces() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        account_with_sign_in(root);
+        let signing = Signing {
+            vault: VaultAt::Held(super::tests::held()),
+            root,
+            by: "",
+        };
         let fixture = Arc::new(Fixture::default());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
+        runtime.block_on(account_with_sign_in(signing));
 
         let began = begin_send(
             root,
@@ -2104,7 +2291,7 @@ mod mail_session_tests {
         let sent = runtime
             .block_on(send_staged_with(
                 session,
-                root,
+                signing,
                 SendId {
                     send: began.send.clone(),
                 },
@@ -2130,7 +2317,11 @@ mod mail_session_tests {
 
         // A message no longer staged is refused, never sent twice.
         let session: Session = fixture;
-        let again = runtime.block_on(send_staged_with(session, root, SendId { send: began.send }));
+        let again = runtime.block_on(send_staged_with(
+            session,
+            signing,
+            SendId { send: began.send },
+        ));
         assert!(again.is_err(), "a sent message is gone");
     }
 
@@ -2161,6 +2352,7 @@ mod mail_session_tests {
     fn a_migrated_account_keeps_its_identities_and_its_sign_in() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        let vault = super::tests::held();
         let tester = Arc::new(Accepting::default());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2169,7 +2361,7 @@ mod mail_session_tests {
         let kept = runtime
             .block_on(add_mail_with(
                 tester.clone(),
-                root,
+                (VaultAt::Held(vault), root),
                 AddMailAccount {
                     address: "ada@example.test".into(),
                     display_name: "Ada".into(),
@@ -2182,6 +2374,7 @@ mod mail_session_tests {
                     identities: vec!["Ada at work <ada@work.example.test>".into()],
                     services: person_accounts::Services::default(),
                 },
+                None,
             ))
             .unwrap();
         assert!(kept.has_secret);
@@ -2202,6 +2395,17 @@ mod mail_session_tests {
             vec!["Ada at work <ada@work.example.test>".to_owned()]
         );
         assert!(!config.import_pending);
+        assert_eq!(
+            super::tests::entries_of(vault),
+            [(
+                "thunderbird-secret".to_owned(),
+                vec![
+                    "imap://imap.example.test:993".to_owned(),
+                    "smtp://smtp.example.test:465".to_owned()
+                ]
+            )],
+            "the sign-in is the account's own entry of the workspace's vault, at its servers"
+        );
 
         for path in walk(root) {
             let bytes = std::fs::read(&path).unwrap();
@@ -2229,7 +2433,7 @@ mod mail_session_tests {
         let kept = runtime
             .block_on(add_mail_with(
                 tester.clone(),
-                root,
+                (VaultAt::Held(super::tests::held()), root),
                 AddMailAccount {
                     address: "ada@example.test".into(),
                     display_name: String::new(),
@@ -2242,6 +2446,7 @@ mod mail_session_tests {
                     identities: Vec::new(),
                     services: person_accounts::Services::default(),
                 },
+                None,
             ))
             .unwrap();
         assert!(!kept.has_secret);
@@ -2254,66 +2459,47 @@ mod mail_session_tests {
         assert!(config.import_pending);
     }
 
-    /// A sign-in is typed for the servers its account names then. One kept
-    /// with no servers on it is bound when the keeper of the account asks
-    /// for it, never on a call an agent makes under its own name; and once
-    /// bound it is joined to no account that names another server.
+    /// A sign-in belongs to the servers its account names when it is kept. An
+    /// account that comes to name another server signs in nowhere with it,
+    /// whoever asks, until it names its own servers again.
     #[test]
-    fn a_sign_in_is_bound_by_its_keeper_and_joined_at_no_other_server() {
+    fn a_sign_in_is_used_at_its_own_servers_alone() {
         const ADA: &str = "ada@example.test";
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let id = accounts::AccountId::from(ADA);
+        let signing = Signing {
+            vault: VaultAt::Held(super::tests::held()),
+            root,
+            by: "",
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(account_with_sign_in(signing));
         let names = |incoming: &str| {
-            let mut settings = accounts::email::AccountConfig {
-                email: ADA.into(),
-                ..Default::default()
-            };
-            // An address it does not know names imap. and smtp. of its domain.
-            settings.autofill_from_email();
-            let mut settings = settings.to_value().unwrap();
-            for value in settings.as_object_mut().unwrap().values_mut() {
-                if value.as_str() == Some("imap.example.test") {
-                    *value = incoming.into();
-                }
-            }
-            let mut account = accounts::Account::new(id.clone(), accounts::email::TYPE_ID);
-            account.config = settings;
-            let mut store = accounts::AccountStore::new();
+            let mut store = accounts::AccountStore::load_in(root);
+            let mut account = store.get(&accounts::AccountId::from(ADA)).cloned().unwrap();
+            account.config["imap_host"] = incoming.into();
             store.upsert(account);
             store.save_in(root).unwrap();
         };
-        // Kept as before the vault remembered: with no servers on it.
-        names("imap.example.test");
-        let mut vault = credentials(root).unwrap();
-        vault.put(&id, &accounts::Secret::password("kept-for-a-test"));
-        vault.try_save().unwrap();
+        let (_, secret) = runtime.block_on(account_with_secret(signing, ADA)).unwrap();
+        assert_eq!(secret.password, "fixture-password");
 
-        // An agent's call binds nothing and is refused in words.
-        let refused = bound_for_an_agent(root, ADA).unwrap_err();
-        assert!(refused.contains("not bound"), "{refused}");
-        assert_eq!(credentials(root).unwrap().typed_for(&id), None);
-
-        // The keeper asks: it is bound to the servers the account names now.
-        bind_kept_first(root).unwrap();
-        bound_for_an_agent(root, ADA).unwrap();
-        let bound = credentials(root).unwrap().typed_for(&id).unwrap();
-        assert!(
-            bound.servers.contains("imap://imap.example.test:993"),
-            "{bound:?}"
-        );
-        assert!(account_with_secret(root, ADA).is_ok());
-
-        // The account comes to name another server: the sign-in does not
-        // follow it there, whoever asks.
         names("imap.elsewhere.example");
-        bind_kept_first(root).unwrap();
-        assert_eq!(
-            account_with_secret(root, ADA).unwrap_err(),
-            "That account has no sign-in yet"
-        );
+        let refused = runtime
+            .block_on(account_with_secret(signing, ADA))
+            .unwrap_err();
+        assert!(refused.contains("other servers"), "{refused}");
+        let agent = Signing {
+            by: "scout",
+            ..signing
+        };
+        assert!(runtime.block_on(account_with_secret(agent, ADA)).is_err());
+
         names("imap.example.test");
-        assert!(account_with_secret(root, ADA).is_ok());
+        assert!(runtime.block_on(account_with_secret(signing, ADA)).is_ok());
     }
 
     fn walk(dir: &Path) -> Vec<PathBuf> {
@@ -2341,6 +2527,11 @@ mod mail_session_tests {
     fn an_account_without_its_sign_in_reaches_no_server() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        let signing = Signing {
+            vault: VaultAt::Held(super::tests::held()),
+            root,
+            by: "",
+        };
         let mut account = accounts::Account::new(
             accounts::AccountId::from("ada@example.test"),
             accounts::email::TYPE_ID,
@@ -2361,7 +2552,7 @@ mod mail_session_tests {
         let refused = runtime
             .block_on(fetch_with(
                 Arc::new(Fixture::default()),
-                root,
+                signing,
                 FetchMail {
                     account: "ada@example.test".into(),
                     folder: "inbox".into(),

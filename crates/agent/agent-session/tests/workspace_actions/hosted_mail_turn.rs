@@ -696,6 +696,7 @@ async fn with_every_device_off_the_assistant_reads_arrived_mail_drafts_and_asks_
     // Something on the server listens for the workspace's mail, as an event with a mail trigger
     // does.
     let _listening = hosted.workspaces.listen_for_mail(&hosted.workspace);
+    hosted.workspaces.mail_watches_settled().await;
     a_message_arrives(&hosted, &servers);
     the_turn_reads_what_arrived(&hosted, &servers).await;
     the_turn_keeps_a_draft(&hosted, &servers).await;

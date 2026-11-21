@@ -62,20 +62,20 @@ macro_rules! on_both_kinds {
 /// The workspace's own model as it linked it: a scripted provider behind the workspace's
 /// settings, with [`KEY`] in its vault. It answers `replies` in order, whoever asks: the
 /// workspace's own agent and the coding program alike.
-fn links_model(
+async fn links_model(
     workspaces: &Workspaces,
     workspace: &str,
     replies: impl IntoIterator<Item = Reply>,
 ) -> Arc<ScriptedProvider> {
     let theirs = ScriptedProvider::answering(replies);
     workspaces.answer_models_with(theirs.clone());
-    links_model_in(workspaces, workspace);
+    links_model_in(workspaces, workspace).await;
     theirs
 }
 
 /// [`links_model`]'s provider kept in `workspace` alone, for a workspace whose answers come from
 /// the provider another one registered: each workspace keeps a model of its own to ask.
-fn links_model_in(workspaces: &Workspaces, workspace: &str) {
+async fn links_model_in(workspaces: &Workspaces, workspace: &str) {
     workspaces
         .link_model_for(
             workspace,
@@ -88,6 +88,7 @@ fn links_model_in(workspaces: &Workspaces, workspace: &str) {
             },
             true,
         )
+        .await
         .unwrap();
 }
 
@@ -299,7 +300,7 @@ on_both_kinds! {
             Reply::text("Say twice is done."),
             Reply::text("Third one waits for your word."),
         ],
-    );
+    ).await;
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
 
     // Nothing stands for its person: the job alone starts nothing.
@@ -421,7 +422,7 @@ on_both_kinds! {
             Reply::text("Yes, one line.").costing(800),
             Reply::text("Fix hello is done: the README says hello."),
         ],
-    );
+    ).await;
     let (agents, starts) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
@@ -572,7 +573,7 @@ on_both_kinds! {
             Reply::text("Greeted."),
             Reply::text("Fix hello greeted the reader."),
         ],
-    );
+    ).await;
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let copy = machine.files().join("code/hello.agents/fix-hello");
@@ -697,7 +698,7 @@ on_both_kinds! {
             Reply::text("Fix hello waits for your word."),
             Reply::text("The job is looked at."),
         ],
-    );
+    ).await;
     let (agents, starts) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let copy = machine.files().join("code/hello.agents/fix-hello");
@@ -885,7 +886,7 @@ on_both_kinds! {
             Reply::text("The README says hello now.").costing(900),
             Reply::text("Fix hello is done."),
         ],
-    );
+    ).await;
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
@@ -984,7 +985,7 @@ on_both_kinds! {
             Reply::text("The job is looked at."),
             Reply::text("Fix hello is done."),
         ],
-    );
+    ).await;
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
@@ -1185,10 +1186,10 @@ on_both_kinds! {
             Reply::text("Mend hello is done."),
             Reply::text("Mine."),
         ],
-    );
+    ).await;
     // The other workspace keeps a model of its own: its agent works through that one, never
     // through this one's.
-    links_model_in(&workspaces, &other);
+    links_model_in(&workspaces, &other).await;
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
 
     // A coding agent of each workspace says where its model is.
@@ -1316,7 +1317,7 @@ on_both_kinds! {
             Reply::text("A long first look.").costing(1_500),
             Reply::text("never asked"),
         ],
-    );
+    ).await;
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     started_and_waiting(

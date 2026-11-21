@@ -33,7 +33,7 @@ use tilo_actions::remote::person_telling::{
 use super::*;
 use crate::workspace_telling::Teller;
 use crate::workspaces::ToTell;
-use crate::workspaces::fixtures::{governor, test_server_keeping_keys_apart};
+use crate::workspaces::fixtures::{governor, test_host_taking_part as test_host};
 use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
 use crate::workspaces::person_model::{ProviderProtocol, Spender};
 use crate::workspaces::push_addresses::{PushKey, Register};
@@ -324,9 +324,13 @@ async fn served() -> Served<impl Sized> {
     let apple = StandIn::start().await;
     let (state, keys) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let (key, cert) = governor();
-    let apart = keys.path().join("apart");
-    let server = test_server_keeping_keys_apart(state.path(), &apart, &key, &cert).await;
+    let server = test_host(state.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
+    // Her workspace, whose vault keeps her model's key.
+    workspaces
+        .create_workspace("Ada's", Some(WORKSPACE))
+        .await
+        .unwrap();
     let (setup, signs_with) = made_up_key(keys.path());
     let push = for_stand_in(&setup, workspaces.clone(), &apple).unwrap();
     let teller = Teller::new(workspaces.clone(), Arc::new(push.clone()));
@@ -414,7 +418,7 @@ fn news(words: &str, key: &str) -> ToTell {
 }
 
 /// Ada's own model for judging, answering as scripted. Its key is made up.
-fn judge(workspaces: &Workspaces, replies: impl IntoIterator<Item = Reply>) {
+async fn judge(workspaces: &Workspaces, replies: impl IntoIterator<Item = Reply>) {
     let scripted = ScriptedProvider::answering(replies);
     workspaces.answer_models_with(scripted);
     workspaces
@@ -429,6 +433,7 @@ fn judge(workspaces: &Workspaces, replies: impl IntoIterator<Item = Reply>) {
             },
             true,
         )
+        .await
         .unwrap();
 }
 
@@ -479,7 +484,8 @@ async fn an_important_thing_is_pushed_once_and_an_unimportant_one_never() {
             Reply::text(r#"{"important": true, "why": "The landlord wrote."}"#),
             Reply::text(r#"{"important": false, "why": "It is not the landlord."}"#),
         ],
-    );
+    )
+    .await;
     let rule = Importance {
         lines: vec![Line {
             id: "line-1".into(),

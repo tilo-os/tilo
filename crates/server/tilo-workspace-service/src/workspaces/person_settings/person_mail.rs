@@ -18,9 +18,10 @@ use tilo_actions::remote::{ActionCallError, InvokeRequest};
 
 #[cfg(feature = "agents")]
 use super::calendars;
-use super::credentials;
+use super::kept_sign_ins::{Signing, has_sign_in};
 use super::{add_mail_with, answer, argument, remove_mail};
 use crate::workspaces::Workspaces;
+use crate::workspaces::vault::VaultAt;
 
 impl Workspaces {
     /// Where the mail of `address` lives, worked out from the address alone.
@@ -52,9 +53,10 @@ impl Workspaces {
     /// (`ADD_MAIL`).
     pub(super) async fn add_mail(
         &self,
-        root: &Path,
+        signing: Signing<'_>,
         mut adding: AddMailAccount,
     ) -> Result<MailAccount, String> {
+        let root = signing.root;
         let finding =
             adding.incoming_host.trim().is_empty() || adding.outgoing_host.trim().is_empty();
         let provider = if finding {
@@ -84,12 +86,13 @@ impl Workspaces {
             return Err(its_own_page(provider));
         }
         let password = adding.password.clone();
-        let mut kept = add_mail_with(self.account_tester(), root, adding).await?;
+        let mut kept =
+            add_mail_with(self.account_tester(), (signing.vault, root), adding, None).await?;
         // An iCloud account's calendars are kept with its app password, where
         // its person asked for them. A calendar server that does not take
         // them leaves the mail account as it is, feeding mail alone.
         if provider == Provider::Icloud && kept.services.calendar {
-            match self.keep_added_calendars(root, &kept, &password).await {
+            match self.keep_added_calendars(signing, &kept, &password).await {
                 Ok(calendar) => {
                     link_calendar(root, &kept.id, &calendar, &self.icloud_calendar_server())?;
                     kept = kept_mail(root, &kept.id)?;
@@ -122,9 +125,10 @@ impl Workspaces {
     )]
     pub(super) async fn set_services(
         &self,
-        root: &Path,
+        signing: Signing<'_>,
         saying: SetServices,
     ) -> Result<MailAccounts, String> {
+        let root = signing.root;
         let store = accounts::AccountStore::load_in(root);
         let id = accounts::AccountId::from(saying.account.clone());
         let account = store
@@ -145,7 +149,7 @@ impl Workspaces {
         #[cfg(feature = "agents")]
         if provider == Provider::Icloud {
             if services.calendar && linked.is_none() {
-                match self.keep_service_calendar(root, &account).await {
+                match self.keep_service_calendar(signing, &account).await {
                     Ok(calendar) => {
                         link_calendar(
                             root,
@@ -166,7 +170,7 @@ impl Workspaces {
             } else if !services.calendar
                 && let Some(calendar) = &linked
             {
-                remove_calendar(root, calendar)?;
+                remove_calendar((signing.vault, root), calendar).await?;
                 unlink_calendar(root, &saying.account)?;
             }
         }
@@ -179,7 +183,7 @@ impl Workspaces {
     #[cfg(feature = "agents")]
     async fn keep_added_calendars(
         &self,
-        root: &Path,
+        signing: Signing<'_>,
         account: &MailAccount,
         password: &str,
     ) -> Result<String, String> {
@@ -190,26 +194,35 @@ impl Workspaces {
             name: account.display_name.clone(),
             mail_account: account.id.clone(),
         };
-        let reach = self.inner.models.mail_reach();
-        let root = root.to_owned();
+        let reach =
+            calendars::Asking::of(signing.vault, signing.by, self.inner.models.mail_reach());
+        let root = signing.root.to_owned();
         tokio::task::spawn_blocking(move || calendars::add_service(&root, &reach, service))
             .await
             .map_err(|_| "the calendar server was not asked to the end".to_owned())?
     }
 
-    /// Keep the calendars of a kept iCloud account with the sign-in its vault
-    /// holds, answering the calendar account's id.
+    /// Keep the calendars of a kept iCloud account with the sign-in its entry in the
+    /// workspace's vault holds, answering the calendar account's id.
     #[cfg(feature = "agents")]
     async fn keep_service_calendar(
         &self,
-        root: &Path,
+        signing: Signing<'_>,
         account: &accounts::Account,
     ) -> Result<String, String> {
-        let password = credentials(root)?
-            .get(&account.id)
-            .map(|secret| secret.password)
-            .filter(|password| !password.is_empty())
+        let reference = super::kept_sign_ins::sign_in_of(&account.config)
             .ok_or_else(|| "That account has no sign-in yet for its calendars".to_owned())?;
+        let places = super::kept_sign_ins::places_of(account)?;
+        let password = signing
+            .vault
+            .use_sign_in(
+                &reference,
+                (accounts::vault_items::ItemKind::Login, &places),
+                signing.by,
+                super::kept_sign_ins::SIGN_IN,
+            )
+            .await?
+            .secret;
         let address = field(account, "email");
         let kept = MailAccount {
             id: account.id.to_string(),
@@ -221,7 +234,7 @@ impl Workspaces {
             display_name: account.display_name.clone(),
             ..MailAccount::default()
         };
-        self.keep_added_calendars(root, &kept, &password).await
+        self.keep_added_calendars(signing, &kept, &password).await
     }
 
     /// Where an iCloud account's calendars are kept: iCloud's own server, or
@@ -270,7 +283,7 @@ impl Workspaces {
     )]
     async fn keep_added_calendars(
         &self,
-        _root: &Path,
+        _signing: Signing<'_>,
         _account: &MailAccount,
         _password: &str,
     ) -> Result<String, String> {
@@ -293,7 +306,7 @@ impl Workspaces {
     /// person does with the accounts their vault keeps.
     pub(super) async fn person_mail_action(
         &self,
-        root: &Path,
+        signing: Signing<'_>,
         request: &InvokeRequest,
     ) -> Result<Option<Value>, ActionCallError> {
         let answered = match request.target.address.action.as_str() {
@@ -303,7 +316,7 @@ impl Workspaces {
             }
             person_accounts::ADD_MAIL => {
                 let adding: AddMailAccount = argument(request, "an account to add")?;
-                let kept = self.add_mail(root, adding).await;
+                let kept = self.add_mail(signing, adding).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -311,7 +324,7 @@ impl Workspaces {
             }
             person_accounts::SET_SERVICES => {
                 let saying: SetServices = argument(request, "an account and its services")?;
-                let kept = self.set_services(root, saying).await;
+                let kept = self.set_services(signing, saying).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -319,7 +332,7 @@ impl Workspaces {
             }
             person_accounts::REMOVE => {
                 let account = one_account(request)?;
-                let kept = remove_mail(root, &account);
+                let kept = remove_mail((signing.vault, signing.root), &account).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -337,7 +350,6 @@ impl Workspaces {
 /// which feeds no mail.
 pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
     let store = accounts::AccountStore::load_in(root);
-    let vault = credentials(root)?;
     let email = accounts::AccountTypeId::from(accounts::email::TYPE_ID);
     let listed = |account: &accounts::Account| {
         let provider = provider_of_account(account);
@@ -359,9 +371,7 @@ pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
             incoming_port: port(account, "imap_port", 993),
             outgoing_host: field(account, "smtp_host"),
             outgoing_port: port(account, "smtp_port", 465),
-            has_secret: vault
-                .get_for(account)
-                .is_some_and(|secret| !secret.is_empty()),
+            has_secret: has_sign_in(account),
             // Only a mail account sends as other addresses; another
             // provider's settings are not mail settings.
             identities: if account.type_id == email {
@@ -664,16 +674,23 @@ fn kept_calendar_for(_root: &Path, _id: &str) -> Option<String> {
 /// Remove the calendar account `calendar` and what was kept of it, where
 /// this build keeps calendars.
 #[cfg(feature = "agents")]
-pub(super) fn remove_calendar(root: &Path, calendar: &str) -> Result<(), String> {
-    calendars::remove_account(root, calendar)
+pub(super) async fn remove_calendar(
+    (vault, root): (VaultAt<'_>, &Path),
+    calendar: &str,
+) -> Result<(), String> {
+    calendars::remove_account((vault, root), calendar).await
 }
 
 #[cfg(not(feature = "agents"))]
 #[allow(
     clippy::unnecessary_wraps,
+    clippy::unused_async,
     reason = "it keeps the shape of the build that does remove a calendar account"
 )]
-pub(super) fn remove_calendar(_root: &Path, _calendar: &str) -> Result<(), String> {
+pub(super) async fn remove_calendar(
+    (_vault, _root): (VaultAt<'_>, &Path),
+    _calendar: &str,
+) -> Result<(), String> {
     Ok(())
 }
 

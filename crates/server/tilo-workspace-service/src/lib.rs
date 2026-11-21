@@ -78,8 +78,6 @@ pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
-mod people_keys;
-#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod persistence;
 #[cfg(not(target_arch = "wasm32"))]

@@ -29,14 +29,12 @@ use tilo_server_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use super::actions::ServiceWorkspaceActions;
-use super::fixtures::{governor, signed_pre_admission, test_server_keeping_keys_apart};
-use super::mail_watch::testing::keep;
+use super::fixtures::{governor, signed_pre_admission, test_host};
 use super::person_settings::{provider_config, save_provider_config};
 use super::tests::guest_device;
 use super::{IssueInvitationRequest, OwnWorkspaceOffer, PreAdmitRequest, Workspaces};
 
 const ACCOUNT: &str = "ada@example.test";
-const PASSWORD: &str = "adas-password";
 /// What the vault kept under a name only a test gives it.
 const SEALED: &str = "the secret only her item holds";
 const SECRET: &str = "the entry only she kept";
@@ -157,11 +155,26 @@ fn keeps_the_account(root: &std::path::Path) -> bool {
         .any(|account| account.id == accounts::AccountId::from(ACCOUNT))
 }
 
+/// `address` kept as a mail account in the store at `root`.
+fn keep(root: &std::path::Path, address: &str) {
+    let mut store = accounts::AccountStore::load_in(root);
+    let mut account = accounts::Account::new(address, accounts::email::TYPE_ID);
+    account.config = json!({
+        "email": address,
+        "imap_host": "imap.example.test",
+        "imap_port": 993,
+        "smtp_host": "smtp.example.test",
+        "smtp_port": 465,
+    });
+    store.upsert(account);
+    store.save_in(root).unwrap();
+}
+
 /// A person's store kept per person before workspaces kept it, written with
-/// the writers that kept it: an account with its sign-in, a provider, and a
-/// sealed secret, with the person's own formats and rule beside them.
+/// the writers that kept it: an account, a provider, and a sealed secret,
+/// with the person's own formats and rule beside them.
 fn an_old_store(root: &std::path::Path) -> String {
-    keep(root, ACCOUNT, PASSWORD);
+    keep(root, ACCOUNT);
     let profile = agent_provider_config::ProviderProfile::local_vllm();
     let config = agent_provider_config::ProviderConfig {
         profiles: vec![profile.clone()],
@@ -184,16 +197,14 @@ fn an_old_store(root: &std::path::Path) -> String {
 #[tokio::test]
 async fn a_host_moves_what_it_kept_per_person_into_the_workspaces_they_own() {
     let dir = tempfile::tempdir().unwrap();
-    let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
-    // The folder its operator made for the keys: a host makes none.
-    std::fs::create_dir(&keys).unwrap();
+    let state = dir.path().join("state");
     let (key, owner) = governor();
     let ada = guest_device().1;
     let bo = guest_device().1;
 
     // A workspace of Ada's own, and one she is only a member of.
     let (own_workspace, shared) = {
-        let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+        let server = test_host(&state, &key, &owner).await;
         let workspaces = server.workspaces().clone();
         workspaces
             .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
@@ -224,27 +235,21 @@ async fn a_host_moves_what_it_kept_per_person_into_the_workspaces_they_own() {
         hers.join("accounts").join("store.json").exists(),
         "the old store keeps its account"
     );
-    // Its key, in the folder the host was told to keep keys apart in.
-    let her_key = keys
-        .join(hex::encode(ada.user_public_key))
-        .join("accounts")
-        .join("vault")
-        .join("vault.key");
     assert!(
-        her_key.exists(),
-        "the key the host keeps apart: {her_key:?}"
+        accounts::vault_dir_in(&hers).join("vault.enc").exists(),
+        "the old store sealed a secret"
     );
 
     // Someone who owns no workspace here kept a store of their own as well.
     let bos_store = people.join(hex::encode(bo.user_public_key));
-    keep(&bos_store, "bo@example.test", "bos-password");
+    keep(&bos_store, "bo@example.test");
 
     // The host opens again over the same state.
-    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+    let server = test_host(&state, &key, &owner).await;
     let workspaces = server.workspaces();
     let owned_root = workspaces.workspace_root(&own_workspace);
 
-    // Her account, provider and sealed secret are the workspace's now.
+    // Her account and provider are the workspace's now.
     assert!(
         keeps_the_account(&owned_root),
         "the workspace keeps the account its owner kept"
@@ -258,27 +263,11 @@ async fn a_host_moves_what_it_kept_per_person_into_the_workspaces_they_own() {
         [provider_id.as_str()],
         "the workspace keeps her provider"
     );
-    assert_eq!(
-        accounts::SecretVault::open_in(&owned_root)
-            .get(&accounts::AccountId::new(SECRET))
-            .map(|secret| secret.password),
-        Some(SEALED.to_owned()),
-        "her sealed secret reads back in the workspace's vault"
-    );
-    let workspace_key = keys
-        .join("workspaces")
-        .join(hex::encode(own_workspace.as_bytes()))
-        .join("accounts")
-        .join("vault")
-        .join("vault.key");
+    // What her store sealed stays behind: the workspace keeps every secret
+    // in its one vault, and its accounts are signed in to again there.
     assert!(
-        workspace_key.exists(),
-        "the workspace's own key: {workspace_key:?}"
-    );
-    assert_ne!(
-        std::fs::read(&workspace_key).unwrap(),
-        std::fs::read(&her_key).unwrap(),
-        "the secret is sealed under the workspace's key, not hers"
+        !accounts::vault_dir_in(&owned_root).exists(),
+        "the host keeps no vault of the workspace's beside its vault document"
     );
 
     // The workspace she is only a member of got nothing of it.

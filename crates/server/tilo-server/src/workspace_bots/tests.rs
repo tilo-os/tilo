@@ -73,7 +73,7 @@ pub(super) async fn bot_server(
 
 /// The same host run on a device that takes part in its workspaces' channels,
 /// as a server whose device owns workspaces does.
-async fn bot_server_taking_part(
+pub(super) async fn bot_server_taking_part(
     state: &std::path::Path,
     key: &ed25519_dalek::SigningKey,
     cert: &DeviceCert,

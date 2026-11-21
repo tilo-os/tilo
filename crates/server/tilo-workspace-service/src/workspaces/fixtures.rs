@@ -394,32 +394,7 @@ pub async fn test_host_with_grants(
     cert: &DeviceCert,
     grants: Option<usize>,
 ) -> TestHost {
-    host_on(state_root, key, cert, None, grants, None).await
-}
-
-/// The same server, told to keep the keys of people's sealed stores under
-/// `keys`, apart from `state_root`: it does when `keys` is a folder that is
-/// there, and makes none.
-///
-/// # Panics
-///
-/// The endpoint cannot bind or the server cannot open.
-pub async fn test_server_keeping_keys_apart(
-    state_root: &Path,
-    keys: &Path,
-    key: &SigningKey,
-    cert: &DeviceCert,
-) -> TestHost {
-    host_on(state_root, key, cert, Some(taking_part()), None, Some(keys)).await
-}
-
-/// The key groups of a host that holds its workspaces' keys, as a server whose device may own
-/// workspaces does: what opens the workspace's vault on it.
-fn taking_part() -> DeviceKeyGroups {
-    DeviceKeyGroups {
-        keys: Arc::<TestGroupKeys>::default(),
-        sink: None,
-    }
+    host_on(state_root, key, cert, None, grants).await
 }
 
 /// The same host, run on a device that takes part in its workspaces' channels,
@@ -456,7 +431,6 @@ pub async fn test_host_holding(
         cert,
         Some(DeviceKeyGroups { keys, sink: None }),
         None,
-        None,
     )
     .await
 }
@@ -469,7 +443,6 @@ async fn host_on(
     cert: &DeviceCert,
     channels: Option<DeviceKeyGroups>,
     grants: Option<usize>,
-    people_keys: Option<&Path>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
@@ -483,7 +456,6 @@ async fn host_on(
     let host = WorkspaceService::open(
         ServiceConfig {
             max_workspace_grants: grants,
-            people_keys: people_keys.map(Path::to_owned),
             // Each device knows only the app surfaces named to it: tests run side by side in one
             // process, and a surface one of them names must not change what another's stores
             // admit.

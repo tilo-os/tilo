@@ -29,9 +29,8 @@ use tilo_user_identity::DeviceCert;
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::fixtures::test_host_taking_part as test_host;
-use crate::workspaces::fixtures::test_server_keeping_keys_apart;
 use crate::workspaces::tests::{governor, guest_device};
-use crate::workspaces::{AsksPeople, PersonAnswer};
+use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 const PASSWORD: &str = "correct horse battery staple";
 const NAME: &str = "ada@example.test";
@@ -796,16 +795,15 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
     assert_eq!(view["configured"], json!(true), "{view}");
     assert!(!view.to_string().contains(KEY), "{view}");
 
-    // The key is the provider's now: sealed in the workspace's vault,
-    // nowhere in the clear.
+    // The provider names the very item: its key is the entry the vault
+    // keeps, copied nowhere, and nowhere in the clear.
     let own = workspaces.workspace_root(&workspace_id.to_string());
-    let (reference, authorization) =
-        accounts::provider_api_key(&provider, "https://models.example/v1").unwrap();
-    let sealed = accounts::ServiceCredentials::open_in(&own)
-        .resolve(&reference, &authorization)
-        .unwrap()
-        .expect("the provider's key is kept");
-    assert_eq!(sealed.as_str(), KEY);
+    let named = provider_named(&own, &provider).expect("the provider names its key");
+    assert_eq!(json!(named.to_string()), item);
+    assert_eq!(
+        entry_of(workspaces, workspace_id, &named).await.as_deref(),
+        Some(KEY)
+    );
     assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
 
     let listed = ask(
@@ -1130,402 +1128,57 @@ async fn a_mail_sign_in_by_reference_goes_only_to_its_own_servers() {
     server.shutdown().await;
 }
 
-/// Every file under `dir` called `name`.
-fn files_called(dir: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
-    let mut found = Vec::new();
-    let mut waiting = vec![dir.to_path_buf()];
-    while let Some(next) = waiting.pop() {
-        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                waiting.push(path);
-            } else if path.file_name().is_some_and(|file| file == name) {
-                found.push(path);
-            }
-        }
-    }
-    found
+/// The entry of the workspace's vault the provider `provider` of the store at `root` names
+/// as its key.
+fn provider_named(root: &std::path::Path, provider: &str) -> Option<person_vault::ItemRef> {
+    crate::workspaces::person_settings::provider_config(root)
+        .profiles
+        .iter()
+        .find(|profile| profile.id == provider)
+        .and_then(crate::workspaces::person_settings::key_reference)
 }
 
-/// Keep a key for a provider of the workspace's at `site`, as its person types it: what the
-/// server seals in the workspace's store on its disk, under the workspace's key.
-async fn keeps_a_providers_key(
-    service: &ServiceWorkspaceActions,
+/// The entry of the workspace's vault the account `account` of the store at `root` names as
+/// its sign-in.
+fn account_named(root: &std::path::Path, account: &str) -> Option<person_vault::ItemRef> {
+    accounts::AccountStore::load_in(root)
+        .get(&accounts::AccountId::from(account.to_owned()))
+        .and_then(|kept| accounts::email::password_item(&kept.config))
+        .and_then(person_vault::ItemRef::parse)
+}
+
+/// What the entry `named` of the workspace's vault holds.
+async fn entry_of(
+    workspaces: &Workspaces,
     workspace_id: WorkspaceId,
-    who: (&DeviceCert, &Caller),
-    site: &str,
-) {
-    let added = ask_at(
-        service,
-        workspace_id,
-        who,
-        person_models::target(person_models::ADD_PROVIDER),
-        json!({"name": site, "protocol": "open-ai-compatible", "endpoint": format!("{site}/v1")}),
-    )
-    .await
-    .expect("a provider is added");
-    ask_at(
-        service,
-        workspace_id,
-        who,
-        person_models::target(person_models::SET_KEY),
-        json!({"provider": added["id"], "key": KEY}),
-    )
-    .await
-    .expect("its person keeps its key");
+    named: &person_vault::ItemRef,
+) -> Option<String> {
+    workspaces
+        .open_vault(&workspace_id.to_string())
+        .await
+        .unwrap()
+        .entry(named.id())
+        .map(|entry| entry.password.clone())
 }
 
-/// How many of the workspace's providers have a key, as whoever asks reads them.
-async fn providers_keyed(
-    service: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    who: (&DeviceCert, &Caller),
-) -> Result<usize, ActionCallError> {
-    let models = ask_at(
-        service,
-        workspace_id,
-        who,
-        person_models::target(person_models::LIST),
-        json!({}),
-    )
-    .await?;
-    Ok(models["providers"].as_array().map_or(0, |providers| {
-        providers
-            .iter()
-            .filter(|provider| provider["configured"] == json!(true))
-            .count()
-    }))
-}
-
-/// Copy the folder `from` to `to`, with every folder and file under it, as a backup does: a
-/// socket a running server listens on is no file to copy.
-fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap().flatten() {
-        let (path, copy) = (entry.path(), to.join(entry.file_name()));
-        let kind = entry.file_type().unwrap();
-        if kind.is_dir() {
-            copy_folder(&path, &copy);
-        } else if kind.is_file() {
-            std::fs::copy(&path, &copy).unwrap();
-        }
-    }
-}
-
-/// A server told where to keep the keys of the workspaces' sealed stores
-/// keeps none of them in its state folder. So a copy of that folder, a
-/// backup or a staging copy, opens nothing of what a workspace's store keeps
-/// sealed and makes no key for it; with the keys beside it the same copy
-/// opens, which is all it lacked.
-#[tokio::test]
-async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_sealed_store() {
-    let dir = tempfile::tempdir().unwrap();
-    let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
-    // The folder its operator made for the keys: a server makes none.
-    std::fs::create_dir(&keys).unwrap();
-    let (key, owner) = governor();
-    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
-    let workspaces = server.workspaces();
-    let (workspace, workspace_id, actions) = governed(workspaces).await;
-    let _ada = admit(workspaces, &workspace, &owner, 1).await;
-    let asking = caller(&owner);
-    let theirs = (&owner, &asking);
-
-    keeps_a_providers_key(&actions, workspace_id, theirs, "https://models.example").await;
-    assert_eq!(
-        providers_keyed(&actions, workspace_id, theirs)
-            .await
-            .unwrap(),
-        1,
-        "the key reads back"
-    );
-
-    // What is sealed lies in the state folder; its key does not.
-    assert_eq!(files_called(&state, "vault.enc").len(), 1);
-    assert_eq!(
-        files_called(&state, "vault.key"),
-        Vec::<std::path::PathBuf>::new(),
-        "the key of the workspace's vault lies in the state folder"
-    );
-    assert_eq!(files_called(&keys, "vault.key").len(), 1);
-    assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
-
-    // A copy of the state folder alone.
-    let copy = dir.path().join("copy");
-    copy_folder(&state, &copy);
-    let stores = |state: &std::path::Path| state.join("workspaces").join("workspaces");
-    let vault_in = |state: &std::path::Path| {
-        stores(state).join(hex::encode(workspace_id.to_string().as_bytes()))
-    };
-    let (reference, authorization) = accounts::provider_api_key(
-        &provider_of(&actions, workspace_id, theirs).await,
-        "https://models.example/v1",
-    )
-    .unwrap();
-    let opened =
-        accounts::ServiceCredentials::open_in(&vault_in(&copy)).resolve(&reference, &authorization);
-    assert!(
-        !matches!(opened, Ok(Some(_))),
-        "a copy of the state folder opened the workspace's sealed store"
-    );
-    assert_eq!(
-        files_called(&copy, "vault.key"),
-        Vec::<std::path::PathBuf>::new(),
-        "and trying made no key for it"
-    );
-
-    // The same copy with the keys: the key was all it lacked.
-    let copied_keys = dir.path().join("copied-keys");
-    copy_folder(&keys, &copied_keys);
-    accounts::keep_vault_keys_apart(&stores(&copy), &copied_keys.join("workspaces"));
-    let opened = accounts::ServiceCredentials::open_in(&vault_in(&copy))
-        .resolve(&reference, &authorization)
-        .expect("the copy opens with its keys")
-        .expect("the copy keeps the key");
-    assert_eq!(opened.as_str(), KEY);
-}
-
-/// The id of the one provider of the workspace's, as whoever asks reads it.
-async fn provider_of(
-    service: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    who: (&DeviceCert, &Caller),
-) -> String {
-    let models = ask_at(
-        service,
-        workspace_id,
-        who,
-        person_models::target(person_models::LIST),
-        json!({}),
-    )
-    .await
-    .unwrap();
-    models["providers"][0]["id"].as_str().unwrap().to_owned()
-}
-
-/// A server that kept a workspace's key in its state, beside the sealed store
-/// the key opens, is then told a folder for the keys. Nobody is locked out of
-/// the store. The key moves under the folder the first time the store is
-/// opened, once it was read back from there: the very key, and no new one.
-/// A key whose place under the folder cannot be made stays where it lies
-/// and opens its store from there, at that start and at the one after it.
-#[cfg(unix)]
-#[tokio::test]
-async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_is_named() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let asking = caller(&owner);
-    let hers = (&owner, &asking);
-    for movable in [true, false] {
-        let state = dir.path().join(format!("state-{movable}"));
-        let keys = dir.path().join(format!("keys-{movable}"));
-
-        // Before any folder was named, the workspace's key lies in the state.
-        let server = test_server_keeping_keys_apart(&state, no_folder(), &key, &owner).await;
-        let workspaces = server.workspaces().clone();
-        let (_, workspace_id, actions) = governed(&workspaces).await;
-        keeps_a_providers_key(&actions, workspace_id, hers, "https://models.example").await;
-        server.shutdown().await;
-        let beside = files_called(&state, "vault.key");
-        assert_eq!(beside.len(), 1, "the key lies beside its store");
-        let sealed_under = std::fs::read(&beside[0]).unwrap();
-
-        // The folder is named, and it is there. The key's place under it is
-        // free, or it is taken by a link that leads nowhere, under which
-        // nothing can be made.
-        std::fs::create_dir(&keys).unwrap();
-        let her_place = keys
-            .join("workspaces")
-            .join(hex::encode(workspace_id.to_string().as_bytes()));
-        if !movable {
-            std::fs::create_dir_all(keys.join("workspaces")).unwrap();
-            std::os::unix::fs::symlink(dir.path().join("nowhere"), &her_place).unwrap();
-        }
-        for (kept, start) in (1..).zip(["the first start with the folder", "the start after it"]) {
-            let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
-            let actions = ServiceWorkspaceActions::new();
-            actions.attach(server.workspaces().clone());
-            let keyed = providers_keyed(&actions, workspace_id, hers)
-                .await
-                .unwrap_or_else(|error| {
-                    panic!("{start} locked the workspace out of its store: {error:?}")
-                });
-            assert_eq!(keyed, kept, "{start}");
-            let in_state = files_called(&state, "vault.key");
-            let apart = files_called(&keys, "vault.key");
-            if movable {
-                assert_eq!(
-                    in_state,
-                    Vec::<std::path::PathBuf>::new(),
-                    "{start}: the key still lies in the state"
-                );
-                assert_eq!(apart.len(), 1, "{start}: {apart:?}");
-                assert!(apart[0].starts_with(&her_place), "{start}: {apart:?}");
-                assert!(
-                    std::fs::read(&apart[0]).unwrap() == sealed_under,
-                    "{start}: the key kept apart is not the one the store was sealed under"
-                );
-            } else {
-                assert_eq!(in_state, beside, "{start}: the key left its place");
-                assert_eq!(apart, Vec::<std::path::PathBuf>::new(), "{start}");
-                assert!(
-                    std::fs::read(&in_state[0]).unwrap() == sealed_under,
-                    "{start}: the key was replaced"
-                );
-            }
-            // What is kept from now on is sealed under the same key.
-            keeps_a_providers_key(
-                &actions,
-                workspace_id,
-                hers,
-                &format!("https://{kept}.example.test"),
-            )
-            .await;
-            server.shutdown().await;
-        }
-    }
-}
-
-/// What a server is told whose operator named no folder for people's keys:
-/// nothing, as an environment without the setting, or with it empty, reads.
-fn no_folder() -> &'static std::path::Path {
-    std::path::Path::new("")
-}
-
-/// What a server in a test wrote to its log.
-#[derive(Clone, Default)]
-struct Logged(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for Logged {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logged {
-    type Writer = Self;
-    fn make_writer(&'a self) -> Self {
-        self.clone()
-    }
-}
-
-impl Logged {
-    /// How much was written so far.
-    fn written(&self) -> usize {
-        self.0.lock().unwrap().len()
-    }
-
-    /// The lines written after the first `from` bytes that say where
-    /// people's keys are kept.
-    fn said_since(&self, from: usize) -> Vec<String> {
-        String::from_utf8_lossy(&self.0.lock().unwrap()[from..])
-            .lines()
-            .filter(|line| line.contains("the keys of people's sealed stores"))
-            .map(str::to_owned)
-            .collect()
-    }
-}
-
-/// A server says as it starts where it keeps the keys of the workspaces'
-/// vaults: one line at every start, a warning for as long as they lie in
-/// its state. A folder it was named that is not there it does not make; it
-/// says so and goes on opening each vault with the key beside it. Nothing
-/// it logs, at any level, holds a key.
-#[tokio::test]
-async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_key() {
-    let logged = Logged::default();
-    let _subscribed = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_ansi(false)
-            .with_writer(logged.clone())
-            .finish(),
-    );
-    let dir = tempfile::tempdir().unwrap();
-    let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
-    let named = keys.display().to_string();
-    let (key, owner) = governor();
-    let asking = caller(&owner);
-    let hers = (&owner, &asking);
-
-    // No folder is named: the keys lie in the state, and the server says so.
-    let from = logged.written();
-    let server = test_server_keeping_keys_apart(&state, no_folder(), &key, &owner).await;
-    let said = logged.said_since(from);
-    assert_eq!(said.len(), 1, "{said:?}");
-    assert!(
-        said[0].contains("WARN")
-            && said[0].contains("are kept in the state folder")
-            && said[0].contains("TILO_PEOPLE_KEYS names no folder"),
-        "{said:?}"
-    );
-    let workspaces = server.workspaces().clone();
-    let (_, workspace_id, actions) = governed(&workspaces).await;
-    keeps_a_providers_key(&actions, workspace_id, hers, "https://models.example").await;
-    server.shutdown().await;
-    let beside = files_called(&state, "vault.key");
-    assert_eq!(beside.len(), 1, "the key lies beside its store");
-    let her_key = std::fs::read(&beside[0]).unwrap();
-
-    // A folder is named that is not there: the server makes none, says so,
-    // and the vault opens with the key where it lies.
-    let from = logged.written();
-    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
-    let said = logged.said_since(from);
-    assert_eq!(said.len(), 1, "{said:?}");
-    assert!(
-        said[0].contains("WARN")
-            && said[0].contains("are kept in the state folder")
-            && said[0].contains("where no folder is")
-            && said[0].contains(&named),
-        "{said:?}"
-    );
-    let actions = ServiceWorkspaceActions::new();
-    actions.attach(server.workspaces().clone());
-    assert_eq!(
-        providers_keyed(&actions, workspace_id, hers)
-            .await
-            .expect("the store opens"),
-        1
-    );
-    assert!(!keys.exists(), "the server made the folder it was named");
-    assert_eq!(files_called(&state, "vault.key"), beside);
-    server.shutdown().await;
-
-    // The folder is there: the server says the keys are kept apart, and
-    // warns of nothing.
-    std::fs::create_dir(&keys).unwrap();
-    let from = logged.written();
-    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
-    let said = logged.said_since(from);
-    assert_eq!(said.len(), 1, "{said:?}");
-    assert!(
-        said[0].contains("INFO")
-            && said[0].contains("are kept apart from the state folder")
-            && said[0].contains(&named),
-        "{said:?}"
-    );
-    server.shutdown().await;
-
-    let all = logged.0.lock().unwrap().clone();
-    assert!(
-        !all.windows(her_key.len()).any(|window| window == her_key),
-        "the log holds her key as it is kept"
-    );
-    let text = String::from_utf8_lossy(&all);
-    for spelled in [hex::encode(&her_key), hex::encode_upper(&her_key)] {
-        assert!(!text.contains(&spelled), "the log holds her key in hex");
-    }
+/// A mail account of `address` at `server`, as a host kept one.
+fn mail_account(address: &str, server: &str) -> accounts::Account {
+    let mut account = accounts::Account::new(address, accounts::email::TYPE_ID);
+    account.config = json!({
+        "email": address,
+        "imap_host": format!("imap.{server}"),
+        "imap_port": 993,
+        "smtp_host": format!("smtp.{server}"),
+        "smtp_port": 465,
+    });
+    account
 }
 
 /// What a host kept of a workspace's vault in its own sealed store before the vault was the
 /// document, a member's login with the uses it recorded and a Passwords entry, is in the vault
 /// document the first time the vault is opened: listed under the reference it had, its uses
-/// kept, and taken out of the host's store, while an account's own sign-in beside it stays.
+/// kept, and taken out of the host's store. An account's sign-in beside it becomes the
+/// account's own entry, and the host's store is gone.
 #[tokio::test]
 async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document() {
     let dir = tempfile::tempdir().unwrap();
@@ -1560,6 +1213,9 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
         &accounts::Secret::password("an account's own"),
     );
     vault.try_save().unwrap();
+    let mut accounts_kept = accounts::AccountStore::load_in(&root);
+    accounts_kept.upsert(mail_account("ada@example.test", "example.test"));
+    accounts_kept.save_in(&root).unwrap();
     let mut store = accounts::SecretStore::open_person(Some(&root));
     let mut entry = accounts::SecretItem::login("Example", "bo", "a passwords entry");
     store.put(&mut entry).unwrap();
@@ -1567,10 +1223,26 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
     let listed = ask(&service, workspace_id, hers, person_vault::LIST, json!({}))
         .await
         .unwrap();
+    // The item the host kept, and the account's sign-in, an entry of the vault like any other.
     let items = listed["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "{listed}");
-    assert_eq!(items[0]["reference"], json!(format!("vault.item:{id}")));
-    assert_eq!(items[0]["belongsTo"], json!(["https://example.test"]));
+    assert_eq!(items.len(), 2, "{listed}");
+    let carried = items
+        .iter()
+        .find(|item| item["reference"] == json!(format!("vault.item:{id}")))
+        .unwrap_or_else(|| panic!("the kept item is listed: {listed}"));
+    assert_eq!(carried["belongsTo"], json!(["https://example.test"]));
+    let sign_in = items
+        .iter()
+        .find(|item| item["reference"] != carried["reference"])
+        .unwrap();
+    assert_eq!(
+        sign_in["belongsTo"],
+        json!([
+            "imap://imap.example.test:993",
+            "smtp://smtp.example.test:465"
+        ]),
+        "{listed}"
+    );
     let uses = ask(
         &service,
         workspace_id,
@@ -1595,17 +1267,203 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
         "the Passwords entry is in the vault: {entries}"
     );
 
-    // The host keeps no second copy; what is an account's own stays.
+    // The host keeps no second copy: the account's sign-in is its own entry,
+    // and the host's store is gone.
     assert!(
         accounts::vault_items::KeptBefore::under(&root)
             .unwrap()
             .is_empty()
     );
+    let named = account_named(&root, "ada@example.test").expect("the account names its entry");
     assert_eq!(
-        accounts::SecretVault::open_person(Some(&root))
-            .get(&accounts::AccountId::new("ada@example.test"))
-            .map(|secret| secret.password),
-        Some("an account's own".to_owned())
+        entry_of(workspaces, workspace_id, &named).await.as_deref(),
+        Some("an account's own")
+    );
+    assert!(
+        !accounts::vault_dir_in(&root).exists(),
+        "the host's store is gone"
+    );
+    server.shutdown().await;
+}
+
+/// Each sign-in a host kept in its own sealed store before every secret was the workspace
+/// vault's, a mail account's password, a mail account's grant and a model provider's key, is
+/// carried into the vault as the host starts: each account and provider names an entry of its
+/// own, which holds what the store held and is what it signs in with, and the store is gone,
+/// so the host keeps no copy anywhere.
+#[tokio::test]
+async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
+    const GRANT: &str = "an-access-token-only-the-grant-holds";
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces().clone();
+    let (_, workspace_id, _) = governed(&workspaces).await;
+    let workspace = workspace_id.to_string();
+    // Its vault opened here before, so the host holds its keys as it starts.
+    workspaces.open_vault(&workspace).await.unwrap();
+    server.shutdown().await;
+
+    // The store the host kept, as a host before kept it.
+    let root = workspaces.workspace_root(&workspace);
+    let (mail, google) = (
+        mail_account(NAME, "example.test"),
+        mail_account("ada@gmail.example", "gmail.example"),
+    );
+    let mut store = accounts::AccountStore::load_in(&root);
+    store.upsert(mail.clone());
+    store.upsert(google.clone());
+    store.save_in(&root).unwrap();
+    let mut credentials = accounts::AccountCredentials::open_in(&root).unwrap();
+    credentials.put_for(&mail, &accounts::Secret::password(PASSWORD));
+    credentials.put_for(
+        &google,
+        &account_credentials::oauth_secret(&tilo_oauth::TokenSet {
+            access_token: GRANT.to_owned(),
+            scope: None,
+            refresh_token: "a-refresh-token".to_owned(),
+            expires_in: 3600,
+            obtained_at: tilo_clock::unix_now(),
+        }),
+    );
+    credentials.try_save().unwrap();
+    let mut profile = agent_provider_config::ProviderProfile::hosted(
+        agent_provider_config::ProviderProtocol::OpenAiCompatible,
+    );
+    profile.endpoint = "https://models.example/v1".to_owned();
+    let provider = profile.id.clone();
+    crate::workspaces::person_settings::save_provider_config(
+        &root,
+        &agent_provider_config::ProviderConfig {
+            profiles: vec![profile.clone()],
+            ..agent_provider_config::ProviderConfig::default()
+        },
+    )
+    .unwrap();
+    let (reference, authorization) =
+        accounts::provider_api_key(&provider, &profile.endpoint).unwrap();
+    accounts::ServiceCredentials::open_in(&root)
+        .store(&reference, &authorization, KEY)
+        .unwrap();
+
+    // The host starts again over the same state, and carries them over.
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while accounts::vault_dir_in(&root).exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host's store is still there"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let password = account_named(&root, NAME).expect("the mail account names its entry");
+    assert_eq!(
+        entry_of(workspaces, workspace_id, &password)
+            .await
+            .as_deref(),
+        Some(PASSWORD)
+    );
+    let signing_in =
+        crate::workspaces::person_settings::account_secret_for_test(workspaces, &workspace, NAME)
+            .await
+            .expect("the account signs in with its entry");
+    assert_eq!(signing_in.password, PASSWORD);
+
+    let grant = account_named(&root, "ada@gmail.example").expect("the grant's account names it");
+    let grant = entry_of(workspaces, workspace_id, &grant)
+        .await
+        .expect("the grant is an entry");
+    let tokens = account_credentials::oauth_tokens(&accounts::Secret {
+        password: String::new(),
+        token: Some(grant),
+    })
+    .expect("the entry is the grant");
+    assert_eq!(tokens.access_token, GRANT);
+
+    let key_named = provider_named(&root, &provider).expect("the provider names its key");
+    assert_eq!(
+        entry_of(workspaces, workspace_id, &key_named)
+            .await
+            .as_deref(),
+        Some(KEY)
+    );
+
+    for secret in [PASSWORD, GRANT, KEY] {
+        assert_eq!(
+            files_holding(dir.path(), secret.as_bytes()),
+            Vec::<std::path::PathBuf>::new(),
+            "the host keeps a copy of {secret}"
+        );
+    }
+    server.shutdown().await;
+}
+
+/// A workspace whose policy keeps Passwords from the host that serves it keeps its sign-ins
+/// from that host too: the host holds no key of the vault, so an account that names an entry
+/// of it no longer signs in there, and the host kept no copy of the sign-in to fall back on.
+#[tokio::test]
+async fn a_host_kept_from_passwords_signs_in_with_none_of_the_vaults_entries() {
+    use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+    const KEPT: &str = "kept-for-a-test";
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    // Ada's workspace, which the host founded for her and serves.
+    let ada = guest_device().1;
+    let workspace = workspaces
+        .create_for("Ada's", None, ada.user_public_key)
+        .await
+        .unwrap()
+        .workspace;
+    let signing_in = async || {
+        crate::workspaces::person_settings::account_secret_for_test(workspaces, &workspace, NAME)
+            .await
+    };
+
+    // An account names an entry of the vault, and signs in with it while the host reads
+    // Passwords.
+    workspaces
+        .keep_mail_account_as_added(&workspace, NAME)
+        .await
+        .unwrap();
+    assert_eq!(
+        signing_in()
+            .await
+            .expect("the host reads the vault")
+            .password,
+        KEPT
+    );
+
+    // The vault is kept from the host's own person, who administers the workspace for her.
+    let reply = workspaces
+        .page_workspaces(
+            &owner,
+            WorkspacesRequest::SetDocumentAccess {
+                workspace: workspace.clone(),
+                request_id: [9; 32],
+                app: tilo_app_id::apps::PASSWORDS.into(),
+                document: tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT.into(),
+                recipient: format!("member:{}", hex::encode(owner.user_public_key)),
+                access: "no-access".into(),
+            },
+        )
+        .await;
+    assert!(matches!(reply, WorkspacesReply::Workspace(_)), "{reply:?}");
+
+    let refused = signing_in().await;
+    assert!(refused.is_err(), "the host still signs in: {refused:?}");
+    assert!(
+        !accounts::vault_dir_in(&workspaces.workspace_root(&workspace)).exists(),
+        "the host keeps a vault of its own"
+    );
+    assert_eq!(
+        files_holding(dir.path(), KEPT.as_bytes()),
+        Vec::<std::path::PathBuf>::new(),
+        "the host keeps a copy of the sign-in"
     );
     server.shutdown().await;
 }

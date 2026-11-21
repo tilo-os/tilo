@@ -39,9 +39,11 @@ fn grant(access: &str, refresh: &str, expires_in: u64) -> TokenSet {
 }
 
 /// Keep the calendar account a sign-in on Google's page keeps, and its
-/// calendar as a device's Calendar keeps them, in the workspace's store: the
-/// calendar server `server`, whose one calendar "work" is in it.
-fn seed_google_calendar(root: &Path, server: &fake_caldav::Server, tokens: &TokenSet) -> String {
+/// calendar as a device's Calendar keeps them, in Ada's workspace: the account
+/// in its store, its grant an entry of its vault, and the calendar server
+/// `ada.server`, whose one calendar "work" is in it.
+async fn seed_google_calendar(ada: &Ada, tokens: &TokenSet) -> String {
+    let server = &ada.server;
     let server_url = server.url();
     let address = tilo_dav::Url::parse(&server_url).expect("the server's address reads");
     let id = format!("caldav:{ADDRESS}@{}", address.authority());
@@ -63,19 +65,32 @@ fn seed_google_calendar(root: &Path, server: &fake_caldav::Server, tokens: &Toke
             "read_only": false,
         }],
     });
-    crate::workspaces::person_settings::seal_grant_for_test(root, &kept, tokens)
-        .expect("the grant is sealed");
-    let mut store = accounts::AccountStore::load_in(root);
-    store.upsert(kept);
-    store.save_in(root).expect("the account is kept");
+    crate::workspaces::person_settings::seal_grant_for_test(
+        &ada.workspaces,
+        &ada.workspace_id.to_string(),
+        &kept,
+        tokens,
+    )
+    .await
+    .expect("the grant is kept");
     id
 }
 
-/// Whether a sign-in is still kept for `account` in the workspace's vault.
-fn secret_kept(root: &Path, account: &str) -> bool {
-    crate::workspaces::person_settings::credentials(root)
-        .expect("the workspace's vault")
+/// Whether `account` still names a sign-in the workspace's vault keeps.
+async fn secret_kept(ada: &Ada, account: &str) -> bool {
+    let store = accounts::AccountStore::load_in(&ada.root());
+    let Some(named) = store
         .get(&accounts::AccountId::from(account.to_owned()))
+        .and_then(|kept| accounts::email::password_item(&kept.config))
+        .and_then(tilo_actions::remote::person_vault::ItemRef::parse)
+    else {
+        return false;
+    };
+    ada.workspaces
+        .open_vault(&ada.workspace_id.to_string())
+        .await
+        .expect("the workspace's vault")
+        .entry(named.id())
         .is_some()
 }
 
@@ -90,12 +105,7 @@ async fn a_fresh_grant_reads_the_calendar_server_with_its_access_token() {
         .await
         .reading_a_grant("access-token-1");
     let her = ada.herself();
-    let root = ada.root();
-    let id = seed_google_calendar(
-        &root,
-        &ada.server,
-        &grant("access-token-1", "refresh-1", 3600),
-    );
+    let id = seed_google_calendar(&ada, &grant("access-token-1", "refresh-1", 3600)).await;
     ada.server.put(
         "work",
         "review.ics",
@@ -135,13 +145,8 @@ async fn an_expired_grant_is_renewed_before_the_server_is_read() {
         .await
         .reading_a_grant("access-token-2");
     let her = ada.herself();
-    let root = ada.root();
     // No lifetime reported: renewed before every read.
-    let id = seed_google_calendar(
-        &root,
-        &ada.server,
-        &grant("access-token-old", "refresh-1", 0),
-    );
+    let id = seed_google_calendar(&ada, &grant("access-token-old", "refresh-1", 0)).await;
     ada.server.put(
         "work",
         "review.ics",
@@ -181,14 +186,9 @@ async fn a_grant_the_provider_will_not_renew_leaves_the_account_needing_a_sign_i
         .await
         .reading_a_grant("access-token-2");
     let her = ada.herself();
-    let root = ada.root();
     // The provider knows no such refresh token: it will never renew this
     // grant.
-    let id = seed_google_calendar(
-        &root,
-        &ada.server,
-        &grant("access-token-old", "refresh-dead", 0),
-    );
+    let id = seed_google_calendar(&ada, &grant("access-token-old", "refresh-dead", 0)).await;
 
     // The provider was not reached: that is not the person's sign-in ending.
     env.set("TILO_OAUTH_GOOGLE_TOKEN_URL", "http://127.0.0.1:1/token");
@@ -201,7 +201,7 @@ async fn a_grant_the_provider_will_not_renew_leaves_the_account_needing_a_sign_i
         "the refusal says the provider was not reached: {unreached}"
     );
     assert!(
-        secret_kept(&root, &id),
+        secret_kept(&ada, &id).await,
         "a grant that was not reached stays in the vault"
     );
     let listed = ada
@@ -228,7 +228,7 @@ async fn a_grant_the_provider_will_not_renew_leaves_the_account_needing_a_sign_i
         "the refusal is in plain words"
     );
     assert!(
-        !secret_kept(&root, &id),
+        !secret_kept(&ada, &id).await,
         "the dead grant is taken out of the vault"
     );
     let listed = ada

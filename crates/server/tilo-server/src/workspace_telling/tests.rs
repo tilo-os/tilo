@@ -20,7 +20,7 @@ use tilo_actions::remote::person_telling::{
 
 use super::*;
 use crate::workspaces::ToTell;
-use crate::workspaces::fixtures::{TestHost, governor, test_host};
+use crate::workspaces::fixtures::{TestHost, governor, test_host_taking_part as test_host};
 use crate::workspaces::person_model::ProviderProtocol;
 use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
 
@@ -74,6 +74,11 @@ impl Host {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let server = test_host(dir.path(), &key, &cert).await;
+        server
+            .workspaces()
+            .create_workspace("Ada's", Some(WORKSPACE))
+            .await
+            .unwrap();
         Self {
             workspaces: server.workspaces().clone(),
             heard: Arc::default(),
@@ -89,7 +94,7 @@ impl Host {
     }
 
     /// Ada's own model for judging, answering as scripted.
-    fn judge(&self, replies: impl IntoIterator<Item = Reply>) -> Arc<ScriptedProvider> {
+    async fn judge(&self, replies: impl IntoIterator<Item = Reply>) -> Arc<ScriptedProvider> {
         let scripted = ScriptedProvider::answering(replies);
         self.workspaces.answer_models_with(scripted.clone());
         self.workspaces
@@ -104,6 +109,7 @@ impl Host {
                 },
                 true,
             )
+            .await
             .unwrap();
         scripted
     }
@@ -177,10 +183,12 @@ fn line(id: &str, words: &str, only_while: Option<(&str, &str)>) -> Line {
 async fn what_is_to_reach_a_person_is_told_outside_once_and_the_rest_never() {
     let host = Host::new().await;
     let teller = host.teller();
-    let model = host.judge([
-        Reply::text(r#"{"important": true, "why": "The landlord wrote."}"#),
-        Reply::text(r#"{"important": false, "why": "It is not the landlord."}"#),
-    ]);
+    let model = host
+        .judge([
+            Reply::text(r#"{"important": true, "why": "The landlord wrote."}"#),
+            Reply::text(r#"{"important": false, "why": "It is not the landlord."}"#),
+        ])
+        .await;
     host.workspaces
         .keep_importance(
             &ADA,
@@ -257,9 +265,11 @@ async fn what_is_to_reach_a_person_is_told_outside_once_and_the_rest_never() {
 async fn the_same_mail_is_told_outside_or_kept_quiet_as_the_persons_situation_stands() {
     let host = Host::new().await;
     let teller = host.teller();
-    let model = host.judge([Reply::text(
-        r#"{"important": true, "why": "A new customer while you are hiring."}"#,
-    )]);
+    let model = host
+        .judge([Reply::text(
+            r#"{"important": true, "why": "A new customer while you are hiring."}"#,
+        )])
+        .await;
     let rule = |hiring: &str, revision: u64| Importance {
         lines: vec![line(
             "line-1",

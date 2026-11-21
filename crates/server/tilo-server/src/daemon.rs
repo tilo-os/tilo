@@ -21,10 +21,6 @@ use tilo_user_identity::{RevocationList, verify_revocation_entry};
 
 use crate::config::ServerConfig;
 
-/// Names the folder the keys of people's sealed stores are kept under, apart
-/// from the state folder: what an operator sets so that a copy or a backup
-/// of the state alone opens nobody's sign-ins, keys or vault items.
-const PEOPLE_KEYS_ENV: &str = "TILO_PEOPLE_KEYS";
 use crate::handshake::{EndpointTrust, LiveIdentity};
 use crate::metrics::Metrics;
 use crate::peer::WorkspaceRegistry;
@@ -659,15 +655,6 @@ impl Server {
                 reachability: tilo_endpoint_reachability::Reachability::default(),
                 apps: app_serving.clone(),
                 shell_payloads,
-                // The folder its operator names for the keys of people's
-                // sealed stores, apart from the state it copies and backs up.
-                // The answer is handed on when it is empty too: a server
-                // whose operator named none says so every time it starts.
-                people_keys: Some(
-                    std::env::var_os(PEOPLE_KEYS_ENV)
-                        .map(PathBuf::from)
-                        .unwrap_or_default(),
-                ),
                 // A server serves other people's workspaces; it joins none as
                 // a member.
                 member: None,

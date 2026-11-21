@@ -52,7 +52,7 @@ impl Hers {
             cert,
             inboxes,
         };
-        hers.keeps(WORK);
+        hers.keeps(WORK).await;
         (hers, holder)
     }
 
@@ -62,9 +62,10 @@ impl Hers {
     }
 
     /// The workspace keeps `account` on this server.
-    fn keeps(&self, account: &str) {
+    async fn keeps(&self, account: &str) {
         self.workspaces
             .keep_mail_account_as_added(&self.workspace, account)
+            .await
             .unwrap();
     }
 
@@ -120,8 +121,9 @@ impl Hers {
 
     /// The watch this server keeps of `account`'s inbox hears a message
     /// arrive: number `uid` there, from `from`, called `about` and saying
-    /// `says`.
-    fn arrives(&self, account: &str, uid: u32, from: &str, (about, says): (&str, &str)) {
+    /// `says`, once every watch asked for is in line with the accounts kept.
+    async fn arrives(&self, account: &str, uid: u32, from: &str, (about, says): (&str, &str)) {
+        self.workspaces.mail_watches_settled().await;
         let heard = self
             .inboxes
             .heard(account)
@@ -173,8 +175,10 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
     // before any event of hers waits on its mail.
     {
         let _asking = hers.workspaces.listen_for_mail(&hers.workspace);
-        hers.arrives(WORK, 3, BO, ("Old news", "This came before the event."));
+        hers.arrives(WORK, 3, BO, ("Old news", "This came before the event."))
+            .await;
     }
+    hers.workspaces.mail_watches_settled().await;
     assert!(
         hers.inboxes.watched().is_empty(),
         "with nothing waiting on her mail her inbox is not watched"
@@ -182,6 +186,7 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
 
     let made = hers.sets_up(&events, ON_MAIL, &json!({}));
     assert_eq!((made.sort, made.when.as_str()), (Sort::Event, ON_MAIL));
+    hers.workspaces.mail_watches_settled().await;
     assert_eq!(
         hers.inboxes.watched(),
         [WORK],
@@ -193,7 +198,8 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
         4,
         BO,
         ("Lunch on Friday?", "Does Friday at one work?"),
-    );
+    )
+    .await;
     let taken = handed(&assistant, 1).await;
     assert_eq!(taken.len(), 1, "{taken:?}");
     let first = &taken[0];
@@ -232,8 +238,10 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
         4,
         BO,
         ("Lunch on Friday?", "Does Friday at one work?"),
-    );
-    hers.arrives(WORK, 5, CY, ("Minutes", "They are attached."));
+    )
+    .await;
+    hers.arrives(WORK, 5, CY, ("Minutes", "They are attached."))
+        .await;
     let taken = handed(&assistant, 2).await;
     assert_eq!(taken.len(), 2, "{taken:?}");
     assert!(
@@ -250,7 +258,8 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
     })
     .await;
     let _asking = hers.workspaces.listen_for_mail(&hers.workspace);
-    hers.arrives(WORK, 6, BO, ("While you were down", "Still on for Friday?"));
+    hers.arrives(WORK, 6, BO, ("While you were down", "Still on for Friday?"))
+        .await;
     assert_eq!(assistant.taken().len(), 2);
 
     // The server starts again: the event is handed what arrived while it
@@ -286,8 +295,10 @@ async fn nothing_new_asks_nobody_and_its_persons_model_says_what_is_handed_over(
 
     // Two messages arrive. Her model is asked about each, and only the one
     // it says yes to is handed to her assistant.
-    hers.arrives(WORK, 4, BO, ("Newsletter", "Our autumn offers."));
-    hers.arrives(WORK, 5, CY, ("Contract", "Can you sign by Friday?"));
+    hers.arrives(WORK, 4, BO, ("Newsletter", "Our autumn offers."))
+        .await;
+    hers.arrives(WORK, 5, CY, ("Contract", "Can you sign by Friday?"))
+        .await;
     let taken = handed(&assistant, 1).await;
     let judged = assistant.judged();
     assert_eq!(judged.len(), 2, "one judgement for each message");
@@ -320,10 +331,11 @@ async fn mail_the_workspace_keeps_is_handed_over_and_another_workspaces_mail_is_
 
     // The workspace keeps a second account. Another workspace keeps an
     // account on the same server, and something listens for its mail.
-    hers.keeps(HOME);
+    hers.keeps(HOME).await;
     let (elsewhere, _) = chat_workspace(&hers.workspaces, &hers.cert).await;
     hers.workspaces
         .keep_mail_account_as_added(&elsewhere, BOBS)
+        .await
         .unwrap();
     let _bobs = hers.workspaces.listen_for_mail(&elsewhere);
     until("the other workspace's inbox is watched", || {
@@ -332,9 +344,10 @@ async fn mail_the_workspace_keeps_is_handed_over_and_another_workspaces_mail_is_
     .await;
     hers.sets_up(&events, ON_MAIL, &json!({}));
 
-    hers.arrives(HOME, 4, BO, ("Home", "For her."));
-    hers.arrives(BOBS, 4, BO, ("Elsewhere", "For the other workspace."));
-    hers.arrives(WORK, 4, BO, ("Work", "For her too."));
+    hers.arrives(HOME, 4, BO, ("Home", "For her.")).await;
+    hers.arrives(BOBS, 4, BO, ("Elsewhere", "For the other workspace."))
+        .await;
+    hers.arrives(WORK, 4, BO, ("Work", "For her too.")).await;
     let _taken = handed(&assistant, 2).await;
     a_pass_goes_by().await;
     let taken = assistant.taken();
@@ -365,16 +378,19 @@ async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_c
     let (hers, _holder) = Hers::on(scratch.path()).await;
     let assistant = Assistant::answering(vec![]);
     let events = hers.events(&scratch.path().join("person-events"), &assistant);
-    hers.keeps(HOME);
+    hers.keeps(HOME).await;
     let when = format!("{ON_MAIL} at \"{WORK}\" where from is \"{BO}\"");
     let made = hers.sets_up(&events, &when, &json!({}));
     assert_eq!(made.when, when, "the line reads back as it was written");
 
     // Another account, another sender, and then the one it waits for, whose
     // address is the same however it is capitalised.
-    hers.arrives(HOME, 4, BO, ("Other account", "Not this one."));
-    hers.arrives(WORK, 4, CY, ("Other sender", "Nor this."));
-    hers.arrives(WORK, 5, "Bo@Example.Test", ("The one", "This one."));
+    hers.arrives(HOME, 4, BO, ("Other account", "Not this one."))
+        .await;
+    hers.arrives(WORK, 4, CY, ("Other sender", "Nor this."))
+        .await;
+    hers.arrives(WORK, 5, "Bo@Example.Test", ("The one", "This one."))
+        .await;
     let taken = handed(&assistant, 1).await;
     assert!(
         taken[0].instruction.contains("This one."),
@@ -386,11 +402,13 @@ async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_c
     // later.
     let paused = hers.take(&events, person_events::PAUSE, &json!({"event": made.id}));
     assert!(!paused.on);
-    hers.arrives(WORK, 6, BO, ("While paused", "Passed over."));
+    hers.arrives(WORK, 6, BO, ("While paused", "Passed over."))
+        .await;
     a_pass_goes_by().await;
     let resumed = hers.take(&events, person_events::RESUME, &json!({"event": made.id}));
     assert!(resumed.on);
-    hers.arrives(WORK, 7, BO, ("After", "Handed over again."));
+    hers.arrives(WORK, 7, BO, ("After", "Handed over again."))
+        .await;
     handed(&assistant, 2).await;
     a_pass_goes_by().await;
     let taken = assistant.taken();

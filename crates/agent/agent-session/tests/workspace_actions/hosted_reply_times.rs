@@ -216,6 +216,7 @@ async fn four_hundred_words_reach_a_device_while_they_are_written() {
             },
             true,
         )
+        .await
         .unwrap();
     let first = write_to_agent(
         &actions,

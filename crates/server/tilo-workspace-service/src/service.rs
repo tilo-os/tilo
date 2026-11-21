@@ -73,16 +73,6 @@ pub struct ServiceConfig {
     /// invitation's address, so the link it hands out names where it is reached from any
     /// network. The default holds nothing back, so an invitation names the endpoint's address.
     pub reachability: Reachability,
-    /// What a server's operator answered for the folder that keeps the keys
-    /// of people's sealed stores apart from `state_root`: one a copy or a
-    /// backup of the state does not take along, so that such a copy opens
-    /// nobody's sign-ins, keys or vault items. An empty answer names none.
-    /// The folder keeps the keys when it is there. When it is not, or none
-    /// was named, each key is kept beside its sealed file, and the server
-    /// says so in its log as it opens. `None` on a person's own device,
-    /// where nobody is asked: each key is kept beside its sealed file and
-    /// nothing is said.
-    pub people_keys: Option<PathBuf>,
     /// The device this service's member copies act as, when the embedder
     /// keeps it on a device that serves the workspaces that device joined as
     /// a member: `None` for a server, which joins none.
@@ -109,7 +99,6 @@ impl ServiceConfig {
             shell_payloads: crate::payloads::neighbour(),
             reaching: Reaching::ByRelay,
             reachability: Reachability::default(),
-            people_keys: None,
             member: None,
             surfaces: Arc::clone(collab_types::app_surface::Surfaces::process()),
         }
@@ -299,25 +288,6 @@ impl ServiceSessions {
         // there is nothing to open.
         if governance.is_none() && cfg.member.is_none() {
             return Ok((sessions, None));
-        }
-        if let Some(named) = &cfg.people_keys {
-            // Decided and said before any person's store is opened: each key
-            // is made, or found, where it is kept from then on.
-            let people_keys = crate::people_keys::decide(named, &cfg.state_root);
-            people_keys.say(&cfg.state_root);
-            if let Some(keys) = people_keys.folder() {
-                // Each workspace's store, under the workspace's own key.
-                accounts::keep_vault_keys_apart(
-                    &cfg.state_root.join("workspaces").join("workspaces"),
-                    &keys.join("workspaces"),
-                );
-                // A store a host kept per person before, read once as it moves
-                // into the workspaces that person owns.
-                accounts::keep_vault_keys_apart(
-                    &cfg.state_root.join("workspaces").join("people"),
-                    keys,
-                );
-            }
         }
         // No workspace this server keeps is opened with an address it would
         // have to rename: the endpoint names where it is reached first, when it

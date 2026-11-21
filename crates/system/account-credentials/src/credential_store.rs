@@ -553,6 +553,26 @@ pub fn is_cloud_type(type_id: &str) -> bool {
         || matches!(type_id, ICLOUD_DRIVE_TYPE | NEXTCLOUD_TYPE | WEBDAV_TYPE)
 }
 
+/// A grant read and, where it needed it, renewed ([`CredentialStore::renew_grant`]).
+pub struct RenewedGrant {
+    /// The tokens to sign in with now: none where the provider will not renew the grant any
+    /// more, and its person signs in again.
+    pub tokens: Option<TokenSet>,
+    /// What to keep in place of the secret read, where that changed: the renewed grant, or the
+    /// emptied one a provider would not renew.
+    pub keep: Option<Secret>,
+}
+
+impl std::fmt::Debug for RenewedGrant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RenewedGrant")
+            .field("signs_in", &self.tokens.is_some())
+            .field("changed", &self.keep.is_some())
+            .finish()
+    }
+}
+
 /// See the module docs.
 #[derive(Clone)]
 pub struct CredentialStore {
@@ -1150,6 +1170,28 @@ impl CredentialStore {
         let secret = credentials
             .get(id)
             .ok_or(CredentialError::NeedsAuthentication)?;
+        let renewed = self.renew_grant(&secret, oauth_use, force)?;
+        if let Some(keep) = &renewed.keep {
+            credentials.put(id, keep);
+            credentials.try_save().map_err(CredentialError::Storage)?;
+        }
+        renewed.tokens.ok_or(CredentialError::NeedsAuthentication)
+    }
+
+    /// The grant `secret` keeps for `oauth_use`, renewed first where it is about to expire, or
+    /// with `force`: the one way a grant is renewed, whatever keeps the secret. The answer says
+    /// what to keep in the secret's place where that changed; it holds no tokens where the
+    /// provider will not renew the grant any more, and its person signs in again.
+    ///
+    /// # Errors
+    /// `secret` holds no grant, the grant's registration does not fit the use, or the provider
+    /// was not reached.
+    pub fn renew_grant(
+        &self,
+        secret: &Secret,
+        oauth_use: OAuthUse,
+        force: bool,
+    ) -> Result<RenewedGrant, CredentialError> {
         let Some((
             Grant::Oauth2 {
                 mut tokens,
@@ -1158,52 +1200,50 @@ impl CredentialStore {
                 copy_origin,
             },
             legacy,
-        )) = decode_grant(&secret)
+        )) = decode_grant(secret)
         else {
             return Err(CredentialError::NeedsAuthentication);
         };
         if let Some(imported) = &registration {
             imported.validate(oauth_use)?;
         }
-        if legacy {
-            credentials.put(id, &oauth_secret(&tokens));
-            credentials.try_save().map_err(CredentialError::Storage)?;
-        }
+        let mut keep = legacy.then(|| oauth_secret(&tokens));
         if tokens.refresh_token.is_empty() {
-            return Err(CredentialError::NeedsAuthentication);
+            return Ok(RenewedGrant { tokens: None, keep });
         }
         if force || tokens.needs_refresh() {
             let (provider, client) = self.grant_config(oauth_use, registration.as_ref())?;
-            let renewed =
+            let mut renewed =
                 match OAuthClient::new()?.refresh(&provider, &client, &tokens.refresh_token) {
                     Ok(renewed) => renewed.stamp_now(),
                     Err(OAuthError::InvalidGrant) => {
-                        credentials.put(
-                            id,
-                            &registered_secret(
+                        return Ok(RenewedGrant {
+                            tokens: None,
+                            keep: Some(registered_secret(
                                 &TokenSet::default(),
                                 registration,
                                 copied,
                                 copy_origin,
-                            ),
-                        );
-                        credentials.try_save().map_err(CredentialError::Storage)?;
-                        return Err(CredentialError::NeedsAuthentication);
+                            )),
+                        });
                     }
                     Err(error) => return Err(error.into()),
                 };
-            let mut renewed = renewed;
             if renewed.scope.is_none() {
                 renewed.scope = tokens.scope;
             }
             tokens = renewed;
-            credentials.put(
-                id,
-                &registered_secret(&tokens, registration, copied, copy_origin),
-            );
-            credentials.try_save().map_err(CredentialError::Storage)?;
+            keep = Some(registered_secret(
+                &tokens,
+                registration,
+                copied,
+                copy_origin,
+            ));
         }
-        Ok(tokens)
+        Ok(RenewedGrant {
+            tokens: Some(tokens),
+            keep,
+        })
     }
 
     pub fn finish_sign_in(authorization: Authorization) -> Result<TokenSet, CredentialError> {

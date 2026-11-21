@@ -151,7 +151,7 @@ impl Drop for LetsGo {
 
 /// Link `root` a provider of their own that answers `calls`, each as its steps, and have the
 /// server ask it for their agent's turns.
-fn reporting(
+async fn reporting(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     calls: impl IntoIterator<Item = Vec<Next>>,
@@ -175,6 +175,7 @@ fn reporting(
             },
             true,
         )
+        .await
         .unwrap();
     (theirs.clone(), LetsGo(theirs))
 }
@@ -363,7 +364,8 @@ async fn an_answer_longer_than_one_message_stands_whole_in_the_conversation() {
             Waits,
             Reports(waits_at, lines()),
         ]],
-    );
+    )
+    .await;
     assert!(
         report(0, waits_at).len() > chat::chat::MAX_MESSAGE_TEXT_BYTES,
         "what the model writes before it waits is longer than one message holds"
@@ -496,7 +498,8 @@ async fn a_stop_that_names_a_message_of_a_long_answer_ends_its_turn(nth: usize) 
             Waits,
             Reports(waits_at, lines()),
         ]],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -590,7 +593,8 @@ async fn a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped()
             vec![Reports(0, waits_at), Waits, Reports(waits_at, lines())],
             vec![Writes("The report ends here.")],
         ],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -667,7 +671,8 @@ async fn the_thinking_and_the_steps_of_a_long_answer_stay_with_its_first_message
                 Writes("That is the whole report."),
             ],
         ],
-    );
+    )
+    .await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -774,7 +779,8 @@ async fn a_sub_agents_long_answer_goes_on_in_its_own_conversation() {
             // What its person asks it in its own conversation.
             vec![Reports(0, lines())],
         ],
-    );
+    )
+    .await;
     let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
     starts(
         &workspaces,

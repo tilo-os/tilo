@@ -74,6 +74,7 @@ async fn a_keys_mail_grant_lets_it_list_the_workspaces_accounts_and_read_its_mes
     // The workspace keeps an account, and holds a message Mail brought in.
     workspaces
         .keep_mail_account_as_added(&workspace, ACCOUNT)
+        .await
         .unwrap();
     let holder = Holder::start(&on_server, &ada, &workspace, "Claude Code").await;
     let delivered = holder

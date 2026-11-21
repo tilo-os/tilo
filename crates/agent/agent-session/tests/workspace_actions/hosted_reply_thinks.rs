@@ -63,7 +63,7 @@ impl Drop for LetsGo {
 
 /// Link the workspace a provider of its own whose model thinks before it answers, and have the
 /// server ask it for their agent's turns.
-fn thinking(
+async fn thinking(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
     writes: bool,
@@ -85,6 +85,7 @@ fn thinking(
             },
             true,
         )
+        .await
         .unwrap();
     (theirs.clone(), LetsGo(theirs))
 }
@@ -140,7 +141,7 @@ async fn thought(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let (theirs, _lets_go) = thinking(&workspaces, &workspace, false);
+    let (theirs, _lets_go) = thinking(&workspaces, &workspace, false).await;
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -188,7 +189,7 @@ async fn a_reply_shows_its_model_thinking_and_keeps_an_answer_that_came_whole() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_model_thought_stands_beside_the_words_it_then_writes() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let (theirs, _lets_go) = thinking(&workspaces, &workspace, true);
+    let (theirs, _lets_go) = thinking(&workspaces, &workspace, true).await;
     let first = write_to_agent(
         &actions,
         &workspaces,

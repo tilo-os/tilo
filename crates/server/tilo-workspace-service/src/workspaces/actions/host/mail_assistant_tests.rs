@@ -33,7 +33,7 @@ use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::asking;
 use crate::workspaces::fixtures::TestHost;
 use crate::workspaces::mail_watch::testing::{Watched, keep};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 const ACCOUNT: &str = "ada@example.test";
@@ -65,10 +65,12 @@ impl Setup {
         let (workspace, workspace_id, host) = governed(&workspaces).await;
         let device = admit(&workspaces, &workspace, &owner, 1).await;
         keep(
-            &workspaces.workspace_root(&workspace_id.to_string()),
+            &workspaces,
+            &workspace_id.to_string(),
             ACCOUNT,
             "adas-password",
-        );
+        )
+        .await;
         Self {
             servers,
             workspaces,
@@ -293,6 +295,7 @@ async fn a_members_agent_reads_and_searches_and_its_changes_ask_first() {
     assert_eq!(found.folders[0].messages[0].uid, 4);
     let arrived = setup.ask(&agent, person_accounts::ARRIVED, json!({})).await;
     assert!(read::<MailArrivals>(arrived).arrivals.is_empty());
+    setup.workspaces.mail_watches_settled().await;
     assert_eq!(setup.servers.running().len(), 1, "its asking is listening");
     let begun: StartedSend = read(
         setup

@@ -3,8 +3,10 @@
 //! A calendar account is added the way a mail account is: its server is
 //! asked first, with the name and password the person gives or the vault
 //! item they name, and only a server that takes them is kept. The account
-//! sits beside the mail accounts in the person's own store, its password in
-//! their vault, in the shape a device's Calendar keeps one.
+//! sits beside the mail accounts in the workspace's store, in the shape a
+//! device's Calendar keeps one, and names its sign-in: an entry of the
+//! workspace's vault, resolved each time its server is asked
+//! ([`super::kept_sign_ins`]).
 //!
 //! An account may be connected for reading only ([`Add`]). Its settings say
 //! so in that same store, where a device's Calendar reads it too, and every
@@ -52,7 +54,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use calendar_model::account::{CalDavConfig, CalendarAccount, RemoteCalendar, TYPE_ID};
+use calendar_model::account::{RemoteCalendar, TYPE_ID};
 use calendar_model::model::Event;
 use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde::{Deserialize, Serialize};
@@ -67,8 +69,10 @@ use tilo_dav::{Credentials, DavClient, Depth, Limits, Precondition, Url, props};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
-use super::{answer, argument, credentials, mail_accounts, sending};
+use super::kept_sign_ins::{NO_SIGN_IN, SIGN_IN, Signing, places_of, sign_in_of};
+use super::{answer, argument, mail_accounts, sending};
 use crate::workspaces::Workspaces;
+use crate::workspaces::vault::{VaultAt, VaultOf};
 use crate::workspaces::workspace_stores::Store;
 
 /// The calendar server tests ask.
@@ -246,6 +250,8 @@ struct Categories {
 /// An account as the store keeps it, read without its sign-in.
 #[derive(Clone, Debug)]
 struct Account {
+    /// The account as kept, which names its sign-in and its server.
+    stored: accounts::Account,
     id: String,
     name: String,
     server_url: String,
@@ -383,6 +389,7 @@ fn accounts_at(root: &Path) -> Vec<Account> {
                 calendar.read_only |= config.read_only;
             }
             Some(Account {
+                stored: stored.clone(),
                 id: stored.id.to_string(),
                 name: stored.display_name.clone(),
                 server_url: config.server_url,
@@ -394,42 +401,75 @@ fn accounts_at(root: &Path) -> Vec<Account> {
         .collect()
 }
 
-fn password_of(root: &Path, account: &str) -> Result<String, String> {
-    credentials(root)?
-        .get(&accounts::AccountId::from(account.to_owned()))
-        .map(|secret| secret.password)
-        .filter(|password| !password.is_empty())
-        .ok_or_else(|| "That calendar account has no sign-in yet".to_owned())
-}
-
-/// Whether `account` has a sign-in to read its server with: a password, or
-/// the grant a sign-in on its provider's page left. A grant the provider
-/// will not renew any more is taken out of the vault, and the account lists
-/// without a sign-in until its person signs in again.
-fn has_sign_in(root: &Path, account: &str) -> bool {
-    password_of(root, account).is_ok()
-        || matches!(
-            super::oauth_grant::ProviderGrant::load(root, account),
-            Ok(Some(grant)) if !grant.tokens.refresh_token.is_empty()
-        )
-}
-
-/// What reads `account`'s server: the password its person gave, or the
-/// access token of the grant their sign-in on its provider's page left,
-/// renewed through the one shared path when it expired.
-fn sign_in(root: &Path, account: &Account) -> Result<Credentials, String> {
-    if let Ok(issuer) = super::oauth_grant::issuer_of_account(root, &account.id) {
-        let token = super::oauth_grant::ProviderGrant::access_token(
-            root,
-            &account.id,
+/// What signs in to `account`'s server now, for whoever `signing` signs in for: the password
+/// its entry in the workspace's vault holds, at its server's own origin, or the access token of
+/// the grant a sign-in on its provider's page left there, renewed through the one shared path
+/// when it expired. The use is written into the entry first.
+async fn signed_in(signing: Signing<'_>, account: &Account) -> Result<Credentials, String> {
+    if let Ok(issuer) = super::oauth_grant::issuer_of_account(signing.root, &account.id) {
+        let token = super::oauth_grant::access_token(
+            signing.vault,
+            signing.root,
+            &account.stored,
             account_credentials::OAuthUse::calendar(issuer),
-        )?;
+            signing.by,
+        )
+        .await?;
         return Ok(Credentials::bearer(token));
     }
+    let reference = sign_in_of(&account.stored.config).ok_or_else(|| NO_SIGN_IN.to_owned())?;
+    let places = places_of(&account.stored)?;
+    let released = signing
+        .vault
+        .use_sign_in(
+            &reference,
+            (accounts::vault_items::ItemKind::Login, &places),
+            signing.by,
+            SIGN_IN,
+        )
+        .await?;
     Ok(Credentials::new(
         account.username.clone(),
-        password_of(root, &account.id)?,
+        released.secret.to_string(),
     ))
+}
+
+/// What asks a workspace's calendar servers, from the thread that does: how far it may reach,
+/// the workspace's vault every sign-in is resolved from the moment it signs in, and who signs
+/// in (empty for a person or this host itself), which each use writes down.
+#[derive(Clone)]
+pub(super) struct Asking {
+    reach: Reach,
+    vault: VaultOf,
+    by: String,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Asking {
+    /// Asking within `reach`, signing in from `vault` for `by`. Made on the runtime the sign-ins
+    /// are resolved on.
+    pub(super) fn of(vault: VaultAt<'_>, by: &str, reach: Reach) -> Self {
+        Self {
+            reach,
+            vault: vault.owned(),
+            by: by.to_owned(),
+            runtime: tokio::runtime::Handle::current(),
+        }
+    }
+
+    fn signing<'a>(&'a self, root: &'a Path) -> Signing<'a> {
+        Signing {
+            vault: self.vault.at(),
+            root,
+            by: &self.by,
+        }
+    }
+
+    /// What signs in to `account`'s server now ([`signed_in`]).
+    fn sign_in(&self, root: &Path, account: &Account) -> Result<Credentials, String> {
+        self.runtime
+            .block_on(signed_in(self.signing(root), account))
+    }
 }
 
 fn view(root: &Path, account: &Account) -> AccountView {
@@ -439,7 +479,7 @@ fn view(root: &Path, account: &Account) -> AccountView {
         name: account.name.clone(),
         server_url: account.server_url.clone(),
         username: account.username.clone(),
-        has_secret: has_sign_in(root, &account.id),
+        has_secret: super::kept_sign_ins::has_sign_in(&account.stored),
         calendars: account
             .calendars
             .iter()
@@ -591,10 +631,11 @@ fn pull(
 
 /// Ask `account`'s server now and keep what it answers. A pull that does
 /// not end leaves the copy as it was and says why with it.
-fn sync(root: &Path, reach: &Reach, account: &Account) -> Result<(), String> {
+fn sync(root: &Path, reach: &Asking, account: &Account) -> Result<(), String> {
     let mut kept = read_kept(root, &account.id);
-    let pulled =
-        sign_in(root, account).and_then(|credentials| pull(account, credentials, &mut kept, reach));
+    let pulled = reach
+        .sign_in(root, account)
+        .and_then(|credentials| pull(account, credentials, &mut kept, &reach.reach));
     match &pulled {
         Ok(()) => {
             kept.synced_at_ms = now_ms();
@@ -643,9 +684,15 @@ fn account_id(username: &str, server: &Url) -> String {
 }
 
 /// Add an account once its server answered the sign-in with the calendars
-/// it holds: the password into the vault, the account into the store. Its
-/// server is asked within `reach`, as it is at every later read.
-fn add(root: &Path, reach: &Reach, adding: Add) -> Result<AccountView, String> {
+/// it holds: the account into the store, naming its sign-in in the
+/// workspace's vault ([`keep_account`]), `named` where a member's entry is
+/// it. Its server is asked within `reach`, as it is at every later read.
+fn add(
+    root: &Path,
+    reach: &Asking,
+    adding: Add,
+    named: Option<ItemRef>,
+) -> Result<AccountView, String> {
     let username = adding.username.trim().to_owned();
     if username.is_empty() || adding.password.is_empty() {
         return Err("A calendar account has a user name and a password".into());
@@ -660,9 +707,9 @@ fn add(root: &Path, reach: &Reach, adding: Add) -> Result<AccountView, String> {
             .any(|kept| kept.id == id && kept.read_only);
     let mut asked = accounts::Account::new(accounts::AccountId::from(id.clone()), TYPE_ID);
     asked.config = serde_json::json!({ "server_url": server.as_str(), "username": username });
-    let found = FindingAccountTester(reach.clone())
+    let found = FindingAccountTester(reach.reach.clone())
         .discover_calendars(&asked, &accounts::Secret::password(adding.password.clone()))?;
-    let calendars = found
+    let calendars: Vec<RemoteCalendar> = found
         .into_iter()
         .enumerate()
         .map(|(place, calendar)| RemoteCalendar {
@@ -676,25 +723,28 @@ fn add(root: &Path, reach: &Reach, adding: Add) -> Result<AccountView, String> {
             read_only: calendar.read_only || read_only,
         })
         .collect();
-    let mut store = calendar_model::AccountStore::new();
-    store.upsert(CalendarAccount {
-        id: id.clone(),
-        config: CalDavConfig {
-            display_name: adding
-                .name
-                .map(|name| name.trim().to_owned())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| username.clone()),
-            server_url: server.to_string(),
-            username,
-            password: adding.password,
-            oauth_account_id: None,
-        },
-        calendars,
-        collapsed: false,
-        read_only,
+    let display_name = adding
+        .name
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| username.clone());
+    let mut stored = accounts::Account::new(accounts::AccountId::from(id.clone()), TYPE_ID);
+    stored.display_name.clone_from(&display_name);
+    stored.config = serde_json::json!({
+        "display_name": display_name,
+        "server_url": server.to_string(),
+        "username": username,
+        "calendars": calendars,
+        "collapsed": false,
     });
-    store.persist_in(root).map_err(|error| error.to_string())?;
+    if read_only {
+        stored.config["read_only"] = true.into();
+    }
+    let sign_in = match named {
+        Some(named) => SignIn::Named(named),
+        None => SignIn::Own(zeroize::Zeroizing::new(adding.password)),
+    };
+    keep_account(root, reach, stored, sign_in)?;
     let account = accounts_at(root)
         .into_iter()
         .find(|account| account.id == id)
@@ -703,6 +753,67 @@ fn add(root: &Path, reach: &Reach, adding: Add) -> Result<AccountView, String> {
     // by the first read.
     let _ = sync(root, reach, &account);
     Ok(view(root, &account))
+}
+
+/// The sign-in an account added here names.
+enum SignIn {
+    /// An entry a member keeps in the workspace's vault: it stays theirs.
+    Named(ItemRef),
+    /// A password typed for the account, kept as its own entry.
+    Own(zeroize::Zeroizing<String>),
+}
+
+/// Keep `stored` in the workspace's store under `root`, naming `sign_in`: a member's entry, or
+/// a password kept as the account's own entry at its server's origin, in place of the one it
+/// kept before. An entry of its own it named before and names no more goes.
+fn keep_account(
+    root: &Path,
+    reach: &Asking,
+    mut stored: accounts::Account,
+    sign_in: SignIn,
+) -> Result<(), String> {
+    let vault = reach.vault.at();
+    let owner = stored.id.to_string();
+    let mut store = accounts::AccountStore::load_in(root);
+    let before = store
+        .get(&stored.id)
+        .and_then(|kept| sign_in_of(&kept.config));
+    let (reference, own) = match sign_in {
+        SignIn::Named(named) => (named, false),
+        SignIn::Own(password) => {
+            let places = places_of(&stored)?;
+            let username = stored
+                .config
+                .get("username")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let kept = reach.runtime.block_on(vault.keep_sign_in(
+                &owner,
+                (accounts::vault_items::ItemKind::Login, places),
+                &username,
+                password,
+                before.as_ref(),
+            ))?;
+            (kept, true)
+        }
+    };
+    accounts::email::set_password_item(&mut stored.config, Some(&reference.to_string()));
+    store.upsert(stored);
+    if let Err(error) = store.save_in(root) {
+        if own && before.as_ref() != Some(&reference) {
+            let _ = reach
+                .runtime
+                .block_on(vault.forget_sign_in(&owner, &reference));
+        }
+        return Err(error.to_string());
+    }
+    if let Some(before) = before.filter(|before| *before != reference) {
+        reach
+            .runtime
+            .block_on(vault.forget_sign_in(&owner, &before))?;
+    }
+    Ok(())
 }
 
 /// A calendar account kept as the service of a mail account of the same
@@ -720,7 +831,7 @@ pub(super) struct Service {
 /// add takes, and keep beside what is kept of it the mail account it
 /// belongs to. Answers the calendar account's id, which the mail account
 /// keeps for it.
-pub(super) fn add_service(root: &Path, reach: &Reach, service: Service) -> Result<String, String> {
+pub(super) fn add_service(root: &Path, reach: &Asking, service: Service) -> Result<String, String> {
     let name = if service.name.trim().is_empty() {
         service.username.clone()
     } else {
@@ -736,6 +847,7 @@ pub(super) fn add_service(root: &Path, reach: &Reach, service: Service) -> Resul
             name: Some(name),
             read_only: false,
         },
+        None,
     )?;
     let mut state = read_kept(root, &kept.id);
     state.mail_account = Some(service.mail_account);
@@ -766,10 +878,11 @@ fn sign_in_place(adding: &AddWithItem) -> Result<accounts::vault_items::Place, S
 }
 
 /// Add an account with `sign_in`, what the vault item `adding` names
-/// released for the server's own origin ([`sign_in_place`]).
+/// released for the server's own origin ([`sign_in_place`]): the account
+/// names that item, and no copy of it is kept.
 fn add_with_item(
     root: &Path,
-    reach: &Reach,
+    reach: &Asking,
     adding: AddWithItem,
     mut sign_in: accounts::vault_items::Released,
 ) -> Result<AccountView, String> {
@@ -787,6 +900,7 @@ fn add_with_item(
             name: adding.name,
             read_only: adding.read_only,
         },
+        Some(adding.password),
     )
 }
 
@@ -812,13 +926,14 @@ impl Workspaces {
                 accounts::vault_items::UsedFor::default(),
             )
             .await?;
-        let (root, reach) = (root.to_path_buf(), self.inner.models.mail_reach());
+        let root = root.to_path_buf();
+        let reach = Asking::of(self.vault_at(workspace), by, self.inner.models.mail_reach());
         off_thread(move || add_with_item(&root, &reach, adding, sign_in)).await
     }
 }
 
-fn remove(root: &Path, account: &str) -> Result<Listed, String> {
-    remove_account(root, account)?;
+async fn remove((vault, root): (VaultAt<'_>, &Path), account: &str) -> Result<Listed, String> {
+    remove_account((vault, root), account).await?;
     Ok(Listed {
         accounts: accounts_at(root)
             .iter()
@@ -830,12 +945,15 @@ fn remove(root: &Path, account: &str) -> Result<Listed, String> {
 /// Remove `account`, its sign-in and what was kept of it: what removing a
 /// calendar account alone does, and what a mail account's removal does for
 /// the calendar kept as its service ([`super::remove_mail`]).
-pub(super) fn remove_account(root: &Path, account: &str) -> Result<(), String> {
+pub(super) async fn remove_account(
+    (vault, root): (VaultAt<'_>, &Path),
+    account: &str,
+) -> Result<(), String> {
     if !accounts_at(root).iter().any(|kept| kept.id == account) {
         return Err("That calendar account is not kept here".into());
     }
-    // The account and its sign-in go together.
-    super::remove_mail(root, account)?;
+    // The account and its own sign-in go together.
+    Box::pin(super::remove_mail((vault, root), account)).await?;
     let _ = std::fs::remove_file(kept_at(root, account));
     Ok(())
 }
@@ -843,7 +961,7 @@ pub(super) fn remove_account(root: &Path, account: &str) -> Result<(), String> {
 /// Bring the copies of `accounts` up to date when they are older than a
 /// reader should be answered from. A server that does not answer leaves
 /// its copy, with why.
-fn freshen(root: &Path, reach: &Reach, accounts: &[Account], fresh_ms: i64) {
+fn freshen(root: &Path, reach: &Asking, accounts: &[Account], fresh_ms: i64) {
     for account in accounts {
         if now_ms().saturating_sub(read_kept(root, &account.id).synced_at_ms) > fresh_ms {
             let _ = sync(root, reach, account);
@@ -864,7 +982,7 @@ fn bounded_notes(notes: &str) -> String {
 
 fn entries(
     root: &Path,
-    reach: &Reach,
+    reach: &Asking,
     accounts: &[Account],
     asked: &SpanAsked,
     fresh_ms: i64,
@@ -903,7 +1021,7 @@ fn entries(
 
 fn free(
     root: &Path,
-    reach: &Reach,
+    reach: &Asking,
     accounts: &[Account],
     asked: &FreeAsked,
 ) -> Result<Value, String> {
@@ -917,7 +1035,7 @@ fn free(
 /// `Ok(false)` when the server holds something else there than expected.
 fn write(
     root: &Path,
-    reach: &Reach,
+    reach: &Asking,
     account: &Account,
     url: &str,
     ics: String,
@@ -928,7 +1046,7 @@ fn write(
     if account.read_only {
         return Err(READ_ONLY.into());
     }
-    let (client, server) = client(account, sign_in(root, account)?, reach)?;
+    let (client, server) = client(account, reach.sign_in(root, account)?, &reach.reach)?;
     let response = client
         .put(
             on_server(&server, url)?,
@@ -1056,7 +1174,7 @@ struct Planned {
 /// again finds it. Nothing is written yet.
 fn planned(
     root: &Path,
-    reach: &Reach,
+    reach: &Asking,
     accounts: &[Account],
     invitation: &Invitation,
 ) -> Result<Planned, String> {
@@ -1123,7 +1241,7 @@ fn planned(
 /// Write what `planned` comes to on its calendar's server, and answer what
 /// was made of the invitation. An entry that is no longer what was read
 /// when it was planned is not written over.
-fn carry_out(root: &Path, reach: &Reach, planned: Planned) -> Result<Value, String> {
+fn carry_out(root: &Path, reach: &Asking, planned: Planned) -> Result<Value, String> {
     let Planned {
         account,
         entry,
@@ -1138,7 +1256,7 @@ fn carry_out(root: &Path, reach: &Reach, planned: Planned) -> Result<Value, Stri
             if account.read_only {
                 return Err(READ_ONLY.into());
             }
-            let (client, server) = client(&account, sign_in(root, &account)?, reach)?;
+            let (client, server) = client(&account, reach.sign_in(root, &account)?, &reach.reach)?;
             let matching = found.etag.as_deref().unwrap_or("*");
             // The server answers nobody for its person: where they were
             // invited, declining is theirs to say.
@@ -1211,7 +1329,7 @@ fn carry_out(root: &Path, reach: &Reach, planned: Planned) -> Result<Value, Stri
 /// whose calendar it is: their asking is their word.
 fn add_invitation(
     root: &Path,
-    reach: &Reach,
+    reach: &Asking,
     accounts: &[Account],
     invitation: &Invitation,
 ) -> Result<Value, String> {
@@ -1464,7 +1582,7 @@ struct Filing {
 /// server has it. Nothing is written yet.
 fn filing(
     root: &Path,
-    reach: &Reach,
+    reach: &Asking,
     accounts: &[Account],
     asked: &Categories,
 ) -> Result<Filing, String> {
@@ -1557,7 +1675,7 @@ fn filed(filing: &Filing, by: &PutIn) -> Result<Judged, String> {
 
 /// Write what `filing` comes to on its calendar's server. An entry that is
 /// no longer what was read when it was planned is not written over.
-fn file(root: &Path, reach: &Reach, filing: Filing) -> Result<Value, String> {
+fn file(root: &Path, reach: &Asking, filing: Filing) -> Result<Value, String> {
     let Filing {
         account,
         entry,
@@ -1586,7 +1704,7 @@ fn file(root: &Path, reach: &Reach, filing: Filing) -> Result<Value, String> {
 /// calendar it is: their asking is their word.
 fn set_categories(
     root: &Path,
-    reach: &Reach,
+    reach: &Asking,
     accounts: &[Account],
     asked: &Categories,
 ) -> Result<Value, String> {
@@ -1649,7 +1767,12 @@ impl Workspaces {
         }
         let asked = SpanAsked::between_ms(from_ms, to_ms)
             .ok_or_else(|| "a time no calendar reaches".to_owned())?;
-        let reach = self.inner.models.mail_reach();
+        let workspace = workspace.to_string();
+        let reach = Asking::of(
+            self.vault_at(&workspace),
+            "",
+            self.inner.models.mail_reach(),
+        );
         off_thread(move || {
             let mut read = entries(&root, &reach, &accounts, &asked, TIMES_FRESH_MS)?;
             match read.get_mut("entries").map(Value::take) {
@@ -1705,7 +1828,7 @@ impl Workspaces {
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         action: &str,
-    ) -> Result<(PathBuf, Vec<Account>, Option<Assistant>), ActionError> {
+    ) -> Result<(PathBuf, Vec<Account>, Option<Assistant>, Asking), ActionError> {
         let effect = calendar_effect(action);
         let reach = self
             .reaching(
@@ -1726,13 +1849,18 @@ impl Workspaces {
         let workspace = reach.workspace.to_string();
         let root = self.workspace_root(&workspace);
         let accounts = accounts_at(&root);
+        let asking = Asking::of(
+            self.vault_at(&workspace),
+            &reach.by(),
+            self.inner.models.mail_reach(),
+        );
         let assistant = reach.agent.clone().map(|agent| Assistant {
             person: reach.person,
             workspace,
             agent,
             asks: reach.answer != tilo_action_policy::Answer::Allow,
         });
-        Ok((root, accounts, assistant))
+        Ok((root, accounts, assistant, asking))
     }
 
     /// Put `question`, about an entry an agent of `person`'s would put into
@@ -1774,7 +1902,7 @@ impl Workspaces {
     /// was read before they were asked.
     async fn assistant_adds(
         &self,
-        root: PathBuf,
+        (root, reach): (PathBuf, Asking),
         accounts: Vec<Account>,
         invitation: Invitation,
         assistant: &Assistant,
@@ -1783,7 +1911,6 @@ impl Workspaces {
         let reading = root.clone();
         let by = assistant.putting();
         let asking = by.clone();
-        let reach = self.inner.models.mail_reach();
         let reaching = reach.clone();
         let read = off_thread(move || {
             let planned = planned(&reading, &reaching, &accounts, &invitation)?;
@@ -1841,7 +1968,7 @@ impl Workspaces {
     /// was read before they were asked.
     async fn assistant_files(
         &self,
-        root: PathBuf,
+        (root, reach): (PathBuf, Asking),
         accounts: Vec<Account>,
         asked: Categories,
         assistant: &Assistant,
@@ -1849,7 +1976,6 @@ impl Workspaces {
     ) -> Result<Value, ActionError> {
         let reading = root.clone();
         let by = assistant.putting();
-        let reach = self.inner.models.mail_reach();
         let reaching = reach.clone();
         let read = off_thread(move || {
             let filing = filing(&reading, &reaching, &accounts, &asked)?;
@@ -1903,18 +2029,17 @@ impl Workspaces {
                 .calendar_by_reference(workspace_id, caller, certificate, request)
                 .await;
         }
-        let (root, accounts, assistant) = self
+        let (root, accounts, assistant, reach) = self
             .calendars_asked(workspace_id, caller, certificate, &action)
             .await?;
         let listed = |root: &Path, accounts: &[Account]| Listed {
             accounts: accounts.iter().map(|account| view(root, account)).collect(),
         };
-        let reach = self.inner.models.mail_reach();
         match action.as_str() {
             LIST => answer(&Ok::<_, String>(listed(&root, &accounts))),
             ADD => {
                 let adding: Add = argument(request, "a calendar account to add")?;
-                let kept = off_thread(move || add(&root, &reach, adding)).await;
+                let kept = off_thread(move || add(&root, &reach, adding, None)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -1922,7 +2047,11 @@ impl Workspaces {
             }
             REMOVE => {
                 let asked: OneAccount = argument(request, "the account")?;
-                let kept = remove(&root, asked.account.as_deref().unwrap_or_default());
+                let kept = remove(
+                    (reach.vault.at(), &root),
+                    asked.account.as_deref().unwrap_or_default(),
+                )
+                .await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -1964,8 +2093,14 @@ impl Workspaces {
                         &off_thread(move || add_invitation(&root, &reach, &accounts, &asked)).await,
                     ),
                     Some(assistant) => {
-                        Box::pin(self.assistant_adds(root, accounts, asked, &assistant, caller))
-                            .await
+                        Box::pin(self.assistant_adds(
+                            (root, reach),
+                            accounts,
+                            asked,
+                            &assistant,
+                            caller,
+                        ))
+                        .await
                     }
                 }
             }
@@ -1977,8 +2112,14 @@ impl Workspaces {
                         &off_thread(move || set_categories(&root, &reach, &accounts, &asked)).await,
                     ),
                     Some(assistant) => {
-                        Box::pin(self.assistant_files(root, accounts, asked, &assistant, caller))
-                            .await
+                        Box::pin(self.assistant_files(
+                            (root, reach),
+                            accounts,
+                            asked,
+                            &assistant,
+                            caller,
+                        ))
+                        .await
                     }
                 }
             }
@@ -2007,27 +2148,25 @@ impl Workspaces {
         const CALENDAR: &str = "https://calendar.example.test/dav/calendars/ada/work/";
         let root = self.workspace_root(workspace);
         let id = account_id("ada", &server_of(SERVER)?);
-        let mut store = calendar_model::AccountStore::new();
-        store.upsert(CalendarAccount {
-            id: id.clone(),
-            config: CalDavConfig {
-                display_name: "Work".into(),
-                server_url: SERVER.into(),
-                username: "ada".into(),
-                password: "kept-for-a-test".into(),
-                oauth_account_id: None,
-            },
-            calendars: vec![RemoteCalendar {
+        // Its server is never asked: the copy is fresh, so the account names no sign-in.
+        let mut stored = accounts::Account::new(accounts::AccountId::from(id.clone()), TYPE_ID);
+        stored.display_name = "Work".into();
+        stored.config = serde_json::json!({
+            "display_name": "Work",
+            "server_url": SERVER,
+            "username": "ada",
+            "calendars": [RemoteCalendar {
                 id: CALENDAR.into(),
                 name: "Work".into(),
                 color: 0,
                 visible: true,
                 read_only: false,
             }],
-            collapsed: false,
-            read_only: false,
+            "collapsed": false,
         });
-        store.persist_in(&root).map_err(|error| error.to_string())?;
+        let mut store = accounts::AccountStore::load_in(&root);
+        store.upsert(stored);
+        store.save_in(&root).map_err(|error| error.to_string())?;
         let mut kept = Kept {
             synced_at_ms: now_ms(),
             ..Kept::default()

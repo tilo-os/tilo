@@ -26,7 +26,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::ServiceWorkspaceActions;
 use super::tests::{admit, ask_own, governed, request, settled};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
 use crate::workspaces::{AsksPeople, OpenAiSignIn, PersonAnswer};
 
 fn asking(text: &str) -> Value {

@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::remote::person_accounts::{self, BeginSend, SendId, SentMail};
 use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
 
+use super::kept_sign_ins::Signing;
 use super::{Staged, argument, begun_for, send_staged, sends_root};
 use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
@@ -268,7 +269,16 @@ impl Workspaces {
         let root = self.workspace_root(&workspace);
         if target.address.action != person_accounts::SEND {
             return self
-                .mail_read_or_draft(&root, &workspace, request, true)
+                .mail_read_or_draft(
+                    Signing {
+                        vault: self.vault_at(&workspace),
+                        root: &root,
+                        by: &using.agent,
+                    },
+                    &workspace,
+                    request,
+                    true,
+                )
                 .await
                 .map(TurnMail::Done);
         }
@@ -400,7 +410,13 @@ impl Workspaces {
         if staged.shown()?.rows() != asked.rows.as_slice() {
             return Err("What waited is not what you were shown, so nothing was sent.".into());
         }
-        send_staged(self.mail_session(), root, staged).await
+        // Their allowing it is their sending it.
+        let signing = Signing {
+            vault: self.vault_at(&asked.workspace),
+            root,
+            by: "",
+        };
+        send_staged(self.mail_session(), signing, staged).await
     }
 
     /// Forget the messages set apart under `root` for the workspace whose

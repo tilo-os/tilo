@@ -29,8 +29,8 @@ use tilo_actions::remote::{
 };
 
 use super::{
-    Account, ENTRIES, FREE, FRESH_MS, LIST, Listed, RESOURCE, accounts_at, answer, argument,
-    entries, free, off_thread, view,
+    Account, Asking, ENTRIES, FREE, FRESH_MS, LIST, Listed, RESOURCE, accounts_at, answer,
+    argument, entries, free, off_thread, view,
 };
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
@@ -126,7 +126,11 @@ impl Workspaces {
         if !turn.may_take(&using.workspace, target) {
             return Err(ActionError::NotPermitted);
         }
-        let reach = self.inner.models.mail_reach();
+        let reach = Asking::of(
+            self.vault_at(&using.workspace),
+            &using.agent,
+            self.inner.models.mail_reach(),
+        );
         match action {
             LIST => answer(&Ok::<_, String>(Listed {
                 accounts: accounts

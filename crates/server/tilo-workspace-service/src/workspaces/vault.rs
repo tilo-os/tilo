@@ -28,6 +28,7 @@ use zeroize::Zeroizing;
 use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
+use super::person_settings::kept_sign_ins::HostSignIns;
 
 /// The app that keeps the vault: whose grants decide each reader of it.
 pub(crate) const APP: &str = tilo_app_id::apps::PASSWORDS;
@@ -100,9 +101,24 @@ impl Workspaces {
     /// `workspace`'s vault, opened on this device with the document's own keys.
     ///
     /// # Errors
-    /// This service does not hold the workspace, its device holds no keys of the vault (the
-    /// policy does not let it read Passwords), or the document does not read.
+    /// This service does not hold the workspace, the policy does not let its device read
+    /// Passwords now, its device holds no keys of the vault, or the document does not read.
     pub(crate) async fn open_vault(&self, workspace: &str) -> Result<OpenVault, String> {
+        // The policy decides as the vault is read: keys this device was handed before its access
+        // was taken away still open what was sealed with them, and they open nothing here.
+        let state = self
+            .state(workspace)
+            .await
+            .ok_or_else(|| UNAVAILABLE.to_owned())?;
+        if let Err(reason) = state.check_document_read(
+            self.inner.host.cert.device_public_key,
+            APP,
+            WORKSPACE_VAULT_DOCUMENT,
+            tilo_clock::wall(),
+        ) {
+            tracing::debug!(%workspace, %reason, "the policy does not let this device read the vault");
+            return Err(UNAVAILABLE.to_owned());
+        }
         // The keys are made where nobody made them yet, as this device's own write of any of
         // the workspace's documents makes them.
         let keys = match self.own_route_keys(&route(workspace), true).await {
@@ -124,8 +140,7 @@ impl Workspaces {
     pub(crate) async fn carry_vaults_over(&self) {
         let governed: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
         for workspace in governed {
-            let kept = accounts::vault_items::KeptBefore::under(&self.workspace_root(&workspace))
-                .is_ok_and(|kept| !kept.is_empty());
+            let kept = accounts::vault_dir_in(&self.workspace_root(&workspace)).exists();
             if kept && let Err(error) = self.open_vault(&workspace).await {
                 tracing::info!(%workspace, %error, "what the host kept of the workspace's vault is carried over once its vault opens here");
             }
@@ -153,9 +168,11 @@ impl Workspaces {
 
     /// Carry what this host kept of `opened`'s vault in its own sealed store, before the
     /// workspace's vault was the document, into the document, once after each start: every item
-    /// and entry the document does not keep yet, with its uses. Only once they are written are
-    /// they taken out of the host's store, so a failed write loses nothing and is carried at the
-    /// next open.
+    /// and entry the document does not keep yet, with its uses, and every account's and
+    /// provider's sign-in, as that account's or provider's own entry, which its settings then
+    /// name ([`HostSignIns`]). Only once they are written are they taken out of the host's
+    /// store, and the store goes, so a failed write loses nothing and is carried at the next
+    /// open.
     async fn carry_over(&self, opened: OpenVault) -> Result<OpenVault, String> {
         let workspace = opened.workspace.clone();
         if self
@@ -168,6 +185,24 @@ impl Workspaces {
             return Ok(opened);
         }
         let root = self.workspace_root(&workspace);
+        let done = || {
+            self.inner
+                .vault_uses
+                .carried_over
+                .lock_recover()
+                .insert(workspace.clone());
+        };
+        let sign_ins = match HostSignIns::under(&root) {
+            Ok(Some(sign_ins)) => sign_ins,
+            Ok(None) => {
+                done();
+                return Ok(opened);
+            }
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "what the host kept of the workspace's sign-ins before does not open; it stays");
+                return Ok(opened);
+            }
+        };
         let kept = match accounts::vault_items::KeptBefore::under(&root) {
             Ok(kept) => kept,
             Err(error) => {
@@ -175,15 +210,9 @@ impl Workspaces {
                 return Ok(opened);
             }
         };
-        if kept.is_empty() {
-            self.inner
-                .vault_uses
-                .carried_over
-                .lock_recover()
-                .insert(workspace);
-            return Ok(opened);
-        }
-        let mut changes = Vec::new();
+        let mut items = opened.items();
+        let named = sign_ins.keep_in(&mut items)?;
+        let mut changes = items.take_changes();
         for (entry, uses) in kept.entries() {
             if opened.entry(&entry.id.0).is_some() {
                 continue;
@@ -194,6 +223,7 @@ impl Workspaces {
             }
         }
         let carried = changes.len();
+        let nothing = kept.is_empty() && sign_ins.is_empty();
         // A few at a time: one write of a document carries a bounded number of bytes.
         let mut opened = opened;
         let mut changes = changes.into_iter().peekable();
@@ -203,12 +233,11 @@ impl Workspaces {
             opened = self.read_vault(&workspace, opened.keys).await?;
         }
         kept.forget().map_err(|error| error.to_string())?;
-        tracing::info!(%workspace, carried, "carried what the host kept of the workspace's vault into the vault document");
-        self.inner
-            .vault_uses
-            .carried_over
-            .lock_recover()
-            .insert(workspace.clone());
+        sign_ins.carry(&named)?;
+        if !nothing {
+            tracing::info!(%workspace, carried, "carried what the host kept of the workspace's vault into the vault document");
+        }
+        done();
         let keys = opened.keys;
         self.read_vault(&workspace, keys).await
     }
@@ -342,7 +371,29 @@ impl Workspaces {
 pub(crate) enum VaultAt<'a> {
     Workspace(&'a Workspaces, &'a str),
     #[cfg(test)]
-    Held(&'a std::sync::Mutex<VaultItems>),
+    Held(&'static std::sync::Mutex<VaultItems>),
+}
+
+/// [`VaultAt`] for work that runs where nothing it borrowed reaches: the thread that asks a
+/// server, which resolves an account's sign-in the moment it signs in.
+#[cfg(feature = "agents")]
+#[derive(Clone)]
+pub(crate) enum VaultOf {
+    Workspace(Workspaces, String),
+    #[cfg(test)]
+    Held(&'static std::sync::Mutex<VaultItems>),
+}
+
+#[cfg(feature = "agents")]
+impl VaultOf {
+    /// The vault this names, to change.
+    pub(crate) fn at(&self) -> VaultAt<'_> {
+        match self {
+            Self::Workspace(workspaces, workspace) => VaultAt::Workspace(workspaces, workspace),
+            #[cfg(test)]
+            Self::Held(items) => VaultAt::Held(items),
+        }
+    }
 }
 
 impl std::fmt::Debug for VaultAt<'_> {
@@ -358,6 +409,18 @@ impl std::fmt::Debug for VaultAt<'_> {
 }
 
 impl VaultAt<'_> {
+    /// The same vault, for work that runs where nothing it borrowed reaches.
+    #[cfg(feature = "agents")]
+    pub(crate) fn owned(&self) -> VaultOf {
+        match *self {
+            Self::Workspace(workspaces, workspace) => {
+                VaultOf::Workspace(workspaces.clone(), workspace.to_owned())
+            }
+            #[cfg(test)]
+            Self::Held(items) => VaultOf::Held(items),
+        }
+    }
+
     /// Let `change` read and change the vault's items, writing what it changed before
     /// answering ([`Workspaces::changing_vault`]).
     ///

@@ -763,6 +763,7 @@ mod tests {
         other.sign_in = Some(crate::SignInCredential {
             issuer: "elsewhere".into(),
             billing_project: Some("p".into()),
+            kept: None,
         });
         assert_eq!(profile_headers(&other, Some("k")).unwrap().len(), 1);
     }

@@ -55,6 +55,41 @@ pub fn is_oauth(settings: &serde_json::Value) -> bool {
         .is_some_and(|auth| auth.eq_ignore_ascii_case("oauth"))
 }
 
+/// The key of an account's settings that names the entry of the workspace's vault its sign-in
+/// is: a password, or the grant a provider's own sign-in page left. The value is the entry's
+/// reference (`vault.item:<entry id>`), never the secret, so the settings stay free of one. Every
+/// kind of account that signs in with a kept secret names it here, a calendar's and a cloud
+/// server's as much as a mail account's.
+pub const PASSWORD_ITEM_KEY: &str = "passwordItem";
+
+/// The reference of the vault entry `settings` (an account's `config`) sign in with, when they
+/// name one ([`PASSWORD_ITEM_KEY`]).
+#[must_use]
+pub fn password_item(settings: &serde_json::Value) -> Option<&str> {
+    settings
+        .get(PASSWORD_ITEM_KEY)
+        .and_then(serde_json::Value::as_str)
+        .filter(|reference| !reference.trim().is_empty())
+}
+
+/// Name `reference` as the vault entry `settings` sign in with, or, with `None`, name none:
+/// an account whose sign-in went has none to use until its person signs in again.
+pub fn set_password_item(settings: &mut serde_json::Value, reference: Option<&str>) {
+    if !settings.is_object() {
+        *settings = serde_json::json!({});
+    }
+    if let Some(settings) = settings.as_object_mut() {
+        match reference {
+            Some(reference) => {
+                settings.insert(PASSWORD_ITEM_KEY.into(), reference.into());
+            }
+            None => {
+                settings.remove(PASSWORD_ITEM_KEY);
+            }
+        }
+    }
+}
+
 /// How a connection to a mail server becomes secure. There is no third way:
 /// nothing signs in over a connection that stays in the clear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,6 +385,40 @@ impl AccountConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An account names its sign-in by the vault entry's reference beside its other settings,
+    /// names none once it is taken back, and an empty name is none.
+    #[test]
+    fn an_account_names_its_sign_in_by_reference() {
+        let mut settings = AccountConfig {
+            email: "ada@example.test".into(),
+            ..Default::default()
+        }
+        .to_value()
+        .unwrap();
+        assert_eq!(password_item(&settings), None);
+        set_password_item(
+            &mut settings,
+            Some("vault.item:0123456789abcdef0123456789abcdef"),
+        );
+        assert_eq!(
+            password_item(&settings),
+            Some("vault.item:0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(settings["email"], "ada@example.test");
+        // The settings' own form keeps it, and reads as the account's settings still.
+        assert_eq!(
+            AccountConfig::from_value(settings.clone()).unwrap().email,
+            "ada@example.test"
+        );
+        set_password_item(&mut settings, None);
+        assert_eq!(password_item(&settings), None);
+        settings[PASSWORD_ITEM_KEY] = serde_json::json!(" ");
+        assert_eq!(password_item(&settings), None);
+        let mut none = serde_json::Value::Null;
+        set_password_item(&mut none, Some("vault.item:x"));
+        assert_eq!(password_item(&none), Some("vault.item:x"));
+    }
 
     #[test]
     fn connection_metadata_roundtrip_excludes_passwords() {

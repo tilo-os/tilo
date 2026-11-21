@@ -351,7 +351,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
     use crate::workspaces::person_model::{Interaction, ProviderProtocol};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    let server = super::bot_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let models = ScriptedProvider::answering([Reply::text("Looked.").costing(600_000)]);
@@ -368,6 +368,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
             },
             true,
         )
+        .await
         .unwrap();
     let assistant = Assistant::answering(vec![]);
     let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);

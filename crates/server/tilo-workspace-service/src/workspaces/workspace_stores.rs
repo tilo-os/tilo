@@ -1,9 +1,10 @@
 //! What a workspace keeps on the host that serves it beside its records: its
-//! mail and calendar accounts with their sign-ins, its model providers and
-//! their keys, the services it connected, what its agents learned, and the
-//! items of its vault, sealed under a key of the workspace's own. One set per
-//! workspace, for all its members, kept under `workspaces/<workspace>/` in the
-//! host's state, beside the workspace's asks and grants.
+//! mail and calendar accounts, its model providers, the services it connected
+//! and what its agents learned. Each account and provider names its sign-in or
+//! key, an entry of the workspace's one vault ([`super::vault`]); no secret is
+//! kept here. One set per workspace, for all its members, kept under
+//! `workspaces/<workspace>/` in the host's state, beside the workspace's asks
+//! and grants.
 //!
 //! The workspace's policy decides who reaches them, as it decides every app's
 //! records ([`tilo_action_policy::decide`]). Each store stands at its app's
@@ -114,8 +115,7 @@ impl Reach {
 
 impl Workspaces {
     /// Where this host keeps what `workspace` keeps on it beside its records:
-    /// its accounts, providers, connections and vault, with the key the vault
-    /// is sealed under where there is no keyring.
+    /// its accounts, providers and connections.
     pub(super) fn workspace_root(&self, workspace: &str) -> PathBuf {
         super::person_asking::workspace_store_dir(&self.inner.dir, workspace)
     }
@@ -390,15 +390,15 @@ fn owned_index(dir: &Path) -> std::collections::BTreeMap<String, Vec<String>> {
 }
 
 /// Copy the person's store at `from` into the store of `workspace` at `to`:
-/// the vault's secrets sealed again under `to`'s own key, what was learned
-/// in that workspace, and every other file as it is. Who the person named for
-/// which account is not copied: a workspace's grants say what its agents
-/// reach. What `to` keeps already stays as it is.
+/// what was learned in that workspace, and every other file as it is. The
+/// secrets the person's store sealed stay behind: a workspace keeps every
+/// secret in its one vault, and its accounts are signed in to again there.
+/// Who the person named for which account is not copied: a workspace's grants
+/// say what its agents reach. What `to` keeps already stays as it is.
 fn move_store(from: &Path, to: &Path, workspace: &str) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|error| error.to_string())?;
-    let vault = accounts::vault_dir_in(from);
     let skip = [
-        vault.clone(),
+        accounts::vault_dir_in(from),
         from.join(LEARNED),
         from.join("mail").join("assistants.json"),
     ];
@@ -407,9 +407,6 @@ fn move_store(from: &Path, to: &Path, workspace: &str) -> Result<(), String> {
     if from.join(&learned).exists() && !to.join(&learned).exists() {
         std::fs::create_dir_all(to.join(LEARNED)).map_err(|error| error.to_string())?;
         std::fs::copy(from.join(&learned), to.join(&learned)).map_err(|error| error.to_string())?;
-    }
-    if vault.join("vault.enc").exists() {
-        accounts::SecretVault::reseal_into(from, to)?;
     }
     Ok(())
 }

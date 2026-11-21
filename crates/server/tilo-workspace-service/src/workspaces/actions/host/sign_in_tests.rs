@@ -21,7 +21,10 @@ use tilo_actions::remote::{ActionProvider as _, InvocationReceipt, ReceiptStatus
 
 use super::super::tests::{admit, caller, governed, settled};
 use super::accounts_tests::{asking, listed};
-use crate::workspaces::tests::{governor, test_host};
+use tilo_server_protocol::WorkspaceId;
+
+use crate::workspaces::Workspaces;
+use crate::workspaces::tests::{governor, test_host_taking_part as test_host};
 
 /// What an action answered.
 fn answered<T: serde::de::DeserializeOwned>(receipt: InvocationReceipt) -> T {
@@ -108,11 +111,26 @@ fn web_client(
         );
 }
 
-/// The account a signed-in workspace keeps, by its address.
-fn sealed(root: &std::path::Path, address: &str) -> Option<accounts::Secret> {
-    crate::workspaces::person_settings::credentials(root)
-        .ok()
-        .and_then(|vault| vault.get(&accounts::AccountId::from(address.to_owned())))
+/// The sign-in the account `id` of a signed-in workspace names: what the entry of the
+/// workspace's vault it names holds.
+async fn sealed(workspaces: &Workspaces, workspace: WorkspaceId, id: &str) -> Option<String> {
+    let workspace = workspace.to_string();
+    let store = accounts::AccountStore::load_in(&workspaces.workspace_root(&workspace));
+    let named = store
+        .get(&accounts::AccountId::from(id.to_owned()))
+        .and_then(|kept| accounts::email::password_item(&kept.config))
+        .and_then(tilo_actions::remote::person_vault::ItemRef::parse)?;
+    let vault = workspaces.open_vault(&workspace).await.ok()?;
+    vault.entry(named.id()).map(|entry| entry.password.clone())
+}
+
+/// Whether `kept` is a grant as a provider's sign-in leaves one.
+fn is_grant(kept: &str) -> bool {
+    account_credentials::oauth_tokens(&accounts::Secret {
+        password: String::new(),
+        token: Some(kept.to_owned()),
+    })
+    .is_some()
 }
 
 /// Wait until `ready`, which a background sign-in makes true.
@@ -196,8 +214,10 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
     assert!(!serde_json::to_string(&listed).unwrap().contains("access-"));
 
     let keeping = workspaces.workspace_root(&workspace_id.to_string());
-    let grant = sealed(&keeping, "ada@gmail.example").expect("the grant is sealed");
-    assert!(grant.token.is_some() && grant.password.is_empty());
+    let grant = sealed(&workspaces, workspace_id, "ada@gmail.example")
+        .await
+        .expect("the grant is an entry of the workspace's vault");
+    assert!(is_grant(&grant));
     // The same grant opens the calendar server the account feeds.
     let calendar = accounts::AccountStore::load_in(&keeping)
         .all()
@@ -212,7 +232,11 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
             .and_then(Value::as_str),
         Some("google")
     );
-    assert!(sealed(&keeping, calendar.id.as_str()).is_some_and(|secret| secret.token.is_some()));
+    assert!(
+        sealed(&workspaces, workspace_id, calendar.id.as_str())
+            .await
+            .is_some_and(|kept| is_grant(&kept))
+    );
 
     // The state was used up: the same answer finishes nothing twice.
     assert!(workspaces.accounts_return(&landing.query()).await.is_err());
@@ -254,12 +278,12 @@ async fn a_grant_renews_through_the_web_client_it_was_signed_in_with() {
     tilo_oauth::fake::browse(&step.open).unwrap();
     workspaces.accounts_return(&landing.query()).await.unwrap();
 
-    let root = workspaces.workspace_root(&workspace_id.to_string());
-    let secret = tokio::task::spawn_blocking(move || {
-        crate::workspaces::person_settings::account_secret_for_test(&root, "ada@gmail.example")
-    })
+    let secret = crate::workspaces::person_settings::account_secret_for_test(
+        &workspaces,
+        &workspace_id.to_string(),
+        "ada@gmail.example",
+    )
     .await
-    .expect("the read finishes")
     .expect("the sign-in mail reads with");
     assert_eq!(secret.password, "access-token-1");
     assert!(fake.refreshes() >= 1, "the token was not renewed");
@@ -488,12 +512,9 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
             .any(|account| account.type_id.as_str() == accounts::cloud_types::NEXTCLOUD)
     })
     .await;
-    let app_password = crate::workspaces::person_settings::credentials(&keeping)
-        .unwrap()
-        .get(&accounts::AccountId::from(
-            "nextcloud:ada@127.0.0.1".to_owned(),
-        ))
-        .map_or_else(String::new, |secret| secret.password);
+    let app_password = sealed(&workspaces, workspace_id, "nextcloud:ada@127.0.0.1")
+        .await
+        .unwrap_or_default();
     assert_eq!(app_password, "minted-app-password");
     let calendar = accounts::AccountStore::load_in(&keeping)
         .all()
