@@ -5,8 +5,6 @@
 
 #[path = "account_engine_loop.rs"]
 mod account_engine_loop;
-#[path = "google_settings.rs"]
-mod google_settings;
 #[path = "host_mail_session.rs"]
 mod host_mail_session;
 #[path = "oauth_credentials.rs"]

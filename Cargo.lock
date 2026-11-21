@@ -9966,7 +9966,6 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "settings",
  "tempfile",
  "test-http",
  "tilo-actions",
