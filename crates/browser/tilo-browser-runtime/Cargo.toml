@@ -27,6 +27,9 @@ tilo-pdf = { version = "0.1.0", path = "../../platform/tilo-pdf" }
 # Which app opens what a file's bytes are, as a workspace lands a file.
 tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
+# The core a page holds and reads its workspaces' documents through, as a
+# service does: it loads with the peer module, never with the start module.
+tilo-workspace-service = { version = "0.1.0", path = "../../server/tilo-workspace-service" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # The person's settings sections, which this page keeps as their session does.

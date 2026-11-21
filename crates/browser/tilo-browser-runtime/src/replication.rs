@@ -30,7 +30,7 @@
 //! A package's workspace-primary document travels with an empty record, as the
 //! native broker sends it; in the page's stores it is
 //! [`ui::resource::DocumentId::package_primary`], kept at the workspace index.
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -43,8 +43,12 @@ use durable_store::{DurableStore as _, MemoryStore, WriteOp};
 use neighbour_wire::content::ContentWants;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
-use tilo_session_client::engine::ResourceReading;
+use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
+use tilo_session_client::engine::{Engine, ResourceReading};
 use tilo_session_client::{DocumentAnswer, Events, Link};
+use tilo_workspace_service::documents::{
+    DeviceKeys, GroupKeys, GroupKeysAnswerFuture, HeldDocuments,
+};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::collaboration::document_content::ContentLink;
 use ui::resource::{DocumentSync, WorkspaceAnswer};
@@ -106,6 +110,41 @@ enum DesktopSending {
     Changes,
 }
 
+/// The engine's channel keys as the document core asks a device for them
+/// ([`tilo_workspace_service::documents::GroupKeys`]): the same key service the
+/// session reaches, so a sealed record opens here as it does anywhere else on
+/// this device.
+struct EngineKeys(Arc<Engine>);
+
+impl GroupKeys for EngineKeys {
+    fn named_readers(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        document: &str,
+    ) -> Option<String> {
+        self.0.named_document_readers(workspace, document).ok().flatten()
+    }
+
+    fn group_keys<'a>(
+        &'a self,
+        workspace: &'a str,
+        readers: &'a str,
+        _create: bool,
+    ) -> GroupKeysAnswerFuture<'a> {
+        Box::pin(async move {
+            let workspace = tilo_server_protocol::WorkspaceId::parse(workspace)?;
+            match self.0.reader_keys(workspace, readers) {
+                Ok(tilo_session_client::engine::SealKeys::Here(keys)) => Some(Ok(keys)),
+                // The keys are on their way: what is sealed under them reads once they are here.
+                Ok(tilo_session_client::engine::SealKeys::Waiting) => {
+                    Some(Err("the keys of the reader set are on their way".to_owned()))
+                }
+                Ok(tilo_session_client::engine::SealKeys::NoSecretStore) | Err(_) => None,
+            }
+        })
+    }
+}
+
 struct Mounted {
     attachment: Attachment,
     documents: HashMap<(String, String), DocumentSync>,
@@ -119,6 +158,12 @@ pub(crate) struct Joined {
     peer: Link,
     /// The certified device key, hex.
     device: String,
+    /// The same key as bytes: the device this page reads its workspace's documents as.
+    device_key: [u8; 32],
+    /// What this page reads its workspace's documents through, built once the
+    /// device holds the workspace: the replica the session's owner admits into,
+    /// read and written through the workspace service's document core.
+    documents: OnceCell<HeldDocuments>,
     events: Events,
     uuid: String,
     /// `uuid`, as the routes of the workspace's records name it.
@@ -259,9 +304,15 @@ pub(crate) fn open(
         workspace_id,
         Arc::new(kept_content(id, workspace.to_owned())),
     ))?;
+    let device_key: [u8; 32] = hex::decode(&device)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or("a device key is 32 bytes of hex")?;
     let joined = Joined {
         peer,
         device,
+        device_key,
+        documents: OnceCell::new(),
         events,
         uuid: workspace.to_owned(),
         cluster: uuid::Uuid::parse_str(workspace).map_err(|_| "a workspace must be a uuid")?,
@@ -344,19 +395,86 @@ pub(crate) fn device_of(id: u32) -> Option<String> {
     replica_of(id).map(|joined| joined.borrow().device.clone())
 }
 
+impl Joined {
+    /// What this page reads its workspace's documents through, once its device
+    /// holds the workspace: the replica the session's owner admits into, over
+    /// the engine's channel keys.
+    #[cfg_attr(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "a page's key service reaches the engine's handles on its one thread"
+        )
+    )]
+    fn documents(&self) -> Option<&HeldDocuments> {
+        if self.documents.get().is_none() {
+            let engine = self.peer.engine();
+            let replica = engine.owner().replica(self.workspace).ok()?;
+            let keys = Some(Arc::new(EngineKeys(Arc::clone(engine))) as DeviceKeys);
+            let _ = self.documents.set(HeldDocuments::over(
+                &self.uuid,
+                replica,
+                self.device_key,
+                None,
+                keys,
+            ));
+        }
+        self.documents.get()
+    }
+
+    /// `route` as this page's replica holds it now, read for a reader that last
+    /// merged it at `kept`: only what changed since, where the replica holds
+    /// those heads.
+    fn read(
+        &self,
+        route: &DocumentRoute,
+        kept: Option<&[[u8; 32]]>,
+    ) -> Result<ResourceReading, String> {
+        let documents = self
+            .documents()
+            .ok_or("this device does not hold the workspace yet")?;
+        match documents.read(&route.cluster_id, &route.app_id, &route.document, kept)? {
+            DocumentRead::Whole {
+                revision,
+                heads,
+                bytes,
+            } => Ok(ResourceReading::Captured {
+                revision,
+                heads,
+                bytes,
+            }),
+            DocumentRead::Changes {
+                revision,
+                heads,
+                bytes,
+            } => Ok(ResourceReading::Changes {
+                revision,
+                heads,
+                bytes,
+            }),
+            DocumentRead::Unchanged(revision) => Ok(ResourceReading::Unchanged(revision)),
+            DocumentRead::Absent | DocumentRead::Pending => Ok(ResourceReading::Pending),
+        }
+    }
+}
+
 /// Whether peer `id`'s workspace holds record `record` (wire form) of `app`:
 /// open in a mount, or delivered and stored for whoever opens it.
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
     replica_of(id).is_some_and(|replica| {
         let joined = replica.borrow();
-        joined
-            .open_resources()
-            .any(|(a, r)| a == app && r == record)
+        joined.open_resources().any(|(a, r)| a == app && r == record)
             || joined
-                .peer
-                .engine()
-                .holds_resource(&joined.uuid, app, record)
+                .documents()
+                .is_some_and(|documents| documents.holds(&joined.uuid, app, record))
     })
+}
+
+/// Whether peer `id` may read its workspace's documents now: its workspace has
+/// said what the person at this page may do there, which no read is made on a
+/// guess before (the same rule the page's read bounds apply).
+pub(crate) fn may_read_files(id: u32) -> bool {
+    replica_of(id).is_some_and(|replica| replica.borrow().role.code() != 0)
 }
 
 /// The workspace's records peer `id` holds, open in a mount or in its replica, as
@@ -367,9 +485,8 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     };
     let joined = joined.borrow();
     let mut records: BTreeSet<(String, String)> = joined
-        .peer
-        .engine()
-        .documents(&joined.uuid)
+        .documents()
+        .and_then(|documents| documents.listing(&joined.uuid).ok())
         .unwrap_or_default()
         .into_iter()
         .collect();
@@ -419,11 +536,13 @@ pub(crate) fn resource_document(id: u32, app: &str, wire: &str) -> Option<AutoCo
     }
     let joined = replica_of(id)?;
     let joined = joined.borrow();
-    let bytes = joined
-        .peer
-        .engine()
-        .record(&joined.uuid, app, wire)
-        .ok()??;
+    let documents = joined.documents()?;
+    let DocumentRead::Whole { bytes, .. } = documents
+        .read(&joined.uuid, app, wire, None)
+        .ok()?
+    else {
+        return None;
+    };
     tilo_automerge::shared::load(&bytes).ok()
 }
 
@@ -1419,14 +1538,7 @@ impl Joined {
         let (read, stopped) = tilo_peer_state::opening::in_turns(
             move || js_sys::Date::now() >= due,
             || {
-                tilo_automerge_isolate::away::deferring(|| {
-                    self.peer.engine().document_update(
-                        &route.cluster_id,
-                        &route.app_id,
-                        &route.document,
-                        kept.as_deref(),
-                    )
-                })
+                tilo_automerge_isolate::away::deferring(|| self.read(route, kept.as_deref()))
             },
         );
         if stopped {
@@ -2020,11 +2132,12 @@ impl Joined {
         };
         let document = tilo_desktop_model::person_view::resource_of(&person);
         let Some(bytes) = self
-            .peer
-            .engine()
-            .record(&self.uuid, DESKTOP_APP, &document)
-            .ok()
-            .flatten()
+            .documents()
+            .and_then(|documents| documents.read(&self.uuid, DESKTOP_APP, &document, None).ok())
+            .and_then(|read| match read {
+                DocumentRead::Whole { bytes, .. } => Some(bytes),
+                _ => None,
+            })
         else {
             return;
         };

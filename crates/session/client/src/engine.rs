@@ -1215,7 +1215,7 @@ impl Engine {
         self.scoped_keys(route, readers.as_deref())
     }
 
-    pub(crate) fn named_document_readers(
+    pub fn named_document_readers(
         &self,
         workspace: WorkspaceId,
         document: &str,

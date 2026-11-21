@@ -130,7 +130,7 @@ impl WorkspaceFiles {
             crate::peer_sync::handle_of(self.peer).ok_or("the workspace session is closed")?;
         let route = crate::content_open::files_route(&self.workspace);
         let workspace = route.workspace_id().map_err(|error| error.to_string())?;
-        if !handle.engine().document_read_policy(workspace)(&route.app_id, &route.document) {
+        if !crate::replication::may_read_files(self.peer) {
             return Err("you cannot read files in this workspace".into());
         }
         let address = collab_types::file_content_artifact(workspace);
@@ -138,13 +138,7 @@ impl WorkspaceFiles {
     }
 
     fn can_read(&self) -> bool {
-        let Some(handle) = crate::peer_sync::handle_of(self.peer) else {
-            return false;
-        };
-        let route = crate::content_open::files_route(&self.workspace);
-        route.workspace_id().is_ok_and(|workspace| {
-            handle.engine().document_read_policy(workspace)(&route.app_id, &route.document)
-        })
+        crate::replication::may_read_files(self.peer)
     }
 
     /// The workspace's tree record, opened: on its way while the workspace's hosts have not
