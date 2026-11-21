@@ -587,21 +587,32 @@ impl Worker {
         held: Option<&BTreeSet<TreeChunk>>,
         writes: Vec<tilo_fs::namespace::ResourceWrite>,
     ) -> Result<(), String> {
+        // The records the workspace holds are read once, before any of them is written: reading
+        // each on its own waited on a part for every record, a folder's new chunks among them,
+        // and a part the workspace holds nothing of never arrives.
+        let mut known = None;
         for write in writes {
             if write.changes.is_empty() {
                 continue;
             }
             let route = Self::tree_chunk_route(workspace, write.chunk);
-            // What the tree's document stands at before this write: the identity goes onto
-            // it, so the change it makes follows the document's own.
-            let prior = match self.refreshed_for(workspace_id, &route, true) {
-                Ok(state) => state.document(&route).ok(),
-                Err(_) => None,
-            };
-            if prior.is_none() && held.is_some_and(|held| held.contains(&write.chunk)) {
+            let holds = held.is_some_and(|held| held.contains(&write.chunk));
+            if holds && known.is_none() {
+                // What the tree's document stands at before this write: the identity goes onto
+                // it, so the change it makes follows the document's own.
+                known = Some(match self.refreshed_for(workspace_id, &route, true) {
+                    Ok(state) => state,
+                    Err(_) => return Err("the workspace's tree could not be read to name it".into()),
+                });
+            }
+            if holds
+                && known
+                    .as_ref()
+                    .is_none_or(|state| state.document(&route).is_err())
+            {
                 return Err("the workspace's tree could not be read to name it".into());
             }
-            if !held.is_some_and(|held| held.contains(&write.chunk)) {
+            if !holds {
                 let genesis = DocumentMutation::Snapshot(AutoCommit::new().save());
                 self.commit(workspace_id, &route, &genesis)?;
             }
