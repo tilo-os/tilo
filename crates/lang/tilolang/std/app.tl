@@ -611,20 +611,24 @@ template view tree<R, T>(
                 if items.is_empty() {
                     ui.EmptyState(empty, icon: meta(of).icon)
                 } else {
-                    std.tree_rows(
-                        meta(of).title,
-                        items,
-                        opened,
-                        parent,
-                        depth,
-                        branch,
-                        label,
-                        place,
-                        place_after,
-                        add,
-                        found: found,
-                    ) { x ->
-                        row(x)
+                    // The tree takes the room the map under it leaves, so a map of a few rows
+                    // never pushes the tree past the foot of the sidebar.
+                    stack(fill: 1.0) {
+                        std.tree_rows(
+                            meta(of).title,
+                            items,
+                            opened,
+                            parent,
+                            depth,
+                            branch,
+                            label,
+                            place,
+                            place_after,
+                            add,
+                            found: found,
+                        ) { x ->
+                            row(x)
+                        }
                     }
                 }
                 // What the open item holds as a map of its own, under the tree: its headings,
