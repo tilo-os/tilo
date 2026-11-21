@@ -108,6 +108,8 @@ pub(super) struct CallWaits {
     /// The request being served takes the answer of the call it handed off: it waits for
     /// nothing else of its workspace.
     taking_an_answer: bool,
+    /// The request being served asks every call here, on this thread ([`Worker::asking_here`]).
+    here: bool,
 }
 
 impl CallWaits {
@@ -123,6 +125,7 @@ impl CallWaits {
         self.step = 0;
         self.dispatched = false;
         self.held = None;
+        self.here = false;
     }
 
     /// Whether the request being served takes the answer of the call it handed off, and so
@@ -199,6 +202,9 @@ impl<'a> Handing<'a> {
         holder: &DocumentRoute,
         ask: impl FnOnce() -> T + Send + 'static,
     ) -> Option<T> {
+        if self.calls.here {
+            return Some(ask());
+        }
         let step = self.calls.step;
         self.calls.step = step.wrapping_add(1);
         let mut inline = false;
@@ -284,6 +290,18 @@ impl Worker {
         ask: impl FnOnce() -> T + Send + 'static,
     ) -> Option<T> {
         self.handing().hand(workspace_id, holder, ask)
+    }
+
+    /// `work`, the request being served, with every call it makes of an app's worker asked on
+    /// this thread. A search names its hits from many listings and keeps what each answered:
+    /// one listing that went on off the thread left the search naming the rest from nothing,
+    /// and kept that as the caller listing none of them. Applied again, it would skip what it
+    /// kept, so its calls would no longer line up with the answer it handed off.
+    pub(super) fn asking_here<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> T {
+        self.call_waits.here = true;
+        let done = work(self);
+        self.call_waits.here = false;
+        done
     }
 
     /// This thread's calls into app workers, asked from beside what else the caller reads of

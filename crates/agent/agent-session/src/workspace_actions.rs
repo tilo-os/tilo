@@ -1949,7 +1949,9 @@ impl Worker {
                     needle,
                     within,
                     done,
-                } => done.complete(self.search(workspace_id, &caller, (&needle, &within))),
+                } => done.complete(self.asking_here(|worker| {
+                    worker.search(workspace_id, &caller, (&needle, &within))
+                })),
                 Job::Changes {
                     workspace_id,
                     caller,
