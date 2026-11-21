@@ -9,6 +9,7 @@ use crate::peer::FetchGrants as _;
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::join::Role;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 fn device(
@@ -115,7 +116,7 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         ),
         site: site.and_then(Site::new),
         login_codes: Arc::new(login_codes::LoginCodes::new(None)),
-        wait_list: Default::default(),
+        wait_list: Arc::default(),
     }
 }
 
@@ -2274,7 +2275,7 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
         plain_listen: Some("127.0.0.1:0".parse().unwrap()),
         public_origin: public_origin.map(str::to_owned),
         fetch_proxy: None,
-        wait_list: Default::default(),
+        wait_list: Arc::default(),
         link: None,
         site: None,
     };

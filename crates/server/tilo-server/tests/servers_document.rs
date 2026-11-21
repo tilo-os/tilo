@@ -25,17 +25,9 @@ fn entry(device: &crate::common::TestDevice) -> Id {
 /// the device that governs the workspace; from then on the workspace's
 /// governance alone says what it holds, so taking it out there is not undone
 /// by the plan.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it_go() {
-    let alice = TestUser::fresh("Alice");
-    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = governor.host.workspaces();
-    servers::founded(workspaces).await.unwrap();
-    let workspace = workspaces.create("Notes").await.unwrap();
-    let nonce = hex::encode([0x5a_u8; 16]);
+/// The plan `nas` installs with, as the action takes it: a server named for it that holds
+/// `workspace` as a key holder, begun with `nonce` and unlocked by the TPM.
+fn plan_holding(workspace: &str, nonce: &str) -> String {
     let plan = install_plan::Choices {
         destination: "tilo-server".to_owned(),
         name: Some("nas".to_owned()),
@@ -50,22 +42,34 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
         unlock: Some("tpm".to_owned()),
         updates: Some("stable".to_owned()),
         hosting: Some(vec![install_profile_model::plan::Holding {
-            workspace: workspace.workspace.clone(),
+            workspace: workspace.to_owned(),
             mode: "key-holder".to_owned(),
         }]),
     }
     .plan(
         "0123456789abcdef0123456789abcdef",
         install_profile_model::plan::Token {
-            nonce: nonce.clone(),
+            nonce: nonce.to_owned(),
             expires_at_ns: u64::MAX / 2,
         },
     )
     .unwrap();
-    servers::apply(
-        workspaces,
-        Servers::PLAN_MACHINE.with((serde_json::to_string(&plan).unwrap(), "nas".into())),
-    )
+    serde_json::to_string(&plan).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it_go() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
+    let workspaces = governor.host.workspaces();
+    servers::founded(workspaces).await.unwrap();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    let nonce = hex::encode([0x5a_u8; 16]);
+    let plan = plan_holding(&workspace.workspace, &nonce);
+    servers::apply(workspaces, Servers::PLAN_MACHINE.with((plan, "nas".into())))
     .await
     .unwrap();
     let retained = || async {

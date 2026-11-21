@@ -11,6 +11,7 @@ use ed25519_dalek::SigningKey;
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server_protocol::operator::{self, OperatorCommand, OperatorEvent, RefusalReason};
+use std::sync::Arc;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,
@@ -563,7 +564,7 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         }),
         // The entry's wait list is the workspace's own: whoever starts one sets it
         // on the config it gives the listener.
-        wait_list: Default::default(),
+        wait_list: Arc::default(),
         link: args
             .link_listen
             .zip(args.link_origin.clone())

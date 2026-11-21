@@ -512,7 +512,7 @@ async fn an_invited_device_reads(process: tilo_clock::testing::OwnProcess) {
 
     let bob = TestUser::fresh("Bob");
     let desktop = bob.enrol("desktop", DeviceCapabilities::primary());
-    let issued = crate::common::invitation(
+    let invited = crate::common::invitation(
         hosted,
         &issuer,
         &WORKSPACE.to_string(),
@@ -527,7 +527,7 @@ async fn an_invited_device_reads(process: tilo_clock::testing::OwnProcess) {
         tilo_test_env::within(
             "the invited device joins",
             copies.join_member(&tilo_peer_state::join::encode_invitation_text(
-                &issued.signed_invitation
+                &invited.signed_invitation
             )),
         )
         .await
