@@ -608,11 +608,23 @@ fn serve_in_background(socket: &Path, store: &Store) {
     std::thread::spawn(move || {
         let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
     });
-    let deadline = tilo_test_env::hang_deadline();
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(socket.exists(), "the supervisor never bound its socket");
+    tilo_test_env::wait_for("the supervisor's socket", || socket.exists().then_some(()));
+    // Binding creates the path a moment before the listener accepts it, and a
+    // connect in that window is refused: connecting is what says it serves.
+    tilo_test_env::wait_for("the supervisor to serve its socket", || {
+        match UnixStream::connect(socket) {
+            Ok(_) => Some(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                None
+            }
+            Err(error) => panic!("connect: {error}"),
+        }
+    });
 }
 
 fn serve_fixture(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {
