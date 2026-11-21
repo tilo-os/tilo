@@ -79,6 +79,12 @@ impl Memberships {
         }
     }
 
+    /// Whether this host governs `workspace`: it settled it since it started, and did not forget
+    /// it since.
+    pub(super) fn governs(&self, workspace: &str) -> bool {
+        self.by_workspace.read_recover().contains_key(workspace)
+    }
+
     /// Whether `person` is a member of `workspace` now.
     pub(super) fn holds(&self, person: &[u8; 32], workspace: &str) -> bool {
         self.by_person

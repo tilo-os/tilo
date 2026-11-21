@@ -298,6 +298,29 @@ impl Layout {
         self.workspaces.iter_mut().find(|w| w.id() == self.active)
     }
 
+    /// Take the workspace `id` off this layout, the person going to the next one along when it was
+    /// the one in front (the one before it when it was the last), with what pointed into it. `None`
+    /// when the layout holds no such workspace.
+    pub fn take_off(&mut self, id: WorkspaceId) -> Option<Workspace> {
+        let at = self.workspaces.iter().position(|w| w.id() == id)?;
+        let taken = self.workspaces.remove(at);
+        if taken.id() == self.active {
+            let next_at = at.min(self.workspaces.len().saturating_sub(1));
+            if let Some(next) = self.workspaces.get(next_at) {
+                self.active = next.id();
+            }
+        }
+        self.active_strip.remove(&id);
+        let strips: Vec<StripId> = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .map(|strip| strip.id)
+            .collect();
+        self.active_group.retain(|strip, _| strips.contains(strip));
+        Some(taken)
+    }
+
     /// The `(workspace, strip)` indices of `strip_id`, searching every
     /// workspace.
     pub fn strip_position(&self, strip_id: StripId) -> Option<(usize, usize)> {

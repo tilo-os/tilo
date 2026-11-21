@@ -760,7 +760,12 @@ impl Workspaces {
         } = self.inner.personal.of(&device.user_public_key);
         let mut workspaces: Vec<PersonalWorkspace> = Vec::new();
         for kept in list.workspaces {
-            if !reaches(&kept.workspace)
+            // A workspace this host governs is listed as its governance has the person, never as
+            // a device of theirs last kept it: one they left, or were taken out of, is in no list
+            // of theirs here, so their devices let it go.
+            let governed_here = self.inner.memberships.governs(&kept.workspace);
+            if (governed_here && !local.iter().any(|one| one.workspace == kept.workspace))
+                || !reaches(&kept.workspace)
                 || !wanted(&kept)
                 || workspaces
                     .iter()

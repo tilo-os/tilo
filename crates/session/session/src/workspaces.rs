@@ -178,6 +178,13 @@ pub(crate) struct Personal {
     /// away comes back, and nothing else would ask it again ([`Self::asked`] holds one ask per
     /// hint).
     ask_again: BTreeMap<WorkspaceId, std::time::Instant>,
+    /// The workspace the shell started with on a device that kept none, while it is not known
+    /// whether the person has workspaces of their own: it becomes their first only if they have
+    /// none, and goes when they have some. Until then it is neither founded nor listed.
+    seed: Option<WorkspaceId>,
+    /// The parts the person takes in their workspaces, as governance named them when the list
+    /// was last kept where their keys read it: a part that changed since says the list again.
+    kept_roles: BTreeMap<WorkspaceId, String>,
 }
 
 /// How long after a host did not take this device in it is asked again.
@@ -202,6 +209,7 @@ impl PublishInputs {
         handle: &DesktopHandle,
         device: [u8; 32],
         borrowed: &BTreeSet<WorkspaceId>,
+        seed: Option<WorkspaceId>,
         agreed: &BTreeMap<WorkspaceId, Listed>,
         hosts: &BTreeMap<WorkspaceId, [u8; 32]>,
     ) -> Self {
@@ -209,7 +217,11 @@ impl PublishInputs {
             listed: tree
                 .workspaces
                 .iter()
-                .filter(|workspace| !workspace.id().is_nil() && !borrowed.contains(&workspace.id()))
+                .filter(|workspace| {
+                    !workspace.id().is_nil()
+                        && !borrowed.contains(&workspace.id())
+                        && seed != Some(workspace.id())
+                })
                 .map(|workspace| {
                     // Where the workspace itself says it is hosted first: a device that joined one
                     // hosted elsewhere must not name itself, or the person's other devices enter a
@@ -319,6 +331,8 @@ impl Personal {
             fleet: None,
             told_awaiting: BTreeSet::new(),
             ask_again: BTreeMap::new(),
+            seed: None,
+            kept_roles: BTreeMap::new(),
         };
         let read = personal
             .store
@@ -376,6 +390,69 @@ impl Personal {
         std::mem::take(&mut self.unreadable)
     }
 
+    /// Hold `workspace`, the one the shell started with on a device that kept none, until it is
+    /// known whether the person has workspaces of their own ([`Self::seed`]).
+    pub(crate) fn hold_seed(&mut self, workspace: WorkspaceId) {
+        if !workspace.is_nil() {
+            self.seed = Some(workspace);
+        }
+    }
+
+    /// The workspace the shell started with, while it is not known whether the person has
+    /// workspaces of their own: it is neither founded nor listed meanwhile.
+    pub(crate) const fn seed(&self) -> Option<WorkspaceId> {
+        self.seed
+    }
+
+    /// Whether the person's list names a workspace of theirs besides `except`: one this device
+    /// or another of theirs made, or one a host of theirs lists.
+    fn names_besides(&self, except: WorkspaceId) -> bool {
+        entries_of(&self.directory)
+            .iter()
+            .any(|(workspace, _)| *workspace != except)
+    }
+
+    /// Settle the workspace the shell started with ([`Self::seed`]) once what the person has is
+    /// known. A person with a workspace of their own anywhere — on their list, held on this device
+    /// (`held`), or on what their hosts list (`listed`) — has it taken off `handle`'s shell once
+    /// another workspace stands there, never founded nor listed; a person with none has it as their
+    /// first, founded and listed from then on. `listed` is `None` while a host has not answered,
+    /// which leaves it waiting when nothing else says the person has one. Whether it settled.
+    pub(crate) fn settle_seed(
+        &mut self,
+        handle: &DesktopHandle,
+        held: &[WorkspaceId],
+        listed: Option<&BTreeSet<WorkspaceId>>,
+    ) -> bool {
+        let Some(seed) = self.seed else {
+            return false;
+        };
+        let theirs =
+            |workspace: &WorkspaceId| *workspace != seed && !self.borrowed.contains(workspace);
+        let has = self.names_besides(seed)
+            || held.iter().any(theirs)
+            || match listed {
+                None => return false,
+                Some(listed) => listed.iter().any(theirs),
+            };
+        if has {
+            let mut tree = handle.read(Clone::clone);
+            // The shell always shows a workspace: this one stands until another does.
+            if tree.workspaces.iter().all(|workspace| workspace.id() == seed) {
+                return false;
+            }
+            if tree.take_off(seed).is_some() {
+                handle.replace_tree(tree);
+            }
+            tracing::info!(target: JOIN_FLOW_TARGET, %seed, "the person has workspaces: the one this shell started with goes");
+        } else {
+            tracing::info!(target: JOIN_FLOW_TARGET, %seed, "the person has no workspace: the one this shell started with is their first");
+        }
+        self.seed = None;
+        self.published = None;
+        true
+    }
+
     /// `workspace` arrived from an API: it is the workspace of whoever let the person in, not one
     /// of their own, so their other devices are never told to open it themselves — each joins it
     /// through its own invitation.
@@ -405,6 +482,14 @@ impl Personal {
             .get(&workspace)
             .copied()
             .or_else(|| self.agreed.get(&workspace).and_then(|listed| listed.host))
+            .or_else(|| {
+                // One the list names a host of before this device agreed it: taken from a host's
+                // list, it is entered there.
+                entries_of(&self.directory)
+                    .into_iter()
+                    .find(|(listed, _)| *listed == workspace)
+                    .and_then(|(_, entry)| entry.host_devices.first().copied())
+            })
             .is_none_or(|host| host == self.device)
     }
 
@@ -447,6 +532,7 @@ impl Personal {
             handle,
             self.device,
             &self.borrowed,
+            self.seed,
             &self.agreed,
             &self.hosts,
         );
@@ -928,10 +1014,13 @@ impl Personal {
 
     /// The person's workspaces as their keys read them: every one the list carries, in the person's
     /// order, each with the signed address of its host: `hints` (by workspace id) where this device
-    /// holds it, else where the person's devices said it is reached.
+    /// holds it, else where the person's devices said it is reached; and with the part the person
+    /// takes in it as its governance names it (`roles`, by workspace), none where no governance here
+    /// says yet.
     pub(crate) fn readable(
         &self,
         hints: &BTreeMap<String, Vec<u8>>,
+        roles: &BTreeMap<WorkspaceId, String>,
     ) -> tilo_server_session::workspaces::PersonalList {
         let mut listed = self.directory.list_workspaces();
         listed.sort_by(|a, b| {
@@ -954,7 +1043,7 @@ impl Personal {
                 tilo_server_session::workspaces::PersonalWorkspace {
                     name: meta.name,
                     host,
-                    role: meta.governor.is_none().then(|| "owner".to_owned()),
+                    role: roles.get(&workspace).cloned(),
                     workspace: workspace.to_string(),
                     labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
                     unattended: false,
@@ -1017,6 +1106,19 @@ fn reorder(tree: &mut Layout, wanted: &[WorkspaceId]) -> bool {
     before != after
 }
 
+/// The part `person` takes in each workspace of `tree`, as the workspace's governance names it
+/// there: `owner` for one of theirs, else the role they hold. A workspace whose governance names
+/// nobody yet is missing: the person's list never guesses whose it is.
+pub(crate) fn governed_roles(tree: &Layout, person: &str) -> BTreeMap<WorkspaceId, String> {
+    tree.workspaces
+        .iter()
+        .filter_map(|workspace| {
+            let role = workspace.role_of(person)?;
+            Some((workspace.id(), role.key().to_owned()))
+        })
+        .collect()
+}
+
 /// The person's own workspaces as this computer can keep them: nothing when this computer knows no
 /// identity to keep them for.
 pub(crate) fn personal_for(state: Option<&Path>) -> Option<RefCell<Personal>> {
@@ -1060,7 +1162,13 @@ impl crate::Shared {
                 && self
                     .personal
                     .as_ref()
-                    .is_some_and(|personal| personal.borrow().made_here(workspace.id()))
+                    .is_some_and(|personal| {
+                        let personal = personal.borrow();
+                        // The workspace the shell started with is founded only once it is known
+                        // to be the person's first.
+                        personal.made_here(workspace.id())
+                            && personal.seed() != Some(workspace.id())
+                    })
                 && !workspace.id().is_nil()
                 && !borrowed.contains(&workspace.id())
                 && !engine.holds(workspace.id())
@@ -1109,7 +1217,7 @@ impl crate::Shared {
                 workspace.set_owner(owner);
                 changed = true;
             } else {
-                tracing::warn!(
+                tracing::debug!(
                     workspace = %workspace.id(),
                     borrowed = borrowed.contains(&workspace.id()),
                     "a workspace on the session is nobody's this pass: nothing may be done in it"
@@ -1123,10 +1231,12 @@ impl crate::Shared {
     }
 
     /// Who the governance of a workspace names as its owner: its own, when this device holds it,
-    /// else the person at this device for a workspace of their own that no governance here has yet.
-    /// A workspace founded before this device had an identity names the person by the id they went
-    /// by then; it is theirs as the person they are now, which is what their own actions in it are
-    /// decided as. `None` for one joined through an API whose host has not said whose it is here.
+    /// else the person at this device for one this device is founding, which no governance has
+    /// yet. A workspace founded before this device had an identity names the person by the id they
+    /// went by then; it is theirs as the person they are now, which is what their own actions in it
+    /// are decided as. `None` for every other workspace not held here yet — one joined through an
+    /// API, or one the person's list names that this device is entering, which may be someone
+    /// else's they were let in to: whose it is waits for its governance.
     fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
         if let Some(engine) = &self.engine
             && let Ok(owner) = engine.owner_of(&workspace.to_string())
@@ -1137,7 +1247,11 @@ impl crate::Shared {
                 owner
             });
         }
-        (!borrowed.contains(&workspace)).then(|| self.person.clone())
+        let founding = self
+            .personal
+            .as_ref()
+            .is_none_or(|personal| personal.borrow().made_here(workspace));
+        (founding && !borrowed.contains(&workspace)).then(|| self.person.clone())
     }
 
     /// Open a listed workspace on this session, named `name` , through the session's own action for
@@ -1580,6 +1694,14 @@ impl crate::Shared {
             for workspace in adoption.release {
                 self.release_workspace(workspace);
             }
+            // A workspace its host lists the person in no longer goes the same way: they left it,
+            // or were taken out of it, and what it holds stays theirs to whom it belongs.
+            if let Some(hosted) = hosted {
+                for workspace in hosted.take_dropped() {
+                    self.release_workspace(workspace);
+                }
+            }
+            self.settle_seed(&mut personal, hosted);
             // What this pass wrote to the list goes to the person's store, which carries it to their
             // other devices.
             if let Some(store) = store {
@@ -1623,6 +1745,39 @@ impl crate::Shared {
         moved
     }
 
+    /// Settle the workspace the shell started with on a device that kept none
+    /// ([`Personal::seed`]) against what the person has: what the hosts of the workspaces this
+    /// device holds list for them, unless this computer is still joining the community it was set
+    /// up for, which lists them once it is in.
+    fn settle_seed(
+        &self,
+        personal: &mut Personal,
+        hosted: Option<&crate::hosted_workspaces::HostedWorkspaces>,
+    ) {
+        if personal.seed().is_none() {
+            return;
+        }
+        let held = self
+            .engine
+            .as_ref()
+            .map(|engine| engine.workspaces())
+            .unwrap_or_default();
+        let listed = if self.community.borrow().joining(personal) {
+            None
+        } else {
+            hosted.map_or_else(
+                || Some(BTreeSet::new()),
+                crate::hosted_workspaces::HostedWorkspaces::listed_everywhere,
+            )
+        };
+        personal.settle_seed(&self.handle, &held, listed.as_ref());
+    }
+
+    /// The part the person takes in each workspace on the shell ([`governed_roles`]).
+    fn governed_roles(&self) -> BTreeMap<WorkspaceId, String> {
+        self.handle.read(|tree| governed_roles(tree, &self.person))
+    }
+
     /// Keep the person's list where their keys read it, when it moved: this device's API answers
     /// it to a key of theirs that dials it, and every dedicated host of a workspace held here keeps
     /// it for the keys that reach no device of theirs.
@@ -1633,7 +1788,10 @@ impl crate::Shared {
         moved: bool,
     ) {
         let owed = personal.kept.is_none() || (hosted.is_some() && !personal.kept_on_hosts);
-        if !moved && !owed {
+        // A workspace's governance naming the person's part in it arrives after the workspace
+        // does: the list says it again then.
+        let roles = self.governed_roles();
+        if !moved && !owed && roles == personal.kept_roles {
             return;
         }
         let hints: BTreeMap<String, Vec<u8>> = self
@@ -1641,7 +1799,8 @@ impl crate::Shared {
             .as_ref()
             .map(|engine| engine.host_hints().into_iter().collect())
             .unwrap_or_default();
-        let mut list = personal.readable(&hints);
+        let mut list = personal.readable(&hints, &roles);
+        personal.kept_roles = roles;
         // The keys the person's root certified on this device go with the
         // list, so the record every device of theirs reads holds them.
         if let Some(engine) = &self.engine {
@@ -1999,7 +2158,8 @@ mod tests {
 
         phase the_list_a_key_reads_names_each_workspace_and_where_it_is_hosted;
         // The list the person's keys read names every workspace of theirs in their order, with its
-        // host as the host's own signed address names it, and the ones of their own as theirs.
+        // host as the host's own signed address names it, and the part they take in it as its
+        // governance names it: a workspace they were let in to is not listed as theirs.
         {
             let session = session();
             let [(first, _)] = on_shell(&session)
@@ -2030,7 +2190,8 @@ mod tests {
             .transport_hint(identity.signer.as_ref())
             .expect("a signed address");
             let hint = postcard::to_stdvec(&hint).expect("an address's bytes");
-            let list = personal.readable(&BTreeMap::from([(workspace.clone(), hint)]));
+            let roles = BTreeMap::from([(first, "owner".to_owned()), (second, "editor".to_owned())]);
+            let list = personal.readable(&BTreeMap::from([(workspace.clone(), hint)]), &roles);
             let read: Vec<_> = list
                 .workspaces
                 .iter()
@@ -2056,7 +2217,7 @@ mod tests {
                         second.to_string(),
                         "Second".to_owned(),
                         None,
-                        Some("owner".to_owned())
+                        Some("editor".to_owned())
                     ),
                 ],
                 "the person's order, each named by the host that signed its address"

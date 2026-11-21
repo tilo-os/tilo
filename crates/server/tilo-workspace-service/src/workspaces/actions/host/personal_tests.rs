@@ -1111,3 +1111,65 @@ async fn a_devices_session_is_sent_the_list_when_a_device_is_taken_back() {
     );
     holder.shutdown().await;
 }
+
+/// A workspace this host governs is listed as its governance has the person, whatever a device of
+/// theirs kept: one they are not in (they left it, were taken out, or a device claimed it as
+/// theirs) is in no list of theirs here, so their devices let it go, while one another server
+/// keeps is still listed as their devices kept it.
+#[tokio::test]
+async fn a_workspace_governed_here_is_listed_only_as_its_governance_has_the_person() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = ServiceWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    let home = workspaces.create("Lounge").await.unwrap().workspace;
+    assert!(workspaces.admit_own_through(&home));
+    workspaces
+        .issue(
+            &home,
+            workspaces.serving_certificate(),
+            crate::workspaces::IssueInvitationRequest {
+                request_id: rand::random(),
+                role: tilo_peer_state::join::Role::Viewer,
+                recipient_user_public_key: Some(root.verifying_key().to_bytes()),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let desktop = key_of(&root, "studio", DeviceCapabilities::member());
+    // The host's own workspace, which the person is not in.
+    let team = workspaces.create("Team").await.unwrap().workspace;
+
+    // A device of theirs keeps a list naming it as theirs, beside one another device keeps.
+    let kept = json!({"workspaces": [
+        {"workspace": SHELL, "name": "Shell", "host": {"name": "studio", "hint": "00"}, "role": "owner"},
+        {"workspace": team, "name": "Team", "role": "owner"},
+    ]});
+    assert_eq!(
+        invoke(&host, &desktop, KEEP_PERSONAL, json!({"list": kept}))
+            .await
+            .unwrap(),
+        json!({"kept": 2})
+    );
+    let listed: Vec<String> = read(&host, &desktop)
+        .await
+        .workspaces
+        .into_iter()
+        .map(|one| one.workspace)
+        .collect();
+    assert_eq!(
+        listed,
+        [SHELL.to_owned()],
+        "the workspace governed here that the person is not in is not listed from what a device kept"
+    );
+    server.shutdown().await;
+}

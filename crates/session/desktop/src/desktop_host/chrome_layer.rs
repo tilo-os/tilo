@@ -1452,28 +1452,9 @@ impl DesktopChrome {
                 .map(tilo_desktop_model::Workspace::id)
         });
         let id = id.ok_or_else(|| crate::i18n::t("desktop-no-workspace-to-leave"))?;
-        let at = tree
-            .workspaces
-            .iter()
-            .position(|workspace| workspace.id() == id)
+        let left = tree
+            .take_off(id)
             .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
-        let left = tree.workspaces.remove(at);
-        if left.id() == tree.active {
-            // The next one along, or the one before it when this was the last: what stood where the
-            // person was.
-            let next_at = at.min(tree.workspaces.len().saturating_sub(1));
-            if let Some(next) = tree.workspaces.get(next_at) {
-                tree.active = next.id();
-            }
-        }
-        tree.active_strip.remove(&id);
-        let strips: Vec<StripId> = tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .map(|strip| strip.id)
-            .collect();
-        tree.active_group.retain(|strip, _| strips.contains(strip));
         self.handle.replace_tree(tree);
         Ok(left.name)
     }

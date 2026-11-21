@@ -22,6 +22,9 @@
 //! theirs restored from their identity alone learns of nowhere else. Each one
 //! this device holds no copy of is handed to the session with its host's
 //! signed address, and the session enters it there as their further device.
+//! A workspace the host governs that its list stops naming (the person left it,
+//! or was taken out of it) is handed to the session to let go of, the way it
+//! lets go of every workspace gone from the person's list.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,6 +66,12 @@ struct Inner {
     /// The person's workspaces the hosts listed that this device holds no copy of, by
     /// workspace, until the session takes them ([`HostedWorkspaces::take_listed`]).
     listed: Mutex<BTreeMap<WorkspaceId, Listed>>,
+    /// The workspaces held here that their host's list stopped naming, until the session takes
+    /// them ([`HostedWorkspaces::take_dropped`]).
+    dropped: Mutex<BTreeSet<WorkspaceId>>,
+    /// The workspaces this device held as the session started: what a host's first list is
+    /// measured against, since the person was in each of them before it was sent.
+    held_at_start: BTreeSet<WorkspaceId>,
 }
 
 /// One of the person's workspaces a host of theirs lists that this device holds no copy of.
@@ -77,6 +86,10 @@ pub(crate) struct Listed {
 /// This device's session with one host, and the workspaces it entered there.
 struct ServerAddress {
     device: Device,
+    /// The host's device key.
+    key: [u8; 32],
+    /// The workspaces the host's newest list named; `None` until it answered one.
+    named: Mutex<Option<BTreeSet<WorkspaceId>>>,
     /// The person's workspace list as the host sends it on this session.
     personal: PersonalWorkspaces,
     /// Whether the person's list is followed on this session yet.
@@ -133,13 +146,16 @@ impl HostedWorkspaces {
         endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
         runtime: tokio::runtime::Handle,
     ) -> Option<Self> {
+        let engine = Arc::clone(engine?);
         Some(Self(Arc::new(Inner {
-            engine: Arc::clone(engine?),
+            held_at_start: engine.workspaces().into_iter().collect(),
+            engine,
             endpoint,
             runtime,
             hosts: Mutex::default(),
             inbound: Mutex::default(),
             listed: Mutex::default(),
+            dropped: Mutex::default(),
         })))
     }
 
@@ -177,6 +193,24 @@ impl HostedWorkspaces {
     /// copy of, by workspace.
     pub(crate) fn take_listed(&self) -> BTreeMap<WorkspaceId, Listed> {
         std::mem::take(&mut *self.0.listed.lock_recover())
+    }
+
+    /// The workspaces held here that their host's list stopped naming since the last call: the
+    /// person is no longer in them, so this device lets them go.
+    pub(crate) fn take_dropped(&self) -> BTreeSet<WorkspaceId> {
+        std::mem::take(&mut *self.0.dropped.lock_recover())
+    }
+
+    /// Every workspace the hosts of what this device holds list for the person, once each of them
+    /// answered a list; `None` while one has not, when what the person has is not known yet.
+    pub(crate) fn listed_everywhere(&self) -> Option<BTreeSet<WorkspaceId>> {
+        let hosts = self.0.hosts.lock_recover();
+        let mut named = BTreeSet::new();
+        for on in hosts_of(&self.0.engine) {
+            let host = hosts.get(&on.host.device_certificate.device_public_key)?;
+            named.extend(host.named.lock_recover().clone()?);
+        }
+        Some(named)
     }
 
     /// Serve what another device addresses to this device through a host of its:
@@ -241,6 +275,8 @@ impl HostedWorkspaces {
             },
         );
         let host = Arc::new(ServerAddress {
+            key,
+            named: Mutex::new(None),
             personal: PersonalWorkspaces::follow(device.session()),
             followed: AtomicBool::new(false),
             device,
@@ -417,7 +453,9 @@ impl Reading {
 
 /// Keep each workspace `host` lists for the person that `hosted`'s device holds no copy of, with
 /// the host's signed address for it: one a host keeps itself is asked for alone, which is when the
-/// host signs where it answers for it. Whether any was kept.
+/// host signs where it answers for it. A workspace held here on `host` that its list named before
+/// (or that was held as the session started) and names no longer is kept for the session to let
+/// go of. Whether anything moved: something kept, something dropped, or the host's first answer.
 async fn read_list(hosted: &Inner, host: &ServerAddress, on: &(String, WorkspaceId)) -> bool {
     let entered = match enter(host, &on.0, on.1).await {
         Ok(_) => on.1,
@@ -434,7 +472,40 @@ async fn read_list(hosted: &Inner, host: &ServerAddress, on: &(String, Workspace
         }
     };
     let held: BTreeSet<WorkspaceId> = hosted.engine.workspaces().into_iter().collect();
-    let mut kept = false;
+    let named: BTreeSet<WorkspaceId> = list
+        .workspaces
+        .iter()
+        .filter_map(|entry| WorkspaceId::parse(&entry.workspace))
+        .collect();
+    let before = host.named.lock_recover().replace(named.clone());
+    let mut kept = before.is_none();
+    // The host governs what it places here: a workspace it named and names no longer is one the
+    // person is not in now. A list that never named one says nothing of it: the person may have
+    // come into it after the list was sent.
+    let own = hosted.engine.identity().device_cert.device_public_key;
+    let gone: Vec<WorkspaceId> = hosted
+        .engine
+        .host_hints()
+        .into_iter()
+        .filter_map(|(workspace, hint)| {
+            let hint = postcard::from_bytes::<tilo_peer_state::join::TransportHint>(&hint).ok()?;
+            let placed = placed_on_host(&hint, own)?;
+            let workspace = WorkspaceId::parse(&workspace)?;
+            (placed.device_certificate.device_public_key == host.key
+                && held.contains(&workspace)
+                && !named.contains(&workspace)
+                && before
+                    .as_ref()
+                    .unwrap_or(&hosted.held_at_start)
+                    .contains(&workspace))
+            .then_some(workspace)
+        })
+        .collect();
+    if !gone.is_empty() {
+        tracing::info!(host = host.device.label(), ?gone, "a host no longer lists workspaces of the person's held here");
+        hosted.dropped.lock_recover().extend(gone);
+        kept = true;
+    }
     for entry in list.workspaces {
         let Some(workspace) = WorkspaceId::parse(&entry.workspace) else {
             continue;

@@ -465,6 +465,22 @@ impl Host {
         tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
     }
 
+    /// Take `person` and every device of theirs out of `workspace`, one this host governs, as its
+    /// administrator does.
+    pub fn remove(&self, workspace: &str, person: [u8; 32], request: u8) {
+        self.0
+            .runtime
+            .block_on(self.0.workspaces.remove_member(
+                workspace,
+                &self.0.cert,
+                tilo_server::workspaces::RemoveMemberRequest {
+                    request_id: [request; 32],
+                    user_public_key: person,
+                },
+            ))
+            .expect("the host takes the person out");
+    }
+
     /// Where this host is reached for its workspace, as it signed it: what a device of the person
     /// is told to dial.
     #[must_use]

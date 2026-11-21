@@ -338,6 +338,12 @@ impl Session {
         // them; what this device keeps of its own is what it showed.
         let restore = crate::restore::Restore::default();
         let mut tree = handle.read(Clone::clone);
+        // A device that kept no workspace shows the one the shell started with: whether it is the
+        // person's first is known only once their hosts listed what they have.
+        let seed = activity
+            .keeps_no_workspace()
+            .then(|| tree.workspaces.first().map(tilo_desktop_model::Workspace::id))
+            .flatten();
         if activity.show(&mut tree) {
             handle.replace_tree(tree);
         }
@@ -761,6 +767,9 @@ impl Session {
         // them: kept beside the shell, and opened when this computer knows
         // whose they are.
         let personal = crate::workspaces::personal_for(options.state.as_deref());
+        if let (Some(personal), Some(seed)) = (&personal, seed) {
+            personal.borrow_mut().hold_seed(seed);
+        }
         // The fabric the session acts on: one handed to it — a stand-in in a
         // test — or its own, when the person certified this device. A
         // session that takes part as nobody keeps none.

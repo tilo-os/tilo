@@ -2,8 +2,9 @@
 //!
 //! A small Automerge document. It carries:
 //!
-//! - The workspaces the person has (`id`, `name`, who governs one that is
-//!   someone else's, and its place in their list).
+//! - The workspaces the person has (`id`, `name` and its place in their
+//!   list). Whose each one is, and the part the person takes in it, is its
+//!   own governance's to say, never this list's.
 //! - Per workspace, the devices that hold it, host it, keep it pinned or keep
 //!   it off their desktop, and where each device that holds it reaches its
 //!   host ([`WorkspaceDirectory::host_hint`]).
@@ -38,11 +39,6 @@ pub struct WorkspaceMeta {
     pub id: WorkspaceId,
     /// Human-readable name — "Personal", "Company Wiki", etc.
     pub name: String,
-    /// Who governs the workspace when someone other than this directory's
-    /// person owns it: the governing peer as the device that accepted the
-    /// invitation pinned it. `None` for the person's own workspaces, which
-    /// any of their devices governs.
-    pub governor: Option<String>,
     /// Where the workspace sits in the person's list: entries sort by
     /// `(order, id)`, an entry without one last. Each entry's position is
     /// its own register, so concurrent moves of different workspaces both
@@ -481,7 +477,6 @@ impl WorkspaceDirectory {
                 continue;
             };
             let name = self.doc.str_at(&obj, "name").unwrap_or_default();
-            let governor = self.doc.str_at(&obj, "governor");
             let order = match self.doc.get(&obj, "order") {
                 Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
                     ScalarValue::F64(v) if v.is_finite() => Some(*v),
@@ -492,7 +487,6 @@ impl WorkspaceDirectory {
             out.push(WorkspaceMeta {
                 id,
                 name,
-                governor,
                 order,
                 member_devices: self.read_pubkey_list(&obj, "members"),
                 kept_off_devices: self.read_kept_off(&obj),

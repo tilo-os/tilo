@@ -137,6 +137,12 @@ impl DeviceState {
         }
     }
 
+    /// Whether this device kept no workspace to show: a shell opened over it shows only the one it
+    /// started with.
+    pub(crate) fn keeps_no_workspace(&self) -> bool {
+        self.kept.borrow().workspaces.is_empty()
+    }
+
     /// Show what this device left in `tree`. Whether anything changed.
     pub(crate) fn applied(&self, tree: &mut Layout) -> bool {
         self.kept.borrow().applied(tree)

@@ -506,6 +506,12 @@ impl Activity {
         self.0.shown.applied(tree)
     }
 
+    /// Whether this device kept no workspace to show, so the shell shows only the one it started
+    /// with.
+    pub(crate) fn keeps_no_workspace(&self) -> bool {
+        self.0.shown.keeps_no_workspace()
+    }
+
     /// Keep what `tree` shows of this device: the workspace in front and the displays' partition.
     /// Read at `revision` of the session, so a session that did not move is not read.
     pub fn keep_shown(&self, revision: Option<u64>, tree: impl FnOnce() -> Layout) -> bool {
