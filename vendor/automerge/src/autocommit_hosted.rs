@@ -529,6 +529,21 @@ impl AutoCommit {
         self.must_get(op::ROLLBACK, |_| {})
     }
 
+    /// The objects [`crate::AutoCommit::batch_create_objects`] makes, each
+    /// made by the host as [`Transactable::batch_create_object`] makes it:
+    /// the same document, without the native op set's side-by-side insert.
+    pub fn batch_create_objects<O: AsRef<ExId>>(
+        &mut self,
+        obj: O,
+        values: &[(&str, &hydrate::Value)],
+    ) -> Result<Vec<ExId>, AutomergeError> {
+        let obj = obj.as_ref();
+        values
+            .iter()
+            .map(|(key, value)| self.batch_create_object(obj, *key, value, false))
+            .collect()
+    }
+
     pub fn empty_change(&mut self, options: CommitOptions) -> ChangeHash {
         self.must_get(op::EMPTY_CHANGE, |w| {
             w.put(&options.message).put(&options.time);
