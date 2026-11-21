@@ -1195,21 +1195,18 @@ async fn allow_on_list(
     }))
     .expect("its keeper may allow it to invite people");
     let changes = list.doc_mut().save_after(&heads);
-    // Her laptop's session seals the change under the workspace's keys once they are here, and
-    // sends it to the workspace as each of her writes there.
-    holder
-        .device
-        .session()
-        .outbox()
-        .write(
-            tilo_session_client::DocumentRoute {
-                cluster_id: holder.device.workspace_id().to_string(),
-                app_id: chat.to_owned(),
-                document: document.clone(),
-            },
-            &collab_types::DocumentMutation::Incremental(changes),
-        )
-        .expect("Ada's laptop writes the bound");
+    // Her laptop's session holds the change, seals it under the workspace's keys once they are
+    // here, and sends it to the workspace as each of her writes there.
+    tilo_session_client::Outbox::write(
+        holder.device.session(),
+        tilo_session_client::DocumentRoute {
+            cluster_id: holder.device.workspace_id().to_string(),
+            app_id: chat.to_owned(),
+            document: document.clone(),
+        },
+        &collab_types::DocumentMutation::Incremental(changes),
+    )
+    .expect("Ada's laptop writes the bound");
     while listed(true).await.is_none() {
         assert!(
             std::time::Instant::now() < deadline,
