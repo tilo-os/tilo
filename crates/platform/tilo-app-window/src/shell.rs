@@ -340,6 +340,14 @@ pub fn nothing_listed(mut shell: UiNode) -> UiNode {
     shell
 }
 
+/// Whether the window's body holds only an empty state: nothing is chosen or open there, so a
+/// one-column window has nothing to show in the body and opens on its sidebar instead.
+#[must_use]
+pub fn shows_nothing(shell: &UiNode) -> bool {
+    let content = part_children(shell, "content");
+    !content.is_empty() && placeholder(content)
+}
+
 fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let overview = has_overview(root);
     let mut shell = root.clone();

@@ -23,7 +23,9 @@ use tilo_render_protocol::patch::{self as wire, Answer, Level, ToApp, ToUi, Tran
 use ui::tokens::{MotionSource, Rhythm, TextRole};
 use ui::widget::arrange::{Fit, Part, Row, Stack};
 use ui::widget::toast::ToastKind;
-use ui::widget::{Absent, Button, ButtonRole, Element, NavPane, NavShell, Text, Widget};
+use ui::widget::{
+    Absent, Button, ButtonRole, Element, NavPane, NavShell, SidebarPlacement, Text, Widget,
+};
 
 use crate::i18n::{t, t_args};
 use crate::pane::Pane;
@@ -314,6 +316,11 @@ pub struct AppWindow {
     /// screen a new window opens on; the window remembers where the person is, so a patch that
     /// changes the views' keys does not send them back.
     front: Option<NavPane>,
+    /// The column a one-column window owes the front while its body holds nothing: the list the
+    /// person chooses from (the overview beside the body, else the sidebar). It is taken once a
+    /// layout says the window shows one column at a time, so a person who looks at the empty body
+    /// anyway keeps it.
+    front_chooser: Option<NavPane>,
     /// A part of a shell rather than a window ([`Self::part`]): the root view as it is, with no
     /// window shell around it.
     shape: Shape,
@@ -430,6 +437,7 @@ impl AppWindow {
             root_space: None,
             detail_space: None,
             front: None,
+            front_chooser: None,
             shape: Shape::Window,
             notices: Vec::new(),
             actions: Vec::new(),
@@ -1004,6 +1012,36 @@ impl AppWindow {
             .downcast_mut::<NavShell>()
     }
 
+    /// A one-column window whose body holds only an empty state opens on the list that chooses
+    /// for it (the overview beside the body, else the sidebar): "Nothing open" with the way to
+    /// choose a press away is nothing to do. The window knows its width and the app does not, so
+    /// the choice is the window's. It is made once for each turn the body has nothing in it, so a
+    /// person who looks at the empty body anyway keeps it.
+    fn front_the_chooser(&mut self) {
+        let Some(chooser) = self.front_chooser else {
+            return;
+        };
+        // Only a window that shows one column at a time chooses: where both stand, the body is
+        // beside the list and there is nothing to put in front of what.
+        let one_column = self
+            .shell()
+            .is_some_and(|shell| shell.geometry().sidebar == SidebarPlacement::Screen);
+        if !one_column {
+            return;
+        }
+        self.front_chooser = None;
+        if self
+            .shell()
+            .is_some_and(|shell| shell.front_pane() != chooser)
+        {
+            self.front = Some(chooser);
+            if let Some(shell) = self.shell() {
+                shell.show_from(chooser, MotionSource::Action);
+            }
+            self.structure_dirty = true;
+        }
+    }
+
     fn show_content(&mut self, source: MotionSource) {
         // The shell reports the columns its own front moves, and owes the frame that slides them; a
         // window whose content already stood in front (a press on what the person was reading)
@@ -1093,6 +1131,22 @@ impl AppWindow {
             _ => composed,
         };
         let composed = crate::shell::header_rules(composed);
+        // Whether the body has anything in it: a body that holds only an empty state says nothing
+        // is chosen or open, and a one-column window has nothing to show there. The column that
+        // chooses owes the front when the body turned empty this way; a layout decides it once it
+        // knows the window shows one column (`Self::front_the_chooser`).
+        let nothing = crate::shell::shows_nothing(&composed);
+        let was_nothing = self.built.as_ref().is_some_and(crate::shell::shows_nothing);
+        if nothing && !was_nothing {
+            // What chooses stands nearest the body: the overview list beside it, else the sidebar.
+            self.front_chooser = Some(if crate::shell::has_overview(&composed) {
+                NavPane::Overview
+            } else {
+                NavPane::Sidebar
+            });
+        } else if !nothing {
+            self.front_chooser = None;
+        }
         // Where the person is now, not where the last frame laid them out: a place chosen in this
         // very input put its page in front, and the shell its choice builds anew keeps it there.
         // A shell never laid out has no screen in front yet.
@@ -2866,6 +2920,7 @@ impl ui::widget::Decorator for AppWindow {
         if let Some(shell) = self.shell() {
             self.front = Some(shell.front_pane());
         }
+        self.front_the_chooser();
     }
 
     fn inner(&self) -> &(dyn Widget + 'static) {

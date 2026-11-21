@@ -1428,6 +1428,115 @@ fn a_window_keeps_the_column_in_front_when_its_shell_is_built_anew() {
     assert_eq!(front(&mut window), Some(NavPane::Overview));
 }
 
+/// A shell with a sidebar and the body `content`, as a notebook draws one.
+fn chooser_shell(content: Vec<UiNode>) -> UiNode {
+    let part = |name: &str, children: Vec<UiNode>| {
+        let mut node = UiNode::empty(PART, &format!("shell#{name}"));
+        node.props.insert("name".to_owned(), Value::text(name));
+        node.children = children;
+        node
+    };
+    let mut tree = UiNode::empty(&kind("EmptyState"), "shell#none");
+    tree.props
+        .insert("title".to_owned(), Value::text("No notes yet"));
+    let mut shell = UiNode::empty(&kind("NavShell"), "shell");
+    shell
+        .props
+        .insert("sidebar_title".to_owned(), Value::text("Notes"));
+    let mut file = UiNode::empty(&kind("MenuButton"), "shell#file");
+    file.props.insert("label".to_owned(), Value::text("File"));
+    shell.children.push(part("sidebar_actions", vec![file]));
+    shell.children.push(part("sidebar", vec![tree]));
+    shell.children.push(part("content", content));
+    shell
+}
+
+fn chooser_page(content: Vec<UiNode>) -> Vec<ToUi> {
+    vec![ToUi::Open {
+        level: Level::Root,
+        target: doc(),
+        tree: chooser_shell(content),
+        front: None,
+    }]
+}
+
+/// A one-column window has room for one screen. Where the body holds only an empty state (nothing
+/// chosen or open), the screen is the sidebar, where the person chooses; the empty body is no
+/// screen to open on.
+#[test]
+fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let mut nothing = UiNode::empty(&kind("EmptyState"), "shell#unopened");
+    nothing
+        .props
+        .insert("title".to_owned(), Value::text("Nothing open"));
+    send(&mut app, &chooser_page(vec![nothing.clone()]));
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (390, 844));
+    harness.present_in_window_bar();
+    harness.relayout();
+    harness.relayout();
+    {
+        let window = drawn_window(&mut harness);
+        let shell = window.shell_ref().expect("the shell");
+        assert_eq!(
+            shell.geometry().sidebar,
+            SidebarPlacement::Screen,
+            "a phone shows one column at a time"
+        );
+        assert_eq!(
+            shell.front_pane(),
+            NavPane::Sidebar,
+            "the window opens on the sidebar, which chooses, not on a body with nothing in it"
+        );
+    }
+    // A place chosen in the sidebar shows its page in front: the window does not take the person
+    // back to the sidebar over a body that has something in it.
+    let mut page = UiNode::empty(&kind("Text"), "shell#note");
+    page.props.insert("value".to_owned(), Value::text("A note"));
+    send(
+        &mut app,
+        &[ToUi::Open {
+            level: Level::Root,
+            target: doc(),
+            tree: chooser_shell(vec![page]),
+            front: Some(wire::Front::Input),
+        }],
+    );
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness)
+            .shell_ref()
+            .expect("the shell")
+            .front_pane(),
+        NavPane::Content,
+        "a body that shows something stays in front of the sidebar"
+    );
+    // A width that stands both columns beside each other needs no choice, and makes none.
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    send(&mut app, &chooser_page(vec![nothing]));
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.present_in_window_bar();
+    harness.relayout();
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness)
+            .shell_ref()
+            .expect("the shell")
+            .geometry()
+            .sidebar,
+        SidebarPlacement::Docked,
+        "both columns stand beside each other, so no screen is chosen"
+    );
+}
+
 fn overview_list(window: &mut AppWindow) -> &mut ui::widget::DescribedList {
     window
         .shell_mut()
