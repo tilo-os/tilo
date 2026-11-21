@@ -4,12 +4,11 @@
 //! lives. Every device of the person partakes in the admin workspace, so each
 //! one applies the document it reads:
 //!
-//! - A device that governs a workspace attaches the servers the document says
-//!   hold it, each in the role its entry says, moves one whose role changed
-//!   and detaches the ones it no longer names. Every holder of the Servers
-//!   workspace does that, server or desktop alike
-//!   ([`super::attach::attach_named`]), so one action on the document both
-//!   chooses a holder and names it in the workspace.
+//! - Which workspaces a server holds is each workspace's governance. A device
+//!   that governs a workspace hands a planned machine the workspaces its plan
+//!   names once, and takes a retired server out; every enrolled server takes
+//!   part in the Servers workspace. Every holder of the Servers workspace does
+//!   that, server or desktop alike ([`super::attach::attach_named`]).
 //! - Each server sets what it answers devices offering it work from its own
 //!   entry ([`Workspaces::set_offer`]), writes the update policy it follows
 //!   ([`super::policy`]) and the device configuration it applies
@@ -131,10 +130,11 @@ pub async fn reconcile_into(
             }),
     );
     // Every holder of the Servers workspace applies this part of the
-    // document first: one action on it both chooses a holder and names it in
-    // the workspace, and a machine a desktop approved gets the workspace it
-    // waits in. The same pass runs on every device of the person, so it is
-    // applied where it is written rather than only on a server.
+    // document first: each enrolled server takes part in the workspace, a
+    // planned machine gets the workspaces its plan names once, and a retired
+    // server is taken out of every workspace. The same pass runs on every
+    // device of the person, so it is applied where it is written rather than
+    // only on a server.
     let attached = super::attach::attach_named(workspaces).await?;
     if let Some(entry) = own_entry {
         if entry.retired {

@@ -73,6 +73,21 @@ pub struct Pending {
     /// The questions the machine asked and no device answered yet, by the
     /// choice each settles, with the reason the machine could not settle it.
     pub ask: Collection<Asked>,
+    /// The workspaces the plan has the machine hold, by workspace id: what a
+    /// device governing each names it a holder of once it enrolled. From then
+    /// on the workspace's governance says what it holds.
+    pub hosting: Collection<Hosting>,
+}
+
+/// A workspace a plan has its machine hold, and how.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Hosting {
+    /// As an encrypted store or a key holder
+    /// ([`install_profile_model::plan::HOLDING_MODES`]).
+    pub mode: String,
+    /// The workspace's governance names the machine: it was handed over, and
+    /// its governance alone says what the machine holds from then on.
+    pub handed: bool,
 }
 
 /// How the plan said the machine's network is set up, as its entry keeps it.
@@ -154,9 +169,9 @@ impl Pending {
             .collect()
     }
 
-    /// The plan document this entry keeps, as `label` names the machine and
-    /// `hosting` are the workspaces it holds: the same document the machine
-    /// installs from and the person's devices planned.
+    /// The plan document this entry keeps, as `label` names the machine: the
+    /// same document the machine installs from and the person's devices
+    /// planned.
     ///
     /// # Errors
     /// The entry does not read back as a plan, because a value it keeps is
@@ -164,7 +179,6 @@ impl Pending {
     pub fn document(
         &self,
         label: &str,
-        hosting: Vec<install_profile_model::plan::Holding>,
     ) -> Result<install_profile_model::plan::Plan, String> {
         use install_profile_model::plan;
         let open: Vec<String> = self
@@ -194,7 +208,14 @@ impl Pending {
             disk: plan::DiskRule::decode(&self.disk).map_err(str::to_owned)?,
             unlock: self.unlock.clone(),
             updates: self.updates.clone(),
-            hosting,
+            hosting: self
+                .hosting
+                .iter()
+                .map(|(workspace, hosting)| plan::Holding {
+                    workspace: workspace.as_str().to_owned(),
+                    mode: hosting.mode.clone(),
+                })
+                .collect(),
             open,
             token: plan::Token {
                 nonce: self.nonce.clone(),

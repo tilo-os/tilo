@@ -54,9 +54,6 @@ fn the_document_answers_a_read_with_what_each_server_is_set_to() {
 fn a_servers_configuration_is_typed_actions_with_history() {
     let mut replica = enrolled();
     replica
-        .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), KEY_HOLDER.into())))
-        .unwrap();
-    replica
         .apply(Servers::SET_APPETITE.with((device(), 500, true, 2)))
         .unwrap();
     replica
@@ -71,7 +68,6 @@ fn a_servers_configuration_is_typed_actions_with_history() {
     let state = replica.state().unwrap();
     let server = state.active(&[7; 32]).unwrap();
     assert_eq!(server.label, "Attic");
-    assert_eq!(server.holding(WORKSPACE), Some(KEY_HOLDER));
     assert_eq!(
         (server.storage_gb, server.compute, server.machines),
         (500, true, 2)
@@ -84,34 +80,10 @@ fn a_servers_configuration_is_typed_actions_with_history() {
     assert_eq!(server.unlock, "tpm");
     assert_eq!(
         replica.log().len(),
-        6,
+        5,
         "each change is one entry of history"
     );
 
-    replica
-        .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), STORE.into())))
-        .unwrap();
-    assert_eq!(
-        replica
-            .state()
-            .unwrap()
-            .active(&[7; 32])
-            .unwrap()
-            .holding(WORKSPACE),
-        Some(STORE)
-    );
-    replica
-        .apply(Servers::RELEASE_WORKSPACE.with((device(), WORKSPACE.into())))
-        .unwrap();
-    assert_eq!(
-        replica
-            .state()
-            .unwrap()
-            .active(&[7; 32])
-            .unwrap()
-            .holding(WORKSPACE),
-        None
-    );
 }
 
 /// Every device founds the document with the same change, so two of the
@@ -176,8 +148,6 @@ fn the_genesis_is_empty_and_named_by_its_workspace() {
 fn a_change_the_document_cannot_mean_is_refused() {
     let mut replica = enrolled();
     for refused in [
-        Servers::HOLD_WORKSPACE.with((device(), "not-a-workspace".into(), STORE.into())),
-        Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), "owner".into())),
         Servers::SET_UPDATES.with((device(), "nightly-ish".into())),
         Servers::SET_MAINTENANCE_WINDOW.with((device(), 24 * 60, 10)),
         Servers::SET_UNLOCK_POLICY.with((device(), "none".into())),
@@ -448,9 +418,6 @@ fn a_machine_keeps_what_it_boots_from_and_a_drive_is_erased_only_when_named() {
 fn a_retired_server_holds_nothing_and_is_not_taken_in_again() {
     let mut replica = enrolled();
     replica
-        .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), STORE.into())))
-        .unwrap();
-    replica
         .apply(Servers::RETIRE_SERVER.with(device()))
         .unwrap();
     assert!(replica.state().unwrap().active(&[7; 32]).is_none());
@@ -464,7 +431,7 @@ fn a_retired_server_holds_nothing_and_is_not_taken_in_again() {
     assert!(replica.state().unwrap().active(&[7; 32]).is_none());
     assert!(
         replica
-            .apply(Servers::HOLD_WORKSPACE.with((device(), WORKSPACE.into(), STORE.into())))
+            .apply(Servers::SET_APPETITE.with((device(), 500, true, 2)))
             .is_err()
     );
 }
@@ -692,8 +659,9 @@ fn a_machine_asks_the_drive_it_could_not_settle_and_takes_the_answer() {
     assert_eq!(entry.plan.status, plan::INSTALLED);
 }
 
-/// A plan's other choices are answered the same way; the machine's network and
-/// the workspaces it holds are set on its entry, not guessed from an answer.
+/// A plan's other choices are answered the same way; the machine's network is
+/// set on its entry and the workspaces it holds in each workspace, not guessed
+/// from an answer.
 #[test]
 fn the_other_open_choices_are_answered_on_the_persons_devices() {
     let mut servers = planned("largest", "name,unlock,updates");

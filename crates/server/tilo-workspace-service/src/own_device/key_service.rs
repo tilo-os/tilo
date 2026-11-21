@@ -333,7 +333,7 @@ impl KeyDirectory for Directory {
     /// member copy's groups are its serving device's to found.
     fn founds(&self, workspace: WorkspaceId) -> bool {
         let Some((Held::Governs, founder)) =
-            self.read(workspace, |state| state.governance().founding_device())
+            self.read(workspace, |state| state.governance().founder())
         else {
             return false;
         };

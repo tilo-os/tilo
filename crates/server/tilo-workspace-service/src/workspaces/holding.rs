@@ -212,6 +212,36 @@ pub(crate) fn work_takes(
 
 /// Why a hand-over of a workspace kept here is refused to a device its copy
 /// does not name among its holders.
+/// Whether the copy `held` kept here is a Servers workspace an earlier build
+/// founded alike on each of its person's devices, naming the person's root as
+/// its founder, which the hand-over `request` from `caller` founds again under
+/// one device. It does when `caller` is a device of that person and the
+/// founder the hand-over names is one of theirs the copy here names among its
+/// holders. Such a copy holds only what that device carried into the new
+/// founding, so the hand-over replaces it.
+///
+/// # Errors
+///
+/// The hand-over's governance does not hold up.
+fn refounds(
+    held: &StatePeer,
+    caller: &DeviceCert,
+    request: &HostWorkspaceRequest,
+    now: SystemTime,
+) -> Result<bool, String> {
+    let owner = held.owner();
+    if held.governance().founder() != Some(owner) || caller.user_public_key != owner {
+        return Ok(false);
+    }
+    let Some(founder) = replica(&request.bootstrap, now)?.governance().founder() else {
+        return Ok(false);
+    };
+    Ok(founder != owner
+        && held.governance().keeping_devices().iter().any(|hint| {
+            hint.host.device_public_key == founder && hint.host.user_public_key == owner
+        }))
+}
+
 const NOT_A_HOLDER: &str =
     "the workspace kept here is another's: it is handed over only by one of its holders";
 
@@ -311,36 +341,40 @@ impl Workspaces {
             return Err("only a holder of the workspace hands it over".into());
         }
         let now = tilo_clock::wall();
-        let held = self.inner.workspaces.lock().await.get(&workspace).cloned();
+        let mut held = self.inner.workspaces.lock().await.get(&workspace).cloned();
+        if let Some(copy) = held.clone() {
+            let copy = copy.lock().await;
+            if refounds(&copy.peer(), caller, request, now)? {
+                let workspace_id = copy.workspace_id();
+                drop(copy);
+                self.discard(&workspace, workspace_id).await?;
+                held = None;
+            }
+        }
         let state = if let Some(held) = held {
             if !names_holder(&held.lock().await.peer(), caller) {
-                // A workspace that is its person's own is founded by every one
-                // of their devices alike, so a device of theirs that founded
-                // it beside this one hands the changes it made. Its certificate
-                // comes in from the hand-over, the changes are judged as any
-                // governance change is, and this copy names it a holder once
-                // they are in.
-                let governed = held.lock().await;
-                let mut peer = governed.peer().clone();
-                if caller.user_public_key != peer.owner() {
-                    return Err(NOT_A_HOLDER.into());
-                }
-                peer.admit_owner_device(caller, now)?;
-                take_governance(&mut peer, &request.bootstrap, now)?;
-                if !names_holder(&peer, caller) {
-                    return Err(NOT_A_HOLDER.into());
-                }
-                *governed.peer.lock() = peer;
+                return Err(NOT_A_HOLDER.into());
             }
             held
         } else {
             let path = self.inner.dir.join(format!("{workspace}.workspace"));
             let device = self.device_keys();
-            let mut governed = if path.exists() {
+            let released = if path.exists() {
+                let governed = GovernedWorkspace::open(path.clone(), device.as_ref())?;
+                if refounds(&governed.peer(), caller, request, now)? {
+                    drop(governed);
+                    super::delete::remove_files(&self.inner.dir, &workspace);
+                    None
+                } else {
+                    Some(governed)
+                }
+            } else {
+                None
+            };
+            let mut governed = if let Some(governed) = released {
                 // Held here before and let go: its files are where it
                 // stands, and the hand-over brings what it missed, from one
                 // of the holders those files name.
-                let governed = GovernedWorkspace::open(path.clone(), device.as_ref())?;
                 if !names_holder(&governed.peer(), caller) {
                     return Err(NOT_A_HOLDER.into());
                 }

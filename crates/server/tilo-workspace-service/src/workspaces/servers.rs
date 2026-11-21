@@ -3,8 +3,7 @@
 //! The Servers workspace is an ordinary workspace whose only member is the
 //! person. Each server is one of their devices and takes part in it, and so
 //! does each of their other devices. Its [`SERVERS`] document says, per server,
-//! what that server should be: its name, which workspaces it holds and how (an
-//! encrypted store or a key holder that takes work), how much it offers
+//! what that server should be: its name, how much it offers
 //! (storage, compute, machines), which updates it follows and when it may
 //! restart for maintenance, how it unlocks after a boot, whether it was
 //! retired, and the machine itself: its hostname, the drives it uses for what
@@ -30,7 +29,7 @@
 //! server taken in. That device is its founder, and every other device joins
 //! it: a later server asks an earlier one to take it in ([`admit`]), which
 //! enters it in the document, and the holders then hand it the workspace as
-//! they hand a server any workspace its entry names. A device that does not
+//! they hand it every server the document names. A device that does not
 //! hold it asks a holder to take it in ([`take_in`]) and holds it like any
 //! other workspace of the person's from then on. A device that founds it again
 //! anyway (one restored from the recovery words, say, before it heard of the
@@ -45,11 +44,15 @@
 //! no part in the person's store, whose link knows a device by its endpoint id
 //! while a server's endpoint runs on a key of its own.
 //!
-//! A device of the person that holds a workspace attaches the servers its
-//! document names as holders, and only those: one action on the document
-//! chooses the holder and names it in the workspace. Each server applies its
-//! own entry's offer to what it answers devices, its update policy to what it
-//! follows, and a retired server lets go of everything it holds.
+//! Which workspaces a server holds, and how, is each workspace's governance
+//! alone: its holders list names the server, as a store or a key holder, and
+//! the workspace's own actions add, move and remove it. The document keeps no
+//! copy of it. What it keeps is what the governance cannot name yet: the
+//! workspaces a planned machine is to hold once it exists, which a device of
+//! the person governing each hands it once, when it enrolled ([`attach`]).
+//! Each server applies its own entry's offer to what it answers devices, its
+//! update policy to what it follows, and a retired server lets go of
+//! everything it holds.
 
 pub use install_profile_model::plan::WaitingPlan;
 use serde::Deserialize;
@@ -64,17 +67,12 @@ pub mod attach;
 pub mod device;
 pub mod machine;
 pub mod plan;
+mod refound;
 
 /// The Servers workspace's document of the person's servers.
 pub const SERVERS: (&str, &str) = ("so.tilo.servers", "servers");
 /// The name the Servers workspace is made with.
 const ADMIN_WORKSPACE_NAME: &str = "Servers";
-/// What a server holds a workspace as: an encrypted store that keeps and
-/// forwards what it cannot read.
-pub const STORE: &str = "store";
-/// What a server holds a workspace as: a key holder, which holds the keys and
-/// takes the workspace's work.
-pub const KEY_HOLDER: &str = "key-holder";
 /// The ways a server unlocks after a boot: an owner's device approves it, its
 /// TPM unseals its keys, or someone types a passphrase at it.
 pub const UNLOCK_POLICIES: [&str; 3] = ["owner-device", "tpm", "passphrase"];
@@ -102,8 +100,6 @@ pub struct Server {
     /// a device of its person can hand it a workspace. Empty until it
     /// enrolled one.
     pub endpoint: String,
-    /// The workspaces it holds, by workspace id.
-    pub holds: Collection<Holding>,
     /// Gigabytes of storage it offers its workspaces.
     pub storage_gb: u64,
     /// Whether it does its workspaces' actions and jobs.
@@ -172,13 +168,6 @@ impl Asked {
             serde_json::from_str(&self.answer).ok()
         )
     }
-}
-
-/// How a server holds one workspace.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Holding {
-    /// [`STORE`] or [`KEY_HOLDER`].
-    pub mode: String,
 }
 
 impl Servers {
@@ -287,14 +276,6 @@ fn as_plan(server: &Server) -> Result<WaitingPlan, String> {
 }
 
 impl Server {
-    /// Whether it holds `workspace`, and how.
-    #[must_use]
-    pub fn holding(&self, workspace: &str) -> Option<&str> {
-        self.holds
-            .get(&Id::from_raw(workspace))
-            .map(|holding| holding.mode.as_str())
-    }
-
     /// The operations still to do here, oldest first: what the person asked
     /// and this server did not answer yet.
     pub fn pending(&self) -> impl Iterator<Item = (&Id, &Asked)> {
@@ -314,17 +295,7 @@ impl Server {
     /// # Errors
     /// The entry does not read back as a plan.
     pub fn install_plan(&self) -> Result<install_profile_model::plan::Plan, String> {
-        let hosting = self
-            .holds
-            .iter()
-            .map(
-                |(workspace, holding)| install_profile_model::plan::Holding {
-                    workspace: workspace.as_str().to_owned(),
-                    mode: holding.mode.clone(),
-                },
-            )
-            .collect();
-        self.plan.document(&self.label, hosting)
+        self.plan.document(&self.label)
     }
 
     /// What was asked of it and answered, newest first.
@@ -414,7 +385,7 @@ impl Servers {
                 server.plan.revision = server.plan.revision.saturating_add(1);
                 server.plan.nonce = nonce;
                 server.plan.expires_at_ns = expires_at_ns;
-                server.holds = hosting;
+                server.plan.hosting = hosting;
                 plan::PLANNED.clone_into(&mut server.plan.status);
             }
             None => {
@@ -433,10 +404,10 @@ impl Servers {
                             updates,
                             disk,
                             open,
+                            hosting,
                             revision: 1,
                             ..plan::Pending::default()
                         },
-                        holds: hosting,
                         ..Server::default()
                     },
                 );
@@ -505,7 +476,8 @@ impl Servers {
     /// one it did not.
     ///
     /// A choice the machine did not ask about, or one another answer settles
-    /// (a network is set up on its entry, the workspaces it holds are), is
+    /// (a network is set up on its entry, the workspaces it holds in each
+    /// workspace), is
     /// refused with what answers it instead.
     #[action(external)]
     pub fn answer_machine_choice(
@@ -565,7 +537,7 @@ impl Servers {
             }
             _ => {
                 return Err(Refusal::new(
-                    "the workspaces a machine holds are set on its entry, not answered here",
+                    "the workspaces a machine holds are set in each workspace, not answered here",
                 ));
             }
         }
@@ -634,37 +606,18 @@ impl Servers {
         Ok(())
     }
 
-    /// Have a server hold a workspace as `mode` ([`STORE`] or [`KEY_HOLDER`]).
-    #[action(external)]
-    pub fn hold_workspace(
-        &mut self,
-        device: Id,
-        workspace: String,
-        mode: String,
-    ) -> Result<(), Refusal> {
-        if uuid::Uuid::parse_str(&workspace).is_err() {
-            return Err(Refusal::new("not a workspace id"));
-        }
-        if mode != STORE && mode != KEY_HOLDER {
-            return Err(Refusal::new(
-                "a server holds a workspace as store or key holder",
-            ));
-        }
-        let server = self.server(&device)?;
-        let workspace = Id::from_raw(workspace);
-        match server.holds.get_mut(&workspace) {
-            Some(holding) => holding.mode = mode,
-            None => {
-                server.holds.push(workspace, Holding { mode });
-            }
-        }
-        Ok(())
-    }
-
-    /// Have a server let a workspace go.
-    #[action(external)]
-    pub fn release_workspace(&mut self, device: Id, workspace: String) -> Result<(), Refusal> {
-        self.server(&device)?.holds.remove(&Id::from_raw(workspace));
+    /// The workspace `workspace` its plan has a server hold was handed to it:
+    /// the workspace's governance names it from then on, and says alone what
+    /// it holds, so a holder taken out there later stays out.
+    #[action(housekeeping)]
+    pub fn hand_planned_workspace(&mut self, device: Id, workspace: String) -> Result<(), Refusal> {
+        let planned = self
+            .server(&device)?
+            .plan
+            .hosting
+            .get_mut(&Id::from_raw(workspace))
+            .ok_or_else(|| Refusal::new("its plan has it hold no such workspace"))?;
+        planned.handed = true;
         Ok(())
     }
 
@@ -982,7 +935,6 @@ impl Servers {
     pub fn retire_server(&mut self, device: Id) -> Result<(), Refusal> {
         let server = self.server(&device)?;
         server.retired = true;
-        server.holds = Collection::default();
         Ok(())
     }
 }
@@ -1022,7 +974,7 @@ struct PendingPlan {
     updates: String,
     disk: String,
     open: String,
-    hosting: Collection<Holding>,
+    hosting: Collection<plan::Hosting>,
 }
 
 impl PendingPlan {
@@ -1042,8 +994,9 @@ impl PendingPlan {
                 .map(|held| {
                     (
                         Id::from_raw(held.workspace.clone()),
-                        Holding {
+                        plan::Hosting {
                             mode: held.mode.clone(),
+                            handed: false,
                         },
                     )
                 })
@@ -1321,7 +1274,7 @@ pub async fn enroll(
 /// Take the server `server`, dialled at `endpoint`, in among this device's
 /// person's servers, as it asks when it starts without the Servers workspace:
 /// it is entered in the document, and the workspace's holders then hand it the
-/// workspace as they hand any server the workspaces its entry names.
+/// workspace as they hand it every server the document names.
 /// A retired server stays retired.
 ///
 /// # Errors

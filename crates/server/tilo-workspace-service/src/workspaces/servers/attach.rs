@@ -1,26 +1,31 @@
-//! Handing the workspaces this device governs to the servers its person's
-//! document names as their holders.
+//! Handing the workspaces this device governs to the person's servers.
 //!
-//! The Servers workspace's document ([`super::SERVERS`]) says, per server, what
-//! that server should be. One action on it thus both chooses a holder and names
-//! it in the workspace: the workspace names the server among its keeping
-//! devices, a server whose role changed moves to the new one, and a server the
-//! document stops naming lets the workspace go, each at the address it
-//! enrolled.
+//! Which workspaces a server holds is each workspace's governance: its holders
+//! list names the server, and the workspace's actions add, move and remove it.
+//! The Servers workspace's document ([`super::SERVERS`]) adds only what
+//! governance cannot say yet or must follow:
 //!
-//! Every holder of the Servers workspace applies this part of the document, not
-//! only a server: a person whose only device is a desktop approves their first
-//! server there, and it holds the workspace from then on. [`Workspaces::follow_servers`]
-//! applies it now and again after each change, and [`attach_named`] is the one
-//! pass it makes, so a caller that wants to know what it did reads it too.
+//! - every server of the person takes part in the Servers workspace itself, as
+//!   a key holder, once it enrolled an address;
+//! - a planned machine holds the workspaces its plan names: a device governing
+//!   one names the machine there once it enrolled, then marks it handed in the
+//!   plan, so a holder taken out of a workspace later stays out;
+//! - a retired server holds nothing: a device governing a workspace that names
+//!   it takes it out.
+//!
+//! Every holder of the Servers workspace applies this, not only a server: a
+//! person whose only device is a desktop approves their first server there, and
+//! it holds the workspace from then on. [`Workspaces::follow_servers`] applies it
+//! now and again after each change, and [`attach_named`] is the one pass it
+//! makes, so a caller that wants to know what it did reads it too.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use iroh_base::EndpointAddr;
 use tilo_peer_state::CopyRole;
 
-use super::{STORE, Server, admin_workspace_id, read};
+use super::{Server, Servers, admin_workspace_id, read};
 use crate::workspaces::Workspaces;
 
 /// How often a holder looks for a server the document names besides the
@@ -47,15 +52,16 @@ impl Attached {
     }
 }
 
-/// Hand each server the document names the workspaces this device governs, in
-/// the role its entry says, and let go of the ones it stops naming: one pass.
+/// Name each enrolled server in the Servers workspace, hand a planned machine
+/// the workspaces its plan names that this device governs, and take a retired
+/// server out of every workspace this device governs: one pass.
 ///
-/// A workspace an entry names but this device does not govern is applied by
-/// its governor, so it is skipped here.
+/// A workspace this device does not govern is its governor's to change, so it
+/// is skipped here.
 ///
 /// # Errors
-/// The document could not be read, or a workspace's keeping devices could not
-/// be changed.
+/// The document could not be read or written, or a workspace's keeping
+/// devices could not be changed.
 pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
     // A device that holds no Servers workspace yet names nobody in it, and
     // asks a holder to take it in rather than read it.
@@ -63,82 +69,91 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
         return Ok(Attached::default());
     }
     let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
+    // A copy founded in the person's name waits to be founded again
+    // ([`super::refound`]): what this pass wrote there would not be carried.
+    if workspaces
+        .state(&admin)
+        .await
+        .is_some_and(|state| state.governance().founder() == Some(state.owner()))
+    {
+        return Ok(Attached::default());
+    }
     let servers = read(workspaces).await?;
-    let cert = workspaces.serving_certificate().clone();
-    let mut attached = Attached::default();
-    // Each workspace this device governs, which is where a holder it names is
-    // named and from where one its entries stop naming is let go; the admin
-    // workspace counts even before it is listed.
-    let mut named_workspaces = workspaces
+    let own = workspaces.serving_certificate().device_public_key;
+    let mut governed = workspaces
         .list()
         .await
         .into_iter()
         .map(|summary| summary.workspace)
         .collect::<BTreeSet<_>>();
-    named_workspaces.insert(admin.clone());
-    for (_, server) in servers.servers.iter() {
-        named_workspaces.extend(server.holds.iter().map(|(id, _)| id.as_str().to_owned()));
-    }
-    for workspace in named_workspaces {
-        let Ok(keeping) = workspaces.keeping_devices(&workspace).await else {
-            // Not a workspace this device governs: its governor applies this
-            // part of the document.
+    governed.insert(admin.clone());
+    let mut attached = Attached::default();
+    for (device, server) in servers.servers.iter() {
+        let Some(key) = tilo_failure::ignored!(
+            "a server is named by its device key in hex",
+            <[u8; 32]>::try_from(hex::decode(device.as_str()).unwrap_or_default()).ok()
+        ) else {
             continue;
         };
-        // What each keeping device of the workspace reads: a key holder reads
-        // its contents, a store only keeps and forwards them.
-        let named = keeping
-            .iter()
-            .map(|keeper| (keeper.device.clone(), keeper.reads))
-            .collect::<BTreeMap<_, _>>();
-        for (device, server) in servers.servers.iter() {
-            let Some(key) = tilo_failure::ignored!(
-                "a server is named by its device key in hex",
-                <[u8; 32]>::try_from(hex::decode(device.as_str()).unwrap_or_default()).ok()
-            ) else {
-                continue;
-            };
-            if key == cert.device_public_key {
+        if key == own {
+            continue;
+        }
+        if server.retired {
+            for workspace in &governed {
+                if names(workspaces, workspace, device.as_str()).await == Some(true) {
+                    workspaces
+                        .remove_server(workspace, device.as_str())
+                        .await?;
+                    attached.released.push(workspace.clone());
+                }
+            }
+            continue;
+        }
+        let Some(endpoint) = endpoint(server) else {
+            // Not enrolled yet: there is no address to hand it anything at.
+            continue;
+        };
+        if names(workspaces, &admin, device.as_str()).await == Some(false) {
+            workspaces
+                .attach_server(&admin, key, endpoint.clone(), CopyRole::KeyHolder)
+                .await?;
+            attached.held.push(admin.clone());
+        }
+        for (workspace, planned) in server.plan.hosting.iter() {
+            let workspace = workspace.as_str();
+            if planned.handed || workspace == admin {
                 continue;
             }
-            // Every server takes part in the admin workspace; elsewhere it
-            // holds the workspaces its entry names, and a retired server
-            // holds none.
-            let wants =
-                !server.retired && (workspace == admin || server.holding(&workspace).is_some());
-            // The admin workspace is read by every server of the person.
-            let role = if workspace != admin && server.holding(&workspace) == Some(STORE) {
-                CopyRole::Store
-            } else {
-                CopyRole::KeyHolder
+            // Only the workspace's governor names a holder in it.
+            let Some(named) = names(workspaces, workspace, device.as_str()).await else {
+                continue;
             };
-            let reads = role == CopyRole::KeyHolder;
-            let named = named.get(device.as_str());
-            if wants && named.is_some_and(|named| *named != reads) {
-                workspaces.set_holder_role(&workspace, key, role).await?;
-                attached.held.push(workspace.clone());
-            } else if wants && named.is_none() {
-                let Some(endpoint) = endpoint(server) else {
-                    tracing::info!(
-                        %workspace,
-                        server = %device.as_str(),
-                        "a server the document names as a holder enrolled no address"
-                    );
-                    continue;
+            if !named {
+                let role = if planned.mode == "store" {
+                    CopyRole::Store
+                } else {
+                    CopyRole::KeyHolder
                 };
                 workspaces
-                    .attach_server(&workspace, key, endpoint, role)
+                    .attach_server(workspace, key, endpoint.clone(), role)
                     .await?;
-                attached.held.push(workspace.clone());
-            } else if !wants && named.is_some() {
-                workspaces
-                    .remove_server(&workspace, device.as_str())
-                    .await?;
-                attached.released.push(workspace.clone());
+                attached.held.push(workspace.to_owned());
             }
+            super::apply(
+                workspaces,
+                Servers::HAND_PLANNED_WORKSPACE.with((device.clone(), workspace.to_owned())),
+            )
+            .await?;
         }
     }
     Ok(attached)
+}
+
+/// Whether `workspace` names the device `device` (hex) among its keeping
+/// devices: `None` when this device does not govern the workspace.
+async fn names(workspaces: &Workspaces, workspace: &str, device: &str) -> Option<bool> {
+    let keeping = workspaces.keeping_devices(workspace).await.ok()?;
+    Some(keeping.iter().any(|keeper| keeper.device == device))
 }
 
 /// The address `server` enrolled, as it is dialled: none when it enrolled
@@ -173,6 +188,9 @@ impl Workspaces {
                     return;
                 };
                 let this = Self { inner };
+                if let Err(error) = super::refound::refound(&this).await {
+                    tracing::warn!(%error, "the Servers workspace was not founded again under this device");
+                }
                 match attach_named(&this).await {
                     Ok(attached) if !attached.none() => {
                         tracing::info!(?attached, "the servers' document applied");

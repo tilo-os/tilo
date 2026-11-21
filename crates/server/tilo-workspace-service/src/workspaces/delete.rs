@@ -140,6 +140,42 @@ impl Workspaces {
         Ok(())
     }
 
+    /// Let go of `workspace` (`workspace_id`) here with everything this host
+    /// keeps of it, and mark nothing: unlike a deleted workspace it is not
+    /// refused afterwards, and can be held again under the same identity.
+    ///
+    /// # Errors
+    ///
+    /// Who may reach it could not be recorded.
+    pub(super) async fn discard(&self, workspace: &str, workspace_id: WorkspaceId) -> Result<(), String> {
+        let governed = self.inner.workspaces.lock().await.get(workspace).cloned();
+        if let Some(governed) = governed {
+            let governed = governed.lock().await;
+            self.inner.workspaces.lock().await.remove(workspace);
+            self.inner.readings.forget(workspace);
+            self.inner.host.access.forget_workspace(workspace_id);
+            // Served no more, and not refused as deleted: it can come again.
+            self.inner.direct.release(workspace_id);
+            self.inner
+                .host
+                .access
+                .replace(
+                    workspace_id,
+                    GovernedAccess {
+                        member_devices: Vec::new(),
+                        member_user_roots: Vec::new(),
+                    },
+                    Vec::new(),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
+            drop(governed);
+        }
+        self.forget_deleted(workspace, workspace_id).await;
+        Ok(())
+    }
+
     /// Whether the workspace whose server workspace is `workspace_id` was
     /// deleted here: whoever asks for it is told so
     /// ([`Refusal::WorkspaceDeleted`]), the same on every queue.
@@ -351,31 +387,7 @@ impl Workspaces {
             .filter(|_| self.unfinished_branch(branch))
             .ok_or("that is no branch being made here")?;
         self.delete_machine(branch).await?;
-        let governed = self.inner.workspaces.lock().await.get(branch).cloned();
-        if let Some(governed) = governed {
-            let governed = governed.lock().await;
-            self.inner.workspaces.lock().await.remove(branch);
-            self.inner.readings.forget(branch);
-            self.inner.host.access.forget_workspace(workspace_id);
-            // Served no more, and not refused as deleted: it can come again.
-            self.inner.direct.release(workspace_id);
-            self.inner
-                .host
-                .access
-                .replace(
-                    workspace_id,
-                    GovernedAccess {
-                        member_devices: Vec::new(),
-                        member_user_roots: Vec::new(),
-                    },
-                    Vec::new(),
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
-            drop(governed);
-        }
-        self.forget_deleted(branch, workspace_id).await;
+        self.discard(branch, workspace_id).await?;
         let content = self.inner.branch_content.read_recover().clone();
         if let Some(content) = content {
             let branch = branch.to_owned();

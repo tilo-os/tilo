@@ -1,7 +1,7 @@
-//! A server does what its entry in its person's admin workspace says: it holds
-//! the workspaces the entry names and lets go of the ones it stops naming,
-//! offers the work its entry allows, and follows the update policy its entry
-//! names.
+//! A server does what its entry in its person's admin workspace says: a
+//! planned machine is handed the workspaces its plan names once, after which
+//! each workspace's governance alone says what it holds; it offers the work its
+//! entry allows, and follows the update policy its entry names.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -21,24 +21,77 @@ fn entry(device: &crate::common::TestDevice) -> Id {
     Id::from_raw(hex::encode(device.device_pubkey()))
 }
 
-/// Choosing a server as a holder in the admin workspace is the one action an
-/// owner takes: the device that governs the workspace hands it to
-/// the server and names it, and naming it no more lets it go.
+/// A machine planned to hold a workspace is handed it once it enrolled, by
+/// the device that governs the workspace; from then on the workspace's
+/// governance alone says what it holds, so taking it out there is not undone
+/// by the plan.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
+async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it_go() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
     let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let workspaces = governor.host.workspaces();
-    let admin = admin_workspace_id(&alice.user_pk);
-    workspaces
-        .create_workspace("Servers", Some(&admin))
-        .await
-        .unwrap();
-    // The server enrolled itself on its first start: its entry names the
-    // address it is dialled at.
+    servers::founded(workspaces).await.unwrap();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    let nonce = hex::encode([0x5a_u8; 16]);
+    let plan = install_plan::Choices {
+        destination: "tilo-server".to_owned(),
+        name: Some("nas".to_owned()),
+        network: Some(install_profile_model::plan::Network {
+            addressing: "dhcp".to_owned(),
+            ..install_profile_model::plan::Network::default()
+        }),
+        disk: Some(install_profile_model::plan::DiskRule {
+            kind: "empty".to_owned(),
+            identity: String::new(),
+        }),
+        unlock: Some("tpm".to_owned()),
+        updates: Some("stable".to_owned()),
+        hosting: Some(vec![install_profile_model::plan::Holding {
+            workspace: workspace.workspace.clone(),
+            mode: "key-holder".to_owned(),
+        }]),
+    }
+    .plan(
+        "0123456789abcdef0123456789abcdef",
+        install_profile_model::plan::Token {
+            nonce: nonce.clone(),
+            expires_at_ns: u64::MAX / 2,
+        },
+    )
+    .unwrap();
+    servers::apply(
+        workspaces,
+        Servers::PLAN_MACHINE.with((serde_json::to_string(&plan).unwrap(), "nas".into())),
+    )
+    .await
+    .unwrap();
+    let retained = || async {
+        server
+            .host
+            .workspace_documents()
+            .retained(workspace.workspace_id)
+            .await
+            .ok()
+    };
+    applied::reconcile(workspaces).await.unwrap();
+    assert!(retained().await.is_none(), "a plan holds nothing yet");
+
+    // The machine enrolled with the plan's token and gave the address it is
+    // dialled at.
+    servers::apply(
+        workspaces,
+        Servers::BEGIN_INSTALL.with((
+            hex::encode(nas.device_pubkey()),
+            nonce,
+            "[]".into(),
+            String::new(),
+        )),
+    )
+    .await
+    .unwrap();
     servers::apply(
         workspaces,
         Servers::ENROLL_SERVER.with((
@@ -49,69 +102,60 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
     )
     .await
     .unwrap();
-
-    let workspace = workspaces.create("Notes").await.unwrap();
-    let retained = || async {
-        server
-            .host
-            .workspace_documents()
-            .retained(workspace.workspace_id)
-            .await
-            .ok()
-    };
-    assert!(retained().await.is_none(), "it holds nothing yet");
-
-    servers::apply(
-        workspaces,
-        Servers::HOLD_WORKSPACE.with((
-            entry(&nas),
-            workspace.workspace.clone(),
-            servers::KEY_HOLDER.into(),
-        )),
-    )
-    .await
-    .unwrap();
-    // Every holder of the Servers workspace applies its document, so the
-    // owner's device hands it over as the change is written.
-    applied::reconcile(workspaces).await.unwrap();
+    let attached = applied::reconcile(workspaces).await.unwrap();
+    assert!(
+        attached.held.contains(&workspace.workspace),
+        "the governor hands it the planned workspace: {attached:?}"
+    );
     tilo_test_env::within("the server to hold the workspace", async {
         while retained().await.is_none() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;
-
     assert_eq!(
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
         2,
         "the workspace names the governor and its holder"
     );
-    assert_eq!(
-        servers::read(workspaces).await.unwrap().servers.len(),
-        1,
-        "the document still names the server"
+    let entry_now = servers::read(workspaces)
+        .await
+        .unwrap()
+        .servers
+        .get(&entry(&nas))
+        .cloned()
+        .unwrap();
+    assert!(
+        entry_now
+            .plan
+            .hosting
+            .iter()
+            .all(|(_, planned)| planned.handed),
+        "the plan was handed over once: {entry_now:?}"
     );
-    // Naming it no more in its entry lets the workspace go.
-    servers::apply(
-        workspaces,
-        Servers::RELEASE_WORKSPACE.with((entry(&nas), workspace.workspace.clone())),
-    )
-    .await
-    .unwrap();
-    let after = servers::read(workspaces).await.unwrap();
-    let nas_entry = after.servers.get(&entry(&nas)).cloned().unwrap();
-    assert_eq!(
-        nas_entry.holding(&workspace.workspace),
-        None,
-        "the release took: {nas_entry:?}"
+
+    // The workspace takes it out of its holders; the plan does not hand it
+    // back.
+    workspaces
+        .remove_server(&workspace.workspace, &hex::encode(nas.device_pubkey()))
+        .await
+        .unwrap();
+    let again = applied::reconcile(workspaces).await.unwrap();
+    assert!(
+        !again.held.contains(&workspace.workspace),
+        "the plan does not hand it back: {again:?}"
     );
-    applied::reconcile(workspaces).await.unwrap();
     tilo_test_env::within("the server to let go of the workspace", async {
         while retained().await.is_some() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await;
+    assert_eq!(
+        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
+        1,
+        "the workspace names its governor alone"
+    );
 }
 
 /// A server offers exactly what its entry says: an entry naming no compute
@@ -575,6 +619,82 @@ async fn founder(hosted: &crate::common::Hosted, admin: &str) -> Option<[u8; 32]
         .state(admin)
         .await
         .and_then(|state| state.governance().founder())
+}
+
+/// A Servers workspace an earlier build founded alike on each of its
+/// person's devices, naming the person rather than a device as its founder, is
+/// founded again once, under the first of its key holders. Every server its
+/// document named stays named, and the other holder takes the new founding in
+/// place of its old copy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_servers_workspace_founded_in_its_persons_name_is_founded_again_under_one_device() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let desktop = alice.enrol("desktop", DeviceCapabilities::member());
+    let one = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
+    let other = serve_on(&alice, &desktop, WorkSetting::own_person()).await;
+    let admin = admin_workspace_id(&alice.user_pk);
+    servers::founded(one.host.workspaces()).await.unwrap();
+    for (device, hosted, label) in [(&laptop, &one, "laptop"), (&desktop, &other, "desktop")] {
+        servers::apply(
+            one.host.workspaces(),
+            Servers::ENROLL_SERVER.with((
+                hex::encode(device.device_pubkey()),
+                label.into(),
+                serde_json::to_string(&hosted.host.node_addr()).unwrap(),
+            )),
+        )
+        .await
+        .unwrap();
+    }
+    tilo_test_env::within("the other device to read the person's servers", async {
+        while named_servers(&other).await != ["desktop", "laptop"] {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    // Both copies as the earlier build founded them; the device to found it
+    // again last, so the other one's copy is the earlier build's when it is
+    // handed the new founding.
+    let first = laptop.device_pubkey().min(desktop.device_pubkey());
+    let (later, earlier) = if first == laptop.device_pubkey() {
+        (&other, &one)
+    } else {
+        (&one, &other)
+    };
+    for hosted in [later, earlier] {
+        hosted
+            .host
+            .workspaces()
+            .name_person_as_founder(&admin)
+            .await;
+        assert_eq!(founder(hosted, &admin).await, Some(alice.user_pk));
+    }
+
+    tilo_test_env::within("both copies to be one founding of the first holder", async {
+        loop {
+            let mut founders = Vec::new();
+            let mut named = Vec::new();
+            for hosted in [&one, &other] {
+                founders.push(founder(hosted, &admin).await);
+                named.push(named_servers(hosted).await);
+            }
+            if founders == [Some(first), Some(first)]
+                && named.iter().all(|named| named == &["desktop", "laptop"])
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    for hosted in [&one, &other] {
+        assert!(
+            servers::holds_admin(hosted.host.workspaces()).await,
+            "each device holds the new founding"
+        );
+    }
 }
 
 /// The person's Servers workspace has one founder, the device that made it,

@@ -59,7 +59,8 @@ pub fn waiting<'a>(servers: &'a Servers, nonce: &str) -> Option<&'a Server> {
 
 /// The choices a machine asks about: each is one of the person's devices
 /// answering in its entry ([`super::Servers::answer_machine_choice`]). Its
-/// network and the workspaces it holds are set up on its entry instead, so a
+/// network is set up on its entry instead, and the workspaces it holds in each
+/// workspace, so a
 /// machine with those open installs with what its entry says and asks
 /// nothing.
 const ASKABLE: [&str; 5] = ["destination", "name", "disk", "unlock", "updates"];

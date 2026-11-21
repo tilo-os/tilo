@@ -325,31 +325,13 @@ impl PeerGovernance<'_> {
         self.peer.require_administrator_invitation(key, now).is_ok()
     }
 
-    /// The device that founds the workspace's MLS group, and no other device:
-    /// the device the workspace was created on, or, for a workspace whose
-    /// founder row names its person rather than a device (a Servers workspace
-    /// an earlier build founded alike on each of the person's devices), the
-    /// first of its key-holding devices by device key. A device that is not
-    /// that one takes the group it hands over.
-    #[must_use]
-    pub fn founding_device(self) -> Option<[u8; 32]> {
-        let founder = self.founder()?;
-        if founder != self.peer.owner() {
-            return Some(founder);
-        }
-        self.keeping_devices()
-            .into_iter()
-            .filter(|hint| {
-                hint.host.user_public_key == self.peer.owner()
-                    && super::holder_role(hint) == super::CopyRole::KeyHolder
-            })
-            .map(|hint| hint.host.device_public_key)
-            .min()
-    }
-
-    /// Who created the workspace: the device it was created on, or, where an
-    /// earlier build founded it in its person's name, the person's root key. What
-    /// founds the workspace's MLS group is [`Self::founding_device`].
+    /// The device the workspace was created on, which founds its MLS group;
+    /// every other device takes the group it hands over.
+    ///
+    /// A Servers workspace an earlier build founded alike on each of its
+    /// person's devices names the person's root here instead, which founds
+    /// nothing: its first holder founds it again under its own device
+    /// (`tilo_workspace_service::workspaces::servers::refound`).
     pub fn founder(self) -> Option<[u8; 32]> {
         let doc = self.peer.core.workspace_doc.as_ref()?;
         let (value, _) = doc.get(ROOT, super::seed::FOUNDER).ok()??;

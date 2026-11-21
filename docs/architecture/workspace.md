@@ -338,16 +338,17 @@ its devices find the same one; a server enrolled into the person's identity
 makes it where it holds none and enters itself on its first start, and a
 device of theirs that is not a server asks a server that holds it to take it
 in. One document of kind `tilo.servers` holds each server's desired
-configuration: its name, which workspaces it holds and as what (store or key
-holder), what it offers (storage, compute, machines), the updates it follows
-and daily maintenance window, how it unlocks after a boot, and whether it was
-retired. Every change is a typed action on that document, so it has history
-and an author, and a device, an agent or a script change it the same way, and
-a server applies what its entry says: no setting of a server lives in a file
-of its own. A device of the person that governs a workspace hands it to the
-servers the entry names and names them among its hosts, so choosing a holder
-is one action on that document, and an entry that stops naming a workspace
-lets it go.
+configuration: its name, what it offers (storage, compute, machines), the
+updates it follows and daily maintenance window, how it unlocks after a boot,
+and whether it was retired. Every change is a typed action on that document, so
+it has history and an author, and a device, an agent or a script change it the
+same way, and a server applies what its entry says: no setting of a server
+lives in a file of its own. Which workspaces a server holds, and as what (store
+or key holder), is each workspace's governance alone: its holders list names
+the server, and the workspace's own actions add, move and remove it. The
+document keeps only what governance cannot name yet, the workspaces a planned
+machine is to hold, which a device governing each hands the machine once it
+enrolled. A retired server is taken out of every workspace that names it.
 What the person asks of a server is the same document and the same actions:
 each entry keeps the operation asked of it (its health, a service's journal,
 a restart, a reboot, an update, pausing or resuming updates, a rollback or a

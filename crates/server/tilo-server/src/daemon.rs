@@ -2383,8 +2383,7 @@ mod tests {
             let server_workspaces = server.workspaces().expect("the server holds workspaces");
             // The person's primary device makes their Servers workspace, enters
             // this server among their servers there and hands it the workspace,
-            // as it hands a server any workspace its entry names: no server
-            // founds it.
+            // as it hands every server of theirs: no server founds it.
             let primary_state = tempfile::tempdir().unwrap();
             let primary = Server::start(
                 ServerConfig {

@@ -765,3 +765,20 @@ pub async fn enter_key(workspaces: &Workspaces, workspace: &str, key: &DeviceCer
         .await
         .expect("the workspace admits the key");
 }
+
+impl Workspaces {
+    /// Name `workspace`'s person, not a device, as the founder of the copy
+    /// held here: the copy of a Servers workspace an earlier build founded
+    /// alike on each of its person's devices.
+    ///
+    /// # Panics
+    ///
+    /// `workspace` is not held here.
+    pub async fn name_person_as_founder(&self, workspace: &str) {
+        let governed = self
+            .workspace(workspace)
+            .await
+            .expect("the workspace is held here");
+        governed.lock().await.peer.lock().name_person_as_founder();
+    }
+}
