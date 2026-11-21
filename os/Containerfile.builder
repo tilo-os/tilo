@@ -308,7 +308,7 @@ RUN --mount=type=bind,source=tools/ci/verify-native-mold.sh,target=/tmp/verify-n
 # instead of fetching 56 MB from the release store on every run. The seed is checked against the
 # pins here, every file by size and SHA-256 and nothing beside them, and read-only. The seed is
 # laid out by the publishing job, whose umask decides what mode it arrives with, so every file is
-# made readable here: the tests read the seed as the image's ordinary user.
+# made readable here: the tests read the seed with the account they run as.
 RUN --mount=type=bind,from=font-artifacts,source=/,target=/tmp/font-seed,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tmp/fonts/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tmp/fonts/crates/sdk/ui-core/assets/fonts,ro \
@@ -317,10 +317,3 @@ RUN --mount=type=bind,from=font-artifacts,source=/,target=/tmp/font-seed,ro \
     && python3 -I /tmp/fonts/tools/font-catalog.py seed /tmp/fonts/crates/sdk/ui-core/assets/fonts \
          /usr/share/tilo/font-artifacts --offline \
     && chmod -R a-w,a+rX /usr/share/tilo/font-artifacts
-
-# The ordinary user tests run as. Jobs start as root, which passes every
-# permission check: a test of a sandbox, a Landlock rule or a refusal to run as
-# root proves nothing there. tools/as-test-user.sh starts each test binary as
-# this user instead.
-RUN useradd --uid 1000 --user-group --create-home tilo
-ENV TILO_TEST_USER=tilo

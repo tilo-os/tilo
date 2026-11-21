@@ -499,9 +499,13 @@ be `setrlimit` only. On other platforms `spawn` returns `Unsupported` today.
 
 `crates/platform/tilo-sandbox/tests/job/` needs a Linux host where unprivileged
 user namespaces (or root) are available. Elsewhere every test prints why it
-skipped. Limits tests also need a delegated cgroup; quota tests need
-`JOB_SANDBOX_TEST_XFS` pointing at a directory on an XFS filesystem mounted with
-`prjquota`. Run them where the kernel can, for example in a throwaway pod.
+skipped. Tilo's CI runs the tests that take root, the limits tests and the
+helpers test, as the `sandbox-limits` t check: a micro-VM step, where the
+guest's root has its capabilities and its cgroup root's controllers can be
+delegated. The other limits tests take a delegated cgroup, not root, and run
+as any user. Quota tests need `JOB_SANDBOX_TEST_XFS` pointing at a directory on
+an XFS filesystem mounted with `prjquota`, which the check does not do; run one
+where the kernel can, for example in a throwaway pod.
 
 - isolation: a job can't see a neighbour's processes or files, can't reach a
   server on the host's loopback, and can read `/proc/<pid>/environ` only of

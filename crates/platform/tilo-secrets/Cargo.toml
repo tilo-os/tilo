@@ -12,12 +12,6 @@ homepage.workspace = true
 name = "tilo_secrets"
 path = "src/lib.rs"
 
-[features]
-# Requires a fresh private no-network native container; never the host session bus.
-native-goa-qualification = []
-# Actual selected OSCrypt reader on a fresh private owner bus only.
-native-chromium-qualification = []
-
 [dependencies]
 # Desktop backends block on IPC; the async API runs them on the app runtime's
 # blocking pool.

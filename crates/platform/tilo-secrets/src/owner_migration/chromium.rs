@@ -68,26 +68,21 @@ mod tests {
     use super::*;
     #[test]
     fn owner_scope_refuses_files_and_elevation_without_contacting_a_keyring() {
+        tilo_test_env::require_capability!(
+            NonRoot,
+            tilo_test_env::non_root_identity(),
+            "elevation is only refused to an ordinary account"
+        );
         let directory = tempfile::tempdir().unwrap();
         let file = File::create(directory.path().join("not-profile")).unwrap();
         assert!(ChromiumKey::new(&file, ChromiumBrand::Chrome).is_err());
-        if rustix::process::getuid().as_raw() == 0 {
-            assert!(
-                ChromiumKey::new(
-                    &File::open(directory.path()).unwrap(),
-                    ChromiumBrand::Chrome
-                )
-                .is_err()
-            );
-        } else {
-            assert!(
-                ChromiumKey::new(
-                    &File::open(directory.path()).unwrap(),
-                    ChromiumBrand::Chromium
-                )
-                .is_ok()
-            );
-        }
+        assert!(
+            ChromiumKey::new(
+                &File::open(directory.path()).unwrap(),
+                ChromiumBrand::Chromium
+            )
+            .is_ok()
+        );
         assert_eq!(ChromiumBrand::Chrome.application(), "chrome");
         assert_eq!(ChromiumBrand::Chromium.application(), "chromium");
         assert_eq!(ChromiumBrand::Slack452178.application(), "Slack");

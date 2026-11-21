@@ -380,9 +380,11 @@ mod tests {
 
         phase unreadable_state_reports_the_operating_system_error;
         {
-            if rustix::process::geteuid().is_root() {
-                return; // root reads a mode-000 file regardless
-            }
+            tilo_test_env::require_capability!(
+                NonRoot,
+                tilo_test_env::non_root_identity(),
+                "a mode-000 state file is only unreadable to an ordinary account"
+            );
             let fixture = Fixture::new();
             Fixture::write(&fixture.state(), READY, 0o000);
             let summary: Value = serde_json::from_str(&fixture.summary()).expect("JSON");

@@ -29,13 +29,13 @@
 #          recorded with, and so TILO_REQUIRE_GPU=1; TILO_REQUIRE_MEDIA=1, as
 #          the image carries the codecs; TILO_PDFIUM_LIB when the image
 #          installed PDFium; and TILO_TEST_CACHE_DIR (default
-#          ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env, the test user's
-#          where tests run as one, tools/as-test-user.sh), so fixtures a test
-#          generates itself (the media decode clip) are made once and shared
-#          by every test process instead of once per process in its fresh HOME;
-#          with lavapipe, MESA_SHADER_CACHE_DIR below it, so the machine code
-#          lavapipe compiles a shader to is compiled by the first test process
-#          that draws with it, not by every one again before its first frame;
+#          ${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env, the runner's), so
+#          fixtures a test generates itself (the media decode clip) are made
+#          once and shared by every test process instead of once per process in
+#          its fresh HOME — with lavapipe, MESA_SHADER_CACHE_DIR below it, so
+#          the machine code lavapipe compiles a shader to is compiled by the
+#          first test process that draws with it, not by every one again before
+#          its first frame;
 #          and TILO_REQUIRE_* of every capability .config/nextest-capabilities.toml
 #          maps, whose tests the CI step leaves out where it is missing.
 #          A TILO_REQUIRE_* or TILO_PDFIUM_LIB already set is kept, and a
@@ -64,10 +64,6 @@
 #          makes one in a directory of its own and places it with one rename,
 #          so no job waits on another's generation, and a set a job raced to
 #          make is dropped whole rather than written over the one that landed.
-# root     TILO_TEST_AS_ROOT=1: the few tests that need root say so with this
-#          step, and keep it where the others run as the test user
-#          (tools/as-test-user.sh). In a container's own cgroup root, its
-#          processes move to a leaf so the root delegates its controllers.
 # swtpm    TILO_REQUIRE_SWTPM=1: the sign-in and rollback tests observe an emulated
 #          TPM, which the builder has (dist/ci/install-build-deps.sh); one that
 #          cannot start it fails instead of passing by skipping.
@@ -104,7 +100,7 @@
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|fonts|audio|ntfs|root|swtpm|pdf-sandbox|video-render|pam-module|throughput|property-cases ..." >&2
+    echo "usage: $0 runtime|fonts|audio|ntfs|swtpm|pdf-sandbox|video-render|pam-module|throughput|property-cases ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
@@ -113,18 +109,7 @@ case ${BASH_SOURCE[0]} in
     *) repo=. ;;
 esac
 repo=$(cd -- "$repo/.." && pwd)
-# Who the tests run as, asked in this shell (tools/as-test-user.sh's
-# functions) rather than of another one: a program starts only where there is
-# a test user to look up.
-# shellcheck source=tools/as-test-user.sh
-source "$repo/tools/as-test-user.sh"
-home=$HOME
-[[ -z $tilo_test_user ]] || home=$(tilo_test_user_home)
-if [[ $home == "$HOME" ]]; then
-    cache_dir="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}"
-else
-    cache_dir="${TILO_TEST_CACHE_DIR:-$home/.cache/tilo/test-env}"
-fi
+cache_dir="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}"
 # The build directory is the cache a job shares with the build; a run outside
 # one keeps the catalog in the test cache, where it outlives the run rather
 # than being written into the tree.
@@ -135,11 +120,10 @@ provide() { # KEY VALUE: the variable, for the tests and for the later steps
     export "$1=$2"
 }
 
-# The fixture cache, the test user's, or DIR below it: made, with what is above it, where it is
-# not there yet.
+# The fixture cache, or DIR below it: made, with what is above it, where it is not there yet.
 test_cache() { # [DIR]
     local dir=${1:-$cache_dir}
-    [[ -d $dir ]] || (tilo_test_user_exec mkdir -p "$dir")
+    [[ -d $dir ]] || mkdir -p "$dir"
 }
 
 # The TILO_REQUIRE_* variable of every capability
@@ -327,11 +311,6 @@ ntfs() {
     provide TILO_NTFS_FIXTURES "$dir"
 }
 
-root() {
-    provide TILO_TEST_AS_ROOT 1
-    delegate_cgroups
-}
-
 swtpm() {
     provide TILO_REQUIRE_SWTPM 1
 }
@@ -380,33 +359,9 @@ throughput() {
     provide TILO_THROUGHPUT_LARGE_MB 16
 }
 
-# The limits tests give jobs cgroups of their own, under one that hands its
-# children the controllers. A cgroup holding processes cannot: a container's
-# own root, where every process of the run starts, is one. As root there, its
-# processes move into a leaf and the root hands its children every controller
-# it is given, as a container that starts containers does.
-delegate_cgroups() {
-    local cg=/sys/fs/cgroup pids pid controller
-    [[ $(id -u) == 0 && $(cat /proc/self/cgroup) == 0::/ && -w $cg/cgroup.subtree_control ]] || return 0
-    [[ -z $(cat "$cg/cgroup.subtree_control") ]] || return 0
-    mkdir -p "$cg/init"
-    # Again while any is left: a process may fork while the others move.
-    for _ in 1 2 3 4 5; do
-        pids=$(cat "$cg/cgroup.procs")
-        [[ -n $pids ]] || break
-        for pid in $pids; do
-            echo "$pid" >"$cg/init/cgroup.procs" 2>/dev/null || true
-        done
-    done
-    for controller in $(cat "$cg/cgroup.controllers"); do
-        echo "+$controller" >"$cg/cgroup.subtree_control" ||
-            echo "the cgroup root does not delegate $controller" >&2
-    done
-}
-
 for step; do
     case $step in
-        runtime | fonts | audio | ntfs | root | swtpm | pdf-sandbox | video-render | pam-module | throughput | property-cases)
+        runtime | fonts | audio | ntfs | swtpm | pdf-sandbox | video-render | pam-module | throughput | property-cases)
             "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac

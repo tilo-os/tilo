@@ -35,6 +35,18 @@ fn built_once(cell: &'static OnceLock<PathBuf>, name: &str, edition: &str) -> &'
     cell.get_or_init(|| build_payload(name, edition))
 }
 
+/// A payload root built before the test started, for a run whose sources are read-only. The micro-VM
+/// check `launcher-root` builds the fixture in a job and names the directory here, since the guest
+/// runs the test from sources it cannot write the build into. Every other run compiles it as
+/// [`build_payload`] does, in the target directory the test was built in.
+fn prepared_payload(name: &str) -> Option<PathBuf> {
+    let variable = format!(
+        "TILO_LAUNCHER_FIXTURE_{}",
+        name.replace('-', "_").to_uppercase()
+    );
+    std::env::var_os(variable).map(PathBuf::from)
+}
+
 /// `bwrap`, resolved on `PATH` rather than at a fixed path, since the distro decides where it lives.
 pub fn bwrap() -> PathBuf {
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -98,9 +110,18 @@ pub fn isolated_options(data_home: &Path) -> LaunchOptions {
     }
 }
 
-/// Compile `tests/fixtures/<name>/src/main.rs` with `rustc` into a payload root under
-/// `CARGO_TARGET_TMPDIR`, once per source revision.
+/// `tests/fixtures/<name>/src/main.rs`, compiled with `rustc` into a payload root under
+/// `CARGO_TARGET_TMPDIR`, once per source revision, unless the run prepared one already.
 fn build_payload(name: &str, edition: &str) -> PathBuf {
+    if let Some(payload) = prepared_payload(name) {
+        let binary = payload.join("bin").join(name);
+        assert!(
+            binary.is_file(),
+            "the prepared {name} fixture is missing: no {}",
+            binary.display()
+        );
+        return payload;
+    }
     let src = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name)

@@ -202,6 +202,3 @@ pub(crate) fn read_chromium(
         result
     })
 }
-
-#[cfg(all(test, feature = "native-chromium-qualification"))]
-mod native_process;

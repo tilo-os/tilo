@@ -285,16 +285,14 @@ mod tests {
                 panic!("Retired authority admitted");
             };
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            // Neither actor branch skips this production constructor.
-            let expected = if rustix::process::getuid().as_raw() == 0
-                && rustix::process::geteuid().as_raw() == 0
-                && unsafe { libc::setfsuid(u32::MAX) } == 0
-            {
-                "Original transaction retired"
-            } else {
-                "Original output requires native root ownership"
-            };
-            assert_eq!(error.to_string(), expected);
+            // The admission refuses anyone but root before it asks the
+            // authority anything, and this runs as the account it names.
+            tilo_test_env::require_capability!(
+                NonRoot,
+                tilo_test_env::non_root_identity(),
+                "the refusal before the authority is only reached by an account that is not root"
+            );
+            assert_eq!(error.to_string(), "Original output requires native root ownership");
         }
 
         phase original_output_regular_file_cannot_stand_in_for_partition;

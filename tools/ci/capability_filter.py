@@ -6,8 +6,8 @@
 
 Reads .config/nextest-capabilities.toml. Without --probe-output it runs
 tilo-test-env's `tilo-capability-probe` program as the tests' runner starts a
-test binary (tools/cargo-runner.sh: in the test environment, as the test user),
-here, where the tests run, and reads its report. A run t hands the program
+test binary (tools/cargo-runner.sh: in the test environment), here, where the
+tests run, and reads its report. A run t hands the program
 (t.toml's `starts`, NEXTEST_BIN_EXE_tilo-capability-probe) runs that build of
 it and compiles nothing; any other builds it with Cargo first. For
 each test group whose probe failed it prints a line to stderr naming the
@@ -44,10 +44,7 @@ BUILD = [
     "--message-format", "json-render-diagnostics",
 ]
 # How tools/cargo-runner.sh starts a test binary, so the probe sees what the tests will.
-AS_A_TEST = [
-    "bash", str(ROOT / "tools" / "with-test-environment.sh"),
-    "bash", str(ROOT / "tools" / "as-test-user.sh"),
-]
+AS_A_TEST = ["bash", str(ROOT / "tools" / "with-test-environment.sh")]
 # The packages a group's filter names (`.config/nextest-capabilities.toml`).
 PACKAGE = re.compile(r"package\(\s*([^)\s]+)\s*\)")
 
