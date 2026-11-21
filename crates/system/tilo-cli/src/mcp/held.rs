@@ -635,7 +635,7 @@ async fn serve_held<E: Enter>(
     let (count, mut live) = tokio::sync::watch::channel(0_usize);
     let count = Arc::new(count);
     let mut accepting = accepting(listener, Arc::clone(&shared), Arc::clone(&count))?;
-    let mut ended = ending()?;
+    let mut ended = ending(STOPPED_WITHIN)?;
     let mut login = tokio::time::interval(LOGIN_LOOK);
     // Whether the login this holder serves was replaced: a holder on its way out then unmounts
     // nothing, since the holder of the new login shows the folders again.
@@ -953,13 +953,29 @@ fn serve_api<E: Enter>(place: &Place, shared: &Arc<Shared<E>>) -> Result<()> {
     Ok(())
 }
 
+/// How long a holder told to stop takes at most to end: every wait of its stop together (the
+/// folders and trees, the session closing, the runtime's threads, the stores closing). Less than
+/// the user service gives a stop, so the service never has to kill it.
+const STOPPED_WITHIN: Duration = STOPPING
+    .saturating_add(super::CLOSING)
+    .saturating_add(SHUTDOWN)
+    .saturating_add(RELEASING)
+    .saturating_add(SHUTDOWN);
+
 /// What ends a holder from outside: the user service stopping it, or a
 /// person's Ctrl-C.
 ///
 /// The signals are waited for on a thread of their own, with a runtime of its own: the holder's
 /// two workers may both be inside a step that walks a whole folder tree, and a stop that waited
-/// for a free worker was heard only once that step ended.
-fn ending() -> Result<tokio::sync::mpsc::UnboundedReceiver<&'static str>> {
+/// for a free worker was heard only once that step ended. The stop itself runs on those workers
+/// (the folders unmount, the trees are kept, the session closes), so a holder whose workers do
+/// not take it up ends from this thread once `within` went by: a signal always ends
+/// the holder, and its folders' changes are on disk, as a kill would leave them.
+#[expect(
+    clippy::exit,
+    reason = "a holder told to stop whose workers do not take the stop up cannot end through them"
+)]
+fn ending(within: Duration) -> Result<tokio::sync::mpsc::UnboundedReceiver<&'static str>> {
     use tokio::signal::unix::{SignalKind, signal};
     let (said, ended) = tokio::sync::mpsc::unbounded_channel();
     std::thread::Builder::new()
@@ -996,6 +1012,14 @@ fn ending() -> Result<tokio::sync::mpsc::UnboundedReceiver<&'static str>> {
                 drop(signalled);
                 if let Some(name) = heard.recv().await {
                     let _ = said.send(name);
+                    tokio::time::sleep(within).await;
+                    tracing::error!(
+                        signal = name,
+                        "this holder ends: it was told to stop ({name}) {}s ago and its stop did \
+                         not finish, so its workers never took it up",
+                        within.as_secs()
+                    );
+                    std::process::exit(1);
                 }
             });
         })?;
@@ -1459,11 +1483,59 @@ mod tests {
     /// stopped while a bulk write is under way exits rather than being killed.
     #[test]
     fn a_stop_ends_inside_the_services_timeout() {
-        let waits = STOPPING + crate::mcp::CLOSING + SHUTDOWN + RELEASING + SHUTDOWN;
         assert!(
-            waits < crate::service::STOP_TIMEOUT,
-            "a stop's waits add up to {waits:?}, past the unit's {:?}",
+            STOPPED_WITHIN < crate::service::STOP_TIMEOUT,
+            "a stop's waits add up to {STOPPED_WITHIN:?}, past the unit's {:?}",
             crate::service::STOP_TIMEOUT
+        );
+    }
+
+    /// Set in the child of [`a_stop_ends_a_holder_whose_workers_never_take_it_up`].
+    const CHILD_STOPPED: &str = "TILO_TEST_HOLDER_STOPPED";
+    /// How long that child's stop may take.
+    const CHILD_STOPPED_WITHIN: Duration = Duration::from_secs(1);
+
+    /// The body of [`a_stop_ends_a_holder_whose_workers_never_take_it_up`]'s child, and a no-op in
+    /// every other run: a holder told to stop whose workers never read that it was.
+    #[test]
+    fn a_child_is_stopped_with_busy_workers() {
+        if std::env::var_os(CHILD_STOPPED).is_none() {
+            return;
+        }
+        let _ended = ending(CHILD_STOPPED_WITHIN).unwrap();
+        // The signal thread's handlers are in place well before this: a SIGTERM before them
+        // would end the child by the signal, which the parent tells apart.
+        std::thread::sleep(Duration::from_millis(500));
+        rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)
+            .unwrap();
+        // Workers that never take the stop up: the receiver is never read.
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    /// A holder told to stop ends however busy its workers are: the stop runs on them, and one
+    /// they never take up still ends the process once a stop's waits went by, as a holder busy
+    /// re-reading its folder's tree once ignored SIGTERM until it was killed.
+    #[test]
+    fn a_stop_ends_a_holder_whose_workers_never_take_it_up() {
+        let module = module_path!();
+        let name = format!(
+            "{}::a_child_is_stopped_with_busy_workers",
+            module.split_once("::").map_or(module, |(_, within)| within)
+        );
+        let started = Instant::now();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture", "--test-threads", "1"])
+            .env(CHILD_STOPPED, "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status_locked()
+            .unwrap();
+        let took = started.elapsed();
+        assert_eq!(status.code(), Some(1), "the stopped child ended as {status}");
+        assert!(
+            took < Duration::from_secs(30),
+            "the stopped child ended only after {} s",
+            took.as_secs()
         );
     }
 
