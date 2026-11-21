@@ -1,0 +1,315 @@
+//! The chooser service on its own socket, reached the way an app reaches it: the launcher's
+//! handshake written first, then the app's own client (`tilo_dialogs::shell`).
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tilo_app_launch::Launch;
+use tilo_dialogs::portal::{ContentsOutcome, LaunchOutcome, LaunchRequest, PickRequest, PortalOutcome};
+use tilo_dialogs::shell::ShellLink;
+
+use super::{Opens, Served, Serving, serve_at};
+
+const APP: &str = "so.tilo.settings";
+const WORKSPACE: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
+
+fn answer() -> Duration {
+    tilo_test_env::hang_bound()
+}
+
+/// The session's apps as the loop opens with them: the link routing the shell's search uses, over
+/// a device whose Browser claims web links, recording what it would start.
+#[derive(Default)]
+struct Device {
+    started: Mutex<Vec<(String, Launch)>>,
+}
+
+impl Opens for Device {
+    fn open_claimed(&self, workspace: &str, uri: &str) -> Result<Option<()>, tilo_actions::ApiError> {
+        let browser = desktop_policy::AppCandidate::package(
+            "so.tilo.browser".into(),
+            "Browser".into(),
+            &[],
+            &[],
+            &["http".into(), "https".into()],
+            false,
+        );
+        let personal = desktop_policy::PersonalDefaults::default();
+        let defaults = tilo_app_launch::routing::Defaults {
+            person: "ada",
+            personal: &personal,
+            workspace: None,
+            host: None,
+        };
+        Ok(
+            tilo_app_launch::routing::link(uri, &[browser], &defaults).map(|launch| {
+                self.started
+                    .lock()
+                    .unwrap()
+                    .push((workspace.to_owned(), launch));
+            }),
+        )
+    }
+}
+
+/// Turn the session's loop over `device` until `done` holds.
+fn loop_until(served: &Served, device: &Device, done: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now().checked_add(answer()).unwrap();
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "the loop was never asked");
+        served.follow(device);
+        std::thread::yield_now();
+    }
+}
+
+/// The question the chooser put up, as the session's sheet finds it.
+fn pending(questions: &tilo_service::Questions) -> tilo_service::Question {
+    let deadline = std::time::Instant::now().checked_add(answer()).unwrap();
+    loop {
+        if let Some(question) = questions.pending().into_iter().next() {
+            return question;
+        }
+        assert!(std::time::Instant::now() < deadline, "no question was asked");
+        std::thread::yield_now();
+    }
+}
+
+/// An app's connection as its launcher hands it over: connected, and named by the launcher.
+fn app_connection(socket: &std::path::Path, app: &str) -> ShellLink {
+    use std::io::Write as _;
+
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream
+        .write_all(&launcher::services::chooser_handshake(app, WORKSPACE).unwrap())
+        .unwrap();
+    ShellLink::connect(stream).unwrap()
+}
+
+/// A session serving the chooser on a socket of its own, and an app connected to it as its
+/// launcher connects one: the app runs sandboxed, with the documents store bound in.
+struct Rig {
+    directory: tempfile::TempDir,
+    socket: std::path::PathBuf,
+    questions: tilo_service::Questions,
+    documents: tilo_documents::Documents,
+    served: Served,
+    device: Device,
+    link: ShellLink,
+}
+
+fn rig() -> Rig {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("chooser");
+    let questions = tilo_service::Questions::new();
+    let documents = tilo_documents::Documents::new();
+    let launches = Arc::new(crate::Launches::default());
+    // This test's process is the app's launch, in a sandbox with the documents store bound in.
+    launches.started(std::process::id(), APP, WORKSPACE, true);
+    let served = serve_at(
+        &socket,
+        Serving {
+            questions: Some(questions.clone()),
+            documents: Some(documents.clone()),
+            launches,
+            wake: Arc::new(|| {}),
+        },
+    )
+    .unwrap();
+    let link = app_connection(&socket, APP);
+    Rig {
+        directory,
+        socket,
+        questions,
+        documents,
+        served,
+        device: Device::default(),
+        link,
+    }
+}
+
+#[test]
+fn a_link_opens_in_the_app_that_claims_it_and_one_nothing_claims_goes_back() {
+    let Rig {
+        served,
+        device,
+        link,
+        directory: _directory,
+        ..
+    } = rig();
+
+    let elsewhere = Arc::new(Elsewhere::default());
+    let opener = link.opener(Arc::clone(&elsewhere) as Arc<dyn tilo_dialogs::UriOpener>);
+    let login = "https://cloud.example.test/login/v2/flow/abc";
+    let asking = std::thread::spawn({
+        let opener = Arc::clone(&opener);
+        move || opener.open(login)
+    });
+    loop_until(&served, &device, || asking.is_finished());
+    asking.join().unwrap().unwrap();
+    assert_eq!(
+        *device.started.lock().unwrap(),
+        [(
+            WORKSPACE.to_owned(),
+            Launch::Package {
+                app: "so.tilo.browser".into(),
+                open: Some(tilo_app_launch::Open::Uri(login.into())),
+            }
+        )],
+        "the Browser starts on the login page, in the workspace the launcher named"
+    );
+    assert!(elsewhere.0.lock().unwrap().is_empty());
+
+    // A link nothing here takes goes back to the app, which hands it to its desktop.
+    let asking = std::thread::spawn({
+        let opener = Arc::clone(&opener);
+        move || opener.open("mailto:ada@example.test")
+    });
+    loop_until(&served, &device, || asking.is_finished());
+    asking.join().unwrap().unwrap();
+    assert_eq!(*elsewhere.0.lock().unwrap(), ["mailto:ada@example.test"]);
+}
+
+#[test]
+fn a_pick_is_the_sessions_question_and_answers_the_exported_path() {
+    let Rig {
+        directory,
+        questions,
+        documents,
+        served,
+        device,
+        link,
+        ..
+    } = rig();
+
+    let chosen = directory.path().join("plan.txt");
+    std::fs::write(&chosen, "Spring planting").unwrap();
+    let picker = link.picker(tilo_dialogs::unavailable_picker());
+    let picking = picker.pick(PickRequest::open("Import a plan", "Import"));
+    let question = pending(&questions);
+    assert_eq!(question.kind, tilo_portal::file_chooser::FILE_CHOOSER_QUESTION);
+    assert_eq!(question.app_id.as_deref(), Some(APP), "the launcher's name, not the app's");
+    assert_eq!(question.details["title"], "Import a plan");
+    assert!(questions.answer(
+        &question.handle,
+        tilo_service::Answer {
+            uris: vec![url::Url::from_file_path(&chosen).unwrap().to_string()],
+            ..tilo_service::Answer::default()
+        }
+    ));
+    let PortalOutcome::Opened(path) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the pick answered nothing");
+    };
+    let (token, _) = tilo_documents::split_sandbox_path(&path)
+        .expect("a sandboxed app is answered a path in its view of the documents store");
+    let key = tilo_documents::AppKey::new(WORKSPACE, APP).unwrap();
+    assert_eq!(
+        documents.document(&key, &token).unwrap().host,
+        chosen.canonicalize().unwrap()
+    );
+
+    // The file it was given opens in the app that takes it; one it was not given does not.
+    let opening = std::thread::spawn({
+        let picker = Arc::clone(&picker);
+        move || picker.launch(LaunchRequest::open(path)).recv_timeout(answer())
+    });
+    loop_until(&served, &device, || opening.is_finished());
+    assert_eq!(
+        opening.join().unwrap().unwrap(),
+        LaunchOutcome::Failed(super::NOTHING_OPENS.into()),
+        "the device here has no app for text files, so the open reached the routing"
+    );
+    assert_eq!(
+        picker
+            .launch(LaunchRequest::open("/etc/passwd"))
+            .recv_timeout(answer())
+            .unwrap(),
+        LaunchOutcome::Failed(super::NOT_CHOSEN.into())
+    );
+}
+
+#[test]
+fn a_choice_of_contents_is_only_the_bytes_the_person_chose() {
+    let Rig {
+        directory,
+        questions,
+        link,
+        ..
+    } = rig();
+
+    // Past one chunk, so the app reads it in several.
+    let markdown = "# Lisbon in May\n".repeat(1500);
+    let chosen = directory.path().join("Lisbon.md");
+    std::fs::write(&chosen, &markdown).unwrap();
+    let picker = link.picker(tilo_dialogs::unavailable_picker());
+    let picking = picker.pick_contents(PickRequest::open("Import Markdown", "Import"));
+    let question = pending(&questions);
+    assert_eq!(question.app_id.as_deref(), Some(APP));
+    assert!(questions.answer(
+        &question.handle,
+        tilo_service::Answer {
+            uris: vec![url::Url::from_file_path(&chosen).unwrap().to_string()],
+            ..tilo_service::Answer::default()
+        }
+    ));
+    let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the app was not given the file");
+    };
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].name, "Lisbon.md");
+    assert_eq!(files[0].bytes, markdown.as_bytes());
+    assert_eq!(files[0].location, None, "the app never learns where the file is");
+}
+
+#[test]
+fn a_cancelled_pick_and_an_unserved_chooser_answer_the_app() {
+    let Rig {
+        questions,
+        link,
+        directory: _directory,
+        ..
+    } = rig();
+
+    let picker = link.picker(tilo_dialogs::unavailable_picker());
+    let picking = picker.pick(PickRequest::open("Open", "Open"));
+    let handle = pending(&questions).handle;
+    assert!(questions.decline(&handle));
+    assert_eq!(picking.recv_timeout(answer()).unwrap(), PortalOutcome::Cancelled);
+
+    let (chosen_tx, chosen) = std::sync::mpsc::channel();
+    link.choose_app("Paste in apps", move |outcome| {
+        let _ = chosen_tx.send(outcome);
+    });
+    assert_eq!(
+        chosen.recv_timeout(answer()).unwrap(),
+        Err(super::NO_APP_CHOOSER.to_owned())
+    );
+}
+
+#[test]
+fn a_connection_the_launcher_did_not_name_is_closed() {
+    use std::io::{Read as _, Write as _};
+
+    let Rig {
+        socket,
+        directory: _directory,
+        ..
+    } = rig();
+    let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    stream
+        .write_all(b"{\"type\":\"open_uri\",\"id\":1,\"uri\":\"https://example.test/\"}\n")
+        .unwrap();
+    stream.set_read_timeout(Some(answer())).unwrap();
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).unwrap();
+    assert!(rest.is_empty(), "nothing is answered to a connection no launcher named");
+}
+
+#[derive(Default)]
+struct Elsewhere(Mutex<Vec<String>>);
+
+impl tilo_dialogs::UriOpener for Elsewhere {
+    fn open(&self, uri: &str) -> std::io::Result<()> {
+        self.0.lock().unwrap().push(uri.to_owned());
+        Ok(())
+    }
+}

@@ -2394,6 +2394,32 @@ impl AppActions for Apps {
     /// Open `uri` in the app that takes it: the app this workspace's defaults, the person's own or
     /// this machine's open a file with, or the app that claims the scheme of a link.
     fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), ApiError> {
+        self.open_claimed(workspace, uri)?
+            .ok_or_else(|| ApiError::Failed(format!("nothing on this device opens {uri}")))
+    }
+
+    fn start_host_app(&self, desktop_id: &str) -> Result<(), ApiError> {
+        // One of the machine's own apps runs unconfined, so it is launched into no workspace: it is
+        // told nothing of Tilo's authority.
+        self.start(
+            &Launch::Host {
+                desktop_id: desktop_id.to_owned(),
+                open: None,
+            },
+            &Workspace::under(&runtime_dir(), String::new()),
+        )
+    }
+}
+
+impl Apps {
+    /// Open `uri` in `workspace` in the app that takes it, as [`AppActions::open_uri`] does: the
+    /// app this workspace's defaults, the person's own or this machine's open a file with, or the
+    /// app that claims the scheme of a link. `None` when nothing here takes it, which an app asking
+    /// is told so it can hand the link on.
+    ///
+    /// # Errors
+    /// The app that takes it did not start, or was not reached.
+    pub(crate) fn open_claimed(&self, workspace: &str, uri: &str) -> Result<Option<()>, ApiError> {
         let person = self.state.borrow().person.clone();
         let shell = self
             .desktop
@@ -2411,27 +2437,17 @@ impl AppActions for Apps {
             .into_iter()
             .next(),
             None => crate::documents::opener(shell.as_ref(), workspace, &person, uri),
-        }
-        .ok_or_else(|| ApiError::Failed(format!("nothing on this device opens {uri}")))?;
+        };
+        let Some(launch) = launch else {
+            return Ok(None);
+        };
         // A Tilo app shows a link through its `open-link`, in the window it has or one the
         // delivery starts: the same action the page hands a link to.
         if let Some((target, arguments)) = crate::documents::link_delivery(workspace, &launch) {
-            return self.deliver(target, arguments, workspace);
+            return self.deliver(target, arguments, workspace).map(Some);
         }
         let workspace = self.workspace_named(workspace);
-        self.start(&launch, &workspace)
-    }
-
-    fn start_host_app(&self, desktop_id: &str) -> Result<(), ApiError> {
-        // One of the machine's own apps runs unconfined, so it is launched into no workspace: it is
-        // told nothing of Tilo's authority.
-        self.start(
-            &Launch::Host {
-                desktop_id: desktop_id.to_owned(),
-                open: None,
-            },
-            &Workspace::under(&runtime_dir(), String::new()),
-        )
+        self.start(&launch, &workspace).map(Some)
     }
 }
 

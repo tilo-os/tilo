@@ -1311,6 +1311,12 @@ impl Session {
             tools: Some(tools),
             wake: options.wake.handle(),
             windows: crate::windows_compat::serving(&mut options),
+            documents: options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.documents())
+                .cloned(),
+            launches: Some(std::sync::Arc::clone(&options.launches)),
         });
         tilo_startup_metrics::mark("published-done");
         // The control API `tilo-control` reaches: the development socket and the device admin's,
@@ -2660,6 +2666,13 @@ impl Session {
                     .map(|drives| drives.live())
                     .unwrap_or_default();
                 self.shared.follow_tools(tools, media);
+            }
+            // The links and files the apps asked to open, opened where the shell's own search
+            // opens one.
+            if let (Some(chooser), Some(launch)) =
+                (self.shared.table.chooser(), &self.shared.launch)
+            {
+                chooser.follow(&**launch);
             }
             // The windows this device left open, one at a time, each into the
             // tab it was in.

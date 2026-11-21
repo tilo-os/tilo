@@ -46,8 +46,7 @@ use crate::tools;
 
 mod accounts;
 pub(crate) mod app_wire;
-#[cfg(unix)]
-mod chooser;
+pub(crate) mod chooser;
 
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +95,8 @@ pub(crate) enum Service {
     /// The connections adding an account makes to its servers, made for Settings, whose sandbox
     /// has no network ([`accounts`]).
     Accounts,
-    /// The person's file chooser, on the launcher's socket for it ([`chooser`]).
+    /// The files an app asks the person for, chosen in the session's own file chooser, and the
+    /// links and files it opens, in the app that takes them ([`chooser`]).
     Chooser,
 }
 
@@ -218,9 +218,8 @@ pub(crate) struct Served {
     windows: Option<crate::windows_compat::Served>,
     /// The connections to accounts' servers, made for Settings.
     accounts: Option<accounts::Served>,
-    /// The person's file chooser, which every app asks on the launcher's socket for it.
-    #[cfg(unix)]
-    chooser: Option<chooser::Chooser>,
+    /// The files apps ask the person for, and the links and files they open.
+    chooser: Option<chooser::Served>,
 }
 
 /// What a session serves its services with.
@@ -249,6 +248,10 @@ pub(crate) struct Serving {
     pub wake: tilo_service::Wake,
     /// What the Windows compatibility service is served with, for a session that starts apps.
     pub windows: Option<crate::windows_compat::Serving>,
+    /// The files people choose for apps, while the session serves them to its sandboxes.
+    pub documents: Option<tilo_documents::Documents>,
+    /// The apps this session started, for a session that starts apps.
+    pub launches: Option<Arc<crate::Launches>>,
 }
 
 /// Start every service of [`TABLE`] this module owns, and keep what serves them for as long as the
@@ -292,18 +295,6 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                 served.system_info =
                     system_info(serving.questions.clone(), serving.consents.take());
             }
-            Service::Chooser => {
-                // The person answers a file pick in the session's own chooser sheet, as they
-                // answer the portal's: one sheet, whether an app reached it through the portal or
-                // through the shell's socket.
-                #[cfg(unix)]
-                if let Some(questions) = serving.questions.clone() {
-                    match chooser::serve(questions) {
-                        Ok(chooser) => served.chooser = Some(chooser),
-                        Err(error) => tracing::warn!(%error, "the file chooser is unavailable"),
-                    }
-                }
-            }
             Service::Tools => {
                 served.tools =
                     serving
@@ -327,6 +318,20 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                     )
                     .ok();
             }
+            Service::Chooser => {
+                served.chooser = serving.launches.take().and_then(|launches| {
+                    chooser::serve(chooser::Serving {
+                        questions: serving.questions.clone(),
+                        documents: serving.documents.take(),
+                        launches,
+                        wake: serving.wake.clone(),
+                    })
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "the chooser service is unavailable"),
+                    )
+                    .ok()
+                });
+            }
             Service::DataUsage => {}
         }
     }
@@ -337,6 +342,11 @@ impl Served {
     /// The typed opens an app asks this session for, while it serves them.
     pub(crate) fn tools(&self) -> Option<&tools::Handle> {
         self.tools.as_ref().map(tools::Tools::handle)
+    }
+
+    /// The files and links the apps ask this session for, while it serves them.
+    pub(crate) const fn chooser(&self) -> Option<&chooser::Served> {
+        self.chooser.as_ref()
     }
 
     /// Count what this device's traffic did since the last pass into the person's settings, on the
