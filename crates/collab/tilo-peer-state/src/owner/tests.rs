@@ -261,6 +261,28 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A device owes a workspace nothing until it writes to it, and nothing again once the write is
+/// answered: what its session reads to send nothing, without judging the device's standing.
+#[test]
+fn a_device_owes_a_workspace_nothing_until_it_writes_and_once_it_is_answered() {
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    assert!(owner.owes_nothing(workspace).unwrap(), "a device that only entered");
+    owner.commit_document(edit(owner, workspace, now), now).unwrap();
+    assert!(!owner.owes_nothing(workspace).unwrap(), "its write waits");
+    let written = owner
+        .with_outgoing(workspace, now, |_, outgoing| Ok(outgoing.queued().last()))
+        .unwrap()
+        .unwrap();
+    owner
+        .retire_answered(
+            workspace,
+            &BTreeMap::from([(written, HostAnswer::Durable(1))]),
+        )
+        .unwrap();
+    assert!(owner.owes_nothing(workspace).unwrap(), "its write was answered");
+}
+
 tilo_test_env::scenario! {
     fn a_local_write_is_committed_durably_or_not_at_all;
 

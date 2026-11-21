@@ -1755,6 +1755,22 @@ impl NativeWorkspaceOwner {
         self.0.verified.lock().insert(workspace, verified);
         result
     }
+    /// Whether this device owes `workspace` nothing: its outgoing ownership holds no write and no
+    /// governance entry, sendable or waiting. Read without judging the device's permissions, which
+    /// only a write that goes needs: a device that entered a workspace and wrote nothing to it
+    /// may not be on its roster yet, and has nothing to be judged for.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or its ownership is missing.
+    pub fn owes_nothing(&self, workspace: WorkspaceId) -> Result<bool, String> {
+        self.with_current(workspace, |view| {
+            let publication = state(view)?;
+            Ok(publication.governance.is_empty()
+                && publication.entries.is_empty()
+                && publication.tail.is_empty()
+                && publication.spilled.iter().all(|run| run.taken >= run.writes))
+        })
+    }
     /// How many of this device's committed writes to `workspace` are still in
     /// its outgoing ownership: not yet admitted by the workspace's governor.
     pub fn unadmitted_writes(&self, workspace: WorkspaceId) -> Result<usize, String> {

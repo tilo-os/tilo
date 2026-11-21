@@ -472,6 +472,15 @@ impl Sending {
         authorize: impl FnOnce(&tilo_peer_state::owner::NativeCommittedView) -> Result<(), String>,
         send: impl FnMut(Outgoing<'_>) -> bool,
     ) -> Result<bool, String> {
+        // Nothing owed sends nothing, and the device's standing in the workspace is not asked
+        // after: a device that entered and wrote nothing (a key granted a workspace it only reads)
+        // is not on its roster until it writes, and each pass would find it absent again.
+        if owner.owes_nothing(workspace).unwrap_or(false) {
+            self.held = 0;
+            self.sent.clear();
+            self.awaiting_ready.clear();
+            return Ok(true);
+        }
         owner.with_outgoing(workspace, tilo_clock::wall(), |view, outgoing| {
             authorize(view)?;
             let (queued, sendable) = (outgoing.queued().count(), outgoing.entries().count());
@@ -621,6 +630,38 @@ mod tests {
             assert_eq!(sending.answered(&[3; 16]), Some([3; 32]));
             assert_eq!(sending.answered(&[3; 16]), None, "an answer is taken once");
         }
+    }
+
+    /// A device that entered a workspace and wrote nothing to it owes it nothing: each pass sends
+    /// nothing and asks nothing of its standing. A device whose standing does not hold there (a
+    /// key let in that is not on the roster yet) was judged absent again on every pass.
+    #[test]
+    fn a_device_that_owes_a_workspace_nothing_is_not_judged_on_each_pass() {
+        use tilo_peer_state::owner::testing;
+        let (intent, bootstrap, _admission, _governor, now) = testing::raw_fixture();
+        let directory = tempfile::tempdir().unwrap();
+        let owner =
+            tilo_peer_state::owner::open_file(&directory.path().join("joined-workspaces.json"))
+                .unwrap();
+        let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+        owner
+            .install(&testing::finalize(intent, pending, bootstrap).unwrap(), now)
+            .unwrap();
+        let workspace = WorkspaceId::parse(testing::WORKSPACE).unwrap();
+        let mut sending = Sending::default();
+        for _ in 0..2 {
+            assert_eq!(
+                sending.drive(
+                    &owner,
+                    workspace,
+                    |_| Err("its standing does not hold".into()),
+                    |_| panic!("nothing is owed"),
+                ),
+                Ok(true),
+                "nothing owed asks nothing of the device's standing"
+            );
+        }
+        assert_eq!(sending.held(), 0);
     }
 
     #[test]
