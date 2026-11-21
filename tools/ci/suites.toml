@@ -1767,6 +1767,10 @@ reason = "needs a whole tilo.sh stack and a FUSE mount, and the tilo-sh-programs
 check = "peer-handover"
 
 [[unrequired]]
+suite = "os/containers/tilo-sh/test-server-handover.sh"
+reason = "needs the programs and server context of an earlier build, named in its environment (TILO_HANDOVER_FROM_PROGRAMS, TILO_HANDOVER_FROM_LOUNGE), and two whole tilo.sh stacks under bwrap; it is run by hand against the build a workspace is handed over from"
+
+[[unrequired]]
 suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
 reason = "needs a whole tilo.sh stack and a FUSE mount, and minutes for the bulk write and its convergence; the peer-kill-midwrite check brings one up when named"
 check = "peer-kill-midwrite"

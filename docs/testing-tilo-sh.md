@@ -288,3 +288,24 @@ already, so the stack compiles and lays out nothing. With `--images`,
 `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_API` and `TILO_SH_IMAGE_WEB` each take an
 OCI archive or a registry reference; a release candidate's `sha-<commit>`
 images reproduce what is deployed.
+
+## Handing a workspace over from an earlier build
+
+`os/containers/tilo-sh/test-server-handover.sh WORK` hands a workspace over,
+peer to peer, from a server of an earlier build to one of this checkout. It runs
+two stacks here, the earlier one on port base 26500 and this checkout's on 26600.
+The earlier server's owner has it keep a workspace with members and records in
+notes, chat, files and mail. That owner then asks it for `workspace/servers#add`
+with the second server's site. The check reads every record back from the
+second server, writes on each side and reads each write on the other. It then
+lets the earlier server go from the second one (`workspace/servers#remove`) and
+reads the workspace again with the earlier stack stopped. Each step prints PASS
+or FAIL with the error the API answered, and `WORK/steps` keeps what each step
+read.
+
+The earlier build comes from the environment, so the check runs against any
+build: `TILO_HANDOVER_FROM_PROGRAMS` names its programs (its own
+`build-on-builder.sh … programs` stage) and `TILO_HANDOVER_FROM_LOUNGE` its
+server context, laid out by its own `tools/ci/publish/lounge-context.sh` with
+its own font catalog. `TILO_SH_PROGRAMS` and `TILO_SH_FONTS` are this
+checkout's. Neither stack is reached through a relay of the web.
