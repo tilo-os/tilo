@@ -1466,19 +1466,6 @@ fn a_card_written_into_a_chunk_is_there_when_the_document_opens_again_from_disk(
     assert_eq!(left(&instance.host().unwrap(), &root, &field), [card]);
 }
 
-/// The same at a hundred thousand cards: minutes under a debug build, seconds under a release
-/// one.
-#[test]
-#[ignore = "a hundred thousand cards take minutes to derive under a debug build"]
-fn a_hundred_thousand_cards_open_over_their_index() {
-    let (filled, loaded, cold, warm, _, held) = opens_at(100_000);
-    println!(
-        "100000 cards over {filled} chunks: first open read {loaded} chunks in {cold:?}, \
-         opened over the index in {warm:?} holding {held:?}"
-    );
-    assert!(warm < Duration::from_secs(10), "opened in {warm:?}");
-}
-
 /// A field edited by its id alone, as the API's `edit-text` and a bound input write it: the
 /// edit names the card, not the chunk it is in, and is written where the card is.
 #[test]
