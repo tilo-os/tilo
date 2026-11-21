@@ -86,28 +86,38 @@ impl GroupRow {
     /// A window carried here by another of the person's devices was let go: the window of this row
     /// under the pointer takes it, as the window whose bar it was let go over takes a window dragged
     /// on one device. The row hands it to its shell, which moves the place showing that resource.
-    pub(super) fn take_window_drop(&mut self) {
+    ///
+    /// `shows` says whether this surface knows the resource the window carries: one it does not
+    /// know is no window here, and the drop stays on the bus for the shell that draws the windows
+    /// itself.
+    pub fn take_window_drop(&mut self, shows: &dyn Fn(&str) -> bool) {
         if self.group_drag.is_some() {
             return;
         }
-        let Some(landed) = crate::widget::drag_bus::take(DROP, self.rect) else {
+        let Some(landed) = crate::widget::drag_bus::landed() else {
             return;
         };
-        let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
+        let crate::dnd::DragPayload::Custom { kind, blob } = &landed.payload else {
             return;
         };
         if kind != crate::widget::drag_source::RESOURCE_PAYLOAD {
             return;
         }
-        let Ok(resource) = String::from_utf8(blob) else {
+        let Ok(resource) = String::from_utf8(blob.clone()) else {
             return;
         };
+        if !shows(&resource) {
+            return;
+        }
         let Some(into) = self
             .window_under(landed.pointer, None)
             .map(|i| self.groups[i].id)
         else {
             return;
         };
+        if crate::widget::drag_bus::take(DROP, self.rect).is_none() {
+            return;
+        }
         self.carried.landed = Some((into, resource));
     }
 

@@ -1745,6 +1745,12 @@ impl DesktopSurface {
         };
         let mut shared = self.shared.borrow_mut();
         let mut changed = false;
+        // A window let go over one of this strip's windows joins it, as one let go on the device
+        // that carried it: only a resource a window here shows is this surface's to take, so a
+        // drop of a window the shell draws itself stays on the bus for its own target.
+        row.take_window_drop(&|resource| {
+            shared.resources.values().any(|shown| shown == resource)
+        });
         if let Some(payload) = row.take_pending_cross_strip_detach() {
             let down = payload.release_point.y > row.get_rect().y1;
             changed |= window_move::carry_out(&mut shared, strip_id, row, payload, down);

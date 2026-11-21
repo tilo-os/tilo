@@ -152,6 +152,19 @@ pub fn carry_away() {
     }
 }
 
+/// The drop the last drag left, if any, as [`take`] would test it, without taking it: what a
+/// target reads to decide whether the drop is its own before it takes the one landing there is.
+#[must_use]
+pub fn landed() -> Option<Landed> {
+    let origin = origin();
+    LANDED.with(|slot| {
+        slot.borrow().as_ref().map(|landed| Landed {
+            pointer: landed.pointer - origin,
+            ..landed.clone()
+        })
+    })
+}
+
 /// Take the drop `run` takes, if the last drag ended inside its `extent` and came from
 /// somewhere else.
 pub fn take(run: &str, extent: Rect) -> Option<Landed> {

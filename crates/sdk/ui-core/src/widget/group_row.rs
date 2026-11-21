@@ -4172,7 +4172,6 @@ impl Widget for GroupRow {
                 self.prune_closed_groups();
             }
             let now = crate::motion::frame_now();
-            self.take_window_drop();
             self.tick_snap_at(now);
             self.advance_drag_reach(now);
             self.advance_edge_autoscroll(now);
