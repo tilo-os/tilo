@@ -197,6 +197,58 @@ fn an_outline_of_an_item_reads_that_items_view() {
     );
 }
 
+/// The content address of the picture `render` answers with `arguments`.
+fn picture(app: &mut TestApp<PagesApp>, arguments: serde_json::Value) -> Option<String> {
+    let drawn = app.call("render", arguments).ok()??;
+    drawn.get("content")?.as_str().map(str::to_owned)
+}
+
+/// A view asked for an item is read once the item is laid out: its line
+/// stands where the window shows it, and its picture is the one the window
+/// draws of it, not the item before it nor the item at no place.
+#[test]
+fn a_view_of_an_item_reads_the_item_laid_out() {
+    let mut app = TestApp::<PagesApp>::new().unwrap();
+    app.call("outline", json!({ "anchor": "page:a" }))
+        .expect("the item's lines")
+        .expect("an outline answers");
+    let read = app
+        .call("outline", json!({ "anchor": "page:b" }))
+        .expect("the item's lines")
+        .expect("an outline answers");
+    let tree = read["tree"].as_array().expect("an outline's tree");
+    let line = tree
+        .iter()
+        .flat_map(flatten)
+        .find(|line| {
+            [&line["name"], &line["value"]]
+                .iter()
+                .any(|words| words.as_str() == Some("Showing page:b"))
+        })
+        .unwrap_or_else(|| panic!("the item's line: {read}"));
+    let rect: Vec<f64> = line["rect"]
+        .as_array()
+        .expect("a line's rect")
+        .iter()
+        .filter_map(serde_json::Value::as_f64)
+        .collect();
+    assert!(
+        rect.get(2).is_some_and(|width| *width > 0.0)
+            && rect.get(3).is_some_and(|height| *height > 0.0),
+        "the item's line stands where it is shown: {line}"
+    );
+
+    let first = picture(&mut app, json!({ "anchor": "page:a" })).expect("page a's picture");
+    let second = picture(&mut app, json!({ "anchor": "page:b" })).expect("page b's picture");
+    // The window, laid out by its own frame since, as it draws page b.
+    let drawn = picture(&mut app, json!({})).expect("the window's picture");
+    assert_ne!(first, second, "each item's picture shows that item");
+    assert_eq!(
+        second, drawn,
+        "the item's picture is the window's own picture of it"
+    );
+}
+
 #[test]
 fn an_outline_without_a_picture_draws_nothing() {
     let mut app = TestApp::<NotebookApp>::new().unwrap();

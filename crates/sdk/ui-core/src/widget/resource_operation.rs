@@ -28,6 +28,52 @@ impl ResourceOperationStart {
     }
 }
 
+/// The code of the refusal a view operation gives when it changed what the view shows and
+/// reads the view only once that is laid out ([`lay_out_first`]).
+pub const LAY_OUT_FIRST: &str = "lay_out_first";
+
+thread_local! {
+    /// Whether the host starting the operation on this thread lays out what a view operation
+    /// shows before it is read ([`host_lays_out_first`]).
+    static LAYS_OUT_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the host starting this operation lays the view out between a view operation's
+/// showing something and its reading it: a view operation that shows an item first (a
+/// render of one, the lines of one) then refuses with [`lay_out_first`], the host runs its
+/// frame, and starts the operation again, which reads the view laid out. A host that cannot
+/// (a live window mid-event) reads the view as it stands.
+#[must_use]
+pub fn host_lays_out_first() -> bool {
+    LAYS_OUT_FIRST.with(std::cell::Cell::get)
+}
+
+/// What a view operation answers when it changed what the view shows and the host lays that
+/// out before the operation reads it ([`host_lays_out_first`]).
+#[must_use]
+pub fn lay_out_first() -> Refusal {
+    Refusal::coded(LAY_OUT_FIRST, "the view lays out what it shows before it is read")
+}
+
+/// Whether `error` is the refusal [`lay_out_first`] answers with.
+#[must_use]
+pub fn asks_to_lay_out_first(error: &tilo_actions::ApiError) -> bool {
+    matches!(error, tilo_actions::ApiError::Refused { code, .. } if code == LAY_OUT_FIRST)
+}
+
+/// Run `start` (a host starting an operation) as a host that lays a view out between a view
+/// operation's showing something and its reading it ([`host_lays_out_first`]).
+pub fn laying_out_first<T>(start: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LAYS_OUT_FIRST.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(LAYS_OUT_FIRST.with(|cell| cell.replace(true)));
+    start()
+}
+
 /// What a handler matches on.
 #[derive(Clone, Copy, Debug)]
 pub struct OperationRequest<'a> {

@@ -102,6 +102,9 @@ pub(crate) struct ResourceRoot {
     permissions: Option<LivePermissions>,
     write: Option<PermissionScope>,
     stages: Stages,
+    /// The item a view operation showed and its host laid out, which the
+    /// operation, started again, reads without showing it anew.
+    shown_first: Option<String>,
     feeds: super::history::HistoryFeeds,
     /// What the view was built for, and the fixtures a capture's views read.
     pub(crate) run: Run,
@@ -595,6 +598,7 @@ impl ResourceRoot {
             permissions: None,
             write: None,
             stages,
+            shown_first: None,
             feeds,
             run,
             storage,
@@ -1676,15 +1680,22 @@ impl ResourceRoot {
             )
             && !request.payload.is_empty()
             && let Some(anchor) = crate::runner::rendered_anchor(request.payload)
+            && self.shown_first.take().as_deref() != Some(anchor.as_str())
         {
             self.stages
                 .open(&anchor)
                 .map_err(tilo_resource::Refusal::new)?;
-            // Showing the item changed the view's own state, and the widgets
-            // that show it are built at a sync: without one the read below
-            // answers with the item the window showed before. Sync now, as
-            // the next frame would, so the view is read as it is once the
-            // item is up.
+            // Showing the item changed the view's own state: the widgets that
+            // show it are built at a sync and placed by a layout, and without
+            // them the read below answers with the item the window showed
+            // before, or with the item at no place at all. A host that lays
+            // the view out first does so and starts the read again, which
+            // then reads the item laid out; one that cannot gets the sync the
+            // next frame would run.
+            if ui_core::host_operation::host_lays_out_first() {
+                self.shown_first = Some(anchor);
+                return Err(ui_core::host_operation::lay_out_first());
+            }
             self.content.sync(doc.doc(), path);
         }
         Ok(with_app_view_mut(&mut self.content, |view| {

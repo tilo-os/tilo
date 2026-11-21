@@ -7123,8 +7123,21 @@ impl FrameHarness {
         delivered: Option<(tilo_actions::InvocationId, Option<&tilo_actions::Actor>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
-        let answered =
-            self.invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered);
+        // A view operation that shows something first (the item a render or the lines of a
+        // view name) asks for it to be laid out before it reads the view: the frame a window
+        // would run next is run here, and the operation reads the view as it then stands.
+        let answered = crate::widget::resource_operation::laying_out_first(|| {
+            self.invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered)
+        });
+        let answered = match answered {
+            Err(crate::bound_dispatch::BoundActionError::Api(error))
+                if crate::widget::resource_operation::asks_to_lay_out_first(&error) =>
+            {
+                self.relayout();
+                self.invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered)
+            }
+            answered => answered,
+        };
         #[cfg(any(test, feature = "test-support"))]
         if let Err(crate::bound_dispatch::BoundActionError::Api(tilo_actions::ApiError::Unknown(
             unknown,

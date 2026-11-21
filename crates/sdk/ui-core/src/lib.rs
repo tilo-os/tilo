@@ -296,9 +296,10 @@ pub mod close_admission;
 /// effect vocabulary and never names these (`tools/policy/check_app_resource_action_contract.py`).
 pub mod host_operation {
     pub use crate::widget::resource_operation::{
-        OperationRequest, OperationTarget, ResourceOperation, ResourceOperationStart,
-        ResourceOperations, local_resource_operation_handlers, poll_resource_operation,
-        resource_operation_handlers, start_in_children, start_operation,
+        LAY_OUT_FIRST, OperationRequest, OperationTarget, ResourceOperation,
+        ResourceOperationStart, ResourceOperations, asks_to_lay_out_first, host_lays_out_first,
+        lay_out_first, laying_out_first, local_resource_operation_handlers,
+        poll_resource_operation, resource_operation_handlers, start_in_children, start_operation,
     };
 }
 mod app_core;
