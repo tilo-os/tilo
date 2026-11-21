@@ -109,7 +109,7 @@ exclude = [
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "music", "pdf-viewer", "runtime-bundle", "store", "tilo-agent-session",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
-    "tilo-sandbox-core", "tilo-ui", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
+    "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
 # The tests that start sandboxes of their own need nested namespaces, which a job's sandbox does
@@ -168,17 +168,17 @@ starts = { app-cli = ["install:tilo-install"], windows-vm = ["tilo-test-env:tilo
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
-# room (which bisects a failure to its commit), when dispatched, and by name.
+# room (which bisects a failure to its commit), when dispatched, and by name. A build server that
+# is never idle never runs them, so nothing every app is built on belongs here: tilo-ui's tests
+# are the `test` family's, run on every head they reach.
 [[cargo]]
 name = "test-idle"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
-# tilo-ui's tests build with its test fixtures (tools/ci/package_features.py), which reach this
-# family's build through `unify` like every other family's, so its args name none.
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
-packages = ["canvas", "music", "pdf-viewer", "tilo-ui"]
+packages = ["canvas", "music", "pdf-viewer"]
 heavy = true
 on = ["dispatch", "idle"]
 
