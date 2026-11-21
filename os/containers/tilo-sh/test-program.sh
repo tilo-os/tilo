@@ -49,11 +49,11 @@ eval "$(stack env)"
 [[ -n ${TILO_API_KEY:-} && -n ${TILO_API_URL:-} ]] || die 'stack.sh env named no API server and key'
 workspace=$(cat "$TILO_SH_STATE/server/lounge/workspace-id") || die 'the server kept no workspace id'
 
-# One program, which reads the notebook Notes keeps in the Lounge and changes nothing. The key
+# One program, which reads the tracker Tasks keeps in the Lounge and changes nothing. The key
 # goes to curl on its input, not among its arguments.
 answer=$work/answer.json
 status=$(curl -sS -o "$answer" -w '%{http_code}' --max-time 120 \
-  -H @- -H 'content-type: application/json' -d '{"program":"notes.notebook"}' \
+  -H @- -H 'content-type: application/json' -d '{"program":"tasks.tracker"}' \
   "$TILO_API_URL/v1/workspaces/$workspace/programs" <<< "Authorization: Bearer $TILO_API_KEY") \
   || die 'the API server did not answer the program'
 [[ $status == 200 ]] || die "the API server answered $status to the program: $(head -c 2000 "$answer")"
