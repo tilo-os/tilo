@@ -23,11 +23,11 @@ mkdir -p "$(dirname -- "$out")"
 case $part in
   wasm)
     python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --bundle runtime --profile "${3:-release}" --wasm-only >/dev/null
+    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --profile "${3:-release}" --wasm-only >/dev/null
     ;;
   bundle)
     wasm=${3:?$usage}
-    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --bundle runtime --profile "${4:-release}" --wasm-from "$wasm" >/dev/null
+    crates/browser/tilo-browser-runtime/scripts/build.sh "$out" --profile "${4:-release}" --wasm-from "$wasm" >/dev/null
     ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac

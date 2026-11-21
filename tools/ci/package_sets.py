@@ -73,7 +73,7 @@ WASM_ALSO = {
 
 
 # The crate the web build compiles into the module a browser loads: the page's
-# runtime (`build.sh --bundle runtime`).
+# runtime (`build.sh`).
 PAGE_ENTRY = "tilo-browser-runtime"
 
 

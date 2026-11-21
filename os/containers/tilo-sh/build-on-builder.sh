@@ -12,18 +12,18 @@
 #              there, so the fetch passes over it
 #   bundle     the web entry's bundle module (build.sh --profile quick
 #              --wasm-only --update): compiled and bound, into
-#              STAGE/bundle (STAGE/bundle-names with --names)
+#              STAGE/bundle
 #
 # Both at once: their profiles are their own, so neither waits for the
 # other's build directory lock, and one command takes one admission to the
 # build server. Each one's output is prefixed with its name.
 #
-# usage: build-on-builder.sh RUN STAGE [programs] [bundle [--names]]
+# usage: build-on-builder.sh RUN STAGE [programs] [bundle]
 # RUN is written to STAGE/run when everything built, so the caller knows what
 # it fetched is this run's.
 set -euo pipefail
 
-usage='usage: build-on-builder.sh RUN STAGE [programs] [bundle [--names]]'
+usage='usage: build-on-builder.sh RUN STAGE [programs] [bundle]'
 run=${1:?$usage}
 stage=${2:?$usage}
 shift 2
@@ -31,12 +31,11 @@ shift 2
   echo 'this runs on the build server, in the build container that sets CARGO_TARGET_DIR' >&2; exit 2;
 }
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
-programs=0 bundle= names=()
+programs=0 bundle=
 while [[ $# -gt 0 ]]; do
   case $1 in
     programs) programs=1; shift ;;
     bundle) bundle=$stage/bundle; shift ;;
-    --names) names=(--names); shift ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
 done
@@ -114,9 +113,8 @@ bindgen_tool() {
 build_bundle() {
   local bindgen
   bindgen=$(bindgen_tool) || { echo 'could not build wasm-bindgen' >&2; return 1; }
-  [[ ${#names[@]} == 0 ]] || bundle+=-names
   WASM_BINDGEN=$bindgen bash "$repo/crates/browser/tilo-browser-runtime/scripts/build-wasm-on-builder.sh" "$bundle" "$run" \
-    --bundle runtime --profile quick --no-wasm-opt --update "${names[@]}"
+    --profile quick --no-wasm-opt --update
 }
 
 mkdir -p "$CARGO_TARGET_DIR/$stage"

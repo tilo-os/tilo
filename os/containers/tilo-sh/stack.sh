@@ -218,11 +218,8 @@ server and the API server trust the local Caddy's CA through the fixed bundle pa
 Tilo's programs read, which bwrap (bubblewrap) puts in front of this machine's
 own for those processes alone. No process sees this session's D-Bus or runtime
 directory. TILO_SH_BUNDLE names a built bundle
-(build.sh --bundle runtime) instead of building one, built from this
-checkout's commit (TILO_SH_BUNDLE_ANY_COMMIT=1 serves one from another);
-TILO_SH_BUNDLE_NAMES=1
-builds it with its function names kept, for profiling the page
-(stack.sh restart web).
+(build.sh) instead of building one, built from this
+checkout's commit (TILO_SH_BUNDLE_ANY_COMMIT=1 serves one from another).
 Already-built inputs, which a check hands the stack so its bring-up compiles
 and lays out nothing (see docs/testing-tilo-sh.md):
   TILO_SH_PROGRAMS  a directory of the programs the other services run
@@ -1627,7 +1624,6 @@ builder_build() {
   [[ ${#what[@]} -gt 0 ]] || return 0
   run=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
   local args=("$run" "$builder_stage" "${what[@]}")
-  [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]] || args+=(--names)
   say "building the ${what[*]} on the build server ($cargo exec build-on-builder.sh; only what changed compiles)"
   # A drop-in that mirrors a directory back takes the stage's name alone; one that copies the files
   # a glob matches (a routing drop-in hands the call to a remote builder, whose exec copies files)
@@ -1646,7 +1642,7 @@ builder_build() {
 
 # Where the fetch leaves the bundle's module.
 bundle_stage() {
-  if [[ ${TILO_SH_BUNDLE_NAMES:-0} == 1 ]]; then echo "$builder_stage/bundle-names"; else echo "$builder_stage/bundle"; fi
+  echo "$builder_stage/bundle"
 }
 
 # The programs every service runs: a copy of the build's, not its files
@@ -1739,38 +1735,36 @@ lay_out_lounge() {
   if [[ -w $lounge/bin ]]; then ln -sfn ../fonts "$lounge/bin/fonts"; fi
 }
 
-# The bundle the web entry serves (build.sh --bundle runtime);
+# The bundle the web entry serves (build.sh);
 # TILO_SH_BUNDLE names a built one instead. By default build.sh's quick
 # profile, the development one `cargo web` builds too, compiled and bound on
 # the build server and brought up to date in place (--update): a module that
 # did not change is not bound again, and only the files that changed come back. The site the web
 # entry serves is laid out from it afterwards (lay_out_web), so a build that
 # stops halfway is never served. With TILO_SH_BUILD=t, t's
-# web-entry-bundle. TILO_SH_BUNDLE_NAMES=1 builds it with its function
-# names kept (build.sh --names), for profiling the page.
+# web-entry-bundle.
 build_bundle() {
   if [[ -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_SITE:-} ]]; then return; fi
-  local began=$SECONDS names=() out=$native/bundle-local
-  if from_t && [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]]; then
+  local began=$SECONDS out=$native/bundle-local
+  if from_t; then
     t_build "the web entry's bundle" web-entry-bundle
     t_bundle
     say "bundle built ($((SECONDS - began))s)"
     return
   fi
-  if [[ ${TILO_SH_BUNDLE_NAMES:-0} == 1 ]]; then names=(--names) out+=-names; fi
   local from=()
   if on_builder; then
     builder_build bundle
     from=(--wasm-from "$repo/target/$(bundle_stage)")
     say "laying out the web entry's bundle around the module the build server made (build.sh --wasm-from)"
   else
-    say "building the web entry's bundle (build.sh --bundle runtime --profile quick --update ${names[*]}, compiled by $cargo)"
+    say "building the web entry's bundle (build.sh --profile quick --update, compiled by $cargo)"
   fi
   mkdir -p "$out"
   CARGO=$here/cargo.sh TILO_SH_CARGO=$cargo TILO_SOURCE_REVISION=$commit \
     "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$out" \
-    --bundle runtime --profile quick --update "${names[@]}" "${from[@]}" >&2 \
-    || die 'the desktop bundle did not build (above)'
+    --profile quick --update "${from[@]}" >&2 \
+    || die 'the web entry bundle did not build (above)'
   [[ -L $native/bundle ]] || rm -rf "${native:?}/bundle"
   ln -sfn "${out##*/}" "$native/bundle"
   say "bundle built ($((SECONDS - began))s)"

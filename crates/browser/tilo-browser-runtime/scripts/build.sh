@@ -7,13 +7,10 @@
 #   manifest.json, icon.svg  the web app manifest that makes the site
 #                       installable as an app window, and its icon
 #   locales/            the entry pages' arrival lines (web/arrival.mjs)
-#   fonts/, fonts.json  canonical product fonts, their manifest and licences
-#   data/, data.json    application data fetched on request (an app bundle:
-#                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
-# usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt] [--names]
-#                 [--bundle runtime|app] [--no-split] [--update]
+# usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt]
+#                 [--no-split] [--update]
 #                 [--wasm-only | --wasm-from WASM_DIR] [--wasm-steps auto|builder|local]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
 # wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips it unless `--wasm-opt`.
@@ -41,32 +38,19 @@
 # The runtime bundle is the web entry's: the pages the site serves and the
 # module a browser gets into a workspace with. No app is linked into it — a
 # page's app is the server's, rendered as HTML.
-# `--bundle app` builds an app's own bundle: the runtime with that one app
-# linked and registered, from the crate `tilo-app build --platform web`
-# generates for it (`--manifest-path`, built with the target directory named by
-# $CARGO_TARGET_DIR), carrying the app's `apps.json` (`--apps-json`, which also
-# names the app `build.json` records). It is not split and has no application
-# data. `tilo-app` builds every web bundle through this script, so an app's
-# bundle and the site's are one build, and a workspace that defines no
-# `wasm-dev`/`wasm-release` profile gets Cargo's own `dev`/`release`.
 # `--update` (dev, quick and local only; also with `--module-only` and `--wasm-only`) brings an OUTPUT_DIR this script built
 # before up to date, step by step: the module is bound and split again only
 # when the linked module changed, the page's modules and entry pages are
-# copied again, and fonts and data are kept. A loop that
+# copied again. A loop that
 # edits only web/*.mjs takes seconds; one that edits Rust,
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
-# `--names` (an app bundle, release or assert) keeps the module's function names (its wasm
-# name section), which a shipped bundle strips: a profile of the page then
-# names the functions it spends its time in rather than numbering them. It is
-# otherwise the same build, compiled, split and optimized alike, so it
-# measures what ships; build.json records the wasm-opt flags it ran with.
-# `--wasm-only` builds only what Cargo compiles (pkg/,
-# data/ and apps.json) and records how in wasm.json; it reads no git
+# `--wasm-only` builds only what Cargo compiles (pkg/) and records how in
+# wasm.json; it reads no git
 # metadata, so a build cache can key it by its sources alone. `--module-only`
 # builds pkg/ and nothing else: a test that drives the runtime's exports from
-# a page serves it beside the page's modules, with no fonts or data a browser test does not mount. `--wasm-from`
+# a page serves it beside the page's modules. `--wasm-from`
 # assembles the bundle around such a directory instead of compiling: the
-# pages, locales and fonts from this tree, and build.json for this tree's
+# pages and locales from this tree, and build.json for this tree's
 # revision. A change to the pages alone then compiles nothing.
 # Needs the wasm32-unknown-unknown target and a wasm-bindgen CLI matching the
 # crate's pinned wasm-bindgen. Compiles with `cargo`, or with the cargo `$CARGO`
@@ -79,39 +63,31 @@
 # `$CARGO` is a drop-in that runs a program there and brings a directory of
 # the target dir back (`$CARGO exec --fetch`), and beside the compile otherwise;
 # `builder` refuses to run them here, `local` never sends them away. The
-# fetched directory holds what a local run writes — pkg/, data/, apps.json
-# and wasm.json — so a builder build and a local one record the same
+# fetched directory holds what a local run writes — pkg/ and wasm.json — so a builder build and a local one record the same
 # build.json, down to the tools that ran on the builder.
 set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|app] [--manifest-path FILE --apps-json FILE] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
 out=${1:?$usage}
 shift
 profile=release
 optimize=
 bundle=runtime
+package=tilo-browser-runtime
 split=1
 update=0
 wasm_only=0
 module_only=0
 wasm_from=
-names=0
-manifest=
-apps_json=
-app_id=
 steps=${TILO_BUNDLE_WASM_STEPS:-auto}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) profile=${2:?--profile needs a value}; shift 2 ;;
     --wasm-opt) optimize=1; shift ;;
     --no-wasm-opt) optimize=0; shift ;;
-    --bundle) bundle=${2:?--bundle needs a value}; shift 2 ;;
-    --manifest-path) manifest=${2:?--manifest-path needs a file}; shift 2 ;;
-    --apps-json) apps_json=${2:?--apps-json needs a file}; shift 2 ;;
     --no-split) split=0; shift ;;
-    --names) names=1; shift ;;
     --update) update=1; shift ;;
     --wasm-only) wasm_only=1; shift ;;
     --module-only) module_only=1; shift ;;
@@ -124,10 +100,8 @@ case "$steps" in
   auto|builder|local) ;;
   *) echo "unsupported --wasm-steps: $steps" >&2; exit 2 ;;
 esac
-# The workspace whose profiles the build compiles with: this repository's, or
-# the generated app crate's (`--bundle app`), which carries its app workspace's.
+# The workspace whose profiles the build compiles with.
 profiles_manifest=$repo/Cargo.toml
-[[ -z $manifest ]] || profiles_manifest=$manifest
 defines_profile() { grep -q "^\[profile\.$1\]" "$profiles_manifest" 2>/dev/null; }
 # `wasm-dev` and `wasm-release` are this repository's (light iteration, small
 # shipping): a workspace without them, as an app's own may be, gets Cargo's
@@ -163,45 +137,7 @@ esac
 # The runtime bundle is the web entry's: the pages the site serves, and the
 # module that gets a browser into a workspace. The apps' own code is not in
 # it — the page asks the server for them.
-[[ $names == 0 || $bundle == app ]] || { echo '--names is for an app bundle, not the entry' >&2; exit 2; }
-[[ $names == 0 || $profile == release || $profile == assert ]] || { echo '--names is for a release or assert bundle' >&2; exit 2; }
 [[ $profile != check && $profile != local ]] || { echo "--profile $profile is for a bundle built from source" >&2; exit 2; }
-case "$bundle" in
-  runtime) package=tilo-browser-runtime ;;
-  app) ;;
-  *) echo "unsupported bundle: $bundle" >&2; exit 2 ;;
-esac
-# An app bundle is the one crate `--manifest-path` names, with its `apps.json`;
-# the bundles of this repository's own crates take neither.
-if [[ $bundle == app ]]; then
-  [[ -n $manifest && -n $apps_json ]] || {
-    echo '--bundle app builds the crate --manifest-path names, with the --apps-json to carry' >&2; exit 2;
-  }
-  eval "$(python3 - "$manifest" "$apps_json" <<'PY'
-import json, shlex, sys, tomllib
-manifest, apps = sys.argv[1:]
-package = tomllib.load(open(manifest, 'rb'))['package']['name']
-app = json.load(open(apps))['applications']
-assert len(app) == 1, f"{apps} lists {len(app)} applications; an app bundle carries one"
-print('package=' + shlex.quote(package))
-print('app_id=' + shlex.quote(app[0]['id']))
-PY
-)"
-else
-  [[ -z $manifest && -z $apps_json ]] || {
-    echo '--manifest-path and --apps-json are for --bundle app' >&2; exit 2;
-  }
-fi
-bindgen_flags=()
-# `wasm-release` and `wasm-assert` strip the linked module's symbols; `wasm-split` and
-# `wasm-assert-split` are those profiles with them kept, for the name section.
-if [[ $names == 1 ]]; then
-  defines_profile wasm-split || { echo '--names needs the workspace'"'"'s wasm-split profiles' >&2; exit 2; }
-  case $profile in
-    release) cargo_profile=wasm-split ;;
-    assert) cargo_profile=wasm-assert-split ;;
-  esac
-fi
 # Cargo writes a profile's output under the profile's own name, but dev's
 # under `debug`.
 artifact=$cargo_profile
@@ -250,15 +186,14 @@ runs_on_builder() {
   help=$("$cargo" exec --help 2>/dev/null) && [[ $help == *--fetch* ]]
 }
 if [[ $steps == auto ]]; then
-  # An app bundle's crate is this tree's own, not the builder's.
-  if [[ -z $wasm_from && -z $manifest && $module_only == 0 ]] && runs_on_builder; then steps=builder; else steps=local; fi
+  if [[ -z $wasm_from && $module_only == 0 ]] && runs_on_builder; then steps=builder; else steps=local; fi
 elif [[ $steps == builder ]]; then
   runs_on_builder || {
     echo "--wasm-steps builder needs a cargo that runs a program on its builder (\`$CARGO exec --fetch\`), and CARGO ($cargo) has no exec" >&2
     exit 2
   }
-  [[ -z $wasm_from && -z $manifest && $module_only == 0 ]] || {
-    echo '--wasm-steps builder is for the module and the bundle; not with --module-only, --wasm-from or a --manifest-path' >&2
+  [[ -z $wasm_from && $module_only == 0 ]] || {
+    echo '--wasm-steps builder is for the module and the bundle; not with --module-only or --wasm-from' >&2
     exit 2
   }
 fi
@@ -289,17 +224,8 @@ fi
 # What Cargo compiles: pkg/ (the runtime's module) and
 # the tools that made them.
 build_wasm() {
-# An app bundle compiles the crate `tilo-app` generated for it: a workspace of
-# its own, whose lock file cargo writes, so it is named rather than `-p`, and
-# built without `--locked` and without `--offline`.
-local -a compile metadata
-if [[ -n $manifest ]]; then
-  compile=(build --manifest-path "$manifest" --lib --target wasm32-unknown-unknown --profile "$cargo_profile")
-  metadata=(metadata --format-version 1 --no-deps --manifest-path "$manifest")
-else
-  compile=(build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile")
-  metadata=(metadata --format-version 1 --no-deps --offline)
-fi
+local -a compile=(build --locked -p "$package" --lib --target wasm32-unknown-unknown --profile "$cargo_profile")
+local -a metadata=(metadata --format-version 1 --no-deps --offline)
 local began=$SECONDS
 "$cargo" "${compile[@]}"
 took "compile ($cargo_profile)" "$began"
@@ -368,7 +294,7 @@ else
     # past that the contention the first line describes comes back (19.4 s on
     # twenty-four).
     RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-16} \
-      "$bindgen" "$bind_input" --target web --out-dir "$next" --out-name tilo_browser_runtime "${bindgen_flags[@]}"
+      "$bindgen" "$bind_input" --target web --out-dir "$next" --out-name tilo_browser_runtime
     took wasm-bindgen "$began"
     if [[ $profile == local && $update == 1 ]]; then
       bash "$repo/tools/web/wasm-split/bind-patch.sh" record "$bind_input" \
@@ -385,11 +311,6 @@ fi
 # What the app SDK's own web build passes wasm-opt, so the module a size check
 # measures is the module the site serves (tools/web/wasm-opt-flags).
 wasm_opt_flags=$(grep -v '^[[:space:]]*#' "$repo/tools/web/wasm-opt-flags" | xargs)
-# With --names, the same passes, writing the name section the splitter keeps
-# (-g: binaryen writes no names without it) instead of dropping it.
-if [[ $names == 1 ]]; then
-  wasm_opt_flags="$(printf '%s\n' $wasm_opt_flags | grep -vx -- --strip-debug | xargs) -g"
-fi
 if [[ $optimize == 1 ]]; then
   command -v wasm-opt >/dev/null || { echo 'wasm-opt (binaryen) is required; pass --no-wasm-opt to skip' >&2; exit 2; }
   # A few at a time: the start module alone takes gigabytes to optimize.
@@ -412,9 +333,8 @@ if [[ $optimize == 1 ]]; then wasm_opt_version=$(wasm-opt --version); fi
 # writes several gigabytes and wasm-opt over the start module alone more,
 # which is memory this machine does not spend when it is not the builder.
 wasm_on_builder() {
-  local stage=web-bundle-wasm-$bundle-$profile args=(--bundle "$bundle" --profile "$profile")
+  local stage=web-bundle-wasm-$bundle-$profile args=(--profile "$profile")
   local script=${crate#"$repo"/}/scripts/build-wasm-on-builder.sh
-  if [[ $names == 1 ]]; then stage+=-names; args+=(--names); fi
   if [[ $optimize == 1 ]]; then args+=(--wasm-opt); else stage+=-no-wasm-opt; args+=(--no-wasm-opt); fi
   if [[ $split == 0 ]]; then stage+=-no-split; args+=(--no-split); fi
   # An --update loop keeps the builder's previous output too, so a module that
@@ -481,13 +401,6 @@ PY
     rm -rf "$out/pkg"
     cp -R "$wasm_from/pkg" "$out/pkg"
   fi
-  # What the module was compiled from can be unchanged while these are not
-  # (a manifest that names apps), so they follow the module and not --update.
-  if [[ -d $wasm_from/data ]]; then
-    rm -rf "$out/data"
-    cp -R "$wasm_from/data" "$out/data"
-  fi
-  [[ ! -f $wasm_from/apps.json ]] || cp "$wasm_from/apps.json" "$out/apps.json"
 fi
 # The module the page loads first, whole: a pkg/ without it is a page that
 # never starts, so the build stops here rather than reporting a bundle. It goes
@@ -517,7 +430,6 @@ PY
   echo "wasm: $out ($profile $bundle)"
   exit 0
 fi
-mkdir -p "$out/fonts"
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
 cp "$crate/web/sign-in.html" "$out/sign-in.html"
@@ -527,52 +439,6 @@ mkdir -p "$out/locales"
 cp "$crate"/web/locales/*.ftl "$out/locales/"
 mkdir -p "$out/app"
 cp "$crate/web/app/index.html" "$out/app/index.html"
-kept fonts.json || python3 - "$repo" "$out" <<'PY'
-import importlib.util, json, os, pathlib, re, shutil, sys
-repo, out = map(pathlib.Path, sys.argv[1:])
-tool = repo / 'tools/font-catalog.py'
-spec = importlib.util.spec_from_file_location('font_catalog', tool)
-catalog_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(catalog_module)
-source = catalog_module.prepared_root(repo / 'crates/sdk/ui-core/assets/fonts', 'product')
-def install(src, dst):
-    # A hard link where the file system allows one: the bundle shares the
-    # cached product fonts, 40 MB it would otherwise copy for itself.
-    try:
-        os.link(src, dst)
-    except OSError:
-        shutil.copy2(src, dst)
-text = (source / 'manifest.toml').read_text()
-assets = []
-for block in text.split('[[font]]')[1:]:
-    block = block.split('[[license]]')[0]
-    if re.search(r'^scope = "product"$', block, re.M):
-        name = re.search(r'^file = "(.*?)"$', block, re.M)[1]
-        install(source / name, out / 'fonts' / name)
-        assets.append(dict(
-            name=name,
-            bytes=int(re.search(r'^bytes = (\d+)$', block, re.M)[1]),
-            sha256=re.search(r'^sha256 = "([0-9a-f]{64})"$', block, re.M)[1],
-            startup=bool(re.search(r'^browser_startup = true$', block, re.M)),
-        ))
-assert any(asset['startup'] for asset in assets), 'no browser startup fonts in the manifest'
-shutil.copytree(source / 'LICENSES', out / 'fonts/LICENSES', dirs_exist_ok=True, copy_function=install)
-install(source / 'manifest.toml', out / 'fonts/manifest.toml')
-install(source / 'PROVENANCE.md', out / 'fonts/PROVENANCE.md')
-catalog = re.search(r'^catalog_id = "(.*?)"$', text, re.M)[1]
-(out / 'fonts.json').write_text(json.dumps(dict(schema=1, catalog=catalog, assets=assets), separators=(',', ':')) + '\n')
-PY
-
-if [[ -d "$out/data" ]]; then
-  python3 - "$out" <<'PY'
-import hashlib, json, pathlib, sys
-out = pathlib.Path(sys.argv[1])
-assets = [dict(name=str(p.relative_to(out / 'data')), bytes=p.stat().st_size, sha256=hashlib.sha256(p.read_bytes()).hexdigest())
-          for p in sorted((out / 'data').rglob('*')) if p.is_file()]
-(out / 'data.json').write_text(json.dumps(dict(schema=1, assets=assets), separators=(',', ':')) + '\n')
-PY
-fi
-
 # What the page has to resolve: every module the generated JavaScript imports. A bare name is
 # one no page has to resolve — nothing outside a browser provides it — and a page has nothing to
 # resolve it with: the entry stops at its first import and never reaches the desktop. The build
@@ -597,16 +463,12 @@ if [[ $have_git == 1 ]] &&
   echo 'Source changed during build; discard output' >&2; exit 1
 fi
 python3 - "$out" "$revision" "$source_status" "$profile" "$rustc_version" "$bindgen_version" "$optimize" \
-  "$cargo_profile" "$bundle" "$wasm_opt_version" "$wasm_opt_flags" "$app_id" <<'PY'
+  "$cargo_profile" "$bundle" "$wasm_opt_version" "$wasm_opt_flags" <<'PY'
 import hashlib, json, pathlib, sys
 out = pathlib.Path(sys.argv[1])
 metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[4], builtFromSource=True, rustc=sys.argv[5],
                 wasmBindgen=sys.argv[6], wasmOpt=sys.argv[7] == '1', target='wasm32-unknown-unknown',
                 cargoProfile=sys.argv[8], bundle=sys.argv[9])
-# An app's own bundle names the app it carries, as its page host and the
-# registry read it.
-if sys.argv[12]:
-    metadata['app'] = sys.argv[12]
 if metadata['wasmOpt']:
     metadata.update(wasmOptVersion=sys.argv[10], wasmOptFlags=sys.argv[11])
 # Never this file itself: an --update run finds the previous one in place.
