@@ -363,6 +363,13 @@ pub fn sole_text_argument(arguments: &serde_json::Map<String, serde_json::Value>
 /// dispatched as an application operation.
 pub const INVALID_ARGUMENTS_TYPE: &str = "tilo.invalid_arguments";
 
+/// The operation type of the verbs an accessibility surface publishes for a
+/// control: focusing it, pressing it, toggling it or setting its value. They
+/// stand in for the person's own pointer and keyboard, which only the person
+/// at the device invokes, so they need what reading needs; what the control
+/// then does is decided as the control's own action declares it.
+pub const SEMANTIC_OPERATION_TYPE: &str = "tilo.ui.semantic-action";
+
 /// Stable identity of a resource within the publishing app instance
 /// (e.g. `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

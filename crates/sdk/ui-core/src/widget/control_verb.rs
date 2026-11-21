@@ -76,6 +76,10 @@ impl<A: serde::Serialize + 'static> ControlVerb<A> {
                 .expect("a control verb's generated payload is serializable")
             },
         )
+        // A typed operation's kind is named by its declaration, and this is it: a value verb
+        // changes only the control. What the app writes from the value is decided as that
+        // write is, so a person typing in a field is not asked as if the field reached out.
+        .of_kind(crate::tilo_actions::ActionKind::Read)
         .for_audience(crate::tilo_actions::Audience::Agents);
         let resource = ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", label)
             .with_action(spec.clone());

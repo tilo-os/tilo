@@ -150,7 +150,7 @@ use tilo_actions::{ActionSpec, Collects, EncodedAction, OperationKind, ResourceS
 
 /// Operation type used when the retained semantic tree projects an ordinary UI affordance into the
 /// resource/action catalogue.
-pub(crate) const SEMANTIC_OPERATION_TYPE: &str = "tilo.ui.semantic-action";
+pub(crate) use tilo_actions::SEMANTIC_OPERATION_TYPE;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SemanticOperation {

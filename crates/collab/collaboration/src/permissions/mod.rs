@@ -829,7 +829,7 @@ impl PermissionContext {
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> (Answer, Vec<policy::GrantId>) {
-        let need = input_need(&resource.kind, action.need_for(json, argument));
+        let need = input_need(&resource.kind, action, action.need_for(json, argument));
         // A window on a member's own record decides on that record
         // ([`Self::action_decider_on`]).
         let resource_id = if self.own_person(app_id, record).is_some() {
@@ -866,7 +866,7 @@ impl PermissionContext {
             &resource.kind,
             resource.id.as_str(),
             &action.id,
-            &input_need(&resource.kind, action.need_for(json, argument)),
+            &input_need(&resource.kind, action, action.need_for(json, argument)),
         )
     }
 
@@ -1514,13 +1514,23 @@ impl std::fmt::Debug for LivePermissions {
 mod action_authority;
 use action_authority::ActionAuthoritySampler;
 
-/// What invoking an action of a resource of `kind` needs: a control the window
-/// draws stands in for the person's own pointer and keyboard, which only they
-/// invoke ([`tilo_actions::kind_is_a_drawn_control`]), and needs what reading
-/// needs. What its handler then writes is decided as those writes are, so a
-/// person typing in a field is not asked first as if the field reached out.
-fn input_need(kind: &str, need: tilo_actions::ActionNeed) -> tilo_actions::ActionNeed {
-    if tilo_actions::kind_is_a_drawn_control(kind) {
+/// What invoking an action of a resource of `kind` needs. The verbs an
+/// accessibility surface publishes for a control — focusing it, pressing it,
+/// toggling it, setting its value — stand in for the person's own pointer and
+/// keyboard, which only they invoke
+/// ([`tilo_actions::kind_is_a_drawn_control`]), and need what reading needs:
+/// what the control then writes is decided as those writes are, so a person
+/// typing in a field is not asked first as if the field reached out. The
+/// control's own action says what it does and keeps that need; a button's
+/// effect that reaches outside still asks.
+fn input_need(
+    kind: &str,
+    action: &tilo_actions::ActionSpec,
+    need: tilo_actions::ActionNeed,
+) -> tilo_actions::ActionNeed {
+    if tilo_actions::kind_is_a_drawn_control(kind)
+        && action.operation_type.as_deref() == Some(tilo_actions::SEMANTIC_OPERATION_TYPE)
+    {
         tilo_actions::ActionNeed {
             kind: ActionKind::Read,
             field: None,
@@ -1572,6 +1582,9 @@ pub fn admit_in_window(
 
 #[cfg(test)]
 mod policy_time_tests;
+
+#[cfg(test)]
+mod control_input_tests;
 
 #[cfg(test)]
 mod own_resource_tests {
