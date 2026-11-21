@@ -654,7 +654,7 @@ src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 command -v cryptsetup >/dev/null \
   || { echo "the image carries no cryptsetup, so its own LUKS2 header cannot be read here"; exit 1; }
 # The mapper holds the plaintext view; the header is on the partition under it.
-backing=$(lsblk -snro NAME,TYPE "$src" | awk '$2 == "part" { print $1; exit }')
+backing=$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 [ -n "$backing" ] || { echo "no partition under $src"; lsblk -s "$src"; exit 1; }
 dump=$(cryptsetup luksDump "/dev/$backing")
 printf "%s\n" "$dump" | grep -q systemd-recovery \
