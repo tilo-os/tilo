@@ -348,8 +348,7 @@ pub(crate) struct StoredOutgoing {
     ordinal: u64,
     pub(crate) id: [u8; 32],
     /// Base64 text in the owner's JSON files, like the record's other
-    /// opaque bytes; entries written before that held JSON arrays of
-    /// numbers, one line per byte pretty-printed, and still read back.
+    /// opaque bytes; a binary encoding keeps its sequence.
     #[serde(
         serialize_with = "crate::owner::stored::base64_bytes::serialize",
         deserialize_with = "read_message_bytes"

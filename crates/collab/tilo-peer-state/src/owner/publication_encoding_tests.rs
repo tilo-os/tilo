@@ -80,19 +80,21 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase outgoing_bytes_past_the_cap_are_refused_as_text_and_as_arrays;
-    // Bytes past the cap are refused in either JSON form, text before it is
-    // decoded.
+    phase outgoing_bytes_past_the_cap_are_refused_as_text_and_as_sequences;
+    // Bytes past the cap are refused in either encoding, text before it is
+    // decoded; JSON takes text alone, a binary encoding a sequence.
     {
         let read = |json: &str| read_bytes(&mut serde_json::Deserializer::from_str(json), 4);
         assert_eq!(read(r#""AAECAw==""#).unwrap(), [0, 1, 2, 3]);
-        assert_eq!(read("[0, 1, 2, 3]").unwrap(), [0, 1, 2, 3]);
+        assert!(
+            read("[0, 1, 2, 3]").is_err(),
+            "JSON takes the text, not a sequence"
+        );
         assert!(read(r#""AAECAwQ=""#).is_err(), "five bytes");
         assert!(
             read(r#""AAECAwQFBg==""#).is_err(),
             "text longer than four bytes'"
         );
-        assert!(read("[0, 1, 2, 3, 4]").is_err());
         assert!(read(r#""not base64""#).is_err());
         let fits = entry(vec![0; MAX_BYTES]);
         assert_eq!(
@@ -102,6 +104,13 @@ tilo_test_env::scenario! {
         let past = entry(vec![0; MAX_BYTES + 1]);
         assert!(
             serde_json::from_value::<StoredOutgoing>(serde_json::to_value(&past).unwrap()).is_err()
+        );
+        let binary = postcard::to_allocvec(&fits).unwrap();
+        assert_eq!(postcard::from_bytes::<StoredOutgoing>(&binary).unwrap(), fits);
+        let binary = postcard::to_allocvec(&past).unwrap();
+        assert!(
+            postcard::from_bytes::<StoredOutgoing>(&binary).is_err(),
+            "a binary sequence past the cap"
         );
     }
 }
