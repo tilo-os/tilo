@@ -283,3 +283,95 @@ fn taken(held: &ConfinedReplica) {
     held.take_mutation().unwrap();
     held.take_document_mutations().unwrap();
 }
+
+/// The resources a page under the chat's messages lists, in order.
+fn listed_ids(held: &ConfinedReplica, window: (usize, usize)) -> (Vec<String>, bool) {
+    let query = CatalogueQuery {
+        provider: Some("host".into()),
+        parent_resource: Some(messages()),
+        ..CatalogueQuery::default()
+    };
+    let (_, rows, arriving) = held.survey_page_arriving(&query, window);
+    let mut ids: Vec<String> = Vec::new();
+    for row in rows {
+        if ids.last() != Some(&row.resource.id) {
+            ids.push(row.resource.id.clone());
+        }
+    }
+    (ids, arriving)
+}
+
+/// A host that holds only a chat's newest part — one that just started, sent nothing more by
+/// the workspace — lists a page reaching past that part only once it holds the part before:
+/// the page says it reads a part not here yet, and asks the workspace's hosts for it. It
+/// answered the newest part's messages as the whole chat, and a caller paging through it read
+/// that the chat ended there.
+#[test]
+fn a_page_reaching_past_the_parts_a_host_holds_asks_for_the_one_before() {
+    let mut record = founded();
+    let writer = held(&mut record);
+    let mut filled = 0;
+    while filled * chat::chat::MAX_MESSAGE_TEXT_BYTES <= ui::framework::PART_BYTES {
+        let text = format!(
+            "{filled}: {}",
+            "x".repeat(chat::chat::MAX_MESSAGE_TEXT_BYTES.saturating_sub(4))
+        );
+        post(&writer, &text);
+        filled = filled.saturating_add(1);
+    }
+    post(&writer, "first of the newest part");
+    post(&writer, "second of the newest part");
+    taken(&writer);
+    let whole = (0, 1_000_000);
+    let (every, arriving) = listed_ids(&writer, whole);
+    assert!(!arriving, "the writer holds every part");
+    assert!(every.len() > filled, "both parts are listed: {}", every.len());
+    let saved = |id: &ui::resource::DocumentId| {
+        writer
+            .read_resource(id, |doc| doc.clone().save())
+            .unwrap_or_else(|| panic!("the writer holds {}", id.as_str()))
+    };
+    let (oldest, newest) = (saved(&chat::parts::part(0)), saved(&chat::parts::part(1)));
+
+    // A host holding the record and the newest part, as one that just started does.
+    let fresh = ConfinedReplica::open(
+        &crate::common::catalogue(),
+        "so.tilo.chat",
+        crate::common::WORKSPACE,
+        &MemberId::person("host"),
+        &ReplicaActor::Owner,
+        Seed::Existing {
+            record: record.document_id().clone(),
+            changes: vec![writer.read(|doc| doc.clone().save()).unwrap()],
+        },
+        true,
+    )
+    .expect("the chat opens in its worker");
+    fresh
+        .apply_document(&chat::parts::part(1), &DocumentMutation::Snapshot(newest))
+        .unwrap();
+    // A first page the newest part fills is answered from it.
+    let (first, arriving) = listed_ids(&fresh, (0, 20));
+    assert!(!arriving, "a page the newest part fills reads nothing more");
+    assert_eq!(first, listed_ids(&writer, (0, 20)).0, "the first page is the chat's");
+    // A page reaching past it reads the part before, which it asks for.
+    let (short, arriving) = listed_ids(&fresh, whole);
+    assert!(
+        arriving,
+        "a page reaching past the newest part says it reads one not here: {} of {}",
+        short.len(),
+        every.len()
+    );
+    assert!(
+        fresh.wanted_resources().contains(&chat::parts::part(0)),
+        "the part before is asked for: {:?}",
+        fresh.wanted_resources()
+    );
+    // Handed it, as the host hands what was asked for, the page is the chat's.
+    fresh
+        .apply_document(&chat::parts::part(0), &DocumentMutation::Snapshot(oldest))
+        .unwrap();
+    let (after, arriving) = listed_ids(&fresh, whole);
+    assert!(!arriving, "every part is here");
+    assert_eq!(after, every, "the page lists both parts, as the writer's does");
+}

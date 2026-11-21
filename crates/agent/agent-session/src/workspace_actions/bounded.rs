@@ -1003,29 +1003,19 @@ impl Worker {
         window: (usize, usize),
     ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), ActionCallError> {
         let key = self.bounded_replica(workspace_id, who, route, state)?;
-        let Some(app) = self
-            .bounded
-            .get(&key)
-            .map(|held| std::sync::Arc::clone(&held.held.app))
-        else {
-            return Ok((0, Vec::new()));
-        };
-        // Its worker reads the page: off this thread once it outlasts a call.
-        let holder = self.holder_of(route);
-        let asked = query.clone();
-        let worker = std::sync::Arc::clone(&app);
-        let (total, rows, arriving) = self
-            .hand(workspace_id, &holder, move || {
-                worker.survey_page_arriving(&asked, window)
-            })
-            .ok_or_else(|| ActionCallError::Unavailable {
+        let holder = key.0.clone();
+        match self.listed_from(
+            (workspace_id, &super::Writer::Bounded(key), &holder),
+            state,
+            query,
+            window,
+        ) {
+            super::part_load::Listed::Page(total, rows) => Ok((total, rows)),
+            super::part_load::Listed::Held => Err(ActionCallError::NotReady),
+            super::part_load::Listed::Answering => Err(ActionCallError::Unavailable {
                 reason: "the app's worker is still answering".into(),
-            })?;
-        // A page reading parts still being taken in waits for them.
-        if self.page_arriving(&app, arriving) {
-            return Err(ActionCallError::NotReady);
+            }),
         }
-        Ok((total, rows))
     }
 
     /// The action at `address` as `who` is offered it on the record at

@@ -563,9 +563,10 @@ impl ViewStorage {
         self.chain_api(id).map(|api| api.publish_shared())
     }
 
-    /// Whether a page listing the chain `parent` reads a part still on its way
+    /// Whether a page listing the chain `parent` reads a part not here yet
     /// ([`super::chain::ChainState::listing_arriving`]), `filled` when the parts held filled
-    /// it; for any other level, whether any chain the views opened has a part on its way.
+    /// it; for any other level, whether a chain the views opened holds no part yet, or misses
+    /// one between those it holds.
     pub(crate) fn listing_arriving(&self, parent: &str, filled: bool) -> bool {
         match self.chain_api(parent) {
             Some(api) => api.listing_arriving(filled),
@@ -573,7 +574,7 @@ impl ViewStorage {
                 .chains
                 .apis()
                 .iter()
-                .any(|api| api.listing_arriving(false)),
+                .any(|api| api.listing_arriving(true)),
         }
     }
 

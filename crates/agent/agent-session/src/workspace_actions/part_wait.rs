@@ -155,6 +155,12 @@ impl PartWaits {
         self.serving_kind != Serving::Other
     }
 
+    /// Whether the request being served found parts of a chain on their way and waits off this
+    /// thread for them ([`Self::chain_wait`]).
+    pub(super) const fn chains_owed(&self) -> bool {
+        self.chains_owed
+    }
+
     /// Whether the request being served is a listing.
     pub(super) const fn listing(&self) -> bool {
         matches!(self.serving_kind, Serving::Listing)

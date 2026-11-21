@@ -27,7 +27,7 @@ use tilo_server_protocol::WorkspaceId;
 
 use super::catch_up::{HOLD_ROUNDS, chains_untold, hold, hold_parts_told, read_parts};
 use super::part_wait::{ChainWait, PART_WAIT};
-use super::{DocumentRoute, Job, Mounted, Shared, Worker, WorkspaceState};
+use super::{DocumentRoute, Job, Mounted, Shared, Worker, WorkspaceState, Writer};
 use crate::worker::ConfinedReplica;
 
 /// How many parts a replica holds none of before they are taken in off the serving thread:
@@ -174,7 +174,7 @@ impl Worker {
             Load::Idle => return false,
             Load::Done(loaded) => Some(loaded),
             // A listing asks for its page meanwhile, answered once it reads no part still on
-            // its way ([`Self::page_arriving`]).
+            // its way ([`Self::listed_from`]).
             Load::Running if self.part_waits.listing() => return false,
             Load::Running => {
                 if matches!(self.part_waits.chain_wait(PART_WAIT), ChainWait::Held) {
@@ -256,15 +256,75 @@ impl Worker {
             && self.hold_for_chains()
     }
 
-    /// Whether the page `app`'s worker answered, `arriving` when it reads parts of a chain
-    /// still on their way, waits for them: held off this thread while they are taken in, and
-    /// applied again as each arrives. A page reading none is what it will be once every part
-    /// is in, and is answered now.
-    pub(super) fn page_arriving(&mut self, app: &Arc<ConfinedReplica>, arriving: bool) -> bool {
-        arriving
-            && self.part_loads.running(app)
-            && matches!(self.part_waits.chain_wait(PART_WAIT), ChainWait::Held)
+    /// The page of `query` in `window` that the worker of the replica `at` (of the document at
+    /// `holder`) answers, once it reads no part not here yet: a page that reads one
+    /// (`Replica::survey_page_arriving`) waits for the parts being taken in, or is handed the
+    /// parts it asked for and asked again, or waits off this thread for those the workspace
+    /// has still to send, applied again as they arrive. A page reading none is what it will be
+    /// once every part is in, and is answered now; so is one whose parts nothing brings.
+    pub(super) fn listed_from(
+        &mut self,
+        (workspace_id, at, holder): (WorkspaceId, &Writer, &DocumentRoute),
+        state: &WorkspaceState,
+        query: &tilo_actions::remote::CatalogueQuery,
+        window: (usize, usize),
+    ) -> Listed {
+        let Some(app) = self.held_at(at).map(|held| Arc::clone(&held.app)) else {
+            return Listed::Page(0, Vec::new());
+        };
+        let mut rounds = 0_usize;
+        loop {
+            // Its worker reads the page: off this thread once it outlasts a call.
+            let (asked, worker) = (query.clone(), Arc::clone(&app));
+            let Some((total, rows, arriving)) = self.hand(workspace_id, holder, move || {
+                worker.survey_page_arriving(&asked, window)
+            }) else {
+                return Listed::Answering;
+            };
+            if !arriving || rounds >= PAGE_ROUNDS {
+                return Listed::Page(total, rows);
+            }
+            rounds = rounds.saturating_add(1);
+            if self.part_loads.running(&app) {
+                return match self.part_waits.chain_wait(PART_WAIT) {
+                    ChainWait::Held => Listed::Held,
+                    ChainWait::Here | ChainWait::GaveUp => Listed::Page(total, rows),
+                };
+            }
+            // The parts the page asked for: handed where the workspace holds them, asked of it
+            // otherwise, and waited for off this thread.
+            let before = self.held_at(at).map_or(0, |held| held.parts.len());
+            self.hold_chains(at, holder, state);
+            if self.part_waits.chains_owed() {
+                return Listed::Held;
+            }
+            if self.held_at(at).map_or(0, |held| held.parts.len()) <= before {
+                return Listed::Page(total, rows);
+            }
+        }
     }
+
+    /// The replica `at` holds.
+    fn held_at(&self, at: &Writer) -> Option<&Mounted> {
+        match at {
+            Writer::Mounted(holder) => self.mounted.get(holder),
+            Writer::Bounded(key) => self.bounded.get(key).map(|replica| &replica.held),
+        }
+    }
+}
+
+/// How many times a page is asked again for the parts it reads in one request: a page reaching
+/// back through a chain takes in one part a round.
+const PAGE_ROUNDS: usize = 64;
+
+/// What a listing of a replica's page came to ([`Worker::listed_from`]).
+pub(super) enum Listed {
+    /// How many rows it admits, and those on the page.
+    Page(usize, Vec<tilo_actions::remote::CatalogueRow>),
+    /// It waits off this thread for the parts it reads.
+    Held,
+    /// Its worker answers it off this thread.
+    Answering,
 }
 
 /// How a thread taking in parts tells the workspace's thread that one more is in: the requests

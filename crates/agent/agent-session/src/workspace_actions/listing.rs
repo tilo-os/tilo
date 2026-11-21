@@ -205,20 +205,20 @@ impl Worker {
             self.bounded_page(workspace_id, who, (route, state), query, window)
                 .map_err(|error| error.to_string())
         } else {
-            let app = std::sync::Arc::clone(&self.mount(route, state)?.app);
+            self.mount(route, state)?;
             let holder = self.holder_of(route);
-            let asked = query.clone();
-            let worker = std::sync::Arc::clone(&app);
-            let (total, rows, arriving) = self
-                .hand(workspace_id, &holder, move || {
-                    worker.survey_page_arriving(&asked, window)
-                })
-                .ok_or_else(|| "the app's worker is still answering".to_owned())?;
-            // A page reading parts still being taken in waits for them.
-            if self.page_arriving(&app, arriving) {
-                return Err(super::part_wait::not_ready().to_string());
+            match self.listed_from(
+                (workspace_id, &super::Writer::Mounted(holder.clone()), &holder),
+                state,
+                query,
+                window,
+            ) {
+                super::part_load::Listed::Page(total, rows) => Ok((total, rows)),
+                super::part_load::Listed::Held => Err(super::part_wait::not_ready().to_string()),
+                super::part_load::Listed::Answering => {
+                    Err("the app's worker is still answering".to_owned())
+                }
             }
-            Ok((total, rows))
         }
     }
 

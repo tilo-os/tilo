@@ -19,7 +19,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ui_core::resource::{ResourceOpenError, WorkspaceAnswer};
+use ui_core::resource::ResourceOpenError;
 use ui_core::wake::WakeHandle;
 
 use super::{ChainCore, PartArrival};
@@ -179,34 +179,44 @@ impl ChainCore {
 }
 
 impl super::ChainState {
-    /// Whether a page of the chain's listing reads a part still on its way here, `filled`
-    /// when the parts held filled the page. A listing shows the held parts newest first, so a
-    /// page is what it is once every part is in only when the parts held are the chain's
-    /// newest, with none missing between them: the head is here, no part between the oldest
-    /// held and the head is on its way, and the page filled before reaching the parts older
-    /// than those. A part the workspace said it holds none of is not waited for.
+    /// Whether a page of the chain's listing reads a part not here yet, `filled` when the
+    /// parts held filled the page; a part it reads that nobody asked for is asked for now.
+    ///
+    /// A listing shows the held parts newest first, so a page is what it will be once every
+    /// part is in only when the parts held are the chain's newest, with none missing between
+    /// them, and the page filled before reaching the parts older than those. Every part before
+    /// the head exists somewhere (it was started before the head), so one not held is waited
+    /// for unless the workspace's hosts cannot be asked for it ([`PartArrival::Unavailable`]);
+    /// the workspace's word that it holds none of one is no answer, as a service that just
+    /// started says so of parts it has not read yet. A chain not held whole asks for such a
+    /// part only when a reader reaches it: a listing that reaches it is such a reader. A chain
+    /// holding no part lists nothing until its newest part arrives.
     pub(crate) fn listing_arriving(&self, filled: bool) -> bool {
-        // A chain holding no part lists nothing yet: what it lists arrives with its newest
-        // part. Its host waits on this only while it hands the chain its parts, and the
-        // workspace's word that it holds none of the chain is no answer to that then.
-        if self.head().is_none() {
+        let Some(head) = self.head() else {
             return true;
-        }
-        let core = &self.core;
-        let holds_none = |document: &ui_core::resource::DocumentId| {
-            core.workspace.store.workspace_answer(document) == Some(WorkspaceAnswer::HoldsNone)
         };
-        let parts = core.parts.borrow();
-        let (Some(&oldest), Some(&head)) = (parts.keys().next(), parts.keys().next_back()) else {
+        let core = &self.core;
+        let missing = {
+            let parts = core.parts.borrow();
+            let waiting = core.waiting.borrow();
+            let oldest = parts.keys().next().copied().unwrap_or(head);
+            // The newest part the page reads that is not here and can be asked for: one
+            // between those held, or, for a page the held parts did not fill, one before them.
+            (0..head).rev().find(|index| {
+                !parts.contains_key(index)
+                    && waiting.get(index) != Some(&PartArrival::Unavailable)
+                    && (*index > oldest || !filled)
+            })
+        };
+        let Some(index) = missing else {
             return false;
         };
-        let waiting = core.waiting.borrow();
-        let on_its_way = |index: u64| match waiting.get(&index) {
-            Some(PartArrival::Arriving) => true,
-            Some(PartArrival::Unavailable) => false,
-            None => core.part.held_whole && !holds_none(&core.chain.part(index)),
-        };
-        (oldest..head).any(|index| !parts.contains_key(&index) && on_its_way(index))
-            || (!filled && (0..oldest).any(on_its_way))
+        if core.waiting.borrow().get(&index).is_none()
+            && !core.part.held_whole
+            && let Err(reason) = core.hold(index)
+        {
+            tracing::warn!(kind = core.part.kind, part = index, %reason, "a part a listing reaches is not asked for");
+        }
+        true
     }
 }

@@ -850,10 +850,11 @@ impl AttachedView {
             .map_or(0, |root| root.storage.chain_past_page_len(parent))
     }
 
-    /// Whether a page of the listing of the level `parent` reads what is still on its way here,
-    /// `filled` when what the view holds filled the page: a chain listed whose newest parts are
-    /// not all in, or, for a level no chain keeps, any chain with a part on its way. A page that
-    /// reads none is what it will be once every part is in, and is answered now.
+    /// Whether a page of the listing of the level `parent` reads what is not here yet, `filled`
+    /// when what the view holds filled the page: a chain listed whose newest parts are not all
+    /// in, the one the page reaches asked of the workspace's hosts
+    /// ([`ResourceStore::wanted_resources`]). A page that reads none is what it will be once
+    /// every part is in, and is answered now.
     #[must_use]
     pub fn listing_arriving(&self, parent: &str, filled: bool) -> bool {
         self.frame
