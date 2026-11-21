@@ -169,6 +169,10 @@ pub struct Fallback {
 /// The `system-update` resource.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a reading of its own that a person's update page shows beside the others, not a state one of them implies"
+)]
 pub struct Update {
     /// The system this machine started; `None` where its admins alone may see it.
     pub booted: Option<Deployment>,

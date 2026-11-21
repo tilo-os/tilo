@@ -317,9 +317,11 @@ impl StateWatch {
         let dir = self.dir.clone();
         let named = self.dir.clone();
         let moved = Arc::clone(&self.moved);
+        // The state file itself, by the name it is kept under.
+        let is_state = move |path: &Path| path.file_name() == state_name.as_deref();
         let watched = tilo_files::native::watch_changes(
             &self.dir,
-            move |path| path == named || path.file_name() == state_name.as_deref(),
+            move |path| path == named || is_state(path),
             move || {
                 // The directory went (a test, a tidy-up): its parent is watched for it again.
                 if !dir.is_dir() {

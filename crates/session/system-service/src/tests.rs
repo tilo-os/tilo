@@ -380,7 +380,9 @@ fn until(
     woken: &std::sync::mpsc::Receiver<()>,
     done: impl Fn(&SystemService) -> bool,
 ) -> bool {
-    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let give_up = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(20))
+        .expect("a deadline within range");
     while !done(service) {
         let left = give_up.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
