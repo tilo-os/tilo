@@ -355,7 +355,6 @@ pub enum LaunchError {
     CapabilityDenied(crate::permissions::PermissionScope),
     BindingMismatch,
     MissingComponentHost,
-    IncompatibleComponentSetup,
     /// Setup failed after the record became Ready: `recovery` holds its store (and any close reports)
     /// so the caller can reopen or flush it.
     ComponentSetup {
@@ -397,9 +396,6 @@ impl fmt::Display for LaunchError {
             Self::CapabilityDenied(scope) => write!(f, "required capability denied: {scope:?}"),
             Self::MissingComponentHost => {
                 f.write_str("application definition requires an explicit component host")
-            }
-            Self::IncompatibleComponentSetup => {
-                f.write_str("application definition cannot use legacy setup overrides")
             }
             Self::BindingMismatch => f.write_str("application binding does not match"),
             Self::ComponentSetup { source, .. } => write!(f, "application setup failed: {source}"),
@@ -483,9 +479,6 @@ impl fmt::Debug for LaunchError {
             Self::MissingComponentHost => {
                 f.write_str("application definition requires an explicit component host")
             }
-            Self::IncompatibleComponentSetup => {
-                f.write_str("application definition cannot use legacy setup overrides")
-            }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
             Self::ResourceNotHere => f.write_str("ResourceNotHere"),
             Self::SubstituteFont(_) => f.write_str("SubstituteFont"),
@@ -519,7 +512,6 @@ impl LaunchError {
                 | Self::CapabilityDenied(_)
                 | Self::BindingMismatch
                 | Self::MissingComponentHost
-                | Self::IncompatibleComponentSetup
         ) {
             1
         } else {
