@@ -87,6 +87,8 @@ mod remote_action_routing;
 mod server_cost;
 #[path = "server_daemon.rs"]
 mod server_daemon;
+#[path = "server_member_copy.rs"]
+mod server_member_copy;
 #[path = "servers_document.rs"]
 mod servers_document;
 #[path = "servers_operations.rs"]
