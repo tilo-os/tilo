@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
-description = "The Tilo UI runtime in the browser: real application components rendered with Vello on a WebGPU canvas."
+description = "The Tilo web entry's runtime in the browser: sign-in, admission and pairing for the entry pages."
 repository.workspace = true
 homepage.workspace = true
 
@@ -20,57 +20,18 @@ accounts = { version = "0.1.0", path = "../../system/accounts", features = ["per
 # broker transport is linked.
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
-# The workspace's files, which a page shows without a disk: the tree record they are.
-fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
-# Reading a PDF's words for search, through the portable engine the viewer draws with.
-tilo-pdf = { version = "0.1.0", path = "../../platform/tilo-pdf" }
-# Which app opens what a file's bytes are, as a workspace lands a file.
-tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
-# The core a page holds and reads its workspaces' documents through, as a
-# service does: it loads with the peer module, never with the start module.
-tilo-workspace-service = { version = "0.1.0", path = "../../server/tilo-workspace-service" }
-tilo-automerge.workspace = true
-settings-store = { version = "0.1.0", path = "../../system/settings-store" }
-# The person's settings sections, which this page keeps as their session does.
-settings-sections = { version = "0.1.0", path = "../../system/settings-sections" }
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-# The model service clients, and the page's own model service with the
-# gateway's provider dialects.
-tilo-model-gateway = { default-features = false, version = "0.1.0", path = "../../agent/model-gateway" }
-# The provider administration interface the page's deferred client implements.
-agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
-zeroize.workspace = true
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
-tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
-# The person's record on their host: the devices Settings lists.
-tilo-server-session = { version = "0.1.0", path = "../../server/tilo-server-session" }
-# The content windows' records reference (pictures, attachments), kept in
-# the profile's app files — which outlive the page, so an upload a draft names
-# is still here when the draft is sent — and asked of the workspace when
-# missing.
-tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false, features = ["dir"] }
-# The content format the workspace's files are kept in: a file dropped on the
-# page is kept as its manifest and chunks (src/dropped_files.rs).
-fs-content = { version = "0.1.0", path = "../../system/fs-content" }
 # The one link grammar, exported to the page as parseLink/formatLink.
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }
-# The layout's own document, run by the same rules the native session runs.
-tilo-session-core = { version = "0.1.0", path = "../../session/core" }
 # The session's sync, which keeps who is here on every host: the page says its
 # own word through it and reads the members back from its board.
 tilo-session = { version = "0.1.0", path = "../../session/session" }
-tilo-desktop-surface = { version = "0.1.0", path = "../../session/desktop-surface" }
-tilo-desktop-search = { version = "0.1.0", path = "../../session/desktop-search" }
 # The native shell's chrome widgets: top bar, backdrop, launchpad.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
-tilo-desktop = { version = "0.1.0", path = "../../session/desktop" }
-# The report transport the page's feedback delivery files through.
-tilo-feedback-transport = { version = "0.1.0", path = "../../collab/feedback-transport" }
 # The workspace directory's sheet, and the reads and joins behind it: the
 # session's own, over the page's `fetch`.
 tilo-sheets = { version = "0.1.0", path = "../../session/sheets" }
@@ -81,16 +42,6 @@ tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" 
 tilo-delivery-protocol = { version = "0.1.0", path = "../../server/tilo-delivery-protocol" }
 serde.workspace = true
 serde_json.workspace = true
-# Large records verified in the page's worker before they load (src/record_verify.rs).
-tilo-automerge-isolate = { version = "0.1.0", path = "../../doc/tilo-automerge-isolate" }
-# Warnings and errors reach the console (src/console_log.rs).
-tracing.workspace = true
-vello.workspace = true
-# The DOM presentation: the scene as HTML elements instead of a canvas.
-tilo-cpu-raster = { version = "0.1.0", path = "../../sdk/tilo-cpu-raster" }
-wgpu.workspace = true
-winit.workspace = true
-web-time = "1"
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 js-sys = "=0.3.85"
@@ -123,10 +74,6 @@ tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
 tilo-workspace-keys = { version = "0.1.0", path = "../../collab/workspace-keys" }
 # The picture sources and layers a call of the page encodes and shows.
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["live_session"] }
-# Which records a join does not replay, so a mount asks for them.
-neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
-# The browser's decoder for another device's window pictures (src/window_pictures.rs).
-tilo-media = { version = "0.1.0", path = "../../platform/tilo-media" }
 tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
@@ -226,15 +173,8 @@ deferred-page-layout = []
 deferred-page-search = []
 
 [dependencies]
-# What a notice says and where choosing it lands.
-tilo-service = { version = "0.1.0", path = "../../session/service" }
 # The host's endpoint address, as the page receives and dials it.
 iroh-base = { workspace = true }
-# Sorts without a copy of std's sort per call site, which kept the web
-# desktop's start module large.
-tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
-tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -246,40 +186,17 @@ workspace-hack = { version = "0.1" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 # A sheet's own life, which the page's sheets answer and its tests read (src/over_page.rs).
 tilo-sheets = { version = "0.1.0", path = "../../session/sheets" }
-tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
-# Merging a record the host sent into the page's copy (src/landing.rs).
-tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
-tracing.workspace = true
 tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }
-# What the page tells a person about a chord it cannot serve (src/fixed_chords.rs).
-tilo-desktop-surface = { version = "0.1.0", path = "../../session/desktop-surface" }
-# The layout's arranging actions in the page (src/arranging.rs).
-tilo-session-core = { version = "0.1.0", path = "../../session/core" }
-tilo-desktop-search = { version = "0.1.0", path = "../../session/desktop-search", features = ["settings"] }
 serde.workspace = true
 serde_json.workspace = true
 # What the page says of itself, as its live layer hands it back (src/presence_value.rs).
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # Another device's window pictures, as its track brings them (src/window_pictures.rs).
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live" }
-# The input a person gives another device's window, as the wire encodes it.
-neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
 # The device list's keys as text, as the page's own module writes them.
 hex.workspace = true
-# The workspace's file tree a drop on the page writes into, and the content
-# format its files are kept in (src/dropped_files.rs).
-fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
-fs-content = { version = "0.1.0", path = "../../system/fs-content" }
-tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
 
-# The person's settings the page keeps, and Settings' window changing them
-# (src/kept_settings.rs).
-tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", features = ["test-support"] }
-settings-sections = { version = "0.1.0", path = "../../system/settings-sections" }
-# Which appearance mode follows the system (src/page_theme.rs).
-settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 settings = { path = "../../../apps/settings", default-features = false }
-tilo-test-env = { path = "../../dev/test-env" }
