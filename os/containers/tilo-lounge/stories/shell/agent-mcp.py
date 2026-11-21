@@ -360,6 +360,12 @@ def steps(story: Story) -> None:
         ids = [name for name in names if re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-", name)]
         if ids:
             raise Failed(f"the question's sheet shows a raw id, not a name: {ids[0]!r}")
+        # No answer is the default: an Enter as the sheet comes up gives none, by accident or not.
+        ada.session.key("Enter")
+        time.sleep(1.0)
+        if "text" in answer or "error" in answer or not ada.shows(QUESTION):
+            raise Failed("Enter on the question as it came up answered it: "
+                         f"{answer.get('text') or answer.get('error') or 'the sheet went'}")
 
     def answers():
         ada.press(ANSWER, "the answer Ada picks")

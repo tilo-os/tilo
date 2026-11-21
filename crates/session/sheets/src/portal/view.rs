@@ -20,6 +20,14 @@ use crate::{t, words};
 
 /// The id of the sheet's dialog, which the shell finds it by.
 pub(super) const DIALOG_ID: &str = "portal-sheet";
+
+/// The dialog's id for the question it asks. The shell keeps the keyboard's place in an app by
+/// its controls' ids while the app is away, and the sheet stays up from one question to the next:
+/// a question of its own makes its controls its own, so the next question never opens on the
+/// button an earlier one was answered or left on.
+fn dialog_id(dialog: &Dialog) -> String {
+    format!("{DIALOG_ID}.{}", dialog.handle)
+}
 /// The id of the secret prompt.
 pub(super) const PROMPT_ID: &str = "portal-secret-prompt";
 /// How many facts a review lists before it counts the rest.
@@ -217,7 +225,7 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         ));
     }
     let mut sheet = ModalDialog::new(dialog.title.clone(), body)
-        .with_test_id(DIALOG_ID)
+        .with_test_id(dialog_id(dialog))
         .with_description(t("portal-sheet-description"))
         .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
         // On a phone it rises from the foot as tall as what it asks.
@@ -610,7 +618,7 @@ fn secret(dialog: &Dialog, prompt: &Prompt, parts: &Parts) -> Element {
     Widget::set_focus(&mut built, true);
     Box::new(presented(
         Some(&parts.state.presentation),
-        built.into_dialog().with_test_id(DIALOG_ID),
+        built.into_dialog().with_test_id(dialog_id(dialog)),
     ))
 }
 

@@ -229,15 +229,11 @@ fn at_most_one_answer_wears_the_primary_face_when_the_pointer_is_on_another() {
     }
 }
 
-/// An agent's own question: its choices come first and lead, the keyboard
-/// starts on the first of them but Enter answers nothing until the person
-/// moves onto one, and the system's two ways out ("Ask me later", "Don't
-/// answer") step back, plain, below them. A device with one workspace names
-/// none.
-#[test]
-fn an_agents_own_choices_lead_and_enter_gives_no_answer_by_accident() {
+/// The agent's question the sheets here ask: two choices of its own, on a device with one
+/// workspace.
+fn agents_own_question() -> tilo_sheets::portal::Dialog {
     use tilo_sheets::portal::{AgentAsk, AgentQuestion};
-    let asked = AgentQuestion {
+    AgentQuestion {
         agent: "Claude Code".into(),
         ask: Some(AgentAsk {
             question: "Shall I file the budget under Spring?".into(),
@@ -245,8 +241,63 @@ fn an_agents_own_choices_lead_and_enter_gives_no_answer_by_accident() {
             secret: false,
         }),
         ..AgentQuestion::default()
-    };
-    let shown = asked.dialog("request-1");
+    }
+    .dialog("request-1")
+}
+
+/// As the shell asks: the sheet is up before a question reaches it, and stays up from one
+/// question to the next. A question answered with its footer's way out leaves the keyboard
+/// there; the next question opens on its own first choice, never on that button.
+#[test]
+fn a_new_question_never_opens_on_the_button_the_last_was_answered_with() {
+    use tilo_sheets::portal::AgentQuestion;
+    let shown = agents_own_question();
+    {
+        use tilo_sheets::SheetState as _;
+        let state = PortalState::default();
+        let mut app =
+            HeadlessApp::<PortalApp>::for_person_with_lent("person", state.clone()).unwrap();
+        app.harness().resize(VIEWPORT).unwrap();
+        app.settle();
+        // An earlier question answered with its footer's way out: the keyboard's place there is
+        // that question's, never the next one's.
+        state.presentation().open(true);
+        state.show(Some(
+            AgentQuestion {
+                agent: "Claude Code".into(),
+                action: "Connect".into(),
+                allow_always: true,
+                ..AgentQuestion::default()
+            }
+            .dialog("request-0"),
+        ));
+        app.settle();
+        let deny = app.harness().targets()["portal-sheet.request-0.secondary"].center();
+        app.harness().click_at(deny.x, deny.y);
+        app.settle();
+        state.show(None);
+        state.presentation().open(false);
+        app.settle();
+        state.presentation().open(true);
+        state.show(Some(shown));
+        app.settle();
+        let focused = app.harness().a11y_focus().map(|(_, node)| node);
+        assert_eq!(
+            focused.as_ref().and_then(|node| node.label()),
+            Some("Yes, file it"),
+            "a question shown on a sheet already up starts the keyboard on its first choice"
+        );
+    }
+}
+
+/// An agent's own question: its choices come first and lead, the keyboard
+/// starts on the first of them but Enter answers nothing until the person
+/// moves onto one, and the system's two ways out ("Ask me later", "Don't
+/// answer") step back, plain, below them. A device with one workspace names
+/// none.
+#[test]
+fn an_agents_own_choices_lead_and_enter_gives_no_answer_by_accident() {
+    let shown = agents_own_question();
     assert!(
         shown.facts.is_empty(),
         "one workspace on the device goes unsaid"
@@ -267,8 +318,8 @@ fn an_agents_own_choices_lead_and_enter_gives_no_answer_by_accident() {
         );
         let targets = app.harness().targets();
         let first = targets["portal-answer-0"];
-        let later = targets["portal-sheet.secondary"];
-        let decline = targets["portal-sheet.tertiary"];
+        let later = targets["portal-sheet.request-1.secondary"];
+        let decline = targets["portal-sheet.request-1.tertiary"];
         assert!(
             first.y1 <= later.y0 && first.y1 <= decline.y0,
             "{name}: the choices come before the system's ways out"
@@ -292,7 +343,10 @@ fn an_agents_own_choices_lead_and_enter_gives_no_answer_by_accident() {
             );
         }
         let choice = face_fill(&mut app, "portal-answer-0");
-        for way_out in ["portal-sheet.secondary", "portal-sheet.tertiary"] {
+        for way_out in [
+            "portal-sheet.request-1.secondary",
+            "portal-sheet.request-1.tertiary",
+        ] {
             let fill = face_fill(&mut app, way_out);
             assert_ne!(
                 fill, choice,
