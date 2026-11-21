@@ -827,28 +827,47 @@ impl SignInFlow {
         let _ = crate::device_read::thread(
             "settings-cloud-sign-in",
             Box::new(move || {
-                let outcome = nextcloud::begin(&server).and_then(|flow| {
-                    let _ = url_sender.send(flow.login_url().to_string());
-                    flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
-                });
+                let page = |url: String| {
+                    let _ = url_sender.send(url);
+                };
+                // Settings' sandbox has no network: the session follows the sign-in where it
+                // connects for Settings, and Settings does only where it has a network itself.
+                let outcome = match crate::account_probe::session() {
+                    Some(session) => session
+                        .nextcloud_sign_in(
+                            &server,
+                            page,
+                            &cancel,
+                            nextcloud::POLL_INTERVAL,
+                            nextcloud::FLOW_LIFETIME,
+                        )
+                        .map(|login| (login.server, login.login_name, login.app_password)),
+                    None => nextcloud::begin(&server)
+                        .and_then(|flow| {
+                            page(flow.login_url().to_string());
+                            flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
+                        })
+                        .map(|login| (login.server, login.login_name, login.app_password))
+                        .map_err(|error| match error {
+                            NextcloudError::Cancelled => "sign-in was cancelled".to_owned(),
+                            error => error.to_string(),
+                        }),
+                };
                 let _ = sender.send(match outcome {
-                    Ok(login) => Outcome::completed(Completed {
+                    Ok((server, login_name, app_password)) => Outcome::completed(Completed {
                         kind,
                         existing_id,
                         display_name: display_name.clone(),
                         config: serde_json::json!({
                             "label": display_name,
-                            "server_url": login.server,
-                            "username": login.login_name,
+                            "server_url": server,
+                            "username": login_name,
                             "app_password": true,
                         }),
-                        secret: accounts::Secret::password(login.app_password.as_str()),
+                        secret: accounts::Secret::password(app_password.as_str()),
                         mail: None,
                     }),
-                    Err(NextcloudError::Cancelled) => {
-                        Outcome::Failed("sign-in was cancelled".into())
-                    }
-                    Err(error) => Outcome::Failed(error.to_string()),
+                    Err(error) => Outcome::Failed(error),
                 });
             }),
         );

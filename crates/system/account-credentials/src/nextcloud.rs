@@ -224,7 +224,12 @@ impl LoginFlow {
         }
     }
 
-    fn poll(&self) -> Result<Option<NextcloudLogin>, NextcloudError> {
+    /// Ask once whether the person approved the sign-in: `None` while they have not. What
+    /// [`Self::wait`] asks at each interval, for a caller that follows the flow on its own.
+    ///
+    /// # Errors
+    /// The server could not be reached or answered something a login flow does not.
+    pub fn poll(&self) -> Result<Option<NextcloudLogin>, NextcloudError> {
         let mut body = url::form_urlencoded::Serializer::new(String::new());
         body.append_pair("token", &self.token);
         let response = self

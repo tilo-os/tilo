@@ -40,6 +40,9 @@ pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const PACKAGE_SERVICE: &str = "package-service";
 /// The person's messaging accounts (`tilo-messaging`).
 pub const MESSAGING_SERVICE: &str = "messaging";
+/// The connections an account's sign-in makes to the account's own servers, made by the session
+/// for Settings, whose sandbox has no network (`tilo_account_probe::connect`).
+pub const ACCOUNTS_SERVICE: &str = "accounts";
 /// The shell runtime's supervisor.
 pub const USH_SERVICE: &str = "ush";
 /// Prefix of the `ush` handoff; the supervisor reads it before any request.
@@ -229,6 +232,9 @@ pub enum ServiceError {
         "service `package-service` is restricted to the Store, and to Settings for its language packs"
     )]
     PackageServiceUnauthorized,
+    /// Only Settings adds accounts, so only Settings is handed the connections to their servers.
+    #[error("service `accounts` is restricted to Settings, where accounts are added")]
+    AccountsServiceUnauthorized,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -777,6 +783,10 @@ fn resolve_service_binds_inner(
                 .is_none_or(|launch| ![STORE_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id))
         {
             return Err(ServiceError::PackageServiceUnauthorized);
+        }
+        if name == ACCOUNTS_SERVICE && context.is_none_or(|launch| launch.app_id != SETTINGS_APP_ID)
+        {
+            return Err(ServiceError::AccountsServiceUnauthorized);
         }
 
         if no_services {
@@ -1446,6 +1456,23 @@ mod tests {
                 )
                 .expect_err("third-party manifest must not grant package-manager authority");
                 assert!(matches!(error, ServiceError::PackageServiceUnauthorized));
+            }
+            {
+                let mut services = BTreeMap::new();
+                services.insert(
+                    ACCOUNTS_SERVICE.to_string(),
+                    crate::manifest::service_req("required@1"),
+                );
+                let error = resolve_service_binds_for_launch(
+                    &services,
+                    false,
+                    ServiceLaunchContext {
+                        app_id: "org.example.untrusted",
+                        workspace_id: None,
+                    },
+                )
+                .expect_err("an app that declares the accounts service is not handed its network");
+                assert!(matches!(error, ServiceError::AccountsServiceUnauthorized));
             }
             {
                 let dir = tempfile::tempdir().unwrap();

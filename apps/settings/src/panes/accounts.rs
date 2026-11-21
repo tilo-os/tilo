@@ -1048,7 +1048,7 @@ impl AccountsPane {
             reauth_password: ui::LocalState::new(String::new()),
             reauth_error: None,
             reauth_id: None,
-            account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
+            account_tester: crate::account_probe::tester(),
             form_probe: None,
             form_candidate: None,
             form_saving: false,

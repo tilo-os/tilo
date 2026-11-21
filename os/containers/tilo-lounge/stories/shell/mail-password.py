@@ -19,11 +19,10 @@ What the shell itself makes of the exchange is the only thing a step passes on: 
 window draws and their accessible names, the windows' own records, and, for the reply, the
 stand-in's own inbox, read back over IMAP. Nothing is taken from what an action answered.
 
-The account's sign-in is checked where the shell's Settings runs it: in the app. The app is
-sandboxed with no network of its own (`apps/settings/tilo-app.toml` declares `[sandbox.net]
-mode = "off"`), so the check cannot open the connection to the account's servers, and the step
-that connects the account ends on the form's own refusal. The steps after it are walked when the
-account is connected.
+The account's sign-in is checked before it is kept. Settings' sandbox has no network of its own
+(`apps/settings/tilo-app.toml` declares `[sandbox.net] mode = "off"`), so the session makes that
+connection for it, on the `accounts` service the launcher hands Settings alone: the story's
+provider is reached by the session, at the names the account gives.
 
     python3 mail-password.py OUT_DIR
 """
@@ -396,11 +395,10 @@ def steps(story: Story) -> None:
             except Failed as error:
                 raise Failed(
                     "the account was not kept: Settings kept its Add Email form up after Save, "
-                    "because the sign-in check could not reach the account's servers. Settings "
-                    "is sandboxed with no network at all (its manifest declares [sandbox.net] "
-                    "mode = off, and the session's log says net_restricted=true), so it cannot "
-                    f"open a connection to imap.{DOMAIN}:{IMAP_PORT}; the form's own message is "
-                    "in this step's shot") from error
+                    "so the sign-in check did not pass. Settings connects through the session's "
+                    f"accounts service to imap.{DOMAIN}:{IMAP_PORT}; the form's own message is "
+                    "in this step's shot, and the session's log says what the service did"
+                ) from error
             found["servers-named-by-the-person"] = False
             # Mail's own window takes the account it was given, with nothing reloaded.
             until(f"{ADDRESS} in Mail, with no reload", lambda: ada.shows(ADDRESS), 60, 0.2)

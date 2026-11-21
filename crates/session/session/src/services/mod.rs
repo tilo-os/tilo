@@ -45,6 +45,7 @@ use crate::app_wire::LayoutAuthority;
 use crate::render;
 use crate::tools;
 
+mod accounts;
 pub(crate) mod app_wire;
 
 /// How a client reaches a service of this session.
@@ -93,6 +94,9 @@ pub(crate) enum Service {
     /// The Windows compatibility service the Windows Apps manager sets up and starts Windows
     /// programs through ([`crate::windows_compat`]).
     Windows,
+    /// The connections adding an account makes to its servers, made for Settings, whose sandbox
+    /// has no network ([`accounts`]).
+    Accounts,
 }
 
 /// One service of this desktop: its name, how it is reached, and what serves it.
@@ -158,6 +162,11 @@ pub(crate) const TABLE: &[Row] = &[
         owner: Owner::Session(Service::Render),
     },
     Row {
+        name: launcher::services::ACCOUNTS_SERVICE,
+        reach: Reach::Launcher,
+        owner: Owner::Session(Service::Accounts),
+    },
+    Row {
         name: launcher::services::MESSAGING_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("tilo-messaging"),
@@ -209,6 +218,8 @@ pub(crate) struct Served {
     render: Option<render::Broker>,
     /// The Windows compatibility service.
     windows: Option<crate::windows_compat::Served>,
+    /// The connections to accounts' servers, made for Settings.
+    accounts: Option<accounts::Served>,
 }
 
 /// What a session serves its services with.
@@ -294,6 +305,13 @@ pub(crate) fn start(mut serving: Serving) -> Served {
             }
             Service::Windows => {
                 served.windows = windows(&mut serving);
+            }
+            Service::Accounts => {
+                served.accounts = accounts::serve()
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "the accounts service is unavailable"),
+                    )
+                    .ok();
             }
             Service::DataUsage => {}
         }
@@ -955,6 +973,7 @@ mod tests {
                 Service::Tools,
                 Service::Render,
                 Service::Windows,
+                Service::Accounts,
             ] {
                 assert!(
                     TABLE

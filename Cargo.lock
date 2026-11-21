@@ -17664,14 +17664,17 @@ dependencies = [
 name = "tilo-account-probe"
 version = "0.1.0"
 dependencies = [
+ "account-credentials",
  "accounts",
  "async-imap",
  "base64 0.22.1",
  "futures-util",
  "hickory-resolver",
+ "libc",
  "rcgen",
  "roxmltree 0.21.1",
  "rustls",
+ "serde",
  "serde_json",
  "test-http",
  "tilo-dav",
@@ -17681,6 +17684,7 @@ dependencies = [
  "tokio-rustls",
  "web-time",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -22527,6 +22531,7 @@ dependencies = [
  "test-server",
  "threshold-identity",
  "tilo-accessibility-settings",
+ "tilo-account-probe",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-activities",

@@ -79,6 +79,28 @@ pub mod account_probe {
     //! The bounded account connection probes, which the host that keeps an
     //! account runs too: one owner for what a sign-in check asks a server.
     pub use tilo_account_probe::*;
+
+    use std::sync::{Arc, OnceLock};
+
+    /// The session's connections to accounts' servers, where the launcher handed Settings them:
+    /// Settings' sandbox has no network, so the session signs in for it ([`connect`]).
+    #[must_use]
+    pub fn session() -> Option<Arc<connect::Connection>> {
+        static HANDED: OnceLock<Option<Arc<connect::Connection>>> = OnceLock::new();
+        HANDED
+            .get_or_init(|| connect::Connection::handed().map(Arc::new))
+            .clone()
+    }
+
+    /// What checks an account's sign-in: the session, where it connects for Settings, and this
+    /// program itself where Settings runs with a network of its own.
+    #[must_use]
+    pub fn tester() -> Arc<dyn AccountTester> {
+        match session() {
+            Some(session) => session,
+            None => Arc::new(LiveAccountTester),
+        }
+    }
 }
 pub mod device_fleet;
 #[cfg(feature = "tilo-os")]

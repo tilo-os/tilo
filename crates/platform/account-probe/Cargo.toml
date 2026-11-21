@@ -42,6 +42,14 @@ web-time = "1"
 # The stand-in's own certificate, where a test build serves one.
 rcgen = { workspace = true, optional = true }
 
+[target.'cfg(unix)'.dependencies]
+# The session's end of the connections it makes for Settings (`connect`): a Nextcloud
+# sign-in is the account-credentials login flow, and the messages are serde's.
+account-credentials = { path = "../../system/account-credentials" }
+serde.workspace = true
+zeroize.workspace = true
+libc.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

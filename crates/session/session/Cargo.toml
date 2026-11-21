@@ -272,6 +272,9 @@ tilo-identity-authority = { path = "../identity-authority" }
 # them on the apps' own routes.
 accounts = { path = "../../system/accounts", features = ["person"] }
 account-credentials = { path = "../../system/account-credentials" }
+# The sign-ins and calendar look-ups adding an account makes, made here for Settings, whose
+# sandbox has no network (services::accounts).
+tilo-account-probe = { path = "../../platform/account-probe" }
 # The website session a selected ownership entry holds, and what it opens.
 browser-continuity = { path = "../../browser/browser-continuity" }
 # The machine's readings, served to the apps the launcher connects at the

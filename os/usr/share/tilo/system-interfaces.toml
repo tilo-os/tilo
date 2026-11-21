@@ -39,6 +39,11 @@ package-service = 6
 # only those two apps are handed (crates/platform/tilo-messaging/interface.toml).
 messaging = 1
 
+# Settings ↔ session: the connections adding an account makes to its servers,
+# on the accounts service only Settings is handed, whose sandbox has no network
+# (crates/platform/account-probe/interface.toml).
+accounts = 1
+
 [runtime]
 # Session services handed to apps as connected sockets; each speaks the
 # runtime interface's version.

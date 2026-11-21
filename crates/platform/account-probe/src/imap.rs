@@ -190,14 +190,40 @@ pub async fn reach(
         .await
         {
             Ok(Ok(stream)) => return Ok(stream),
-            Ok(Err(error)) => last_error = Some(error.to_string()),
-            Err(_) => last_error = Some("connection timed out".into()),
+            Ok(Err(error)) => last_error = Some(unreached(&error)),
+            Err(_) => last_error = None,
         }
     }
     Err(format!(
         "could not reach {named}:{port}: {}",
-        last_error.unwrap_or_else(|| "connection timed out".into())
+        last_error.unwrap_or(TIMED_OUT)
     ))
+}
+
+/// What a person reads for a server that did not answer in time.
+const TIMED_OUT: &str = "it did not answer in time. Check the server name and port, and that this \
+                         device is online";
+
+/// Why a connection to a server failed, in words a person can act on: what they can check or
+/// change, never the operating system's error.
+pub fn unreached(error: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::ConnectionRefused => {
+            "nothing answers on that port. Check the server name and port"
+        }
+        ErrorKind::TimedOut => TIMED_OUT,
+        ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable | ErrorKind::NetworkDown => {
+            "no network reaches it. Check that this device is online"
+        }
+        ErrorKind::PermissionDenied => {
+            "this device does not allow the connection. Check its firewall and network settings"
+        }
+        ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => {
+            "the server closed the connection. Check the port, and try again"
+        }
+        _ => "the connection failed. Check the server name and port, and try again",
+    }
 }
 
 /// Open the secured connection to the IMAP server at `named:port`, reached
