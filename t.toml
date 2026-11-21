@@ -4574,6 +4574,7 @@ name = "image-fex-buildroot"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "set -eu\n# os/tests/fex-assembler.sh runs inside os/Containerfile.fex-buildroot beside the pinned\n# NASM it proves.\nbash tools/ci/publish/windows-compat.sh fex-buildroot /target/publish/fex-buildroot"
+needs = ["os-assets"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=arm64"]
 isolation = "vm"
