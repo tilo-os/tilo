@@ -20115,6 +20115,7 @@ dependencies = [
  "tilo-paths",
  "tilo-power-mgmt",
  "tilo-rt",
+ "tilo-server-protocol",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-user-identity",

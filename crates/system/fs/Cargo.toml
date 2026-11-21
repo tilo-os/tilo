@@ -26,6 +26,9 @@ default = ["filesystem"]
 rystic-tests = ["filesystem", "dep:tilo-cloud-files"]
 # The document-media capability over the content store, without the mount.
 document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror"]
+# Keeping a workspace's tree records converged with a peer's, over that peer's own document
+# reads and writes (the CLI's folder, a server's member copy).
+tree-sync = ["filesystem", "dep:tilo-server-protocol"]
 filesystem = [
     "tilo-files/watch",
     "dep:clap",
@@ -127,6 +130,8 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id", optional
 # A change of the tree names the file action it is and who made it, as every resource's does.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions", optional = true }
 fs-protocol = { version = "0.1.0", path = "../fs-protocol", optional = true }
+# What the workspace's host answered about a record it was opened on.
+tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol", optional = true }
 getrandom = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features

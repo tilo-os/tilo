@@ -413,8 +413,7 @@ impl Peer {
         let content = content::SessionContent::new(workspace, key, &link, Arc::clone(&self.store));
         let state = self.state.join(workspace.to_string());
         let replica =
-            tree::TreeReplica::start(link, workspace, &state, key, person, Arc::clone(&content))
-                .await?;
+            tree::start(link, workspace, &state, key, person, Arc::clone(&content)).await?;
         let actor = fs_protocol::FileActor {
             person: collab_types::Ed25519PublicKey(device.cert().user_public_key),
             device: collab_types::Ed25519PublicKey(key),

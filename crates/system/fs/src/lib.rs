@@ -92,6 +92,9 @@ pub mod tree_document;
 /// and no folder of its own.
 #[cfg(feature = "filesystem")]
 pub mod tree_put;
+/// Keeping a namespace of that tree converged with a peer's records of it.
+#[cfg(feature = "tree-sync")]
+pub mod tree_sync;
 #[cfg(feature = "filesystem")]
 pub mod unsaved;
 #[cfg(feature = "filesystem")]

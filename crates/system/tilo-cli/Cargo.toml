@@ -99,8 +99,10 @@ install-plan = { path = "../../session/install-plan" }
 # The peer `tilo login` leaves running: the person's workspaces' file trees,
 # held over the device's session and mounted at ~/Tilo with the filesystem
 # Tilo OS mounts.
-tilo-fs = { package = "tilo-fs", path = "../fs" }
+tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"] }
 fs-protocol = { path = "../fs-protocol" }
+# A workspace's records as this device's session reads them for the tree sync.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 automerge.workspace = true
@@ -154,7 +156,6 @@ tilo-test-env = { path = "../../dev/test-env" }
 # A server the login enters, whose workspace the device's own service holds as a member copy.
 tilo-server = { path = "../../server/tilo-server" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 getrandom.workspace = true
 migration-sources = { path = "../../platform/migration-sources", features = ["fixture"] }
 # Fake cloud drives for `tilo migrate`'s cloud sources.

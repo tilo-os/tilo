@@ -577,54 +577,29 @@ impl Worker {
         Ok(Some((records, held)))
     }
 
-    /// Commit `writes` to `workspace`'s tree, one record each: a record not in `held` (none
-    /// for a tree nobody wrote yet) is founded first with the empty genesis every writer makes
-    /// alike, then takes what was written there, as a record founded on the session is.
-    pub(super) fn commit_tree_writes(
+    /// Write `writes` to `workspace`'s tree, one record each, in the order the tree may go out
+    /// ([`tilo_fs::tree_sync::write_tree`]): the chunks the workspace does not hold first, the
+    /// tree's own record that names them last, so the tree never names a chunk it lacks.
+    ///
+    /// # Errors
+    /// The tree's records could not be read to name their write, or a write was refused.
+    pub(super) fn write_tree(
         &mut self,
         workspace_id: WorkspaceId,
-        workspace: &str,
+        named: &str,
         held: Option<&BTreeSet<TreeChunk>>,
-        writes: Vec<tilo_fs::namespace::ResourceWrite>,
+        records: &[tilo_fs::namespace::ResourceWrite],
     ) -> Result<(), String> {
-        // The records the workspace holds are read once, before any of them is written: reading
-        // each on its own waited on a part for every record, a folder's new chunks among them,
-        // and a part the workspace holds nothing of never arrives.
-        let mut known = None;
-        for write in writes {
-            if write.changes.is_empty() {
-                continue;
-            }
-            let route = Self::tree_chunk_route(workspace, write.chunk);
-            let holds = held.is_some_and(|held| held.contains(&write.chunk));
-            if holds && known.is_none() {
-                // What the tree's document stands at before this write: the identity goes onto
-                // it, so the change it makes follows the document's own.
-                known = Some(match self.refreshed_for(workspace_id, &route, true) {
-                    Ok(state) => state,
-                    Err(_) => {
-                        return Err("the workspace's tree could not be read to name it".into());
-                    }
-                });
-            }
-            if holds
-                && known
-                    .as_ref()
-                    .is_none_or(|state| state.document(&route).is_err())
-            {
-                return Err("the workspace's tree could not be read to name it".into());
-            }
-            if !holds {
-                let genesis = DocumentMutation::Snapshot(AutoCommit::new().save());
-                self.commit(workspace_id, &route, &genesis)?;
-            }
-            self.commit(
-                workspace_id,
-                &route,
-                &DocumentMutation::Incremental(write.changes),
-            )?;
-        }
-        Ok(())
+        let mut writer = TreeWrites {
+            worker: self,
+            workspace_id,
+            named,
+            held,
+            refreshed: false,
+        };
+        // A record write is answered where it is made: the service keeps it, or the agent's own
+        // session takes it, and the one-shot takes the answer at once.
+        tilo_fs::tree_sync::write_tree(records, held, &mut writer)
     }
 
     /// Answer a Files open naming a file: put it into `named`'s tree at the
@@ -738,7 +713,7 @@ impl Worker {
         ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        self.commit_tree_writes(workspace_id, named, held.as_ref(), writes)
+        self.write_tree(workspace_id, named, held.as_ref(), &writes)
             .map_err(|reason| commit_failed(reason, true))?;
         self.keep_tree(workspace_id, named, tree);
         // A folder's answer names how many files it put, not each: the caller
@@ -766,6 +741,47 @@ impl Worker {
             },
             None,
         ))
+    }
+}
+
+/// The workspace's tree written as this host, one record at a time
+/// ([`tilo_fs::tree_sync::write_tree`]).
+struct TreeWrites<'a> {
+    worker: &'a mut Worker,
+    workspace_id: WorkspaceId,
+    named: &'a str,
+    /// The record chunks the workspace holds: a write of one is a change, not a founding.
+    held: Option<&'a BTreeSet<TreeChunk>>,
+    /// Whether the held records were read for their write already: the identity goes onto what
+    /// the tree's document stands at, so the change it makes follows the document's own.
+    refreshed: bool,
+}
+
+impl tilo_fs::tree_sync::RecordWrite for TreeWrites<'_> {
+    fn write_record(
+        &mut self,
+        chunk: TreeChunk,
+        changes: &[u8],
+        _founding: bool,
+        snapshot: bool,
+    ) -> Result<(), String> {
+        let route = Worker::tree_chunk_route(self.named, chunk);
+        if !snapshot && !self.refreshed && self.held.is_some_and(|held| held.contains(&chunk)) {
+            self.refreshed = true;
+            if self
+                .worker
+                .refreshed_for(self.workspace_id, &route, true)
+                .is_err()
+            {
+                return Err("the workspace's tree could not be read to name it".to_owned());
+            }
+        }
+        let mutation = if snapshot {
+            DocumentMutation::Snapshot(changes.to_vec())
+        } else {
+            DocumentMutation::Incremental(changes.to_vec())
+        };
+        self.worker.commit(self.workspace_id, &route, &mutation)
     }
 }
 
