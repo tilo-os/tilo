@@ -183,12 +183,16 @@ impl<T: Animatable> MotionValue<T> {
     /// Whether the value is still on its way at `now`.
     #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
-        let moving =
-            !super::clock::testing::is_settled() && self.settles_at.is_some_and(|at| now < at);
+        let moving = self.moving(now);
         if moving {
             super::clock::debug_assert_frame_instant(now);
         }
         moving
+    }
+
+    /// Whether the value is still on its way at `now`, without a frame's check on the instant.
+    fn moving(&self, now: Instant) -> bool {
+        !super::clock::testing::is_settled() && self.settles_at.is_some_and(|at| now < at)
     }
 
     /// When the current motion arrives; `None` at rest.
@@ -278,10 +282,10 @@ impl<T: Animatable> MotionValue<T> {
             Timing::Spring(spring) => spring,
         };
         let same_target = channels_eq(self.target.to_channels(), target.to_channels());
-        if same_target && (spring == self.spring || !self.is_moving(now)) {
+        if same_target && (spring == self.spring || !self.moving(now)) {
             return;
         }
-        let (position, velocity) = self.channels_at(now);
+        let (position, velocity) = self.channels(now);
         self.start(target, position, velocity, spring, now);
     }
 
@@ -293,7 +297,7 @@ impl<T: Animatable> MotionValue<T> {
             self.snap(target);
             return;
         };
-        let (position, _) = self.channels_at(now);
+        let (position, _) = self.channels(now);
         self.start(target, position, velocity.to_channels(), spring, now);
     }
 
@@ -335,8 +339,18 @@ impl<T: Animatable> MotionValue<T> {
 
     #[track_caller]
     fn channels_at(&self, now: Instant) -> (Channels, Channels) {
+        if self.moving(now) {
+            super::clock::debug_assert_frame_instant(now);
+        }
+        self.channels(now)
+    }
+
+    /// Where the value is drawn and how fast it moves at `now`, without a frame's check: what a
+    /// caller that starts or redirects the motion there reads, which may be the instant the person
+    /// asked for it (no frame reads that one) and never what a frame's layout is drawn from.
+    fn channels(&self, now: Instant) -> (Channels, Channels) {
         let goal = self.target.to_channels();
-        if !self.is_moving(now) {
+        if !self.moving(now) {
             return (goal, [0.0; 4]);
         }
         let t = now.saturating_duration_since(self.started).as_secs_f64();

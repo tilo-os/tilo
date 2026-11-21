@@ -374,7 +374,7 @@ impl ColorSwatchPicker {
     /// once it rests there (the chosen swatch draws its own ring) or when none is chosen.
     fn follow_ring(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Rect> {
         use crate::motion::{Direction, ListChange};
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let Some(target) = self
             .shown_selected()
             .and_then(|i| self.swatch_rects.get(i).copied())

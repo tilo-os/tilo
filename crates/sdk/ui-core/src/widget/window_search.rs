@@ -1596,7 +1596,7 @@ impl Widget for WindowSearch {
         if self.anchor.area() <= 0.0 {
             return;
         }
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let progress = self.presence.progress(now);
         if progress <= 0.0 {
             let name = tr("window-search-name");
