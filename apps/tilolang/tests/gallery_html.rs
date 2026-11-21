@@ -542,9 +542,9 @@ fn a_tree_lays_the_rows_under_a_row_out_below_it() {
         .expect("a composition was handed over")
         .clone();
     let mut holding = 0_usize;
-    let mut nodes = vec![&composition.root];
-    while let Some(node) = nodes.pop() {
-        nodes.extend(&node.children);
+    let mut pending = vec![&composition.root];
+    while let Some(node) = pending.pop() {
+        pending.extend(&node.children);
         let Some(notes) = node.children.iter().find(|child| child.widget == "TreeNotes") else {
             continue;
         };
