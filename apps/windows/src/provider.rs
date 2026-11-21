@@ -707,6 +707,11 @@ impl LiveProvider {
                         capsule: capsule_id,
                         listed: false,
                     });
+                    // What was asked for, starting the setup, is done: the request is answered
+                    // now. The setup itself is a launch of the session's and its line follows the
+                    // list. Left unanswered, the window kept waiting for it and turned every
+                    // later request away, the installed program's "Open app" included.
+                    self.operation_result = Some(Ok(detail.clone()));
                     self.notice = Some(detail);
                     self.notice_error = false;
                 }
@@ -2394,6 +2399,27 @@ mod tests {
             capsule_id: capsule.into(),
             detail: "Installation is running.".into(),
         }
+    }
+
+    /// Starting a setup answers the request that asked for it. The window keeps one request
+    /// waiting at a time, so an unanswered one refused every later request: after any setup
+    /// "Open app" did nothing until Windows Apps was closed and opened again.
+    #[test]
+    fn a_started_setup_answers_the_request_that_asked_for_it() {
+        let (mut provider, events) = connected_to_nothing();
+        assert_eq!(provider.take_operation_result(), None);
+        events.send(setup_started("private-capsule")).unwrap();
+        assert_eq!(
+            provider.take_operation_result(),
+            Some(Ok("Installation is running.".into())),
+            "the request is answered as soon as the setup has started"
+        );
+        assert_eq!(provider.take_operation_result(), None, "and only once");
+        assert_eq!(
+            provider.notice.as_deref(),
+            Some("Installation is running."),
+            "the line still follows the list"
+        );
     }
 
     /// A setup's "Installation is running." line describes the capsule, so the list takes it down
