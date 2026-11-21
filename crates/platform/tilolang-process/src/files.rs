@@ -42,12 +42,13 @@ pub fn choose(
     chooser: &dyn FilePicker,
     request: &FileRequest,
 ) -> Result<Option<FileValue>, String> {
-    let label = accept_label(&request.accept);
-    let mut pick = PickRequest::open(&request.title, &label)
+    // The confirm button keeps the chooser's own word (Open): the types it offers name its
+    // filter, never what pressing the button does.
+    let mut pick = PickRequest::open(&request.title, "")
         .max_contents_bytes(MAX_CHOSEN)
         .thread_name("tilolang-choose-file");
     if !request.accept.is_empty() {
-        let mut filter = FileFilter::new(&label);
+        let mut filter = FileFilter::new(&filter_name(&request.accept));
         for media in &request.accept {
             filter = filter.mimetype(media);
         }
@@ -117,16 +118,16 @@ pub fn keep(
 /// Why it was not written: the chooser refused, or the write failed.
 pub fn save(chooser: &dyn FilePicker, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
     let title = format!("Save {}", request.name);
-    let pick =
-        PickRequest::save(&title, &request.media, &request.name).thread_name("tilolang-save-file");
+    // The confirm button reads Save, not the file's media type.
+    let pick = PickRequest::save(&title, "", &request.name).thread_name("tilolang-save-file");
     match wait(&chooser.save_contents(pick, content.to_vec()))? {
         SaveOutcome::Saved | SaveOutcome::Cancelled => Ok(()),
         SaveOutcome::Failed(why) => Err(why),
     }
 }
 
-/// The name a chooser shows for the types `accept` asks for.
-fn accept_label(accept: &[String]) -> String {
+/// The name a chooser's filter shows for the types `accept` asks for.
+fn filter_name(accept: &[String]) -> String {
     match accept.first().and_then(|media| media.split_once('/')) {
         Some(("image", _)) => "Images".to_owned(),
         Some(("text", _)) => "Text files".to_owned(),
@@ -164,16 +165,26 @@ mod tests {
     }
 
     #[test]
-    fn a_chooser_is_named_for_what_it_offers() {
-        assert_eq!(accept_label(&[]), "Any file");
-        assert_eq!(accept_label(&["image/png".to_owned()]), "Images");
-        assert_eq!(accept_label(&["text/markdown".to_owned()]), "Text files");
-        assert_eq!(accept_label(&["application/pdf".to_owned()]), "Files");
+    fn a_choosers_filter_is_named_for_what_it_offers() {
+        assert_eq!(filter_name(&[]), "Any file");
+        assert_eq!(filter_name(&["image/png".to_owned()]), "Images");
+        assert_eq!(filter_name(&["text/markdown".to_owned()]), "Text files");
+        assert_eq!(filter_name(&["application/pdf".to_owned()]), "Files");
     }
 
     /// A chooser that answers every contents pick with `name` and `bytes`: the person picking a
     /// file, without a desktop.
-    struct Picks(&'static str, &'static [u8]);
+    struct Picks(
+        &'static str,
+        &'static [u8],
+        std::sync::Mutex<Option<PickRequest>>,
+    );
+
+    impl Picks {
+        fn new(name: &'static str, bytes: &'static [u8]) -> Self {
+            Self(name, bytes, std::sync::Mutex::new(None))
+        }
+    }
 
     impl FilePicker for Picks {
         fn pick(&self, _: PickRequest) -> PortalChannel {
@@ -192,7 +203,8 @@ mod tests {
             unanswered()
         }
 
-        fn pick_contents(&self, _: PickRequest) -> ContentsChannel {
+        fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
+            *self.2.lock().unwrap() = Some(request);
             let (sender, receiver) = std::sync::mpsc::channel();
             let _ = sender.send(ContentsOutcome::Picked(vec![PickedContents {
                 name: self.0.to_owned(),
@@ -207,7 +219,7 @@ mod tests {
     #[test]
     fn a_chosen_file_is_kept_in_the_store_the_instance_holds() {
         let store = ContentStore::memory();
-        let chooser = Picks("Lisbon.md", b"# Lisbon in May\n");
+        let chooser = Picks::new("Lisbon.md", b"# Lisbon in May\n");
         let chosen = choose(
             &store,
             &chooser,
@@ -221,6 +233,12 @@ mod tests {
         .expect("a file was chosen");
         assert_eq!(chosen.name, "Lisbon.md");
         assert_eq!(chosen.media, "text/markdown");
+        let asked = chooser.2.lock().unwrap().take().expect("the chooser was asked");
+        assert_eq!(
+            (asked.title(), asked.accept_label(), asked.filter_names()),
+            ("Import Markdown", "", vec!["Text files"]),
+            "the types name the filter; the confirm button keeps the chooser's own Open"
+        );
         assert_eq!(
             store.read(&chosen.hash).as_deref(),
             Some(&b"# Lisbon in May\n"[..]),
@@ -231,7 +249,7 @@ mod tests {
     #[test]
     fn a_file_another_type_is_refused_before_it_is_kept() {
         let store = ContentStore::memory();
-        let chooser = Picks("photo.png", b"\x89PNG");
+        let chooser = Picks::new("photo.png", b"\x89PNG");
         let refused = choose(
             &store,
             &chooser,
