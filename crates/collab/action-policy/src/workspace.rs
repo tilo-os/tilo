@@ -1137,118 +1137,189 @@ impl WorkspacePolicy {
         self.check_administration_change(actor_person, actor, change, cx)?;
         match change {
             Change::TransferOwnership { person } => {
-                if !self.is_owner(actor_person) {
-                    return Err(Refusal::OwnershipByOwner);
-                }
-                if self.is_owner(person) {
-                    return Err(Refusal::Owner);
-                }
-                if self.is_banned(person) {
-                    return Err(Refusal::Banned(person.clone()));
-                }
-                Ok(())
+                self.check_ownership_transfer(actor_person, person)
             }
             Change::AddMember { person, role } => {
-                if self.is_member(person) {
-                    return Err(Refusal::AlreadyAMember(person.clone()));
-                }
-                if self.is_banned(person) {
-                    return Err(Refusal::Banned(person.clone()));
-                }
-                self.check_role_handout(actor_person, *role)
+                self.check_member_addition(actor_person, person, *role)
             }
-            Change::SetRole { person, role } => {
-                if self.is_owner(person) {
-                    return Err(Refusal::Owner);
-                }
-                if !self.members.contains_key(person) {
-                    return Err(Refusal::NotAMember(person.clone()));
-                }
-                self.check_role_handout(actor_person, *role)
-            }
-            Change::RemoveMember { person } => {
-                if self.is_owner(person) {
-                    return Err(Refusal::Owner);
-                }
-                // A member's removal takes their membership and every grant
-                // naming them. Someone the membership no longer holds, because
-                // the admission an invitation receipt gave them was taken back
-                // first ([`super::super::members`] replay), has only those
-                // grants left to take: removing them is the same change, and
-                // removing them twice changes nothing.
-                if self.members.contains_key(person) {
-                    self.check_reach(actor_person, person, false)?;
-                }
-                Ok(())
-            }
-            Change::Ban { person } => {
-                if self.is_banned(person) {
-                    return Err(Refusal::Banned(person.clone()));
-                }
-                self.check_reach(actor_person, person, true)
-            }
-            Change::Unban { person } => {
-                if !self.is_banned(person) {
-                    return Err(Refusal::NotBanned(person.clone()));
-                }
-                Ok(())
-            }
+            Change::SetRole { person, role } => self.check_member_role(actor_person, person, *role),
+            Change::RemoveMember { person } => self.check_member_removal(actor_person, person),
+            Change::Ban { person } => self.check_ban(actor_person, person),
+            Change::Unban { person } => self.check_unban(person),
             Change::Restrict { person, until_ms } => {
-                if *until_ms <= cx.now_unix_ms {
-                    return Err(Refusal::InThePast(*until_ms));
-                }
-                self.check_reach(actor_person, person, true)
+                self.check_restriction(actor_person, person, *until_ms, cx)
             }
-            Change::Unrestrict { person } => {
-                if self.restricted_until(person, cx).is_none() {
-                    return Err(Refusal::NotRestricted(person.clone()));
-                }
-                self.check_reach(actor_person, person, true)
-            }
+            Change::Unrestrict { person } => self.check_restriction_lift(actor_person, person, cx),
             Change::Grant(grant) => self.check_new_grant(actor, grant, cx),
-            Change::Revoke(id) => {
-                if let Some(grant) = self.grants.iter().find(|grant| &grant.id == id) {
-                    if roles::is_role_grant(grant) {
-                        return Err(Refusal::BuiltInRole(id.clone()));
-                    }
-                    Ok(())
-                } else {
-                    Err(Refusal::UnknownGrant(id.clone()))
-                }
-            }
+            Change::Revoke(id) => self.check_revocation(id),
             Change::DefineRole { id, name } => Self::check_role_definition(id, name),
             Change::RemoveRole { id } => self.require_custom_role(id),
             Change::SetMemberRoles { person, roles } => {
-                if !self.members.contains_key(person) {
-                    return Err(Refusal::NotAMember(person.clone()));
-                }
-                for role in roles {
-                    self.require_custom_role(role)?;
-                }
-                for grant in &self.grants {
-                    if matches!(&grant.grantee, Grantee::CustomRole(id) if roles.contains(id)) {
-                        Self::check_within(actor, grant, cx)?;
-                    }
-                }
-                Ok(())
+                self.check_member_roles(actor, person, roles, cx)
             }
             Change::SetMemberCustomRole {
                 person,
                 role,
                 assigned,
-            } => {
-                if !self.members.contains_key(person) {
-                    return Err(Refusal::NotAMember(person.clone()));
-                }
-                self.require_custom_role(role)?;
-                for grant in self.grants.iter().filter(|grant| {
-                    *assigned && matches!(&grant.grantee, Grantee::CustomRole(id) if id == role)
-                }) {
-                    Self::check_within(actor, grant, cx)?;
-                }
-                Ok(())
+            } => self.check_member_custom_role(actor, person, role, *assigned, cx),
+        }
+    }
+
+    /// The owner alone hands the workspace to someone who is neither its owner
+    /// nor banned.
+    fn check_ownership_transfer(&self, actor_person: &str, person: &str) -> Result<(), Refusal> {
+        if !self.is_owner(actor_person) {
+            return Err(Refusal::OwnershipByOwner);
+        }
+        if self.is_owner(person) {
+            return Err(Refusal::Owner);
+        }
+        if self.is_banned(person) {
+            return Err(Refusal::Banned(person.to_owned()));
+        }
+        Ok(())
+    }
+
+    /// An admission takes someone the workspace holds neither as a member nor
+    /// as banned, at a role the actor may hand out.
+    fn check_member_addition(
+        &self,
+        actor_person: &str,
+        person: &str,
+        role: Role,
+    ) -> Result<(), Refusal> {
+        if self.is_member(person) {
+            return Err(Refusal::AlreadyAMember(person.to_owned()));
+        }
+        if self.is_banned(person) {
+            return Err(Refusal::Banned(person.to_owned()));
+        }
+        self.check_role_handout(actor_person, role)
+    }
+
+    /// A role changes on someone the membership holds and nobody owns; who may
+    /// hand the new role out is the handout's rule.
+    fn check_member_role(
+        &self,
+        actor_person: &str,
+        person: &str,
+        role: Role,
+    ) -> Result<(), Refusal> {
+        if self.is_owner(person) {
+            return Err(Refusal::Owner);
+        }
+        if !self.members.contains_key(person) {
+            return Err(Refusal::NotAMember(person.to_owned()));
+        }
+        self.check_role_handout(actor_person, role)
+    }
+
+    /// A removal takes the membership and every grant naming them. Someone the
+    /// membership no longer holds, because the admission an invitation receipt
+    /// gave them was taken back first ([`super::super::members`] replay), has
+    /// only those grants left to take: removing them is the same change, and
+    /// removing them twice changes nothing.
+    fn check_member_removal(&self, actor_person: &str, person: &str) -> Result<(), Refusal> {
+        if self.is_owner(person) {
+            return Err(Refusal::Owner);
+        }
+        if self.members.contains_key(person) {
+            self.check_reach(actor_person, person, false)?;
+        }
+        Ok(())
+    }
+
+    fn check_ban(&self, actor_person: &str, person: &str) -> Result<(), Refusal> {
+        if self.is_banned(person) {
+            return Err(Refusal::Banned(person.to_owned()));
+        }
+        self.check_reach(actor_person, person, true)
+    }
+
+    fn check_unban(&self, person: &str) -> Result<(), Refusal> {
+        if !self.is_banned(person) {
+            return Err(Refusal::NotBanned(person.to_owned()));
+        }
+        Ok(())
+    }
+
+    fn check_restriction(
+        &self,
+        actor_person: &str,
+        person: &str,
+        until_ms: u64,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
+        if until_ms <= cx.now_unix_ms {
+            return Err(Refusal::InThePast(until_ms));
+        }
+        self.check_reach(actor_person, person, true)
+    }
+
+    fn check_restriction_lift(
+        &self,
+        actor_person: &str,
+        person: &str,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
+        if self.restricted_until(person, cx).is_none() {
+            return Err(Refusal::NotRestricted(person.to_owned()));
+        }
+        self.check_reach(actor_person, person, true)
+    }
+
+    /// A grant is revoked by its own id, and a role's built-in grants are not
+    /// the workspace's to take away.
+    fn check_revocation(&self, id: &GrantId) -> Result<(), Refusal> {
+        if let Some(grant) = self.grants.iter().find(|grant| &grant.id == id) {
+            if roles::is_role_grant(grant) {
+                return Err(Refusal::BuiltInRole(id.clone()));
+            }
+            Ok(())
+        } else {
+            Err(Refusal::UnknownGrant(id.clone()))
+        }
+    }
+
+    fn check_member_roles(
+        &self,
+        actor: &Authority<'_>,
+        person: &str,
+        roles: &BTreeSet<String>,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
+        if !self.members.contains_key(person) {
+            return Err(Refusal::NotAMember(person.to_owned()));
+        }
+        for role in roles {
+            self.require_custom_role(role)?;
+        }
+        for grant in &self.grants {
+            if matches!(&grant.grantee, Grantee::CustomRole(id) if roles.contains(id)) {
+                Self::check_within(actor, grant, cx)?;
             }
         }
+        Ok(())
+    }
+
+    fn check_member_custom_role(
+        &self,
+        actor: &Authority<'_>,
+        person: &str,
+        role: &str,
+        assigned: bool,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
+        if !self.members.contains_key(person) {
+            return Err(Refusal::NotAMember(person.to_owned()));
+        }
+        self.require_custom_role(role)?;
+        for grant in self.grants.iter().filter(|grant| {
+            assigned && matches!(&grant.grantee, Grantee::CustomRole(id) if id == role)
+        }) {
+            Self::check_within(actor, grant, cx)?;
+        }
+        Ok(())
     }
 
     fn check_administration_change(
