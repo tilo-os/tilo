@@ -65,13 +65,20 @@ thin_app_dir=$target_dir/thin-app
 # Every app that keeps a model ships its built module inside the package, so a
 # device holding the workspace's keys applies the app's actions with no build
 # of its own. The modules are the `app-models` check's output (`tools/ci/app-models.sh`,
-# kept under the target directory); a pack given them through `TILO_APP_MODELS`
-# takes that output and builds no wasm crate. One given none builds them here
-# first, through the same script the check does, and then packs what it built;
-# an app whose guest crate is beside it and whose module is not there fails
-# below either way, rather than shipping without one. Each module holds only
-# its app's own code and links against the model runtime beside them
-# (`app-model-runtime/`), which the runtime bundle below carries once for every app.
+# kept under the target directory); a pack takes that output through `TILO_APP_MODELS`
+# and builds no wasm crate. Each module holds only its app's own code and links
+# against the model runtime beside them (`app-model-runtime/`), which the runtime
+# bundle below carries once for every app.
+# The modules every app ships are the app-models check's output; a release builds them in its
+# model step and names them here. This packs what is there and builds no module of its own: an
+# app whose module is missing cannot ship, and a wasm link under the native hardening flags
+# fails far from the cause, so a pack without them stops here, before anything compiles.
+if [[ ${TILO_APP_RUNTIME_ONLY:-} != 1 && ${TILO_APP_COMPILE_ONLY:-} != 1 ]]; then
+    [[ -n ${TILO_APP_MODELS:-} ]] || {
+        printf 'TILO_APP_MODELS is not set: point it at the app-models output (`t outputs app-models`)\n' >&2
+        exit 2
+    }
+fi
 app_models=$(realpath -m "${TILO_APP_MODELS:-${CARGO_TARGET_DIR:-$repo_root/target}/app-models}")
 # TILO_APP_TOOLS_BUILT=1: the packing tools are already in $release_dir, built by an earlier run,
 # so none is built.
@@ -122,6 +129,12 @@ elif [[ -n ${TILO_APP_DEV_SOURCE:-} ]]; then
         --source "$TILO_APP_DEV_SOURCE" --plan "$plan"
 fi
 mapfile -t packages < <(jq -r '.packages[]' "$plan")
+# A tilolang package runs on the tilolang runtime bundle, whose binary is a thin app binary of
+# the same graph the selection builds: naming it here builds it with the runtime's libraries.
+tilolang_apps=$(jq -r '.tilolang | length' "$plan")
+if (( tilolang_apps > 0 )); then
+    packages+=(tilolang-app)
+fi
 runtime_plan="$out/runtime-plan.json"
 python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
@@ -131,6 +144,12 @@ if [[ -z $prebuilt ]]; then
 # app-binaries check) packs nothing, so it needs no packing tools.
 if [[ ${TILO_APP_SKIP_TOOLS:-} != 1 && $tools_built != 1 ]]; then
     (cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p runtime-bundle)
+    if (( tilolang_apps > 0 )); then
+        # `tilolang build` stages, packs and signs each package's tapp; the host runs a
+        # workspace's instances, without the toolkit, on the app runtime's own libraries.
+        (cd "$repo_root" && cargo build --profile "$tools_profile" --locked \
+            -p tilolang-cli --bin tilolang -p tilolang-process --bin tilolang-process)
+    fi
 fi
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
 # features across the selected graph.  Always resolve the shared runtime against
@@ -143,7 +162,7 @@ fi
 [[ $runtime_only != 1 ]] || exit 0
 mapfile -t app_binaries < <(
     jq -r --arg root "$thin_app_dir" \
-        '.catalog[] | $root + "/" + .binary' "$plan"
+        '.catalog[] | select(.kind == "native") | $root + "/" + .binary' "$plan"
 )
 "$repo_root/os/scripts/verify-elf-hardening.sh" "${app_binaries[@]}"
 # Compiling needs no publisher identity; a caller can build here and sign in a
@@ -191,13 +210,8 @@ keyboard_library="$keyboard_libdir/libxkbcommon.so.0"
 runtime_fonts="$out/work/fonts"
 python3 "$repo_root/tools/font-catalog.py" prepare \
     "$repo_root/crates/sdk/ui-core/assets/fonts" "$runtime_fonts" --scope product
-# A pack given no modules builds them now, once, through the app-models check's
-# own script; one given them takes that output and builds nothing. The model
-# runtime the apps' modules link against is signed into the runtime bundle
+# The model runtime the apps' modules link against is signed into the runtime bundle
 # (lib/app-model-runtime), so every device these apps are installed on has it once.
-if [[ -z ${TILO_APP_MODELS:-} ]]; then
-    bash "$repo_root/tools/ci/app-models.sh"
-fi
 app_model_runtime="$app_models/app-model-runtime"
 [[ -f $app_model_runtime/runtime.json ]] || {
     printf 'no model runtime at %s; build it with `t outputs app-models`\n' "$app_model_runtime" >&2
@@ -318,7 +332,46 @@ while IFS=$'\t' read -r name package binary id version manifest; do
             "$tapp" "$tapp_bytes" "$max_tapp_bytes" >&2
         exit 1
     }
-done < <(jq -r '.catalog[] | [.name,.package,.binary,.id,.version,.manifest] | @tsv' "$plan")
+done < <(jq -r '.catalog[] | select(.kind == "native") | [.name,.package,.binary,.id,.version,.manifest] | @tsv' "$plan")
+
+# --- tilolang packages --------------------------------------------------------
+# A package's payload is its compiled module, and it runs on the tilolang runtime bundle: the
+# bundle's binary (apps/tilolang) and its host are built by the same thin graph, and the bundle
+# is the `tilolang/<version>` each package names as its entrypoint runtime and lists under
+# `optional-runtimes`, so a device installs the bundle along with the apps that need it.
+if (( tilolang_apps > 0 )); then
+    tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
+        "$repo_root/apps/tilolang/tilo-runtime.toml")
+    [[ -n $tilolang_version ]] \
+        || { printf 'apps/tilolang/tilo-runtime.toml provides no tilolang version\n' >&2; exit 1; }
+    tilolang_bin="$thin_app_dir/tilolang-app"
+    tilolang_host="$release_dir/tilolang-process"
+    [[ -f $tilolang_bin ]] || { printf 'missing tilolang runtime binary: %s\n' "$tilolang_bin" >&2; exit 1; }
+    [[ -f $tilolang_host ]] || { printf 'missing tilolang host: %s\n' "$tilolang_host" >&2; exit 1; }
+    chmod +x "$tilolang_bin"
+    tilolang_bundle="$out/runtime/tilolang/$tilolang_version"
+    "$release_dir/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
+        --out "$tilolang_bundle" --include-bin "$tilolang_bin" \
+        --include-bin "$tilolang_host" --identity "$runtime_identity" >/dev/null
+    # `tilolang build` keeps each tapp's own name (`<last id segment>.tapp`); the collection
+    # names every tapp `<app>-<version>-<arch>`, native or not, so a client reads one scheme.
+    while IFS=$'\t' read -r name dir id version runtime; do
+        tilolang_out="$out/work/tilolang"
+        mkdir -p "$tilolang_out"
+        printf 'building tilolang app=%s id=%s runtime=%s\n' "$name" "$id" "$runtime"
+        "$release_dir/tilolang" build "$repo_root/$dir" --search "$repo_root/apps/tl" \
+            --out "$tilolang_out" --identity "$identity" --version "$version" \
+            --tilo-runtime "tilo-runtime/$runtime_release"
+    done < <(jq -r '.tilolang[] | [.app,.dir,.id,.version,.runtime] | @tsv' "$plan")
+    # Every package the apps use was signed beside them: a library is installed with the apps
+    # that need it, from the same collection.
+    tilolang_arch=$(uname -m)
+    while IFS=$'\t' read -r id name version; do
+        tapp="$tilolang_out/${id##*.}.tapp"
+        [[ -f $tapp ]] || { printf 'tilolang build made no tapp for %s\n' "$id" >&2; exit 1; }
+        install -pm 0644 "$tapp" "$out/tapp/$name-$version-$tilolang_arch.tapp"
+    done < <(jq -r '.catalog[] | select(.kind == "tilolang") | [.id,.name,.version] | @tsv' "$plan")
+fi
 
 # The runtime itself, as the registry offers it: a `kind = "runtime"`
 # package whose payload is the signed bundle above, split into its thin
