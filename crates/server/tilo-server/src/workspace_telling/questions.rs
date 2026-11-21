@@ -362,10 +362,6 @@ mod tests {
     /// answered or taken back waits no more; a plain message is nobody's
     /// question.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one part with a question in each state, read once"
-    )]
     fn a_parts_questions_are_read_as_they_stand() {
         let decks = [("march", "The March one"), ("june", "The June one")];
         let mut answered = question(chat::question::CHOICE, &decks);

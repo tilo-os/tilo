@@ -325,6 +325,14 @@ async fn govern(
 /// stopped one out; the second then keeps the workspace alone and makes its
 /// base.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: the old build's grant, the hand-over, the stop and the owner's take-out"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "both servers stay up until the owner has taken the stopped one out"
+)]
 async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     use tilo_action_policy::{Answer, Grant, GrantId, Grantee, KindSet, Lifetime, roles};
     use tilo_test_env::within;
