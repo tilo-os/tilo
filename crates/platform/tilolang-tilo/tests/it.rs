@@ -80,6 +80,5 @@ mod undo_own;
 mod unions;
 mod unsaved;
 mod upgrade;
-mod views_migration;
 mod window;
 mod words;
