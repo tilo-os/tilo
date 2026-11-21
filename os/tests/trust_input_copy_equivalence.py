@@ -21,9 +21,11 @@ COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_
 COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml
 COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml
+COPY keys/release/rekor.pub keys/release/trust.env /usr/share/tilo/release/
 """
 DESTINATIONS = (
     'run/tilo-official-trust', 'run/tilo-trust-tools', 'etc/containers',
+    'usr/share/tilo/release',
 )
 
 
