@@ -54,12 +54,7 @@ fn is_disk_unlock_prompt(text: &str) -> bool {
 
 fn check_retained_preferences(saved: &Value, current: &Value) -> Result<(), String> {
     for key in ["hostname", "keyboard_layout", "timezone", "locale"] {
-        let legacy = if key == "hostname" {
-            json!("scenario-tilo")
-        } else {
-            Value::Null
-        };
-        if saved.get(key).unwrap_or(&legacy) != current.get(key).unwrap_or(&legacy) {
+        if saved.get(key) != current.get(key) {
             return Err(format!(
                 "retained scenario {key} differs; use its original inputs"
             ));
@@ -406,7 +401,7 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
         .map_err(|error| format!("invalid VM install proof: {error}"))?;
     validate_install_proof_identity(&proof)?;
     match version {
-        1 => validate_legacy_install_proof(&proof)?,
+        1 => validate_booted_image_proof(&proof)?,
         3 => validate_development_copy_proof(&proof)?,
         4 => validate_development_target_proof(&proof)?,
         _ => validate_signed_target_proof(&proof)?,
@@ -448,8 +443,9 @@ fn validate_install_proof_identity(proof: &VmInstallProof) -> Result<(), String>
     Ok(())
 }
 
+/// The booted image installed as it is: no target was selected and nothing was copied.
 #[cfg(any(windows, test))]
-fn validate_legacy_install_proof(proof: &VmInstallProof) -> Result<(), String> {
+fn validate_booted_image_proof(proof: &VmInstallProof) -> Result<(), String> {
     if proof.schema != "tilo.vm-install-image-proof.v1"
         || proof.booted_image_digest != proof.installed_image_digest
         || proof
@@ -1800,11 +1796,8 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_install_scenario_checks_preferences_and_prompts;
 
-        phase retained_install_preferences_preserve_legacy_defaults_and_reject_changes;
+        phase retained_install_preferences_reject_changes;
         {
-            let legacy = serde_json::json!({});
-            let defaults = serde_json::json!({"hostname":"scenario-tilo", "keyboard_layout":null, "timezone":null, "locale":null});
-            super::check_retained_preferences(&legacy, &defaults).unwrap();
             let mut configured = plan(Layout::Erase);
             configured.hostname = "tilo-desktop".into();
             configured.keyboard_layout = Some("German (QWERTZ)".into());
@@ -1820,7 +1813,7 @@ mod tests {
                         .contains(key)
                 );
             }
-            assert!(super::check_retained_preferences(&legacy, &requested).is_err());
+            assert!(super::check_retained_preferences(&serde_json::json!({}), &requested).is_err());
         }
 
         phase disk_secret_requires_the_visible_encrypted_root_prompt;
@@ -1860,7 +1853,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn vm_install_proofs_bind_what_was_installed;
 
-        phase vm_install_proofs_bind_legacy_line;
+        phase vm_install_proofs_bind_the_booted_image;
         {
             let digest = format!("sha256:{}", "a".repeat(64));
             let efi = "11111111-1111-4111-8111-111111111111";
