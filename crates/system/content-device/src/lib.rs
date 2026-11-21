@@ -5,7 +5,9 @@
 //! capability to it, and [`device()`] is the one store every caller in the process
 //! shares.
 
-use tilo_content::{ContentBackend, ContentStore};
+use tilo_content::ContentStore;
+#[cfg(unix)]
+use tilo_content::ContentBackend;
 
 #[cfg(unix)]
 mod device;
