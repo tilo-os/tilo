@@ -447,7 +447,20 @@ impl AccountTester for FindingAccountTester {
     }
 }
 
-pub use accounts::local_http_allowed;
+/// Whether plain HTTP to `url` is allowed: only in a development build, and
+/// only to this machine, named `localhost` or by a loopback address. A
+/// loopback address reaches exactly the listener bound there, where the
+/// name may resolve to `[::1]` first.
+pub fn local_http_allowed(url: &tilo_dav::Url) -> bool {
+    let local = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    cfg!(debug_assertions) && url.scheme() == "http" && local
+}
 
 #[cfg(test)]
 mod tests {

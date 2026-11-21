@@ -276,13 +276,13 @@ fn from_account(account: &Account) -> Option<RemoteAccount> {
     })
 }
 
-/// The host (and port) an account's server is named by, when it is one Files may show: reached
-/// over HTTPS, or over plain HTTP only where the system allows it ([`accounts::local_http_allowed`]),
-/// and naming no credential, query or fragment.
+/// The host (and port) an account's server is named by, when it is one Files may show: one the
+/// cloud service mounts ([`cloud_source::is_secure_endpoint`]: HTTPS, or plain HTTP to this
+/// machine), naming no credential, query or fragment.
 fn server_host(raw: &str) -> Option<String> {
     let rest = raw.strip_prefix("https://").or_else(|| {
         raw.strip_prefix("http://")
-            .filter(|_| accounts::local_http_allowed_at(raw))
+            .filter(|_| cloud_source::is_secure_endpoint(raw))
     })?;
     if rest.is_empty() || rest.contains(['@', '?', '#', '\\']) {
         return None;
@@ -432,8 +432,8 @@ mod tests {
                 assert_eq!(server_host("http://cloud.example"), None);
                 assert_eq!(
                     server_host("http://127.0.0.1:8080/"),
-                    cfg!(debug_assertions).then(|| "127.0.0.1:8080".to_owned()),
-                    "plain HTTP only to this machine, and only in a development build"
+                    Some("127.0.0.1:8080".to_owned()),
+                    "plain HTTP to this machine, as the cloud service mounts it"
                 );
                 assert_eq!(server_host("https://user:pass@cloud.example"), None);
                 assert_eq!(server_host("https://cloud.example/?token=secret"), None);
