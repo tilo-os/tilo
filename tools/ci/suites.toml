@@ -1691,6 +1691,16 @@ reason = "one flow of the e2e check's, on a whole tilo.sh of its own (the stack,
 check = "onboarding"
 
 [[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-notes.sh"
+reason = "walks a workspace's page, its Notes and every app it opens in a headless browser against the Lounge, keeping what each step saw and a picture of it for a reviewer; needs the built web desktop bundle, the built server, crypto and font programs; the page-notes check runs it on request"
+check = "page-notes"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-reopen.sh"
+reason = "walks a page whose app request is held past the server's wait, keeping what each step saw; needs the built web desktop bundle, the built server, crypto and font programs; the page-reopen check runs it on request"
+check = "page-reopen"
+
+[[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"
 reason = "needs the built Lounge image"
 check = "image-lounge"
