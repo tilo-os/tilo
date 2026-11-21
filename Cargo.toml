@@ -89,7 +89,6 @@ members = [
     "crates/session/lock-screen",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
-    "crates/browser/tilo-browser-compute",
     "crates/browser/paint-stream",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",

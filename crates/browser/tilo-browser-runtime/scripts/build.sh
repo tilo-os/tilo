@@ -52,7 +52,7 @@
 # `--update` (dev, quick and local only; also with `--module-only` and `--wasm-only`) brings an OUTPUT_DIR this script built
 # before up to date, step by step: the module is bound and split again only
 # when the linked module changed, the page's modules and entry pages are
-# copied again, and fonts, data and the compute module are kept. A loop that
+# copied again, and fonts and data are kept. A loop that
 # edits only web/*.mjs takes seconds; one that edits Rust,
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
 # `--names` (an app bundle, release or assert) keeps the module's function names (its wasm
@@ -60,12 +60,11 @@
 # names the functions it spends its time in rather than numbering them. It is
 # otherwise the same build, compiled, split and optimized alike, so it
 # measures what ships; build.json records the wasm-opt flags it ran with.
-# `--wasm-only` builds only what Cargo compiles (pkg/ with the compute module,
+# `--wasm-only` builds only what Cargo compiles (pkg/,
 # data/ and apps.json) and records how in wasm.json; it reads no git
 # metadata, so a build cache can key it by its sources alone. `--module-only`
 # builds pkg/ and nothing else: a test that drives the runtime's exports from
-# a page serves it beside the page's modules, with no fonts, data or compute
-# module a browser test does not mount. `--wasm-from`
+# a page serves it beside the page's modules, with no fonts or data a browser test does not mount. `--wasm-from`
 # assembles the bundle around such a directory instead of compiling: the
 # pages, locales and fonts from this tree, and build.json for this tree's
 # revision. A change to the pages alone then compiles nothing.
@@ -287,7 +286,7 @@ if [[ $wasm_only == 0 ]]; then
   fi
 fi
 
-# What Cargo compiles: pkg/ (the runtime's module and the compute module) and
+# What Cargo compiles: pkg/ (the runtime's module) and
 # the tools that made them.
 build_wasm() {
 # An app bundle compiles the crate `tilo-app` generated for it: a workspace of
@@ -328,7 +327,7 @@ if [[ -n "$made_from" ]] && kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-fro
   echo "pkg: unchanged module, kept" >&2
 else
   # Made beside the old pkg/ and swapped in, so a page reloading meanwhile
-  # gets one or the other; the compute module's pkg/compute moves over.
+  # gets one or the other.
   next="$out/pkg.next"
   rm -rf "$next"
   mkdir -p "$next"
@@ -377,7 +376,6 @@ else
     fi
   fi
   [[ $bind_input == "$linked" ]] || rm -f "$bind_input"
-  if [[ -d "$out/pkg/compute" ]]; then mv "$out/pkg/compute" "$next/compute"; fi
   # A release or qualification bundle ships exactly what it was built from; no
   # stamp.
   if [[ $profile != release && $profile != assert && $profile != check && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
@@ -401,18 +399,6 @@ if [[ $optimize == 1 ]]; then
   took wasm-opt "$began"
 else
   wasm_opt_flags=
-fi
-compute_opt=--no-wasm-opt
-[[ $optimize == 1 ]] && compute_opt=--wasm-opt
-if [[ $module_only == 0 ]] && ! kept pkg/compute; then
-  # The same profile the page module is built in.
-  # A check or local bundle's compute module is the release one: it is small,
-  # and separate from the page's module those profiles are about.
-  local compute_profile=$profile
-  [[ $profile != check && $profile != local ]] || compute_profile=release
-  began=$SECONDS
-  bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$compute_profile" "$compute_opt" --module-only
-  took 'compute module' "$began"
 fi
 rustc_version=$(rustc --version)
 bindgen_version=$("$bindgen" --version)
@@ -531,7 +517,6 @@ PY
   echo "wasm: $out ($profile $bundle)"
   exit 0
 fi
-bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --assets-only
 mkdir -p "$out/fonts"
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"

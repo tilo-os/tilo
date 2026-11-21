@@ -61,8 +61,6 @@ if [ "$#" -gt 0 ]; then
 fi
 # scripts/build.sh runtime: the page runtime an app bundle links.
 verify "page runtime" --lib -p tilo-browser-runtime
-# Private image-only worker kernel.
-verify "image compute worker" --lib -p tilo-browser-compute
 
 printf 'wasm32 %s passed: %s\n' "$mode" "${passed[*]}"
 if ((${#failed[@]})); then

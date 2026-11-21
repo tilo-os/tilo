@@ -18511,16 +18511,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-browser-compute"
-version = "0.1.0"
-dependencies = [
- "image",
- "tilo-image-codec",
- "wasm-bindgen",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-browser-import-engine"
 version = "0.1.0"
 dependencies = [
@@ -29664,7 +29654,6 @@ dependencies = [
  "tilo-boot-signin",
  "tilo-bot-directory",
  "tilo-broker-core",
- "tilo-browser-compute",
  "tilo-browser-runtime",
  "tilo-browser-sessions",
  "tilo-callstream",

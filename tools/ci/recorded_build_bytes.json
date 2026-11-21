@@ -181,7 +181,6 @@
   "tilo-boot-signin": {"libraries": 6583861, "tests": 14545304},
   "tilo-bot-directory": {"libraries": 720731, "tests": 66451704},
   "tilo-broker-core": {"libraries": 4668152, "tests": 155745424},
-  "tilo-browser-compute": {"libraries": 0, "tests": 13419704},
   "tilo-browser-import-engine": {"libraries": 0, "tests": 2852160},
   "tilo-browser-runtime": {"libraries": 0, "tests": 244326000},
   "tilo-browser-sessions": {"libraries": 167778, "tests": 23376584},

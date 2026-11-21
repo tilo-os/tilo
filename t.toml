@@ -229,7 +229,7 @@ packages = [
     "accounts", "agent", "app-cli", "browser", "calculator", "key-group", "code-editor",
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
     "notes", "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
-    "tilo-agent-session", "tilo-app", "tilo-bluez", "tilo-browser-compute",
+    "tilo-agent-session", "tilo-app", "tilo-bluez",
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
     "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
@@ -327,7 +327,7 @@ args = ["--locked", "--target", "wasm32-unknown-unknown"]
 wrapper = ["bash", "tools/ci/page-clippy.sh"]
 trailing = ["-D", "warnings"]
 packages = [
-    "key-group", "tilo-browser-compute", "tilo-browser-runtime", "tilo-capture",
+    "key-group", "tilo-browser-runtime", "tilo-capture",
     "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
     "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
     "tilo-secrets", "tilo-session-client", "tilo-workspace-service", "tilolang-app",
@@ -563,13 +563,6 @@ needs = ["vm-test-binaries", "font-seed"]
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin", TILO_STAGING_HANDOFF_BIN = "/target/debug/tilo-staging-handoff", TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
 on = ["dispatch", "idle"]
 heavy = true
-
-[[check.matrix.set]]
-when = { group = "browser-compute-web" }
-# Its packaging test runs the bundle build, which lays out the product fonts from tilo's package
-# store, each fetched by the SHA-256 tools/font-catalog.py pins and checks.
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/ci/suites.py run --jobs 8 --group browser-compute-web"
 
 [[check.matrix.set]]
 when = { group = "browser-runtime-web" }

@@ -611,16 +611,6 @@ suites = [
   "crates/platform/tilo-secrets/web/secrets.test.mjs",
 ]
 
-[[group]]
-name = "browser-compute-web"
-inputs = ["crates/browser/tilo-browser-compute/", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/dev/tilo-app-cli/src/targets/web.rs"]
-suites = [
-  "crates/browser/tilo-browser-compute/web/compute-domains.test.mjs",
-  "crates/browser/tilo-browser-compute/scripts/artifact.test.mjs",
-  "crates/browser/tilo-browser-compute/scripts/stage.test.mjs",
-  "crates/browser/tilo-browser-compute/scripts/test_packaging.py",
-]
-
 [[covered]]
 suite = "crates/browser/tilo-browser-runtime/web/pairing.test.mjs"
 check = "web-node-tests"
@@ -1303,8 +1293,6 @@ inputs = [
   "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
-  # Canonical worker builder sources.
-  "crates/browser/tilo-browser-compute/",
   # Tests over every app of the workspace read each one's manifests and sources: the
   # capability check, the record kinds each manifest must declare, the
   # SDK graph of every app, workspace certification and the packaging fixtures.
