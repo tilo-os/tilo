@@ -602,10 +602,6 @@ const OFFLOAD_TEST: &str =
     "standalone::tests::the_session_hands_its_broker_the_round_its_workspaces_devices_answer";
 
 #[test]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "each session holds the profile for its whole phase on purpose"
-)]
 fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
     let Some(root) = isolated_root(OFFLOAD_TEST) else {
         return;

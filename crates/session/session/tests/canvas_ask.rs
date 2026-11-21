@@ -16,10 +16,8 @@
 
 #![cfg(target_os = "linux")]
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing,
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 

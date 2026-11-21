@@ -468,7 +468,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "scenario test: each labelled phase keeps one former test's fixture and assertions")]
     fn the_storage_step_explains_and_checks_what_happens_to_the_disk;
 
     phase storage_explains_missing_drives_and_the_confirmation_boundary;
@@ -1638,7 +1637,6 @@ fn hardware_report(
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "scenario test: each labelled phase keeps one former test's fixture and assertions")]
     fn the_review_begins_only_with_acknowledged_protection;
 
     phase review_begin_refuses_a_report_missing_an_essential_component;
@@ -2590,7 +2588,6 @@ fn prepared_profile_app() -> InstallerApp {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "scenario test: each labelled phase keeps one former test's fixture and assertions")]
     fn a_prepared_medium_revalidates_storage_and_routes_repairs;
 
     phase prepared_storage_revalidation_reuses_supplied_credentials_but_keeps_review;

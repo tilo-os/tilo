@@ -1003,7 +1003,6 @@ mod tests {
         }
     }
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
         fn a_desktop_install_verifies_artifacts_commands_and_diagnostics;
 
         phase install_refuses_untrusted_artifacts_and_identity_before_mutation;

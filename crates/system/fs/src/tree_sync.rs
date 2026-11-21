@@ -1572,7 +1572,6 @@ impl Drop for Sync {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};

@@ -839,7 +839,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
         fn the_model_maps_pages_normalises_rects_and_matches_search_spans;
 
         phase page_map_fits_rotated_pages_and_round_trips_every_space;

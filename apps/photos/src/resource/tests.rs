@@ -340,7 +340,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn metadata_edits_are_bounded_canonical_and_merge_per_label;
 
     phase details_save_keeps_clears_sets_adds_and_removes_atomically;
@@ -619,7 +618,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn shared_analysis_is_bounded_pinned_and_merges_by_component;
 
     phase shared_analysis_is_bounded_readable_and_removable;

@@ -1,6 +1,5 @@
 //! A file put by a page through its session, as the host answers it: the session's upload driver
 //! against the host's own open uploads and a workspace store.
-#![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
 use std::cell::{Cell, RefCell};
 

@@ -1,5 +1,3 @@
-#![allow(clippy::indexing_slicing, reason = "test assertions")]
-
 use super::*;
 
 fn person(name: &str, handle: &str) -> Candidate {

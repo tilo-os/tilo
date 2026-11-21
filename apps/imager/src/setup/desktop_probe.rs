@@ -961,7 +961,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
         fn the_desktop_probe_reads_hosts_and_packages_exactly;
 
         phase native_package_status_and_installed_version_are_exact;

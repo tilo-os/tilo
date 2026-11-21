@@ -381,7 +381,6 @@ pub fn checked_waits(waits: Vec<WaitFor>) -> Result<Vec<WaitFor>, Refusal> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use super::*;
 

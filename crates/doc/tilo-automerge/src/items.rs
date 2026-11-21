@@ -126,7 +126,6 @@ fn find(doc: &impl ReadDoc, heads: &[ChangeHash], item: &str) -> Option<ObjId> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT};

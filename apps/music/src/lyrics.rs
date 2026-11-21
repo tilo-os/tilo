@@ -512,10 +512,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// Lyrics: parsing LRC, the bundled ones first, and the names a lookup asks by.
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-        )]
         fn lyrics_parse_resolve_from_the_bundle_and_ask_lrclib_by_clean_names;
 
         phase lrc_parsing_and_current_line_tracking;

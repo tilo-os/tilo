@@ -2829,7 +2829,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn migration_first_use_semantic_actions_are_bound_to_pending_operation_and_defer_truthfully() {
         use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
@@ -3825,10 +3824,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn setup_journal_is_durable_resumable_and_fails_closed;
 
         phase journal_is_durable_before_identity_action_and_removed_only_after_finish;
@@ -4386,10 +4381,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn desktop_tour_is_navigable_skippable_and_dismissable;
 
         phase desktop_tour_is_complete_backtrackable_and_finishes_only_at_the_end;
@@ -4542,10 +4533,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn onboarding_copy_and_live_regions_speak_the_real_contract;
 
         phase nearby_pairing_updates_share_one_polite_live_region;
@@ -4726,10 +4713,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn connecting_an_existing_identity_journals_and_imports_without_minting;
 
         phase connect_existing_imports_without_minting;
@@ -5480,10 +5463,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn portable_backup_verifies_passphrases_and_returns_to_the_desktop;
 
         phase portable_backup_requires_matching_strong_passphrases_and_reports_success;
@@ -6177,10 +6156,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn pointer_targets_hit_the_acknowledgement_and_continue_actions;
 
         phase acknowledgement_label_is_the_checkbox_click_target;
@@ -6319,10 +6294,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn backup_and_recovery_tasks_share_a_reachable_scroll_body_at_review_sizes;
 
         phase first_frames_do_not_hide_backup_recovery_or_final_tour_tasks;
@@ -6564,10 +6535,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-        )]
         fn large_text_keeps_every_primary_action_visible;
 
         phase done_exit_action_stays_visible_at_laptop_height_with_large_text;

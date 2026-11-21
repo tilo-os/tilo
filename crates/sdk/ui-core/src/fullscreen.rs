@@ -280,7 +280,6 @@ mod tests {
         /// Which output a fullscreen request lands on: by target, for an audience and for the
         /// presenter.
         /// Each phase was a test of its own and builds its own fixture.
-        #[allow(clippy::too_many_lines, reason = "one row per case")]
         fn an_output_is_chosen_for_each_target_and_set_of_screens;
 
         phase select_output_resolves_each_target_or_defers_to_the_compositor;

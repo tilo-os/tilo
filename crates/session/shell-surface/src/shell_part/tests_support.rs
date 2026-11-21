@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
-
 use super::*;
 use tilo_session_core::surface::KeyModifiers;
 

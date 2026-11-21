@@ -1,7 +1,6 @@
 use super::*;
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn the_worker_queue_bounds_coalesces_and_isolates_its_sessions;
 
     phase evicted_page_results_notify_only_their_session_once;

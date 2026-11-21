@@ -617,7 +617,6 @@ pub(crate) fn may_read_vault(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a test: a failed step is the assertion")]
 
     use super::*;
     use crate::workspaces::fixtures::{governor, test_host_taking_part};

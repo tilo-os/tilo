@@ -86,10 +86,6 @@ fn newest<A: ResourceApp>(app: &TestApp<A>) -> String {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn history_answers_each_version_through_the_types_own_adapter;
 
     phase a_type_reads_each_version_through_its_own_adapter;

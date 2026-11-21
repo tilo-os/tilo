@@ -1091,10 +1091,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         #[allow(
-            clippy::too_many_lines,
-            reason = "merged scenario: each former test is a labelled case block with its own fixture"
-        )]
-        #[allow(
             clippy::arithmetic_side_effects,
             reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
         )]

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::significant_drop_tightening,
-    reason = "each test keeps its broker state for the whole scenario"
-)]
 use super::*;
 
 fn state() -> Arc<AppBrokerState> {

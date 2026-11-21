@@ -513,12 +513,6 @@ fn place_of(community: Option<url::Url>, keeper: Option<String>) -> Option<(Stri
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "a failed step in a test is the assertion"
-    )]
 
     use std::cell::RefCell;
 

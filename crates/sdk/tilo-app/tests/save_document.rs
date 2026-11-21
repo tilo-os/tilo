@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
-
 //! A document saved somewhere new (Save As) is the file its window shows from
 //! then on, so reopening the window comes back there instead of on the file the
 //! document was opened from.

@@ -81,7 +81,6 @@ pub fn open(cipher: &Cipher, packet: &[u8]) -> Option<(u32, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
 

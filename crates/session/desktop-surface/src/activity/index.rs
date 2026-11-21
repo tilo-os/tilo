@@ -649,7 +649,9 @@ fn made_at(entry: &HistoryEntry) -> SystemTime {
             .map(|since| since.as_secs())
             .ok()
     };
-    match at_ms.and_then(|ms| SystemTime::UNIX_EPOCH.checked_add(ui::time::Duration::from_millis(ms))) {
+    match at_ms
+        .and_then(|ms| SystemTime::UNIX_EPOCH.checked_add(ui::time::Duration::from_millis(ms)))
+    {
         Some(at) if second(at) == second(entry.timestamp) => at.max(entry.timestamp),
         _ => entry.timestamp,
     }
@@ -670,7 +672,6 @@ fn artifact_kind(kind: &ResourceType) -> ArtifactKind {
 
 #[cfg(test)]
 mod folder_rows_tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
     use fs_protocol::FileAction;

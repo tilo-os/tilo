@@ -1,10 +1,3 @@
-#![cfg_attr(
-    test,
-    allow(
-        clippy::float_cmp,
-        reason = "in a test an exact comparison is the assertion, not a hazard"
-    )
-)]
 //! Frame-loop instrumentation: per-tick phase timings, present pacing and input-to-present latency.
 //!
 //! One [`FrameSample`] per loop iteration: `period_us` (real cadence), per-phase durations,

@@ -9,7 +9,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
 

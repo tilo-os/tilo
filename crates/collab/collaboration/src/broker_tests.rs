@@ -10,10 +10,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::unreachable,
-    clippy::string_slice,
     clippy::disallowed_methods,
-    clippy::future_not_send,
     reason = "the tests and the fixtures they share with the toolkit's tests are test code"
 )]
 use super::*;

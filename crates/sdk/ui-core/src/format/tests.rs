@@ -493,7 +493,6 @@ fn a_formats_change_applies_live_and_moves_the_i18n_revision() {
 tilo_test_env::scenario! {
     /// The facts that name a day or a moment by how far it is from today, in English and in German.
     /// Each phase was a test of its own and installs the language it reads.
-    #[allow(clippy::too_many_lines, reason = "one row per case")]
     fn a_fact_about_a_day_names_it_by_how_far_it_is;
 
     phase the_day_fact_names_a_day_and_its_time_by_how_far_it_is_in_english_and_german;

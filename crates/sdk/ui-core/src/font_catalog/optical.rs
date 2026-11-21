@@ -195,7 +195,6 @@ mod tests {
         /// Which optical cut a size is set in, and what serves it when the catalog leaves that cut
         /// out.
         /// Each phase was a test of its own and builds its own fixture.
-        #[allow(clippy::too_many_lines, reason = "one row per case")]
         fn an_optical_cut_follows_its_size_and_falls_back_to_what_the_catalog_has;
 
         phase a_cut_follows_its_size_ground_style_weight_and_sizing;

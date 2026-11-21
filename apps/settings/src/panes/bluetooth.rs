@@ -1,5 +1,3 @@
-#![allow(clippy::doc_markdown, reason = "BlueZ is the upstream service name")]
-
 //! Bluetooth settings backed directly by `BlueZ` over D-Bus. Settings starts
 //! operations; the compositor-owned `BlueZ` Agent owns security prompts. Every
 //! change is a [`BluetoothEffect`], offered on the device it names.

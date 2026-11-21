@@ -323,7 +323,6 @@ fn overlaps(a: Rect, b: Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::indexing_slicing, reason = "test assertions read fixed draws")]
 
     use super::{Plan, Region};
     use crate::decode::DisplayList;

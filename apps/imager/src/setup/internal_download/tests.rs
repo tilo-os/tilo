@@ -5,7 +5,6 @@ fn manifest() -> Vec<u8> {
     super::super::internal_bundle::tests::bytes(&super::super::internal_bundle::tests::fixture())
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn an_internal_download_accepts_only_authenticated_resumable_bytes;
 
     phase manifest_and_selected_context_require_exact_authenticated_bytes;
@@ -593,7 +592,6 @@ pub(in crate::setup) fn with_hook(hook: Hook, test: impl FnOnce()) {
     test();
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn an_internal_download_never_reports_a_broken_transfer_as_complete;
 
     phase network_errors_and_short_bodies_are_never_completion;
@@ -1330,7 +1328,6 @@ fn with_write_failure(after: usize, test: impl FnOnce()) {
     test();
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn an_internal_download_counts_and_recovers_real_writes;
 
     phase terminal_counter_reflects_actual_file_writes;
@@ -1668,7 +1665,6 @@ use super::super::internal_cache::tests::{
 use super::super::internal_cache::{Provider, Session};
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn a_persistent_internal_download_commits_only_what_it_validated;
 
     phase persistent_download_commits_only_verified_tails;

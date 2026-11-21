@@ -1675,10 +1675,6 @@ fn hello_version(frame: &[u8]) -> Option<u16> {
 
 // The channel handles are deliberately owned by the per-connection worker,
 // which outlives the pass that took the connection off the socket.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the per-connection worker owns its handles and outlives the session's pass"
-)]
 fn serve_connection(
     connection: u64,
     stream: UnixStream,
@@ -1783,10 +1779,6 @@ struct Window {
 
 /// Serve an admitted window's connection until it ends: every frame it writes becomes an ask the
 /// session answers on its pass.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the per-connection worker owns its handles and outlives the session's pass"
-)]
 fn serve_window(
     window: Window,
     mut reader: BufReader<UnixStream>,

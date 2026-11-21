@@ -83,7 +83,6 @@ pub fn share(samples: &[f32], hz: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
 

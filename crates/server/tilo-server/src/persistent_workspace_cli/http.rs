@@ -403,7 +403,6 @@ fn parse_revision(value: Option<&str>) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "test assertions")]
 mod tests {
     use http_body_util::BodyExt as _;
 

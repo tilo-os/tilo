@@ -1104,7 +1104,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
         fn a_release_is_selected_for_the_architecture_it_was_built_for;
 
         phase media_selection_matches_the_native_host_architecture_only;

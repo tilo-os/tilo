@@ -195,11 +195,6 @@ impl ItemLending {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test a failed step is the assertion"
-)]
 mod tests {
     use super::*;
 
@@ -270,7 +265,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn only_a_session_that_holds_the_workspaces_browser_has_an_item_used_and_each_refusal_says_why()
     {
         let asked = Asked::default();

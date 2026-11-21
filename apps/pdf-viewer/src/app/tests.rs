@@ -677,10 +677,6 @@ pub(super) fn any_access_node(
             .any(|child| any_access_node(child, predicate))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "this lifecycle test intentionally verifies canonical page, bookmark, markup, reply, and find-result addresses together"
-)]
 #[serial(pdfium)]
 #[test]
 fn semantic_targets_and_global_search_address_stable_pages() {

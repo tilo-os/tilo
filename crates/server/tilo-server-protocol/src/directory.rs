@@ -482,7 +482,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn a_directory_lists_workspaces_as_text_activity_and_camel_case_json;
 
         phase a_listing_is_text_and_hands_out_no_moderators;

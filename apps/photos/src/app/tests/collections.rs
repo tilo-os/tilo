@@ -145,7 +145,6 @@ fn collection_actions_leave_unrelated_library_destinations() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn collection_views_are_local_complete_and_refuse_stale_ids;
 
     phase opening_an_album_operation_only_changes_the_local_filter_and_refuses_stale_ids;

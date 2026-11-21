@@ -479,7 +479,6 @@ pub fn asked_words(message: &Message) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::indexing_slicing, reason = "in a test this is the assertion")]
 
     use super::*;
     use crate::model::AgentWorkState;

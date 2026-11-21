@@ -160,10 +160,6 @@ fn press_bar(app: &PhotosApp, name: &str) -> bool {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::float_cmp,
-        reason = "the surface must show exactly the factor the gesture answered, and a reset is exactly 1.0"
-    )]
     fn the_open_photograph_can_be_presented_slid_and_zoomed;
 
     phase presenting_is_the_window_and_the_slide_show_advances_the_set;
@@ -411,7 +407,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn people_review_commits_only_explicit_canonical_actions;
 
     phase people_scan_cursor_only_advances_after_the_admitted_batch_succeeds;
@@ -797,7 +792,6 @@ fn timeline_anchor_uses_current_library_instead_of_cached_day_offset() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn analysis_queue_is_shared_bounded_and_commits_only_current_results;
 
     phase every_local_analysis_kind_uses_the_same_bounded_queue;
@@ -1032,7 +1026,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn density_changes_share_one_event_path_and_reanchor_the_first_photo;
 
     phase pinch_and_ctrl_wheel_use_the_same_density_event_path;
@@ -1191,10 +1184,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the end-to-end parity test deliberately compares favorite and membership envelopes across UI, AT, and resource routes"
-    )]
     fn selection_and_album_editing_page_everything_and_mint_canonical_actions;
 
     phase selection_is_local_but_its_favorite_and_album_results_are_canonical_actions;
@@ -1578,7 +1567,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls;
 
     phase accessibility_exposes_and_routes_every_header_command;
@@ -1983,7 +1971,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn in_app_search_registers_pages_and_keeps_the_last_good_index;
 
     phase the_system_searches_the_library_and_the_window_keeps_its_own_filter;
@@ -2130,7 +2117,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results;
 
     phase a_large_library_fills_a_bounded_background_thumbnail_queue;
@@ -2290,7 +2276,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn controls_contain_their_text_share_insets_and_keep_pointer_targets;
 
     phase library_card_actions_share_one_edge_inset;
@@ -2409,7 +2394,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn background_work_dashboards_pause_cancel_page_and_reflow;
 
     phase visible_analysis_pause_uses_the_published_operation_envelope;
@@ -2723,7 +2707,6 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources;
 
     phase edited_content_effect_stores_and_returns_the_exact_transformed_png;

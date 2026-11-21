@@ -1,7 +1,7 @@
 //! What the mount writes is the tree's own History: a file's changes are listed under who
 //! made them, and History's undo and restore act on them as changes of their own.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use std::collections::BTreeMap;
 

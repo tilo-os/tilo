@@ -1,5 +1,4 @@
 //! UI zoom must reach the same geometry painting and input use.
-#![allow(clippy::expect_used, reason = "tests fail on missing editor surfaces")]
 use super::*;
 
 #[test]

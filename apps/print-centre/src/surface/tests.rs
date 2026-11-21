@@ -86,7 +86,6 @@ fn row_id(surface: &ui::serde_json::Value, kind: &str) -> String {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn scenarios_and_resources_expose_real_navigation_and_backend_states;
 
     phase every_scenario_captures_at_its_viewport;
@@ -301,7 +300,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn phone_and_large_text_layouts_keep_actions_visible_and_measured;
 

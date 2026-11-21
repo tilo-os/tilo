@@ -355,7 +355,6 @@ fn finish_private_unlock(app: &mut InstallerApp) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "scenario test: each labelled phase keeps one former test's fixture and assertions")]
     fn the_published_surface_refuses_what_was_not_reviewed;
 
     phase linux_without_unallocated_space_never_falls_back_to_erase;

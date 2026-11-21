@@ -821,7 +821,6 @@ impl ActionProvider for OnHost {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a test's unwrap is its assertion")]
 
     use super::placed_on_host;
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;

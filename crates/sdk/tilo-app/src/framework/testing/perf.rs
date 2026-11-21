@@ -294,7 +294,6 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 #[must_use]
 #[allow(
     clippy::expect_used,
-    clippy::panic,
     reason = "a measurement fails loudly when the app binary cannot run or says nothing"
 )]
 pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdStart {
@@ -860,7 +859,6 @@ impl Sweep {
     ///
     /// On the first motion that repainted more, or asked for a sync or a
     /// layout, and when the p50 is over the budget.
-    #[allow(clippy::panic, reason = "a failed assertion names the motion")]
     pub fn assert_each_hover_repaints_only_its_rows(&self) {
         for step in &self.steps {
             let rows = step.rows.map(|row| row.inflate(2.0, 2.0));

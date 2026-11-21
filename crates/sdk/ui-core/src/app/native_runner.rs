@@ -244,10 +244,6 @@ impl AppHandler {
     /// Tell the app how far the compositor's input reached it, to run in its place among the
     /// window's own input; only the Wayland host delivers a serial, and the receiver stays `&mut
     /// self` on every target so callers need no `cfg`.
-    #[allow(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the Wayland host mutates the app through this; other targets have nothing to do"
-    )]
     fn follow_handled_input(&mut self) {
         #[cfg(target_os = "linux")]
         if let Some(serial) = winit::platform::wayland::delivered_input_serial() {
@@ -2241,10 +2237,6 @@ impl AppHandler {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame handshake shares render state, timing locals, and early exits"
-    )]
     /// Split out of `window_event`'s `RedrawRequested` arm (`clippy::too_many_lines`).
     /// Body unchanged from the original inline arm — see `window_event` for the
     /// event-loop plumbing this is called from. The layout pass, draw pass
@@ -5051,11 +5043,6 @@ impl App {
     /// Once running, a Wayland compositor disconnect is a normal application
     /// shutdown boundary (session logout, compositor restart), so an
     /// `ExitFailure` is logged and returned rather than converted into a panic.
-    #[allow(
-        clippy::expect_used,
-        clippy::unwrap_used,
-        reason = "event-loop creation/run failure is unrecoverable at process startup; the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
-    )]
     pub fn run_with_setup<F>(self, setup: F)
     where
         F: FnOnce(EventLoopProxy<UserEvent>),
@@ -5067,7 +5054,6 @@ impl App {
     /// process later with `open` ([`crate::window_link`]): each becomes one
     /// more window of the loop, and the loop ends with the last.
     #[allow(
-        clippy::expect_used,
         clippy::unwrap_used,
         reason = "event-loop creation/run failure is unrecoverable at process startup; the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
     )]

@@ -312,7 +312,6 @@ impl DconfPublisher {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, reason = "values are copied, not computed")]
 mod tests {
     use super::*;
 

@@ -73,7 +73,6 @@ fn action_ids(resource: &tilo_actions::ResourceSpec) -> Vec<&str> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn comment_threads_keep_their_text_marks_and_anchors;
 
     phase a_comment_written_rich_keeps_its_marks_and_plain_text;
@@ -492,7 +491,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn the_page_plan_converges_reorders_and_replays_imports;
 
     phase page_plan_converges_imports_atomically_and_carries_markup;

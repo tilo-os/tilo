@@ -636,10 +636,6 @@ fn destination(state: &State, request: &Request) -> Option<String> {
     decode_path(rest)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one match over the WebDAV methods reads best in one place"
-)]
 /// How the queued fault spoils a response: a body cut short, declaring its
 /// full length when the flag is `true` ([`Reply::cut_short`]), or a 200 that
 /// is not a `multistatus`.

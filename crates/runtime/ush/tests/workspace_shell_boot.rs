@@ -9,13 +9,6 @@
 //! TILO_HOSTED_FIRECRACKER=… TILO_HOSTED_KERNEL=… TILO_HOSTED_INITRAMFS=… //! TILO_LINUX_VM_BIN=… it workspace_shell_boot --ignored --nocapture
 //! ```
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "a test"
-)]
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

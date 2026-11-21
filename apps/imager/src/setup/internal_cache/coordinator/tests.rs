@@ -11,7 +11,6 @@ fn manifest() -> Vec<u8> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn the_coordinator_keeps_roles_and_residue_exact;
 
     phase authenticated_roles_stay_held_and_resume_their_own_ranges;
@@ -910,7 +909,6 @@ fn transfer_hook_worker(
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn the_coordinator_discloses_cancellation_and_uncertainty;
 
     phase cancel_and_discard_win_and_disclose_retained_state;

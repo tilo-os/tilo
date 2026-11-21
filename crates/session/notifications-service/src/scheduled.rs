@@ -912,5 +912,4 @@ impl Schedules {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "a fixture that fails fails the test")]
 mod tests;

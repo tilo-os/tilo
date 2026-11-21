@@ -1631,7 +1631,6 @@ fn lerp_rect(a: Rect, b: Rect, t: f64) -> Rect {
 
 #[cfg(test)]
 #[allow(
-    clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     reason = "test sessions add margins to logical pixels and lay out in f32"
 )]

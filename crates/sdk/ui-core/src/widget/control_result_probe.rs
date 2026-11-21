@@ -1,7 +1,5 @@
 //! A probe that reports the control results a test drives, in place of an app.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test support")]
-
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -36,10 +34,6 @@ impl Observed {
             });
     }
 }
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent test switches exercise acceptance, confirmation and typing"
-)]
 pub(crate) struct Probe {
     observed: Observed,
     accepted: bool,

@@ -549,7 +549,6 @@ tilo_automerge_isolate::test_worker!();
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use automerge::transaction::Transactable as _;
 

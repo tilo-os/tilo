@@ -426,7 +426,6 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
     eprintln!("phase bound_first_type_undo_to_empty_retypes_once");

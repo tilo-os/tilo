@@ -594,7 +594,6 @@ fn ticker(every: Duration) -> tokio::time::Interval {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT};

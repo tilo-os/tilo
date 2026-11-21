@@ -742,7 +742,6 @@ impl ApproverReply {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;

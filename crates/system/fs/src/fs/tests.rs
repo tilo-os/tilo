@@ -1171,10 +1171,6 @@ mod thumb_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     async fn thumbnails_are_generated_verified_and_published() {
         {
             let dir = tempfile::tempdir().unwrap();

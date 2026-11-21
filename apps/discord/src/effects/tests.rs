@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
-
 use serde_json::json;
 use ui::framework::testing::TestApp;
 

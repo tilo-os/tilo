@@ -561,7 +561,6 @@ pub fn write<D: Transactable + ?Sized>(
 }
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use super::*;
     use crate::ApplyIncoming;

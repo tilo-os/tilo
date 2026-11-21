@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 use super::*;
 
 #[cfg(target_os = "linux")]

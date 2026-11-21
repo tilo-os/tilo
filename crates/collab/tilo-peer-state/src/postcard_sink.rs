@@ -99,7 +99,6 @@ impl postcard::ser_flavors::Flavor for Compare<'_> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use super::*;
 

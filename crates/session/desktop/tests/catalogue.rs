@@ -1,8 +1,6 @@
 //! What the desktop publishes: one verb vocabulary per resource, every verb declared once, and
 //! every row offering a verb of its resource's.
 
-#![allow(clippy::unwrap_used, clippy::panic, reason = "a test's assertions")]
-
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 

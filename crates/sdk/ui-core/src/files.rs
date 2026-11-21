@@ -105,7 +105,6 @@ fn device_store() -> Option<crate::content::ContentStore> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, reason = "in a test this is the assertion")]
 
     use super::*;
 

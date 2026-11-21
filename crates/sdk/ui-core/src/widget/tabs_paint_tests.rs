@@ -1,10 +1,5 @@
 //! A bar is drawn once at rest and again only on a change.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "test fixture: failures are the assertion"
-)]
-
 use super::super::{BUSY_TURNING, TabBar, TabDescriptor, TabMark, tab_presence_key};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;

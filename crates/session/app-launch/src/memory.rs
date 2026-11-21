@@ -440,13 +440,6 @@ impl launcher::memory_monitor::Effects for Effects {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 mod tests {
     use super::*;
     use launcher::memory_pressure::{Action, Policy};
@@ -505,7 +498,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn an_apps_cgroup_takes_the_tier_of_what_the_person_sees;
 
         phase pressure_reclaims_from_the_app_nobody_can_see_before_the_one_in_front;

@@ -61,7 +61,6 @@ pub fn saying(key: &str, name: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test the unwrap is the assertion")]
 
     use super::*;
     use crate::i18n::I18nManager;

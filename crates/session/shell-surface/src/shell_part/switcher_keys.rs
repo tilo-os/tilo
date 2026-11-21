@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test fixtures")]
-
 use std::collections::BTreeMap;
 
 use super::tests_support::{

@@ -155,7 +155,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
         fn a_local_document_report_binds_its_whole_capture_and_refuses_the_rest;
 
         phase capture_identity_binds_all_report_fields_and_preserves_distinct_noops;

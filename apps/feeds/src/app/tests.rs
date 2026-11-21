@@ -1012,10 +1012,6 @@ fn the_window_shell_adapts_to_its_width() {
 
 /// OPML import persists every new feed once, and never reports success on
 /// cancel or failure.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario per portal outcome, kept together"
-)]
 #[test]
 fn opml_portal_import_reports_honestly() {
     // The host reads and writes the chosen file as background work; pump it

@@ -310,7 +310,6 @@ fn oom_kills_in(dir: &Path) -> Option<u64> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "a failed step is the assertion")]
 mod tests {
     use super::oom_kills_in;
 

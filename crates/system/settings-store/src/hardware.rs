@@ -2494,10 +2494,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn display_configurations_validate_confirm_and_name_their_monitors;
 
         phase only_changes_that_can_blank_a_screen_need_confirming;
@@ -2747,10 +2743,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"

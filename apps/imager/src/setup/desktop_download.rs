@@ -483,7 +483,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
         fn a_desktop_download_keeps_only_verified_private_bytes;
 
         phase desktop_download_resumes_or_restarts_ranges_without_duplicate_bytes;

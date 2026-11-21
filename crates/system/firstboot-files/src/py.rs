@@ -125,7 +125,6 @@ pub fn realpath(path: &OsStr) -> std::io::Result<OsString> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failed fixture call fails the test")]
 
     use super::*;
 

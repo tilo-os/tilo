@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! Who an app's people list offers: the workspace's members and the agents it keeps, and
 //! nobody a device named that the workspace never admitted (a page's host is such a

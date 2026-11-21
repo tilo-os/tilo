@@ -411,7 +411,6 @@ pub fn reconfigure_all<D: ConfigurableDevice>(config: &InputConfig, devices: &mu
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
-    clippy::indexing_slicing,
     reason = "exact normalized input fixtures are the contract under test"
 )]
 mod tests {
@@ -454,7 +453,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The plan a device is configured with.
-        #[allow(clippy::too_many_lines, reason = "one scenario, one block per case")]
         fn a_device_plan_follows_the_settings_and_what_the_device_can_do;
 
         phase defaults_tap_on_a_laptop_and_keep_wheels_conventional;

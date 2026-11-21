@@ -671,7 +671,6 @@ fn push_capped(list: &mut Vec<[u8; 32]>, item: [u8; 32], max: usize) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 mod tests {
     use super::*;
     use crate::workspaces::readings::Invitations;

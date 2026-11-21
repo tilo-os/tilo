@@ -137,10 +137,6 @@ fn card_ids(replica: &Replica<Board>) -> Vec<Id> {
 
 tilo_test_env::scenario! {
     #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
-    #[allow(
         clippy::arithmetic_side_effects,
         reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
     )]

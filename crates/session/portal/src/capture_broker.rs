@@ -975,10 +975,6 @@ mod tests {
             clippy::arithmetic_side_effects,
             reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
         )]
-        #[allow(
-            clippy::too_many_lines,
-            reason = "each phase keeps one former test's body verbatim"
-        )]
         fn capture_leases_are_authorized_once_scoped_renewed_and_revoked_exactly;
 
         phase capture_authorization_is_one_shot_exact_and_broker_scoped;

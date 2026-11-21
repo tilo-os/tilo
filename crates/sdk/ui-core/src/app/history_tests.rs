@@ -986,7 +986,6 @@ impl PrimaryMetadataShape {
     }
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "factory contract")]
 fn primary_routed_factory(
     mut context: crate::application::ProcessContext,
     target: crate::application::LaunchTarget,

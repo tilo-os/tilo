@@ -406,7 +406,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
         fn reconcile_hands_alarms_and_timers_to_the_hosts_scheduler;
 
         phase real_alarm_handoff_transmits_the_full_resource_identity;

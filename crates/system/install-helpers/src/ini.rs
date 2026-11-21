@@ -224,7 +224,6 @@ impl Ini {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failed fixture call fails the test")]
 
     use super::*;
 

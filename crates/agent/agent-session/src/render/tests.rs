@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
-
 use super::*;
 use crate::{AppCatalogue, Replica, ReplicaActor, Seed, component_apps};
 use tilo_actions::MemberId;

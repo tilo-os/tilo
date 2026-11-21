@@ -868,7 +868,6 @@ fn authority(origin: &str) -> &str {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {
     use super::*;
 

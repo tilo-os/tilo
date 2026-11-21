@@ -834,7 +834,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::arithmetic_side_effects, reason = "fixture arithmetic in test bodies, which the lint skips in a plain test")]
         fn a_still_graph_is_read_less_often;
 
         phase a_stable_graph_backs_off_pw_dump;

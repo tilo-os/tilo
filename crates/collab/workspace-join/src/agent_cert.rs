@@ -216,7 +216,6 @@ impl AgentCert {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};

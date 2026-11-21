@@ -56,7 +56,6 @@ pub fn events_since(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use automerge::transaction::{CommitOptions, Transactable as _};
 

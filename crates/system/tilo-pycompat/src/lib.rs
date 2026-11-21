@@ -199,9 +199,7 @@ pub fn equal(a: &Value, b: &Value) -> bool {
         }
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Bool(_) | Value::Number(_), Value::Bool(_) | Value::Number(_)) => {
-            #[allow(clippy::float_cmp, reason = "Python compares the numbers exactly")]
-            let same = numeric(a) == numeric(b);
-            same
+            numeric(a) == numeric(b)
         }
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(x, y)| equal(x, y))
@@ -442,7 +440,6 @@ fn string(text: &str, out: &mut String) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failed fixture call fails the test")]
 
     use super::*;
 

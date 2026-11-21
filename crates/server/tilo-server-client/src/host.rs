@@ -221,7 +221,6 @@ pub fn transport() -> iroh::endpoint::QuicTransportConfig {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a test's parse is its assertion")]
 
     use super::{Carrier, ServerAddress};
     use iroh_base::{EndpointAddr, RelayUrl, SecretKey};

@@ -167,10 +167,6 @@ fn published<A: ResourceApp>(app: &mut TestApp<A>, resource: &str) -> Vec<String
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-    )]
     fn a_settings_section_is_edited_by_its_person_and_kept_apart;
 
     phase a_click_on_a_persons_settings_section_is_stored_both_ways;

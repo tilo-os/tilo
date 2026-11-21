@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::expect_used, reason = "test assertions")]
 
 //! A verb marked `#[action(by_app)]` is the app's own bookkeeping of its
 //! record: its code applies it, and no caller is offered it. It has no

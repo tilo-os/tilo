@@ -319,7 +319,6 @@ pub async fn settled<H: ActionProvider + Clone + Send + Sync + 'static>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
 

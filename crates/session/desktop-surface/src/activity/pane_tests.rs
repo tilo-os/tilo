@@ -7,10 +7,6 @@ use crate::activity::testing::StoreRecords as _;
 use tilo_actions::remote::workspace_activity as wire;
 
 #[cfg(test)]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "test fixtures transitively own long-lived permits and lock guards by design"
-)]
 mod tests {
     //! Every fixture mutates the workspace through the *production* mirrors and reads the pane back
     //! — nothing writes a synthetic `HistoryEntry` .

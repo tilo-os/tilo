@@ -1,5 +1,3 @@
-#![allow(clippy::indexing_slicing, reason = "test assertions")]
-
 use super::*;
 use ui::component::{Fired, Intent};
 use ui::testing::dispatch;

@@ -36,10 +36,6 @@ fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
     (a, ac, b, bc, now)
 }
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one cached policy followed through expiry, removal and replacement"
-    )]
     #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn permission_queries_reuse_what_admission_already_verified;
 

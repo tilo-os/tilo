@@ -914,7 +914,6 @@ mod tests {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
         fn the_writer_refuses_jobs_and_backends_it_cannot_run_truthfully;
 
         phase begin_refuses_mismatched_oversized_forbidden_or_invalid_jobs;
@@ -1230,10 +1229,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn helper_cancellation_and_child_processes_are_bounded_and_retryable() {
         {
             let work = tempfile::Builder::new()
@@ -1336,7 +1331,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
         fn the_write_engine_reports_only_what_it_verified;
 
         phase media_profile_block_is_reserved_secret_free_and_verified;

@@ -1736,7 +1736,6 @@ mod tests {
 
 #[cfg(test)]
 mod window_tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
     use super::*;
     use fs_protocol::FileAction;

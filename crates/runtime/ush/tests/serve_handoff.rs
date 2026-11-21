@@ -11,7 +11,6 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
-    clippy::missing_panics_doc,
     reason = "in a test these are the assertion, not a hazard"
 )]
 

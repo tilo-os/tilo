@@ -201,7 +201,6 @@ impl Namespace {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
 

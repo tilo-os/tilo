@@ -543,7 +543,6 @@ impl WholeDocuments {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
     use tilo_peer_state::peer_handle;

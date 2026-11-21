@@ -256,7 +256,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn photographs_fit_the_canvas_and_non_images_open_nothing;
 
     phase the_whole_photograph_is_inside_the_canvas_at_every_window_size;
@@ -400,7 +399,6 @@ tilo_test_env::scenario! {
         clippy::cast_sign_loss,
         reason = "fx/fy are literal fractions in 0..=1 in this test, so (dim - 1) * frac stays within 0..dim"
     )]
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn rotate_crop_and_reset_change_exactly_the_exported_pixels;
 
@@ -710,7 +708,6 @@ fn save_asks_the_chooser_with_a_bare_name() {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn resource_surface_acts_on_the_open_photograph_without_a_display;
 
     phase the_resource_surface_enumerates_the_open_photograph_and_acts_on_it;
@@ -875,10 +872,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
-    )]
     fn toolbar_controls_fit_legibly_at_every_size_and_theme;
 
     phase every_toolbar_control_is_inside_the_window_at_every_size;
@@ -945,7 +938,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn library_cards_lay_out_inside_the_canvas_at_every_size;
 

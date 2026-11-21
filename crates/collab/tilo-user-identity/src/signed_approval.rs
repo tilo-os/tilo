@@ -253,7 +253,6 @@ impl HostApproval {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a test's unwrap is its assertion")]
 
     use super::*;
 

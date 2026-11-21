@@ -133,11 +133,6 @@ fn link(site: &str, origin: &str, workspace: &str, secret: &str) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "a failed step in a test is the assertion"
-    )]
 
     use super::*;
     use tilo_reference::link::WebEntries;

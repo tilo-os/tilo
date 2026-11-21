@@ -9,7 +9,6 @@
 //! refuses like sudo without a grant while a `deny` file exists.
 #![allow(
     clippy::unwrap_used,
-    clippy::too_many_lines,
     reason = "one end-to-end scenario; helpers fail the test on setup errors"
 )]
 

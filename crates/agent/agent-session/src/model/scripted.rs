@@ -114,7 +114,6 @@ fn words(message: &Message) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
     use tilo_model_gateway::host_backend::protocol::ToolChoice;

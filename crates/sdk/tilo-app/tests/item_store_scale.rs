@@ -1,9 +1,4 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-#![allow(
-    clippy::arithmetic_side_effects,
-    clippy::indexing_slicing,
-    reason = "measurements over small known sizes and samples"
-)]
 
 //! The chain's storage of an app's items at 1,000, 10,000 and 25,000 items:
 //! a change to one item writes about the same bytes, finding an item by its

@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! A verb marked `#[action(incoming_message)]` tags its change, so an
 //! incoming-message trigger fires on it without knowing the app's schema.
 

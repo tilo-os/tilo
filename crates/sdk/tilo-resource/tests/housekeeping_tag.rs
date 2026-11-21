@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! A verb marked `#[action(housekeeping)]` says so in its declaration, so a
 //! host reviewing held actions can tell housekeeping from what a person
 //! asked for.

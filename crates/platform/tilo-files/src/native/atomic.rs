@@ -622,7 +622,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
         fn atomic_writes_publish_whole_values_beside_their_target;
         phase directory_barriers_target_the_containing_directory;
         {

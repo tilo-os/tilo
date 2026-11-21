@@ -66,10 +66,6 @@ fn rounded(rect: Rect, radius: f32) -> RoundedRect {
     RoundedRect::from_rect(rect, f64::from(radius))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one composition, read top to bottom like the list it draws"
-)]
 pub fn miniature_list(
     scene: &mut Scene,
     transform: Affine,
@@ -148,10 +144,6 @@ pub fn miniature_list(
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one composition, read top to bottom like the dialog it draws"
-)]
 pub fn miniature_dialog(
     scene: &mut Scene,
     transform: Affine,

@@ -2151,7 +2151,6 @@ mod paste_shortcut_tests {
 
 #[cfg(test)]
 mod power_storage_tests {
-    #![allow(clippy::unwrap_used, reason = "test assertions")]
 
     use super::PowerPrefs;
     use ui::tilo_resource::{Replica, Slot, evolution};
@@ -2200,7 +2199,6 @@ mod power_storage_tests {
 
 #[cfg(test)]
 mod theme_tests {
-    #![allow(clippy::unwrap_used, reason = "test assertions")]
 
     use super::AppearancePrefs;
 

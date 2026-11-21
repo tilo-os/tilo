@@ -816,8 +816,6 @@ impl crate::widget::Decorator for Board {
 #[cfg(test)]
 mod tests {
     #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "in a test these are the assertion"

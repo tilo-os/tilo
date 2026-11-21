@@ -201,7 +201,6 @@ fn sealed(
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "one rule, followed from each side")]
     fn removing_a_device_takes_its_future_and_keeps_its_persons_past;
 
     phase what_a_removed_device_wrote_before_is_history_whatever_the_reason;

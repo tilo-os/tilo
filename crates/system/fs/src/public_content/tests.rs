@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
-
 use std::sync::Mutex;
 
 use super::*;

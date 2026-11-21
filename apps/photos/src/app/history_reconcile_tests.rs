@@ -182,7 +182,6 @@ fn dispatch_unmatched_action(app: &mut PhotosApp, doc: &mut AutoCommit) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per phase")]
     fn changed_targets_invalidate_metadata_and_album_drafts;
 
     phase changed_target_invalidates_metadata_draft_before_input_but_unrelated_change_preserves_it;
@@ -309,7 +308,6 @@ tilo_test_env::scenario! {
     }
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn late_opens_imports_and_restores_settle_against_current_content;
 
     phase pending_resource_open_cannot_overwrite_changed_content_and_settles_once;
@@ -584,7 +582,6 @@ fn seed_membership_album(doc: &mut AutoCommit, ids: &[String; 4]) {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     fn album_membership_edits_save_selected_ids_in_browse_order;
 
     phase album_membership_create_saves_selected_ids_in_browse_order;

@@ -2,8 +2,6 @@
 //! are the host's answers, and a row's control is the ask that answer's own
 //! path takes.
 
-#![allow(clippy::unwrap_used, clippy::panic, reason = "a test's assertions")]
-
 use std::rc::Rc;
 
 use tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};

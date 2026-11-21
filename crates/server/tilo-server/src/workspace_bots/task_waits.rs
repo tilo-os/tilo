@@ -187,7 +187,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[allow(clippy::unwrap_used, reason = "test setup and results must succeed")]
     async fn an_automation_selected_before_the_wait_changed_cannot_end_the_new_wait() {
         use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 

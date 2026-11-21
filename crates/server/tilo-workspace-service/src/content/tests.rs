@@ -385,7 +385,6 @@ fn picture(len: usize) -> Vec<u8> {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn content_reaches_only_a_host_that_may_read_its_record_in_verified_pieces;
 
     phase content_one_host_was_offered_reaches_the_other_in_verified_pieces;
@@ -518,7 +517,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    #[allow(clippy::arithmetic_side_effects, reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's")]
     fn a_want_follows_the_devices_that_could_answer_it;
 
     phase a_want_waits_for_its_holder_and_is_fetched_when_it_connects;

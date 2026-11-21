@@ -1,5 +1,4 @@
 //! Mount boundaries apply to id-addressed operations, not just path listings.
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 use cloud_source::{CloudSource, Credential, Error, StaticCredential, UploadTarget};
 use cloud_source_dropbox::{
     DropboxSource,

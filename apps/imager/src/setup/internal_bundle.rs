@@ -531,7 +531,6 @@ pub(crate) mod tests {
         validate_internal_bundle(&bytes(&data))
     }
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
         fn the_internal_bundle_schema_and_names_are_closed_contracts;
 
         phase live_cmdline_profile_and_root_floor_are_closed_contracts;
@@ -895,10 +894,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn windows_unicode_ancestors_are_exact_bounded_and_lossless() {
         {
             for name in [

@@ -424,7 +424,6 @@ impl crate::workspace_telling::Outside for WebPush {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 pub(crate) mod tests {
     use super::*;
     use ring::{aead, agreement, hkdf};

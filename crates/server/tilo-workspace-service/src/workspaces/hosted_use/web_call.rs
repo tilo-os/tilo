@@ -682,7 +682,6 @@ impl AllowedOnce {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use std::future::Future;
     use std::pin::Pin;

@@ -379,7 +379,6 @@ fn write_record(path: &Path, record: &DiskRecord) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "a fixture that fails fails the test")]
 mod tests {
     use super::*;
 

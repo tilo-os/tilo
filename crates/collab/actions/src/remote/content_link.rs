@@ -181,7 +181,6 @@ pub fn viewable(name: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
 

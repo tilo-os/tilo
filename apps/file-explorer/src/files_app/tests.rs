@@ -782,7 +782,6 @@ mod open_with_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod command_path_tests {
     use super::*;
     use crate::model::Entry;

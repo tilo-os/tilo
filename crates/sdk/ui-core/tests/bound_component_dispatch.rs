@@ -1679,10 +1679,6 @@ thread_local! {
     static NESTED: RefCell<Option<AppComponent>> = const { RefCell::new(None) };
     static INVALID_VIEW: Cell<bool> = const { Cell::new(false) };
 }
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "fixed component factory contract"
-)]
 fn nested_factory(
     mut context: ProcessContext,
     _: LaunchTarget,

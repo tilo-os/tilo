@@ -391,7 +391,6 @@ fn made_of(read: &impl Fn(&str) -> Option<Vec<u8>>, live: &mut BTreeSet<String>)
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
     use std::collections::BTreeMap;
 
     use automerge::transaction::Transactable as _;

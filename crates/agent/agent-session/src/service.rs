@@ -664,7 +664,6 @@ fn persist(supervisor: &AgentSupervisor, shared: &Shared, written: &Mutex<String
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
     use ed25519_dalek::SigningKey;

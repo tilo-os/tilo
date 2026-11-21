@@ -17,7 +17,7 @@
 //! The kernel needs virtio-mmio, vsock and FUSE built in; the initramfs
 //! starts `tilo-linux-vm-agent` as root with an ordinary user `tilo`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "a test")]
+#![allow(clippy::unwrap_used, reason = "a test")]
 
 use std::path::PathBuf;
 use std::sync::Arc;

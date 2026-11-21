@@ -352,7 +352,6 @@ mod tests {
     /// public: one look-up, all of its addresses handed back or none, and a
     /// refusal told apart from a look-up that failed.
     #[cfg(not(target_family = "wasm"))]
-    #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
     #[tokio::test]
     async fn a_name_is_connected_to_only_where_every_address_it_answers_with_is_public() {
         use std::sync::Arc;
@@ -421,7 +420,6 @@ mod tests {
 
     /// An address written into a URL is found in the forms a URL takes, and
     /// a name is not one.
-    #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
     #[test]
     fn an_address_a_url_writes_out_is_found_and_a_name_is_not() {
         for (url, address) in [
@@ -445,7 +443,6 @@ mod tests {
     /// The system's resolver answers for this machine's own name, and that
     /// name is refused: nothing leaves the machine for it.
     #[cfg(not(target_family = "wasm"))]
-    #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
     #[tokio::test]
     async fn the_systems_resolver_answers_and_this_machines_own_name_is_refused() {
         let system = system_lookup();

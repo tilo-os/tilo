@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::expect_used, reason = "test assertions")]
 
 use std::path::Path;
 use std::process::{Command, Output};

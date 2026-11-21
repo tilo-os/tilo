@@ -3286,10 +3286,6 @@ impl<T: 'static> ListItems for Vec<T> {
 }
 
 /// What `Vec<T>`'s table reaches into one with.
-#[allow(
-    clippy::type_complexity,
-    reason = "each field reaches into the list one way"
-)]
 pub struct VecDesc {
     item: &'static ModelTable,
     items: for<'a> fn(&'a dyn Any) -> Option<&'a dyn ListItems>,
@@ -3572,10 +3568,6 @@ impl<T: 'static> MapEntries for std::collections::BTreeMap<String, T> {
 }
 
 /// What the table of a map of string keys reaches into one with.
-#[allow(
-    clippy::type_complexity,
-    reason = "each field reaches into the map one way"
-)]
 pub struct MapDesc {
     item: &'static ModelTable,
     item_nullable: bool,

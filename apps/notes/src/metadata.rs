@@ -371,7 +371,6 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
         fn the_date_index_reads_note_dates_from_the_documents_history;
 
         phase metadata_dates_follow_real_edits_and_survive_reload_and_legacy_notes;

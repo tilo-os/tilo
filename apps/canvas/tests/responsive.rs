@@ -1,5 +1,4 @@
 //! Controls must fit the logical window, including a small display at 2× scale.
-#![allow(clippy::unwrap_used, reason = "assertions over real editor controls")]
 use canvas::App;
 use ui::prelude::TestApp;
 

@@ -6,8 +6,6 @@
 //! A service's resources read for a device: what it holds whole, what it holds nothing of, and
 //! what a chain's head names.
 
-#![allow(clippy::unwrap_used, reason = "a test: a failed step is the assertion")]
-
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 

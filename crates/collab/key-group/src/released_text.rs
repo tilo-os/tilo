@@ -103,7 +103,6 @@ pub fn open_released_text(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "in a test an unwrap is the assertion")]
 mod tests {
     use super::*;
 

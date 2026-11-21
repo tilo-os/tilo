@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::expect_used, reason = "test assertions")]
 //! A conversation's record, opened beside the window's own: one record of
 //! the two people it is between in the workspace, written by either person's
 //! devices, each person's read mark theirs, merged without an owner in

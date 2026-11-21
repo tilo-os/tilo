@@ -45,7 +45,6 @@ pub fn set_of(value: &Value) -> Option<std::collections::BTreeSet<String>> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "a failed fixture call fails the test")]
 
     use super::*;
 

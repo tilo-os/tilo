@@ -1,10 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
-)]
-
 use std::sync::{Arc, Mutex};
 
 use settings_store::notification_policy::AppNotificationRule;

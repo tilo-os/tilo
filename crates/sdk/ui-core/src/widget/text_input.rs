@@ -4812,10 +4812,6 @@ impl crate::resources::PublishesResources for TextInput {
     }
 }
 
-#[allow(
-    clippy::indexing_slicing,
-    reason = "the mask is built from the same bits"
-)]
 const TEXT_OPERATIONS: [&[&str]; 8] = {
     const C: &str = CHANGE_TEXT;
     const S: &str = SUBMIT_TEXT;
@@ -5284,10 +5280,6 @@ impl Widget for TextInput {
 
         // The text shows only in the width its scroll keeps the caret in: inside the field's inset
         // on both edges, never under the show/hide control or the trailing accessory.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "sums of a few on-screen insets, far inside f64's range"
-        )]
         let text_clip = Rect::new(
             self.rect.x0 + padding_x,
             self.rect.y0,

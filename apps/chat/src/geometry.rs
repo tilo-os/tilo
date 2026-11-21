@@ -129,7 +129,6 @@ impl Default for Chrome {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, reason = "tests assert exact authored geometry")]
 mod tests {
     use super::*;
 

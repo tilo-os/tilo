@@ -12,7 +12,6 @@ fn selected() -> SelectedManifest {
     SelectedManifest::from_bytes(&release, bytes).unwrap()
 }
 tilo_test_env::scenario! {
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn cache_names_and_paths_follow_the_support_contract;
 
     phase final_component_paths_follow_the_native_cache_support_contract;
@@ -233,7 +232,6 @@ fn file_id(file: &File) -> [u8; 32] {
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn cache_records_survive_restart_faults_and_conflicts;
 
     phase creation_and_restart_keep_only_committed_prefixes;
@@ -1096,7 +1094,6 @@ fn standalone_epoch_record(kind: u8, generation: u64, epoch: u64) -> Vec<u8> {
 }
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
     fn cache_preparation_and_settlement_follow_real_history;
 
     phase preparation_receipts_follow_real_history_and_revoke_on_failure;

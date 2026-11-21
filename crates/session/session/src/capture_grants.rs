@@ -47,7 +47,6 @@ pub(crate) fn ended(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "a failed step is the assertion")]
 mod tests {
     use super::*;
     use collab_types::caps::{Access, CapOverride};

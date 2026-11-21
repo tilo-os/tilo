@@ -118,7 +118,6 @@ fn long_nonce(counter: u32) -> [u8; 24] {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
 
