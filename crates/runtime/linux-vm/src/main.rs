@@ -282,7 +282,7 @@ fn run_in_guest(
         argv,
         cwd: parsed.cwd.as_ref().map(|cwd| cwd.display().to_string()),
         env,
-        stdio: LaunchStdio::Relay,
+        stdio: LaunchStdio::Pump,
         display: if windowed {
             Display::Forwarded
         } else {

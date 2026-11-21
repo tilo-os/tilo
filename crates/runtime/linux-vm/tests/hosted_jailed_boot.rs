@@ -65,7 +65,7 @@ fn run(link: &AgentLink, script: &str) -> (i32, String, String) {
             argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
             cwd: None,
             env: Vec::new(),
-            stdio: Stdio::Relay,
+            stdio: Stdio::Pump,
             display: Display::None,
         },
         LaunchIo {

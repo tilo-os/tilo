@@ -82,7 +82,7 @@ fn python(env: Vec<(String, String)>) -> Launch {
         argv: vec!["python3".into(), "-I".into(), "-c".into(), CLIENT.into()],
         cwd: Some("/".into()),
         env,
-        stdio: Stdio::Relay,
+        stdio: Stdio::Pump,
         display: Display::None,
     }
 }
@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
                 argv: vec!["cat".into()],
                 cwd: Some("/".into()),
                 env: Vec::new(),
-                stdio: Stdio::Relay,
+                stdio: Stdio::Pump,
                 display: Display::None,
             };
             std::thread::spawn(move || {

@@ -171,7 +171,7 @@ mod tests {
                 ("LANG".into(), "de_DE.UTF-8".into()),
                 (PORT_ENV.into(), "9001".into()),
             ],
-            stdio: Stdio::Relay,
+            stdio: Stdio::Pump,
             display,
         }
     }

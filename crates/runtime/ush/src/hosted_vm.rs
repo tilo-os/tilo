@@ -25,7 +25,7 @@
 //! there (`/home/tilo`), and a run moves neither ([`HostedPrograms::machine_environment`]).
 //!
 //! A program whose input and output are the session's terminal runs on a pseudo-terminal
-//! in the VM ([`Relay::Terminal`]), so editors, prompts and pagers work as on a device.
+//! in the VM ([`Stream::Terminal`]), so editors, prompts and pagers work as on a device.
 //!
 //! Where the host serves its workspaces' agents ([`HostedPrograms::serving_agents`]), each
 //! program finds Tilo's MCP server where an environment's programs find it on a device
@@ -48,7 +48,7 @@ use linux_vm::hosted::size::VmSize;
 use linux_vm_protocol::client::{self, LaunchIo, LaunchSignals};
 use linux_vm_protocol::link::{AgentLink, AgentStream};
 use linux_vm_protocol::{
-    AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio as Relay, TerminalSize,
+    AGENT_PORT, Display, Launch, ProtocolError, Signal, Stdio as Stream, TerminalSize,
 };
 use tilo_actions::remote::server_account;
 use ush_shell::{Input, Output, Program, Std, Stdio};
@@ -636,7 +636,7 @@ impl Programs for HostedPrograms {
             argv: argv.to_vec(),
             cwd: Some(cwd.display().to_string()),
             env: self.environment(env),
-            stdio: terminal.map_or(Relay::Relay, |fd| Relay::Terminal(terminal_size(fd))),
+            stdio: terminal.map_or(Stream::Pump, |fd| Stream::Terminal(terminal_size(fd))),
             display: Display::None,
         };
         // On the session's terminal the keys are relayed below. Otherwise
@@ -760,7 +760,7 @@ impl Drop for Raw<'_> {
 
 const RELAY_TICK: Duration = Duration::from_millis(100);
 
-/// Relay the session's keys and size to a program on a terminal in the VM
+/// Pump the session's keys and size to a program on a terminal in the VM
 /// until it ends. Reads only what is ready, so no read is left waiting for
 /// a key the shell needs next. A terminal that hangs up (its window closed, or nobody
 /// came back to a kept session) ends the program, as a hangup ends one on a device.

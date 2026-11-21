@@ -28,7 +28,7 @@ pub struct Agent {
     boot_id: String,
     running: Mutex<BTreeMap<u32, RunningApp>>,
     shares: Mutex<Vec<GuestShare>>,
-    /// Moves the guest's wall clock. The agent runs as root in the guest, which
+    /// Moves the guest's wall clock. The agent is root in the guest, which
     /// is what `CLOCK_REALTIME` takes; a program it launches for the tenant is
     /// theirs, not root's.
     set_clock: Box<dyn Fn(u64) -> Result<(), String> + Send + Sync>,
@@ -265,7 +265,7 @@ impl Agent {
         command
     }
 
-    /// Start `request`'s program and relay it until it exits; with
+    /// Start `request`'s program and pump it until it exits; with
     /// `serving_agents`, the agent socket answers what it starts, over this
     /// connection ([`crate::agent_socket`]).
     fn launch<S: Duplex>(
@@ -336,7 +336,7 @@ impl Agent {
         });
 
         let windowed = request.display == Display::Forwarded;
-        let (pumps, pumps_done) = relay(
+        let (pumps, pumps_done) = pump_streams(
             &mut child,
             terminal,
             (stream, &writer),
@@ -366,7 +366,7 @@ impl Agent {
     }
 
     /// Start `command`; with `serving_agents`, the agent socket serves what
-    /// it starts from before it runs, so a connection it makes at once is its
+    /// it starts from before it starts, so a connection it makes at once is its
     /// own and not turned away.
     #[cfg(target_os = "linux")]
     #[allow(
@@ -442,7 +442,7 @@ impl Agent {
         let terminal = matches!(request.stdio, linux_vm_protocol::Stdio::Terminal(_));
         let mut command = self.command(&spec, !terminal);
         let stdio = || match request.stdio {
-            linux_vm_protocol::Stdio::Relay => Stdio::piped(),
+            linux_vm_protocol::Stdio::Pump => Stdio::piped(),
             // Attached to its terminal by the caller.
             linux_vm_protocol::Stdio::Null | linux_vm_protocol::Stdio::Terminal(_) => Stdio::null(),
         };
@@ -451,10 +451,10 @@ impl Agent {
     }
 }
 
-/// Relay the launched `child`'s output, and its `terminal`'s when it has one,
+/// Pump the launched `child`'s output, and its `terminal`'s when it has one,
 /// to the host on `writer`, and the host's frames on `stream` to it; how many
 /// pumps carry its output, and where each says it is done.
-fn relay<S: Duplex>(
+fn pump_streams<S: Duplex>(
     child: &mut Child,
     terminal: Option<std::fs::File>,
     (stream, writer): (S, &Writer<S>),
@@ -817,7 +817,7 @@ mod tests {
                 ],
                 cwd: Some("/".into()),
                 env: Vec::new(),
-                stdio: linux_vm_protocol::Stdio::Relay,
+                stdio: linux_vm_protocol::Stdio::Pump,
                 display: Display::None,
             };
             let (mut out, mut err) = (Vec::new(), Vec::new());

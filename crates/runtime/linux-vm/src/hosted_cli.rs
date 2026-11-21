@@ -628,7 +628,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             argv: program.to_vec(),
             cwd: None,
             env: Vec::new(),
-            stdio: Stdio::Relay,
+            stdio: Stdio::Pump,
             display: Display::None,
         },
         LaunchIo {

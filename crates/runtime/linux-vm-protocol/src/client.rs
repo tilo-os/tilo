@@ -93,12 +93,12 @@ pub type AgentServer = Arc<dyn Fn(AgentCaller, UnixStream) + Send + Sync>;
 /// Who made a connection to the guest's agent socket, as the guest says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentCaller {
-    /// The executable the connecting process runs.
+    /// The executable the connecting process starts.
     pub program: String,
 }
 
-/// Start `launch` and relay its stdio until it exits. `on_signals` receives a
-/// handle before the first byte is relayed, so a caller can forward its own
+/// Start `launch` and pump its stdio until it exits. `on_signals` receives a
+/// handle before the first byte is pumped, so a caller can forward its own
 /// signals from the start.
 pub fn launch<S: Duplex>(
     stream: S,
@@ -106,7 +106,7 @@ pub fn launch<S: Duplex>(
     io: LaunchIo<'_>,
     on_signals: impl FnOnce(LaunchSignals<S>),
 ) -> Result<ExitStatus, ProtocolError> {
-    relay(stream, launch, io, None, on_signals)
+    pump(stream, launch, io, None, on_signals)
 }
 
 /// [`launch`], with the guest's agent socket answering what the program
@@ -120,13 +120,13 @@ pub fn launch_serving_agents<S: Duplex>(
     agents: &AgentServer,
     on_signals: impl FnOnce(LaunchSignals<S>),
 ) -> Result<ExitStatus, ProtocolError> {
-    relay(stream, launch, io, Some(agents), on_signals)
+    pump(stream, launch, io, Some(agents), on_signals)
 }
 
 /// The host's ends of the connections a launch carries, by the guest's number.
 type Carried = HashMap<u64, UnixStream>;
 
-fn relay<S: Duplex>(
+fn pump<S: Duplex>(
     mut stream: S,
     launch: &Launch,
     io: LaunchIo<'_>,
@@ -142,7 +142,7 @@ fn relay<S: Duplex>(
     send(&mut stream, &asked)?;
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
     let mut carried = Carried::new();
-    let ended = relay_frames(&mut stream, &writer, io, agents, &mut carried, on_signals);
+    let ended = pump_frames(&mut stream, &writer, io, agents, &mut carried, on_signals);
     // What the launch carried ends with it, whichever way it ended.
     for (_, connection) in carried.drain() {
         let _ = connection.shutdown(std::net::Shutdown::Both);
@@ -150,7 +150,7 @@ fn relay<S: Duplex>(
     ended
 }
 
-fn relay_frames<S: Duplex>(
+fn pump_frames<S: Duplex>(
     stream: &mut S,
     writer: &Arc<Mutex<S>>,
     io: LaunchIo<'_>,
@@ -306,7 +306,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_launch_relays_stdio_and_reports_the_exit;
+        fn a_launch_pumps_stdio_and_reports_the_exit;
 
         phase stdin_reaches_the_guest_output_and_exit_come_back;
         // phase: stdin reaches the guest, output and exit come back
@@ -346,7 +346,7 @@ mod tests {
                 argv: vec!["cat".into()],
                 cwd: None,
                 env: Vec::new(),
-                stdio: Stdio::Relay,
+                stdio: Stdio::Pump,
                 display: Display::None,
             };
             let (mut out, mut err, mut pid) = (Vec::new(), Vec::new(), 0);
@@ -445,7 +445,7 @@ mod tests {
                 argv: vec!["claude".into()],
                 cwd: None,
                 env: Vec::new(),
-                stdio: Stdio::Relay,
+                stdio: Stdio::Pump,
                 display: Display::None,
             };
             let (mut out, mut err) = (Vec::new(), Vec::new());

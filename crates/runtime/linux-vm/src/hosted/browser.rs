@@ -381,7 +381,7 @@ impl Session {
             argv: vec![kind.entry().to_owned()],
             cwd: None,
             env,
-            stdio: Stdio::Relay,
+            stdio: Stdio::Pump,
             display: Display::None,
         };
         let (input, lines) = mpsc::channel::<String>();

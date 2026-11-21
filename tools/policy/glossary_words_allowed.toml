@@ -2030,3 +2030,11 @@ paths = [
     "crates/agent/agent-session/tests/chain_listing.rs",
     "crates/agent/agent-session/tests/workspace_actions/slow_read.rs",
 ]
+
+[[allow]]
+reason = "The guest's system runtime directory, /run, where the agent's socket is kept."
+words = ["run"]
+paths = [
+    "crates/runtime/linux-vm-protocol/src/lib.rs",
+    "crates/runtime/linux-vm-agent/tests/agent_socket.rs",
+]

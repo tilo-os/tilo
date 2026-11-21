@@ -245,7 +245,7 @@ pub struct Launch {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Stdio {
-    Relay,
+    Pump,
     /// The app gets `/dev/null`; the connection only reports its exit.
     Null,
     Terminal(TerminalSize),
@@ -479,7 +479,7 @@ mod tests {
             argv: argv.iter().map(ToString::to_string).collect(),
             cwd: Some("/var/home/you/src".into()),
             env: vec![("LANG".into(), "C.UTF-8".into())],
-            stdio: Stdio::Relay,
+            stdio: Stdio::Pump,
             display: Display::Forwarded,
         }
     }
