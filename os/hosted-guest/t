@@ -1,0 +1,60 @@
+#!/bin/sh
+# The workspace's t: the checkout tool that runs a project's checks, builds
+# and tests on the shared server instead of inside the VM
+# (docs/hosted-browser.md). The image carries this launcher, not the program:
+# the first call downloads t from the server it is named for and caches it
+# under the tenant's own cache, and every call after that execs the cached
+# copy with its arguments.
+#
+# t reads its server and its token from the environment, so neither is written
+# to disk: T_SERVER names the server (default https://t.tilo.so) and T_TOKEN
+# is the token that server knows, which the workspace's vault puts in a
+# program's environment. Without a cached copy and without T_TOKEN, the
+# launcher says which vault item to grant and exits.
+#
+# The download is the one t's own self-update makes: T_SERVER/download/t, with
+# the token in an Authorization header, following the server's redirect to
+# /repos/download/t. A server that answers a browser login instead has not
+# accepted the token, and the launcher refuses the page rather than caching it.
+set -eu
+
+server=${T_SERVER:-https://t.tilo.so}
+cache=${XDG_CACHE_HOME:-${HOME:?}/.cache}/t/t
+
+if [ -x "$cache" ]; then
+    exec "$cache" "$@"
+fi
+
+if [ -z "${T_TOKEN:-}" ]; then
+    echo 't: no token: grant this workspace the vault item holding the t token (it arrives as T_TOKEN), then run t again' >&2
+    exit 1
+fi
+
+url=$server/download/t
+dir=$(dirname -- "$cache")
+mkdir -p -m 700 "$dir"
+tmp=$(mktemp "$dir/.t.XXXXXX")
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+
+if ! curl -fsSL --max-time 300 -H "Authorization: Bearer $T_TOKEN" -o "$tmp" "$url"; then
+    echo "t: could not download $url" >&2
+    exit 1
+fi
+
+# A login page is not the program: the server must accept the token at the
+# download, and this says so once instead of caching a web page that cannot
+# run.
+magic=$(od -An -tx1 -N4 "$tmp" | tr -d ' \n')
+if [ "$magic" != 7f454c46 ]; then
+    echo "t: $url answered with a page, not the program: its server must accept Authorization: Bearer <token> there" >&2
+    exit 1
+fi
+chmod 0755 "$tmp"
+if ! "$tmp" --version >/dev/null 2>&1; then
+    echo "t: the program $url served does not run on this machine" >&2
+    exit 1
+fi
+
+mv -f "$tmp" "$cache"
+trap - EXIT HUP INT TERM
+exec "$cache" "$@"

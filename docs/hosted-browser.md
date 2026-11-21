@@ -54,6 +54,29 @@ on the workspace's Browser record, so the window is live, published and
 subscribed like a Browser window on anyone's computer, and its page actions
 (`browser@<window>/page#read-page`, …) are the ones Browser already has.
 
+### t
+
+The VM runs the workspace's `t` (`/usr/local/bin/t`): `t cargo`, `t test` and
+`t exec` put a checkout's builds and checks on the shared server the same way
+they do on a person's machine, so a workspace runs them without a warm build
+of its own. The image holds a launcher, not the program: the first call
+downloads `t` from the server it is named for into the tenant's cache
+(`~/.cache/t/t`), and every later call runs that copy.
+
+`t` reads both settings from its environment, so the launcher writes neither
+to disk:
+
+| Variable | What it is | Without it |
+| :--- | :--- | :--- |
+| `T_SERVER` | The t server the workspace runs on | `https://t.tilo.so` |
+| `T_TOKEN` | A token that server accepts, granted to the workspace from its vault | the launcher names the vault item to grant and exits 1 |
+
+The download is `T_SERVER/download/t` with `Authorization: Bearer <T_TOKEN>`,
+following the server's redirect to `/repos/download/t`. The launcher caches
+the answer only when it is the program itself: a server that answers a browser
+login fails the first call with a message naming the header it must accept,
+and nothing is cached.
+
 ## Linux apps
 
 The same VM runs the workspace's Linux programs with windows: a Fedora

@@ -368,6 +368,22 @@ RUN set -eu; \
     done; \
     rm -f /var/tmp/rustup-init
 
+# The workspace's t, as a launcher and not the program: the first call in a VM
+# downloads t from the server it is named for, with the token the workspace's
+# vault gives its programs, and caches it under the tenant's own cache
+# (os/hosted-guest/t, docs/hosted-browser.md). The check below is what a
+# program's first call says with no token: the image holds none, and the
+# launcher names the vault item instead of failing to exec.
+COPY --chmod=0755 os/hosted-guest/t /usr/local/bin/t
+RUN set -eu; \
+    sh -n /usr/local/bin/t; \
+    t_says=$(env -u T_TOKEN -u T_SERVER HOME=/home/tilo /usr/local/bin/t --help 2>&1 || true); \
+    case $t_says in \
+      *'T_TOKEN'*) echo 't: launcher ready, and asks for the vault item' ;; \
+      *) echo "t: $t_says"; exit 1 ;; \
+    esac; \
+    test ! -e /home/tilo/.cache/t
+
 # The session, its fonts and its interface declaration (as the check arranged
 # them), then the store and the runtimes from the payload stage, then the script
 # the guest agent starts a session with and the proof that it does.
