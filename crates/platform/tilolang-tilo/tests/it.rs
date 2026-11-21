@@ -49,6 +49,7 @@ mod make_from;
 mod marks;
 mod migrations;
 mod naming;
+mod native_notes;
 mod note_import;
 mod notebook_order;
 mod notes;
