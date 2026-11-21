@@ -370,10 +370,11 @@ def select_components(manifest: Manifest, names: list[str], everything: bool,
 
 
 def select(manifest: Manifest, names: list[str], everything: bool, layers: list[str],
-           by_layer: bool, dev: bool = False, image: str = "os") -> list[FileEntry]:
+           by_layer: bool, dev: bool = False, image: str = "os",
+           skip_layers: list[str] = ()) -> list[FileEntry]:
     components = select_components(manifest, names, everything, dev, image)
     known_layers = manifest.layers()
-    for layer in layers:
+    for layer in (*layers, *skip_layers):
         if layer not in known_layers:
             raise ManifestError(f"unknown layer {layer!r}; manifest layers: {', '.join(known_layers)}")
     chosen = [entry for component in components for entry in component.files]
@@ -381,7 +382,7 @@ def select(manifest: Manifest, names: list[str], everything: bool, layers: list[
         chosen = [entry for entry in chosen if entry.layer in layers]
     elif by_layer:
         chosen = [entry for entry in chosen if entry.layer != DIRECT_LAYER]
-    return chosen
+    return [entry for entry in chosen if entry.layer not in skip_layers]
 
 
 def native_cosign(manifest_dir: Path, copied: Path | None = None) -> Path:
@@ -641,6 +642,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dest", type=Path, metavar="DIR", help="destination root to install into")
     parser.add_argument("--layer", dest="layers", action="append", default=[], metavar="NAME",
                         help="only files of this image layer (repeatable)")
+    parser.add_argument("--skip-layer", dest="skip_layers", action="append", default=[], metavar="NAME",
+                        help="leave out the files of this image layer (repeatable); none of them is read")
     parser.add_argument("--by-layer", action="store_true",
                         help=f"install each file under DEST/<layer>/ and skip `{DIRECT_LAYER}` files, "
                         "which the Containerfile copies itself")
@@ -667,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.dev, args.format)
             return 0
         entries = select(manifest, args.components, args.all, args.layers, args.by_layer, args.dev,
-                         args.image)
+                         args.image, args.skip_layers)
         if args.dry_run:
             print_plan(entries, args.format)
             return 0

@@ -552,9 +552,25 @@ cmd_compose() {
   frags+=("$os/base/oci")
   for l in $(layers_in_order); do frags+=("$(fragment_dir "$l")"); done
   . os/base-snapshot.env
+  # The desktop's programs over the layers, dated as the top one is (by the clock of the layers
+  # below it, below_dated), as the image layer dates every file it installs.
+  SOURCE_DATE_EPOCH=$(python3 -I - "${frags[-1]}" <<'PY'
+import sys
+sys.path.insert(0, "tools/ci/os")
+import oci_layers
+labels = (oci_layers.load_fragment(sys.argv[1]).get("config") or {}).get("config", {}).get("Labels") or {}
+print(labels.get("org.tilo.source-date-epoch", ""))
+PY
+) || die "could not read the clock of the image's top layer"
+  [[ $SOURCE_DATE_EPOCH =~ ^[1-9][0-9]*$ ]] || die "the image's top layer carries no clock but '$SOURCE_DATE_EPOCH'"
+  export SOURCE_DATE_EPOCH TILO_COMPILED=$os/$compiled
+  . os/image/install-components.sh
+  desktop_programs "$scratch/desktop-programs"
+  frags+=("$scratch/desktop-programs")
   rm -rf "$out"
   mkdir -p "$out"
-  SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0} python3 -I tools/ci/os/oci_layers.py compose "$out" "${frags[@]}"
+  python3 -I tools/ci/os/oci_layers.py compose "$out" "${frags[@]}"
+  rm -rf "$scratch/desktop-programs"
 }
 
 layer_args=()

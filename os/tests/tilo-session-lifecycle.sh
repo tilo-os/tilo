@@ -111,14 +111,14 @@ grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   echo 'the image must ship exactly one login session' >&2
   exit 1
 }
-# The image build refuses a session or X11 bridge with an unresolved library.
+# The composed image is refused with a session or X11 bridge that has an unresolved library
+# (os-image-contracts runs the programs contract on it, after every package is in).
+contract="$repo/os/tests/image-programs-contract.sh"
 grep -Fq 'missing="$(ldd /usr/bin/tilo-session /usr/bin/xwayland-satellite | awk '\''/not found/ { print $1 }'\'')"' \
-  "$repo/os/Containerfile"
-grep -Fq 'if [ -n "$missing" ]; then' "$repo/os/Containerfile"
-grep -Fq 'the session or xwayland-satellite has unresolved runtime libraries:' "$repo/os/Containerfile"
-engine_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-session_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/tilo-session /usr/bin/xwayland-satellite' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-test "$engine_deps_line" -lt "$session_link_check_line"
+  "$contract"
+grep -Fq 'if [ -n "$missing" ]; then' "$contract"
+grep -Fq 'the session or xwayland-satellite has unresolved runtime libraries:' "$contract"
+grep -Fq 'os/tests/image-programs-contract.sh' "$repo/t.toml"
 grep -Fq 'the browser engine has unresolved runtime libraries:' "$repo/os/Containerfile"
 
 tmp_root="${TMPDIR:-/tmp}"

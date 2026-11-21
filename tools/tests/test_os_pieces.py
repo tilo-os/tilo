@@ -241,6 +241,33 @@ class OciLayersTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("is not built on", result.stderr)
 
+    def test_a_tree_layer_holds_image_owned_modes_and_no_hard_links(self) -> None:
+        # A directory entry in an upper layer replaces the image's own directory: a scratch
+        # umask's group write on usr/ would leave the whole image's /usr group-writable.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            programs = root / "tree/usr/libexec"
+            programs.mkdir(parents=True)
+            for path in (root / "tree/usr", programs):
+                path.chmod(0o775)
+            (programs / "one").write_bytes(b"program")
+            (programs / "one").chmod(0o775)
+            os.link(programs / "one", programs / "two")
+            layers.cmd_tree(str(root / "tree"), str(root / "fragment"), "programs", "7")
+            fragment = json.loads((root / "fragment/fragment.json").read_text())
+            entries = {}
+            for layer in fragment["layers"]:
+                blob = root / "fragment/blobs/sha256" / layer["digest"].split(":", 1)[1]
+                with tarfile.open(fileobj=io.BytesIO(gzip.decompress(blob.read_bytes()))) as tar:
+                    for member in tar.getmembers():
+                        entries.setdefault(member.name, []).append(member)
+            for name in ("usr", "usr/libexec"):
+                self.assertEqual({m.mode for m in entries[name]}, {0o755}, name)
+            for name in ("usr/libexec/one", "usr/libexec/two"):
+                [member] = entries[name]
+                self.assertTrue(member.isfile(), name)
+                self.assertEqual((member.mode, member.uid, member.mtime), (0o755, 0, 7))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -207,8 +207,17 @@ class Report:
         self.errors.append(f"{where}: {what}\n  why: {WHY}.\n  fix: {fix}\n  re-run: {RERUN}")
 
 
+# The layer of the desktop's programs, which t lays over the composed image apart from the rest
+# (os/image/binaries.Containerfile): nothing else may be in it, since nothing after it in the
+# image's build sees it. A desktop component's other files are its `desktop-files`.
+PROGRAMS_LAYER = "desktop-binaries"
+PROGRAMS_FILES_LAYER = "desktop-files"
+PROGRAM_DIRS = ("/usr/bin/", "/usr/libexec/")
+
+
 def snippet(name: str, output: str, destination: str, *, direct: bool = False) -> str:
-    layer = "direct" if direct else "desktop-binaries"
+    layer = ("direct" if direct else PROGRAMS_LAYER if destination.startswith(PROGRAM_DIRS)
+             else PROGRAMS_FILES_LAYER)
     mode = "0644" if destination.startswith("/usr/share/") else "0755"
     entry = (f'{{ from = "{output}", to = "{destination}", tree = true }}' if destination.endswith("/")
              else f'{{ from = "{output}", to = "{destination}", mode = "{mode}" }}')
@@ -327,6 +336,16 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
                                  f"{name!r}",
                                  f"add it to [features] in {packages[package].directory.relative_to(report.repo)}"
                                  f"/Cargo.toml or drop it from `{key}`.")
+
+
+def check_programs_layer(report: Report, manifest) -> None:
+    for entry in manifest.files():
+        if entry.layer == PROGRAMS_LAYER and not entry.to.startswith(PROGRAM_DIRS):
+            report.error(report.manifest_line(entry.component),
+                         f"{entry.to} is in the {PROGRAMS_LAYER} layer, which holds programs only",
+                         f'put it in the {PROGRAMS_FILES_LAYER} layer: add `layer = "{PROGRAMS_FILES_LAYER}"` to '
+                         f"the entry. t lays the {PROGRAMS_LAYER} layer over the finished image, so the "
+                         "initramfs, caches and checks of the image's build never see a file in it.")
 
 
 def check_units(report: Report, manifest, containerfile_text: str) -> None:
@@ -636,6 +655,7 @@ def audit(repo: Path) -> list[str]:
     containerfile = repo / "os/Containerfile"
     check_manifest_against_workspace(report, manifest, workspace_packages(repo))
     check_session_programs(report, manifest)
+    check_programs_layer(report, manifest)
     check_units(report, manifest, containerfile.read_text(encoding="utf-8"))
     check_containerfile(report, manifest, installer, containerfile, repo / "os/scripts/build-thin-apps.sh",
                         repo / COMPILE_SCRIPT)

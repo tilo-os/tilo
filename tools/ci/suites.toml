@@ -1997,6 +1997,11 @@ check = "os-image-contracts"
 reason = "needs the assembled OS image root, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
 
 [[unrequired]]
+suite = "os/tests/image-programs-contract.sh"
+check = "os-image-contracts"
+reason = "needs the composed OS image with its programs, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
+
+[[unrequired]]
 suite = "os/tests/container_build_context.py"
 check = "disposable-root-podman"
 reason = "builds real images with Podman, which the ci-fast image cannot give; disposable-root-podman dispatches the Podman fixtures together"

@@ -262,7 +262,7 @@ class InstallerTests(unittest.TestCase):
                         "--from", str(out), "--dest", str(layer), "--by-layer", "model-manager")
                 self.assertEqual(status, 0 if include_license else 1)
                 if include_license:
-                    notice = layer / "desktop-binaries/usr/share/licenses/tilo-speech-worker/LICENSE"
+                    notice = layer / "desktop-files/usr/share/licenses/tilo-speech-worker/LICENSE"
                     self.assertEqual(notice.read_bytes(), (REPO / license_source).read_bytes())
                     self.assertEqual(notice.stat().st_mode & 0o777, 0o644)
                     self.assertTrue((layer / "desktop-binaries/usr/libexec/tilo/tilo-speech-worker").is_file())

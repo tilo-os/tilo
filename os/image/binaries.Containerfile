@@ -56,6 +56,20 @@ COPY --from=component-files /image/extension-files/ /
 # image where those are unreachable on real hardware. Copied from where the
 # manifest installed them, not through the side builds' overlay below: a copy
 # of a tree this size takes minutes, and it was made twice.
+#
+# Their programs (desktop-binaries: everything under /usr/bin and /usr/libexec,
+# which tools/policy/check_component_manifest.py holds that layer to) apart from
+# their other files (desktop-files: units, completions, configuration). t builds
+# the image layer without the programs and lays them over the composed image as
+# layers of their own (os/image/build-layer.sh compose), so a changed program
+# rebuilds no initramfs, cache or check. That is the same image as this file
+# builds only while nothing after this COPY reads or writes a desktop program:
+# the checks that run them are os-image-contracts's (t.toml), on the composed
+# image. The programs the image's consumer receipts certify (consumer-programs:
+# the prepared-setup helper and what its receipts hash) stay in the image layer,
+# whose rootfs publishes those receipts by running them.
+COPY --from=component-files /image/consumer-programs/ /
+COPY --from=component-files /image/desktop-files/ /
 COPY --from=component-files /image/desktop-binaries/ /
 COPY --from=desktop-binaries / /
 COPY --from=component-files /image/windows/ /

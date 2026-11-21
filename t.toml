@@ -5875,10 +5875,15 @@ outputs = ["/target/os/x86_64/layers/image/**"]
 timeout_secs = 7200
 default = false
 
+# The image composed: the layers' fragments, and the desktop's programs laid over them from the
+# compiled tree (os/image/build-layer.sh compose), so a changed program composes the image again
+# without building its image layer. On the image's own architecture, whose cosign the programs
+# carry.
 [[check]]
 name = "os-image-x86_64"
 run = "bash os/image/build-layer.sh compose x86_64 /target/os/x86_64/image"
-needs = ["os-base-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-layer-image-x86_64"]
+needs = ["os-base-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-layer-image-x86_64", "os-compile-x86_64", "os-assets-image-x86_64"]
+requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/image/**"]
 default = false
 
@@ -5919,8 +5924,9 @@ default = false
 [[check]]
 name = "os-release-image-x86_64"
 run = "bash os/image/build-layer.sh compose x86_64 /target/os/x86_64/release-image"
-needs = ["os-base-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-layer-image-release-x86_64"]
+needs = ["os-base-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-layer-image-release-x86_64", "os-compile-release-x86_64", "os-assets-image-x86_64"]
 env = { TILO_OS_FLAVOUR = "release" }
+requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/release-image/**"]
 default = false
 
@@ -6126,7 +6132,8 @@ default = false
 [[check]]
 name = "os-image-aarch64"
 run = "bash os/image/build-layer.sh compose aarch64 /target/os/aarch64/image"
-needs = ["os-base-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-layer-image-aarch64"]
+needs = ["os-base-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-layer-image-aarch64", "os-compile-aarch64", "os-assets-image-aarch64"]
+requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/image/**"]
 default = false
 
@@ -6167,8 +6174,9 @@ default = false
 [[check]]
 name = "os-release-image-aarch64"
 run = "bash os/image/build-layer.sh compose aarch64 /target/os/aarch64/release-image"
-needs = ["os-base-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-layer-image-release-aarch64"]
+needs = ["os-base-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-layer-image-release-aarch64", "os-compile-release-aarch64", "os-assets-image-aarch64"]
 env = { TILO_OS_FLAVOUR = "release" }
+requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/release-image/**"]
 default = false
 
@@ -6242,8 +6250,9 @@ default = false
 [[check]]
 name = "os-release-image-lenovo-83ed"
 run = "bash os/image/build-layer.sh compose aarch64 /target/os/aarch64/release-image-lenovo-83ed"
-needs = ["os-base-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-layer-image-release-lenovo-83ed"]
+needs = ["os-base-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-layer-image-release-lenovo-83ed", "os-compile-release-aarch64", "os-assets-image-aarch64"]
 env = { TILO_OS_FLAVOUR = "release", TILO_OS_BOARD = "lenovo-83ed" }
+requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/release-image-lenovo-83ed/**"]
 default = false
 
@@ -7939,10 +7948,12 @@ on = ["dispatch"]
 
 # The OS image's checks that only read the finished image, run against the image the chain
 # composed as an OCI layout rather than inside its build, where each lengthened the image layer
-# a change to any binary rebuilds: the encrypted-boot, LUKS-enrolment, filesystem and rollback
-# contracts, that no Python program of Tilo's ships, that every file of a package the build
-# installed is what the rpmdb records (dated by the image's clock, which tells the build's
-# packages from the base's), and `bootc container lint`.
+# a change to any binary rebuilds, and where the desktop programs, laid over the composed image,
+# are not yet: the encrypted-boot, LUKS-enrolment, filesystem and rollback contracts, the
+# programs contract (each program in place, the session's libraries resolved, the browser
+# engine's runtime verified), that no Python program of Tilo's ships, that every file of a
+# package the build installed is what the rpmdb records (dated by the image's clock, which tells
+# the build's packages from the base's), and `bootc container lint`.
 [[check]]
 name = "os-image-contracts"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
@@ -7962,6 +7973,8 @@ trap '"${podman[@]}" image rm "$image" >/dev/null 2>&1 || true' EXIT
   --entrypoint bash "$image" -c 'bash /repo/os/tests/rollback-wrappers.sh /usr/libexec/tilo/tilo-rollback'
 epoch=$("${podman[@]}" image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$image")
 case $epoch in ''|*[!0-9]*) echo "the image carries no clock but '$epoch'" >&2; exit 1 ;; esac
+"${podman[@]}" run --rm --network none --mount "type=bind,src=$PWD/os/tests,dst=/repo/os/tests,ro" \
+  --entrypoint bash "$image" /repo/os/tests/image-programs-contract.sh
 "${podman[@]}" run --rm --network none --mount "type=bind,src=$PWD/os/scripts,dst=/repo/os/scripts,ro" \
   --env "SOURCE_DATE_EPOCH=$epoch" --entrypoint bash "$image" -c \
   'bash /repo/os/scripts/verify-no-python-runtime.sh && sh /repo/os/scripts/verify-rpm-files.sh && bootc container lint'

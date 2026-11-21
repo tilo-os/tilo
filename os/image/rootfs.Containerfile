@@ -109,42 +109,21 @@ RUN case "${TILO_GENERATION}" in \
       "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
  && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"
 
-# The session and the browser engine must resolve every library they load from
-# this rootfs: a gap is a loader error at the first launch, on a device.
-ARG TILO_WITH_BROWSER
+# Of the desktop's programs only those the consumer receipts certify run here: t
+# lays the others over the finished image (os/image/binaries.Containerfile), and
+# os-image-contracts checks them in the composed image (os/tests/image-programs-
+# contract.sh). This checks that no package claims one of tilo's nouns as its
+# command, the browser engine resolves every library it loads from this rootfs,
+# and the AirPlay sender starts. Then the prepared-setup helper publishes the
+# account and Home consumer receipts (/usr/share/tilo), which the installer's
+# media validation and a device's first boot hold the image's consumers to.
 ARG CHROMIUM_RUNTIME_VERSION
-RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,target=/run/tilo-collaborative-files-image-contract.sh,ro \
-    for f in /usr/libexec/tilo/tilo-server /usr/libexec/tilo/tilo-server-admin /usr/libexec/tilo/tilo-enroll \
-        /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-server-firstboot /usr/libexec/tilo-server-state-migrate \
-        /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
-        /usr/bin/tilo-session /usr/bin/fs /usr/libexec/tilo/tilo-greeter \
-        /usr/libexec/tilo/tilo-installer /usr/libexec/tilo/tilo-launcher /usr/libexec/tilo/tilo-runtime-bundle \
-        /usr/libexec/tilo/tilo-install /usr/libexec/tilo/tilo-app-package /usr/libexec/tilo-cli-shim \
-        /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
-        /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
-        /usr/libexec/tilo-doubletake-test-receiver \
-        /usr/libexec/tilo-account-credential /usr/libexec/tilo-prepared-setup; do \
-      test -e "$f" || { echo "$f is not in the image" >&2; exit 1; }; \
-      [ "$(stat -c %a "$f")" = 755 ] || chmod 0755 "$f"; \
-    done \
-    && for name in device action package agent system tilo-app tilo-action tilo-device tilo-package tilo-agent; do \
+RUN for name in device action package agent system tilo-app tilo-action tilo-device tilo-package tilo-agent; do \
       if rpm --quiet -qf "/usr/bin/$name"; then \
         echo "/usr/bin/$name is tilo's noun and also $(rpm -qf "/usr/bin/$name")'s command" >&2; exit 1; \
       fi; \
     done \
-    && missing="$(ldd /usr/bin/tilo-session /usr/bin/xwayland-satellite | awk '/not found/ { print $1 }')" \
-    && { if [ -n "$missing" ]; then \
-         printf 'the session or xwayland-satellite has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
-         exit 1; \
-       fi; } \
     && engine="/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}/lib/chromium" \
-    && { if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
-         test -x "$engine/tilo-chromium-host" \
-         && test -s "$engine/libcef.so" \
-         && /usr/libexec/tilo/tilo-runtime-bundle verify \
-              "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}" \
-              --require-publisher "$(cat /usr/share/tilo/browser-runtime-publisher.hex)"; \
-       fi; } \
     && { [ ! -d "$engine" ] || { \
          missing="$(LD_LIBRARY_PATH="$engine" ldd "$engine/tilo-chromium-host" "$engine/libcef.so" \
                     | awk '/not found/ { print $1 }' | sort -u)" \
@@ -161,9 +140,6 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
         >> /etc/tilo/runtime-bundle-trusted-publishers.txt \
     && cat /usr/share/tilo/registry-runtime-publisher.hex \
         >> /etc/tilo/runtime-bundle-trusted-publishers.txt \
-    && OS_ROOT=/ bash /run/tilo-collaborative-files-image-contract.sh image \
-    # Observe the installed helper and exact signed SDK through its own loader.
-    # Optional service-session artifacts absent means no service_sessions proof.
     && /usr/libexec/tilo-prepared-setup --verify-account-consumer-capability \
     && /usr/libexec/tilo-prepared-setup --verify-account-consumer-capability --check >/dev/null \
     && /usr/libexec/tilo-prepared-setup --verify-home-consumer-capability \

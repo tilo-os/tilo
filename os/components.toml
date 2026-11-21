@@ -136,7 +136,7 @@ files = [
   # its one owner: the launcher, tilo-install, the app host and the runtime
   # services read it too, so tilo-vmd refuses a generation in which any of them
   # was built for another declaration (crates/dev/tilo-vmd/src/interfaces.rs).
-  { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" },
+  { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644", layer = "desktop-files" },
   # Source swaps materialize the pinned OS catalog; images already assemble
   # this direct tree with the runtime payload, sharing its font bytes.
   { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
@@ -321,7 +321,7 @@ packages = ["install"]
 bins = ["tilo-install"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-install", to = "/usr/libexec/tilo/tilo-install", mode = "0755" },
+  { from = "tilo-install", to = "/usr/libexec/tilo/tilo-install", mode = "0755", layer = "consumer-programs" },
   { link = "../libexec/tilo/tilo-install", to = "/usr/bin/tilo-install" },
 ]
 
@@ -366,15 +366,15 @@ layer = "desktop-binaries"
 files = [
   { from = "app", to = "/usr/bin/app", mode = "0755" },
   { link = "app", to = "/usr/bin/store" },
-  { from = "@manifest/usr/lib/systemd/user/tilo-app-update.service", to = "/usr/lib/systemd/user/tilo-app-update.service", mode = "0644" },
-  { from = "@manifest/usr/lib/systemd/user/tilo-app-update.timer", to = "/usr/lib/systemd/user/tilo-app-update.timer", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-app-update.service", to = "/usr/lib/systemd/user/tilo-app-update.service", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-app-update.timer", to = "/usr/lib/systemd/user/tilo-app-update.timer", mode = "0644", layer = "desktop-files" },
   # Shell completions the image build generates from the binary; a dev build
   # of the binary alone leaves them absent.
-  { from = "completions/bash/app", to = "/usr/share/bash-completion/completions/app", mode = "0644", optional = true },
-  { link = "app", to = "/usr/share/bash-completion/completions/store" },
-  { from = "completions/fish/app.fish", to = "/usr/share/fish/vendor_completions.d/app.fish", mode = "0644", optional = true },
-  { from = "completions/zsh/_app", to = "/usr/share/zsh/site-functions/_app", mode = "0644", optional = true },
-  { link = "_app", to = "/usr/share/zsh/site-functions/_store" },
+  { from = "completions/bash/app", to = "/usr/share/bash-completion/completions/app", mode = "0644", optional = true, layer = "desktop-files" },
+  { link = "app", to = "/usr/share/bash-completion/completions/store", layer = "desktop-files" },
+  { from = "completions/fish/app.fish", to = "/usr/share/fish/vendor_completions.d/app.fish", mode = "0644", optional = true, layer = "desktop-files" },
+  { from = "completions/zsh/_app", to = "/usr/share/zsh/site-functions/_app", mode = "0644", optional = true, layer = "desktop-files" },
+  { link = "_app", to = "/usr/share/zsh/site-functions/_store", layer = "desktop-files" },
 ]
 
 [[component]]
@@ -396,7 +396,7 @@ packages = ["runtime-bundle"]
 bins = ["tilo-runtime-bundle"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-runtime-bundle", to = "/usr/libexec/tilo/tilo-runtime-bundle", mode = "0755" },
+  { from = "tilo-runtime-bundle", to = "/usr/libexec/tilo/tilo-runtime-bundle", mode = "0755", layer = "consumer-programs" },
   { link = "../libexec/tilo/tilo-runtime-bundle", to = "/usr/bin/tilo-runtime-bundle" },
 ]
 
@@ -410,7 +410,7 @@ user_units = ["tilo-package-service.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-package-service", to = "/usr/libexec/tilo-package-service", mode = "0755" },
-  { from = "@manifest/usr/lib/systemd/user/tilo-package-service.service", to = "/usr/lib/systemd/user/tilo-package-service.service", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-package-service.service", to = "/usr/lib/systemd/user/tilo-package-service.service", mode = "0644", layer = "desktop-files" },
 ]
 
 [[component]]
@@ -424,7 +424,7 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-ush", to = "/usr/libexec/tilo-ush", mode = "0755" },
   { link = "../libexec/tilo-ush", to = "/usr/bin/ush" },
-  { from = "@manifest/usr/lib/systemd/user/tilo-ush.service", to = "/usr/lib/systemd/user/tilo-ush.service", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-ush.service", to = "/usr/lib/systemd/user/tilo-ush.service", mode = "0644", layer = "desktop-files" },
   # The Linux VM service a guest's app shims reach through the broker.
   { from = "tilo-linux-vm", to = "/usr/libexec/tilo/tilo-linux-vm", mode = "0755" },
   { link = "../libexec/tilo/tilo-linux-vm", to = "/usr/bin/tilo-linux-vm" },
@@ -443,7 +443,7 @@ files = [
   { link = "../libexec/tilo/tilo-model-manager", to = "/usr/bin/tilo-model-manager" },
   { from = "tilo-speech-worker", to = "/usr/libexec/tilo/tilo-speech-worker", mode = "0755" },
   { link = "../libexec/tilo/tilo-speech-worker", to = "/usr/bin/tilo-speech-worker" },
-  { from = "@manifest/usr/share/licenses/tilo-speech-worker/LICENSE", to = "/usr/share/licenses/tilo-speech-worker/LICENSE", mode = "0644" },
+  { from = "@manifest/usr/share/licenses/tilo-speech-worker/LICENSE", to = "/usr/share/licenses/tilo-speech-worker/LICENSE", mode = "0644", layer = "desktop-files" },
 ]
 
 [[component]]
@@ -547,7 +547,7 @@ packages = ["account-credentials"]
 bins = ["tilo-account-credential"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755" },
+  { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755", layer = "consumer-programs" },
 ]
 
 # Installed target-user setup consumer. First use and the retained launcher
@@ -566,7 +566,7 @@ bins = ["tilo-prepared-setup", "tilo-installer-prepared-setup-extract"]
 features = ["imager/installation"]
 layer = "desktop-binaries"
 files = [
-  { from = "tilo-prepared-setup", to = "/usr/libexec/tilo-prepared-setup", mode = "0755" },
+  { from = "tilo-prepared-setup", to = "/usr/libexec/tilo-prepared-setup", mode = "0755", layer = "consumer-programs" },
   { from = "tilo-installer-prepared-setup-extract", to = "/usr/libexec/tilo-installer-prepared-setup-extract", mode = "0755" },
 ]
 
@@ -596,7 +596,7 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-installer", to = "/usr/libexec/tilo/tilo-installer", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-installer" },
-  { from = "tilo-firstboot-home-seeds", to = "/usr/libexec/tilo-firstboot-home-seeds", mode = "0755" },
+  { from = "tilo-firstboot-home-seeds", to = "/usr/libexec/tilo-firstboot-home-seeds", mode = "0755", layer = "consumer-programs" },
 ]
 
 [[component]]
@@ -618,12 +618,12 @@ files = [
   { link = "tilo", to = "/usr/bin/tilo-enroll" },
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
   # A node.
-  { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644" },
-  { from = "@manifest/usr/lib/sysusers.d/tilo-server.conf", to = "/usr/lib/sysusers.d/tilo-server.conf", mode = "0644" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-server@.service", to = "/usr/lib/systemd/system/tilo-node-server@.service", mode = "0644" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644" },
+  { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/sysusers.d/tilo-server.conf", to = "/usr/lib/sysusers.d/tilo-server.conf", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-server@.service", to = "/usr/lib/systemd/system/tilo-node-server@.service", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644", layer = "desktop-files" },
 ]
 
 # The server image's own server: the daemon, its admin and enroll programs, built
@@ -734,19 +734,19 @@ files = [
   { link = "tilo", to = "/usr/bin/tilo-agent", layer = "desktop-binaries" },
   # Shell completions the image build generates from the binary; a dev build
   # of the binary alone leaves them absent.
-  { from = "completions/bash/tilo", to = "/usr/share/bash-completion/completions/tilo", mode = "0644", optional = true, layer = "desktop-binaries" },
-  { link = "tilo", to = "/usr/share/bash-completion/completions/system", layer = "desktop-binaries" },
-  { link = "tilo", to = "/usr/share/bash-completion/completions/device", layer = "desktop-binaries" },
-  { link = "tilo", to = "/usr/share/bash-completion/completions/action", layer = "desktop-binaries" },
-  { link = "tilo", to = "/usr/share/bash-completion/completions/package", layer = "desktop-binaries" },
-  { link = "tilo", to = "/usr/share/bash-completion/completions/agent", layer = "desktop-binaries" },
-  { from = "completions/fish/tilo.fish", to = "/usr/share/fish/vendor_completions.d/tilo.fish", mode = "0644", optional = true, layer = "desktop-binaries" },
-  { from = "completions/zsh/_tilo", to = "/usr/share/zsh/site-functions/_tilo", mode = "0644", optional = true, layer = "desktop-binaries" },
-  { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-binaries" },
-  { link = "_tilo", to = "/usr/share/zsh/site-functions/_device", layer = "desktop-binaries" },
-  { link = "_tilo", to = "/usr/share/zsh/site-functions/_action", layer = "desktop-binaries" },
-  { link = "_tilo", to = "/usr/share/zsh/site-functions/_package", layer = "desktop-binaries" },
-  { link = "_tilo", to = "/usr/share/zsh/site-functions/_agent", layer = "desktop-binaries" },
+  { from = "completions/bash/tilo", to = "/usr/share/bash-completion/completions/tilo", mode = "0644", optional = true, layer = "desktop-files" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/system", layer = "desktop-files" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/device", layer = "desktop-files" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/action", layer = "desktop-files" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/package", layer = "desktop-files" },
+  { link = "tilo", to = "/usr/share/bash-completion/completions/agent", layer = "desktop-files" },
+  { from = "completions/fish/tilo.fish", to = "/usr/share/fish/vendor_completions.d/tilo.fish", mode = "0644", optional = true, layer = "desktop-files" },
+  { from = "completions/zsh/_tilo", to = "/usr/share/zsh/site-functions/_tilo", mode = "0644", optional = true, layer = "desktop-files" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-files" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_device", layer = "desktop-files" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_action", layer = "desktop-files" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_package", layer = "desktop-files" },
+  { link = "_tilo", to = "/usr/share/zsh/site-functions/_agent", layer = "desktop-files" },
 ]
 
 # Consent-guarded NTFS access: the root service the shell asks to open a drive
@@ -762,7 +762,7 @@ units = ["tilo-ntfs-mount.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-ntfs-mount", to = "/usr/libexec/tilo-ntfs-mount", mode = "0755" },
-  { from = "ntfs-mount/fuse-handoff.so", to = "/usr/lib/tilo/ntfs-mount/fuse-handoff.so", mode = "0755" },
+  { from = "ntfs-mount/fuse-handoff.so", to = "/usr/lib/tilo/ntfs-mount/fuse-handoff.so", mode = "0755", layer = "desktop-files" },
 ]
 
 # Your devices as a VPN: the root helper the shell asks for a tunnel's TUN,

@@ -30,6 +30,11 @@ layers, so the pinned base is a fragment as it comes from the registry.
     oci_layers.py view OUT FRAGMENT...               the same, its blobs links to the
                                                      fragments' own, for loading in place
                                                      and never kept
+    oci_layers.py tree DIR OUT ACTION                the files under DIR as a fragment of
+                                                     layers of their own, in OUT, with no
+                                                     configuration: composed over an image,
+                                                     it keeps the one below; root's, dated
+                                                     by SOURCE_DATE_EPOCH
     oci_layers.py index OUT LAYOUT...                one multi-architecture index of the
                                                      layouts' images, as a layout
     oci_layers.py attach LAYOUT DIGEST PAYLOAD SIG[,BUNDLE[,CERT]]...
@@ -81,6 +86,10 @@ INPUTS = "org.tilo.layer.inputs"
 # preinstalled apps' trees, each named by its payload. In the one layer that copies them in,
 # one changed app made an update send every app again; apart, it sends the apps that changed.
 APART = ("usr/share/tilo-apps/trees",)
+# How many layers `tree` spreads its files over, each file by a hash of its path: a changed
+# file changes its own layer, and the rest stay the blobs they were, while the layers are
+# compressed in parallel.
+TREE_LAYERS = 8
 
 
 def die(msg):
@@ -372,6 +381,85 @@ def cmd_take(parent, built, out, action, inputs_file):
     print(f"{action}: {len(layers)} layers, {size / 1048576:.1f} MiB, inputs {inputs['inputsDigest'][:19]}")
 
 
+class _Digesting:
+    """A file that keeps the SHA-256 of what is written to it."""
+
+    def __init__(self, f):
+        self.f, self.sha = f, hashlib.sha256()
+
+    def write(self, data):
+        self.sha.update(data)
+        return self.f.write(data)
+
+
+def cmd_tree(src, out, action, epoch):
+    """The files under SRC as the layers of a fragment in OUT, with no configuration (compose
+    keeps the topmost one below). Each file goes to one of TREE_LAYERS layers by a hash of its
+    path, and every layer carries the directories above its files, so it applies on its own.
+    Every entry is root's and dated EPOCH. A directory is 0755: its entry replaces the image's
+    own directory of that name, which must not take the mode a scratch umask gave SRC. A file
+    keeps its mode without group or other write, and every name is a file of its own, never a
+    hard link, as the image's programs each are."""
+    epoch = int(epoch)
+    src = os.path.abspath(src)
+    names = []
+    for root, dirs, files in os.walk(src):
+        dirs.sort()
+        for name in sorted(dirs + files):
+            names.append(os.path.relpath(os.path.join(root, name), src))
+    buckets = [set() for _ in range(TREE_LAYERS)]
+    for name in names:
+        if os.path.isdir(os.path.join(src, name)) and not os.path.islink(os.path.join(src, name)):
+            continue
+        bucket = buckets[zlib.crc32(name.encode("utf-8", "surrogateescape")) % TREE_LAYERS]
+        bucket.add(name)
+        parent = os.path.dirname(name)
+        while parent:
+            bucket.add(parent)
+            parent = os.path.dirname(parent)
+    shutil.rmtree(out, ignore_errors=True)
+    work = os.path.join(out, ".tree")
+    os.makedirs(work)
+    jobs = []
+    for i, bucket in enumerate(buckets):
+        if not bucket:
+            continue
+        path = os.path.join(work, f"{i}.tar")
+        with open(path, "wb") as raw:
+            sink = _Digesting(raw)
+            with tarfile.open(fileobj=sink, mode="w|", format=tarfile.PAX_FORMAT) as tar:
+                for name in sorted(bucket):
+                    full = os.path.join(src, name)
+                    st = os.lstat(full)
+                    entry = tarfile.TarInfo(name)
+                    entry.mode, entry.mtime = st.st_mode & 0o7755, epoch
+                    entry.uid = entry.gid = 0
+                    entry.uname = entry.gname = ""
+                    if os.path.islink(full):
+                        entry.type, entry.linkname = tarfile.SYMTYPE, os.readlink(full)
+                        tar.addfile(entry)
+                    elif os.path.isdir(full):
+                        entry.type, entry.mode = tarfile.DIRTYPE, 0o755
+                        tar.addfile(entry)
+                    else:
+                        entry.size = st.st_size
+                        with open(full, "rb") as f:
+                            tar.addfile(entry, f)
+        jobs.append((path, out, "sha256:" + sink.sha.hexdigest()))
+    with ProcessPoolExecutor(max(1, min(len(jobs), os.cpu_count() or 1)),
+                             mp_context=multiprocessing.get_context("fork")) as pool:
+        packed = list(pool.map(_gzip_job, jobs))
+    shutil.rmtree(work)
+    layers = [{"mediaType": LAYER_GZIP, "digest": digest, "size": size, "diffID": diff_id}
+              for (_, _, diff_id), (digest, size) in zip(jobs, packed)]
+    inputs_digest = sha256_bytes("\n".join(l["diffID"] for l in layers).encode()) if layers else ""
+    frag = {"action": action, "inputs": {}, "inputsDigest": inputs_digest, "layers": layers}
+    with open(os.path.join(out, "fragment.json"), "w") as f:
+        json.dump(frag, f, indent=1, sort_keys=True)
+    size = sum(l["size"] for l in layers)
+    print(f"{action}: {len(layers)} layers, {size / 1048576:.1f} MiB")
+
+
 def compose(out, fragments, epoch, symlink=False, copy=False):
     """The image of the fragments' layers in order, as an OCI layout in OUT/oci; its manifest
     descriptor. The configuration is the topmost fragment's (its environment, labels,
@@ -589,6 +677,8 @@ def main(argv):
         compose(args[1], args[2:], os.environ.get("SOURCE_DATE_EPOCH", "0"), copy=True)
     elif cmd in ("compose", "view") and len(args) >= 2:
         compose(args[0], args[1:], os.environ.get("SOURCE_DATE_EPOCH", "0"), symlink=cmd == "view")
+    elif cmd == "tree" and len(args) == 3:
+        cmd_tree(*args, os.environ.get("SOURCE_DATE_EPOCH", "0"))
     elif cmd == "index" and len(args) >= 2:
         cmd_index(args[0], args[1:])
     elif cmd == "attach" and len(args) >= 4:
