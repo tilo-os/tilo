@@ -771,13 +771,7 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
             }
         };
         drop(budgets);
-        // Every workspace the run entered is the connection's, even when
-        // another of the run ended it: its teardown leaves them all.
-        for workspace_id in entered {
-            if !self.subscribed.contains(&workspace_id) {
-                self.subscribed.push(workspace_id);
-            }
-        }
+        self.enter_workspaces(entered);
         // A batch of subscriptions that only refused a device the server does
         // not admit ends the session with that refusal; one that entered a
         // workspace leaves it.
@@ -786,6 +780,16 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
                 Err(PeerError::NotAdmitted)
             }
             outcome => outcome,
+        }
+    }
+
+    /// The connection holds every workspace the run entered, even when another of the run
+    /// ended it: its teardown leaves them all.
+    fn enter_workspaces(&mut self, entered: Vec<WorkspaceId>) {
+        for workspace_id in entered {
+            if !self.subscribed.contains(&workspace_id) {
+                self.subscribed.push(workspace_id);
+            }
         }
     }
 

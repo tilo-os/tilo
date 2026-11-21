@@ -1193,6 +1193,17 @@ impl std::fmt::Debug for Workspaces {
     }
 }
 
+/// Whether `message` is a notice the host keeps already rather than a record write or
+/// governance: what the server's own device sends.
+fn only_a_notice(message: &neighbour_wire::NeighbourMsg) -> bool {
+    message.governance_workspace().is_none()
+        && !matches!(
+            message,
+            neighbour_wire::NeighbourMsg::AppDocument { .. }
+                | neighbour_wire::NeighbourMsg::SyncResp { .. }
+        )
+}
+
 impl Workspaces {
     /// The address this device answers at, as its endpoint has it now.
     pub(super) fn endpoint_addr(&self) -> iroh_base::EndpointAddr {
@@ -2250,14 +2261,7 @@ impl Workspaces {
         // A host told of its device's channel service retains its own
         // device's channel governance like any member's, for the other
         // key holders: the host keeps no channels to have it already.
-        if author == host.cert.device_public_key
-            && message.governance_workspace().is_none()
-            && !matches!(
-                message,
-                neighbour_wire::NeighbourMsg::AppDocument { .. }
-                    | neighbour_wire::NeighbourMsg::SyncResp { .. }
-            )
-        {
+        if author == host.cert.device_public_key && only_a_notice(&message) {
             return Ok(());
         }
         let Some(message) = self
