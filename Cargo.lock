@@ -20727,8 +20727,12 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-automerge-fork",
+ "tilo-model-guest",
+ "tilo-resource",
  "tilolang-runtime",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -20780,15 +20784,12 @@ dependencies = [
 name = "tilo-model-guest"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "serde",
  "serde_json",
  "tilo-actions",
- "tilo-automerge-fork",
  "tilo-resource",
- "uuid",
  "workspace-hack",
 ]
 

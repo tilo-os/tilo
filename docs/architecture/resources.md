@@ -570,12 +570,12 @@ the change claims and the bytes its payload changed; readers fold it into the
 gesture's first entry.
 
 A device replays a change it receives with the app's model module
-([apps.md](apps.md) §1): it opens the document at the change's parent heads,
-the module's verb reads and writes it through the device's document calls, the
-entry is written from the same committed history (the continuation reads the
-writer's earlier entries through the same calls), and the device compares the
-change that makes with the one it received. Two holders replaying one
-invocation reach the same heads.
+([apps.md](apps.md) §1): the device's executor opens the document at the
+change's parent heads, the module's verb reads and writes it through the
+device's document calls, the device writes the entry from its own committed
+history and commits the change under the envelope's actor and time, and
+compares the change that makes with the one it received. Two holders
+replaying one invocation reach the same heads.
 
 ### 5.2 Sentences are rendered by the reader
 

@@ -126,6 +126,14 @@ fn invokers(document: &[u8]) -> Vec<tilo_actions::ActionInvoker> {
         .collect()
 }
 
+/// The history entry of `document`'s latest change, as the device wrote it.
+fn recorded_entry(document: &[u8]) -> tilo_actions::ActionContext {
+    let mut document = automerge::AutoCommit::load(document).unwrap();
+    let head = document.get_heads()[0];
+    tilo_actions::entry_of(document.committed_document(), head)
+        .expect("the change carries a history entry")
+}
+
 /// The receipt a served invocation settled with: a service still settling the
 /// workspace is asked again, and an invocation accepted while it saves is
 /// observed until it ends.
@@ -464,34 +472,128 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     // Another holder of the resource replays the invocation with the same
     // module, as the same actor and at the same origin clock: the change it
     // writes is the change the server published.
+    let surface = collab_types::surface::SurfaceFile::parse(TASKS_SURFACE).unwrap();
+    let verb = surface
+        .resources
+        .iter()
+        .flat_map(|resource| resource.verbs.iter())
+        .find(|verb| verb.id == "create-area")
+        .unwrap();
     let replayed = tilo_model_engine::Model::compile(&model)
         .unwrap()
-        .ask(&tilo_model_engine::Request {
-            op: tilo_model_engine::Op::Apply,
+        .apply(tilo_model_engine::Invocation {
+            app: TASKS,
             kind: TRACKER,
+            verb,
             id: "",
-            home: &created.workspace,
-            bytes: &before,
-            member: "agent:assistant",
-            acting: Some(serde_json::to_value(&acting).unwrap()),
-            action: "create-area",
+            document: &before,
+            member: &tilo_actions::MemberId::of_actor_bytes(b"agent:assistant").unwrap(),
+            acting: &acting,
             arguments: create_area("Ship it"),
             now: i64::try_from(now_ms).unwrap(),
-            envelope: None,
         })
         .unwrap();
     let mut replayed_document = automerge::AutoCommit::load(&before).unwrap();
-    tilo_automerge::ApplyIncoming::load_incoming(
-        &mut replayed_document,
-        &replayed
-            .changes
-            .expect("the module wrote the action's change"),
-    )
-    .unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut replayed_document, &replayed.changes)
+        .unwrap();
     assert_eq!(
         replayed_document.get_heads(),
         document.get_heads(),
         "the same module replays the action to the same document"
+    );
+    // The device wrote the change's history entry, not the module: the
+    // action as its own type records it, the app, and the agent for its
+    // person.
+    let entry = recorded_entry(&after);
+    assert!(
+        entry
+            .action
+            .as_ref()
+            .is_some_and(|action| String::from_utf8_lossy(&action.payload).contains("create-area")),
+        "the entry records the action applied: {entry:?}"
+    );
+    assert_eq!(entry.app.as_ref().map(|app| app.id.as_str()), Some(TASKS));
+    assert_eq!(
+        entry.invoker.as_ref().and_then(|invoker| invoker.acting.agent_id()),
+        Some("assistant")
+    );
+
+    // The person's own call, as their window makes it when they click: the
+    // same action API, the same device recording it, under the person.
+    let window = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        server_device.cert.device_public_key,
+    )
+    .in_workspace(&created.workspace)
+    .in_new_execution();
+    let clicked = super::request(
+        &provider(&route),
+        ActionAddress::new(TRACKER, "create-area"),
+        InvokeArgument::Json(create_area("From the window")),
+    );
+    let status = settled(&actions, created.workspace_id, &window, &clicked);
+    assert!(
+        matches!(status, ReceiptStatus::Completed { .. }),
+        "the person's action is applied from the package: {status:?}"
+    );
+    let clicked_after = workspaces
+        .resource_document(&created.workspace, TASKS, "")
+        .await
+        .unwrap()
+        .expect("the document still exists");
+    assert!(
+        tasks_model::Tracker::read(&automerge::AutoCommit::load(&clicked_after).unwrap())
+            .unwrap()
+            .areas
+            .iter()
+            .any(|(_, area)| area.name.as_str() == "From the window"),
+        "the tracker holds the area the person made"
+    );
+    let entry = recorded_entry(&clicked_after);
+    let invoker = entry.invoker.as_ref().expect("the entry names who acted");
+    assert_eq!(invoker.acting.agent_id(), None, "the person acted, no agent");
+    assert_eq!(invoker.acting.person_id(), Some(person.as_str()));
+    assert!(
+        entry.action.is_some(),
+        "the person's change records its action as the agent's does"
+    );
+
+    // An agent whose turn denies changes is refused before the module runs,
+    // and nothing is recorded.
+    let denied = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        server_device.cert.device_public_key,
+    )
+    .delegated_to("assistant")
+    .named("Claude Code")
+    .in_workspace(&created.workspace)
+    .in_new_execution()
+    .on_turn(
+        tilo_action_policy::turn::Turn::new("chat.workspace/denied", "m1"),
+        vec![Rule::new(
+            TreePath::workspace(&created.workspace).rest(),
+            KindSet::UNDOABLE,
+            PolicyAnswer::Deny,
+        )],
+    );
+    let refused = super::request(
+        &provider(&route),
+        ActionAddress::new(TRACKER, "create-area"),
+        InvokeArgument::Json(create_area("Denied")),
+    );
+    let status = settled(&actions, created.workspace_id, &denied, &refused);
+    assert!(
+        matches!(status, ReceiptStatus::Rejected { .. }),
+        "the denied action is refused: {status:?}"
+    );
+    assert_eq!(
+        workspaces
+            .resource_document(&created.workspace, TASKS, "")
+            .await
+            .unwrap()
+            .expect("the document still exists"),
+        clicked_after,
+        "a denied action records nothing"
     );
 
     // A packaged action whose grant needs the person's consent is put to them,

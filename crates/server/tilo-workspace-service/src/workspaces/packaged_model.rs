@@ -11,7 +11,7 @@
 //! publishing what the module wrote exactly as an action of this device's own
 //! would be published. Because the module is the same bytes on every device, a
 //! device holding the resource replays the invocation to the same change
-//! ([`tilo_model_engine::Answer::envelope`] is what a peer replays).
+//! ([`tilo_model_engine::Applied::envelope`] is what a peer replays).
 //!
 //! The module is split against the model runtime of the release that built
 //! the app ([`tilo_model_engine::Runtime`]), and this server's image carries its
@@ -24,8 +24,10 @@
 //!
 //! What this side does *not* do is decide anything the app decides: it checks
 //! the package's signature, that the package is the app named, and that the
-//! governor may write the document; the module builds the action from its
-//! vocabulary and the action API binds, checks and keeps it.
+//! governor may write the document. The arguments are checked against the
+//! verb the signed surface declares, the module builds the action from its
+//! vocabulary and applies it, and this device's executor writes the
+//! envelope, the history entry and the change, as for an app compiled in.
 
 use std::collections::BTreeMap;
 
@@ -36,7 +38,7 @@ use crate::service_authority::ServiceOperation;
 use tilo_actions::MemberId;
 use tilo_app_package::blobs::BlobHash;
 use tilo_app_package::tapp;
-use tilo_model_engine::{Model, Op, Request, Runtime};
+use tilo_model_engine::{Invocation, Model, Runtime};
 use tilo_user_identity::DeviceCert;
 
 /// One action of an installed app, as a holder of the workspace applies it
@@ -283,26 +285,9 @@ impl Workspaces {
         }
         // The model is an engine and its memory, which no thread may carry:
         // it is compiled, asked and let go before anything waits.
-        let genesis = {
-            let model = packaged_model(package, app)?;
-            model
-                .ask(&Request {
-                    op: Op::Initialize,
-                    kind,
-                    id: document,
-                    home: workspace,
-                    bytes: &[],
-                    member: &hex::encode(governor.user_public_key),
-                    acting: None,
-                    action: "",
-                    arguments: serde_json::Map::new(),
-                    now: i64::try_from(now / 1_000_000).unwrap_or(i64::MAX),
-                    envelope: None,
-                })
-                .map_err(|error| CollaborationError::new(error.to_string()))?
-                .document
-                .ok_or_else(|| CollaborationError::new("the model produced no genesis"))?
-        };
+        let genesis = packaged_model(package, app)?
+            .initialize(kind, document, workspace)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
         if genesis.len() > 64 * 1024 {
             return Err(CollaborationError::new(
                 "the model's genesis exceeds the bootstrap limit",
@@ -336,9 +321,9 @@ impl Workspaces {
     /// holder that never built the app.
     ///
     /// The change is admitted and signed by this device's governor, as its own
-    /// action would be. The invocation the module made is returned; a peer
+    /// action would be. The invocation this device recorded is returned; a peer
     /// holding the resource replays it with the same module
-    /// ([`tilo_model_engine::Answer::envelope`]).
+    /// ([`tilo_model_engine::Model::replay`]).
     ///
     /// # Errors
     /// Refuses other devices, stale governance, an app the package is not, a
@@ -401,29 +386,27 @@ impl Workspaces {
             .await
             .map_err(CollaborationError::new)?
             .ok_or_else(|| CollaborationError::new("the document is not prepared"))?;
+        // The device checks the arguments against the verb the package's
+        // signed surface declares, and writes the change's envelope and
+        // history entry; the module only builds the action and applies it.
+        let surface = package_surface(package, app)?;
+        let verb = surface_verb(&surface, kind, action)?;
         // The model is an engine and its memory, which no thread may carry:
         // it is compiled, asked and let go before anything waits.
-        let answer = {
-            let model = packaged_model(package, app)?;
-            model
-                .ask(&Request {
-                    op: Op::Apply,
-                    kind,
-                    id: document,
-                    home: workspace,
-                    bytes: &bytes,
-                    member: &member_string(&member),
-                    acting: serde_json::to_value(&acting).ok(),
-                    action,
-                    arguments,
-                    now: now_ms,
-                    envelope: None,
-                })
-                .map_err(|error| CollaborationError::new(error.to_string()))?
-        };
-        let changes = answer
-            .changes
-            .ok_or_else(|| CollaborationError::new("the model wrote nothing"))?;
+        let applied = packaged_model(package, app)?
+            .apply(Invocation {
+                app,
+                kind,
+                verb: &verb,
+                id: document,
+                document: &bytes,
+                member: &member,
+                acting: &acting,
+                arguments,
+                now: now_ms,
+            })
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        let changes = applied.changes;
         if changes.len() > 64 * 1024 {
             return Err(CollaborationError::new(
                 "the action's changes exceed the publication limit",
@@ -431,7 +414,7 @@ impl Workspaces {
         }
         // The change names the app version's surface, which the package
         // carries: the receipt is decided here.
-        keep_surface(app, &package_surface(package, app)?);
+        keep_surface(app, &surface);
         // What the model wrote is published as the governor's signed change,
         // sealed with the workspace's keys where its members write sealed.
         let keys = self.sealing_keys(&governed, app, document).await?;
@@ -449,13 +432,27 @@ impl Workspaces {
             Ok(collaboration)
         })?;
         self.settle(&mut governed).await?;
-        answer
-            .envelope
-            .ok_or_else(|| CollaborationError::new("the model made no invocation"))
+        serde_json::to_value(&applied.envelope)
+            .map_err(|error| CollaborationError::new(format!("the invocation: {error}")))
     }
 }
 
-/// `member` as the model module reads it ([`MemberId::of_actor_bytes`]).
-fn member_string(member: &MemberId) -> String {
-    String::from_utf8_lossy(&member.actor_bytes()).into_owned()
+/// The verb `action` of the resource `kind` the package's signed surface
+/// `surface` declares: what the device checks an invocation's arguments
+/// against before the app's model builds the action.
+///
+/// # Errors
+/// A surface that does not parse, or one that declares no such verb.
+fn surface_verb(
+    surface: &[u8],
+    kind: &str,
+    action: &str,
+) -> Result<tilo_actions::surface::VerbSurface, CollaborationError> {
+    let surface = collab_types::surface::SurfaceFile::parse(surface)
+        .map_err(|error| CollaborationError::new(format!("the package's surface: {error}")))?;
+    surface
+        .resource(Some(kind))
+        .and_then(|resource| resource.verbs.iter().find(|verb| verb.id == action))
+        .cloned()
+        .ok_or_else(|| CollaborationError::new("the app declares no such action"))
 }

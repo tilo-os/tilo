@@ -12,19 +12,15 @@ path = "src/lib.rs"
 
 # The model modules an app's package carries build this for wasm32
 # (`apps/*-model-wasm`), sharing the workspace's lock and target directory so
-# its dependencies compile once across apps. Its dependencies name the same
-# automerge fork the resource layer does, so the two are one crate in the
-# module, built with `--cfg tilo_model_guest`: its documents are the host's.
+# its dependencies compile once across apps. Built with `--cfg
+# tilo_model_guest`, the resource layer's documents are the device's.
 
 [dependencies]
-automerge = { package = "tilo-automerge-fork", version = "0.12.0", path = "../../../vendor/automerge" }
-blake3 = "1.8.5"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource = { path = "../tilo-resource" }
-uuid = { version = "1.23.1", default-features = false }
 
 # A model's actions reach rand_core 0.6, the RustCrypto generation hpke-rs's
 # p256 still takes (tilo-actions keeps an action's large parts as sealed

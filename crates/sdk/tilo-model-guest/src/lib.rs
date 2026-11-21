@@ -7,22 +7,31 @@
 //! calls, and exports [`EXPORT`]; the verbs, declarations and typed arguments
 //! are the app's own, from its model crate.
 //!
+//! The device does everything about an action but what only the app's types
+//! know. It checks the invocation's arguments against the verb the package's
+//! signed surface declares, builds the envelope (its id, base heads, actor and
+//! time), writes the history entry and commits the change, and replays an
+//! invocation another holder recorded at the heads it was made on: the action
+//! executor runs there, natively, exactly as for an app compiled in. The module
+//! answers four requests ([`Op`]):
+//!
+//! - [`Op::Initialize`] writes a new resource's initial content, which the
+//!   device commits as its genesis;
+//! - [`Op::Bind`] builds the action from the arguments the device checked,
+//!   through the resource's own declarations, and answers what it is
+//!   ([`Bound`]): the bytes it is recorded as and the kinds history files it
+//!   under;
+//! - [`Op::Read`] answers the same of an action another holder recorded;
+//! - [`Op::Apply`] applies a recorded action's verb to the device's document,
+//!   under the invoking context the envelope pins.
+//!
 //! The device holds the document. A module built with `--cfg
 //! tilo_model_guest` reads and writes it through the device: its
 //! `tilo_resource::Doc` is a handle on the device's document, every read and
 //! write one call (`automerge::model_device`), so a verb acts on the
-//! resource at its current heads exactly as it does natively, and the change
-//! it makes is the device's Automerge's, which the device signs and keeps. The
-//! module carries the app's own code and none of Automerge's storage.
-//!
-//! An invocation is the one the action API makes: the action is built from
-//! the resource's declarations for the JSON arguments exactly as the device
-//! binds them, then applied through the action executor under an envelope
-//! whose id, base heads, actor and time all come from the request. So two
-//! holders of the resource given the same request write the same change, and
-//! a device that receives it replays the envelope to the same change, through
-//! the same calls against the document at the change's parents: the
-//! determinism every key holder needs to verify another's work.
+//! resource exactly as it does natively. The module writes content only: the
+//! device refuses a commit, an actor or changes loaded into the request's
+//! document from a module, so what history records is the device's.
 //!
 //! An app's module serves every resource it declares: a request names the
 //! resource kind it is for, and the module routes it to that resource's verbs.
@@ -44,11 +53,8 @@
 
 #![deny(rust_2018_idioms, missing_docs)]
 
-use serde::Deserialize;
-use tilo_actions::{
-    Acting, Action, ActionContext, ActionEnvelope, ActionError, ActionId, ActionInvoker,
-    ChangeKind, EncodedAction, ExecutionLocus, MemberId,
-};
+use serde::{Deserialize, Serialize};
+use tilo_actions::{Action as _, ActionContext, ActionKind, ChangeKind, Described, ExecutionLocus};
 use tilo_resource::{Doc, ModelError, Resource};
 
 /// The export the device calls, with no arguments, returning `0` once it wrote
@@ -120,18 +126,98 @@ unsafe extern "C" {
 }
 
 /// What the device asks the model to do.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Op {
-    /// Make the resource's genesis: the app's initial content, committed as
-    /// one change at time zero under the actor the resource's identity
-    /// derives.
+pub enum Op {
+    /// Write the resource's initial content into the device's document, which
+    /// the device commits as the resource's genesis.
     Initialize,
-    /// Apply `action`, with `arguments`, to the device's document.
+    /// Build the action [`Request::action`] names from [`Request::arguments`],
+    /// which the device checked against the signed surface, and answer what
+    /// it is ([`Bound`]), described against the device's document as it is
+    /// before the action, under [`Request::context`].
+    Bind,
+    /// Answer what the recorded action [`Request::payload`] is ([`Bound`]).
+    Read,
+    /// Apply the recorded action [`Request::payload`] to the device's
+    /// document, under [`Request::context`].
     Apply,
-    /// Replay `envelope`, an invocation another holder recorded, against the
-    /// device's document: what a holder that receives the change checks it by.
-    Replay,
+}
+
+/// One request from the device.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Request {
+    /// What the model is asked to do.
+    pub op: Option<Op>,
+    /// The resource kind the request is for: which of the app's resources the
+    /// module routes it to ([`Resource::KIND`]).
+    pub kind: String,
+    /// The verb [`Op::Bind`] builds, in the resource's vocabulary.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub action: String,
+    /// Its arguments, as the device bound them.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// The invocation's origin clock, milliseconds since the Unix epoch.
+    #[serde(default)]
+    pub now: i64,
+    /// The action [`Op::Read`] and [`Op::Apply`] are about, in the bytes it
+    /// is recorded as ([`Bound::payload`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub payload: String,
+    /// The invoking context: the one the envelope pins, which [`Op::Apply`]'s
+    /// verb reads as a natively applied verb reads it
+    /// ([`tilo_actions::invoking_context`]), and the invoker [`Op::Bind`]
+    /// describes the action under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ActionContext>,
+    /// Whether the device reproduces a recorded change rather than making a
+    /// new one ([`tilo_actions::executor::is_replaying`]).
+    #[serde(default)]
+    pub replaying: bool,
+}
+
+/// What a module answers [`Op::Bind`] and [`Op::Read`] with: what only the
+/// app's types know about an action.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Bound {
+    /// The type id the action is recorded under ([`Resource::ACTION_TYPE`]).
+    pub action_type: String,
+    /// The action as it is recorded: its JSON, written by its own type, so
+    /// every device keeps and replays the same bytes.
+    pub payload: String,
+    /// What the resource is called, in the person's language
+    /// ([`Resource::label`]).
+    pub label: String,
+    /// Whether the change is a person's step or housekeeping.
+    pub change: ChangeKind,
+    /// What the action is able to do.
+    pub kind: ActionKind,
+    /// Whether it is a message someone received.
+    pub incoming_message: bool,
+    /// Whether its undo is computed by its own code
+    /// ([`tilo_actions::Action::compensates`]).
+    pub compensates: bool,
+    /// Whether it loses something Undo cannot bring back.
+    pub irreversible: bool,
+    /// Where it is done.
+    pub locus: ExecutionLocus,
+    /// What history records it does and to which item, read from the
+    /// device's document before it applies, for [`Op::Bind`]
+    /// ([`tilo_actions::Action::describe`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub described: Option<Described>,
+}
+
+/// What the module answers.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Answer {
+    /// What the action is, for [`Op::Bind`] and [`Op::Read`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound: Option<Bound>,
+    /// Why the model did not do it, in the device's words for the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One resource an app's module serves, and the code that answers a request
@@ -144,12 +230,10 @@ enum Op {
 pub struct Served {
     /// The resource kind this serves, as the app declares it.
     pub kind: &'static str,
-    /// The app that publishes it ([`Resource::APP_ID`]).
-    pub app: &'static str,
     /// The resource's own code, and nothing else: what a request does about
-    /// it — parsing it, naming its invocation, writing the answer — is the
-    /// same for every resource, so it is one function every app's module
-    /// shares in the runtime.
+    /// it — parsing it, routing it, writing the answer — is the same for
+    /// every resource, so it is one function every app's module shares in the
+    /// runtime.
     model: Model,
 }
 
@@ -159,18 +243,17 @@ impl Served {
     pub fn of<R: Resource>() -> Self {
         Self {
             kind: R::KIND,
-            app: R::APP_ID,
             model: Model {
                 initialize: R::initialize,
-                label: R::label,
-                invoke: invoke::<R>,
-                replay: replay_into::<R>,
+                bind: bind::<R>,
+                read: read_recorded::<R>,
+                apply: apply::<R>,
             },
         }
     }
 }
 
-/// An invocation's arguments, as the action API binds them.
+/// An invocation's arguments, as the device binds them.
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
 /// The resource's own code, as the calls a request makes of it.
@@ -178,89 +261,72 @@ type Arguments = serde_json::Map<String, serde_json::Value>;
 struct Model {
     /// Its initial content.
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
-    /// The name it is published under, in the person's language.
-    label: fn() -> String,
-    /// Its action, built from JSON arguments as the action API binds them.
-    invoke: fn(&str, &Arguments, i64) -> Result<Invoked, String>,
-    /// The invocation replayed through its own verbs.
-    replay: fn(Doc, &ActionEnvelope) -> Result<(), ActionError>,
+    /// Its action, built from bound arguments through its declarations and
+    /// described under the invoking context.
+    bind: fn(&str, &Arguments, i64, Option<ActionContext>) -> Result<Bound, String>,
+    /// A recorded action of it, read.
+    read: fn(&str) -> Result<Bound, String>,
+    /// A recorded action of it, applied to the device's document.
+    apply: fn(&str, Option<ActionContext>, bool) -> Result<(), String>,
 }
 
-/// One request's action, as the invocation names it: its encoded form, its
-/// locus, and what kind of change it is.
-struct Invoked {
-    /// The action in the form a peer replays.
-    encoded: EncodedAction,
-    /// Where the action is done.
-    locus: ExecutionLocus,
-    /// What kind of change it makes.
-    change: ChangeKind,
-}
-
-/// `R`'s action for the arguments `arguments`, with what the invocation needs
-/// of it: the resource's own serialization, and nothing a request decides.
-fn invoke<R: Resource>(id: &str, arguments: &Arguments, now: i64) -> Result<Invoked, String> {
+/// `R`'s action `id` for `arguments`, built as the action API builds an
+/// action of an app compiled in, and described from the device's document
+/// under `context`, as the executor describes a native one.
+fn bind<R: Resource>(
+    id: &str,
+    arguments: &Arguments,
+    now: i64,
+    context: Option<ActionContext>,
+) -> Result<Bound, String> {
     let action = tilo_resource::build_action::<R>(id, arguments, now)?;
-    let encoded = tilo_resource::encode::<R>(&action).map_err(|error| format!("{id}: {error}"))?;
-    Ok(Invoked {
-        encoded,
-        locus: action.locus(),
+    let mut bound = bound::<R>(&action).map_err(|error| format!("{id}: {error}"))?;
+    let doc = device_document()?;
+    bound.described = tilo_actions::with_invoking_context(context, || action.describe(&doc));
+    Ok(bound)
+}
+
+/// What `R`'s recorded `payload` is.
+fn read_recorded<R: Resource>(payload: &str) -> Result<Bound, String> {
+    bound::<R>(&recorded::<R>(payload)?)
+}
+
+/// What `action` is, as its own types say.
+fn bound<R: Resource>(action: &R::Action) -> Result<Bound, String> {
+    let encoded = tilo_resource::encode::<R>(action).map_err(|error| error.to_string())?;
+    Ok(Bound {
+        action_type: encoded.type_id,
+        payload: String::from_utf8(encoded.payload).map_err(|error| error.to_string())?,
+        label: R::label(),
         change: action.change_kind(),
+        kind: action.action_kind(),
+        incoming_message: action.incoming_message(),
+        compensates: action.compensates(),
+        irreversible: action.irreversible(),
+        locus: action.locus(),
+        described: None,
     })
 }
 
-/// Replay `envelope` against `doc` through `R`'s own verbs.
-fn replay_into<R: Resource>(doc: Doc, envelope: &ActionEnvelope) -> Result<(), ActionError> {
-    let mut replica = tilo_resource::Replica::<R>::from_doc(doc);
-    replica.replay(envelope)
+/// `R`'s action recorded as `payload`.
+fn recorded<R: Resource>(payload: &str) -> Result<R::Action, String> {
+    serde_json::from_str(payload).map_err(|error| format!("the recorded action: {error}"))
 }
 
-/// One request from the device.
-#[derive(Debug, Deserialize)]
-pub struct Request {
-    op: Op,
-    /// The resource kind the request is for: which of the app's resources the
-    /// module routes it to ([`Resource::KIND`]).
-    pub kind: String,
-    /// The resource's document id: `@tilo:package-primary` for what an app
-    /// keeps per workspace.
-    id: String,
-    /// The workspace the resource is minted in.
-    home: String,
-    /// The invoking member, as [`MemberId::of_actor_bytes`] reads it: a
-    /// person's key, `agent:<id>` or `bot:<id>`.
-    #[serde(default)]
-    member: String,
-    /// Who acts, and for whom, as the device's action API recorded it
-    /// ([`tilo_actions::Acting`]): an agent a person's session handed to, for
-    /// that person, writes changes that say so. Absent for a member acting for
-    /// themselves, which [`Request::member`] alone names.
-    #[serde(default)]
-    acting: Option<serde_json::Value>,
-    /// The action's id in the resource's vocabulary.
-    #[serde(default)]
-    action: String,
-    /// Its arguments, as the action API binds them.
-    #[serde(default)]
-    arguments: serde_json::Map<String, serde_json::Value>,
-    /// The invocation's origin clock, milliseconds since the Unix epoch.
-    #[serde(default)]
-    now: i64,
-    /// The invocation [`Op::Replay`] replays, as the action API recorded it.
-    #[serde(default)]
-    envelope: Option<serde_json::Value>,
-}
-
-/// What the model answers. What it wrote is in the device's document, which
-/// the device saves, signs and keeps.
-#[derive(Debug, Default, serde::Serialize)]
-pub struct Answer {
-    /// The invocation as the action API recorded it: what a peer replays.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    envelope: Option<serde_json::Value>,
-    /// Why the model did not do it, in the device's words for the caller.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+/// Apply `R`'s recorded `payload` to the device's document under `context`,
+/// as the device's executor applies it: reproducing a recorded change when
+/// `replaying`.
+fn apply<R: Resource>(
+    payload: &str,
+    context: Option<ActionContext>,
+    replaying: bool,
+) -> Result<(), String> {
+    let action = recorded::<R>(payload)?;
+    let mut doc = device_document()?;
+    tilo_actions::replaying_as(replaying, || {
+        tilo_actions::with_invoking_context(context, || action.apply(&mut doc))
+    })
+    .map_err(|error| error.to_string())
 }
 
 /// Serve the device's requests for every resource an app declares: what its
@@ -275,7 +341,7 @@ pub fn serve(resources: &[Served]) -> i32 {
             ..Answer::default()
         });
     }));
-    let answer = match asked(resources) {
+    let answer = match read().and_then(|request| asked(resources, &request)) {
         Ok(answer) => answer,
         Err(error) => Answer {
             error: Some(error),
@@ -285,143 +351,45 @@ pub fn serve(resources: &[Served]) -> i32 {
     write(&answer)
 }
 
-fn asked(resources: &[Served]) -> Result<Answer, String> {
+/// Answer the request `bytes` with the resource it names: every app's module
+/// calls this one function, from the model runtime when the apps are built
+/// together.
+///
+/// # Errors
+/// A request the module cannot read, for a kind it does not serve, or one the
+/// resource refuses.
+#[inline(never)]
+pub fn asked(resources: &[Served], bytes: &[u8]) -> Result<Answer, String> {
     let request: Request =
-        serde_json::from_slice(&read()?).map_err(|error| format!("the request: {error}"))?;
+        serde_json::from_slice(bytes).map_err(|error| format!("the request: {error}"))?;
     let served = resources
         .iter()
         .find(|served| served.kind == request.kind)
         .ok_or_else(|| format!("the module serves no `{}` resource", request.kind))?;
-    serve_served(served, &request)
-}
-
-/// One request for a served resource: every app's module calls this one
-/// function, from the model runtime when the apps are built together.
-fn serve_served(served: &Served, request: &Request) -> Result<Answer, String> {
-    match request.op {
-        Op::Initialize => genesis(served, request),
-        Op::Apply => apply(served, request),
-        Op::Replay => replay(served, request),
-    }
-}
-
-/// The resource's genesis: the initializer's content in one change at time
-/// zero, under the actor every device derives from its identity
-/// ([`tilo_resource::genesis::actor`]).
-fn genesis(served: &Served, request: &Request) -> Result<Answer, String> {
-    let actor = tilo_resource::genesis::actor(&request.id, served.kind, &request.home);
-    let mut doc = device_document()?;
-    doc.set_actor(actor);
-    (served.model.initialize)(&mut doc)
-        .map_err(|error| format!("initializing the resource: {error}"))?;
-    Ok(genesis_answer(&mut doc))
-}
-
-/// The genesis change committed: the same for every resource, so one function
-/// every app's module shares (in the model runtime when the apps are built
-/// together), not a copy per resource. What it wrote is in the device's
-/// document, which the device saves.
-#[inline(never)]
-fn genesis_answer(doc: &mut tilo_resource::Doc) -> Answer {
-    doc.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
-            .with_time(0),
-    );
-    Answer::default()
-}
-
-/// Who acts, for whom: what an action's invocation reads of the request
-/// before the resource's own code, shared by every resource.
-struct Invocation {
-    member: MemberId,
-    acting: Acting,
-}
-
-#[inline(never)]
-fn invocation(request: &Request) -> Result<Invocation, String> {
-    let member = MemberId::of_actor_bytes(request.member.as_bytes())
-        .ok_or_else(|| format!("`{}` names no member", request.member))?;
-    // The actor the device admitted, when it named one: an agent acting for
-    // the person whose session handed it the action says so, and the receipt
-    // decides the change by what that agent may do for them.
-    let acting = match &request.acting {
-        Some(acting) => serde_json::from_value::<Acting>(acting.clone())
-            .map_err(|error| format!("who acts: {error}"))?,
-        None => Acting::member(member.clone()),
+    let model = served.model;
+    let bound = match request.op.ok_or("the request names no op")? {
+        Op::Initialize => {
+            let mut doc = device_document()?;
+            (model.initialize)(&mut doc)
+                .map_err(|error| format!("initializing the resource: {error}"))?;
+            None
+        }
+        Op::Bind => Some((model.bind)(
+            &request.action,
+            &request.arguments,
+            request.now,
+            request.context,
+        )?),
+        Op::Read => Some((model.read)(&request.payload)?),
+        Op::Apply => {
+            (model.apply)(&request.payload, request.context, request.replaying)?;
+            None
+        }
     };
-    Ok(Invocation { member, acting })
-}
-
-/// The answer to an applied action: the envelope a peer replays, shared by
-/// every resource.
-#[inline(never)]
-fn applied(envelope: &ActionEnvelope) -> Result<Answer, String> {
-    let envelope =
-        serde_json::to_value(envelope).map_err(|error| format!("the invocation: {error}"))?;
     Ok(Answer {
-        envelope: Some(envelope),
-        ..Answer::default()
+        bound,
+        error: None,
     })
-}
-
-/// One action, applied as an invocation of its actor against the document
-/// the device gave: what the envelope names makes the change the same for
-/// every holder.
-fn apply(served: &Served, request: &Request) -> Result<Answer, String> {
-    let Invocation { member, acting } = invocation(request)?;
-    let Invoked {
-        encoded,
-        locus,
-        change,
-    } = (served.model.invoke)(&request.action, &request.arguments, request.now)?;
-    let mut doc = device_document()?;
-    let heads = doc.get_heads();
-    let envelope = ActionEnvelope {
-        id: invocation_id(&request.id, &member, &encoded, &heads, request.now),
-        action: encoded,
-        base_heads: heads.iter().map(|head| head.0).collect(),
-        timestamp: request.now / 1_000,
-        locus,
-        actor: Some(member.actor_bytes()),
-        context: Some(context(served, &acting, change)),
-    };
-    (served.model.replay)(doc, &envelope)
-        .map_err(|error| format!("{}: {error}", request.action))?;
-    applied(&envelope)
-}
-
-/// For whom an action was done, and what kind of change it is: the same for
-/// every resource, named by the served one.
-#[inline(never)]
-fn context(served: &Served, acting: &Acting, change: ChangeKind) -> ActionContext {
-    let label = (served.model.label)();
-    ActionContext::for_resource(served.kind, served.kind, label.clone())
-        .with_app(served.app, label)
-        .with_invoker(ActionInvoker::admitted(acting))
-        .with_change(change)
-}
-
-/// An invocation another holder recorded, replayed against the device's
-/// document through the resource's own verbs: at the envelope's base heads it
-/// makes the same change, which is how the holder that receives it checks it.
-fn replay(served: &Served, request: &Request) -> Result<Answer, String> {
-    let envelope = envelope_of(request)?;
-    (served.model.replay)(device_document()?, &envelope)
-        .map_err(|error| format!("replaying the invocation: {error}"))?;
-    Ok(Answer::default())
-}
-
-/// The invocation a replay request names, as the action API wrote it.
-#[inline(never)]
-fn envelope_of(request: &Request) -> Result<ActionEnvelope, String> {
-    request
-        .envelope
-        .clone()
-        .ok_or_else(|| "a replay names no invocation".to_owned())
-        .and_then(|envelope| {
-            serde_json::from_value(envelope).map_err(|error| format!("the invocation: {error}"))
-        })
 }
 
 /// The document the device's request is about.
@@ -442,35 +410,6 @@ fn device_document() -> Result<tilo_resource::Doc, String> {
         "a model module is built with `--cfg tilo_model_guest`, whose documents are the device's"
             .into(),
     )
-}
-
-/// The invocation's id: a function of what the request asks and the resource
-/// it asks it of, so every holder making the same request mints the same one
-/// (its bytes are also the change's actor when no member is named).
-fn invocation_id(
-    id: &str,
-    member: &MemberId,
-    encoded: &tilo_actions::EncodedAction,
-    heads: &[automerge::ChangeHash],
-    now: i64,
-) -> ActionId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"tilo.model.invocation\0");
-    hasher.update(id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(&member.actor_bytes());
-    hasher.update(&now.to_le_bytes());
-    hasher.update(&encoded.payload);
-    for head in heads {
-        hasher.update(&head.0);
-    }
-    let digest = hasher.finalize();
-    let short = digest
-        .as_bytes()
-        .first_chunk::<16>()
-        .copied()
-        .unwrap_or_default();
-    ActionId(uuid::Uuid::from_bytes(short))
 }
 
 /// The request the device wrote for this call.
@@ -500,12 +439,11 @@ fn write(reply: &Answer) -> i32 {
 }
 
 /// A model has no entropy of its own: a module built for
-/// `wasm32-unknown-unknown` has nothing to ask, and needs nothing. Every id it
-/// writes comes from the request, and every actor is the device's or the
-/// invocation's. So this fills zeros and says it worked; a zero draw is a
-/// value, and no change depends on it. Built with
-/// `--cfg getrandom_backend="custom"`, which is what makes getrandom compile
-/// into a module that links no browser glue.
+/// `wasm32-unknown-unknown` has nothing to ask, and needs nothing. Every id
+/// and actor is the device's, which builds the envelope. So this fills zeros
+/// and says it worked; a zero draw is a value, and no change depends on it.
+/// Built with `--cfg getrandom_backend="custom"`, which is what makes
+/// getrandom compile into a module that links no browser glue.
 ///
 /// # Safety
 /// Called by getrandom with a writable buffer of `len` bytes.
