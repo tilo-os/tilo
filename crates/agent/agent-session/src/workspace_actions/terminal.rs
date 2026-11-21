@@ -348,10 +348,25 @@ impl Worker {
         }
         let route = resource_of(&request.target.provider, "")
             .filter(|route| route.app_id == TERMINAL_APP)?;
+        // Unknown and forbidden are answered alike, so why the host turned the request away
+        // is said here, where whoever runs it reads it.
         if !self.acts_for_owner(caller) && self.bounded(caller).is_none() {
+            tracing::info!(
+                %workspace_id,
+                action,
+                acting = ?caller.acting(),
+                "a Terminal request is answered as no action: the host acts for nobody it names"
+            );
             return None;
         }
-        let shell = self.shared.link.get()?.shell()?;
+        let Some(shell) = self.shared.link.get().and_then(|link| link.shell()) else {
+            tracing::info!(
+                %workspace_id,
+                action,
+                "a Terminal request is answered as no action: this host runs no shells"
+            );
+            return None;
+        };
         let refused = |reason: String| {
             Err(InvocationReceipt {
                 invocation,
@@ -638,9 +653,20 @@ impl Worker {
             invocation,
             status: ReceiptStatus::Rejected { error },
         };
-        let who = self
-            .bounded(caller)
-            .ok_or_else(|| refused(ActionCallError::NotPermitted))?;
+        let turned_away = |why: &str| {
+            tracing::info!(
+                %workspace_id,
+                record = %route.document,
+                action = %request.target.address.action,
+                acting = ?caller.acting(),
+                why,
+                "a Terminal request was turned away"
+            );
+        };
+        let who = self.bounded(caller).ok_or_else(|| {
+            turned_away("the host acts for nobody it names");
+            refused(ActionCallError::NotPermitted)
+        })?;
         let policy = self
             .policy_for(
                 workspace_id,
@@ -648,17 +674,27 @@ impl Worker {
                 &route.cluster_id,
                 Some((&route.app_id, &route.document)),
             )
-            .map_err(refused)?;
+            .map_err(|error| {
+                turned_away(&format!("the workspace's policy does not admit them: {error}"));
+                refused(error)
+            })?;
         let permissions = super::bounded::bounded_permissions(&policy, &who)
-            .map_err(refused)?
+            .map_err(|error| {
+                turned_away(&format!("their access does not reach the record: {error}"));
+                refused(error)
+            })?
             .reaching_person();
-        let mounted = self
-            .mount(route, state)
-            .map_err(|_| refused(ActionCallError::UnknownAction))?;
+        let mounted = self.mount(route, state).map_err(|error| {
+            turned_away(&format!("the session record does not open here: {error}"));
+            refused(ActionCallError::UnknownAction)
+        })?;
         let descriptor = super::live_actions(&mounted.app)
             .into_iter()
             .find(|descriptor| descriptor.address == request.target.address)
-            .ok_or_else(|| refused(ActionCallError::UnknownAction))?;
+            .ok_or_else(|| {
+                turned_away("the session record, as this host reads it, offers no such action");
+                refused(ActionCallError::UnknownAction)
+            })?;
         let need = descriptor.contract.need();
         let node = tilo_actions::action_node(
             &ui::permissions::policy::TreePath::root(),

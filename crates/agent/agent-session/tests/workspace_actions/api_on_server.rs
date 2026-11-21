@@ -238,12 +238,18 @@ impl OnServer {
         } else {
             server.shutdown().await;
         }
+        // A server that ran its workspaces' Terminal sessions runs them again, on the files
+        // they kept.
+        let shell = shells
+            .as_ref()
+            .map(|shells| tilo_server::agents::host_shells(shells.path().join("shells")).unwrap());
         let hosted = crate::harness::hosted::start(
             &operator,
             &host,
             state.path(),
             Options {
                 plain: true,
+                shell: shell.clone(),
                 web_entry: Some(web_entry.clone()),
                 ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
             },
@@ -283,7 +289,7 @@ impl OnServer {
             _site: site,
             state,
             shells,
-            shell: None,
+            shell,
         }
     }
 }

@@ -79,7 +79,7 @@ impl Key<'_> {
     }
 
     /// Turn running commands unattended in `workspace` on or off.
-    async fn unattended(&self, workspace: &str, on: bool) -> (u16, Value) {
+    pub(super) async fn unattended(&self, workspace: &str, on: bool) -> (u16, Value) {
         self.send(
             hyper::Method::PUT,
             &format!("/v1/workspaces/{workspace}/unattended"),

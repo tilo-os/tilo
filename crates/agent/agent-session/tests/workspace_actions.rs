@@ -76,6 +76,9 @@ mod api_questions;
 #[path = "workspace_actions/api_runs.rs"]
 mod api_runs;
 #[cfg(test)]
+#[path = "workspace_actions/api_terminal_restart.rs"]
+mod api_terminal_restart;
+#[cfg(test)]
 #[path = "workspace_actions/api_unattended.rs"]
 mod api_unattended;
 #[cfg(test)]
