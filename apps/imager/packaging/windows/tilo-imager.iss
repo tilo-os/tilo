@@ -40,12 +40,6 @@ Source: "{#MyBundle}\tilo-imager.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyBundle}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#MyBundle}\Start-Tilo-Imager.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
-; Remove only the shortcuts created under the previous display name.
-; Keep the legacy install directory and AppId so upgrades reuse the installation.
-[InstallDelete]
-Type: files; Name: "{autoprograms}\Tilo Imager.lnk"
-Type: files; Name: "{autodesktop}\Tilo Imager.lnk"
-
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{sysnative}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Start-Tilo-Imager.ps1"""; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{sysnative}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Start-Tilo-Imager.ps1"""; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon

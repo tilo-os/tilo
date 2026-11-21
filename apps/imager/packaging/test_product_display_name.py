@@ -75,14 +75,6 @@ class ProductDisplayNameTests(unittest.TestCase):
             self.assertIn(r'Filename: "{sysnative}\WindowsPowerShell\v1.0\powershell.exe"', line)
             self.assertIn(r'-File ""{app}\Start-Tilo-Imager.ps1""', line)
 
-    def test_windows_upgrade_removes_only_exact_legacy_shortcuts(self):
-        _, sections = inno_metadata()
-        self.assertEqual(sections["InstallDelete"], [
-            r'Type: files; Name: "{autoprograms}\Tilo Imager.lnk"',
-            r'Type: files; Name: "{autodesktop}\Tilo Imager.lnk"',
-        ])
-        self.assertNotIn("UninstallDelete", sections)
-
     def test_generated_winget_display_name_preserves_package_and_publisher(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR", "/var/tmp")) as temporary:
             root = Path(temporary)
