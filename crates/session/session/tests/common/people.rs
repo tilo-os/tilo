@@ -2014,12 +2014,25 @@ struct NoWindow<'a> {
 
 impl std::fmt::Display for NoWindow<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A window is laid out only in the workspace in front: which one that is, and which the
+        // device holds, say why one it lists has no place on the screen.
+        let state = self.device.state();
+        let tree = &state["state"]["workspace_tree"];
         write!(
             formatter,
-            "{} to show a {} window; it shows {}\n{}",
+            "{} to show a {} window; it shows {}\nin front: {} of {}; held: {}\n{}",
             self.device.label,
             self.app,
             self.device.ask(&json!({"op": "windows"})),
+            tree["active"],
+            tree["workspaces"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|workspace| workspace["id"].to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            state["state"]["held_workspaces"],
             self.device.diagnostic()
         )
     }

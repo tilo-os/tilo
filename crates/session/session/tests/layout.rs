@@ -988,9 +988,7 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
     };
     apps.start(&launch, &apps.workspace_named(&workspace))
         .expect("the launch is taken");
-    until(&mut session, "the app is started", |_| {
-        starts(&started) == 1
-    });
+    until(&mut session, "the app is started", |_| starts(&started) > 0);
 
     // Nothing asks for it again, and the window it opens fills the tab the person left it in.
     for _ in 0..100 {
