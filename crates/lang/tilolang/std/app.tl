@@ -484,7 +484,8 @@ template view tree_rows<T>(
 /// `above` is a place the app keeps over the tree — a filter of its items, such as the ones
 /// pinned — with the filter's own words over them, only while it holds anything.
 /// Choosing one opens it beside as any row of the tree does. A window whose tree holds nothing
-/// says `empty` in its sidebar, and one with nothing open says so beside it.
+/// says `empty` in its sidebar, where the way to start one stands; the body beside it says what
+/// starts the first one. A tree with nothing open says so beside it.
 ///
 /// The bar's search is the tree's: what is typed narrows it to the items the store finds
 /// (`tree_rows`' `found`), with the items they stand under shown for them, and closing the
@@ -550,7 +551,13 @@ template view tree<R, T>(
                     }
                 }
                 if items.is_empty() {
-                    ui.EmptyState(empty, icon: meta(of).icon)
+                    // The list holds nothing, and says what a person does about it: the way to
+                    // start one stands in this state, on the screen a narrow window opens on.
+                    ui.EmptyState(
+                        empty,
+                        message: phrase("tilolang-empty-start-here"),
+                        icon: meta(of).icon,
+                    )
                 } else {
                     std.tree_rows(
                         meta(of).title,
@@ -580,6 +587,13 @@ template view tree<R, T>(
                         doc(x)
                     }
                 }
+            } else if items.is_empty() {
+                // A body with nothing open yet says what to do: the first one starts here, and
+                // the window offers the app's primary action in this state.
+                ui.EmptyState(
+                    phrase("tilolang-empty-start", noun: meta(T).noun),
+                    icon: meta(of).icon,
+                )
             } else {
                 ui.EmptyState(phrase("tilolang-nothing-open"), icon: meta(of).icon, inline: true)
             }

@@ -31,7 +31,7 @@ use crate::i18n::{t, t_args};
 use crate::pane::Pane;
 use crate::reconcile::{EventSink, Reconciler, UiEvent};
 use crate::rows::{BoundValues, RemoteRows};
-use crate::shell::DETAIL;
+use crate::shell::{DETAIL, NOTHING_LISTED};
 use crate::{ResourceRef, UiNode, Value};
 
 /// Every virtual list of the window's views, by the key of its node in the window's tree.
@@ -321,6 +321,12 @@ pub struct AppWindow {
     /// layout says the window shows one column at a time, so a person who looks at the empty body
     /// anyway keeps it.
     front_chooser: Option<NavPane>,
+    /// Where the shell stood its sidebar at its last layout: a screen of its own when the window
+    /// shows one column at a time, and no bar control of the body's there.
+    standing: SidebarPlacement,
+    /// The window owes its body built again for the `SidebarPlacement` it now stands at: what an
+    /// empty state offers follows the width ([`Self::standing`]).
+    compose_at: Option<SidebarPlacement>,
     /// A part of a shell rather than a window ([`Self::part`]): the root view as it is, with no
     /// window shell around it.
     shape: Shape,
@@ -438,6 +444,8 @@ impl AppWindow {
             detail_space: None,
             front: None,
             front_chooser: None,
+            standing: SidebarPlacement::None,
+            compose_at: None,
             shape: Shape::Window,
             notices: Vec::new(),
             actions: Vec::new(),
@@ -1130,7 +1138,19 @@ impl AppWindow {
             }
             _ => composed,
         };
-        let composed = crate::shell::header_rules(composed);
+        let mut composed = crate::shell::header_rules(composed);
+        // An empty state says nothing is there yet, so it is also where the first one is made:
+        // the body's offers the window's primary action. At a width that keeps the sidebar a
+        // screen of its own the body's bar control is not drawn, and the list's state is where
+        // that action stands instead. A window folded onto one state keeps its bar, which holds
+        // that action already: the state repeats no control standing over it.
+        let folded = composed.props.contains_key(NOTHING_LISTED);
+        if !folded {
+            crate::shell::offer_primary(&mut composed, &["content"]);
+        }
+        if self.standing == SidebarPlacement::Screen {
+            crate::shell::offer_primary(&mut composed, &["sidebar", "overview"]);
+        }
         // Whether the body has anything in it: a body that holds only an empty state says nothing
         // is chosen or open, and a one-column window has nothing to show there. The column that
         // chooses owes the front when the body turned empty this way; a layout decides it once it
@@ -2903,6 +2923,12 @@ impl ui::widget::Decorator for AppWindow {
         theme: &ui::Theme,
         node_map: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
+        // A width class a layout found builds the body again, with what its empty states offer
+        // there ([`Self::standing`]): before the tree is built is where the body may be
+        // replaced.
+        if self.compose_at.take().is_some() {
+            self.compose();
+        }
         self.rem = ui::widget::arrange::rem_of(theme);
         self.body.build_layout(taffy, theme, node_map)
     }
@@ -2921,6 +2947,17 @@ impl ui::widget::Decorator for AppWindow {
             self.front = Some(shell.front_pane());
         }
         self.front_the_chooser();
+        // What an empty state offers follows the width: where the sidebar is a screen of its own
+        // it carries the primary action, and the body stands beside it at a wider width. A change
+        // of that builds the body again.
+        let standing = self
+            .shell()
+            .map_or(SidebarPlacement::None, |shell| shell.geometry().sidebar);
+        if standing != self.standing {
+            self.standing = standing;
+            self.compose_at = Some(standing);
+            self.structure_dirty = true;
+        }
     }
 
     fn inner(&self) -> &(dyn Widget + 'static) {

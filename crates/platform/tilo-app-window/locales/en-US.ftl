@@ -81,6 +81,10 @@ tilolang-nothing-open = Nothing open
 tilolang-empty = Nothing here yet
 # What a list says when it lists none of its kind's items: "No notes yet".
 tilolang-empty-kind = No { $kind } yet
+# What a body says when it holds nothing yet, naming the first thing to make: "Start your first note".
+tilolang-empty-start = Start your first { $noun }
+# What an empty list says under its title, where the way to start one stands.
+tilolang-empty-start-here = Start one here
 # What a tree says where it stands when the window's search finds nothing in it.
 tilolang-nothing-found = Nothing matches
 # What a list's entry at its end says while it is empty.

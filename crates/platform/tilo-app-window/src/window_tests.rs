@@ -1445,19 +1445,43 @@ fn chooser_shell(content: Vec<UiNode>) -> UiNode {
         .insert("sidebar_title".to_owned(), Value::text("Notes"));
     let mut file = UiNode::empty(&kind("MenuButton"), "shell#file");
     file.props.insert("label".to_owned(), Value::text("File"));
+    let mut new_note = UiNode::empty(&kind("Button"), "shell#new");
+    new_note
+        .props
+        .insert("label".to_owned(), Value::text("New note"));
+    new_note
+        .props
+        .insert("role".to_owned(), Value::text("primary"));
+    new_note.events.insert(
+        "press".to_owned(),
+        crate::Event {
+            invokes: Some(crate::Invocation {
+                resource: "1".to_owned(),
+                action: "new".to_owned(),
+            }),
+            ..crate::Event::default()
+        },
+    );
     shell.children.push(part("sidebar_actions", vec![file]));
     shell.children.push(part("sidebar", vec![tree]));
     shell.children.push(part("content", content));
+    shell.children.push(part("actions", vec![new_note]));
     shell
 }
 
 fn chooser_page(content: Vec<UiNode>) -> Vec<ToUi> {
-    vec![ToUi::Open {
-        level: Level::Root,
-        target: doc(),
-        tree: chooser_shell(content),
-        front: None,
-    }]
+    let mut target = doc();
+    target.id = "1".to_owned();
+    target.ty = "test.tasks".to_owned();
+    vec![
+        ToUi::Open {
+            level: Level::Root,
+            target,
+            tree: chooser_shell(content),
+            front: None,
+        },
+        ToUi::Actions(wire::ActionCatalogue::All(catalogue_of("New note", None))),
+    ]
 }
 
 /// A one-column window has room for one screen. Where the body holds only an empty state (nothing
@@ -1492,6 +1516,18 @@ fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar
             "the window opens on the sidebar, which chooses, not on a body with nothing in it"
         );
     }
+    // The state says what to do: it offers the app's primary action, and pressing it runs it.
+    let action = named_node(&harness, "New note");
+    harness
+        .perform_a11y_action(action, &ui::a11y::Action::Activate)
+        .expect("the state's action presses");
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app)
+            .iter()
+            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
+        "the state's action reaches the app"
+    );
     // A place chosen in the sidebar shows its page in front: the window does not take the person
     // back to the sidebar over a body that has something in it.
     let mut page = UiNode::empty(&kind("Text"), "shell#note");
@@ -1500,7 +1536,12 @@ fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar
         &mut app,
         &[ToUi::Open {
             level: Level::Root,
-            target: doc(),
+            target: {
+                let mut target = doc();
+                target.id = "1".to_owned();
+                target.ty = "test.tasks".to_owned();
+                target
+            },
             tree: chooser_shell(vec![page]),
             front: Some(wire::Front::Input),
         }],

@@ -348,6 +348,60 @@ pub fn shows_nothing(shell: &UiNode) -> bool {
     !content.is_empty() && placeholder(content)
 }
 
+/// The window's primary action as its bar's control: the words it reads by and what pressing it
+/// runs.
+fn primary_action(shell: &UiNode) -> Option<(String, Event)> {
+    ["actions", "overview_actions"]
+        .into_iter()
+        .flat_map(|part| part_children(shell, part))
+        .find_map(|node| {
+            let primary = node.kind == kind("Button")
+                && node.props.get("role") == Some(&Value::text("primary"));
+            let Some(Value::Text(label)) = node.props.get("label") else {
+                return None;
+            };
+            let press = node.events.get("press")?;
+            (primary && press.invokes.is_some()).then(|| (label.clone(), press.clone()))
+        })
+}
+
+/// Let the empty states of `columns` offer the window's primary action: a state that says
+/// nothing is there yet is also where the first one is made. A state that names its own action
+/// keeps it. At a size that stands the columns beside the body the window offers the action in
+/// its bar too; a one-column window's front column has no bar control of the body's, so its
+/// state is where the way to fill it stands.
+pub fn offer_primary(shell: &mut UiNode, columns: &[&str]) {
+    let Some((label, press)) = primary_action(shell) else {
+        return;
+    };
+    for column in columns {
+        let Some(part) = shell.children.iter_mut().find(|child| {
+            child.kind == PART
+                && matches!(
+                    child.props.get("name"),
+                    Some(Value::Text(name)) if name == column
+                )
+        }) else {
+            continue;
+        };
+        for node in &mut part.children {
+            offer_state(node, &label, &press);
+        }
+    }
+}
+
+/// Put `label` and `press` in the empty state `node` holds, where it names no action yet.
+fn offer_state(node: &mut UiNode, label: &str, press: &Event) {
+    if node.kind == kind("EmptyState") && !node.props.contains_key("action") {
+        node.props.insert("action".to_owned(), Value::text(label));
+        node.events.insert("act".to_owned(), press.clone());
+        return;
+    }
+    for child in &mut node.children {
+        offer_state(child, label, press);
+    }
+}
+
 fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let overview = has_overview(root);
     let mut shell = root.clone();

@@ -69,6 +69,10 @@ tilolang-nothing-open = Nichts offen
 tilolang-empty = Noch nichts hier
 # What a list says when it lists none of its kind's items: "Noch keine Notizen".
 tilolang-empty-kind = Noch keine { $kind }
+# Was ein Körper sagt, der noch nichts enthält: "Beginne mit deiner ersten Notiz".
+tilolang-empty-start = Beginne mit deiner ersten { $noun }
+# Was eine leere Liste unter ihrem Titel sagt, wo der Weg zum ersten Eintrag steht.
+tilolang-empty-start-here = Beginne hier
 # Was ein Baum sagt, wo er steht, wenn die Suche des Fensters in ihm nichts findet.
 tilolang-nothing-found = Nichts passt
 # What a list's entry at its end says while it is empty.
