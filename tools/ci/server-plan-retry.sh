@@ -111,7 +111,7 @@ server_layers=$out/server-layers owner_layers=$out/owner-layers
 mkdir -p "$server_layers" "$owner_layers"
 for component in $(jq -r '.server[]' "$selection"); do cp "$layers/$component".* "$server_layers/"; done
 for component in $(jq -r '.owner[]' "$selection"); do cp "$layers/$component".* "$owner_layers/"; done
-args=(--bundle-dir "$base_dir/bundle" --imager "$base_dir/imager" --owner-disk "$base_dir/owner-disk.qcow2"
+args=(--bundle-dir "$base_dir" --imager "$base_dir/imager" --owner-disk "$base_dir/owner-disk.qcow2"
       --release-tag imager-v0.0.0 --out "$out/proof")
 [[ -z $(ls -A "$server_layers") ]] || args+=(--development-layers "$server_layers")
 [[ -z $(ls -A "$owner_layers") ]] || args+=(--owner-layers "$owner_layers")

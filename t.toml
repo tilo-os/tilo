@@ -4952,6 +4952,61 @@ timeout_secs = 10800
 default = false
 on = ["dispatch"]
 
+# The base a retry of the server install proof starts from, built once from a commit of main and
+# kept by digest: the installer medium's bundle with the development server image as its target,
+# the test Imager that names that bundle, and the owner's dev disk, as one image
+# (tools/ci/publish/server-plan-base.py). Its pointer names the commit and the image, so the base
+# moves only when this is dispatched again, never with main.
+[[check]]
+name = "publish-server-plan-base"
+# Takes an identity token from t (at its deployment's own address) to the registry: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\nout=/target/publish/server-plan-base\nrm -rf \"$out\" && mkdir -p \"$out\"\npython3 tools/ci/publish/server-plan-base.py pack \"$out\" \"$T_COMMIT\" bundle=/target/publish/server-installer-bundle-dev/x86_64/bundle imager=/target/server-installer-imager-dev/imager owner-disk.qcow2=/target/publish/os-dev-disk/x86_64/disk/disk.qcow2\nbash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/server-plan-base \"$out\" 'dev-{commit}'\nprintf 'COMMIT=%s\\nIMAGE=registry.tilo.so/tilo/server-plan-base@%s\\n' \"$T_COMMIT\" \"$(cat \"$out/digest\")\" > \"$out/base.env\"\ncat \"$out/base.env\"\nrm -rf \"$out/oci\""
+needs = ["server-installer-medium-dev-x86_64", "server-installer-imager-dev-x86_64", "os-dev-disk-lean-x86_64", "signing-tools"]
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/server-plan-base/receipt.json", "/target/publish/server-plan-base/base.env"]
+timeout_secs = 3600
+on = ["dispatch"]
+id_token = ["registry.tilo.so"]
+pointers = { server-plan-base = "/target/publish/server-plan-base/base.env" }
+
+# A retry of the server install proof: what this tree changed since main's base, built as the
+# tilo-vm layers `tilo-vm swap` installs, with the compiler cache and without link-time
+# optimisation (tools/ci/server-plan-retry.sh layers). A change the base would have to be rebuilt
+# for stops here, named. Kept by what it read, so the same tree and base build nothing again.
+[[check]]
+name = "server-plan-retry-layers"
+egress = { to = ["code.tilo.so:443"] }
+run = "bash tools/ci/server-plan-retry.sh layers /target/server-plan-retry-layers"
+needs = ["tilo-vm-binary-x86_64"]
+reads_pointers = ["main:server-plan-base"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", CARGO_BUILD_JOBS = "32", CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/server-plan-retry-layers/**"]
+git = true
+timeout_secs = 3600
+default = false
+
+# The retry itself: main's base fetched by digest, and the proof run with this tree's layers in
+# the installed server and the owner's device (tools/ci/server-plan-retry.sh proof).
+[[check]]
+name = "server-plan-install-retry"
+# The base comes from the registry by digest; dnf in the guests installs from Fedora's mirrors, and
+# the enrolment and unlock cross the public iroh relay; no fixed host list names them all.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash tools/ci/server-plan-retry.sh proof /target/server-plan-retry-layers /target/server-plan-install-retry"
+needs = ["server-plan-retry-layers", "tilo-vm-binary-x86_64"]
+reads_pointers = ["main:server-plan-base"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/server-plan-install-retry/**"]
+cache = false
+timeout_secs = 5400
+default = false
+
 # The complete graphical installation cycle on this tree's installer medium: the live installer
 # driven only through the actions its own console publishes, the encrypted target opened by the
 # passphrase after a cold power cycle, and the installed desktop's first login read off the
