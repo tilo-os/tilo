@@ -820,20 +820,13 @@ impl GovernedWorkspace {
                 rebased = candidate.rebase_workspace()?;
             }
             since_base = SinceBase::Added;
-            record.outgoing = candidate
-                .publication_mut()
-                .durable_bootstrap_messages(key, now, generation)?
-                .iter()
-                .filter(|message| match message {
-                    neighbour_wire::NeighbourMsg::AppDocument {
-                        app_id,
-                        document_id,
-                        ..
-                    } => changed_documents.contains(&(app_id.clone(), document_id.clone())),
-                    _ => true,
-                })
-                .map(|message| publication(message, true))
-                .collect::<Result<_, _>>()?;
+            record.outgoing = base_publications(
+                &mut candidate,
+                replica,
+                &changed_documents,
+                (key, now),
+                generation,
+            )?;
             record.published = 0;
         } else {
             let diffing = crate::timing::start();
@@ -920,8 +913,8 @@ impl GovernedWorkspace {
 }
 
 use commit::{
-    changed_records, durable_messages, fold_into_checkpoint, prepare_governance, publication,
-    select_exact_admission,
+    base_publications, changed_records, durable_messages, fold_into_checkpoint, prepare_governance,
+    publication, select_exact_admission,
 };
 
 /// The extension of the marker beside a workspace file this host released.

@@ -76,6 +76,50 @@ pub(super) fn changed_records(
     )
 }
 
+/// What a commit that starts the workspace over from a base publishes in
+/// place of everything published before it. A device of a person who governs
+/// the workspace's history founds its records: it publishes the base and its
+/// checkpoint of each record in `changed`, the records the commit changed,
+/// while every other record keeps its checkpoint on its own channel, since
+/// replacing that baseline could discard members' writes. Any other holder
+/// adopting the base its maker made founds no record, and its checkpoint of
+/// one would be refused as a second start of it. It publishes the base as it
+/// took it in, and after it, as its own writes, what the commit changed of
+/// the records.
+pub(super) fn base_publications(
+    candidate: &mut StatePeer,
+    replica: &StatePeer,
+    changed: &std::collections::BTreeSet<(String, String)>,
+    (key, now): (&SigningKey, SystemTime),
+    generation: u64,
+) -> Result<Vec<Publication>, String> {
+    if !candidate.signed_by_governor(&key.verifying_key().to_bytes()) {
+        let writes = durable_messages(candidate, replica, (key, now), generation)?;
+        let mut outgoing = vec![publication(&candidate.workspace_message(), true)?];
+        for write in writes
+            .iter()
+            .filter(|message| matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }))
+        {
+            outgoing.push(publication(write, false)?);
+        }
+        return Ok(outgoing);
+    }
+    candidate
+        .publication_mut()
+        .durable_bootstrap_messages(key, now, generation)?
+        .iter()
+        .filter(|message| match message {
+            neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                ..
+            } => changed.contains(&(app_id.clone(), document_id.clone())),
+            _ => true,
+        })
+        .map(|message| publication(message, true))
+        .collect()
+}
+
 /// Fold `record` of `app`, as a write in `candidate` left it, into the
 /// governor's checkpoint of it.
 pub(super) fn fold_into_checkpoint(
