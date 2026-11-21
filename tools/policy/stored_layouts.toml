@@ -35,11 +35,12 @@ version = "crates/collab/tilo-peer-state/src/store.rs:FRAMES_VERSION"
 
 [[layout]]
 format = "peer durable state"
-version = 10
-digest = "783705cd628eed78"
-what = """a replica's durable state: its workspace, documents, certificates, receipts, pending frames and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set"""
+version = 11
+digest = "a09a73e698fb8f35"
+what = """a replica's durable state: its workspace, documents, certificates, receipts, the writes waiting to be sent (each a NeighbourMsg, a document write ending with its reader set) and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set (version 10 was written both with and without a waiting document write's reader set)"""
 types = [
   "crates/collab/tilo-peer-state/src/state/durable.rs:Durable",
+  "crates/collab/neighbour-wire/src/lib.rs:NeighbourMsg",
   "crates/collab/tilo-peer-state/src/state.rs:DurableDocument",
   "crates/collab/collab-types/src/op.rs:SignedOp",
   "crates/collab/collab-types/src/op.rs:DocumentMutation",

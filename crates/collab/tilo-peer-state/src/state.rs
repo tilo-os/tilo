@@ -128,8 +128,11 @@ mod admitting;
 mod authority;
 mod construction;
 mod durable;
+pub use durable::DURABLE_VERSION;
 #[cfg(test)]
-pub(crate) use durable::{DURABLE_VERSION, Durable};
+pub(crate) use durable::Durable;
+#[cfg(test)]
+use durable::brought_up;
 pub(crate) use durable::{DocumentParts, DurableParts};
 mod receiving;
 mod records;

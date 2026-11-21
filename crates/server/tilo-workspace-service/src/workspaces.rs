@@ -406,7 +406,7 @@ impl GovernedWorkspace {
                     document_format::FORMAT.name
                 )
             })?;
-        let parts = peer_parts::PeerParts::open(&path)?;
+        let mut parts = peer_parts::PeerParts::open(&path)?;
         let (publications, published) =
             appended::Appended::open(&path, PUBLICATIONS, stored.filed_publications)?;
         let (receipts, receipted) =
@@ -419,10 +419,16 @@ impl GovernedWorkspace {
         if record.published > record.outgoing.len() {
             return Err("workspace record is inconsistent".into());
         }
+        let kept = parts
+            .load(&record.peer)
+            .map_err(|error| format!("peer state parts: {error}"))?;
+        // A state an earlier build kept in an older layout is brought up as it is restored, and
+        // written again in this build's layout once the workspace is open, so no later start
+        // reads the older one.
+        let older = postcard::take_from_bytes::<u32>(&kept)
+            .is_ok_and(|(version, _)| version < tilo_peer_state::DURABLE_VERSION);
         let mut peer = StatePeer::restore(
-            &parts
-                .load(&record.peer)
-                .map_err(|error| format!("peer state parts: {error}"))?,
+            &kept,
             &record.workspace,
             record.owner.clone(),
             vec![record.owner.clone()],
@@ -434,9 +440,25 @@ impl GovernedWorkspace {
         if !peer.has_governance() {
             return Err("restored workspace has no governance".into());
         }
-        // Parts an interrupted write left behind.
-        parts.collect(&record.peer);
-        Self::assemble(record, peer, path, parts, (publications, receipts), device)
+        drop(kept);
+        // The state in today's layout, its parts written before the workspace file that names
+        // them; the parts of the older one go once that file is written.
+        let today = if older {
+            Some(parts.stage(&peer)?)
+        } else {
+            // Parts an interrupted write left behind.
+            parts.collect(&record.peer);
+            None
+        };
+        let mut workspace =
+            Self::assemble(record, peer, path, parts, (publications, receipts), device)?;
+        if let Some(today) = today {
+            workspace.record.peer = today;
+            workspace
+                .persist()
+                .map_err(|error| format!("peer state written again in today's layout: {error}"))?;
+        }
+        Ok(workspace)
     }
 
     /// A workspace of `entry` and its replica `peer`, kept at `path` with

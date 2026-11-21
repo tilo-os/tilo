@@ -68,6 +68,8 @@ pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation
 mod verified_certificate;
 pub use collab_types::work_delegation::WorkDelegation;
 pub use state::ChangeRefused;
+/// The durable layout a replica's state is written in ([`StatePeer::durable`]).
+pub use state::DURABLE_VERSION;
 pub use state::DelegatedWork;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;

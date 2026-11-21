@@ -672,6 +672,53 @@ fn a_created_workspace_restores_with_its_governance_and_publication() {
     assert!(restored.peer().has_governance());
 }
 
+/// The peer state the workspace file at `path` names, read back from its parts.
+fn kept_peer_state(path: &std::path::Path) -> (document_format::StoredResource, Vec<u8>) {
+    let bytes = std::fs::read(path).unwrap();
+    let stored: document_format::StoredResource = postcard::from_bytes(&bytes).unwrap();
+    let peer = peer_parts::PeerParts::open(path)
+        .unwrap()
+        .load(&stored.peer)
+        .unwrap();
+    (stored, peer)
+}
+
+/// A workspace an earlier build kept with its peer state in an older durable layout opens
+/// with everything it held, and its file names the state in today's layout from then on.
+#[test]
+fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let created =
+        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
+            .unwrap();
+    let path = created.path.clone();
+    drop(created);
+    // The same state under the version before: what an earlier build wrote.
+    let (mut stored, mut peer) = kept_peer_state(&path);
+    assert_eq!(
+        peer.first(),
+        Some(&11),
+        "today's layout is one byte of version"
+    );
+    peer[0] = 10;
+    stored.peer = vec![peer_parts::PeerPart::Inline(peer)];
+    std::fs::write(&path, postcard::to_stdvec(&stored).unwrap()).unwrap();
+
+    let restored = GovernedWorkspace::open(path.clone(), None).unwrap();
+    assert_eq!(restored.summary().name, "Team");
+    assert!(restored.peer().has_governance());
+    drop(restored);
+    let (_, peer) = kept_peer_state(&path);
+    assert_eq!(
+        postcard::take_from_bytes::<u32>(&peer).unwrap().0,
+        tilo_peer_state::DURABLE_VERSION,
+        "the file names the state in today's layout"
+    );
+    let reopened = GovernedWorkspace::open(path, None).unwrap();
+    assert_eq!(reopened.summary().name, "Team");
+}
+
 #[test]
 fn a_workspace_name_must_be_printable_and_short() {
     let (key, cert) = governor();

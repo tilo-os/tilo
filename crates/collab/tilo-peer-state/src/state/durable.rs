@@ -17,8 +17,110 @@ use automerge::transaction::Transactable as _;
 
 /// The durable layout this build writes and reads. A change to what is
 /// stored bumps this: a build refuses state of another version by name
-/// rather than reading it as this one's.
-pub const DURABLE_VERSION: u32 = 10;
+/// rather than reading it as this one's, except the version before, which it
+/// brings up ([`brought_up`]).
+pub const DURABLE_VERSION: u32 = 11;
+
+/// The version before [`DURABLE_VERSION`], which this build brings up ([`brought_up`]).
+const BROUGHT_UP: u32 = 10;
+
+/// `bytes`, a durable state, in this build's layout: version 10 brought up to 11, any other as it
+/// is, for [`Durable::read`] to read or refuse.
+///
+/// Version 10 was written in two layouts. A write waiting to be sent (`pending`) that is a
+/// document write ([`NeighbourMsg::AppDocument`]) ends with its reader set from the build that
+/// gave document writes one, and ends before it in the builds before; nothing else differs, and
+/// nothing in the bytes says which. Version 11 is the later layout. A state that reads whole as
+/// that layout is it; any other is read as the earlier layout, its waiting document writes naming
+/// no reader set, as a write of today does for an app's own document.
+pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+    if postcard::take_from_bytes::<u32>(bytes).map_err(err)?.0 != BROUGHT_UP {
+        return Ok(bytes.into());
+    }
+    let durable = match postcard::take_from_bytes::<Durable<'_>>(bytes) {
+        Ok((durable, [])) => durable,
+        _ => before_reader_sets(bytes).map_err(|error| {
+            format!(
+                "this state is of durable layout {BROUGHT_UP} and reads as neither of its \
+                 layouts: {error}. Move the state directory aside, or start with an empty one"
+            )
+        })?,
+    };
+    postcard::to_allocvec(&Durable {
+        version: DURABLE_VERSION,
+        ..durable
+    })
+    .map(Into::into)
+    .map_err(err)
+}
+
+/// A version 10 state written before document writes carried a reader set ([`brought_up`]).
+fn before_reader_sets(bytes: &[u8]) -> Result<Durable<'_>, postcard::Error> {
+    type ThroughDocuments = (u32, String, [u8; 32], Option<Vec<u8>>, Vec<DurableDocument>);
+    let ((version, workspace, owner, workspace_bytes, documents), rest) =
+        postcard::take_from_bytes::<ThroughDocuments>(bytes)?;
+    let ((receipts, certificates, revocations, pending, pending_bytes, exact), rest) =
+        take_tail_before_reader_sets(rest)?;
+    let (sealed, rest) = postcard::take_from_bytes::<SealedHistory>(rest)?;
+    if !rest.is_empty() {
+        return Err(postcard::Error::DeserializeBadEncoding);
+    }
+    Ok(Durable {
+        version,
+        workspace,
+        owner,
+        workspace_bytes,
+        documents,
+        receipts,
+        certificates,
+        revocations,
+        pending,
+        pending_bytes,
+        exact,
+        sealed,
+    })
+}
+
+/// The fields of `Durable` after its documents and before its sealed histories at the start of
+/// `bytes`, as a version 10 state written before document writes carried a reader set holds
+/// them ([`brought_up`]), and the bytes after them.
+fn take_tail_before_reader_sets(bytes: &[u8]) -> Result<(TailFields<'_>, &[u8]), postcard::Error> {
+    type BeforePending = (
+        BTreeMap<String, Vec<u8>>,
+        Vec<DeviceCert>,
+        Vec<tilo_user_identity::RevocationEntry>,
+        usize,
+    );
+    let ((receipts, certificates, revocations, count), mut rest) =
+        postcard::take_from_bytes::<BeforePending>(bytes)?;
+    let mut pending = VecDeque::new();
+    for _ in 0..count {
+        let (key, message, sent);
+        (key, rest) = postcard::take_from_bytes::<[u8; 32]>(rest)?;
+        (message, rest) = NeighbourMsg::take_before_reader_sets(rest)?;
+        (sent, rest) = postcard::take_from_bytes::<bool>(rest)?;
+        pending.push_back((key, message, sent));
+    }
+    let ((pending_bytes, exact), rest) = postcard::take_from_bytes::<(usize, Option<&[u8]>)>(rest)?;
+    // The bytes the waiting writes take, as this build writes them: a document write one more,
+    // for the reader set it names none of.
+    let documents = pending
+        .iter()
+        .filter(|(_, message, _)| matches!(message, NeighbourMsg::AppDocument { .. }))
+        .count();
+    let pending_bytes = pending_bytes.saturating_add(documents);
+    Ok((
+        (
+            receipts,
+            certificates,
+            revocations,
+            pending,
+            pending_bytes,
+            exact,
+        ),
+        rest,
+    ))
+}
 
 /// A replica's durable state. `exact` is the exact admission index, present
 /// once the replica selects exact admissions; `sealed` holds each encrypted
@@ -42,7 +144,7 @@ pub struct Durable<'a> {
 
 impl<'a> Durable<'a> {
     /// The durable state `bytes` hold, of `workspace`.
-    fn read(bytes: &'a [u8], workspace: &str) -> Result<Self, String> {
+    pub(super) fn read(bytes: &'a [u8], workspace: &str) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
         if version != DURABLE_VERSION {
             return Err(if version < DURABLE_VERSION {
@@ -637,7 +739,8 @@ impl StatePeer {
         revocations: RevocationList,
         now: SystemTime,
     ) -> Result<Self, String> {
-        let durable = Durable::read(bytes, workspace)?;
+        let bytes = brought_up(bytes)?;
+        let durable = Durable::read(&bytes, workspace)?;
         let owner = durable.owner;
         let exact_admissions = durable
             .exact
@@ -998,7 +1101,7 @@ impl DurableParts {
         };
         let mut rest = bytes;
         let version: u32 = take(&mut rest)?;
-        if version != DURABLE_VERSION {
+        if version != DURABLE_VERSION && version != BROUGHT_UP {
             return Err(format!(
                 "this state is of durable layout {version}, and this build reads layout \
                  {DURABLE_VERSION}. Move the state directory aside, or start with an empty one"
@@ -1020,7 +1123,34 @@ impl DurableParts {
             );
         }
         let tail_from = at(rest);
-        let _fields: TailFields<'_> = take(&mut rest)?;
+        // A version 10 state is split as it was written, in either of its layouts
+        // ([`brought_up`]): what a journal appended to it copies its stretches as they are.
+        let today = postcard::take_from_bytes::<TailFields<'_>>(rest)
+            .ok()
+            .map(|(_, after)| after)
+            .filter(|after| {
+                version == DURABLE_VERSION
+                    || postcard::take_from_bytes::<SealedHistory>(after)
+                        .is_ok_and(|(_, after)| after.is_empty())
+            });
+        rest = match today {
+            Some(after) => after,
+            None if version == BROUGHT_UP => {
+                take_tail_before_reader_sets(rest)
+                    .map_err(|error| {
+                        format!(
+                            "this state is of durable layout {BROUGHT_UP} and reads as neither \
+                             of its layouts: {error}. Move the state directory aside, or start \
+                             with an empty one"
+                        )
+                    })?
+                    .1
+            }
+            None => {
+                let _fields: TailFields<'_> = take(&mut rest)?;
+                rest
+            }
+        };
         let sealed: usize = take(&mut rest)?;
         let tail = part(tail_from, at(rest));
         for _ in 0..sealed {

@@ -798,16 +798,51 @@ impl NeighbourMsg {
     /// `bytes` are not a message, nor a document write that ends before its reader set.
     pub fn from_kept(bytes: &[u8]) -> Result<Self, postcard::Error> {
         match postcard::from_bytes(bytes) {
-            Err(postcard::Error::DeserializeUnexpectedEnd)
-                if bytes.first() == Some(&Self::APP_DOCUMENT_TAG) =>
-            {
-                let mut today = Vec::with_capacity(bytes.len().saturating_add(1));
-                today.extend_from_slice(bytes);
-                today.push(0);
-                postcard::from_bytes(&today)
+            Err(postcard::Error::DeserializeUnexpectedEnd) if Self::is_app_document(bytes) => {
+                match Self::take_before_reader_sets(bytes)? {
+                    (message, []) => Ok(message),
+                    _ => Err(postcard::Error::DeserializeBadEncoding),
+                }
             }
             read => read,
         }
+    }
+
+    /// The message at the start of `bytes`, kept before document writes carried their reader
+    /// set, and the bytes after it: a document write ([`NeighbourMsg::AppDocument`]) ends
+    /// before its reader set and reads as naming none; every other message is as today. For a
+    /// message kept among other values, where nothing marks where it ends.
+    ///
+    /// # Errors
+    ///
+    /// `bytes` do not start with a message of that layout.
+    pub fn take_before_reader_sets(bytes: &[u8]) -> Result<(Self, &[u8]), postcard::Error> {
+        /// [`NeighbourMsg::AppDocument`]'s fields before its reader set, in their order.
+        #[derive(Deserialize)]
+        struct DocumentWrite {
+            peer: PeerId,
+            app_id: String,
+            cluster_id: String,
+            document_id: String,
+            envelope: Box<collab_types::SignedOp>,
+            own: Option<collab_types::OwnResource>,
+        }
+        let Some(fields) = bytes.strip_prefix(&[Self::APP_DOCUMENT_TAG]) else {
+            return postcard::take_from_bytes(bytes);
+        };
+        let (write, rest) = postcard::take_from_bytes::<DocumentWrite>(fields)?;
+        Ok((
+            Self::AppDocument {
+                peer: write.peer,
+                app_id: write.app_id,
+                cluster_id: write.cluster_id,
+                document_id: write.document_id,
+                envelope: write.envelope,
+                own: write.own,
+                readers: None,
+            },
+            rest,
+        ))
     }
 
     /// Postcard variant index of [`NeighbourMsg::AppDocument`]. Variant order
@@ -1425,8 +1460,22 @@ mod tests {
         assert!(postcard::from_bytes::<NeighbourMsg>(&kept).is_err());
         assert_eq!(NeighbourMsg::from_kept(&kept).unwrap(), message);
         // A message cut short anywhere else stays refused.
+        let whole = kept.clone();
         kept.pop();
         assert!(NeighbourMsg::from_kept(&kept).is_err());
+        // Kept among other values, the write ends where its fields do, and what follows is left.
+        let mut among = whole;
+        among.extend_from_slice(&[1, 0x2a]);
+        let (read, rest) = NeighbourMsg::take_before_reader_sets(&among).unwrap();
+        assert_eq!(read, message);
+        assert_eq!(rest, [1, 0x2a]);
+        // Any other message reads as it does today.
+        let heartbeat = NeighbourMsg::Heartbeat { peer: 3, ts: 4 };
+        let mut among = postcard::to_allocvec(&heartbeat).unwrap();
+        among.push(1);
+        let (read, rest) = NeighbourMsg::take_before_reader_sets(&among).unwrap();
+        assert_eq!(read, heartbeat);
+        assert_eq!(rest, [1]);
     }
 
     /// The tag peek agrees with a full decode on a real encoding of every
