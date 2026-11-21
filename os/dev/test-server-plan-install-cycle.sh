@@ -493,14 +493,17 @@ server "sudo install -d -m 0700 /var/lib/tilo-imager"
 # the guest knows, so the container mounts that tree at the same path. The
 # helper trusts files of root or of the person sudo ran it for (SUDO_UID), as
 # `sudo imager --tilo-staging-helper` does; sudo's variable is handed into the
-# container, which starts with an environment of its own.
+# container, which starts with an environment of its own. The helper reads and
+# writes the partition table with util-linux's lsblk, sfdisk and partx, which
+# Fedora's container image leaves out.
 server "sudo podman run --rm --privileged --pid=host --security-opt label=disable \
   -e SUDO_UID \
   -v /dev:/dev -v /sys:/sys \
   -v /sys/firmware/efi/efivars:/sys/firmware/efi/efivars \
   -v $guest_dir:$guest_dir:z -v /var/lib/tilo-imager:/var/lib/tilo-imager:z \
-  registry.fedoraproject.org/fedora:44 \
-  $guest_dir/imager --tilo-staging-helper $guest_dir/06-request.json $guest_dir/06-progress.jsonl" \
+  registry.fedoraproject.org/fedora:44 bash -c '\
+    dnf install -y -q --setopt=install_weak_deps=False util-linux >/dev/null \
+    && exec $guest_dir/imager --tilo-staging-helper $guest_dir/06-request.json $guest_dir/06-progress.jsonl'" \
   > "$evidence/06-progress.stdout" 2> "$evidence/06-progress.stderr" \
   || { tail -n 60 "$evidence/06-progress.stderr" >&2; die 'the staging helper failed in its container'; }
 server "cat $guest_dir/06-progress.jsonl" > "$evidence/06-progress.jsonl" || true
