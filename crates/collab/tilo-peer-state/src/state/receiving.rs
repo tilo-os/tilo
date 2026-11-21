@@ -584,11 +584,20 @@ impl StatePeer {
         };
         // The owner is whom the governance names now: a transfer the batch
         // carried makes its person the owner here as on every device that
-        // replays it, and the certificates are taken in under that owner.
+        // replays it, and the certificates are taken in under that owner. A
+        // state that names no owner, or another one without the transfer that
+        // hands it over, is no state of this workspace: taking it in would
+        // make the person this replica knows as the owner one of its members
+        // instead.
         let held_owner = self.core.owner;
-        if let Some(owner) = governed_owner(&candidate, &self.core.workspace) {
-            self.core.owner = owner;
+        let first = self.core.workspace_doc.is_none();
+        let Some(owner) = governed_owner(&candidate, &self.core.workspace) else {
+            return Err("the workspace's governance names no owner".into());
+        };
+        if !first && owner != held_owner && !candidate.owner_moved(&self.core.workspace) {
+            return Err("the workspace's governance names an owner it was not handed to".into());
         }
+        self.core.owner = owner;
         let metadata_changed = match self.import_governed_rows(&candidate, now) {
             Ok(changed) => changed || self.core.owner != held_owner,
             Err(error) => {

@@ -67,21 +67,34 @@ pub fn heads(held: &HeldOps) -> Vec<OpId> {
 /// The workspace's membership as `doc`'s operations make it.
 #[must_use]
 pub fn replay(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
+    replayed(doc, workspace).policy
+}
+
+/// Whether the replay of `doc` moved the workspace's owner from the one its
+/// `owner` row names: the ownership transfer it carries, the one way a
+/// workspace's owner changes. A state whose owner moved without one names an
+/// owner the workspace was never handed to.
+#[must_use]
+pub fn owner_moved(doc: &AutoCommit, workspace: &str) -> bool {
+    replayed(doc, workspace).owner_moved
+}
+
+/// The state `doc` reads as: what [`replay`] and [`owner_moved`] answer from.
+fn replayed(doc: &AutoCommit, workspace: &str) -> Replayed {
     // A change is replayed where it is written and again where it is taken
     // in, from the same document state: the membership that state gives is
     // remembered by its heads. A document with a change still open is not
     // the state its heads name, and is replayed as it is.
     if doc.pending_ops() > 0 {
-        return replayed_from(doc, workspace).policy;
+        return replayed_from(doc, workspace);
     }
     let heads = doc.base_heads();
     if let Some(replayed) = recall(workspace, &heads) {
-        return replayed.policy;
+        return replayed;
     }
     let replayed = replayed_from(doc, workspace);
-    let policy = replayed.policy.clone();
-    keep(workspace, heads, replayed);
-    policy
+    keep(workspace, heads, replayed.clone());
+    replayed
 }
 
 /// The membership a document state gives, as [`replay`] keeps it.
@@ -95,6 +108,9 @@ struct Replayed {
     /// Whether an admission the state holds admitted no one: an invitation
     /// part arriving later could let it.
     unadmitted: bool,
+    /// Whether a transfer the state carries moved the owner from the one its
+    /// `owner` row names.
+    owner_moved: bool,
 }
 
 /// The document states whose membership was read, by workspace and heads.
@@ -195,15 +211,24 @@ pub(crate) fn carry(
         let Some(op) = added.remove(&id) else {
             return;
         };
+        let owner = replayed.policy.owner.clone();
         replayed.unadmitted |= !op_effect(&mut replayed.policy, &op, &mut log);
+        replayed.owner_moved |= replayed.policy.owner != owner;
         replayed.heads = BTreeSet::from([id]);
     }
     // Every carry a test makes is checked against replaying the state.
     #[cfg(test)]
-    assert!(
-        read_replay(after, workspace).policy == replayed.policy,
-        "a carried membership is the one its state replays to"
-    );
+    {
+        let whole = read_replay(after, workspace);
+        assert!(
+            whole.policy == replayed.policy,
+            "a carried membership is the one its state replays to"
+        );
+        assert_eq!(
+            whole.owner_moved, replayed.owner_moved,
+            "a carried membership moved the owner as its state replays to"
+        );
+    }
     keep(workspace, after.base_heads(), replayed);
 }
 
@@ -230,12 +255,13 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
             )
         })
         .collect();
-    let (policy, unadmitted) = replay_held(doc, workspace, &held);
+    let (policy, unadmitted, owner_moved) = replay_held(doc, workspace, &held);
     Replayed {
         policy,
         op_keys,
         heads: heads(&held).into_iter().collect(),
         unadmitted,
+        owner_moved,
     }
 }
 
@@ -275,13 +301,15 @@ pub(super) fn start(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
     .with_current_roles()
 }
 
-/// The membership `held`, `doc`'s operations, give, and whether an admission
-/// admitted no one.
-fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspacePolicy, bool) {
+/// The membership `held`, `doc`'s operations, give, whether an admission
+/// admitted no one, and whether a transfer moved the owner from the one the
+/// `owner` row names.
+fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspacePolicy, bool, bool) {
     let mut policy = start(doc, workspace);
     order(&mut policy);
     let mut log = Log::new(doc, workspace);
     let mut unadmitted = false;
+    let mut owner_moved = false;
     // Each operation waits for the parents it was written on top of; one
     // whose parents are all applied is ready. Of the ready ones the next is
     // the one the order reaches first. An operation written on top of one
@@ -308,7 +336,9 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
     {
         ready.remove(&next);
         if let Some(op) = held.get(&next) {
+            let owner = policy.owner.clone();
             unadmitted |= !op_effect(&mut policy, op, &mut log);
+            owner_moved |= policy.owner != owner;
         }
         for child in children.remove(&next).unwrap_or_default() {
             if let Some(count) = waiting.get_mut(&child) {
@@ -320,7 +350,7 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
             }
         }
     }
-    (policy, unadmitted)
+    (policy, unadmitted, owner_moved)
 }
 
 /// The grants of a membership in the one order every device reads them in: by

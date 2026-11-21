@@ -212,3 +212,127 @@ tilo_test_env::scenario! {
         assert!(!governor.signed_by_governor(&host.device_public_key));
     }
 }
+
+/// The owner's device, among the certificates a seeded workspace holds.
+fn owner_device(governor: &StatePeer, key: &SigningKey) -> DeviceCert {
+    governor
+        .owner_certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
+        .expect("the owner's device")
+}
+
+/// A change of the workspace document written as `cert`'s device, on the
+/// document `doc` now holds: the batch that would carry it.
+fn written_by(
+    doc: &AutoCommit,
+    cert: &DeviceCert,
+    write: impl FnOnce(&mut AutoCommit),
+) -> Vec<Vec<u8>> {
+    let mut next = doc.clone();
+    let base = next.get_heads();
+    next.set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
+    write(&mut next);
+    commit_governance(&mut next, wall_secs());
+    next.get_changes(&base)
+        .iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
+}
+
+/// A governance state that names another owner than the one a replica holds,
+/// carrying no ownership transfer, is no state of its workspace: taken in, it
+/// would make the person the replica knows as its owner one of its members
+/// instead.
+#[test]
+fn a_state_that_names_another_owner_without_a_transfer_is_refused() {
+    let (mut governor, owner_key, _, _, now) = seeded();
+    let owner = owner_device(&governor, &owner_key);
+    let workspace = governor.workspace_id().to_owned();
+    let mut replica = replica(&mut governor, &owner_key, &owner, now);
+    let held = replica.owner();
+    let governance = governor
+        .core
+        .workspace_doc
+        .as_deref()
+        .expect("the workspace's governance");
+
+    // The owner's own device writes someone else into the workspace's `owner`
+    // row, and nothing else, so the whole replay names the other person.
+    let changes = written_by(governance, &owner, |doc| {
+        doc.put(
+            ROOT,
+            tilo_desktop_model::projection::WORKSPACE_OWNER_KEY,
+            hex::encode([0x99; 32]),
+        )
+        .unwrap();
+    });
+    let refused = replica.receive(
+        owner_key.verifying_key().to_bytes(),
+        NeighbourMsg::SyncResp { changes, workspace },
+        now,
+    );
+    assert!(
+        refused.is_err(),
+        "a state that names another owner without the transfer that hands it over is refused: {refused:?}"
+    );
+    assert_eq!(
+        replica.owner(),
+        held,
+        "the replica keeps the owner it holds"
+    );
+    assert_eq!(
+        replica
+            .governance()
+            .governed_policy()
+            .expect("its governance")
+            .owner()
+            .map(str::to_owned),
+        Some(hex::encode(held)),
+        "and the owner its governance names"
+    );
+}
+
+/// A state that names no owner is a partial view of a workspace, not the
+/// workspace: a replica that holds none yet takes none in, so it neither
+/// forgets the owner it was joined as nor reads it as a member.
+#[test]
+fn a_state_that_names_no_owner_is_not_adopted() {
+    let (governor, owner_key, _, _, now) = seeded();
+    let owner = owner_device(&governor, &owner_key);
+    let workspace = governor.workspace_id().to_owned();
+    let mut replica = StatePeer::from_join(
+        &workspace,
+        owner.clone(),
+        governor.certificates(),
+        &governor.revocations(),
+        now,
+    )
+    .unwrap();
+    let held = replica.owner();
+    let governance = governor
+        .core
+        .workspace_doc
+        .as_deref()
+        .expect("the workspace's governance");
+
+    // One change on a history this replica holds nothing of: its dependencies
+    // are absent, so the state it makes is empty and names no owner.
+    let changes = written_by(governance, &owner, |doc| {
+        doc.put(ROOT, "name", "A name no owner made").unwrap();
+    });
+    let refused = replica.receive(
+        owner_key.verifying_key().to_bytes(),
+        NeighbourMsg::SyncResp { changes, workspace },
+        now,
+    );
+    assert!(
+        refused.is_err(),
+        "a state that names no owner is refused: {refused:?}"
+    );
+    assert!(
+        replica.core.workspace_doc.is_none(),
+        "nothing of it is taken in"
+    );
+    assert_eq!(replica.owner(), held, "the owner it was joined as stays");
+}

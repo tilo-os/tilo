@@ -196,6 +196,12 @@ impl CachedDocument {
         );
         policy
     }
+    /// Whether the replay of the document moved `workspace`'s owner from the
+    /// one its `owner` row names: the transfer it carries
+    /// ([`crate::members::replay::owner_moved`]).
+    pub(crate) fn owner_moved(&self, workspace: &str) -> bool {
+        crate::members::replay::owner_moved(&self.doc, workspace)
+    }
     /// The redemption receipts the device rows keep, by the invitation each
     /// redeemed: whether an invitation was redeemed is then a lookup, not a
     /// reading of every member's row. Refused, as the rows are, when a row
