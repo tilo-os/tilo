@@ -761,17 +761,18 @@ impl ResourceService {
         // reaches it: a document changed as a whole is built now, not off the frame.
         self.publications.settle(&self.host, &self.planner);
         self.told();
-        let made = self
+        let returned = self
             .host
             .take_returned(&planned.action_id)
-            .map(|made| resource_id(&planned.app, &made.id_string()));
-        Ok(Started::Done(ActionOutput {
-            value: wrote
-                .map(|wrote| published_in(resource, wrote))
-                .as_ref()
-                .and_then(|wrote| ActionOutput::noting_wrote(None, wrote)),
-            resources: made.into_iter().collect(),
-        }))
+            .map(|value| self.host.action_output(&planned.app, &planned.action_id, &value))
+            .transpose()
+            .map_err(ApiError::Failed)?;
+        let mut output = returned.unwrap_or_default();
+        output.value = wrote
+            .map(|wrote| published_in(resource, wrote))
+            .as_ref()
+            .and_then(|wrote| ActionOutput::noting_wrote(output.value, wrote));
+        Ok(Started::Done(output))
     }
 }
 
