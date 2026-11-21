@@ -238,14 +238,6 @@ impl GovernedWorkspace {
         device.group_keys(self.workspace(), readers, false).await
     }
 
-    /// [`Self::reader_keys`] for a write sealed to `readers`: the group is opened when this
-    /// device takes part in none of it yet, as the first write in a fresh workspace finds it.
-    #[cfg(any(feature = "apps", feature = "agents"))]
-    pub(super) async fn writer_keys(&self, readers: &str) -> Option<Result<ContentKeys, String>> {
-        let device = self.device.as_ref()?;
-        device.group_keys(self.workspace(), readers, true).await
-    }
-
     /// Whether this host holds the workspace's keys: it can then read sealed
     /// writes.
     #[cfg_attr(

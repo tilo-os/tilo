@@ -358,7 +358,7 @@ impl TilolangProcess {
             if running.hosted.spec().app != app {
                 return true;
             }
-            let route = running.hosted.record().route();
+            let route = running.hosted.connection().route();
             if !reads_protected_route(route, access) {
                 running.hosted.flush();
                 ended.push(running.hosted.spec().instance);

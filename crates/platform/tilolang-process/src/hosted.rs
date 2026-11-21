@@ -1321,7 +1321,7 @@ impl Hosted {
     fn apply_document_grants(&self, descriptors: &mut [ActionDescriptor]) {
         use tilo_action_policy::{Answer, Context, TreePath};
 
-        let route = self.record.route();
+        let route = self.connection.route();
         let document = route.document.as_deref().unwrap_or("");
         if !collab_types::validator::requires_independent_document_keys(&route.app_id, document) {
             return;
