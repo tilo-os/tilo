@@ -15,7 +15,8 @@
 #   * an [[unrequired]] entry with the reason it cannot be a required check,
 #     and, where a t check already runs it, `check = "<name>"` naming that
 #     check whatever its trigger: a per-arch family is named by one
-#     architecture's check (`image-release-tools-x86_64`). `check` is not
+#     architecture's check (`image-release-tools-x86_64`). A suite that only a
+#     release workflow runs names it in `workflow` instead. `check` is not
 #     required yet; `tools/ci/suites.py report` counts the suites still
 #     without one.
 #
