@@ -639,3 +639,34 @@ fn a_german_window_reads_the_activity_catalogue() {
     catalogue.set_locale("en-US");
     assert_eq!(catalogue.t("activity-title"), "Activity");
 }
+
+/// A long History scrolls under a person's wheel: the list moves up under it, toward its oldest
+/// change.
+#[test]
+fn a_person_scrolls_history_toward_its_oldest_change() {
+    english();
+    let mut app = TestApp::<App>::for_person("ada").expect("open");
+    let entries = (1..=40)
+        .rev()
+        .map(|n| by("Ada", n, &format!("Change {n}")))
+        .collect();
+    open_history(&mut app, 3, None, entries);
+    app.settle();
+    let at = |app: &mut TestApp<App>, n: u8| app.harness().targets().get(&change(n)).copied();
+    let newest = at(&mut app, 40).expect("the newest change is listed");
+    let oldest = at(&mut app, 1).expect("the oldest change is laid out");
+    app.harness()
+        .send(&ui::synthetic_input::cursor_moved(newest.center().x, newest.center().y));
+    for _ in 0..60 {
+        app.harness().scroll(0.0, -3.0);
+        app.frame();
+    }
+    app.settle();
+    let scrolled = at(&mut app, 1).expect("the oldest change is laid out");
+    assert!(
+        scrolled.y0 < oldest.y0 - 300.0,
+        "the list moved up under the wheel: the oldest change was at {}, is at {}",
+        oldest.y0,
+        scrolled.y0
+    );
+}
