@@ -726,7 +726,8 @@ impl ScheduleTriggers {
     /// cannot be encoded or written, `due` runs at once.
     fn persist(&mut self, due: Vec<Firing>) {
         let Some(kept) = &self.kept else {
-            self.held.extend(due.into_iter().map(|firing| (None, firing)));
+            self.held
+                .extend(due.into_iter().map(|firing| (None, firing)));
             return;
         };
         let revision = match serde_json::to_vec_pretty(&self.log) {

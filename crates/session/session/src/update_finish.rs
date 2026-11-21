@@ -9,7 +9,6 @@
 //! updates apply together; an always-on host has nobody to ask and finishes whenever it is away.
 //! How an update ended is told here too, once per report ([`Finish::tell_went_back`]).
 
-use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
@@ -18,6 +17,7 @@ use tilo_notifications_service::{Notifications, Taken};
 use tilo_system_service::update::{self, Fallback, Presence, Update};
 
 use crate::Session;
+use crate::kept::Kept;
 use crate::notices::RESTART_ACTION;
 
 /// When the session first looks for an update to finish: once the shell has settled.
@@ -49,13 +49,13 @@ pub(crate) struct Finish {
     /// says whether to finish it now.
     was_updating: bool,
     /// When the person was last asked to restart, or the desktop or machine last restarted, as
-    /// recorded at `asked` .
-    asked: Option<PathBuf>,
+    /// recorded in `asked` .
+    asked: Option<Kept>,
     /// Where the ids of the deployment fallbacks the person was told about are recorded; `None`
     /// where there is nowhere to keep them.
-    heard: Option<PathBuf>,
+    heard: Option<Kept>,
     /// The fallbacks the person was told about, as the record names them;
-    /// `None` until the record at `heard` is read.
+    /// `None` until the record in `heard` is read.
     told: Option<Vec<String>>,
     /// What the person asked of the update's notice, from the notifications service's taps, which
     /// run wherever it publishes.
@@ -69,22 +69,27 @@ impl Finish {
     /// The clock this session finishes its updates on, recording what it asks, and which fallbacks
     /// the person heard of, where a restart of the desktop keeps them.
     pub(crate) fn for_session(desktop: Option<&crate::desktop_services::DesktopServices>) -> Self {
+        let state = tilo_paths::state_dir();
         Self::new(
             Instant::now(),
-            asked_path(),
-            heard_path(),
+            state
+                .as_deref()
+                .map(|state| Kept::open(state, crate::kept::UPDATE_ASKED)),
+            state
+                .as_deref()
+                .map(|state| Kept::open(state, crate::kept::FALLBACKS_TOLD)),
             desktop.map(crate::desktop_services::DesktopServices::notifications),
         )
     }
 
-    /// A clock that first looks when the shell has settled, recording what it asks at `asked` ,
+    /// A clock that first looks when the shell has settled, recording what it asks in `asked` ,
     /// which survives a restart of the desktop; the person's answers to the update's notice come
     /// back through `notifications` , when this session tells the person through one, and which
     /// fallbacks they already heard of is read from and written to `heard` .
     pub(crate) fn new(
         now: Instant,
-        asked: Option<PathBuf>,
-        heard: Option<PathBuf>,
+        asked: Option<Kept>,
+        heard: Option<Kept>,
         notifications: Option<&Notifications>,
     ) -> Self {
         let (taken, answers) = mpsc::channel();
@@ -198,78 +203,66 @@ impl Finish {
         }
         // Nothing is told that could not be recorded: it would be said at every sign-in instead of
         // once.
-        let Some(heard) = self.heard.clone() else {
+        let Some(heard) = &self.heard else {
             return;
         };
-        let told = self.told.get_or_insert_with(|| heard_ids(&heard));
+        let told = self.told.get_or_insert_with(|| heard_ids(heard));
         for fallback in fell_back {
             if told.contains(&fallback.id) {
                 continue;
             }
             tell(&crate::notices::went_back_notice(fallback));
             told.push(fallback.id.clone());
-            record_heard(&heard, told);
+            record_heard(heard, told);
         }
     }
 
     /// When the person was last asked, or the desktop or machine last restarted.
     fn last_asked(&self) -> Option<SystemTime> {
-        self.asked.as_deref().and_then(last_asked_at)
+        self.asked.as_ref().and_then(last_asked_at)
     }
 
     /// Record that the session asked, or restarted, now: the next one waits
     /// [`update::ASK_INTERVAL`].
     fn record(&self, clock: SystemTime) {
-        if let Some(path) = &self.asked {
-            record_asked_at(path, clock);
+        if let Some(asked) = &self.asked {
+            record_asked_at(asked, clock);
         }
     }
 }
 
-/// When the person was last asked, or the desktop or machine last restarted,
-/// as recorded at `path`.
-fn last_asked_at(path: &Path) -> Option<SystemTime> {
-    let seconds = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
+/// When the person was last asked, or the desktop or machine last restarted, as recorded in
+/// `asked` .
+fn last_asked_at(asked: &Kept) -> Option<SystemTime> {
+    let record = match asked.read() {
+        Ok(record) => record?,
+        Err(error) => {
+            tracing::warn!(%error, "when a restart was last asked for does not read back");
+            return None;
+        }
+    };
+    let seconds = std::str::from_utf8(&record).ok()?.trim().parse().ok()?;
     SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
-fn record_asked_at(path: &Path, now: SystemTime) {
+fn record_asked_at(asked: &Kept, now: SystemTime) {
     let seconds = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
-    if let Err(error) =
-        tilo_files::native::atomic::write_creating_parent(path, seconds.to_string().as_bytes())
-    {
-        tracing::warn!(%error, "could not record when a restart was last asked for");
-    }
+    asked.replace(seconds.to_string().into_bytes());
 }
 
-/// Where the session records when it last asked for a restart, or restarted the desktop or the
-/// machine.
-#[must_use]
-pub(crate) fn asked_path() -> Option<PathBuf> {
-    tilo_paths::state_dir().map(|root| root.join("tilo/update-restart-asked"))
-}
-
-/// Where the session records which deployment fallbacks the person was already told about: one
-/// report's directory name per line.
-#[must_use]
-pub(crate) fn heard_path() -> Option<PathBuf> {
-    tilo_paths::state_dir().map(|root| root.join("tilo/boot-fallback-seen"))
-}
-
-/// The fallbacks the person was told about, as recorded at `path` .
-fn heard_ids(path: &Path) -> Vec<String> {
-    let record = match std::fs::read_to_string(path) {
-        Ok(record) => record,
-        // No record yet is the ordinary case: no fallback was told.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+/// The fallbacks the person was told about, as recorded in `heard` : one report's directory name
+/// per line.
+fn heard_ids(heard: &Kept) -> Vec<String> {
+    let record = match heard.read() {
+        Ok(record) => record.unwrap_or_default(),
         Err(error) => {
             tracing::warn!(%error, "the fallbacks the person was told about do not read back");
-            String::new()
+            Vec::new()
         }
     };
-    record
+    String::from_utf8_lossy(&record)
         .lines()
         .map(str::trim)
         .filter(|id| !id.is_empty())
@@ -277,13 +270,11 @@ fn heard_ids(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Record the fallbacks the person was told about at `path` , one per line.
-fn record_heard(path: &Path, ids: &[String]) {
+/// Record the fallbacks the person was told about in `heard` , one per line.
+fn record_heard(heard: &Kept, ids: &[String]) {
     let mut text = ids.join("\n");
     text.push('\n');
-    if let Err(error) = tilo_files::native::atomic::write_creating_parent(path, text.as_bytes()) {
-        tracing::warn!(%error, "could not record which fallbacks the person was told about");
-    }
+    heard.replace(text.into_bytes());
 }
 
 /// Whether this machine is an always-on host: a board or a host image with nobody at it to ask.
@@ -398,7 +389,7 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
-    fn a_finish(now: Instant, asked: Option<PathBuf>) -> Finish {
+    fn a_finish(now: Instant, asked: Option<Kept>) -> Finish {
         Finish::new(now, asked, None, None)
     }
 
@@ -442,7 +433,7 @@ mod tests {
         // of it.
         {
             let dir = tempdir();
-            let heard = dir.path().join("tilo/boot-fallback-seen");
+            let heard = || Kept::open(dir.path(), crate::kept::FALLBACKS_TOLD);
             let notifications = Notifications::new();
             let id = "20261025T101010Z-0a1b2c3d4e5f6a7b";
             let fallback = update::Fallback {
@@ -454,7 +445,7 @@ mod tests {
                 summary: "/var/lib/tilo/boot-fallback/20261025T101010Z-0a1b2c3d4e5f6a7b/summary.txt"
                     .into(),
             };
-            let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+            let mut finish = Finish::new(Instant::now(), None, Some(heard()), None);
             assert!(
                 notifications.live().is_empty(),
                 "nothing fell back before the reading says so"
@@ -483,7 +474,7 @@ mod tests {
             );
             assert!(notice.body.contains("summary.txt"), "{}", notice.body);
             assert_eq!(
-                heard_ids(&heard),
+                heard_ids(&heard()),
                 [id.to_owned()],
                 "told once is recorded once"
             );
@@ -497,12 +488,12 @@ mod tests {
 
             // A later session reads the record and says nothing at all: the person hears of one
             // fallback once, however many sign-ins follow.
-            let mut later = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+            let mut later = Finish::new(Instant::now(), None, Some(heard()), None);
             later.tell_went_back(std::slice::from_ref(&fallback), |notice| {
                 crate::notifications::tell_daemon(notice, &notifications);
             });
             assert_eq!(notifications.live().len(), 1, "said once per person");
-            assert_eq!(heard_ids(&heard), [id.to_owned()], "and recorded once");
+            assert_eq!(heard_ids(&heard()), [id.to_owned()], "and recorded once");
         }
 
         phase a_later_fallback_is_told_and_nothing_is_told_that_cannot_be_recorded;
@@ -510,14 +501,14 @@ mod tests {
         // record what was told says nothing rather than saying it at every sign-in.
         {
             let dir = tempdir();
-            let heard = dir.path().join("tilo/boot-fallback-seen");
+            let heard = || Kept::open(dir.path(), crate::kept::FALLBACKS_TOLD);
             let notifications = Notifications::new();
             let fallback = |id: &str| update::Fallback {
                 id: id.into(),
                 summary: format!("/var/lib/tilo/boot-fallback/{id}/summary.txt"),
                 ..update::Fallback::default()
             };
-            let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
+            let mut finish = Finish::new(Instant::now(), None, Some(heard()), None);
             finish.tell_went_back(&[fallback("20261025T101010Z-aaaa")], |notice| {
                 crate::notifications::tell_daemon(notice, &notifications);
             });
@@ -536,7 +527,7 @@ mod tests {
                 "each fallback is its own news"
             );
             assert_eq!(
-                heard_ids(&heard),
+                heard_ids(&heard()),
                 ["20261025T101010Z-aaaa", "20261102T090000Z-bbbb"]
             );
 
@@ -556,9 +547,9 @@ mod tests {
         {
             let now = Instant::now();
             let dir = tempdir();
-            let path = dir.path().join("tilo/update-restart-asked");
+            let asked = || Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
             let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-            let mut finish = a_finish(now, Some(path.clone()));
+            let mut finish = a_finish(now, Some(asked()));
 
             assert_eq!(
                 finish.step(now, clock, away(), &pending_desktop(), false, false),
@@ -582,8 +573,9 @@ mod tests {
                 ),
                 Some(Due::RestartDesktop)
             );
-            assert!(
-                path.exists(),
+            assert_eq!(
+                last_asked_at(&asked()),
+                Some(clock),
                 "when it restarted is recorded, so the session that comes back knows"
             );
             assert_eq!(
@@ -665,9 +657,9 @@ mod tests {
         {
             let now = Instant::now();
             let dir = tempdir();
-            let path = dir.path().join("tilo/update-restart-asked");
+            let asked = || Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
             let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-            let mut finish = a_finish(now, Some(path));
+            let mut finish = a_finish(now, Some(asked()));
             let running = Update {
                 updating: true,
                 ..Update::default()
@@ -698,14 +690,14 @@ mod tests {
         {
             let now = Instant::now();
             let dir = tempdir();
-            let path = dir.path().join("tilo/update-restart-asked");
+            let asked = || Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
             let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
             let staged = Update {
                 staged: Some("sha256:aa".into()),
                 restart_needed: true,
                 ..Update::default()
             };
-            let mut finish = a_finish(now, Some(path));
+            let mut finish = a_finish(now, Some(asked()));
             let look = now + FIRST_LOOK_AFTER;
             assert_eq!(
                 finish.step(look, clock, away(), &staged, false, false),
@@ -760,11 +752,14 @@ mod tests {
         phase the_last_restart_survives_a_restart_of_the_session;
         {
             let dir = tempdir();
-            let path = dir.path().join("tilo/update-restart-asked");
-            assert_eq!(last_asked_at(&path), None);
+            let asked = Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
+            assert_eq!(last_asked_at(&asked), None);
             let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-            record_asked_at(&path, at);
-            assert_eq!(last_asked_at(&path), Some(at));
+            record_asked_at(&asked, at);
+            crate::kept::flush(Some(dir.path()));
+            drop(asked);
+            let next = Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
+            assert_eq!(last_asked_at(&next), Some(at));
         }
     }
 }

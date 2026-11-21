@@ -150,8 +150,7 @@ impl Session {
         // widget trees.
         let notices = tilo_desktop_surface::DesktopNotifications::default();
         // The centre opens with what it kept when this session last ended.
-        let notice_history =
-            crate::notifications::restore_history(&notices, options.state.as_deref());
+        let notice_history = crate::notifications::restore_history(&notices, &options);
         // What the bar reads of the notifications, and the policy arrivals
         // are judged by: the person may change it at any time.
         let notice_signals = Rc::new(crate::notifications::NoticeSignals::default());
@@ -183,8 +182,7 @@ impl Session {
         // A device's answer to another's ask about the person is worked out
         // off the loop; when it lands here, the loop wakes to put it to them.
         crate::certification::attach(options.wake.handle());
-        // The pictures the shell shows are this device's, kept beside its
-        // shell: a change of the person's reaches them the same way.
+        // The pictures the shell shows are this device's: a change of the person's reaches them too.
         let wallpapers = std::sync::Arc::new(crate::wallpapers::Wallpapers::new(
             options.state.as_deref(),
             std::sync::Arc::clone(&woken),
@@ -1596,7 +1594,6 @@ impl Session {
             activity,
             person: options.person.clone(),
             earlier: own.earlier,
-            #[cfg(target_os = "linux")]
             state: options.state.clone(),
             search,
             launch: options.launch,

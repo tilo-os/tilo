@@ -757,7 +757,11 @@ tilo_test_env::scenario! {
         );
 
         let reopened = DesktopNotifications::default();
-        let kept = restore_history(&reopened, Some(state.path()));
+        let options = crate::Options {
+            state: Some(state.path().to_path_buf()),
+            ..crate::Options::default()
+        };
+        let kept = restore_history(&reopened, &options);
         let next = SessionNotifications::new(
             Notifications::new(),
             reopened,

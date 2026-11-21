@@ -29,7 +29,6 @@
 "apps/pdf-viewer/src/app.rs" = 5500
 "apps/pdf-viewer/src/app/tests.rs" = 4000
 "apps/settings/src/panes/accounts.rs" = 4000
-"apps/settings/src/panes/device_mesh.rs" = 3500
 "apps/settings/src/panes/network.rs" = 4000
 "apps/sheets/src/grid.rs" = 3500
 "apps/slides/src/app.rs" = 4500

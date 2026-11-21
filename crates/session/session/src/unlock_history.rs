@@ -42,7 +42,7 @@ fn open(kept: crate::kept::Kept) -> (AutoCommit, Option<Saver>) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return (AutoCommit::new(), Some(Saver::new(kept, Vec::new(), 0))),
         Err(error) => {
-            tracing::warn!(%error, "the unlock record is not read");
+            tracing::warn!(%error, "the unlock history is not read");
             return (AutoCommit::new(), None);
         }
     };
@@ -53,7 +53,7 @@ fn open(kept: crate::kept::Kept) -> (AutoCommit, Option<Saver>) {
             (doc, Some(Saver::new(kept, heads, bytes.len())))
         }
         Err(error) => {
-            tracing::warn!(%error, "the unlock record is not opened");
+            tracing::warn!(%error, "the unlock history is not opened");
             (AutoCommit::new(), None)
         }
     }
@@ -81,7 +81,9 @@ impl Saver {
             app_state::Save::Full => {
                 let bytes = doc.save();
                 let len = bytes.len();
-                self.kept.replace(bytes).map(|_| self.plan.stored_whole(len))
+                self.kept
+                    .replace(bytes)
+                    .map(|_| self.plan.stored_whole(len))
             }
             app_state::Save::Append => {
                 let bytes = doc.save_after(&self.heads);

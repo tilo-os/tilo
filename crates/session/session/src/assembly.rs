@@ -62,7 +62,6 @@ pub(crate) struct Shared {
     pub(crate) earlier: Vec<String>,
     /// Where this device keeps what outlives the session ([`crate::kept`]): what ends the session
     /// waits for it to be written.
-    #[cfg(target_os = "linux")]
     pub(crate) state: Option<std::path::PathBuf>,
     #[cfg(target_os = "linux")]
     pub(crate) search: Rc<crate::search::SessionSearch>,

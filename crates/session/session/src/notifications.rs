@@ -126,13 +126,13 @@ pub(crate) fn save_history(notices: &DesktopNotifications, kept: &crate::kept::K
 }
 
 /// Open the centre the last session left, as old as it was, and hand back where it is kept so this
-/// session writes it back there: in the device's store under `state`, the session's state
-/// directory, as the rest of what the session keeps.
+/// session writes it back there: in the device's store under the session's state directory, as
+/// the rest of what the session keeps.
 pub(crate) fn restore_history(
     notices: &DesktopNotifications,
-    state: Option<&std::path::Path>,
+    options: &crate::Options,
 ) -> Option<crate::kept::Kept> {
-    let kept = crate::kept::Kept::open(state?, crate::kept::NOTIFICATIONS);
+    let kept = crate::kept::Kept::open(options.state.as_deref()?, crate::kept::NOTIFICATIONS);
     match kept.read() {
         Ok(Some(bytes)) => {
             if let Err(error) = notices.restore_kept(&bytes, ui::time::wall()) {

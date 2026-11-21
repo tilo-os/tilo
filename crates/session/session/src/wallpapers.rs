@@ -37,14 +37,14 @@ const CUSTOM_EDGE: u32 = 3840;
 /// What each workspace on this device shows: its own `appearance.wallpaper` value, else this
 /// device's default; no value at all is the picture the image ships.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct Records {
+struct Choices {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     workspaces: BTreeMap<String, String>,
 }
 
-impl Records {
+impl Choices {
     /// The `appearance.wallpaper` value workspace `id` shows.
     fn value_for(&self, id: &str) -> Option<&str> {
         self.workspaces
@@ -56,7 +56,7 @@ impl Records {
     /// Apply the person's `value` the way `scope` and `target` say, with `active` the workspace
     /// they are on; whether that changed anything.
     /// A picture for the lock screen alone leaves the shell as it is. "Every workspace" replaces the
-    /// default and forgets what workspaces had of their own; "this workspace" records the one the
+    /// default and forgets what workspaces had of their own; "this workspace" sets the one the
     /// person is on and leaves the others.
     fn apply(
         &mut self,
@@ -87,38 +87,38 @@ impl Records {
     }
 }
 
-/// The records as the file holds them.
+/// The choices as the file holds them.
 #[derive(Serialize, Deserialize)]
 struct Kept {
     #[serde(default)]
     schema: u32,
     #[serde(flatten)]
-    records: Records,
+    choices: Choices,
 }
 
-fn load_at(kept: &crate::kept::Kept) -> Records {
+fn load_at(kept: &crate::kept::Kept) -> Choices {
     let bytes = match kept.read() {
         Ok(Some(bytes)) => bytes,
-        Ok(None) => return Records::default(),
+        Ok(None) => return Choices::default(),
         Err(error) => {
             tracing::warn!(%error, "the kept wallpapers are not read");
-            return Records::default();
+            return Choices::default();
         }
     };
     match serde_json::from_slice::<Kept>(&bytes) {
-        Ok(kept) if kept.schema == SCHEMA => kept.records,
+        Ok(kept) if kept.schema == SCHEMA => kept.choices,
         // A file a newer build wrote describes pictures this one cannot place.
         _ => {
             tracing::debug!("the kept wallpapers are another build's");
-            Records::default()
+            Choices::default()
         }
     }
 }
 
-fn save_at(at: &crate::kept::Kept, records: &Records) {
+fn save_at(at: &crate::kept::Kept, choices: &Choices) {
     let kept = Kept {
         schema: SCHEMA,
-        records: records.clone(),
+        choices: choices.clone(),
     };
     match serde_json::to_vec(&kept) {
         Ok(bytes) => {
@@ -131,7 +131,7 @@ fn save_at(at: &crate::kept::Kept, records: &Records) {
 /// This device's wallpapers: the picture each workspace shows, decoded once and kept while a
 /// workspace still shows it.
 pub(crate) struct Wallpapers {
-    /// Where the records are kept, if this session keeps any.
+    /// Where the choices are kept, if this session keeps any.
     kept: Option<crate::kept::Kept>,
     /// Wakes the compositor when a picture decoded off its thread.
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -140,7 +140,7 @@ pub(crate) struct Wallpapers {
 
 #[derive(Default)]
 struct State {
-    records: Records,
+    choices: Choices,
     /// The workspace in front, which a change covering one workspace lands on.
     active: Option<String>,
     /// Decoded pictures by the value they show.
@@ -151,7 +151,7 @@ struct State {
     /// Values decoding off this thread.
     decoding: HashSet<Option<String>>,
     /// Values that could not be decoded: the image does not carry the picture (a source checkout)
-    /// or the person's own is gone, until the records name another.
+    /// or the person's own is gone, until the choices name another.
     unreadable: HashSet<Option<String>>,
     /// The settings as last read: a change applies once, and a session start applies nothing, so a
     /// restart keeps what the workspaces had.
@@ -165,7 +165,7 @@ impl Wallpapers {
         let kept = state.map(|state| crate::kept::Kept::open(state, crate::kept::WALLPAPERS));
         Self {
             state: Arc::new(Mutex::new(State {
-                records: kept.as_ref().map_or_else(Records::default, load_at),
+                choices: kept.as_ref().map_or_else(Choices::default, load_at),
                 ..State::default()
             })),
             kept,
@@ -173,10 +173,10 @@ impl Wallpapers {
         }
     }
 
-    /// Write `records` as this device's, replacing the ones before.
-    fn save(&self, records: &Records) {
+    /// Write `choices` as this device's, replacing the ones before.
+    fn save(&self, choices: &Choices) {
         if let Some(kept) = &self.kept {
-            save_at(kept, records);
+            save_at(kept, choices);
         }
     }
 
@@ -184,7 +184,7 @@ impl Wallpapers {
     /// the rest.
     pub(crate) fn picture(&self, id: &str) -> Option<ImageData> {
         let mut state = self.state.lock_recover();
-        let value = state.records.value_for(id).map(str::to_owned);
+        let value = state.choices.value_for(id).map(str::to_owned);
         if let Some(image) = state.images.get(&value) {
             return Some(image.clone());
         }
@@ -244,7 +244,7 @@ impl Wallpapers {
     /// workspace neutral.
     pub(crate) fn hue(&self, id: &str) -> Option<f32> {
         let mut state = self.state.lock_recover();
-        let value = state.records.value_for(id).map(str::to_owned);
+        let value = state.choices.value_for(id).map(str::to_owned);
         if let Some(known) = state.hues.get(&value) {
             return *known;
         }
@@ -262,17 +262,17 @@ impl Wallpapers {
     pub(crate) fn start(&self, document: &Map<String, Value>) {
         let taken = {
             let mut state = self.state.lock_recover();
-            if state.records.default.is_none() && state.records.workspaces.is_empty() {
+            if state.choices.default.is_none() && state.choices.workspaces.is_empty() {
                 settings_store::appearance::WALLPAPER
                     .from_document(document)
-                    .inspect(|value| state.records.default = Some(value.clone()))
+                    .inspect(|value| state.choices.default = Some(value.clone()))
             } else {
                 None
             }
         };
         if taken.is_some() {
-            let records = self.state.lock_recover().records.clone();
-            self.save(&records);
+            let choices = self.state.lock_recover().choices.clone();
+            self.save(&choices);
         }
         self.follow(document);
     }
@@ -312,15 +312,15 @@ impl Wallpapers {
             return;
         }
         if !state
-            .records
+            .choices
             .apply(value.as_deref(), scope, target, active.as_deref())
         {
             return;
         }
-        let records = state.records.clone();
+        let choices = state.choices.clone();
         // The pictures no workspace shows any more are let go: each one is the whole screen in
         // pixels.
-        let (default, workspaces) = (&records.default, &records.workspaces);
+        let (default, workspaces) = (&choices.default, &choices.workspaces);
         let shown = |value: &Option<String>| {
             value == default || workspaces.values().any(|own| value.as_deref() == Some(own))
         };
@@ -328,7 +328,7 @@ impl Wallpapers {
         state.hues.retain(|value, _| shown(value));
         state.unreadable.clear();
         drop(state);
-        self.save(&records);
+        self.save(&choices);
     }
 }
 
@@ -355,38 +355,38 @@ mod tests {
 
         phase a_workspace_keeps_the_picture_the_person_gave_it;
         {
-            let mut records = Records::default();
-            assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
-            assert!(records.apply(Some("dunes"), "workspace", "background", Some("2")));
-            assert_eq!(records.value_for("1"), Some("meadow"));
-            assert_eq!(records.value_for("2"), Some("dunes"));
+            let mut choices = Choices::default();
+            assert!(choices.apply(Some("meadow"), "workspace", "background", Some("1")));
+            assert!(choices.apply(Some("dunes"), "workspace", "background", Some("2")));
+            assert_eq!(choices.value_for("1"), Some("meadow"));
+            assert_eq!(choices.value_for("2"), Some("dunes"));
             // One the person never chose shows the picture the image ships.
-            assert_eq!(records.value_for("3"), None);
-            assert!(records.apply(None, "workspace", "background", Some("2")));
-            assert_eq!(records.value_for("2"), None);
-            assert_eq!(records.value_for("1"), Some("meadow"));
+            assert_eq!(choices.value_for("3"), None);
+            assert!(choices.apply(None, "workspace", "background", Some("2")));
+            assert_eq!(choices.value_for("2"), None);
+            assert_eq!(choices.value_for("1"), Some("meadow"));
         }
 
         phase every_workspace_takes_the_change_and_its_own_pictures_are_forgotten;
         {
-            let mut records = Records::default();
-            assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
-            assert!(records.apply(Some("dunes"), "all", "background", Some("1")));
-            assert_eq!(records.value_for("1"), Some("dunes"));
-            assert_eq!(records.value_for("2"), Some("dunes"));
+            let mut choices = Choices::default();
+            assert!(choices.apply(Some("meadow"), "workspace", "background", Some("1")));
+            assert!(choices.apply(Some("dunes"), "all", "background", Some("1")));
+            assert_eq!(choices.value_for("1"), Some("dunes"));
+            assert_eq!(choices.value_for("2"), Some("dunes"));
             // The same choice again changes nothing.
-            assert!(!records.apply(Some("dunes"), "all", "background", None));
+            assert!(!choices.apply(Some("dunes"), "all", "background", None));
         }
 
         phase a_picture_for_the_lock_screen_leaves_the_shell_as_it_is;
         {
-            let mut records = Records::default();
-            assert!(records.apply(Some("meadow"), "workspace", "background", Some("1")));
-            assert!(!records.apply(Some("dunes"), "all", "lockscreen", Some("1")));
-            assert_eq!(records.value_for("1"), Some("meadow"));
+            let mut choices = Choices::default();
+            assert!(choices.apply(Some("meadow"), "workspace", "background", Some("1")));
+            assert!(!choices.apply(Some("dunes"), "all", "lockscreen", Some("1")));
+            assert_eq!(choices.value_for("1"), Some("meadow"));
             // Both places shows it on the shell too.
-            assert!(records.apply(Some("dunes"), "all", "both", Some("1")));
-            assert_eq!(records.value_for("2"), Some("dunes"));
+            assert!(choices.apply(Some("dunes"), "all", "both", Some("1")));
+            assert_eq!(choices.value_for("2"), Some("dunes"));
         }
 
         phase a_change_lands_on_the_workspace_in_front_after_the_first_read_notes_it;
@@ -396,11 +396,11 @@ mod tests {
             // The session's own start read applies nothing: the workspaces keep the pictures this
             // device kept for them.
             wallpapers.follow(&appearance(json!({ "wallpaper": "meadow" })));
-            assert_eq!(wallpapers.state.lock_recover().records.value_for("2"), None);
+            assert_eq!(wallpapers.state.lock_recover().choices.value_for("2"), None);
             wallpapers.follow(&appearance(json!({ "wallpaper": "dunes" })));
             let state = wallpapers.state.lock_recover();
-            assert_eq!(state.records.value_for("2"), Some("dunes"));
-            assert_eq!(state.records.value_for("1"), None);
+            assert_eq!(state.choices.value_for("2"), Some("dunes"));
+            assert_eq!(state.choices.value_for("1"), None);
             drop(state);
         }
 
@@ -421,7 +421,7 @@ mod tests {
             shown([220, 40, 20]);
             assert_eq!(wallpapers.hue("1"), Some(blue));
             // A workspace showing another picture, not decoded, has no hue yet.
-            wallpapers.state.lock_recover().records.workspaces =
+            wallpapers.state.lock_recover().choices.workspaces =
                 BTreeMap::from([("2".to_owned(), "meadow".to_owned())]);
             assert_eq!(wallpapers.hue("2"), None);
             assert_eq!(wallpapers.hue("1"), Some(blue));
@@ -430,14 +430,14 @@ mod tests {
         phase the_wallpapers_this_device_kept_come_back_with_the_next_session;
         {
             let state = tempfile::tempdir().expect("a state directory");
-            let kept = Records {
+            let kept = Choices {
                 default: Some("dunes".into()),
                 workspaces: BTreeMap::from([("1".to_owned(), "meadow".to_owned())]),
             };
             let wallpapers = Wallpapers::new(Some(state.path()), Arc::new(|| {}));
             wallpapers.save(&kept);
             let again = Wallpapers::new(Some(state.path()), Arc::new(|| {}));
-            assert_eq!(again.state.lock_recover().records, kept);
+            assert_eq!(again.state.lock_recover().choices, kept);
         }
     }
 

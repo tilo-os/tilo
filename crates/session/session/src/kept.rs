@@ -1,16 +1,20 @@
 //! What this device keeps of its sessions for the next one: the workspace in front, the person's
-//! workspace list, what could not be written to a workspace yet, the unlock record, the fire times
-//! of scheduled shortcuts, the wallpapers and the notification centre. Each is one document of the device's document store
-//! ([`app_state::FsStore`]) below the session's state directory, under a reserved key no app holds.
+//! workspace list, what could not be written to a workspace yet, the unlock history, the fire times
+//! of scheduled shortcuts, the wallpapers, the notification centre, and what finishing an update
+//! asked and told. Each is one document of the device's document store ([`app_state::FsStore`])
+//! below the session's state directory, under a reserved key no app holds.
 //!
 //! The store commits on its own thread, so a session that keeps something never waits for the
 //! disk; [`flush`] is what a session that ends waits for. A session holds each of its documents as
-//! its only writer: another session on the same state directory reads them and writes none.
+//! its only writer: another session on the same state directory reads them, and becomes their
+//! writer once that session lets them go.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use durable_store::{Durability, DurableStore as _, Lease, ReadyWake, Revision, StorageKey, WriteOp};
+use durable_store::{
+    Durability, DurableStore as _, Lease, ReadyWake, Revision, StorageKey, WriteOp,
+};
 
 /// The workspace in front and the displays' partition ([`crate::device_state`]).
 pub(crate) const SHOWN: &str = "so.tilo.session-shown";
@@ -18,7 +22,7 @@ pub(crate) const SHOWN: &str = "so.tilo.session-shown";
 pub(crate) const WORKSPACES: &str = "so.tilo.session-workspaces";
 /// What this device could not write yet of its workspaces' layouts ([`crate::layout`]).
 pub(crate) const PENDING_LAYOUT: &str = "so.tilo.session-pending-layout";
-/// The person's record of what their devices answered to an unlock ([`crate::unlock_history`]).
+/// What the person's devices answered to an unlock ([`crate::unlock_history`]).
 pub(crate) const UNLOCK: &str = "so.tilo.session-unlock";
 /// When each scheduled shortcut fires next ([`crate::automation::triggers`]).
 pub(crate) const SCHEDULES: &str = "so.tilo.session-schedules";
@@ -26,6 +30,10 @@ pub(crate) const SCHEDULES: &str = "so.tilo.session-schedules";
 pub(crate) const WALLPAPERS: &str = "so.tilo.session-wallpapers";
 /// What the notification centre held when the session ended ([`crate::notifications`]).
 pub(crate) const NOTIFICATIONS: &str = "so.tilo.session-notifications";
+/// When a restart for an update was last asked for, or done ([`crate::update_finish`]).
+pub(crate) const UPDATE_ASKED: &str = "so.tilo.session-update-asked";
+/// The deployment fallbacks the person was told about ([`crate::update_finish`]).
+pub(crate) const FALLBACKS_TOLD: &str = "so.tilo.session-fallbacks-told";
 
 /// The store of a session whose state directory is `state`: one per directory in this process.
 pub(crate) fn store(state: &Path) -> Arc<app_state::FsStore> {
@@ -52,16 +60,19 @@ pub(crate) fn flush(state: Option<&Path>) {
 pub(crate) struct Kept {
     store: Arc<app_state::FsStore>,
     key: StorageKey,
-    /// Held while this session is the document's writer: `None` when another session holds it.
-    /// Never touched after it is taken; the lock lets the document be shared between threads.
-    lease: Option<std::sync::Mutex<Lease>>,
+    /// Held while this session is the document's writer: `None` while another session holds it,
+    /// asked for again at each write until that session lets it go.
+    lease: std::sync::Mutex<Option<Lease>>,
 }
 
 impl std::fmt::Debug for Kept {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Kept")
             .field("key", &self.key)
-            .field("writer", &self.lease.is_some())
+            .field(
+                "writer",
+                &self.lease.lock().is_ok_and(|lease| lease.is_some()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -76,19 +87,25 @@ impl Kept {
         // write still being committed, which holds the document until it lands: wait for it.
         let leased = store.lease(&key).or_else(|error| match error {
             durable_store::StoreError::Busy(_) => {
-                let _ = store.flush(Some(&key));
+                if let Err(error) = store.flush(Some(&key)) {
+                    tracing::warn!(%error, %key, "what the session before wrote was not all written");
+                }
                 store.lease(&key)
             }
             error => Err(error),
         });
         let lease = match leased {
-            Ok(lease) => Some(std::sync::Mutex::new(lease)),
+            Ok(lease) => Some(lease),
             Err(error) => {
-                tracing::warn!(%error, %key, "another session keeps this; this one only reads it");
+                tracing::warn!(%error, %key, "another session keeps this; this one reads it until it lets it go");
                 None
             }
         };
-        Self { store, key, lease }
+        Self {
+            store,
+            key,
+            lease: std::sync::Mutex::new(lease),
+        }
     }
 
     /// What the document holds, `None` when nothing was kept yet.
@@ -111,7 +128,9 @@ impl Kept {
     }
 
     fn write(&self, op: WriteOp) -> Option<Revision> {
-        self.lease.as_ref()?;
+        if !self.writer() {
+            return None;
+        }
         match self.store.write(&self.key, op, None) {
             Ok(revision) => Some(revision),
             Err(error) => {
@@ -119,6 +138,26 @@ impl Kept {
                 None
             }
         }
+    }
+
+    /// Whether this session is the document's writer, becoming it when the session that held the
+    /// document has let it go.
+    fn writer(&self) -> bool {
+        let Ok(mut lease) = self.lease.lock() else {
+            return false;
+        };
+        if lease.is_none() {
+            *lease = match self.store.lease(&self.key) {
+                Ok(taken) => Some(taken),
+                // The other session still holds it.
+                Err(durable_store::StoreError::Busy(_)) => None,
+                Err(error) => {
+                    tracing::warn!(%error, key = %self.key, "this session cannot become the writer of what it keeps");
+                    None
+                }
+            };
+        }
+        lease.is_some()
     }
 
     /// What became of the write that returned `revision`.
@@ -138,4 +177,45 @@ pub(crate) fn local_path(state: &Path, name: &str) -> std::path::PathBuf {
     store(state)
         .local_path(&StorageKey::app(name))
         .expect("a document of the device's store is a file")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_that_opens_while_another_keeps_a_document_writes_it_once_that_one_ends() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let first = Kept::open(state.path(), SHOWN);
+        assert!(
+            first.replace(b"first".to_vec()).is_some(),
+            "the first session writes"
+        );
+
+        let second = Kept::open(state.path(), SHOWN);
+        assert_eq!(
+            second.read().expect("it reads").as_deref(),
+            Some(&b"first"[..]),
+            "the second reads what the first kept"
+        );
+        assert!(
+            second.replace(b"second".to_vec()).is_none(),
+            "and writes nothing while the first holds it"
+        );
+
+        flush(Some(state.path()));
+        drop(first);
+        flush(Some(state.path()));
+        assert!(
+            second.replace(b"second".to_vec()).is_some(),
+            "once the first lets it go, the second is its writer"
+        );
+        flush(Some(state.path()));
+        drop(second);
+        let next = Kept::open(state.path(), SHOWN);
+        assert_eq!(
+            next.read().expect("it reads").as_deref(),
+            Some(&b"second"[..])
+        );
+    }
 }

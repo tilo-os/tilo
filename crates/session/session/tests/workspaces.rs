@@ -64,7 +64,6 @@ fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
     root.join(name).join(app_state::DOCUMENT_FILE)
 }
 
-
 /// This computer's person: a device of theirs, certified for their own root key, kept in an
 /// identity root of the test's own.
 fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
