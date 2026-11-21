@@ -86,10 +86,11 @@ def stand_in(one: Person, workspace: str) -> None:
           lambda: (front(one) or {}).get("id") == workspace, 60, 0.25)
 
 
-def holds(one: Person, text: str) -> bool:
-    """Whether `one`'s computer keeps `text` in a Notes record: the bytes on its disk."""
-    return any(text.encode() in path.read_bytes()
-               for path in one.state.rglob("*.automerge") if NOTES in str(path))
+def in_note(one: Person, text: str) -> bool:
+    """Whether `text` is a block of the note this person's Notes shows: the block's control is
+    named by what it holds. (A note's bytes on disk are Automerge's compressed columns, where
+    typed words never stand in order.)"""
+    return any(t.get("name") == text for t in one.targets())
 
 
 def notes_listed(one: Person) -> int:
@@ -327,7 +328,7 @@ def steps(story: Story) -> None:
             time.sleep(0.08)
         typed["last"] = time.monotonic()
         try:
-            until("Ada's words in Ada's note", lambda: holds(ada, words), 15, 0.1)
+            until("Ada's words in Ada's note", lambda: in_note(ada, words), 15, 0.1)
         except Failed:
             made = notes_listed(ada) - typed["notes"]
             story.note("ada-controls-after-typing", ada.targets())
@@ -339,13 +340,12 @@ def steps(story: Story) -> None:
     story.step("Ada types a line in the note", ada_types, people=[ada])
 
     def grace_sees():
-        until("Ada's words on Grace's computer", lambda: holds(grace, words), 30, 0.05)
-        took = (time.monotonic() - typed["last"]) * 1000
-        story.timing("Ada's words on Grace's computer, after Ada's last key", took)
         try:
-            until("Ada's words on Grace's screen", lambda: grace.shows(words), 10, 0.1)
+            until("Ada's words on Grace's screen", lambda: in_note(grace, words), 30, 0.05)
         finally:
             story.note("grace-controls-at-words", grace.names())
+        took = (time.monotonic() - typed["last"]) * 1000
+        story.timing("Ada's words on Grace's screen, after Ada's last key", took)
         return {"tookMs": took}
 
     story.step("Grace sees Ada’s words", grace_sees)
