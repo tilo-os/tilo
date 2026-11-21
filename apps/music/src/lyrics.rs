@@ -111,7 +111,10 @@ pub async fn resolve(meta: &TrackMeta) -> Option<Lyrics> {
 
 /// Without `live` this is a stub that returns `None`.
 #[cfg(not(feature = "live"))]
-#[allow(clippy::unused_async, reason = "the same signature as the live fetch")]
+#[allow(
+    clippy::unused_async,
+    reason = "`resolve` awaits it, and the live build's fetch is async"
+)]
 async fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let _ = lrclib_url(meta);
     None
