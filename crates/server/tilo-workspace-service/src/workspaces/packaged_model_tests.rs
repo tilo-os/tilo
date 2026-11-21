@@ -301,7 +301,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
             .unwrap()
             .expect("the document still exists"),
         after,
-        "a refused action records nothing"
+        "a refused action writes nothing"
     );
 
     // Taking the step back is history's own revert, on the device: nothing of

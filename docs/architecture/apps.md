@@ -39,7 +39,7 @@ the size of the app's own code rather than one copy of Automerge per app.
 `#[derive(Model)]` and `#[resource]` generate the same code for both builds;
 only what `Doc` is differs.
 
-The device, not the module, records an action (`tilo-model-engine`). It
+The device, not the module, writes an action's history (`tilo-model-engine`). It
 checks an invocation's arguments against the verb the package's signed
 surface declares, builds the envelope (an id minted from the request, the
 base heads, the invoker's actor, the origin time), writes the history entry

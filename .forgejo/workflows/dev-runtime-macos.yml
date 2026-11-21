@@ -138,6 +138,7 @@ on:
       - "crates/sdk/tilo-cpu-raster/**"
       - "crates/sdk/tilo-formats/**"
       - "crates/sdk/tilo-history/**"
+      - "crates/sdk/tilo-model-guest/**"
       - "crates/sdk/tilo-process-services/**"
       - "crates/sdk/tilo-recurrence/**"
       - "crates/sdk/tilo-resource/**"

@@ -502,7 +502,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         "the same module replays the action to the same document"
     );
     // The device wrote the change's history entry, not the module: the
-    // action as its own type records it, the app, and the agent for its
+    // action as its own type writes it, the app, and the agent for its
     // person.
     let entry = recorded_entry(&after);
     assert!(
@@ -510,7 +510,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             .action
             .as_ref()
             .is_some_and(|action| String::from_utf8_lossy(&action.payload).contains("create-area")),
-        "the entry records the action applied: {entry:?}"
+        "the entry names the action applied: {entry:?}"
     );
     assert_eq!(entry.app.as_ref().map(|app| app.id.as_str()), Some(TASKS));
     assert_eq!(
@@ -555,10 +555,10 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     assert_eq!(invoker.acting.person_id(), Some(person.as_str()));
     assert!(
         entry.action.is_some(),
-        "the person's change records its action as the agent's does"
+        "the person's change names its action as the agent's does"
     );
 
-    // An agent whose turn denies changes is refused before the module runs,
+    // An agent whose turn denies changes is refused before the module is called,
     // and nothing is recorded.
     let denied = Caller::authenticated(
         root.verifying_key().to_bytes(),
@@ -593,7 +593,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             .unwrap()
             .expect("the document still exists"),
         clicked_after,
-        "a denied action records nothing"
+        "a denied action writes nothing"
     );
 
     // A packaged action whose grant needs the person's consent is put to them,

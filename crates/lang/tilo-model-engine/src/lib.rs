@@ -22,7 +22,7 @@
 //! The device holds the document. The module reads and writes it through the
 //! device's document calls (`automerge::model_device`): every write lands in
 //! this side's Automerge document, in the change the executor pins. The module
-//! cannot record on its own: on the request's document the device refuses a
+//! cannot write history of its own: on the request's document the device refuses a
 //! commit, an empty change, an actor and changes loaded or merged in, so the
 //! only history a module's verb makes is the entry the device writes for it.
 //!
@@ -324,9 +324,9 @@ impl Model {
             (&member.actor_bytes(), context),
             pinned,
         )?;
-        // The module computes no undo: an action whose own code does records
-        // none, rather than an entry a device with the app compiled in would
-        // find its undo missing from.
+        // The module computes no undo: the entry of an action whose own code
+        // computes it names no action, rather than one a device with the app
+        // compiled in would find its undo missing from.
         if bound.compensates
             && let Some(context) = envelope.context.as_mut()
         {
@@ -716,9 +716,9 @@ mod tests {
 
 /// A module writes into the request's document through the device's
 /// document calls; history there is the device's alone, so a module's
-/// attempt to record a change of its own is refused at the device.
+/// attempt to write a change of its own is refused at the device.
 #[cfg(test)]
-mod records {
+mod history_is_the_devices {
     use automerge::model_device::wire::{Reader, Writer};
     use automerge::model_device::{ANSWERED, Documents, REFUSED, op};
     use automerge::transaction::Transactable as _;

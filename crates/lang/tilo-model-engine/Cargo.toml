@@ -17,7 +17,7 @@ blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# The action framework runs here, natively: binding, envelopes, history
+# The action framework executes here, natively: binding, envelopes, history
 # entries, commits and replay.
 tilo-actions = { path = "../../collab/actions" }
 # What the module reads and answers.

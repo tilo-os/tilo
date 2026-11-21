@@ -67,7 +67,7 @@ fn value_of(value: &ValueRef<'_>) -> Value<'static> {
 /// Whether `call` writes history into the document it is made on rather
 /// than content: a commit, an empty change, a new actor, changes loaded from
 /// bytes, or another document merged in.
-fn records(call: u8) -> bool {
+fn writes_history(call: u8) -> bool {
     matches!(
         call,
         op::COMMIT_WITH | op::EMPTY_CHANGE | op::SET_ACTOR | op::LOAD_INCREMENTAL | op::MERGE
@@ -142,15 +142,15 @@ impl Documents {
             _ => {}
         }
         let handle: u32 = r.take()?;
-        // TILO(model-device): the request's own document records only what
+        // TILO(model-device): the request's own document keeps only what
         // the device commits. A module writes into it, and the device makes
         // the change under the envelope it pins (actor, time, history
         // entry); a module that commits, names an actor, or brings changes
         // in from elsewhere would write history of its own, so those calls
         // are refused there. Documents it opens itself are its scratch.
-        if handle == 0 && records(call) {
+        if handle == 0 && writes_history(call) {
             return Err(Refusal::Said(
-                "a model module does not record: the device commits the change it writes".into(),
+                "a model module writes no history: the device commits the change it writes".into(),
             ));
         }
         match call {

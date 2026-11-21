@@ -623,7 +623,7 @@ a handle on a document the host keeps, with the native API, whose every read
 and write is one call to the host in the form `model_device/wire.rs` writes.
 `model_device::Documents` is the device's side: it holds the module's documents (the
 request's own as handle 0) and answers each call from its real `AutoCommit`,
-so the change a verb makes is the host's Automerge's. On the request's own
+so the change a verb makes is the device's Automerge's. On the request's own
 document a module only writes content: committing, an empty change, setting
 the actor, loading changes and merging another document in are refused there,
 since the device commits what the module wrote under the envelope it pins.

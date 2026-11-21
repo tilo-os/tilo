@@ -11,8 +11,8 @@
 //! know. It checks the invocation's arguments against the verb the package's
 //! signed surface declares, builds the envelope (its id, base heads, actor and
 //! time), writes the history entry and commits the change, and replays an
-//! invocation another holder recorded at the heads it was made on: the action
-//! executor runs there, natively, exactly as for an app compiled in. The module
+//! invocation another holder recorded at the heads it was made on, with its own
+//! action executor, exactly as for an app compiled in. The module
 //! answers four requests ([`Op`]):
 //!
 //! - [`Op::Initialize`] writes a new resource's initial content, which the
@@ -31,7 +31,7 @@
 //! write one call (`automerge::model_device`), so a verb acts on the
 //! resource exactly as it does natively. The module writes content only: the
 //! device refuses a commit, an actor or changes loaded into the request's
-//! document from a module, so what history records is the device's.
+//! document from a module, so what history keeps is the device's.
 //!
 //! An app's module serves every resource it declares: a request names the
 //! resource kind it is for, and the module routes it to that resource's verbs.
@@ -202,7 +202,7 @@ pub struct Bound {
     pub irreversible: bool,
     /// Where it is done.
     pub locus: ExecutionLocus,
-    /// What history records it does and to which item, read from the
+    /// What history says it does and to which item, read from the
     /// device's document before it applies, for [`Op::Bind`]
     /// ([`tilo_actions::Action::describe`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
