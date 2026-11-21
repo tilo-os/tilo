@@ -9748,14 +9748,36 @@ fn app_manifest(spec: &AppSpec) -> Result<String> {
             format!("os/usr/share/tilo/system-interfaces.toml serves no {service} service")
         })
     };
-    Ok(format!(
+    let mut manifest = format!(
         "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@{collab}\"\ntilo-fs = \"optional@{fs}\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
         app_id = spec.app_id,
         title = spec.title,
         package = spec.package_name,
         collab = version("collab")?,
         fs = version("tilo-fs")?,
-    ))
+    );
+    manifest.push_str(&scaffold_offers(spec));
+    Ok(manifest)
+}
+
+/// The actions the template's code offers a person while its app is closed, as its manifest's
+/// `[[offers]]`: what `tilo-app surface` writes for the app it scaffolds. A verb the view
+/// publishes that reaches people, takes nothing or one line they write, and acts on nothing
+/// chosen; a destructive one asks first. Kept beside the template so a freshly scaffolded app
+/// checks clean before it is built.
+fn scaffold_offers(spec: &AppSpec) -> String {
+    const HEADER: &str = "# What the app offers a person while it is closed: written by `tilo-app surface` from\n\
+                          # what its code publishes. Invoking one opens the app and invokes it there.\n";
+    let (action, label, extra) = match spec.template {
+        Template::Starter => ("clear", "Clear", ""),
+        Template::Document => ("clear", "Clear", "confirm = true\n"),
+        Template::Collection => ("add", "Add", "asks = \"title\"\n"),
+        Template::Graph => ("create", "Create", ""),
+    };
+    format!(
+        "\n{HEADER}\n[[offers]]\nresource = {app_id:?}\naction = {action:?}\nlabel = {label:?}\noperation = \"document\"\n{extra}",
+        app_id = spec.app_id,
+    )
 }
 
 fn graph_document() -> Result<String> {

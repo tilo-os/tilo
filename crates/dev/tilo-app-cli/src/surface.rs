@@ -1259,7 +1259,7 @@ pub fn write_offers(app_dir: &Path, offers: &[Value]) -> Result<bool> {
 /// `manifest` with its `[[offers]]` tables, and the comment above them, replaced by
 /// `offers`, written last. The `open-link` every app publishes is offered only by an app that
 /// takes a scheme (`[providers] schemes`): it is how a link of one starts the app.
-fn with_offers(manifest: &str, offers: &[Value]) -> String {
+pub(crate) fn with_offers(manifest: &str, offers: &[Value]) -> String {
     let takes_links = toml::from_str::<toml::Table>(manifest)
         .ok()
         .and_then(|table| {
