@@ -139,6 +139,10 @@ struct Shared<P: Resource> {
     /// Actions asked for while the record could not be changed (its store
     /// in use by whatever runs now), applied in order once it can.
     waiting: RefCell<Vec<Waiting<P>>>,
+    /// What the state shown was read with while edits waited: the record's
+    /// heads and how many waited. The state then holds them, so what is read
+    /// after an edit holds it although the store has not taken it yet.
+    ahead: RefCell<Option<(Vec<ui_core::automerge::ChangeHash>, usize)>>,
 }
 
 /// An action that waits for its record ([`WorkspaceResource::invoke_then`]),
@@ -170,7 +174,7 @@ impl<P: Resource> Shared<P> {
     /// store in use, or its document not readable yet), and the state is what was last read.
     fn refresh_now(&self) -> Option<bool> {
         self.apply_waiting();
-        let moved = match self.record.read(|doc| self.live.sync(doc)) {
+        let mut moved = match self.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
                 tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
@@ -179,15 +183,64 @@ impl<P: Resource> Shared<P> {
             None => return None,
         };
         let _ = self.live.take_change();
-        if moved {
+        let waiting = self.waiting.borrow().len();
+        if waiting > 0 {
+            let read = (self.record.heads(), waiting);
+            if self.ahead.borrow().as_ref() == Some(&read) {
+                return Some(moved);
+            }
+            if let Some(state) = self.state_with_waiting() {
+                self.state.set(state);
+                *self.ahead.borrow_mut() = Some(read);
+                return Some(true);
+            }
+        }
+        if self.ahead.borrow_mut().take().is_some() || moved {
             self.state.set(self.live.get());
+            moved = true;
         }
         Some(moved)
+    }
+
+    /// The state the record has once the edits waiting for its store are
+    /// made: read from a copy of it they are made in, which is then let go.
+    fn state_with_waiting(&self) -> Option<Rc<P::State>> {
+        let mut doc = self.record.read(Clone::clone)?;
+        for entry in self.waiting.borrow().iter() {
+            if let Err(error) = self.apply_to(&mut doc, &entry.action, &entry.invoker) {
+                tracing::warn!(kind = P::KIND, %error, "a waiting edit does not apply");
+            }
+        }
+        match tilo_resource::Reader::<P>::read(&doc) {
+            Ok(reader) => Some(Rc::clone(reader.state())),
+            Err(error) => {
+                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
+                None
+            }
+        }
     }
 
     /// Follow the record when it moved. Whether it did.
     fn refresh(&self) -> bool {
         self.refresh_now().is_some_and(|moved| moved)
+    }
+
+    /// The record's document with the edits waiting for its store made in a
+    /// copy of it: what a read answers although the store has not taken them
+    /// yet.
+    fn document_with_waiting(&self) -> Option<ui_core::automerge::AutoCommit> {
+        let waiting = self.waiting.borrow();
+        if waiting.is_empty() {
+            drop(waiting);
+            return self.record.read(Clone::clone);
+        }
+        let mut doc = self.record.read(Clone::clone)?;
+        for entry in waiting.iter() {
+            if let Err(error) = self.apply_to(&mut doc, &entry.action, &entry.invoker) {
+                tracing::warn!(kind = P::KIND, %error, "a waiting edit does not apply");
+            }
+        }
+        Some(doc)
     }
 
     /// Apply the actions that wait for the record, in order, while it can
@@ -234,10 +287,27 @@ impl<P: Resource> Shared<P> {
     /// the change is attributed to and which
     /// [`ActionCx::author`](tilo_resource::action) answers inside the action.
     fn apply_as(&self, action: &P::Action, invoker: &ActionInvoker) -> Applied {
-        let encoded = match tilo_resource::encode::<P>(action) {
-            Ok(encoded) => encoded,
-            Err(error) => return Applied::Done(Err(error)),
-        };
+        let change = action.change_kind();
+        let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
+            self.apply_to(doc, action, invoker)
+        });
+        match edited {
+            Ok(result) => Applied::Done(result.map_err(ActionError::Refused)),
+            Err(unavailable) if unavailable.is_momentary() => Applied::Waits,
+            Err(unavailable) => Applied::Done(Err(ActionError::Refused(unavailable.to_string()))),
+        }
+    }
+
+    /// Make `action` one change of `doc` as `invoker`: what the record holds
+    /// once its store takes the edit, and what a copy of one it waits in
+    /// holds meanwhile.
+    fn apply_to(
+        &self,
+        doc: &mut ui_core::automerge::AutoCommit,
+        action: &P::Action,
+        invoker: &ActionInvoker,
+    ) -> Result<(), String> {
+        let encoded = tilo_resource::encode::<P>(action).map_err(|error| error.to_string())?;
         let change = action.change_kind();
         // Who the change is: the invoker's own actor (an agent acting in a turn, attributed as it
         // is at an app's record origin), or the person at this device for an invoker naming nobody.
@@ -254,17 +324,10 @@ impl<P: Resource> Shared<P> {
             .with_app(self.owner, self.app_title)
             .with_invoker(invoker)
             .with_change(change);
-        let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
-            let writer = ui_core::history_source::authors::device_actor(&actor, doc.get_actor());
-            tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        });
-        match edited {
-            Ok(result) => Applied::Done(result.map_err(ActionError::Refused)),
-            Err(unavailable) if unavailable.is_momentary() => Applied::Waits,
-            Err(unavailable) => Applied::Done(Err(ActionError::Refused(unavailable.to_string()))),
-        }
+        let writer = ui_core::history_source::authors::device_actor(&actor, doc.get_actor());
+        tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -414,6 +477,7 @@ impl<P: Resource> WorkspaceResource<P> {
                 live,
                 wake,
                 waiting: RefCell::default(),
+                ahead: RefCell::default(),
             }),
         })
     }
@@ -435,6 +499,16 @@ impl<P: Resource> WorkspaceResource<P> {
     /// workspace's tree holds as a document of its own.
     pub fn read<T>(&self, read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T) -> Option<T> {
         self.shared.record.read(read)
+    }
+
+    /// [`Self::read`] with the edits waiting for the record's store made: what
+    /// was asked for a moment ago is read although the store has not taken it
+    /// yet.
+    pub(crate) fn read_with_waiting<T>(
+        &self,
+        read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T,
+    ) -> Option<T> {
+        self.shared.document_with_waiting().map(|doc| read(&doc))
     }
 
     /// The current state.
@@ -839,7 +913,7 @@ fn offered<P: Resource>(shared: &Rc<Shared<P>>, id: String) -> Held<P> {
         if let Some(shared) = reading.upgrade() {
             let document = WorkspaceResource { shared };
             if !document.independently_sealed() || document.may_read() {
-                document.read(|doc| read(doc));
+                document.read_with_waiting(|doc| read(doc));
             }
         }
     })

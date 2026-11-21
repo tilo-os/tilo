@@ -622,11 +622,10 @@ fn an_action_asked_for_while_the_store_is_in_use_waits_for_it() {
     let settled = Rc::new(RefCell::new(Vec::new()));
     kept.record()
         .read(|_| {
-            // Asked for at once, the store in use refuses it, saying why.
-            let refused = kept
-                .invoke(&WorkspaceEmoji::ADD_EMOJI.with(add("party")))
-                .unwrap_err();
-            assert!(refused.to_string().contains("in use"), "{refused}");
+            // Asked for at once, the store in use keeps it for the next
+            // refresh: input is never dropped.
+            kept.invoke(&WorkspaceEmoji::ADD_EMOJI.with(add("first")))
+                .expect("kept for the store to let go");
             for name in ["party", "ship_it"] {
                 let settled = Rc::clone(&settled);
                 kept.invoke_then(&WorkspaceEmoji::ADD_EMOJI.with(add(name)), move |added| {
@@ -639,7 +638,11 @@ fn an_action_asked_for_while_the_store_is_in_use_waits_for_it() {
         })
         .unwrap();
     // The window's next refresh applies them, in order.
-    assert_eq!(names(&kept), ["party", "ship_it"]);
+    assert_eq!(
+        names(&kept),
+        ["first", "party", "ship_it"],
+        "the edit asked for in the pass landed too"
+    );
     assert_eq!(*settled.borrow(), [("party", true), ("ship_it", true)]);
 
     // One the record refuses settles as refused, without waiting.
