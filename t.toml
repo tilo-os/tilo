@@ -2867,8 +2867,8 @@ default = false
 
 [[check]]
 name = "model-catalog-compiler"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Fetches the crates Cargo.lock pins, by their checksums.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/release/local-model-catalog.sh compiler /target/model-catalog/bin"
 outputs = ["/target/model-catalog/bin/tilo-model-catalog"]
 default = false
@@ -2907,8 +2907,10 @@ secrets = ["TILO_MODEL_CATALOG_SIGNING_KEY"]
 
 [[check]]
 name = "model-catalog-dev-x86_64"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Fetches the speech artifacts dist/local-models/catalog-source.json names, each checked against
+# its receipt's sha256: what it fetches is fixed by what it reads, and its catalog is signed with a
+# key derived from what it signs (local-model-catalog.sh dev), so its answer is served.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/release/local-model-catalog.sh dev x86_64 /target/model-catalog/bin/tilo-model-catalog /target/model-catalog/dev/x86_64"
 needs = ["model-catalog-compiler", "local-model-runtime-llama-cpp-cpu-x86_64", "local-model-runtime-llama-cpp-vulkan-x86_64", "local-model-runtime-llama-cpp-cuda-x86_64", "local-model-runtime-vllm-cuda-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
@@ -2917,8 +2919,10 @@ default = false
 
 [[check]]
 name = "model-catalog-dev-aarch64"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Fetches the speech artifacts dist/local-models/catalog-source.json names, each checked against
+# its receipt's sha256: what it fetches is fixed by what it reads, and its catalog is signed with a
+# key derived from what it signs (local-model-catalog.sh dev), so its answer is served.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/release/local-model-catalog.sh dev aarch64 /target/model-catalog/bin/tilo-model-catalog /target/model-catalog/dev/aarch64"
 needs = ["model-catalog-compiler", "local-model-runtime-llama-cpp-cpu-aarch64", "local-model-runtime-llama-cpp-vulkan-aarch64"]
 requires = ["arch=x86_64", "disk-100g"]
@@ -2943,8 +2947,6 @@ runtime = ["llama-cpp-cpu-x86_64", "llama-cpp-cpu-aarch64", "llama-cpp-vulkan-x8
 # at every commit, and each CUDA build takes the better part of an hour.
 [[check]]
 name = "source-date-local-model-runtimes"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/source-date.sh /target/source-date/local-model-runtimes tools/release/local-model-runtime.sh dist/local-models/runtimes tools/ci/publish/oci-run.sh tools/ci/publish/lib.sh"
 git = true
 outputs = ["/target/source-date/local-model-runtimes"]
@@ -2952,8 +2954,10 @@ default = false
 
 [[check]]
 name = "local-model-runtime-llama-cpp-{backend}-{arch}"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Fetches only what local-model-runtime.sh pins: its bases by digest, llama.cpp's source and
+# CMake by hash, and Fedora 44's release repository, frozen at the release. The build makes the
+# same bytes every time, so a build at the same sources is served.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/local-model-runtimes)\nexport SOURCE_DATE_EPOCH\nbash tools/release/local-model-runtime.sh build llama-cpp-{backend}-{arch} /target/local-model-runtimes/llama-cpp-{backend}-{arch}\n"
 needs = ["source-date-local-model-runtimes"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -2969,8 +2973,10 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "local-model-runtime-llama-cpp-cuda-x86_64"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Fetches only what local-model-runtime.sh pins: NVIDIA's CUDA bases by digest, llama.cpp's
+# source and CMake by hash. The build makes the same bytes every time (llama-cpp-cuda.Containerfile),
+# so a build at the same sources is served.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/local-model-runtimes)\nexport SOURCE_DATE_EPOCH\nbash tools/release/local-model-runtime.sh build llama-cpp-cuda-x86_64 /target/local-model-runtimes/llama-cpp-cuda-x86_64\n"
 needs = ["source-date-local-model-runtimes"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -2983,8 +2989,8 @@ heavy = true
 
 [[check]]
 name = "local-model-runtime-vllm-cuda-x86_64"
-# Pulls and builds container images whose packages come from mirrors and registries no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Copies vLLM's image by its digest (local-model-runtime.sh).
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/release/local-model-runtime.sh build vllm-cuda-x86_64 /target/local-model-runtimes/vllm-cuda-x86_64"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 requires = ["disk-100g"]

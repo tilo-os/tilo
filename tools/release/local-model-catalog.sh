@@ -185,8 +185,13 @@ case $command in
     jq --arg key "$dev_key_id" '.key_id = $key' "$work/built.json" > "$work/dev.json"
     stage "$work" "$work/dev.json"
     # A dev image carries this catalog and the key that verifies it, both covered by the image's
-    # own signature: the development key vouches for them, so the catalog key is throwaway.
-    sign_source "$compiler" "$work/source.json" "$out" "$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+    # own signature, and the service reads the two only from beside each other in the image
+    # (local-model-service's IMAGE_CATALOG and IMAGE_KEYS): the development key vouches for them,
+    # so the catalog key holds no authority of its own. Its seed is the hash of what it signs, so
+    # the same runtimes and models sign to the same catalog, and the dev image built on it is
+    # served instead of rebuilt; a random seed made every build of the catalog differ.
+    sign_source "$compiler" "$work/source.json" "$out" \
+      "$(printf 'tilo-local-model-dev\n' | cat - "$work/source.json" | sha256sum | cut -d' ' -f1)"
     rm -rf "$work"
     jq -e --arg key "$dev_key_id" '.key_id == $key and (.payload.runtimes | length) > 0' \
       "$out/catalog.json" >/dev/null || die 'the dev catalog names no runtime'
