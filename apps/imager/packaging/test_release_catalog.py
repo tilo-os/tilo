@@ -32,16 +32,14 @@ class CatalogSelectionTests(unittest.TestCase):
         return path
 
     def test_selection_and_embedding_accept_exactly_one_supported_catalog(self):
-        with self.subTest(phase="real native embedding accepts both supported versions"):
-            for version in (1, 2):
-                with self.subTest(version=version):
-                    source = self.write(version)
-                    destination = self.root / "release-catalog.json"
-                    result = subprocess.run([sys.executable, str(SCRIPT), str(self.root),
-                                             "--copy-to", str(destination)], capture_output=True)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(destination.read_bytes(), source.read_bytes())
-                    source.unlink()
+        with self.subTest(phase="real native embedding accepts the current catalog version"):
+            source = self.write(2)
+            destination = self.root / "release-catalog.json"
+            result = subprocess.run([sys.executable, str(SCRIPT), str(self.root),
+                                     "--copy-to", str(destination)], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+            source.unlink()
 
         self.setUp()
         with self.subTest(phase="empty selection is rejected"):
@@ -71,7 +69,7 @@ class CatalogSelectionTests(unittest.TestCase):
 
         self.setUp()
         with self.subTest(phase="failed embedding preserves existing destination"):
-            self.write(1, 2)
+            self.write(2, 1)
             destination = self.root / "release-catalog.json"
             destination.write_bytes(b"existing authenticated build input")
             result = subprocess.run([sys.executable, str(SCRIPT), str(self.root),

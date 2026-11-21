@@ -101,7 +101,7 @@ jq -s --arg tag "$GITHUB_REF_NAME" \
     | map(if has("hardware_profile") then . else . + {hardware_profile:"generic"} end)) as $media |
    (map(select(.purpose == "tilo-target-policy"))) as $target |
    (map(select(.purpose == "tilo-internal-installer"))) as $internal |
-   {schema:(if any($media[]; .hardware_profile != "generic") then 2 else 1 end),
+   {schema:2,
     tag:$tag,releases:(($media | sort_by(.arch,.hardware_profile)) + ($target | sort_by(.arch)) + ($internal | sort_by(.arch)))}' \
   "${fragments[@]}" ${target_policies[@]+"${target_policies[@]}"} ${internal[@]+"${internal[@]}"} >"$catalog"
 
@@ -110,7 +110,7 @@ jq -e --arg prefix "$release_prefix" --arg internal_prefix "$internal_prefix" \
   ([.releases[] | select(.purpose != "tilo-internal-installer" and .purpose != "tilo-target-policy")]) as $media |
   ([.releases[] | select(.purpose == "tilo-target-policy")]) as $target |
   ([.releases[] | select(.purpose == "tilo-internal-installer")]) as $internal |
-  (.schema == 1 or .schema == 2) and
+  (.schema == 2) and
   (.tag | test("^imager-v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
   ([$media[] | select(.hardware_profile == "generic") | .arch] | sort == ["aarch64", "x86_64"]) and
   ([$media[] | [.arch,.hardware_profile]] | length == (unique | length)) and
@@ -150,10 +150,8 @@ jq -e --arg prefix "$release_prefix" --arg internal_prefix "$internal_prefix" \
     .manifest_size > 0 and .manifest_size <= 65536) and
   (if $require_internal == 1 then ([$internal[] | .arch] | sort == ["aarch64", "x86_64"]) else true end)
 ' --arg tag "$GITHUB_REF_NAME" "$catalog" >/dev/null
-schema="$(jq -r .schema "$catalog")"
-name="tilo-installer-catalog-v${schema}.json"
-other="tilo-installer-catalog-v$((3-schema)).json"
-[ ! -e "$out/$other" ] || { printf 'use a fresh output directory when changing catalog schema\n' >&2; exit 1; }
+name="tilo-installer-catalog-v2.json"
+[ ! -e "$out/tilo-installer-catalog-v1.json" ] || { printf 'use a fresh output directory for the current catalog schema\n' >&2; exit 1; }
 mv "$catalog" "$out/$name"
 (cd "$out" && sha256sum "$name") >"$out/$name.sha256"
 printf '%s\n' "$out/$name"

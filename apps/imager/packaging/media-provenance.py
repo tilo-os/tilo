@@ -162,11 +162,8 @@ def validate(qcow, architecture, name):
     sidecar = Path(str(qcow) + ".hardware.json")
     if sidecar.is_symlink():
         raise ValueError("media provenance sidecar must not be a symlink")
-    if not sidecar.exists() and name == "generic":
-        # Deliberate compatibility: old generic builders did not emit provenance.
-        return None
     if not sidecar.is_file() or sidecar.stat().st_size > 131072:
-        raise ValueError("board media requires a bounded regular .hardware.json provenance sidecar")
+        raise ValueError("media requires a bounded regular .hardware.json provenance sidecar")
     record = json.loads(sidecar.read_text())
     if not isinstance(record, dict) or set(record) not in (FIELDS, FIELDS | {"data_consumers"}) or type(record["schema_version"]) is not int or record["schema_version"] != 1:
         raise ValueError("invalid media provenance schema")

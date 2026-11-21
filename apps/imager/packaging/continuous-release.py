@@ -90,7 +90,7 @@ def catalog(source, output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     schema = document.get("schema")
-    if type(schema) is not int or schema not in (1, 2):
+    if type(schema) is not int or schema != 2:
         raise ValueError("unsupported installer catalog schema")
     name = f"tilo-installer-catalog-v{schema}.json"
     base = f"{server.rstrip('/')}/{repository}/releases/download/{tag}/"
@@ -101,7 +101,7 @@ def catalog(source, output):
         if entry.get("purpose") == "tilo-internal-installer":
             continue
         arch = entry.get("arch")
-        profile = entry.get("hardware_profile", "generic")
+        profile = entry.get("hardware_profile")
         if arch not in ("x86_64", "aarch64") or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", profile):
             raise ValueError("invalid installer target")
         suffix = "" if profile == "generic" else f"-{profile}"

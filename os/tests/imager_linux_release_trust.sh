@@ -78,7 +78,7 @@ for arch in x86_64 aarch64; do
   gpg --batch --yes --armor --detach-sign \
     --output "$assets/installer-signatures/$(basename "$artifact").asc" "$artifact"
 done
-catalog="$assets/catalog/tilo-installer-catalog-v1.json"
+catalog="$assets/catalog/tilo-installer-catalog-v2.json"
 python3 - "$assets" "$catalog" <<'PY'
 import hashlib, json, os, pathlib, sys
 root, destination = map(pathlib.Path, sys.argv[1:])
@@ -90,7 +90,7 @@ for arch in ("x86_64", "aarch64"):
         "url":f"{release_root}/{path.name}",
         "archive_sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
         "archive_size":path.stat().st_size,"image_sha256":"b"*64,"image_size":1024})
-destination.write_text(json.dumps({"schema":1,"tag":"imager-v1.2.3","releases":releases}))
+destination.write_text(json.dumps({"schema":2,"tag":"imager-v1.2.3","releases":releases}))
 PY
 (cd "$assets/catalog" && sha256sum "$(basename "$catalog")" \
   >"$(basename "$catalog").sha256")
@@ -209,19 +209,16 @@ run_cleanup_case stop-failure 0 1
 run_cleanup_case remove-failure 1 37
 printf 'ok    isolated keyring cleanup tolerates vanished sockets and preserves trust failures\n'
 
-# Upgrade the actual signed release fixture to a schema-2 board catalog.
-cp "$catalog" "$work/v1.json"
-mv "$catalog" "$assets/catalog/tilo-installer-catalog-v2.json"
-rm "$assets/catalog/tilo-installer-catalog-v1.json.sha256"
+# Add a board medium to the actual signed release fixture.
+cp "$catalog" "$work/stale-v1.json"
 find "$assets/installer-signatures" -type f -name '*.asc' -delete
-catalog="$assets/catalog/tilo-installer-catalog-v2.json"
 board="$assets/installer-aarch64/tilo-installer-linux-aarch64-lenovo-83ed.img.zst"
 printf 'Lenovo installer fixture\n' >"$board"
 (cd "$(dirname "$board")" && sha256sum "$(basename "$board")" >"$(basename "$board").sha256")
 python3 - "$catalog" "$board" <<'PY'
 import hashlib, json, os, pathlib, sys
 catalog, board = map(pathlib.Path, sys.argv[1:])
-data=json.loads(catalog.read_text()); data["schema"]=2
+data=json.loads(catalog.read_text())
 entry=dict(data["releases"][1]); entry.update(hardware_profile="lenovo-83ed",
     url=f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['TILO_RELEASE_REPOSITORY']}/releases/download/imager-v1.2.3/{board.name}",
     archive_sha256=hashlib.sha256(board.read_bytes()).hexdigest(), archive_size=board.stat().st_size,
@@ -237,7 +234,7 @@ for arch in x86_64 aarch64; do
 done
 TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
   | grep -Fq 'verified 10 Linux and installer artifacts'
-printf 'ok    v1 and v2 releases authenticate every generic and board medium\n'
+printf 'ok    the current catalog authenticates every generic and board medium\n'
 expect_rejected() {
   local label="$1" message="$2"
   if TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
@@ -253,7 +250,7 @@ board_sig="$assets/installer-signatures/$(basename "$board").asc"
 mv "$board_sig" "$work/unsigned-medium.asc"
 expect_rejected 'unsigned board medium' 'expected exactly one'
 mv "$work/unsigned-medium.asc" "$board_sig"
-cp "$work/v1.json" "$assets/catalog/tilo-installer-catalog-v1.json"
+cp "$work/stale-v1.json" "$assets/catalog/tilo-installer-catalog-v1.json"
 expect_rejected 'ambiguous catalog versions' 'expected exactly one installer catalog'
 rm "$assets/catalog/tilo-installer-catalog-v1.json"
 mv "$catalog" "$assets/catalog/tilo-installer-catalog-v1.json"

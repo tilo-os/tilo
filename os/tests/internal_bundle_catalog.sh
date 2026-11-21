@@ -55,7 +55,7 @@ run() {
 reset
 run env || fail 'catalog without internal bundles no longer builds'
 jq -e '[.releases[] | select(.purpose == "tilo-internal-installer")] | length == 0' \
-  "$work/out/tilo-installer-catalog-v1.json" >/dev/null || fail 'internal entries appeared from nowhere'
+  "$work/out/tilo-installer-catalog-v2.json" >/dev/null || fail 'internal entries appeared from nowhere'
 if run env TILO_REQUIRE_INTERNAL_BUNDLE=1; then fail 'required internal bundles were not required'; fi
 
 reset
@@ -69,7 +69,7 @@ jq -e --arg prefix "$internal_prefix/" '
     and .layout == "internal-bundle-v2" and (.manifest_url | startswith($prefix))
     and (has("hardware_profile") | not)) and
   ([.releases[] | select(.purpose != "tilo-internal-installer") | .hardware_profile] == ["generic","generic"])
-' "$work/out/tilo-installer-catalog-v1.json" >/dev/null || fail 'internal catalog entries have the wrong shape'
+' "$work/out/tilo-installer-catalog-v2.json" >/dev/null || fail 'internal catalog entries have the wrong shape'
 printf 'ok    valid internal bundles become catalog entries\n'
 
 for problem in bytes url tag schema-1 duplicate extra-field; do

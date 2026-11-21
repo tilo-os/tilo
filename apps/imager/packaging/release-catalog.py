@@ -23,7 +23,7 @@ def select(root):
         raise ValueError("installer catalog must be a regular file")
     catalog = json.loads(path.read_text(encoding="utf-8"))
     schema = catalog.get("schema")
-    if type(schema) is not int or schema not in (1, 2):
+    if type(schema) is not int or schema != 2:
         raise ValueError("unsupported installer catalog schema")
     if path.name != f"tilo-installer-catalog-v{schema}.json":
         raise ValueError("installer catalog filename does not match its schema")
@@ -100,13 +100,9 @@ def media(catalog, root, arch=None):
             target_policy(entry, catalog["tag"])
             continue
         target = entry.get("arch")
-        profile = entry.get("hardware_profile", "generic")
+        profile = entry.get("hardware_profile")
         if target not in ("x86_64", "aarch64") or not isinstance(profile, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", profile):
             raise ValueError("invalid installer architecture or hardware profile")
-        if catalog["schema"] == 1 and profile != "generic":
-            raise ValueError("board media requires catalog schema 2")
-        if catalog["schema"] == 2 and "hardware_profile" not in entry:
-            raise ValueError("schema 2 requires an explicit hardware profile")
         if profile != "generic":
             provenance = entry.get("provenance")
             if not isinstance(provenance, dict):

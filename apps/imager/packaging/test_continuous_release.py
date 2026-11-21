@@ -164,16 +164,16 @@ class ContinuousRelease(unittest.TestCase):
             downloads[name] = b"measured " + arch.encode()
             downloads[name + ".sha256"] = b"checked later by GPG trust verifier"
             downloads[name + ".asc"] = b"checked later by GPG trust verifier"
-            entries.append({"arch": arch, "url": f"https://github.com/tilo-os/releases/releases/download/imager-v1.2.3/{name}",
+            entries.append({"arch": arch, "hardware_profile": "generic", "url": f"https://github.com/tilo-os/releases/releases/download/imager-v1.2.3/{name}",
                             "archive_sha256": hashlib.sha256(downloads[name]).hexdigest(),
                             "archive_size": len(downloads[name]), "image_sha256": "b" * 64,
                             "image_size": 123})
-        document = {"schema": 1, "tag": "imager-v1.2.3", "releases": entries}
+        document = {"schema": 2, "tag": "imager-v1.2.3", "releases": entries}
         source = self.root / "reviewed.json"
         source.write_text(json.dumps(document))
-        downloads["tilo-installer-catalog-v1.json"] = source.read_bytes()
-        downloads["tilo-installer-catalog-v1.json.sha256"] = b"digest"
-        downloads["tilo-installer-catalog-v1.json.asc"] = b"signature"
+        downloads["tilo-installer-catalog-v2.json"] = source.read_bytes()
+        downloads["tilo-installer-catalog-v2.json.sha256"] = b"digest"
+        downloads["tilo-installer-catalog-v2.json.asc"] = b"signature"
         def fetch(url, timeout):
             self.assertTrue(url.startswith("https://github.com/tilo-os/releases/releases/download/imager-v1.2.3/"))
             self.assertEqual(timeout, 120)
@@ -186,7 +186,7 @@ class ContinuousRelease(unittest.TestCase):
 
     def test_placeholder_catalog_fails_before_network(self):
         source = self.root / "catalog.json"
-        source.write_text('{"schema":1,"tag":"unreleased","releases":[]}')
+        source.write_text('{"schema":2,"tag":"unreleased","releases":[]}')
         with patch.object(MODULE, "urlopen") as fetch, self.assertRaises(ValueError):
             MODULE.catalog(source, self.root / "media")
         fetch.assert_not_called()

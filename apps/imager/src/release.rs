@@ -95,8 +95,7 @@ struct MediaRelease {
     version: String,
     channel: String,
     arch: String,
-    #[serde(default)]
-    hardware_profile: Option<String>,
+    hardware_profile: String,
     #[serde(default)]
     provenance: Option<MediaProvenance>,
     url: String,
@@ -311,7 +310,7 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
         }
     }
     let catalog: Catalog = serde_json::from_str(raw).map_err(|error| error.to_string())?;
-    if !matches!(catalog.schema, 1 | 2) {
+    if catalog.schema != 2 {
         return Err("Unsupported release catalog schema.".into());
     }
     if catalog.releases.is_empty() && catalog.tag == "unreleased" {
@@ -327,15 +326,7 @@ fn parse_catalog(raw: &str) -> Result<Catalog, String> {
     for entry in &catalog.releases {
         let arch = match entry {
             CatalogRelease::Media(media) => {
-                let profile =
-                    match (catalog.schema, media.hardware_profile.as_deref()) {
-                        (1, None | Some("generic")) => "generic",
-                        (2, Some(profile)) => profile,
-                        _ => return Err(
-                            "The release catalog has an invalid hardware profile for its schema."
-                                .into(),
-                        ),
-                    };
+                let profile = media.hardware_profile.as_str();
                 if !valid_hardware_profile(profile)
                     || !identities.insert((media.arch.as_str(), profile))
                 {
@@ -441,7 +432,7 @@ fn media_releases(catalog: Catalog, arch: &str) -> Vec<TiloRelease> {
                 size: release.image_size,
                 channel: release.channel,
                 architecture: release.arch,
-                hardware_profile: release.hardware_profile.unwrap_or_else(|| "generic".into()),
+                hardware_profile: release.hardware_profile,
                 local_path: String::new(),
                 url: release.url,
                 archive_sha256: release.archive_sha256,
@@ -1219,7 +1210,7 @@ mod tests {
                 })
             });
             let catalog = serde_json::json!({
-                "schema": 1,
+                "schema": 2,
                 "tag": "imager-v1.0.0",
                 "releases": entries,
             })
@@ -1272,7 +1263,7 @@ mod tests {
                 })
             };
             let catalog = serde_json::json!({
-                "schema": 1,
+                "schema": 2,
                 "tag": "imager-v1.0.0",
                 "releases": [entry("x86_64"), entry("aarch64")],
             })
@@ -1425,6 +1416,7 @@ mod tests {
                 "version": "1.0.0",
                 "channel": "stable",
                 "arch": arch,
+                "hardware_profile": "generic",
                 "url": format!("https://code.tilo.so/tilo/releases/releases/download/imager-v1.0.0/tilo-{arch}.img.zst"),
                 "archive_sha256": "a".repeat(64),
                 "archive_size": 32,
@@ -1433,7 +1425,7 @@ mod tests {
             })
         });
         serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "tag": "imager-v1.0.0",
             "releases": releases,
         })
@@ -1443,10 +1435,6 @@ mod tests {
     fn catalog_with_hardware_variant() -> serde_json::Value {
         let mut catalog: serde_json::Value =
             serde_json::from_str(&catalog_with_both_architectures()).unwrap();
-        catalog["schema"] = 2.into();
-        for release in catalog["releases"].as_array_mut().unwrap() {
-            release["hardware_profile"] = "generic".into();
-        }
         let mut board = catalog["releases"][1].clone();
         board["hardware_profile"] = "lenovo-83ed".into();
         board["image_sha256"] = "c".repeat(64).into();
@@ -1731,11 +1719,12 @@ mod internal_catalog_tests {
     use serde_json::{Value, json};
     fn media() -> Value {
         json!({"name":"Tilo","version":"test","channel":"test","arch":"x86_64",
+            "hardware_profile":"generic",
             "url":"https://code.tilo.so/test.img.zst","archive_sha256":"a".repeat(64),
             "archive_size":42,"image_sha256":"b".repeat(64),"image_size":84})
     }
     fn catalog(entry: Value) -> String {
-        json!({"schema":1,"tag":"imager-vtest","releases":[entry]}).to_string()
+        json!({"schema":2,"tag":"imager-vtest","releases":[entry]}).to_string()
     }
     tilo_test_env::scenario! {
         fn the_internal_and_media_catalogs_parse_strictly;
@@ -1774,7 +1763,7 @@ mod internal_catalog_tests {
                 entry["release_id"] = json!("loop-test");
                 entry["manifest_url"] = json!("https://code.tilo.so/tilo/loop-test/manifest.json");
                 let text =
-                    json!({"schema":1,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
+                    json!({"schema":2,"tag":"imager-v0.0.0-loop-test","releases":[entry]}).to_string();
                 let parsed = parse_catalog(&text).unwrap();
                 assert!(matches!(
                     parsed.releases.as_slice(),
@@ -1792,7 +1781,7 @@ mod internal_catalog_tests {
                     "https://code.tilo.so/api/packages/tilo/generic/tilo-internal-installer/imager-v1.2.3/tilo-internal-installer-x86_64.json"
                 );
                 let raw =
-                    json!({"schema":1,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
+                    json!({"schema":2,"tag":"imager-v1.2.3","releases":[media(), entry]}).to_string();
                 let catalog = parse_catalog(&raw).unwrap();
                 assert_eq!(
                     media_releases(parse_catalog(&raw).unwrap(), "x86_64").len(),
@@ -1949,7 +1938,7 @@ mod internal_catalog_tests {
                 (
                     "media",
                     tagged_media,
-                    "purpose layout name version channel arch url archive_sha256 archive_size image_sha256 image_size",
+                    "purpose layout name version channel arch hardware_profile url archive_sha256 archive_size image_sha256 image_size",
                 ),
                 (
                     "internal",
@@ -1981,7 +1970,7 @@ mod internal_catalog_tests {
                 let raw = catalog(entry);
                 assert!(parse_catalog(&raw).is_ok());
                 for (marker, replacement) in [
-                    ("\"schema\":1", "\"schema\":1,\"schema\":1"),
+                    ("\"schema\":2", "\"schema\":2,\"schema\":2"),
                     (
                         "\"arch\":\"x86_64\"",
                         "\"arch\":\"x86_64\",\"arch\":\"x86_64\"",

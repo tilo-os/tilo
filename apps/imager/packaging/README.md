@@ -59,21 +59,20 @@ offered to the writer.
 Hardware-specific media also carries an explicit `hardware_profile` identity.
 The packager validates the selected ID against `os/hardware/profiles/` and its
 declared architecture; CPU architecture alone does not establish board support.
-Generic media retains `tilo-installer-linux-ARCH.img.zst` and schema-1 catalogs.
-Board media uses `tilo-installer-linux-ARCH-PROFILE.img.zst` and a separate
-`catalog-ARCH-PROFILE.json` fragment. A catalog containing any board variant is
-schema 2, emitted as `tilo-installer-catalog-v2.json`; clients deliberately treat
-legacy schema-1 entries without a profile as generic only. The catalog requires
-one generic image for each architecture and rejects duplicate profile identities.
+Generic media retains `tilo-installer-linux-ARCH.img.zst` and a `generic`
+profile. Board media uses `tilo-installer-linux-ARCH-PROFILE.img.zst` and a
+separate `catalog-ARCH-PROFILE.json` fragment. Every catalog is
+`tilo-installer-catalog-v2.json` and names the hardware profile of each entry.
+The catalog requires one generic image for each architecture and rejects
+duplicate profile identities.
 
 After the installer has finished resealing and optional PCR signing,
 `build-custom-installer.sh` records `INSTALLER.qcow2.hardware.json`. The sidecar
 binds the final immutable OCI image ID, validated image-owned profile payload
-(including its update origin), and completed qcow2 SHA-256. Package board media
-with `TILO_HARDWARE_PROFILE=PROFILE`; a missing or mismatched sidecar fails before
-conversion. This is build provenance, separate from the UKI/rootfs acceptance
-checks and physical boot validation. Generic builds from older tooling may omit
-the sidecar; when a sidecar exists it is always checked, even for generic media.
+(including its update origin), and completed qcow2 SHA-256. Package media with
+`TILO_HARDWARE_PROFILE=PROFILE`, or `generic` for generic media; a missing or
+mismatched sidecar fails before conversion. This is build provenance, separate
+from the UKI/rootfs acceptance checks and physical boot validation.
 
 The Imager labels board media with `PROFILE only` in selection and write review.
 Selection IDs include architecture, profile and image digest; the download cache
@@ -242,11 +241,10 @@ filled in or changed by a rerun.
 
 ### Versioned installer catalogs
 
-Every native host embeds exactly one `tilo-installer-catalog-v1.json` or
-`tilo-installer-catalog-v2.json`. The filename must match the document schema;
-missing, duplicate, unsupported, or conflicting catalogs fail before packaging.
-Schema 1 remains supported for generic media. Schema 2 also identifies media
-for a specific hardware profile.
+Every native host embeds one `tilo-installer-catalog-v2.json`. The filename
+must match the document schema; missing, duplicate, unsupported, or conflicting
+catalogs fail before packaging. Schema 2 names the hardware profile of every
+medium, so a board image is never mistaken for a generic one.
 
 Each Linux signing job checks the catalog archive size and SHA-256 before
 signing every listed medium for its architecture. Promotion authenticates the

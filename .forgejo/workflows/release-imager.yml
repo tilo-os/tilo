@@ -873,7 +873,7 @@ jobs:
           elif [[ ${TILO_CONTINUOUS_PUBLICATION:-0} != 1 ]]; then
             mkdir -p dist/tilo-installer-catalog
             cp apps/imager/release-catalog.json \
-              dist/tilo-installer-catalog/tilo-installer-catalog-v1.json
+              dist/tilo-installer-catalog/tilo-installer-catalog-v2.json
           fi
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:

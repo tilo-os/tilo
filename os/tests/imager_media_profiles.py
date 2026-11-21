@@ -97,9 +97,21 @@ class MediaProfilesTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 provenance.validate_consumers(bad)
 
+    def generic_sidecar(self, arch, qcow=None):
+        qcow = qcow or self.qcow
+        record = {"schema_version": 1, "source_image_id": IMAGE_ID,
+                  "architecture": arch, "hardware_profile": "generic",
+                  "profile_json": None, "profile_sha256": None, "definition": None,
+                  "qcow2_sha256": hashlib.sha256(qcow.read_bytes()).hexdigest(),
+                  "qcow2_size": qcow.stat().st_size}
+        path = Path(str(qcow) + ".hardware.json")
+        path.write_text(json.dumps(record))
+        return path
+
     def test_board_profile_provenance(self):
         with self.subTest(phase="board_media_needs_provenance_and_matching_declared_architecture"):
-            self.assertIsNone(provenance.validate(self.qcow, "aarch64", "generic"))
+            with self.assertRaisesRegex(ValueError, "provenance sidecar"):
+                provenance.validate(self.qcow, "aarch64", "generic")
             for arch, name in (("aarch64", "lenovo-83ed"), ("x86_64", "lenovo-83ed"),
                                ("aarch64", "../board"), ("aarch64", "undefined-board")):
                 with self.subTest(arch=arch, name=name), self.assertRaises(ValueError):
@@ -129,16 +141,18 @@ class MediaProfilesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "reviewed packaging definition"):
                 self.create_sidecar()
         restart_fixture(self)
-        with self.subTest(phase="real_packagers_preserve_generic_v1_and_publish_distinct_board_v2_metadata"):
+        with self.subTest(phase="real_packagers_publish_generic_and_board_media_in_the_current_catalog"):
             self.packaging_fixture()
             for arch in ("x86_64", "aarch64"):
+                sidecar = self.generic_sidecar(arch)
                 result = self.package(arch)
+                sidecar.unlink()
                 self.assertEqual(result.returncode, 0, result.stderr)
             generic_out = self.root / "catalog-generic"
             result = self.catalog(generic_out)
             self.assertEqual(result.returncode, 0, result.stderr)
-            generic = json.loads((generic_out / "tilo-installer-catalog-v1.json").read_text())
-            self.assertEqual(generic["schema"], 1)
+            generic = json.loads((generic_out / "tilo-installer-catalog-v2.json").read_text())
+            self.assertEqual(generic["schema"], 2)
             self.assertEqual({release["hardware_profile"] for release in generic["releases"]}, {"generic"})
             board_qcow = self.root / "board.qcow2"
             board_qcow.write_bytes(b"different board installer bytes")

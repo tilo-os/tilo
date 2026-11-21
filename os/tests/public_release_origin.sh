@@ -26,7 +26,7 @@ TILO_RELEASE_REPOSITORY=tilo/public-downloads \
     "$work/fragments" "$work/catalog"
 jq -e --arg prefix "$prefix/" \
   'all(.releases[]; .url | startswith($prefix))' \
-  "$work/catalog/tilo-installer-catalog-v1.json" >/dev/null
+  "$work/catalog/tilo-installer-catalog-v2.json" >/dev/null
 
 write_fragment x86_64 \
   'https://code.tilo.so/tilo/tilo/releases/download/imager-v1.2.3/tilo-installer-linux-x86_64.img.zst'
