@@ -531,10 +531,10 @@ fn read_bytes<'de, D: serde::Deserializer<'de>>(
             Ok(bytes)
         }
     }
-    // Text or the legacy array in JSON; the unchanged sequence in a binary
-    // encoding, which writes one.
+    // Base64 text in JSON; the unchanged sequence in a binary encoding,
+    // which writes one.
     if input.is_human_readable() {
-        input.deserialize_any(Bytes(limit))
+        input.deserialize_str(Bytes(limit))
     } else {
         input.deserialize_seq(Bytes(limit))
     }

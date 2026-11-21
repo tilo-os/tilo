@@ -25,23 +25,15 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase outgoing_bytes_are_text_in_json_and_legacy_arrays_still_read;
-    // An entry's bytes are base64 text in JSON, an entry written as the
-    // legacy array of numbers still reads back the same, and a binary
-    // encoding keeps its unchanged sequence.
+    phase outgoing_bytes_are_text_in_json_and_a_sequence_in_binary;
+    // An entry's bytes are base64 text in JSON, and a binary encoding keeps
+    // its unchanged sequence.
     {
         let stored = entry((0..=255).collect());
         let json = serde_json::to_value(&stored).unwrap();
         assert!(json["bytes"].is_string(), "{json}");
         assert_eq!(
             serde_json::from_value::<StoredOutgoing>(json).unwrap(),
-            stored
-        );
-        let mut legacy = serde_json::to_value(&stored).unwrap();
-        legacy["bytes"] = serde_json::to_value(&stored.bytes).unwrap();
-        assert!(legacy["bytes"].is_array());
-        assert_eq!(
-            serde_json::from_value::<StoredOutgoing>(legacy).unwrap(),
             stored
         );
         let pretty = serde_json::to_vec_pretty(&stored).unwrap();
