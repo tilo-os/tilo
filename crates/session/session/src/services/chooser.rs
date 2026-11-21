@@ -57,6 +57,7 @@ const DID_NOT_OPEN: &str = "It didn't open. Try again.";
 const NOT_IN_TIME: &str = "It didn't open in time. Try again.";
 const NO_APP_CHOOSER: &str = "This computer can't ask you to choose an app yet.";
 const NO_IDENTITY_CHOOSER: &str = "This computer can't ask you to choose an identity yet.";
+const NOT_ASKED: &str = "The file chooser couldn't be shown. Try again.";
 
 /// What the chooser service is served with.
 pub(crate) struct Serving {
@@ -263,6 +264,9 @@ fn serve_one(shared: &Arc<Shared>, stream: UnixStream) {
                     reason: NO_IDENTITY_CHOOSER.to_owned(),
                 });
             }
+            request @ (Request::Pick { .. } | Request::PickContents { .. }) => {
+                Connection::ask_person(&connection, request);
+            }
             waits => {
                 let asking = Arc::clone(&connection);
                 if let Err(error) = std::thread::Builder::new()
@@ -280,6 +284,63 @@ fn serve_one(shared: &Arc<Shared>, stream: UnixStream) {
     // The app is gone: what it held is let go, and what it was asking taken down.
     connection.held.lock_recover().clear();
     connection.asking.lock_recover().clear();
+}
+
+/// What a pick hands the app once the person chose.
+#[derive(Clone, Copy)]
+enum Handing {
+    /// Paths in the app's view of the documents store.
+    Paths,
+    /// Only the chosen files' bytes, on the connection.
+    Contents,
+}
+
+/// The question a pick asks in the session's file chooser, and what it hands over; `None` for a
+/// request that is no pick.
+fn pick_question(request: Request) -> Option<(u64, FileChooserQuestion, Handing)> {
+    match request {
+        Request::Pick {
+            id,
+            mode,
+            multiple,
+            title,
+            accept_label,
+            suggested_name,
+            filters,
+        } => Some((
+            id,
+            FileChooserQuestion {
+                parent_window: None,
+                title,
+                save: mode == PickMode::Save,
+                directory: matches!(mode, PickMode::Directory | PickMode::WritableDirectory),
+                writable_directory: mode == PickMode::WritableDirectory,
+                multiple,
+                accept_label: Some(accept_label).filter(|label| !label.is_empty()),
+                current_name: suggested_name.filter(|name| !name.is_empty()),
+                filters: filters.iter().map(picker_filter).collect(),
+            },
+            Handing::Paths,
+        )),
+        Request::PickContents {
+            id,
+            multiple,
+            title,
+            accept_label,
+            filters,
+        } => Some((
+            id,
+            FileChooserQuestion {
+                title,
+                multiple,
+                accept_label: Some(accept_label).filter(|label| !label.is_empty()),
+                filters: filters.iter().map(picker_filter).collect(),
+                ..FileChooserQuestion::default()
+            },
+            Handing::Contents,
+        )),
+        _ => None,
+    }
 }
 
 /// The launcher's handshake, the connection's first line.
@@ -309,47 +370,9 @@ impl Connection {
         }
     }
 
-    /// Answer a request that waits for the person or for the session's loop.
+    /// Answer a request that waits for the session's loop.
     fn answer(&self, request: Request) -> Reply {
         match request {
-            Request::Pick {
-                id,
-                mode,
-                multiple,
-                title,
-                accept_label,
-                suggested_name,
-                filters,
-            } => {
-                let question = FileChooserQuestion {
-                    parent_window: None,
-                    title,
-                    save: mode == PickMode::Save,
-                    directory: matches!(mode, PickMode::Directory | PickMode::WritableDirectory),
-                    writable_directory: mode == PickMode::WritableDirectory,
-                    multiple,
-                    accept_label: Some(accept_label).filter(|label| !label.is_empty()),
-                    current_name: suggested_name.filter(|name| !name.is_empty()),
-                    filters: filters.iter().map(picker_filter).collect(),
-                };
-                self.pick(id, &question)
-            }
-            Request::PickContents {
-                id,
-                multiple,
-                title,
-                accept_label,
-                filters,
-            } => {
-                let question = FileChooserQuestion {
-                    title,
-                    multiple,
-                    accept_label: Some(accept_label).filter(|label| !label.is_empty()),
-                    filters: filters.iter().map(picker_filter).collect(),
-                    ..FileChooserQuestion::default()
-                };
-                self.pick_contents(id, &question)
-            }
             Request::Open { id, path } => match self.opened_path(&path) {
                 Ok(host) => match tilo_portal::file_chooser::file_uri(&host) {
                     Some(uri) => match self.open(&uri) {
@@ -362,7 +385,9 @@ impl Connection {
                 Err(reason) => failed(id, reason),
             },
             Request::OpenUri { id, uri } => self.open_uri(id, &uri),
-            Request::ReadContents { id, .. }
+            Request::Pick { id, .. }
+            | Request::PickContents { id, .. }
+            | Request::ReadContents { id, .. }
             | Request::ReleaseContents { id, .. }
             | Request::ChooseApp { id, .. }
             | Request::AwaitIdentity { id }
@@ -386,69 +411,88 @@ impl Connection {
         }
     }
 
-    /// Ask the person `question` in the session's file chooser: the paths they chose, or the
-    /// reply that ends the request.
-    fn choose(&self, id: u64, question: &FileChooserQuestion) -> Result<Vec<PathBuf>, Reply> {
-        let Some(questions) = &self.shared.serving.questions else {
-            return Err(Reply::Nobody { id });
+    /// Ask the person what `request` asks for in the session's file chooser, and answer the app
+    /// once they chose. Their answer can take as long as they like, so the question runs as a task
+    /// of the session's runtime ([`crate::landing::off_loop`]) and nothing on this connection waits
+    /// for it: the app's other requests are answered meanwhile, and the reply is written when the
+    /// choice lands.
+    fn ask_person(connection: &Arc<Self>, request: Request) {
+        let Some((id, question, handing)) = pick_question(request) else {
+            return;
         };
-        let caller = self.caller();
-        let handle = format!("chooser:{}:{id}", self.number);
+        let caller = connection.caller();
+        let documents = match handing {
+            Handing::Paths => match (&connection.shared.serving.documents, caller.sandboxed) {
+                (Some(documents), _) => Some(documents.clone()),
+                // An app in a sandbox reads only what the store hands it.
+                (None, true) => return connection.say(&failed(id, CANNOT_HAND)),
+                (None, false) => Some(tilo_documents::Documents::new()),
+            },
+            Handing::Contents => None,
+        };
+        let Some(questions) = connection.shared.serving.questions.clone() else {
+            return connection.say(&Reply::Nobody { id });
+        };
+        let kind = tilo_portal::file_chooser::kind_of(&question);
+        let handle = format!("chooser:{}:{id}", connection.number);
         let (taken_down, gone) = tokio::sync::oneshot::channel();
-        self.asking.lock_recover().push(taken_down);
-        let asked = tilo_portal::file_chooser::choose(questions, &caller, handle, question);
-        let chosen = pollster::block_on(async {
+        connection.asking.lock_recover().push(taken_down);
+        let asking = caller.clone();
+        let chosen = crate::landing::off_loop(async move {
+            let asked = tilo_portal::file_chooser::choose(&questions, &asking, handle, &question);
             futures_util::pin_mut!(asked);
             match futures_util::future::select(asked, gone).await {
                 futures_util::future::Either::Left((chosen, _)) => chosen,
                 futures_util::future::Either::Right(_) => Err(Ended::Cancelled),
             }
         });
-        self.asking
-            .lock_recover()
-            .retain(|taken_down| !taken_down.is_closed());
-        match chosen {
-            Ok(paths) => Ok(paths),
-            Err(Ended::Cancelled) => Err(Reply::Cancelled { id }),
-            Err(Ended::Failed) => Err(failed(id, DOES_NOT_FIT)),
-        }
+        let answering = Arc::clone(connection);
+        chosen.then(move |chosen| {
+            // Handing the files over opens them and writes to the app: not on the runtime's thread.
+            let hand = move || {
+                answering
+                    .asking
+                    .lock_recover()
+                    .retain(|taken_down| !taken_down.is_closed());
+                let reply = match chosen {
+                    Some(Ok(paths)) => match documents {
+                        Some(documents) => {
+                            let exports =
+                                tilo_portal::doc_store::exports(&documents, &caller, &paths, kind);
+                            Reply::Picked {
+                                id,
+                                paths: exports.into_iter().map(|export| export.app_path).collect(),
+                            }
+                        }
+                        None => answering.contents(id, &paths),
+                    },
+                    Some(Err(Ended::Cancelled)) => Reply::Cancelled { id },
+                    Some(Err(Ended::Failed)) => failed(id, DOES_NOT_FIT),
+                    None => failed(id, NOT_ASKED),
+                };
+                answering.say(&reply);
+            };
+            match tilo_rt::try_app() {
+                Ok(runtime) => {
+                    runtime.spawn_blocking(hand);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "no thread hands the chosen files over: answered here");
+                    hand();
+                }
+            }
+        });
     }
 
-    /// A pick: the person's choice, exported into the app's view of the documents store as the
-    /// portal's chooser exports it.
-    fn pick(&self, id: u64, question: &FileChooserQuestion) -> Reply {
-        let caller = self.caller();
-        let documents = match (&self.shared.serving.documents, caller.sandboxed) {
-            (Some(documents), _) => documents.clone(),
-            // An app in a sandbox reads only what the store hands it.
-            (None, true) => return failed(id, CANNOT_HAND),
-            (None, false) => tilo_documents::Documents::new(),
-        };
-        let paths = match self.choose(id, question) {
-            Ok(paths) => paths,
-            Err(reply) => return reply,
-        };
-        let kind = tilo_portal::file_chooser::kind_of(question);
-        let exports = tilo_portal::doc_store::exports(&documents, &caller, &paths, kind);
-        Reply::Picked {
-            id,
-            paths: exports.into_iter().map(|export| export.app_path).collect(),
-        }
-    }
-
-    /// A pick of contents: the person's choice opened here, and only its bytes handed on, on this
-    /// connection.
-    fn pick_contents(&self, id: u64, question: &FileChooserQuestion) -> Reply {
-        let paths = match self.choose(id, question) {
-            Ok(paths) => paths,
-            Err(reply) => return reply,
-        };
+    /// The contents of what the person chose, `paths`: opened here, and only their bytes handed on,
+    /// on this connection.
+    fn contents(&self, id: u64, paths: &[PathBuf]) -> Reply {
         if paths.len() > MAX_CONTENT_FILES {
             return failed(id, TOO_LARGE);
         }
         let mut opened = Vec::with_capacity(paths.len());
         let mut total = 0_u64;
-        for path in &paths {
+        for path in paths {
             let name = path.file_name().map_or_else(
                 || "file".to_owned(),
                 |name| name.to_string_lossy().into_owned(),
