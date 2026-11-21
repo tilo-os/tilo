@@ -47,6 +47,8 @@ mod qualifier;
 mod rename;
 #[path = "tabs_status_chips.rs"]
 mod status_chips;
+#[path = "tabs_faces.rs"]
+mod tabs_faces;
 #[path = "tabs_tips.rs"]
 mod tips;
 #[path = "tabs_title_menu.rs"]
@@ -56,6 +58,8 @@ mod toolbar_row;
 use crate::tokens::{EffectiveMotion, MotionSource};
 pub(crate) use new_tab::{new_tab_control, new_tab_name, paint_new_tab};
 use pill_layout::{chip_rects, fit_pill_widths};
+pub use tabs_faces::TabFaceSpec;
+use tabs_faces::{FaceMetrics, PILL_MAX_FACES, PillFaces, paint_tab_face};
 
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
 const HOVER_DROP_LINE_PX: f64 = 1.5;
@@ -358,6 +362,9 @@ pub struct TabBar {
     /// Width each unpinned tab's faces want, keyed by tab id, recorded in `draw` and added to the
     /// pill's natural width so a short title still fits its faces.
     face_demand: HashMap<u64, f64>,
+    /// The faces a tab's view gave its pill, by tab id: shown in place of the live presence
+    /// feed's people while the view gives any.
+    given_faces: HashMap<u64, Vec<TabFaceSpec>>,
     /// `face_demand` changed since the last layout: the pills must resize.
     face_demand_stale: bool,
     pending_context_menu: Option<(u64, Point)>,
@@ -613,6 +620,7 @@ impl TabBar {
             pill_faces: Vec::new(),
             face_metrics: FaceMetrics::default(),
             face_demand: HashMap::new(),
+            given_faces: HashMap::new(),
             face_demand_stale: false,
             pending_context_menu: None,
             hover_idx: None,
@@ -1689,7 +1697,7 @@ impl TabBar {
         if self.icon_only(tab.id) {
             return PillFaces::default();
         }
-        let peers = self.pill_people(tab.id, presence).len();
+        let peers = self.face_count(tab.id, presence);
         let (x0, x1) = self.title_zone_without_faces(i, r);
         let keep = self.shaped_title_width(i).min(MIN_TITLE_PX);
         PillFaces::fit(peers, x1 - x0, keep, self.face_metrics)
@@ -1705,7 +1713,7 @@ impl TabBar {
             .iter()
             .filter(|tab| !self.icon_only(tab.id))
             .filter_map(|tab| {
-                let peers = self.pill_people(tab.id, presence).len();
+                let peers = self.face_count(tab.id, presence);
                 let faces = peers.min(PILL_MAX_FACES);
                 let wanted = PillFaces {
                     faces,
@@ -1756,9 +1764,21 @@ impl TabBar {
                 metrics.face,
             )
         };
+        let given = self
+            .given_faces
+            .get(&pill.tab.id)
+            .filter(|given| !given.is_empty());
         let peers = self.pill_people(pill.tab.id, presence);
-        for (part, user) in peers.iter().take(faces.faces).enumerate() {
+        for part in 0..faces.faces {
             let rect = face_rect(part);
+            if let Some(face) = given.and_then(|given| given.get(part)) {
+                let colour = ctx.theme.tokens.colors.presence.hue(face.hue);
+                paint_tab_face(ctx, rect, &face.name, colour, face.agent, ring);
+                continue;
+            }
+            let Some(user) = peers.get(part) else {
+                continue;
+            };
             let dimmed = presence.availability_of(user).dims();
             if dimmed {
                 ctx.scene.push_layer(
@@ -1770,34 +1790,13 @@ impl TabBar {
                 );
             }
             let (red, green, blue) = presence.color_for(user);
-            let colour = vello::peniko::Color::from_rgb8(red, green, blue);
             if user.is_person() {
                 let name = presence.names.get(user).map_or(user.id(), String::as_str);
-                crate::widget::AvatarFace::new(name, "")
-                    .presence(colour)
-                    .ringed_on(ring)
-                    .paint(ctx, rect);
+                let colour = vello::peniko::Color::from_rgb8(red, green, blue);
+                paint_tab_face(ctx, rect, name, colour, false, ring);
             } else {
-                let theme = ctx.theme;
-                let ring_px = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
-                ctx.scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    ctx.transform,
-                    ring,
-                    None,
-                    &RoundedRect::from_rect(
-                        rect.inflate(ring_px, ring_px),
-                        f64::from(theme.tokens.radii.detail),
-                    ),
-                );
-                crate::agent_identity::draw_agent_identity_mark(
-                    ctx.scene,
-                    ctx.transform,
-                    rect,
-                    theme.tokens.colors.presence.of_rgb((red, green, blue)),
-                    theme,
-                    crate::agent_identity::AgentIdentityStyle::Solid,
-                );
+                let colour = ctx.theme.tokens.colors.presence.of_rgb((red, green, blue));
+                paint_tab_face(ctx, rect, "", colour, true, ring);
             }
             if dimmed {
                 ctx.scene.pop_layer();
@@ -2711,6 +2710,32 @@ impl TabBar {
             _ => false,
         }
     }
+    /// The faces a view gave tab `id`, shown on its pill in place of the live presence feed's
+    /// people; an empty list gives the pill back to the feed.
+    pub fn set_faces(&mut self, id: u64, faces: Vec<TabFaceSpec>) {
+        let changed = self
+            .given_faces
+            .get(&id)
+            .map_or(!faces.is_empty(), |held| *held != faces);
+        if !changed {
+            return;
+        }
+        self.touch();
+        if faces.is_empty() {
+            self.given_faces.remove(&id);
+        } else {
+            self.given_faces.insert(id, faces);
+        }
+        self.face_demand_stale = true;
+    }
+
+    /// How many faces a pill shows: the ones its view gave it, else the live presence feed's.
+    fn face_count(&self, tab: u64, presence: &PresenceCtx) -> usize {
+        self.given_faces
+            .get(&tab)
+            .map_or_else(|| self.pill_people(tab, presence).len(), Vec::len)
+    }
+
     /// Tint `id`'s leading marker: a tab with no `app_kind` paints a filled dot, one with both
     /// tints its app glyph. Pass a colour read off the `Theme`.
     pub fn set_accent(&mut self, id: u64, color: vello::peniko::Color) {
@@ -3577,8 +3602,6 @@ const ACCENT_DOT_R: f64 = 4.0;
 /// smaller than the accent dot so the two never read as the same mark.
 const MODIFIED_DOT_R: f64 = 3.5;
 const PILL_MIN_PX: f64 = 84.0;
-/// Peer faces on a pill: at most this many faces before a "+N" disc.
-const PILL_MAX_FACES: usize = 2;
 /// Below this a pill can't host a legible title fragment alongside the close
 /// chip, so squeezing further would be worse than eliding harder.
 const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
@@ -3682,72 +3705,6 @@ fn busy_epoch() -> Instant {
 fn tab_presence_key(id: u64) -> PresenceKey {
     PresenceKey::Tab {
         id: format!("{id:x}"),
-    }
-}
-
-/// Peer faces a pill shows: `faces` initials, then a "+`overflow`" disc
-/// for everyone else (none when zero).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct PillFaces {
-    faces: usize,
-    overflow: usize,
-}
-
-/// Sizes of a pill's peer faces, from the theme: each face is a medium icon
-/// wide (large enough for a legible initial), keeps the smallest spacing
-/// step from the title, and overlaps its neighbour by only half that step so
-/// both initials stay whole.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct FaceMetrics {
-    face: f64,
-    gap: f64,
-    overlap: f64,
-}
-
-impl FaceMetrics {
-    fn of(theme: &Theme) -> Self {
-        let gap = f64::from(theme.tokens.spacing.s1);
-        Self {
-            face: f64::from(theme.tokens.metrics.icon_md),
-            gap,
-            // The ring alone overlaps the next face onto this one's edge,
-            // never onto its initial.
-            overlap: 0.0,
-        }
-    }
-
-    fn step(self) -> f64 {
-        self.face - self.overlap
-    }
-}
-
-impl PillFaces {
-    fn slots(self) -> usize {
-        self.faces.saturating_add(usize::from(self.overflow > 0))
-    }
-
-    fn width(self, metrics: FaceMetrics) -> f64 {
-        match self.slots() {
-            0 => 0.0,
-            parts => {
-                metrics.face
-                    + crate::num::f64_of_usize(parts.saturating_sub(1)) * metrics.step()
-                    + metrics.gap
-            }
-        }
-    }
-
-    /// The most faces for `peers` that still leave the title `keep` px of a
-    /// `leftover`-wide zone; fewer faces fold into "+N".
-    fn fit(peers: usize, leftover: f64, keep: f64, metrics: FaceMetrics) -> Self {
-        (1..=peers.min(PILL_MAX_FACES))
-            .rev()
-            .map(|faces| Self {
-                faces,
-                overflow: peers.saturating_sub(faces),
-            })
-            .find(|candidate| leftover - candidate.width(metrics) >= keep)
-            .unwrap_or_default()
     }
 }
 
@@ -7387,6 +7344,69 @@ mod tests {
                 );
                 draw_at(&mut b, grown, &presence);
                 assert_eq!(b.pill_faces[1], one, "the grown pill shows the face");
+            }
+
+            {
+                // A face a view gives a tab stands on its pill even where no presence feed
+                // knows the person: the strip's own answer, drawn as the one the feed gives.
+                use vello_encoding::DrawTag;
+                let mut b = TabBar::new(
+                    "g1",
+                    vec![TabDescriptor::new(1, "Alpha"), TabDescriptor::new(2, "Beta")],
+                    1,
+                );
+                b.rect = Rect::new(0.0, 0.0, 360.0, 40.0);
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 180.0, 34.0),
+                    Rect::new(180.0, 6.0, 360.0, 34.0),
+                ];
+                b.close_rects = vec![Rect::ZERO; 2];
+                b.max_rects = vec![Rect::ZERO; 2];
+                b.search_rects = vec![Rect::ZERO; 2];
+                let colour_tags = |b: &mut TabBar| {
+                    let mut scene = Scene::new();
+                    b.draw(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut TextRenderer::new(),
+                        &Theme::dark(),
+                        &PresenceCtx::default(),
+                    );
+                    scene
+                        .encoding()
+                        .draw_tags
+                        .iter()
+                        .filter(|tag| **tag == DrawTag::COLOR)
+                        .count()
+                };
+                let bare = colour_tags(&mut b);
+                b.set_faces(
+                    1,
+                    vec![TabFaceSpec {
+                        name: "Ada Lovelace".to_owned(),
+                        hue: crate::tokens::PresenceHue::Blue,
+                        agent: false,
+                    }],
+                );
+                assert_eq!(
+                    b.face_count(1, &PresenceCtx::default()),
+                    1,
+                    "the given face is the pill's face"
+                );
+                assert!(b.face_demand_stale, "a given face asks for more width");
+                let drawn = colour_tags(&mut b);
+                assert!(
+                    drawn > bare,
+                    "the given face draws: {drawn} colour fills over {bare}"
+                );
+                assert_eq!(
+                    b.pill_faces[0],
+                    PillFaces {
+                        faces: 1,
+                        overflow: 0
+                    },
+                    "the pill fits the given face"
+                );
             }
 
             {

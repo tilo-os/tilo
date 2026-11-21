@@ -2283,8 +2283,8 @@ pub mod top_edge_reveal;
 pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
 pub use tabs::{
-    PresenceFaceProps, TabBar, TabDescriptor, TabHolder, TabItemProps, TabMark, TabStrip,
-    TabStripProps, draw_app_mark, pack_point, unpack_point,
+    PresenceFaceProps, TabBar, TabDescriptor, TabFaceSpec, TabHolder, TabItemProps, TabMark,
+    TabStrip, TabStripProps, draw_app_mark, pack_point, unpack_point,
 };
 pub mod scrollbar;
 pub use scrollbar::{

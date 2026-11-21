@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use crate::component::{Component, Described, Event, Person, ResourceId, Value};
 use crate::icons::Icon;
-use crate::widget::{TabBar, TabDescriptor, TabMark};
+use crate::widget::{TabBar, TabDescriptor, TabFaceSpec, TabMark};
 
 crate::component::part_type!(TabItemProps);
 
@@ -279,6 +279,20 @@ impl Tabs {
     }
 }
 
+/// One face a tab's view gave its pill: who they are, what they are called here and the hue
+/// they wear. A tab given no face falls back to the live presence feed's people.
+fn face_spec(face: &PresenceFaceProps) -> Option<TabFaceSpec> {
+    let who = face.who.as_ref()?;
+    Some(TabFaceSpec {
+        name: face.name.clone().unwrap_or_else(|| who.name.clone()),
+        hue: who.hue,
+        agent: !who
+            .identity
+            .member_id()
+            .is_some_and(crate::permissions::MemberId::is_person),
+    })
+}
+
 /// A frame's tab strip.
 ///
 /// It is the shell's strip ([`TabBar`]) with its view's reports turned into the view's
@@ -425,6 +439,8 @@ impl TabStrip {
             self.bar.set_attention(*id, tab.attention);
             self.bar.set_mark(*id, tab.busy.then_some(TabMark::Busy));
             self.bar.set_modified(*id, tab.modified);
+            self.bar
+                .set_faces(*id, tab.presence.iter().filter_map(face_spec).collect());
         }
     }
 
