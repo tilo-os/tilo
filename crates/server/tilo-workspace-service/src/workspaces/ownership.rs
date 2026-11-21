@@ -26,6 +26,14 @@ use super::{GovernedWorkspace, Workspaces};
 /// build kept a workspace for while its host owned it.
 const KEPT_FOR: &str = "workspace-keeper-v1:";
 
+/// Whom an earlier build kept a workspace for while this host owned it.
+struct Kept {
+    /// The grants that named the people it was kept for, by id.
+    grants: Vec<(GrantId, [u8; 32])>,
+    /// The person it is handed to.
+    person: [u8; 32],
+}
+
 impl Workspaces {
     /// Hand `governed`, a workspace this host owns, to `person`: one
     /// governance change, which leaves this host its administrator, and the
@@ -78,13 +86,10 @@ impl Workspaces {
     }
 
     /// The grants an earlier build wrote to name the people `governed` was
-    /// kept for, by id, and the person it is kept for: the one this host
-    /// records it as the own workspace of, else the first one named. `None`
-    /// when this host does not own it, or keeps it for no one.
-    fn kept(
-        &self,
-        governed: &GovernedWorkspace,
-    ) -> Result<Option<(Vec<(GrantId, [u8; 32])>, [u8; 32])>, String> {
+    /// kept for, and the person it is kept for: the one this host records
+    /// it as the own workspace of, else the first one named. `None` when
+    /// this host does not own it, or keeps it for no one.
+    fn kept(&self, governed: &GovernedWorkspace) -> Result<Option<Kept>, String> {
         let host = self.inner.host.cert.user_public_key;
         if governed.peer().owner() != host {
             return Ok(None);
@@ -107,12 +112,15 @@ impl Workspaces {
         Ok(own
             .or_else(|| kept.first().map(|(_, person)| *person))
             .filter(|person| *person != host)
-            .map(|person| (kept, person)))
+            .map(|person| Kept {
+                grants: kept,
+                person,
+            }))
     }
 
     /// The person `governed` is kept for ([`Self::kept`]).
     fn kept_person(&self, governed: &GovernedWorkspace) -> Result<Option<[u8; 32]>, String> {
-        Ok(self.kept(governed)?.map(|(_, person)| person))
+        Ok(self.kept(governed)?.map(|kept| kept.person))
     }
 
     /// Hand `governed` to the person it is kept for, when this host owns it:
@@ -125,7 +133,11 @@ impl Workspaces {
         &self,
         governed: &mut GovernedWorkspace,
     ) -> Result<(), String> {
-        let Some((kept, person)) = self.kept(governed)? else {
+        let Some(Kept {
+            grants: kept,
+            person,
+        }) = self.kept(governed)?
+        else {
             return Ok(());
         };
         if !kept.is_empty() {
