@@ -750,6 +750,22 @@ mod tests {
             !helper::rule_names(&rule("largest", ""), &nvme),
             "a rule that names no drive never matches a staging disk"
         );
+        // A staging onto a named disk records that identity as the disk's
+        // handle, which is no device path.
+        let mut named = linux_platform().disk;
+        named.id = "serial:tilo-install-target".into();
+        assert_eq!(
+            helper::rule_names_disk(&rule("serial", "tilo-install-target"), &named),
+            Ok(true)
+        );
+        assert_eq!(
+            helper::rule_names_disk(&rule("serial", "another-disk"), &named),
+            Ok(false)
+        );
+        assert_eq!(
+            helper::rule_names_disk(&rule("wwid", "tilo-install-target"), &named),
+            Ok(false)
+        );
     }
 
     tilo_test_env::scenario! {
