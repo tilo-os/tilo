@@ -1400,19 +1400,18 @@ class SelectorTests(unittest.TestCase):
                 "tools/tests/test_ci_select.py",
                 "tools/tests/test_ci_measure.py",
                 "tools/tests/test_suites.py",
-                "tools/tests/test_workflow_package_paths.py",
+                "tools/tests/test_workflow_timeouts.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
             self.assertFalse(plan["rust_required"])
             self.assertFalse(plan["full"])
             self.assertEqual(plan["selected"], [])
             self.assertEqual(plan["matrix"], {"include": []})
-        with self.subTest(phase='check workflow and builder resolution contract need no rust'):
+        with self.subTest(phase='builder resolution contract needs no rust'):
             self.setUp()
             self.install_quality_helpers()
             self.install_control_inputs()
             changes = [
-                ".forgejo/workflows/resolve-builder.yml",
                 "tools/ci/resolve_builder.py",
                 "tools/tests/test_resolve_ci_builder.py",
                 "tools/ci/affected_packages.py",

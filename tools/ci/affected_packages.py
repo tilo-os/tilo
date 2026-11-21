@@ -169,7 +169,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
     "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
-    "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
     "tools/policy/check_clock_contract.py": "tools/tests/test_clock_contract.py",
@@ -212,9 +211,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     # them against stubs, the same recipe t's canary checks build.
     "tools/ci/publish/ci-builder-canary.sh": (
         "os/tests/test_builder_candidate_workflow.py",
-    ),
-    ".forgejo/workflows/resolve-builder.yml": (
-        "tools/tests/test_resolve_ci_builder.py",
     ),
     "tools/ci/resolve_builder.py": (
         "tools/tests/test_resolve_ci_builder.py",
