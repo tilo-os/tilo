@@ -62,7 +62,9 @@ impl Route {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// Which of a workspace's history views to show. Described, so the `activity` action's contract
+/// names the three words it reads rather than an object.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, tilo_resource::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ActivityView {
     CatchUp,

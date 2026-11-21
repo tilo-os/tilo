@@ -28,7 +28,8 @@ from real_apps import Agent  # noqa: E402
 
 SHELL = "so.tilo.session"
 CHROME = "desktop:chrome"
-APPS = "file-explorer tasks notes chat settings"
+APPS = "file-explorer tasks notes chat settings activity"
+ACTIVITY = "so.tilo.activity"
 AGENT = "Claude Code"
 FILE = "agent-notes.md"
 BODY = b"# Notes from your agent\n\nThe spring budget is filed.\n"
@@ -37,6 +38,17 @@ NOTE = "Spring plans"
 CHAT = "I filed the budget under Spring."
 QUESTION = "Shall I file the budget under Spring?"
 ANSWER = "Yes, file it"
+
+
+def inside(target: dict, window: dict) -> bool:
+    """Whether the control `target` is drawn inside `window`: its centre within the window's
+    rect."""
+    if not target.get("rect") or not window.get("rect"):
+        return False
+    x, y, width, height = target["rect"]
+    left, top, wide, high = window["rect"]
+    cx, cy = x + width / 2, y + height / 2
+    return left <= cx <= left + wide and top <= cy <= top + high
 
 
 class Working:
@@ -205,23 +217,43 @@ def steps(story: Story) -> None:
     story.step("The agent posts in Chat", chat)
 
     def under_its_name():
-        # The shell's own history of the workspace: every change, each under who made it.
+        # The shell's own history of the workspace: every change, each under who made it, in the
+        # Activity window the shell opens on its explore view.
         tree = (ada.session.state_dump() or {}).get("workspace_tree") or {}
-        # Its explore view lists every change. The shell's action contract describes the view as
-        # an object, so it is given as one: the variant's name as its one key.
         ada.session.invoke(SHELL, f"{CHROME}\u001factivity",
-                           {"workspace": tree.get("active"), "view": {"explore": None}})
+                           {"workspace": tree.get("active"), "view": "explore"})
+        window = until("the Activity window on Ada's shell", lambda: next(
+            (w for w in ada.session.windows() if w.get("app_id") == ACTIVITY), None), 60, 0.25)
         changes = {FILE: FILE, TASK: TASK, NOTE: NOTE, "the message": "message"}
 
+        def rows():
+            """The names of the controls Activity's own window draws, top to bottom: the rest
+            of the shell (Files, Tasks, Notes and Chat name the same things) is not History."""
+            return [t.get("name") or "" for t in ada.targets() if inside(t, window)]
+
         def listed():
-            names = ada.names()
+            names = rows()
             return all(any(text.lower() in name.lower() for name in names)
                        for text in changes.values()) and names
 
+        def history_shown():
+            # Activity opens on what is new; its History lists every change. A row's own view
+            # replaces the list, so the list is reached through Back first.
+            for control in ("Back", "History"):
+                found = next((t for t in ada.targets()
+                              if t.get("name") == control and inside(t, window)), None)
+                if found:
+                    x, y, width, height = found["rect"]
+                    ada.session.click_at(x + width / 2, y + height / 2)
+                    time.sleep(0.3)
+            return listed()
+
         try:
-            names = until("History listing the agent's file, issue, note and message", listed, 30, 0.25)
+            names = until("History listing the agent's file, issue, note and message",
+                          lambda: listed() or history_shown(), 30, 0.5)
         finally:
-            story.note("history-controls", ada.names())
+            story.note("history-window", window)
+            story.note("history-controls", rows())
         # Each row names who made it: the agent, by its own name, on the row or right beside it.
         unnamed = []
         for what, text in changes.items():
