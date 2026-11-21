@@ -203,6 +203,25 @@ impl AuthorDirectory {
         }
     }
 
+    /// Name the actors `member`'s devices write as (`writers`, hex) as the roster names the
+    /// member ([`Self::register_roster`]): a change one of their devices signed, such as the
+    /// workspace's own governance, reads as theirs. A member the roster does not name is left
+    /// as it was.
+    pub fn register_writers<'a>(
+        &mut self,
+        member: &tilo_actions::MemberId,
+        writers: impl IntoIterator<Item = &'a str>,
+    ) {
+        let actor = hex::encode(member.actor_bytes());
+        if !self.is_registered(&actor) {
+            return;
+        }
+        let author = self.resolve(&actor);
+        for writer in writers {
+            self.register(writer, author.clone());
+        }
+    }
+
     /// The author of the member whose handle is `handle` (a member id, as an
     /// action's context names the person it acted for): what a delegated
     /// agent's change reads as having been made for.

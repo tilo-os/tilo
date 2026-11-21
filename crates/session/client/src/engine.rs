@@ -1314,13 +1314,20 @@ impl Engine {
     /// the name it knows them by and the part they take in it. A joined workspace brings its people
     /// with it, so this is how the layout knows them before any of them is here.
     pub fn people(&self, workspace: &str) -> Result<Vec<Member>, String> {
+        self.members(workspace).map(|list| list.members)
+    }
+
+    /// [`Self::people`], with the devices each of them holds now: the keys a change their device
+    /// signed is written under, such as the workspace's own governance, which names them.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or its governance cannot be read.
+    pub fn members(&self, workspace: &str) -> Result<tilo_peer_state::MemberList, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.with_current(workspace, |view| {
-            Ok(view
-                .peer()
+            view.peer()
                 .governance()
-                .governed_members(tilo_clock::wall())?
-                .members)
+                .governed_members(tilo_clock::wall())
         })
     }
 
@@ -2239,8 +2246,13 @@ mod tests {
                 },
             }])
         };
-        pollster::block_on(engine.owner.write(workspace, draft, engine.identity.signer.as_ref(), now))
-            .expect("the laptop writes its note");
+        pollster::block_on(engine.owner.write(
+            workspace,
+            draft,
+            engine.identity.signer.as_ref(),
+            now,
+        ))
+        .expect("the laptop writes its note");
     }
 
     /// A machine copied from a device, before the workspace admits it, reads what the copy holds

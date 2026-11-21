@@ -140,8 +140,9 @@ struct Inner {
     /// The workspaces this device holds, once the session opened them.
     #[cfg(target_os = "linux")]
     engine: RefCell<Option<Arc<crate::engine::Engine>>>,
-    /// The people of each workspace, by workspace, named as the bar and People name them.
-    people_of: RefCell<HashMap<WorkspaceId, Vec<collab_types::Member>>>,
+    /// The members of each workspace, by workspace: its people named as the bar and People name
+    /// them, its agents as its record of them does, and the actors each person's devices write as.
+    people_of: RefCell<HashMap<WorkspaceId, Members>>,
     /// Moves whenever [`Self::people_of`] does, so an open history names its authors again.
     people_moved: Cell<u64>,
     /// The session's action API, once its apps run here.
@@ -208,6 +209,14 @@ fn ask_for_frame(woken: &AtomicBool, wake: Option<&tilo_service::Wake>) {
     if let Some(wake) = wake {
         wake();
     }
+}
+
+/// Who a workspace's history names: its members (people and agents), and the actors each
+/// member's devices write as, by member, in hex.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Members {
+    pub(crate) members: Vec<collab_types::Member>,
+    pub(crate) writers: Vec<(collab_types::MemberId, Vec<String>)>,
 }
 
 impl Activity {
@@ -382,15 +391,15 @@ impl Activity {
         Some(engine)
     }
 
-    /// Name `workspace` 's people as `people` do: who a change in its history was made by.
+    /// Name `workspace` 's members as `members` do: who a change in its history was made by.
     #[cfg(target_os = "linux")]
-    pub(crate) fn set_people(&self, workspace: &str, people: &[collab_types::Member]) {
+    pub(crate) fn set_people(&self, workspace: &str, members: Members) {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
             return;
         };
         let mut held = self.0.people_of.borrow_mut();
-        if held.get(&workspace).map(Vec::as_slice) != Some(people) {
-            held.insert(workspace, people.to_vec());
+        if held.get(&workspace) != Some(&members) {
+            held.insert(workspace, members);
             self.0
                 .people_moved
                 .set(self.0.people_moved.get().wrapping_add(1));
@@ -745,13 +754,17 @@ impl HistorySource for Activity {
     fn register_authors(&self, workspace: WorkspaceId, authors: &mut ui::AuthorDirectory) {
         // Who this host's own mounts write as: a record's changes by the person who made them.
         (self.0.writers.register)(authors);
-        // The workspace's people: a change another member made reads as theirs, by name.
-        if let Some(people) = self.0.people_of.borrow().get(&workspace) {
+        // The workspace's people and agents: a change another member made reads as theirs, by
+        // name, and so does one a person's device signed, such as the workspace's governance.
+        if let Some(held) = self.0.people_of.borrow().get(&workspace) {
             authors.register_roster(
-                people
+                held.members
                     .iter()
                     .map(|member| (&member.id, member.name.as_str())),
             );
+            for (member, writers) in &held.writers {
+                authors.register_writers(member, writers.iter().map(String::as_str));
+            }
         }
         // A change of a workspace's layout is the person's: the record is written as them, so it
         // reads as presence shows them here and never as another member.
@@ -2144,6 +2157,46 @@ mod tests {
             "a tick reads the three changes made since, and no more"
         );
         assert_eq!(tick(), now, "and then nothing");
+    }
+
+    /// A workspace's history names each member as the workspace does: a change one of Ada's
+    /// devices signed (naming the workspace, adding a member) reads as Ada, and one her agent
+    /// made reads under the name the workspace's record of its agents gives it, not its id.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn changes_read_under_the_names_the_workspace_gives_its_members() {
+        let ada = collab_types::MemberId::person("ada");
+        let agent = "claude-code";
+        let device = hex::encode([7_u8; 32]);
+        let session = Session::new();
+        session.activity.set_people(
+            &session.workspace.to_string(),
+            Members {
+                members: vec![
+                    collab_types::Member::named(ada.clone(), "Ada"),
+                    collab_types::Member::of_software(
+                        collab_types::MemberId::agent(agent),
+                        "Claude Code",
+                    ),
+                ],
+                writers: vec![(ada, vec![device.clone()])],
+            },
+        );
+        let mut authors = ui::AuthorDirectory::new();
+        session
+            .activity
+            .register_authors(session.workspace, &mut authors);
+
+        assert_eq!(authors.resolve_entry(&device, None).name, "Ada");
+        let invoker = tilo_actions::ActionInvoker::admitted(
+            &tilo_actions::Acting::agent(agent).acting_for(tilo_actions::Acting::person("ada")),
+        );
+        let context = tilo_actions::ActionContext::default().with_invoker(invoker);
+        let writer = hex::encode([9_u8; 32]);
+        assert_eq!(
+            authors.resolve_entry(&writer, Some(&context)).name,
+            "Claude Code"
+        );
     }
 
     /// The activity opens from its command and lists the workspace's real changes.

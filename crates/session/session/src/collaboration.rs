@@ -41,12 +41,13 @@ impl Session {
             // draw them: the apps there are told, so a caret wears its person's face and a
             // message names its author after they went offline or left.
             if let Some((workspace, _)) = sync.front_members() {
-                let mut people: Vec<collab_types::Member> = self
+                let governed = self
                     .shared
                     .engine
                     .as_ref()
-                    .and_then(|engine| engine.people(&workspace).ok())
+                    .and_then(|engine| engine.members(&workspace).ok())
                     .unwrap_or_default();
+                let mut people: Vec<collab_types::Member> = governed.members;
                 for (id, name, (r, g, b)) in sync.here().borrow().persons() {
                     let person = collab_types::Person::new(id, name);
                     let colour =
@@ -62,7 +63,46 @@ impl Session {
                         None => people.push(here),
                     }
                 }
-                self.shared.activity.set_people(&workspace, &people);
+                // History names the same people, the workspace's agents as its record of them
+                // names them, and a change a person's device signed (the workspace's own
+                // governance) as that person's: under the device key, or the actor a host writes
+                // as.
+                let mut members = people.clone();
+                {
+                    use tilo_broker_core::services::AgentRoster as _;
+                    members.extend(
+                        self.shared
+                            .agents
+                            .roster()
+                            .listed(&workspace)
+                            .into_iter()
+                            .map(|listed| {
+                                collab_types::Member::of_software(
+                                    collab_types::MemberId::agent(listed.id),
+                                    listed.name,
+                                )
+                            }),
+                    );
+                }
+                let writers = governed
+                    .devices
+                    .into_iter()
+                    .map(|(member, devices)| {
+                        let writers = devices
+                            .iter()
+                            .flat_map(|device| {
+                                [
+                                    hex::encode(device),
+                                    tilo_peer_state::workspace_host_actor(device).to_hex_string(),
+                                ]
+                            })
+                            .collect();
+                        (member, writers)
+                    })
+                    .collect();
+                self.shared
+                    .activity
+                    .set_people(&workspace, crate::activity::Members { members, writers });
                 app_wire.layout.set_people(&workspace, people);
             }
         }
