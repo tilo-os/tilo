@@ -177,7 +177,9 @@ fn bind(path: &Path) -> io::Result<UnixListener> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let listener = UnixListener::bind(path)?;
+    // The guest's own state root can sit deep below its home, past the path a
+    // stock bind takes; this reaches any length through the directory.
+    let listener = tilo_files::native::socket::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
     Ok(listener)
 }

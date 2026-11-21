@@ -9742,6 +9742,7 @@ dependencies = [
  "tempfile",
  "tilo-clock",
  "tilo-desktop-entry",
+ "tilo-files",
  "tilo-lock",
  "tilo-paths",
  "tilo-test-env",

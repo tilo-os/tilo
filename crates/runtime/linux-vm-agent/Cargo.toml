@@ -44,3 +44,5 @@ rustix = { workspace = true, features = ["mount", "process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true
+# The agent's socket is bound through the helper that reaches any path length.
+tilo-files = { path = "../../platform/tilo-files" }
