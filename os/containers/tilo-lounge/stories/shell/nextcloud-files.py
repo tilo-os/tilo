@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Keep files in Nextcloud, sign in from the shell's Settings, and see them in the workspace.
 
-Ada adds her Nextcloud account in Settings' External accounts page, approves the
-app password on the server's own sign-in page (her browser), picks the folder she
-keeps her files in from the Files window, and the files are there. A file then
+Ada adds her Nextcloud account in Settings' Accounts page, signs in and grants
+this device access on the server's own pages in Tilo's Browser, picks the folder
+she keeps her files in from the Files window, and the files are there. A file then
 changed in Nextcloud, as another Nextcloud client would change it, changes in the
 workspace too.
 
@@ -29,16 +29,14 @@ import nextcloud  # noqa: E402
 from story import Failed, Story, until, walk  # noqa: E402
 
 # What Ada's computer has: Settings to connect the account with, Files to see
-# the folder in, and the browser the sign-in opens the server's page in.
+# the folder in, and the Browser the sign-in opens the server's page in.
 APPS = "settings file-explorer browser"
-# The Nextcloud container the check starts (servers.sh names it), where the
-# sign-in page a person's browser opens is found.
-CONTAINER = "tilo-cloud-conformance-nextcloud"
 # A file the seed put in Ada's Nextcloud, and what a change to it says.
 HELD = "plan.txt"
 CHANGED = f"Spring planting, changed {int(time.time()) % 100000:05d}"
 # The folder Ada keeps her files in, in her Nextcloud.
 FOLDER = "Documents"
+FILES = "so.tilo.file-explorer"
 
 
 def mount_files(one) -> list[Path]:
@@ -76,19 +74,23 @@ def steps(story: Story) -> None:
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         story.timing("Ada's session start, to its first frame, "
                      "with the development launcher's installing", took["launcherMs"])
-        nextcloud.connect_account(story, ada, server, user, password, CONTAINER)
+        nextcloud.connect_account(story, ada, server, user, password)
 
     story.step("Ada chooses Nextcloud and signs in", signs_in, people=[ada])
 
     def picks_folders():
         ada.session.launch("file-explorer")
         ada.session.answering("file-explorer", deadline=180)
+        # A window beside another is narrow, and Files keeps its places in a sidebar there: she
+        # opens it to find her account.
+        if not ada.target("Nextcloud", inside=FILES) and ada.target("Show sidebar"):
+            ada.press("Show sidebar", "the sidebar of Files, where its places are")
         until("Ada's account among Files' places",
-              lambda: ada.target("Nextcloud"), 30, 0.25)
-        ada.press("Nextcloud", "her Nextcloud account in Files' places")
+              lambda: ada.target("Nextcloud", inside=FILES), 30, 0.25)
+        ada.press("Nextcloud", "her Nextcloud account in Files' places", inside=FILES)
 
         def opened():
-            if ada.target(FOLDER):
+            if ada.target(FOLDER, inside=FILES):
                 return "folder", []
             # An account Files cannot open is a panel that says why: its
             # status, and where its folder is, or that it is not mounted.
@@ -103,7 +105,7 @@ def steps(story: Story) -> None:
         if which != "folder":
             raise Failed(f"Ada's Nextcloud account does not open on her files: the panel Files "
                          f"draws says {said}, and Files offers {ada.names()[:60]}")
-        ada.press(FOLDER, f"{FOLDER}, where her files are kept")
+        ada.press(FOLDER, f"{FOLDER}, where her files are kept", inside=FILES)
 
     story.step("Ada picks the folders to bring", picks_folders, people=[ada])
 

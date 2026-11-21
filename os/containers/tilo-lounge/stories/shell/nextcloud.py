@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 """The Nextcloud a story meets, and the account Ada adds from the shell's Settings.
 
-Two sides of one server. A person's own browser is asked to approve the app
-Nextcloud gives this device: `sign_in` walks the server's pages as a browser
-does (its connect page, its login form, its grant), over HTTP with the server's
-cookies, because the shell's browser is another program the person's page is
-not a part of. And the server's own state is read the way another client would:
-a calendar's events over CalDAV, a file written over WebDAV.
+`connect_account` is what a person does in the shell: Settings' Accounts page,
+the Nextcloud provider, the server's address and Continue. Settings opens the
+server's sign-in page in Tilo's Browser, where Ada signs in and grants this
+device access on Nextcloud's own pages, and Settings then keeps the account.
+The page is used through the Browser's own page actions (it finds a control by
+what it is named, fills it, presses it), on the page the Browser shows.
 
-`connect_account` is the part a person does in the shell: Settings' External
-accounts page, the Nextcloud provider, the server's address, and the finish.
-Every wait is decided by what the shell draws (its controls' accessible names)
-or by the server's state, never by what an action answered.
+The server's own state is read the way another client would: a calendar's
+events over CalDAV, a file written over WebDAV. Every wait is decided by what
+the shell draws (its controls' accessible names), by what the Browser's page
+says, or by the server's state, never by what an action answered.
 """
 
 from __future__ import annotations
 
 import html
-import http.cookiejar
 import json
 import re
-import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -28,184 +26,12 @@ import urllib.request
 
 from story import Failed, until
 
-# How long the person's browser's side of a sign-in may take, on a server on the check's own
-# loopback.
+# How long a page of the server may take to answer, on a server on the check's own loopback.
 PAGE_SECONDS = 30.0
 
 
 class SignInFailed(Exception):
-    """The server's pages did not give this device its app password."""
-
-
-class _StopRedirect(Exception):
-    """A redirect the browser cannot follow, such as Nextcloud's `nc://login`
-    that hands the app password over: the end of the sign-in."""
-
-    def __init__(self, location: str):
-        super().__init__(location)
-        self.location = location
-
-
-class _Redirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not newurl.startswith(("http://", "https://")):
-            raise _StopRedirect(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-class Answer:
-    def __init__(self, status: int, url: str, text: str):
-        self.status = status
-        self.url = url
-        self.text = text
-
-
-class Browser:
-    """A browser's session with one server: its cookies, its redirects, its
-    forms. Enough of a browser to log in and approve an app on Nextcloud's own
-    pages, which is what the person does on a page the product opens for them."""
-
-    def __init__(self):
-        self.jar = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(self.jar), _Redirect())
-
-    def _open(self, request: urllib.request.Request) -> Answer:
-        try:
-            with self.opener.open(request, timeout=PAGE_SECONDS) as answer:
-                return Answer(answer.status, answer.geturl(),
-                              answer.read().decode(errors="replace"))
-        except _StopRedirect as stop:
-            return Answer(302, stop.location, "")
-        except urllib.error.HTTPError as error:
-            return Answer(error.code, error.geturl(),
-                          error.read().decode(errors="replace"))
-
-    def get(self, url: str, headers: dict | None = None) -> Answer:
-        request = urllib.request.Request(url, headers=headers or {})
-        return self._open(request)
-
-    def post(self, url: str, fields: dict, headers: dict | None = None) -> Answer:
-        body = urllib.parse.urlencode(fields).encode()
-        request = urllib.request.Request(
-            url, data=body, headers={"Content-Type": "application/x-www-form-urlencoded",
-                                     **(headers or {})})
-        return self._open(request)
-
-
-def _plain(text: str) -> str:
-    """The words a page shows: its script and style left out, and a button
-    written as an input folded in, which the page's text leaves out."""
-    buttons = re.findall(r'<input[^>]*type="submit"[^>]*value="([^"]*)"', text)
-    text = re.sub(r"<script[\s\S]*?</script>", " ", text)
-    text = re.sub(r"<style[\s\S]*?</style>", " ", text)
-    text = re.sub(r"<[^>]+>", " ", text)
-    return " ".join(html.unescape(" ".join([text, *buttons])).split())
-
-
-def _hidden(page: str) -> dict:
-    return {name: html.unescape(value) for name, value in
-            re.findall(r'<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"', page)}
-
-
-def _request_token(page: str) -> str | None:
-    found = re.search(r'data-requesttoken="([^"]+)"', page)
-    return html.unescape(found.group(1)) if found else None
-
-
-def _same_origin(url: str) -> str:
-    parts = urllib.parse.urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}"
-
-
-def _relative(url: str) -> str:
-    parts = urllib.parse.urlsplit(url)
-    return f"{parts.path}?{parts.query}" if parts.query else parts.path
-
-
-def sign_in(login_url: str, user: str, password: str) -> dict:
-    """Approve the app password Nextcloud minted for `login_url`, as the
-    person does on the sign-in page their browser opened.
-
-    Nextcloud's login flow: the connect page names the grant that finishes it;
-    a person who is not logged in is taken to the login form first, and comes
-    back to the grant. Answers `{"server", "login"}`: where the approval was
-    given. Raises [`SignInFailed`] with what the page said when it could not."""
-    browser = Browser()
-    origin = _same_origin(login_url)
-    page = browser.get(login_url)
-    flow = _plain(page.text)
-
-    # The connect page's own form posts to the grant, with the flow's token.
-    found = re.search(r'<form id="login-form"[^>]*action="([^"]+)"', page.text)
-    if found:
-        grant = html.unescape(found.group(1))
-        # Logging in first: the login form is where the person types, and it
-        # sends them back to the grant through the session's redirect.
-        login = browser.get(f"{origin}/login?redirect_url="
-                            + urllib.parse.quote(_relative(grant), safe=""))
-        token = _request_token(login.text)
-        if token is None:
-            raise SignInFailed(
-                f"the server's login page offered no sign-in form: {_plain(login.text)[:400]}")
-        posted = browser.post(
-            f"{origin}/login",
-            {"user": user, "password": password, "requesttoken": token,
-             "timezone": "UTC", "timezone_offset": "0"},
-            {"Origin": origin, "Referer": login.url})
-        if "invalidOrigin" in posted.text or "Wrong password" in _plain(posted.text):
-            raise SignInFailed(
-                f"the server refused the password for {user}: {_plain(posted.text)[:400]}")
-        approval = browser.get(grant, {"Referer": login.url})
-    else:
-        approval = page
-    words = _plain(approval.text)
-    if "Grant access" not in words:
-        raise SignInFailed(
-            f"the server's page offered no way to grant access: {words[:400]}")
-
-    fields = _hidden(approval.text)
-    if "stateToken" not in fields:
-        raise SignInFailed(f"the server's grant page named no flow: {words[:400]}")
-    granted = browser.post(f"{origin}/login/v2/grant", fields,
-                           {"Origin": origin, "Referer": approval.url})
-    # A granted flow either redirects to `nc://login/…` (which the browser
-    # cannot follow and the product reads as its app password) or shows the
-    # page that says the client is connected.
-    landed = granted.url if granted.status == 302 else ""
-    said = _plain(granted.text).lower()
-    if not (landed.startswith("nc://login/") or "account connected" in said
-            or "now be connected" in said):
-        raise SignInFailed(
-            f"the server did not grant access: {(_plain(granted.text) or landed)[:400]}")
-    return {"server": origin, "login": user}
-
-
-def _log_since(container: str, since: int) -> str:
-    """What `container` logged since the unix second `since` (a server this
-    check did not start answers nothing)."""
-    try:
-        read = subprocess.run(["podman", "logs", "--since", str(since), container],
-                              text=True, capture_output=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return read.stdout + read.stderr
-
-
-def flow_urls_in_log(container: str, since: int) -> list[str]:
-    """Every login-flow page `container` was asked for since the unix second
-    `since`, as the paths its access log names: the page a person's browser
-    opens when a sign-in starts. A server not run by this check answers none."""
-    paths = re.findall(r'"GET ([^" ]*login/v2/flow[^" ]*) HTTP/[\d.]+"',
-                       _log_since(container, since))
-    return list(dict.fromkeys(paths))
-
-
-def asked_for_a_flow(container: str, since: int) -> bool:
-    """Whether `container` was asked to begin a login flow since the unix
-    second `since`: the request a sign-in makes before any page opens."""
-    return bool(re.search(r'"POST [^" ]*login/v2[^" ]* HTTP/[\d.]+"',
-                          _log_since(container, since)))
+    """The server did not take what a client asked of it."""
 
 
 def _basic(user: str, password: str) -> str:
@@ -364,55 +190,179 @@ def type_into(one, field: str, text: str, what: str) -> None:
                  f"{json.dumps(one.names()[:80])}")
 
 
+# Tilo's Browser, and the row its page's actions are offered on.
+BROWSER = "so.tilo.browser"
+PAGE = "browser.page"
+# What Nextcloud's pages say, by the page: the one a sign-in opens on, its login form, the page
+# that grants this device access, and the one that says it is done.
+CONNECT_PAGE = ("Connect to your account",)
+LOGIN_FORM = ("Account name or email", "Login or email", "Username or email")
+GRANT_PAGE = ("Grant access",)
+CONNECTED_PAGE = ("Account connected", "now be connected")
+
+
+def page_action(one, operation: str) -> dict | None:
+    """The page action `operation` of the Browser window in `one`'s shell, as the desktop lists
+    it: the one offered on the window's page."""
+    for action in one.session.actions(""):
+        if (action.get("application") == BROWSER and action.get("operation") == operation
+                and names_page(str(action.get("resource", "")))):
+            return action
+    return None
+
+
+def names_page(resource: str) -> bool:
+    """Whether the desktop's name `resource` is the Browser window's page: a window's own rows
+    are named after the window's ids, the row's id hex-encoded."""
+    return resource == PAGE or resource.endswith(f":{PAGE.encode().hex()}")
+
+
+def on_page(one, operation: str, args: dict | None = None):
+    """Do `operation` on the page Tilo's Browser shows, and answer what the Browser says of it."""
+    try:
+        action = until(f"the Browser's {operation}", lambda: page_action(one, operation), 60, 0.5)
+    except Failed as error:
+        offered = sorted({a.get("operation") for a in one.session.actions("")
+                          if a.get("application") == BROWSER
+                          and names_page(str(a.get("resource", "")))})
+        raise Failed(f"Tilo's Browser offers no {operation} on its page; it offers "
+                     f"{offered[:60]}") from error
+    answer = one.session.invoke(action["provider"], action["id"], args or {})
+    try:
+        return answer["receipt"]["update"]["output"]["value"]
+    except (KeyError, TypeError):
+        raise Failed(f"the Browser's {operation} on the page answered "
+                     f"{json.dumps(answer)[:1500]}") from None
+
+
+def page_says(one) -> str:
+    """What the page in Tilo's Browser says now, as the Browser reads it, or nothing while it
+    has none."""
+    try:
+        return json.dumps(on_page(one, "read-page"), ensure_ascii=False)
+    except Failed:
+        return ""
+
+
+def page_shown(one) -> str:
+    """What the page in Tilo's Browser says, or why the Browser could not read it: for a failure
+    to name."""
+    try:
+        return json.dumps(on_page(one, "read-page"), ensure_ascii=False)[:600]
+    except Failed as error:
+        return f"nothing the Browser could read ({error})"
+
+
+def says_any(said: str, words: tuple[str, ...]) -> bool:
+    return any(word.lower() in said.lower() for word in words)
+
+
+def element(one, role: str | None, name: str) -> str:
+    """The page's control named `name` (of `role`), found by what it says: the element the
+    Browser's other page actions take."""
+    found = on_page(one, "find-page-element",
+                    {**({"role": role} if role else {}), "name": name})
+    ref = isinstance(found, dict) and found.get("element")
+    if not ref:
+        raise Failed(f"the page in Tilo's Browser has no {role or 'control'} named {name!r}: "
+                     f"{json.dumps(found)[:800]}")
+    return ref
+
+
+def signs_in_on_the_page(story, one, server: str, user: str, password: str) -> None:
+    """Ada signs in on Nextcloud's page in Tilo's Browser, and grants this device access.
+
+    The page is read after each press, and what it says decides what she does next: the page a
+    sign-in opens on asks her to log in, the login form takes her account name and password, and
+    the grant page asks whether this device may have access."""
+    # The address names the server before its page has drawn anything: what the page says decides.
+    known = CONNECT_PAGE + LOGIN_FORM + GRANT_PAGE + CONNECTED_PAGE
+
+    def nextclouds_page():
+        said = page_says(one)
+        return said if says_any(said, known) else None
+
+    try:
+        said = until("Nextcloud's sign-in page in Tilo's Browser", nextclouds_page, 60, 1.0)
+    except Failed as error:
+        raise Failed(f"Settings began a sign-in at {server}, but Tilo's Browser never showed "
+                     f"the server's sign-in page; the page it shows says "
+                     f"{page_shown(one)}") from error
+    story.note("nextcloud-login-page", said[:2000])
+    pressed: list[str] = []
+    for _ in range(6):
+        if says_any(said, CONNECTED_PAGE):
+            story.note("nextcloud-approved", {"server": server, "pressed": pressed})
+            return
+        if says_any(said, GRANT_PAGE):
+            on_page(one, "click-page", {"element": element(one, "button", GRANT_PAGE[0])})
+            pressed.append("Grant access")
+        elif says_any(said, LOGIN_FORM):
+            name = next(word for word in LOGIN_FORM if word.lower() in said.lower())
+            on_page(one, "fill-page", {"element": element(one, "textbox", name), "text": user})
+            secret = element(one, None, "Password")
+            on_page(one, "fill-page-secret", {"element": secret, "text": password})
+            on_page(one, "press-page", {"key": "Enter", "element": secret})
+            pressed.append("Log in")
+        elif says_any(said, CONNECT_PAGE):
+            on_page(one, "click-page", {"element": element(one, "button", "Log in")})
+            pressed.append("Connect")
+        else:
+            raise Failed(f"Nextcloud's page in Tilo's Browser asked nothing Ada knows how to "
+                         f"answer: {said[:800]!r}")
+        before = said
+
+        def moved_on():
+            now = page_says(one)
+            return now if now != before and says_any(now, known) else None
+
+        said = until("Nextcloud's next page in Tilo's Browser", moved_on, PAGE_SECONDS, 0.5)
+    raise Failed(f"Nextcloud's pages never said the account is connected, after {pressed}: "
+                 f"{said[:800]!r}")
+
+
+def kept_accounts(one) -> list[dict]:
+    """The Nextcloud accounts `one`'s computer keeps, as its account store holds them."""
+    store = one.state / "config/tilo/accounts/store.json"
+    try:
+        kept = json.loads(store.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [account for account in kept.get("accounts") or []
+            if account.get("type_id") == "nextcloud"]
+
+
+def closes_the_browser(one) -> None:
+    """Ada closes Tilo's Browser once its page says she may, with the Close its window's header
+    draws: the window is done, and the next app she opens takes its place."""
+    def close_button():
+        area = one.window_rect(BROWSER)
+        if not area:
+            return None
+        left, _, width, _ = area
+        return next((t for t in one.targets() if t.get("name") == "Close"
+                     and left <= (t.get("rect") or (0,))[0] < left + width), None)
+
+    button = until("the Close of Tilo's Browser window", close_button, 15, 0.25)
+    x, y, width, height = button["rect"]
+    one.session.click_at(x + width / 2, y + height / 2)
+    until("Tilo's Browser window to close", lambda: not one.window_rect(BROWSER), 15, 0.25)
+
+
 def connect_account(story, one, server: str, user: str, password: str,
-                    container: str, calendar: bool = False) -> None:
-    """Ada adds her Nextcloud account in the shell's Settings, and approves the
-    app Nextcloud gives this device in her browser. `calendar` also connects the
-    calendars she keeps there, choosing them from what the server lists. The
-    step is decided by what Settings shows when it settles: the account listed,
-    or the product's own words for why it is not."""
+                    calendar: bool = False) -> None:
+    """Ada adds her Nextcloud account in the shell's Settings, and signs in and grants this
+    device access on the server's page in Tilo's Browser. `calendar` also connects the
+    calendars she keeps there, choosing them from what the server lists. The step is decided by
+    what Settings shows when it settles and what her computer keeps: the account listed and
+    kept, or the product's own words for why it is not."""
     open_accounts(one)
     press_settled(one, ADD_NEXTCLOUD, "Nextcloud among the providers Settings adds")
     until("the Nextcloud sign-in form", lambda: one.target(SERVER_FIELD), 30, 0.2)
     type_into(one, SERVER_FIELD, server, "the server's address")
     story.note("settings-controls", one.targets())
-    began_at = int(time.time()) - 5
     press_settled(one, CONTINUE, "the sign-in form's Continue")
-
-    # A sign-in that begins asks the server for a login flow, which the product
-    # then opens in the person's browser. Neither is drawn in the pane, so the
-    # step reads them where they happen: the server's access log names the
-    # flow, and a browser window proves the page opened.
-    def began():
-        pages = flow_urls_in_log(container, began_at)
-        if pages:
-            return "page", pages[0]
-        if asked_for_a_flow(container, began_at):
-            return "asked", ""
-        return None
-
-    try:
-        kind, path = until("Settings to begin a Nextcloud sign-in", began, 30, 0.5)
-    except Failed as error:
-        raise Failed(
-            f"Settings never reached {server} to begin a Nextcloud sign-in: no request for a "
-            f"login flow arrived at the server, and no sign-in page opened. The step's shot "
-            f"shows the message the Accounts page drew for the attempt.") from error
-    if kind == "asked":
-        # The flow exists; the page the person approves it on has to open.
-        try:
-            path = until("the server's sign-in page to be opened",
-                         lambda: next(iter(flow_urls_in_log(container, began_at)), None), 30, 0.5)
-        except Failed as error:
-            raise Failed(f"Nextcloud gave Settings a login flow, but the page to approve it on "
-                         f"never opened: {error}") from error
-    story.note("nextcloud-login-page", path)
-    try:
-        approved = sign_in(urllib.parse.urljoin(server.rstrip("/") + "/", path.lstrip("/")),
-                           user, password)
-    except SignInFailed as error:
-        raise Failed(f"Nextcloud's own sign-in page did not approve this device: {error}") from error
-    story.note("nextcloud-approved", approved)
+    signs_in_on_the_page(story, one, server, user, password)
 
     # Nextcloud's flow answers the app's poll with the app password; Settings
     # keeps the account and lists it. A person sees the account on the page.
@@ -421,6 +371,15 @@ def connect_account(story, one, server: str, user: str, password: str,
               (t for t in one.targets()
                if (t.get("identity") or "").startswith("settings.account:")), None),
           60, 0.25)
+    try:
+        kept = until("the Nextcloud account kept on Ada's computer", lambda: kept_accounts(one),
+                     30, 0.25)
+    except Failed as error:
+        raise Failed(f"Settings lists a Nextcloud account, but Ada's computer keeps none: "
+                     f"{error}") from error
+    story.note("nextcloud-account-kept",
+               [{key: account.get(key) for key in ("id", "type_id", "label")} for account in kept])
+    closes_the_browser(one)
     if not calendar:
         return
     # The calendars she keeps on the server are read from it and chosen here:
@@ -444,6 +403,6 @@ def connect_account(story, one, server: str, user: str, password: str,
     if kind != "form":
         raise Failed(f"Settings could not read the calendars kept on {server}: {said}")
     press_settled(one, SAVE, "the calendar choice's Save")
-    until(f"the chosen calendars kept on Ada's computer",
+    until("the chosen calendars kept on Ada's computer",
           lambda: SEEDED_CALENDAR in kept_calendar_names(one), 30, 0.25)
     story.note("calendars-kept", kept_calendar_names(one))

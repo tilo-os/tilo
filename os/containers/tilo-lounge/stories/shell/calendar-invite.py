@@ -30,7 +30,6 @@ from story import Failed, Story, until, walk  # noqa: E402
 # What Ada's computer has: Settings to connect the account with, Calendar, and
 # the browser the sign-in opens the server's page in.
 APPS = "settings calendar browser"
-CONTAINER = "tilo-cloud-conformance-nextcloud"
 # The event Ada makes, and the person she invites to it.
 EVENT = f"Planning {int(time.time()) % 100000:05d}"
 
@@ -56,8 +55,7 @@ def steps(story: Story) -> None:
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         story.timing("Ada's session start, to its first frame, "
                      "with the development launcher's installing", took["launcherMs"])
-        nextcloud.connect_account(story, ada, server, user, password, CONTAINER,
-                                  calendar=True)
+        nextcloud.connect_account(story, ada, server, user, password, calendar=True)
 
     story.step("Ada connects their calendar", connects, people=[ada])
 

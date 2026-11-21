@@ -140,23 +140,43 @@ class Person:
         """Whether a control this shell shows is named with `text` in it."""
         return any(text in name for name in self.names())
 
-    def target(self, name: str, exact: bool = True) -> dict | None:
+    def window_rect(self, app: str) -> list | None:
+        """Where this shell draws the window of `app` (its application id), or `None` while it
+        has none."""
+        found = next((w for w in self.session.windows() if w.get("app_id") == app), None)
+        return found and found.get("rect")
+
+    def target(self, name: str, exact: bool = True, inside: str | None = None) -> dict | None:
+        """The control `name` this shell shows; with `inside`, the one drawn in the window of that
+        app (by its application id), as a person looks for it in that window."""
+        area = self.window_rect(inside) if inside else None
+        if inside and not area:
+            return None
+
+        def within(target: dict) -> bool:
+            if not area:
+                return True
+            x, y, _, _ = target.get("rect") or (0, 0, 0, 0)
+            left, top, width, height = area
+            return left <= x < left + width and top <= y < top + height
+
         return next((t for t in self.targets()
-                     if (t.get("name") == name if exact else name in (t.get("name") or ""))), None)
+                     if (t.get("name") == name if exact else name in (t.get("name") or ""))
+                     and within(t)), None)
 
     def press(self, name: str, what: str | None = None, deadline: float = 30.0,
-              exact: bool = True) -> dict:
+              exact: bool = True, inside: str | None = None) -> dict:
         """Press the control `name` where this shell draws it, once the shell shows it, as a
-        person points at it and clicks."""
+        person points at it and clicks; with `inside`, the one in the window of that app."""
         what = what or f"{name!r} on {self.name}'s shell"
-        target = until(what, lambda: self.target(name, exact), deadline, 0.2)
+        target = until(what, lambda: self.target(name, exact, inside), deadline, 0.2)
         # A control that has just appeared may still be moving into place (a card sliding in):
         # a person clicks where it comes to rest, so its place is read until two looks agree.
         last = target.get("rect")
 
         def settled():
             nonlocal last
-            now = self.target(name, exact)
+            now = self.target(name, exact, inside)
             rect = now and now.get("rect")
             if rect and rect == last:
                 return now
