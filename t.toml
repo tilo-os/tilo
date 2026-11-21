@@ -4946,6 +4946,8 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/server-plan-install-cycle/**"]
+# What a failed run leaves: its steps, its guests' serials and QEMU logs, the owner's logs.
+evidence = ["/target/server-plan-install-cycle/**"]
 cache = false
 git = true
 timeout_secs = 10800
