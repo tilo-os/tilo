@@ -415,6 +415,8 @@ load_given() {
       id=$(load "$(image_dir "$what")/$stage/oci")
     elif [[ -d $(fragment_dir "$what")/also/$stage/oci ]]; then
       id=$(load "$(fragment_dir "$what")/also/$stage/oci")
+    elif [[ -f $(fragment_dir "$what")/full/oci/index.json ]]; then
+      id=$(load "$(fragment_dir "$what")/full/oci")
     else
       mapfile -t frags < <(fragments_through "$what")
       id=$(load_composition "${frags[@]}")
@@ -448,7 +450,7 @@ cmd_image() {
 }
 
 cmd_layer() {
-  local name=$1 target piece parent id inputs built also
+  local name=$1 target piece parent id inputs built also layers
   target=$(layer_field "$name" target)
   piece=$(layer_field "$name" piece)
   guest_devices
@@ -464,9 +466,15 @@ cmd_layer() {
   if [[ $(layer_field "$name" scratch) != true ]]; then
     parent=$(python3 -I tools/ci/os/pieces.py parent "$name")
     mapfile -t frags < <(fragments_below "$name")
-    below=$scratch/below
-    rm -rf "$below"
-    python3 -I tools/ci/os/oci_layers.py view "$below" "${frags[@]}"
+    # The layer below left the image through it as one layout (full/, below): loaded as it is,
+    # its layers are the ones a node's shared store of layouts already holds unpacked.
+    if [[ -f ${frags[-1]}/full/oci/index.json ]]; then
+      below=${frags[-1]}/full
+    else
+      below=$scratch/below
+      rm -rf "$below"
+      python3 -I tools/ci/os/oci_layers.py view "$below" "${frags[@]}"
+    fi
     id=$(load "$below/oci")
     if [[ $parent == '${BASE_REF}' ]]; then
       podman tag "$id" localhost/tilo-base:pinned
@@ -517,6 +525,17 @@ PY
   rm -rf "$out"
   python3 -I tools/ci/os/oci_layers.py take "$below" "$built" "$out" "$name" "$inputs"
   rm -rf "$built"
+  # The image through this layer as one full layout in OUT/full: the base's and every layer's
+  # blobs as their fragments hold them, in the same order, so the layer above loads it as it
+  # is. Layers shared this way keep their chain IDs from step to step, which is what lets a node
+  # that keeps the layouts' layers unpacked hand them over instead of unpacking them again. The
+  # top layer has none above it; os-image-ARCH composes the whole image.
+  read -ra layers <<<"$(layers_in_order)"
+  if [[ $name != "${layers[-1]}" ]]; then
+    phase full
+    mapfile -t frags < <(fragments_below "$name")
+    python3 -I tools/ci/os/oci_layers.py compose "$out/full" "${frags[@]}" "$out" >/dev/null
+  fi
   # Stages the actions above read beside the layers (the binaries' packing for the derived
   # state), from the same build's cache.
   phase also
