@@ -171,12 +171,16 @@
           },
           {
             "wait_for": {
-              "shown": "New sub-note"
+              "shown": {
+                "menuitem": "New sub-note"
+              }
             }
           },
           {
             "click_any": [
-              "New sub-note"
+              {
+                "menuitem": "New sub-note"
+              }
             ]
           }
         ]
@@ -334,13 +338,15 @@
           },
           {
             "wait_for": {
-              "shown": "Import Markdown…"
+              "shown": {
+                "menuitem": "Import Markdown…"
+              }
             }
           },
           {
             "click_any": [
               {
-                "prefix": "Import Markdown"
+                "menuitem": "Import Markdown…"
               }
             ]
           },

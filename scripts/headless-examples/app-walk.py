@@ -171,10 +171,21 @@ def control(session: Session, selector) -> dict | None:
     """The control `selector` names: an identity (a record kind and its
     operation), a name the widget answers to, `{"prefix": "note-"}` for the
     first control whose name starts that way (a row the app names by its id),
-    or `{"doing": "dpj7scfe"}` for the control that edits the field or runs the
+    `{"doing": "dpj7scfe"}` for the control that edits the field or runs the
     action with that id, on whatever record the window shows it for — the end
-    of an identity is stable where the record it stands on is not."""
-    for target in session.targets():
+    of an identity is stable where the record it stands on is not — or
+    `{"menuitem": "Tag…"}` for the widest drawn control of that name: the row a
+    menu draws for its command, not a button of the window that says the same
+    words."""
+    targets = session.targets()
+    if isinstance(selector, dict) and "menuitem" in selector:
+        found = [
+            target
+            for target in targets
+            if target.get("name") == selector["menuitem"] and drawn(target)
+        ]
+        return max(found, key=lambda target: target["rect"][2]) if found else None
+    for target in targets:
         identity = target.get("identity") or ""
         if isinstance(selector, dict):
             if "prefix" in selector:
