@@ -403,9 +403,11 @@ wait_server_ssh 240 || {
   die 'the retained Fedora did not accept SSH'
 }
 server 'test -e /var/lib/tilo-cycle-root-grown' || die 'cloud-init did not grow the retained root'
-server 'command -v podman >/dev/null' \
-  || server 'sudo dnf install -y --setopt=install_weak_deps=False podman util-linux >/dev/null' \
-  || die 'the retained Fedora has no podman for the privileged staging container'
+# podman runs the privileged staging container; efibootmgr reads back the
+# boot entry it writes.
+server 'command -v podman >/dev/null && command -v efibootmgr >/dev/null' \
+  || server 'sudo dnf install -y --setopt=install_weak_deps=False podman util-linux efibootmgr >/dev/null' \
+  || die 'the retained Fedora has no podman and efibootmgr for the staging'
 # A disk nobody has partitioned yet carries no table at all, which `sfdisk
 # --json` answers as an error rather than an empty list: `lsblk` reads the
 # device either way.
