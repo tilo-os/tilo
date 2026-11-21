@@ -1322,7 +1322,10 @@ fn hex32(text: &str, what: &str) -> Result<[u8; 32], JsError> {
 
 #[path = "peer_js_state.rs"]
 mod js_state;
-use js_state::*;
+use js_state::{
+    JsCallOperation, JsVoiceEvent, JsWanted, is_durable, is_live, is_voice, js_layer, js_source,
+    layer_of_name, own_revocations, source_of_name, voice_event, workspace_of,
+};
 
 /// A running certified peer.
 #[wasm_bindgen]

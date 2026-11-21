@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    Deserialize, DeviceCert, DeviceSigner, Event, JsError, RefCell, RevocationEntry,
+    RevocationList, Serialize, WorkspaceId, hex32, js_error,
+};
 
 /// `{publish, subscribe}`.
 #[derive(Serialize, Deserialize)]
@@ -297,7 +300,9 @@ pub(super) enum JsCallOperation {
 }
 
 impl JsCallOperation {
-    pub(super) fn into_operation(self) -> Result<tilo_server_protocol::voice::CallOperation, JsError> {
+    pub(super) fn into_operation(
+        self,
+    ) -> Result<tilo_server_protocol::voice::CallOperation, JsError> {
         use tilo_server_protocol::voice::{CallOperation, Directions};
         Ok(match self {
             Self::Open {
