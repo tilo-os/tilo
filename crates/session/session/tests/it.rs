@@ -63,8 +63,6 @@ mod canvas_point;
 mod canvas_turn_open;
 #[path = "chat_2x2.rs"]
 mod chat_2x2;
-#[path = "chat_view.rs"]
-mod chat_view;
 #[path = "clipboard_fabric.rs"]
 mod clipboard_fabric;
 #[path = "clipboard_files.rs"]

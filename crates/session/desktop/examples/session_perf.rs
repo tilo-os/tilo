@@ -195,7 +195,6 @@ fn fixture(
     let mut catalog = ApplicationCatalog::new();
     let definitions = [
         word_processor::definition(),
-        chat::definition(),
         sheets::definition(),
     ];
     // The host's catalogue holds each app once, as a session's does; a tab names it again without
@@ -224,13 +223,12 @@ fn fixture(
                             id,
                             definition.resource_type.clone(),
                         );
-                        // Chat's tabs of one workspace share the package's record, so a tab that is
-                        // not the first opens what one before it made.
+                        // An app's tabs of one workspace share the package's record, so a tab
+                        // that is not the first opens what one before it made.
                         if created.insert((definition.app_id().to_string(), checkout.id.clone())) {
                             store.create_resource(&checkout).unwrap();
                             store.with(&checkout.id, |doc| match which {
                                 0 => word_processor::initialize_empty_document(doc).unwrap(),
-                                1 => chat::demo::start(doc, "author").unwrap(),
                                 // Sheets opens an empty workbook of its own on a blank record.
                                 _ => {}
                             });
@@ -662,7 +660,7 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<(), String> {
     let mut json_path = None;
-    let mut tabs_per_window = 3usize;
+    let mut tabs_per_window = 2usize;
     let mut profile = Profile::Arriving;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -698,7 +696,7 @@ fn run() -> Result<(), String> {
             other => return Err(format!("unknown argument {other}")),
         }
     }
-    let tabs_per_window = tabs_per_window.clamp(1, 3);
+    let tabs_per_window = tabs_per_window.clamp(1, 2);
     let device = std::env::var("TILO_PERF_DEVICE").unwrap_or_else(|_| "unlabelled".into());
     if profile == Profile::Activities {
         return run_activities(json_path, &device);

@@ -159,18 +159,13 @@ pub(crate) struct Shared {
     /// shows them.
     #[cfg(target_os = "linux")]
     pub(crate) pages: Rc<RefCell<crate::page_track::PageTracks>>,
-    /// The turns this session's agents answer: a person's message in a
-    /// conversation the agent takes part in, read every pass from Chat's
-    /// record of each workspace.
-    #[cfg(target_os = "linux")]
-    pub(crate) conversations: std::rc::Rc<crate::conversations::Conversations>,
     /// The agents each workspace keeps, read every pass from its record of
     /// them: who keeps an agent is that record's word, and what the broker
     /// admits an agent's session on.
     #[cfg(target_os = "linux")]
     pub(crate) agents: std::rc::Rc<crate::agents::Agents>,
-    /// The workspaces' records the session reads and writes itself — Chat's agents, emoji and
-    /// conversations — as the workspace holds them: replicated with the engine as either moves.
+    /// The workspaces' records the session reads and writes itself — Chat's agents and emoji
+    /// — as the workspace holds them: replicated with the engine as either moves.
     #[cfg(target_os = "linux")]
     pub(crate) records: crate::engine_records::EngineRecords,
     /// The agents the person admitted at its MCP server, as the session and the bar show them.

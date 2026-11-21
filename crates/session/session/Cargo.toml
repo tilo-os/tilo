@@ -48,11 +48,11 @@ dev-session = []
 # throwaway identity, so the feature carries the identity crate's minting too: a
 # session built on its own (a component swap) mints as a dev image's does.
 dev-overrides = ["tilo-identity/throwaway-test-identity"]
-# Publishes a Rust app's (Tube's, Chat's) resources and views in a development session, so a
-# shell draws them live: Tube's sample catalogue and Chat's demo conversation, with the views a
+# Publishes a Rust app's (Tube's) resources and views in a development session, so a
+# shell draws them live: Tube's sample catalogue, with the views a
 # `#[view]` declares, never the live worker. A shot of a Rust app's view on the canvas builds
 # with it (`--features dev-rust-views`); a production image never does.
-dev-rust-views = ["dep:tube", "chat/samples"]
+dev-rust-views = ["dep:tube"]
 # The session's search sources (`search::SEARCH_FEED`) are handed over by the
 # bundling crate, with the desktop's search engine, rather than linked: the
 # browser desktop fetches them as their own module.
@@ -227,10 +227,6 @@ tilo-dictation = { path = "../dictation" }
 # into it from their workspace (`crate::style_packages`), which needs the store's writer.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
-# The conversations this session's agents answer in: what Chat keeps of a
-# workspace, read here the way the app reads it, so this session runs an agent
-# on a turn a person's message started.
-chat = { path = "../../../apps/chat", default-features = false }
 # Where a login's time went, when `TILO_STARTUP_METRICS_PATH` asks
 # (`tools/perf/startup_marks.py` reads it).
 # The person's accessibility settings: the assists, the colour filter and
@@ -480,9 +476,6 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# Chat's own writers, which post a message into a part as its window does: what the person's
-# mentions are tested against is what Chat writes, not a hand-made stand-in.
-chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 # A Windows program that shows through X11, as a Proton program does: the stand-in draws its
 # window on the X11 display its keeper serves.
 x11rb = { version = "0.13", default-features = false }

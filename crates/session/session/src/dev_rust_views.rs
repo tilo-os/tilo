@@ -1,112 +1,40 @@
 //! A Rust app's resources and views in a development session, so a shell draws them live.
 //!
 //! Built only with `dev-rust-views` (a shot of a Rust app's view on the canvas): the sample
-//! catalogue of Tube's channels and videos, each a resource of the app `tube`, and the demo
-//! workspace's `#design-crit` channel of Chat,
-//! each a resource of its app, published as the session publishes any app's resources, and the
-//! views `#[view]` declared in the crates registered with the shell's runtime, so a place that
-//! shows a channel draws that app's own `page` (one-app-model.md §2). Chat's channel takes Chat's
-//! own `send`, written into the demo workspace the same service keeps, so the composer a person
-//! types in adds a message the page draws. A person's session, and every production
-//! image, carries none of it.
+//! catalogue of Tube's channels and videos, each a resource of the app `tube`, published as the
+//! session publishes any app's resources, and the views `#[view]` declared in the crates
+//! registered with the shell's runtime, so a place that shows a channel draws that app's own
+//! `page` (one-app-model.md §2). A person's session, and every production image, carries none
+//! of it.
 
 use serde_json::Value as Json;
 use tilo_actions::{ApiError, ResourceSpec};
-use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
 
-/// The chat channel the demo workspace opens: what a place showing it draws Chat's page over.
-const CHAT_CHANNEL: &str = "c_crit";
-
-/// A small channel of the demo workspace, holding one message: a page whose whole transcript
-/// stands within its view, so a shot of an attachment's press has the row in reach.
-pub const CHAT_SHORT_CHANNEL: &str = "c_general";
-
-/// Tube's sample channels and videos and Chat's demo conversation, as the session publishes
-/// them: each a resource of its app, a channel through its `page` view.
+/// Tube's sample channels and videos, as the session publishes them: each a resource of its
+/// app, a channel through its `page` view.
 pub struct RustApps {
     model: tube::model::TubeModel,
-    /// Chat's demo workspace, read and written as its window does: the channel's messages and
-    /// what its composer sends.
-    chat: chat::demo::Workspace,
 }
 
 impl RustApps {
-    /// The apps' sample catalogue, and the views this crate links registered with the shell.
-    ///
-    /// # Errors
-    ///
-    /// The demo chat could not be written.
-    pub fn new() -> Result<Self, tilo_actions::ApiError> {
-        let mut apps = Self {
+    /// The app's sample catalogue, and the views this crate links registered with the shell.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
             model: tube::sample::model(),
-            chat: chat::demo::Workspace::demo()?,
-        };
-        apps.share_a_record();
-        Ok(apps)
-    }
-
-    /// The demo conversation's page, as its place draws it.
-    fn chat_channel(&self) -> chat::views::Channel {
-        chat::views::Channel::read(
-            &self.chat.read(),
-            &self.chat.message_rows(CHAT_CHANNEL),
-            CHAT_CHANNEL,
-            &tilo_resource::MemberId::person(chat::model::ME),
-            &chat::views::Names::default(),
-        )
-    }
-
-    /// The page of the small demo channel `CHAT_SHORT_CHANNEL`, whose whole transcript stands
-    /// within a place: what a shot of an attachment's press draws.
-    fn chat_short_channel(&self) -> chat::views::Channel {
-        chat::views::Channel::read(
-            &self.chat.read(),
-            &self.chat.message_rows(CHAT_SHORT_CHANNEL),
-            CHAT_SHORT_CHANNEL,
-            &tilo_resource::MemberId::person(chat::model::ME),
-            &chat::views::Names::default(),
-        )
-    }
-
-    /// Share the sample video `vid_rust_async` in the small demo channel, as a person sharing a
-    /// record does: the message the channel then shows carries a row that places the video,
-    /// which the session publishes (Tube's own). A development fixture, so a shot of an
-    /// attachment's press has one to press, in a transcript short enough to reach it.
-    fn share_a_record(&mut self) {
-        let Some(video) = self
-            .model
-            .videos
-            .iter()
-            .find(|video| video.id == "vid_rust_async")
-        else {
-            return;
-        };
-        let at = tilo_reference::ResourceAt {
-            app: "so.tilo.tube".to_owned(),
-            record: None,
-            reference: tilo_reference::ResourceRef::whole(
-                "tube.video",
-                format!("tube.video:{}", video.id),
-                video.title.clone(),
-            ),
-        };
-        let invoke = chat::parts::ChatMessages::SHARE_RESOURCE.with(
-            chat::messages::chat_messages::ShareResource {
-                channel: tilo_resource::Id::from_raw(CHAT_SHORT_CHANNEL),
-                attached: at,
-                text: Some("Worth a watch".to_owned()),
-                mentions: None,
-            },
-        );
-        let _ = self
-            .chat
-            .apply_part_as(&tilo_resource::MemberId::person(chat::model::ME), invoke);
+        }
     }
 }
 
-/// The development session's sample rows, as declared types: Tube's channels and videos, and
-/// Chat's channels, exactly as those apps declare them.
+impl Default for RustApps {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The development session's sample rows, as declared types: Tube's channels and videos,
+/// exactly as that app declares them.
 pub struct SampleChannel;
 
 impl tilo_resource::words::RowType for SampleChannel {
@@ -119,13 +47,6 @@ pub struct SampleVideo;
 impl tilo_resource::words::RowType for SampleVideo {
     const KIND: &'static str = "tube.video";
     const LABEL: &'static str = "Video";
-}
-
-pub struct SampleConversation;
-
-impl tilo_resource::words::RowType for SampleConversation {
-    const KIND: &'static str = "chat.workspace.channels";
-    const LABEL: &'static str = "Channel";
 }
 
 impl Service for RustApps {
@@ -163,34 +84,7 @@ impl Service for RustApps {
             spec.app_id = Some("tube".to_owned());
             spec
         });
-        let conversations = [self.chat_channel(), self.chat_short_channel()];
-        let chat: Vec<ResourceSpec> = conversations
-            .into_iter()
-            .map(|conversation| {
-                let mut chat = tilo_resource::typed_resource::<SampleConversation>(
-                    conversation.resource().id,
-                    format!("#{}", conversation.name),
-                )
-                // Chat's own words for a channel, as its window publishes it.
-                .with_type(tilo_actions::ResourceType {
-                    noun: tilo_actions::Noun::new("channel", "channels"),
-                    app: tilo_actions::Noun::new("Chat", "Chat"),
-                    root: false,
-                })
-                .with_view(tilo_actions::ResourceViewSpec::new(
-                    "page",
-                    conversation.name,
-                    "open",
-                ));
-                // What the page's composer runs: Chat's own `send`, as Chat declares it.
-                if let Some(send) = chat::effects::ChatEffect::spec(SEND) {
-                    chat = chat.with_action(send);
-                }
-                chat.app_id = Some("chat".to_owned());
-                chat
-            })
-            .collect();
-        channels.chain(videos).chain(chat).collect()
+        channels.chain(videos).collect()
     }
 
     fn read(&self, resource: &str) -> Option<Json> {
@@ -206,97 +100,15 @@ impl Service for RustApps {
                 .find(|video| video.id == id)
                 .and_then(|video| serde_json::to_value(video).ok());
         }
-        if let Some(rest) = resource
-            .strip_prefix("chat.workspace/channels/")
-            .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
-        {
-            let id = rest.to_owned();
-            let conversation = [self.chat_channel(), self.chat_short_channel()]
-                .into_iter()
-                .find(|channel| channel.id == id)?;
-            return serde_json::to_value(&conversation).ok();
-        }
         None
     }
 
     fn invoke(
         &mut self,
-        resource: &str,
-        action: &str,
-        arguments: &serde_json::Map<String, Json>,
+        _resource: &str,
+        _action: &str,
+        _arguments: &serde_json::Map<String, Json>,
     ) -> Result<Started, ApiError> {
-        // The composer's send, read as Chat reads its own `send`: a message from the person
-        // typing, in each conversation it goes to.
-        if action == SEND
-            && (resource.starts_with("chat.workspace/channels/")
-                || resource.starts_with("chat.workspace.channels:"))
-        {
-            let chat::effects::ChatEffect::Send { to, text, .. } =
-                chat::effects::ChatEffect::decode(SEND, arguments)
-                    .map_err(|error| ApiError::Failed(format!("{error:?}")))?
-            else {
-                return Err(ApiError::Failed(format!("`{SEND}` is not a send")));
-            };
-            if !text.trim().is_empty() {
-                for conversation in &to {
-                    self.chat
-                        .say(
-                            &tilo_resource::MemberId::person(chat::model::ME),
-                            &conversation.id,
-                            &text,
-                        )
-                        .map_err(|error| ApiError::Failed(format!("{error:?}")))?;
-                }
-            }
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
-    }
-}
-
-/// Chat's own `send`: what its window, its agents and the shell's send-to box run.
-const SEND: &str = "send";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_chat_channel_service_publishes_its_messages_and_their_people() {
-        let apps = RustApps::new().unwrap();
-        let published: Vec<String> = apps
-            .resources()
-            .into_iter()
-            .filter(|spec| spec.kind == "chat.workspace.channels")
-            .map(|spec| spec.id.as_str().to_owned())
-            .collect();
-        assert_eq!(
-            published,
-            [
-                "chat.workspace.channels:c_crit",
-                "chat.workspace.channels:c_general"
-            ],
-            "the demo's conversation and its short channel are published"
-        );
-        let reading = apps
-            .read("chat.workspace.channels:c_crit")
-            .expect("the channel's reading");
-        let channel: chat::views::Channel =
-            serde_json::from_value(reading).expect("the reading is a channel");
-        assert_eq!(channel.name, "design-crit");
-        assert!(
-            !channel.messages.is_empty(),
-            "the demo channel holds messages"
-        );
-        let first = &channel.messages[0];
-        assert!(!first.text.trim().is_empty(), "a message says something");
-        let author = channel
-            .person(&first.author)
-            .unwrap_or_else(|| panic!("the page names {} in {:?}", first.author, channel.people));
-        assert_ne!(
-            author.name,
-            first.author.id(),
-            "a person is named, not their id"
-        );
     }
 }

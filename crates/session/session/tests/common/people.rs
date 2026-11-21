@@ -2145,7 +2145,7 @@ impl Chat<'_> {
         let answer = self.device.ask(&json!({
             "op": "resource_read",
             "app": "so.tilo.chat",
-            "records": ["", chat::parts::part(0).to_string()],
+            "records": ["", ui::resource::DocumentId::derived("messages", &ui::resource::DocumentId::workspace_default()).part(0).to_string()],
             "after": after,
             "wait_ms": u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
         }));
@@ -2318,11 +2318,10 @@ impl HeldChat {
     /// `peer` wrote lie past this person's read mark (a part, and how many of the conversation's
     /// messages in it they saw).
     fn conversation(&self, peer: &str) -> Result<Conversation, String> {
-        use chat::chat::Chat;
         let me = tilo_actions::policy::MemberId::person(self.me.clone());
         let them = tilo_actions::policy::MemberId::person(peer);
         let slot = |member: &tilo_actions::policy::MemberId| {
-            chat::chat::member_marks(member).as_str().to_owned()
+            tilo_resource::text::author_mark(member)
         };
         if peer == self.me {
             return Err(format!("Chat knows no person {peer}"));
@@ -2336,7 +2335,7 @@ impl HeldChat {
         // A message keeps its author as the member's JSON, in a string.
         let author = Value::String(serde_json::to_string(&me).expect("a member serializes"));
         let mark = &self.chat["read"][&slot(&me)];
-        let channel = Chat::direct_id([me, them]).to_string();
+        let channel = tilo_actions::policy::MemberId::direct_conversation([me, them]);
         let mark = &mark[&channel];
         let (from, seen) = (
             mark["part"].as_u64().unwrap_or(0),
