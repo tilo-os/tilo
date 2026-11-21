@@ -101,21 +101,6 @@ impl Drop for AutoCommit {
 }
 
 impl AutoCommit {
-    /// TILO(batch-siblings): objects made under keys of the map `obj`, as
-    /// the native [`AutoCommit`] makes them: their ids, in the order of
-    /// `values`. The host's document puts each one into its op set as it
-    /// comes, so a model module asks for them one at a time.
-    pub fn batch_create_objects<O: AsRef<ExId>>(
-        &mut self,
-        obj: O,
-        values: &[(&str, &hydrate::Value)],
-    ) -> Result<Vec<ExId>, AutomergeError> {
-        values
-            .iter()
-            .map(|(key, value)| self.batch_create_object(obj.as_ref(), *key, value, false))
-            .collect()
-    }
-
     /// The document the host's request is about: what a verb applies to and
     /// a genesis initializes.
     pub fn of_device() -> AutoCommit {
