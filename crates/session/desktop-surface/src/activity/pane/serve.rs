@@ -55,42 +55,6 @@ const fn kind(kind: ui::widget::EntryKind) -> wire::Kind {
     }
 }
 
-/// The app a change was made in, as a person names it: its own name, or for a first-party app
-/// that gave only its id, the name the desktop shows it by.
-fn app_name(app: &ui::tilo_actions::ActionApp) -> Option<String> {
-    let named = ui::human_label(&app.label, &app.id)
-        .filter(|label| *label != app.id && !label.contains('.'))
-        .map(str::to_owned);
-    named.or_else(|| tilo_app_id::apps::builtin_label_for_app_id(&app.id))
-}
-
-/// The record a change was made in, when it is one a person knows by its title: a note, a
-/// channel, a document. An app's own collection (its messages, its issues, its folder) is named
-/// by its kind, not a title, and the change reads as made in the app instead.
-fn place_record(context: &ui::tilo_actions::ActionContext) -> Option<String> {
-    let resource = context.resource.as_ref()?;
-    let label = ui::human_label(&resource.label, &resource.id)?;
-    let kind_word = resource
-        .kind
-        .rsplit(['.', ':', '/'])
-        .next()
-        .unwrap_or_default();
-    let names_kind = |word: &str| {
-        let label = label.trim().to_lowercase();
-        let word = word.trim().to_lowercase();
-        !word.is_empty()
-            && (label == word
-                || label.strip_suffix('s') == Some(word.as_str())
-                || word.strip_suffix('s') == Some(label.as_str()))
-    };
-    let generic = resource.id == resource.kind
-        || names_kind(kind_word)
-        || context.app.as_ref().is_some_and(|app| {
-            names_kind(&app.label) || app_name(app).is_some_and(|name| names_kind(&name))
-        });
-    (!generic).then(|| label.to_owned())
-}
-
 fn target(target: &ui::HistoryResourceTarget) -> wire::Target {
     wire::Target {
         app_id: target.app_id.clone(),
@@ -548,8 +512,8 @@ impl WorkspaceActivityPane {
             }),
             app: context
                 .and_then(|context| context.app.as_ref())
-                .and_then(app_name),
-            resource: context.and_then(place_record),
+                .and_then(ui::history_source::place_app),
+            resource: context.and_then(ui::history_source::place_record),
             group: group.cloned().flatten(),
             redacted: entry.redaction.is_some(),
             refused: refused.unwrap_or_default().to_vec(),

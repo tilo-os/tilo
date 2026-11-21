@@ -1615,26 +1615,21 @@ impl ActivityTimeline {
         true
     }
 
-    /// Human provenance kept deliberately compact for a one-line history
-    /// row. Legacy entries have no synthetic origin label; action-backed
-    /// entries retain the app/resource path that a reader can actually use.
+    /// Where a change happened, as a person knows the place, for a one-line history row: the app
+    /// by its name, and the record by its title when it has one of its own ("Notes / Spring plans").
+    /// An app's own collection (its issues, its folder) is the app itself, never named by its kind.
     fn entry_breadcrumb(entry: &HistoryEntry) -> Option<String> {
         let context = entry.context.as_ref()?;
-        let mut parts = Vec::new();
-        if let Some(app) = context
-            .app
-            .as_ref()
-            .filter(|app| !app.label.trim().is_empty())
-        {
-            parts.push(app.label.trim().to_string());
-        }
-        if let Some(resource) = context
-            .resource
-            .as_ref()
-            .filter(|resource| !resource.label.trim().is_empty())
-        {
-            parts.push(resource.label.trim().to_string());
-        }
+        let parts: Vec<String> = [
+            context
+                .app
+                .as_ref()
+                .and_then(crate::history_source::place_app),
+            crate::history_source::place_record(context),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         (!parts.is_empty()).then(|| parts.join(" / "))
     }
 

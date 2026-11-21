@@ -182,6 +182,22 @@ fn provenance_and_author_pill_presentation() {
             ActivityTimeline::entry_breadcrumb(&timeline.entries()[0]).as_deref(),
             Some("Files / brief.md")
         );
+        // An app's own collection is the app, by the name a person knows it: never the
+        // collection's kind ("Issues", "Folder"), nor the app's id.
+        for (app, label, kind, collection, said) in [
+            ("so.tilo.tasks", "so.tilo.tasks", "tasks.issues", "Issues", "Tasks"),
+            ("so.tilo.file-explorer", "so.tilo.file-explorer", "files.folder", "Folder", "Files"),
+            ("so.tilo.chat", "Chat", "chat.messages", "Messages", "Chat"),
+        ] {
+            let mut own = entry(EntryKind::Text, "Alice", 12, 3);
+            own.context =
+                Some(ActionContext::for_resource(kind, kind, collection).with_app(app, label));
+            assert_eq!(
+                ActivityTimeline::entry_breadcrumb(&own).as_deref(),
+                Some(said),
+                "{app}'s {collection}"
+            );
+        }
         timeline.set_all_expanded(false);
         let group = (0..timeline.row_count())
             .find(|row| timeline.group_at_row(*row).is_some())
