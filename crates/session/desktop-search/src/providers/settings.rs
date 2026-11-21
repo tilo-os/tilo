@@ -312,9 +312,16 @@ mod tests {
             .find(|setting| setting.id == "notifications.banners")
             .expect("Settings indexes notification banners");
         let keywords = setting.search_words();
-        let row = ("Notification banners", keywords.as_slice(), Some("Notifications"));
+        let row = (
+            "Notification banners",
+            keywords.as_slice(),
+            Some("Notifications"),
+        );
         let found = |needle| crate::rank::published_action_match_scores(needle, [row])[0].is_some();
-        assert!(!found("Ben"), "the German name does not surface it: {keywords:?}");
+        assert!(
+            !found("Ben"),
+            "the German name does not surface it: {keywords:?}"
+        );
         assert!(found("ban"), "the English name does: {keywords:?}");
         assert!(found("banners"), "{keywords:?}");
         assert!(found("toasts"), "a word people use for it: {keywords:?}");

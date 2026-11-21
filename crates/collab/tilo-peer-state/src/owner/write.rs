@@ -521,7 +521,7 @@ impl NativeWorkspaceOwner {
                     }
                     if envelope.author.as_bytes() != &device {
                         return Err(
-                            "native local publication signer differs from selected device".into()
+                            "native local publication signer differs from selected device".into(),
                         );
                     }
                     // The replica must hold this exact op as this device's own write: what the
@@ -529,9 +529,7 @@ impl NativeWorkspaceOwner {
                     match live.lookup_exact_local_document(app, document, envelope, now) {
                         Ok(Some(_)) => {}
                         Ok(None) => {
-                            return Err(
-                                "a published write is not admitted by this replica".into()
-                            );
+                            return Err("a published write is not admitted by this replica".into());
                         }
                         Err(AdmissionError::ChangeRefused(change)) => {
                             waiting = Some(WriteRefusal::ChangeRefused(change));

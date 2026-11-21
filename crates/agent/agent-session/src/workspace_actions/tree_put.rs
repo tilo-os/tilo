@@ -602,7 +602,9 @@ impl Worker {
                 // it, so the change it makes follows the document's own.
                 known = Some(match self.refreshed_for(workspace_id, &route, true) {
                     Ok(state) => state,
-                    Err(_) => return Err("the workspace's tree could not be read to name it".into()),
+                    Err(_) => {
+                        return Err("the workspace's tree could not be read to name it".into());
+                    }
                 });
             }
             if holds

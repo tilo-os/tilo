@@ -406,7 +406,10 @@ impl LiveHost for Fake {
             "{}{unit}",
             login.map(|l| format!("{}:", l.user)).unwrap_or_default()
         );
-        self.failed_already.borrow().iter().any(|failed| failed == unit)
+        self.failed_already
+            .borrow()
+            .iter()
+            .any(|failed| failed == unit)
             || (self.failing.borrow().iter().any(|failing| failing == unit)
                 && self.restarted.borrow().contains(&named))
     }

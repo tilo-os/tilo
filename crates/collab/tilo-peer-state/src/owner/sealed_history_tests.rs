@@ -1621,11 +1621,10 @@ async fn a_write_the_holder_signed_and_admitted_is_published_once() {
                 .peer()
                 .draft_write((APP, ""), None, &frame, None, author, 0, now)?;
             collab_types::sign_op(&mut op, &key).map_err(|error| error.to_string())?;
-            view.replica()
-                .write(|peer| {
-                    peer.admit_new_local_document(APP, "", op.clone(), now)
-                        .map_err(|refused| refused.to_string())
-                })?;
+            view.replica().write(|peer| {
+                peer.admit_new_local_document(APP, "", op.clone(), now)
+                    .map_err(|refused| refused.to_string())
+            })?;
             Ok(OwnerCommitRequest {
                 workspace: workspace.to_string(),
                 operation: CommitOperation::Document {
@@ -1641,7 +1640,11 @@ async fn a_write_the_holder_signed_and_admitted_is_published_once() {
     let committed = owner
         .commit_admitted(workspace, vec![request.clone()], now)
         .expect("the write is published");
-    assert_eq!(committed.len(), 1, "the write is published as it was signed");
+    assert_eq!(
+        committed.len(),
+        1,
+        "the write is published as it was signed"
+    );
     assert_eq!(
         ownership(owner, workspace, now).len(),
         1,

@@ -59,8 +59,7 @@ pub fn locate(query: &str, text: &str, weight: FieldWeight) -> Option<Range<usiz
             .map(|(at, _)| at)
             .find(|at| starts_word(*at) && ends_word(*at))?
     } else {
-        let inside_run =
-            infix_allowed(&scalars) && MatchTier::Contains.rank_in(weight).is_some();
+        let inside_run = infix_allowed(&scalars) && MatchTier::Contains.rank_in(weight).is_some();
         let mut occurrences = folded.match_indices(query.as_str()).map(|(at, _)| at);
         let first = occurrences.next()?;
         let at = if starts_word(first) {

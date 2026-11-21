@@ -266,9 +266,7 @@ impl Task {
                 self.count_ownership();
             }
             // What it waits for is still coming: its record here, or a signature.
-            Err(
-                refusals @ (WriteRefusal::Waiting(_) | WriteRefusal::Unsigned(_)),
-            ) => {
+            Err(refusals @ (WriteRefusal::Waiting(_) | WriteRefusal::Unsigned(_))) => {
                 tracing::debug!(app = %route.app_id, record = %route.document, %refusals,
                     "a signed write waits to be published");
                 self.pending_signed

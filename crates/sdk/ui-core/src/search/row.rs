@@ -89,11 +89,7 @@ impl RowFace {
     /// A member an app knows by name and identity alone, in the colour the one rule gives
     /// them ([`crate::presence::identity_colour_of`]).
     #[must_use]
-    pub fn of_member(
-        name: impl Into<String>,
-        identity: impl Into<String>,
-        is_agent: bool,
-    ) -> Self {
+    pub fn of_member(name: impl Into<String>, identity: impl Into<String>, is_agent: bool) -> Self {
         let identity = identity.into();
         Self {
             colour: crate::presence::identity_colour_of(&identity, is_agent),
@@ -108,13 +104,8 @@ impl RowFace {
     /// ([`crate::widget::AvatarFace`]): their colour, an agent's mark for software.
     #[must_use]
     pub fn avatar(&self) -> crate::widget::AvatarFace<'_> {
-        let face = crate::widget::AvatarFace::new(&self.name, &self.identity)
-            .presence(self.colour);
-        if self.is_agent {
-            face.agent()
-        } else {
-            face
-        }
+        let face = crate::widget::AvatarFace::new(&self.name, &self.identity).presence(self.colour);
+        if self.is_agent { face.agent() } else { face }
     }
 }
 
