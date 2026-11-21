@@ -1753,7 +1753,7 @@ async fn a_key_made_for_a_script_reaches_the_workspaces_stores_as_its_persons_ag
         }
         let kept = asked(&on_laptop.device, laptop_in, list(), &json!({}))
             .await
-            .expect("her own device lists her vault");
+            .expect("her own device lists the workspace's vault");
         assert_eq!(kept["items"].as_array().map(Vec::len), Some(1), "{kept}");
 
         // The key itself, read from its token as every API server reads it: a server key, which

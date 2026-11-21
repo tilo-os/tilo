@@ -3,12 +3,12 @@
 //!
 //! The whole way through the server's own interfaces. She writes one sentence, "log in my mail
 //! account" and its address. Her assistant's one tool call hands the server that address and
-//! nothing else. The server works out the account's two servers, asks her for the password
-//! itself, on her own device in the system's protected field, with a question that names both
-//! servers, keeps what she typed in the workspace's vault, signs in with it, keeps the account in the workspace and wakes the
-//! assistant once. Nobody is asked to allow a use. The password is in no request a model was
-//! sent, no message, no log line and no file of the server in the clear, and on this way the
-//! model never holds even the item's reference.
+//! nothing else. The server works out the account's two servers, asks her for the password itself,
+//! on her own device in the system's protected field, with a question that names both servers,
+//! keeps what she typed in the workspace's vault, signs in with it, keeps the account in the
+//! workspace and wakes the assistant once. Nobody is asked to allow a use. The password is in no
+//! request a model was sent, no message, no log line and no file of the server in the clear, and on
+//! this way the model never holds even the item's reference.
 //!
 //! The network is stood in for: what works an address's servers out and what proves a sign-in
 //! answer from this file. A password her mail server refuses is asked for again by the server
@@ -23,7 +23,7 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation, Typ
 const ADDRESS: &str = "ada@example.test";
 const READS: &str = "imap.provider.test";
 const SENDS: &str = "smtp.provider.test";
-/// Where a sign-in for those two servers belongs, as her vault names it.
+/// Where a sign-in for those two servers belongs, as the workspace's vault names it.
 const PLACES: [&str; 2] = [
     "imap://imap.provider.test:993",
     "smtp://smtp.provider.test:465",
@@ -252,7 +252,7 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
     );
     assert!(her_mail(&mut hosted).await.is_empty(), "nothing yet");
 
-    // She types. Her server keeps it in her vault, signs in, keeps the account in the
+    // She types. Her server keeps it in the workspace's vault, signs in, keeps the account in the
     // workspace, and her assistant is told once and says so in one line.
     she_types(&devices, 0, TYPED);
     let told = the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
@@ -263,9 +263,9 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
     assert_eq!(
         signed_in.lock().unwrap().clone(),
         vec![ADDRESS.to_owned()],
-        "her account is signed in with what her vault keeps, once"
+        "her account is signed in with what the workspace's vault keeps, once"
     );
-    let vault = hosted.her_vault().await;
+    let vault = hosted.workspace_vault().await;
     assert_eq!(vault.len(), 1, "{vault:?}");
     assert_eq!(
         vault[0]["belongsTo"],
@@ -325,7 +325,7 @@ async fn a_password_her_mail_server_refuses_is_asked_for_again_by_the_server_its
         "the second question says what was refused: {words}"
     );
     assert!(
-        hosted.her_vault().await.is_empty(),
+        hosted.workspace_vault().await.is_empty(),
         "the item she mistyped is not kept"
     );
     assert!(her_mail(&mut hosted).await.is_empty(), "no account is kept");
@@ -354,7 +354,7 @@ async fn a_password_her_mail_server_refuses_is_asked_for_again_by_the_server_its
     the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
     assert_eq!(signed_in.lock().unwrap().clone(), vec![ADDRESS.to_owned()]);
     assert_eq!(her_mail(&mut hosted).await.len(), 1);
-    assert_eq!(hosted.her_vault().await.len(), 1, "what she typed last");
+    assert_eq!(hosted.workspace_vault().await.len(), 1, "what she typed last");
     assert_eq!(
         hosted.model.asked().len(),
         3,
@@ -378,7 +378,8 @@ async fn declining_or_not_answering_signs_nothing_in_and_tells_the_assistant() {
     devices.answer(0, ConfirmationAnswer::Deny);
     let told = the_assistant_is_told(&hosted, "Nothing was signed in.").await;
     assert!(told.contains("declined"), "{told}");
-    assert!(hosted.her_vault().await.is_empty());
+    let kept = hosted.workspace_vault().await;
+    assert!(kept.is_empty(), "the workspace's vault keeps nothing more: {kept:?}");
     assert!(her_mail(&mut hosted).await.is_empty());
     assert!(signed_in.lock().unwrap().is_empty());
     nothing_asks_in_chat(&hosted).await;
@@ -391,7 +392,7 @@ const OWN_ADDRESS: &str = "ada@nowhere.test";
 const OWN_SERVER: &str = "mail.nowhere.test";
 const OWN_READS: &str = "mail.nowhere.test:1993";
 const OWN_SENDS: &str = "mail.nowhere.test:1587";
-/// Where a sign-in for that server belongs, as her vault names it.
+/// Where a sign-in for that server belongs, as the workspace's vault names it.
 const OWN_PLACES: [&str; 2] = [
     "imap://mail.nowhere.test:1993",
     "smtp://mail.nowhere.test:1587",
@@ -439,7 +440,7 @@ async fn a_server_named_with_its_port_is_signed_in_to_at_that_port() {
     // account at the ports she named.
     she_types(&devices, 0, TYPED);
     the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
-    let vault = hosted.her_vault().await;
+    let vault = hosted.workspace_vault().await;
     assert_eq!(
         vault[0]["belongsTo"],
         serde_json::json!(OWN_PLACES),
@@ -521,7 +522,8 @@ async fn what_a_telling_is_refused_for_asks_nobody_for_a_password() {
         assert_eq!(devices.count(), 0, "{what}: nobody is asked for a password");
     }
     assert!(her_mail(&mut hosted).await.is_empty());
-    assert!(hosted.her_vault().await.is_empty());
+    let kept = hosted.workspace_vault().await;
+    assert!(kept.is_empty(), "the workspace's vault keeps nothing more: {kept:?}");
     assert!(signed_in.lock().unwrap().is_empty());
     hosted.page.peer.close();
 }

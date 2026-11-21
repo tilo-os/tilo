@@ -17,7 +17,7 @@ use tilo_session_actions::SessionActions;
 const KEY: &str = "made-up-key-of-a-page-only-person-0123456789";
 /// What the stand-in for her mail servers takes as her password. Made up for this file.
 const PASSWORD: &str = "only-her-mail-servers-may-read-this";
-/// A made-up sign-in for a site, kept in her vault.
+/// A made-up sign-in for a site, kept in the workspace's vault.
 const SITE_SECRET: &str = "made-up-site-password-for-a-vault-entry";
 
 /// The desktop session a page serves its windows, carrying what the workspace's server keeps to

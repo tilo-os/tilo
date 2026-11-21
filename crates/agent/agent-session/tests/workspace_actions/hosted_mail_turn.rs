@@ -637,7 +637,7 @@ async fn the_password_reached_the_servers_and_nothing_else(
     let signed_in = servers.signed_in.lock().unwrap().clone();
     assert!(
         signed_in.len() >= 5 && signed_in.iter().all(|password| password == PASSWORD),
-        "each of the {} requests signed in with what her vault keeps",
+        "each of the {} requests signed in with what the workspace's vault keeps",
         signed_in.len()
     );
     let asked = hosted.model.asked();

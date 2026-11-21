@@ -1,14 +1,14 @@
 //! A person's assistant on the server signs in to their mail with a password it never sees, with
 //! no device of theirs on while it works.
 //!
-//! The whole chain through the server's own interfaces: the assistant needs a mail account and
-//! asks for the password, first in the conversation, which refuses it, then through the vault;
-//! the server asks the person's own device in the system's protected field, keeps what they type
-//! in the workspace's vault on the server and tells the assistant the reference; the turn that follows holds
-//! only the reference and calls the use; the first
-//! use asks the person; they answer "Always"; the server signs in and adds the account; the second
-//! use asks nothing. The password is in no message, no tool result, no model request, no log line
-//! and nowhere on the server's disk in the clear.
+//! The whole chain through the server's own interfaces: the assistant needs a mail account and asks
+//! for the password, first in the conversation, which refuses it, then through the vault; the
+//! server asks the person's own device in the system's protected field, keeps what they type in the
+//! workspace's vault on the server and tells the assistant the reference; the turn that follows
+//! holds only the reference and calls the use; the first use asks the person; they answer "Always";
+//! the server signs in and adds the account; the second use asks nothing. The password is in no
+//! message, no tool result, no model request, no log line and nowhere on the server's disk in the
+//! clear.
 use super::hosted_agent_turns::{SCOUT, conversation_part, make_agent, write_to_agent};
 use super::*;
 use std::sync::Mutex;
@@ -430,10 +430,10 @@ impl Hosted {
         on_page(&mut self.page, action, argument).await
     }
 
-    /// The items her vault keeps beside the key the workspace's model is called with, as her
-    /// own device lists them: that key is an entry of the vault's own ([`Self::start`] links the
-    /// model with it), and no sign-in of hers.
-    pub(super) async fn her_vault(&mut self) -> Vec<serde_json::Value> {
+    /// The items the workspace's vault keeps beside the key the workspace's model is called with,
+    /// as her own device lists them: that key is an entry of the vault's own ([`Self::start`] links
+    /// the model with it), and no sign-in of hers.
+    pub(super) async fn workspace_vault(&mut self) -> Vec<serde_json::Value> {
         let kept = self
             .on_device(
                 (
@@ -451,7 +451,7 @@ impl Hosted {
         };
         let items = kept["items"]
             .as_array()
-            .unwrap_or_else(|| panic!("her vault: {kept}"));
+            .unwrap_or_else(|| panic!("the workspace's vault: {kept}"));
         assert_eq!(
             items.iter().filter(|item| model_key(item)).count(),
             1,
@@ -564,12 +564,12 @@ fn add_mail(call: &str, address: &str, reference: &str) -> Reply {
     )
 }
 
-/// The assistant asks for the password. It tries the conversation first, in words and by the
-/// kind of question that once asked for a secret there, and is refused both times, told to ask
-/// through the vault: no question is posted, so the password can't be answered into the
-/// conversation. Its ask through the vault ends at once; the server asks her own device in the
-/// protected field, in the system's words, keeps what she types in her vault, and wakes the
-/// assistant once with the reference. The reference.
+/// The assistant asks for the password. It tries the conversation first, in words and by the kind
+/// of question that once asked for a secret there, and is refused both times, told to ask through
+/// the vault: no question is posted, so the password can't be answered into the conversation. Its
+/// ask through the vault ends at once; the server asks her own device in the protected field, in
+/// the system's words, keeps what she types in the workspace's vault, and wakes the assistant once
+/// with the reference. The reference.
 pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
     hosted: &mut Hosted,
 ) -> String {
@@ -645,7 +645,7 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
         ),
     );
 
-    // The assistant is woken once with the reference her vault keeps it under.
+    // The assistant is woken once with the reference the workspace's vault keeps it under.
     let told = hosted.woken_with("Thanks, it is in your vault now.").await;
     let at = told
         .find("vault.item:")
@@ -890,7 +890,7 @@ async fn refused_and_nobody_is_asked(hosted: &Hosted, told: &str) {
 /// turn acts for, as the address of an item in anybody else's vault does, reaches the action as
 /// it was written and is refused there: nobody is asked, and nothing signs in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_reference_her_vault_does_not_hold_is_refused_by_the_use_and_nobody_is_asked() {
+async fn a_reference_the_vault_does_not_hold_is_refused_by_the_use_and_nobody_is_asked() {
     let hosted = Hosted::start().await;
     let elsewhere = format!("vault.item:{}", "0123456789abcdef".repeat(2));
     hosted

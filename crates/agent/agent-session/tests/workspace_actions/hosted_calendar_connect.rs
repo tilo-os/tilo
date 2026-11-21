@@ -5,13 +5,13 @@
 //! She says in her own words where her calendar is and under which user name. Her assistant's one
 //! tool call hands the server that address, the user name and a name for the account, and nothing
 //! else: no password, no reference, nothing that makes the account writable. The server asks her
-//! for the password itself, on her own device in the system's protected field. What she types
-//! goes from that field to the workspace's vault. The server then signs in to her calendar server, keeps the account
-//! in the workspace for reading only and tells the assistant which calendars the
-//! server lists, by their names. Her assistant reads an entry through its tools afterwards. The
-//! calendar server was asked to read and nothing else. The password is in no request a model was
-//! sent, no message, no log line and no file of the server in the clear, and on this way the
-//! model never holds even the item's reference.
+//! for the password itself, on her own device in the system's protected field. What she types goes
+//! from that field to the workspace's vault. The server then signs in to her calendar server, keeps
+//! the account in the workspace for reading only and tells the assistant which calendars the server
+//! lists, by their names. Her assistant reads an entry through its tools afterwards. The calendar
+//! server was asked to read and nothing else. The password is in no request a model was sent, no
+//! message, no log line and no file of the server in the clear, and on this way the model never
+//! holds even the item's reference.
 //!
 //! What a telling is refused for asks nobody and connects nothing; a calendar server that refuses
 //! the password is said so in its own words, and the item she typed is not kept.
@@ -202,8 +202,8 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
     );
     assert!(her_accounts(&mut hosted).await.is_empty(), "nothing yet");
 
-    // She types. Her server keeps it in her vault for that server alone, signs in, keeps the
-    // account in the workspace for reading only. Her assistant is told once: the
+    // She types. Her server keeps it in the workspace's vault for that server alone, signs in,
+    // keeps the account in the workspace for reading only. Her assistant is told once: the
     // calendars by their names, and nothing else of what her calendar server answered.
     she_types(&devices, TYPED);
     let told = the_assistant_is_told(
@@ -219,7 +219,7 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
         !told.contains("/dav/calendars/"),
         "no address of a calendar reaches the model: {told}"
     );
-    let vault = hosted.her_vault().await;
+    let vault = hosted.workspace_vault().await;
     assert_eq!(
         vault[0]["belongsTo"],
         serde_json::json!([place_of(&address)]),
@@ -322,7 +322,7 @@ async fn a_calendar_server_that_refuses_the_password_is_said_so_and_no_item_is_k
          calendar: {told}"
     );
     assert!(
-        hosted.her_vault().await.is_empty(),
+        hosted.workspace_vault().await.is_empty(),
         "the item she typed is not kept"
     );
     assert!(
@@ -349,7 +349,8 @@ async fn a_mail_address_alone_is_asked_for_at_the_server_of_its_name() {
         "the question names the server her address belongs to: {words}"
     );
     assert!(her_accounts(&mut hosted).await.is_empty());
-    assert!(hosted.her_vault().await.is_empty());
+    let kept = hosted.workspace_vault().await;
+    assert!(kept.is_empty(), "the workspace's vault keeps nothing more: {kept:?}");
     hosted.page.peer.close();
 }
 
@@ -415,6 +416,7 @@ async fn what_a_telling_is_refused_for_asks_nobody_and_connects_nothing() {
         assert_eq!(devices.count(), 0, "{what}: nobody is asked for a password");
     }
     assert!(her_accounts(&mut hosted).await.is_empty());
-    assert!(hosted.her_vault().await.is_empty());
+    let kept = hosted.workspace_vault().await;
+    assert!(kept.is_empty(), "the workspace's vault keeps nothing more: {kept:?}");
     hosted.page.peer.close();
 }
