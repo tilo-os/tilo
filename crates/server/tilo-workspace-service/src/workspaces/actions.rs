@@ -2503,6 +2503,20 @@ struct InWorkspace {
     certificate: Option<DeviceCert>,
 }
 
+/// How long a caller waits for the answer in its receipt; past it the receipt says the invocation
+/// runs, and the caller follows it. A burst of slow operations (a backend making hundreds of
+/// workspaces at once) is answered as each finishes, never left unanswered past the caller's
+/// deadline while it still runs.
+fn caller_wait(request: &InvokeRequest) -> Option<std::time::Duration> {
+    request
+        .wait_ms
+        .map(|wait_ms| {
+            std::time::Duration::from_millis(u64::from(wait_ms))
+                .min(tilo_actions::remote::MAX_REMOTE_WAIT)
+        })
+        .or_else(|| super::unattended::asks_first(request))
+}
+
 impl ActionProvider for InWorkspace {
     /// The surface the workspace's package `app` publishes, from the
     /// workspace's own content: the version its governance keeps names the
@@ -2624,18 +2638,7 @@ impl ActionProvider for InWorkspace {
             self.workspace_id,
             self.certificate.clone(),
         );
-        // How long the caller waits for the answer in its receipt; past it the
-        // receipt says the invocation runs, and the caller follows it. A burst
-        // of slow operations (a backend making hundreds of workspaces at once)
-        // is answered as each finishes, never left unanswered past the
-        // caller's deadline while it still runs.
-        let wait = request
-            .wait_ms
-            .map(|wait_ms| {
-                std::time::Duration::from_millis(u64::from(wait_ms))
-                    .min(tilo_actions::remote::MAX_REMOTE_WAIT)
-            })
-            .or_else(|| super::unattended::asks_first(&request));
+        let wait = caller_wait(&request);
         let runtime = self.server.shared.runtime.clone();
         self.server.spawn(async move {
             // An invocation that puts a question to its person answers its caller at once that

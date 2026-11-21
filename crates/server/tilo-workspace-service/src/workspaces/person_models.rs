@@ -85,6 +85,55 @@ impl Workspaces {
         Reach::of(&self.inner.models)
     }
 
+    /// A provider's sign-in, as the person's page drives it: begun, waited for or stopped. Answers
+    /// the action's answer for one of those, and nothing for any other action.
+    async fn sign_in_invoke(
+        &self,
+        action: &str,
+        person: [u8; 32],
+        here: &str,
+        reach: &Reach,
+        request: &InvokeRequest,
+    ) -> Option<Result<Value, ActionCallError>> {
+        match action {
+            person_models::BEGIN_SIGN_IN => {
+                // Named nothing, a sign-in is to the plan.
+                let beginning: BeginSignIn =
+                    if matches!(request.argument, tilo_actions::remote::InvokeArgument::None) {
+                        BeginSignIn::default()
+                    } else {
+                        match argument(request, "a sign-in to begin") {
+                            Ok(beginning) => beginning,
+                            Err(error) => return Some(Err(error)),
+                        }
+                    };
+                Some(
+                    answer(
+                        &self
+                            .begin_openai_sign_in((person, here), beginning, reach.clone())
+                            .await,
+                    ),
+                )
+            }
+            person_models::WAIT_SIGN_IN => {
+                let waiting: WaitSignIn = match argument(request, "a sign-in to wait for") {
+                    Ok(waiting) => waiting,
+                    Err(error) => return Some(Err(error)),
+                };
+                Some(answer(&self.wait_openai_sign_in(person, &waiting).await))
+            }
+            person_models::CANCEL_SIGN_IN => {
+                let cancelling: WaitSignIn = match argument(request, "a sign-in to stop") {
+                    Ok(cancelling) => cancelling,
+                    Err(error) => return Some(Err(error)),
+                };
+                self.cancel_openai_sign_in(person, &cancelling);
+                Some(answer(&Ok(())))
+            }
+            _ => None,
+        }
+    }
+
     /// Answer a [`person_models::PROVIDER`] request.
     pub(super) async fn person_models_invoke(
         &self,
@@ -119,31 +168,11 @@ impl Workspaces {
         let root = self.workspace_root(&here);
         let person = reach.person;
         let reach = self.model_reach();
-        match action {
-            person_models::BEGIN_SIGN_IN => {
-                // Named nothing, a sign-in is to the plan.
-                let beginning: BeginSignIn =
-                    if matches!(request.argument, tilo_actions::remote::InvokeArgument::None) {
-                        BeginSignIn::default()
-                    } else {
-                        argument(request, "a sign-in to begin")?
-                    };
-                return answer(
-                    &self
-                        .begin_openai_sign_in((person, &here), beginning, reach)
-                        .await,
-                );
-            }
-            person_models::WAIT_SIGN_IN => {
-                let waiting: WaitSignIn = argument(request, "a sign-in to wait for")?;
-                return answer(&self.wait_openai_sign_in(person, &waiting).await);
-            }
-            person_models::CANCEL_SIGN_IN => {
-                let cancelling: WaitSignIn = argument(request, "a sign-in to stop")?;
-                self.cancel_openai_sign_in(person, &cancelling);
-                return answer(&Ok(()));
-            }
-            _ => {}
+        if let Some(answered) = self
+            .sign_in_invoke(action, person, &here, &reach, request)
+            .await
+        {
+            return answered;
         }
         let changed = match request.target.address.action.as_str() {
             person_models::LIST => return answer(&Ok(providers(&root))),

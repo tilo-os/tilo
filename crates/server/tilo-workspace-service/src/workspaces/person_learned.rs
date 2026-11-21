@@ -281,8 +281,7 @@ impl Workspaces {
             .await?;
         let workspace = reach.workspace.to_string();
         let person = reach.person;
-        let by = reach.agent.clone();
-        let by = by.as_deref();
+        let by = reach.agent.as_deref();
         let changed = match request.target.address.action.as_str() {
             LIST => Ok(()),
             LEARN => {

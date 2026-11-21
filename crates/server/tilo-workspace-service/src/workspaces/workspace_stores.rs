@@ -264,7 +264,7 @@ impl Workspaces {
                 kind: match effect {
                     ActionKind::Read => "read",
                     ActionKind::Undoable => "undoable",
-                    _ => "outside",
+                    ActionKind::Outside => "outside",
                 }
                 .into(),
                 undoable: effect == ActionKind::Undoable,
