@@ -59,7 +59,6 @@ COMPILE = [
     "tools/ci/thin-app",
     "tools/font-catalog.py",
     "tools/policy/app_capability_usage.toml",
-    "tools/policy/app_portability_rules.toml",
     "tools/protocols/airdrop_sender.py",
     "tools/test-assets-build.rs",
     "tools/test-assets.py",

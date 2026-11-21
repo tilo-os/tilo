@@ -5114,17 +5114,13 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
 }
 
 #[test]
-fn every_template_scaffolds_a_portable_app() {
+fn every_template_scaffolds_an_app_that_declares_what_it_uses() {
     for template in Template::ALL {
         let root = tempfile::tempdir().unwrap();
         let app = root.path().join(template.name());
         let mut new_app = request(app.clone());
         new_app.template = Some(template);
         create_app(new_app).unwrap();
-        let report = lint_portability(&app).unwrap();
-        assert!(report.passed(), "{}: {}", template.name(), report.render());
-        assert!(report.files > 0);
-        assert!(report.render().starts_with("portability: ok"));
         let manifest = tilo_app_package::Manifest::from_toml_str(
             &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
         )
@@ -5143,7 +5139,7 @@ fn every_template_scaffolds_a_portable_app() {
 
 #[test]
 fn every_workspace_app_declares_what_it_uses_and_its_targets_provide_what_it_requires() {
-    let apps = portability::workspace_apps(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let apps = sources::workspace_apps(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
     assert!(apps.len() >= 50, "found {} apps", apps.len());
     let mut problems = Vec::new();
     for app in apps {
@@ -5239,144 +5235,6 @@ fn a_capability_the_code_uses_must_be_declared_before_a_build() {
     )
     .unwrap();
     targets::check_target(&project(&app), targets::Target::Linux, false).unwrap();
-}
-
-fn platform_specific_app(root: &Path) -> PathBuf {
-    let app = root.join("platform");
-    create_app(request(app.clone())).unwrap();
-    add_platform_code(&app);
-    app
-}
-
-/// Writes platform-specific dependencies, modules and attributes into the starter app at `app`.
-fn add_platform_code(app: &Path) {
-    let cargo = std::fs::read_to_string(app.join("Cargo.toml")).unwrap();
-    let cargo = cargo
-        .replacen("[dependencies]\n", "[dependencies]\nlibc = \"0.2\"\n", 1)
-        .replacen("[features]\n", "[features]\nmedia = [\"ui/mpris\"]\n", 1);
-    std::fs::write(
-        app.join("Cargo.toml"),
-        format!(
-            "{cargo}\n[dev-dependencies]\nnix = \"0.29\"\n\n\
-             [target.'cfg(target_os = \"linux\")'.dev-dependencies]\nlibc = \"0.2\"\n"
-        ),
-    )
-    .unwrap();
-    let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
-    lib.push_str(
-        r#"
-#[cfg(unix)]
-pub fn owner_only(file: &std::fs::File) {
-    use std::os::unix::fs::PermissionsExt as _;
-    let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-}
-
-pub fn pid() -> i32 {
-    unsafe { libc::getpid() }
-}
-
-pub fn separator() -> char {
-    if cfg!(windows) { '\\' } else { '/' }
-}
-
-unsafe extern "C" {
-    fn abs(value: i32) -> i32;
-}
-
-mod platform;
-
-#[cfg(test)]
-mod platform_tests;
-
-#[cfg(test)]
-#[cfg(unix)]
-fn test_symlink() {
-    std::os::unix::fs::symlink("a", "b").unwrap();
-}
-
-include!("included.rs");
-
-pub fn guarded() {
-    #[cfg(test)]
-    if true {
-        let _ = std::os::raw::c_int::default();
-    }
-}
-"#,
-    );
-    std::fs::write(
-        app.join("src/included.rs"),
-        "pub use std::os::raw::c_char;\n",
-    )
-    .unwrap();
-    std::fs::write(app.join("src/lib.rs"), lib).unwrap();
-    std::fs::write(
-        app.join("src/platform.rs"),
-        "pub use std::{fs, os::fd::AsRawFd};\n",
-    )
-    .unwrap();
-    std::fs::write(
-        app.join("src/platform_tests.rs"),
-        "use std::os::unix::net::UnixStream;\n",
-    )
-    .unwrap();
-    std::fs::write(
-        app.join("src/orphan.rs"),
-        "use std::os::unix::net::UnixStream;\n",
-    )
-    .unwrap();
-    let main = std::fs::read_to_string(app.join("src/main.rs")).unwrap();
-    std::fs::write(
-        app.join("src/main.rs"),
-        format!("#![cfg_attr(windows, windows_subsystem = \"windows\")]\n{main}"),
-    )
-    .unwrap();
-}
-
-fn narrow_platforms(app: &Path, platforms: &str, reason: &str) {
-    let manifest = std::fs::read_to_string(app.join("tilo-app.toml")).unwrap();
-    let manifest = manifest.replacen(
-        "[package]\n",
-        &format!("[package]\nplatforms = {platforms}\nplatform-reason = {reason:?}\n"),
-        1,
-    );
-    std::fs::write(app.join("tilo-app.toml"), manifest).unwrap();
-}
-
-#[test]
-fn narrowed_platforms_replace_line_exceptions() {
-    let root = tempfile::tempdir().unwrap();
-    let starter = Scaffold::new(Template::Starter);
-    let desktop = root.path().join("platform");
-    starter.copy_to(&desktop);
-    add_platform_code(&desktop);
-    narrow_platforms(
-        &desktop,
-        "[\"linux\", \"macos\"]",
-        "Needs the host's process table.",
-    );
-    let report = lint_portability(&desktop).unwrap();
-    assert!(report.passed(), "{}", report.render());
-    assert!(report.render().contains(
-        "platforms narrowed to linux, macos in tilo-app.toml: \"Needs the host's process table.\""
-    ));
-    assert!(
-        report
-            .findings
-            .iter()
-            .all(|finding| !finding.kind.rule().starts_with('W')),
-        "the web traps do not apply without web"
-    );
-    assert!(report.exempt > 0);
-
-    // Narrowing needs no platform code of its own (a C dependency the lint
-    // cannot see is a reason too), but the report says when it found none.
-    let portable = root.path().join("portable");
-    starter.copy_to(&portable);
-    narrow_platforms(&portable, "[\"linux\"]", "Links a C library.");
-    let report = lint_portability(&portable).unwrap();
-    assert!(report.passed());
-    assert!(report.render().contains("widen `platforms`"));
 }
 
 /// One open window. Reload replaces `contents` and leaves `id` alone.
@@ -6113,271 +5971,13 @@ fn every_example_is_what_new_renders_for_it() {
     }
 }
 
-tilo_test_env::scenario! {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
-    )]
-    fn the_portability_lint_reports_platform_code_by_the_apps_platforms;
-
-    phase portability_lint_reports_shipped_platform_code_with_remedies;
-    {
-        use portability::FindingKind::{
-            Ffi, NativeCrate, NativeDependency, NativeSdkFeature, OsStd, TargetCfg,
-        };
-        let root = tempfile::tempdir().unwrap();
-        let app = platform_specific_app(root.path());
-        let report = lint_portability(&app).unwrap();
-        assert!(!report.passed());
-        let sites: Vec<(String, portability::FindingKind)> = report
-            .findings
-            .iter()
-            .map(|finding| (finding.path.display().to_string(), finding.kind))
-            .collect();
-        for expected in [
-            ("Cargo.toml", NativeDependency),
-            ("Cargo.toml", NativeSdkFeature),
-            ("src/lib.rs", TargetCfg),
-            ("src/lib.rs", OsStd),
-            ("src/lib.rs", NativeCrate),
-            ("src/lib.rs", Ffi),
-            ("src/platform.rs", OsStd),
-            ("src/included.rs", OsStd),
-        ] {
-            assert!(
-                sites.contains(&(expected.0.to_owned(), expected.1)),
-                "missing {expected:?} in {sites:?}"
-            );
-        }
-        // Tests, unreachable files, dev-dependencies and the Windows subsystem
-        // linker setting are not shipped platform code.
-        assert!(sites.iter().all(|(path, _)| path != "src/platform_tests.rs"
-            && path != "src/orphan.rs"
-            && path != "src/main.rs"));
-        assert!(
-            report
-                .findings
-                .iter()
-                .all(|finding| !finding.what.contains("c_int")),
-            "a test-guarded statement is not shipped"
-        );
-        assert_eq!(
-            report
-                .findings
-                .iter()
-                .filter(|finding| finding.kind == NativeDependency)
-                .count(),
-            1,
-            "dev-dependencies are exempt"
-        );
-        assert!(
-            !sites.contains(&("Cargo.toml".to_owned(), TargetCfg)),
-            "a target section of dev-dependencies is exempt"
-        );
-        let rendered = report.render();
-        assert!(rendered.contains("error[portability/R2]: src/lib.rs:"));
-        assert!(rendered.contains("`std::os::unix::fs` is an OS-specific standard library module"));
-        assert!(rendered.contains("= help: call a platform crate instead"));
-        assert!(rendered.contains("enable the semantic SDK feature `ui/media-session`"));
-        assert!(rendered.contains(
-            "platforms = [\"linux\", \"macos\"]\n    platform-reason = \"<one-line reason>\""
-        ));
-        // `std::fs` fails on the web; `tilo_files` replaces it.
-        assert!(rendered.contains("error[portability/W3]: src/platform.rs:1: `std::fs`"));
-    }
-
-    phase portability_lint_reports_a_temp_dir_fallback_which_panics_on_the_web;
-    {
-        let root = tempfile::tempdir().unwrap();
-        let app = platform_specific_app(root.path());
-        let platform = std::fs::read_to_string(app.join("src/platform.rs")).unwrap();
-        std::fs::write(
-            app.join("src/platform.rs"),
-            format!(
-                "{platform}pub fn cache(home: Option<std::path::PathBuf>) -> std::path::PathBuf {{ home.unwrap_or_else(std::env::temp_dir) }}\n"
-            ),
-        )
-        .unwrap();
-        let rendered = lint_portability(&app).unwrap().render();
-        assert!(
-            rendered
-                .lines()
-                .any(|line| line.contains("portability/W3]: src/platform.rs:2:")
-                    && line.contains("temp_dir")),
-            "{rendered}"
-        );
-    }
-
-    phase portability_rules_follow_the_app_platforms;
-    {
-        let root = tempfile::tempdir().unwrap();
-        let app = root.path().join("disks");
-        create_app(request(app.clone())).unwrap();
-        let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
-        lib.push_str(
-            r#"
-pub fn mount() {
-    let _ = std::process::Command::new("udisksctl").status();
-    let _ = std::env::var_os("XDG_RUNTIME_DIR");
-    let _ = "https://demo.local/clip.mp4";
-    std::thread::spawn(|| {});
-}
-"#,
-        );
-        std::fs::write(app.join("src/lib.rs"), lib).unwrap();
-        let kinds = |report: &portability::PortabilityReport| -> Vec<portability::FindingKind> {
-            report.findings.iter().map(|finding| finding.kind).collect()
-        };
-
-        let report = lint_portability(&app).unwrap();
-        assert!(!report.passed(), "an OS tool fails a portable app");
-        assert_eq!(
-            kinds(&report),
-            [
-                portability::FindingKind::OsTool,
-                portability::FindingKind::PlatformPath,
-                portability::FindingKind::Thread,
-            ]
-        );
-        assert!(
-            report
-                .render()
-                .contains("`Command::new(\"udisksctl\")` runs an OS tool")
-        );
-
-        narrow_platforms(
-            &app,
-            "[\"tilo-os\"]",
-            "Administers block devices through udisks.",
-        );
-        let report = lint_portability(&app).unwrap();
-        assert!(report.passed(), "{}", report.render());
-        assert!(kinds(&report).is_empty(), "{:?}", report.findings);
-        assert_eq!(report.exempt, 3);
-    }
-
-    phase the_embedded_portability_rules_cover_every_rule_id;
-    {
-        let rules = portability::rules().unwrap();
-        let ids: Vec<&str> = rules.rules.keys().map(String::as_str).collect();
-        assert_eq!(
-            ids,
-            ["D1", "D2", "F1", "R1", "R2", "R3", "R4", "W1", "W2", "W3"]
-        );
-    }
-
-    phase portability_lint_records_what_the_web_target_cannot_run;
-    {
-        let root = tempfile::tempdir().unwrap();
-        let app = root.path().join("worker");
-        create_app(request(app.clone())).unwrap();
-        let report = lint_portability(&app).unwrap();
-        assert!(report.web_capable(), "{}", report.render());
-
-        let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
-        lib.push_str(
-            r#"
-use std::time::{Duration, Instant, SystemTime};
-use ui::widget::ButtonRole;
-
-pub fn work() -> Duration {
-    let started = Instant::now();
-    std::thread::spawn(|| {}).join().ok();
-    let _ = SystemTime::now();
-    started.elapsed()
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn exempt() {
-        std::thread::sleep(std::time::Duration::ZERO);
-        let _ = std::net::TcpListener::bind("127.0.0.1:0");
-    }
-}
-
-// Built for Tilo OS alone: a web build never has it.
-#[cfg(feature = "tilo-os")]
-pub fn device_only() {
-    std::thread::spawn(|| {}).join().ok();
-}
-"#,
-        );
-        std::fs::write(app.join("src/lib.rs"), &lib).unwrap();
-        let report = lint_portability(&app).unwrap();
-        assert!(!report.passed(), "{}", report.render());
-        assert!(
-            report
-                .findings
-                .iter()
-                .all(|finding| finding.severity == portability::Severity::Error),
-            "{}",
-            report.render()
-        );
-        assert!(!report.web_capable());
-        let line = |needle: &str| {
-            lib.lines()
-                .position(|line| line.contains(needle))
-                .map(|index| index + 1)
-        };
-        let sites: Vec<_> = report
-            .web
-            .iter()
-            .map(|finding| (finding.line, finding.kind))
-            .collect();
-        for (needle, kind) in [
-            (
-                "let started = Instant::now()",
-                portability::FindingKind::Clock,
-            ),
-            ("std::thread::spawn", portability::FindingKind::Thread),
-            ("SystemTime::now()", portability::FindingKind::Clock),
-        ] {
-            assert!(
-                sites.contains(&(line(needle).unwrap(), kind)),
-                "{needle} is not flagged in {sites:?}"
-            );
-        }
-        assert!(
-            report
-                .web
-                .iter()
-                .all(|finding| finding.line < line("#[cfg(test)]").unwrap()),
-            "tests are exempt: {sites:?}"
-        );
-        let device_only = line("pub fn device_only()").unwrap();
-        assert!(
-            sites.iter().all(|(line, _)| *line != device_only + 1),
-            "code under another platform's feature is not the web's: {sites:?}"
-        );
-        let rendered = report.render();
-        assert!(rendered.contains("portability/W1"), "{rendered}");
-
-        let error = crate::web::build_web(&app, &crate::web::WebBuildRequest::default())
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("cannot run on the web"), "{error}");
-        assert!(error.contains("W1"), "{error}");
-        assert!(!app.join("target/tilo-app").exists());
-    }
-}
-
 #[test]
-fn every_example_is_indexed_and_portable() {
+fn every_example_is_indexed() {
     let root = checkout_root();
     let index = std::fs::read_to_string(root.join("examples/README.md")).expect("index");
     for example in examples::ALL {
         let link = format!("[`{}`](apps/{}/)", example.name, example.name);
         assert!(index.contains(&link), "examples/README.md lists {link}");
-        let report = portability::lint_app(&root.join(example.path())).expect("lint");
-        assert!(report.passed(), "{}", report.render());
-        assert_eq!(
-            example.web,
-            report.web_capable(),
-            "{}: the Web column must say what the lint finds\n{}",
-            example.name,
-            report.render_web()
-        );
     }
     let json = examples::examples_json();
     assert_eq!(
@@ -6438,8 +6038,6 @@ fn code_only_reads_past_quote_characters_and_raw_strings() {
     assert!(!code.contains("&quot;"), "{code}");
     assert_eq!(code.lines().count(), source.lines().count());
 }
-
-mod portability_check;
 
 #[test]
 fn every_graph_template_declares_the_contract_its_template_kind_expects() {

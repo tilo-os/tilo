@@ -404,10 +404,10 @@ pub fn check_targets(start: &Path, targets: &[Target], allow_planned: bool) -> R
 pub fn check_host(target: Target) -> Result<()> {
     match target {
         Target::Macos if !cfg!(target_os = "macos") => bail!(
-            "building for macOS needs a Mac (Apple SDK, codesign)\n  help: `tilo-app check --target macos` runs the portability and capability checks here"
+            "building for macOS needs a Mac (Apple SDK, codesign)\n  help: `tilo-app check --target macos` runs the capability check here"
         ),
         Target::Linux if !cfg!(target_os = "linux") => bail!(
-            "building for Linux needs a Linux host (the Linux job in CI builds it)\n  help: `tilo-app check --target linux` runs the portability and capability checks here"
+            "building for Linux needs a Linux host (the Linux job in CI builds it)\n  help: `tilo-app check --target linux` runs the capability check here"
         ),
         _ => Ok(()),
     }

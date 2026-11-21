@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build every web-capable example among PACKAGE... with `tilo-app build
 # --platform web`: the browser runtime bundle with the example registered. It
-# proves the Web column of `tilo-app examples`, which the portability lint
-# already ties to what each example calls.
+# proves the Web column of `tilo-app examples` by building each example the
+# column names.
 #
 #   tools/ci/build-web-examples.sh example-counter example-qr-code ...
 #

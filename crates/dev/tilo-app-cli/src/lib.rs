@@ -33,11 +33,11 @@ pub mod native_libs;
 #[cfg(target_os = "linux")]
 pub mod native_sdk;
 mod pack;
-pub mod portability;
 pub mod push;
 mod resource_kinds;
 mod scaffold_files;
 pub mod size;
+pub mod sources;
 pub mod standalone;
 pub mod surface;
 pub mod targets;
@@ -4062,11 +4062,6 @@ impl DoctorReport {
         });
         output
     }
-}
-
-/// Run the `portability` lint on the app containing `start`.
-pub fn lint_portability(start: &Path) -> Result<portability::PortabilityReport> {
-    portability::lint_app(&resolve_app_dir(start)?)
 }
 
 /// Inspect an app's source and package wiring without compiling it.

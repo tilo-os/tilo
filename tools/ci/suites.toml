@@ -400,7 +400,7 @@ inputs = [
   "tools/ci/app-models.sh",
   "tools/ci/install-xwayland-satellite.sh", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py",
   "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py",
-  "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml",
+  "tools/policy/app_capability_usage.toml",
   "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py",
   "tools/web/wasm-opt-flags", "tools/web/wasm-split",
 ]
@@ -1300,10 +1300,7 @@ inputs = [
   "examples/apps/", "examples/README.md",
   # Task guides are embedded by the CLI from the published documentation.
   "docs/developers/tasks/",
-  # The portability lint compiles in the policy check's rules table and counts
-  # against its baseline; the capability check reads the table of what each
-  # capability's code uses.
-  "tools/policy/app_portability_rules.toml", "tools/policy/app_portability_baseline.toml",
+  # The capability check reads the table of what each capability's code uses.
   "tools/policy/app_capability_usage.toml",
   # Standalone apps take the SDK's toolchain and lock file.
   "rust-toolchain.toml", "Cargo.lock",
@@ -1314,7 +1311,7 @@ inputs = [
   # Canonical worker builder sources.
   "crates/browser/tilo-browser-compute/",
   # Tests over every app of the workspace read each one's manifests and sources: the
-  # capability and portability lints, the record kinds each manifest must declare, the
+  # capability check, the record kinds each manifest must declare, the
   # SDK graph of every app, workspace certification and the packaging fixtures.
   "apps/",
   # A new app's services speak the runtime interface version the image serves.
@@ -1328,7 +1325,7 @@ inputs = [
 # The record-kinds tests read the sources of the local crates the apps depend on, the
 # production resource regression Music's whole normal local dependency closure.
 readers = [
-  "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  "crates/dev/tilo-app-cli/src/tests.rs",
   # The SDK's current interfaces are the image's declaration from the same commit.
   "crates/dev/tilo-app-cli/src/interface_versions.rs",
   "crates/dev/tilo-app-cli/src/guide.rs",

@@ -1670,8 +1670,8 @@ def shared_framework_host(
 def model_crate_host(root: Path, app_dir: Path, manifest: dict, code: str) -> bool:
     """Whether the app hosts a framework app whose record a model crate declares.
 
-    An app may keep its record in an `apps/*-model` crate (the portability
-    rules let an app depend on one): the types, the verbs and the typed action
+    An app may keep its record in an `apps/*-model` crate: the types, the
+    verbs and the typed action
     arguments are then shared with whatever else works the same records, such
     as the agent that runs a tracker's issues. The app hosts a framework app
     whose resource that crate declares — `impl ResourceApp for X { type
@@ -2013,8 +2013,8 @@ def audit(
         app_name = manifest_path.parent.name
         # The headless agent publishes nothing of its own: it acts only
         # through the broker's task-bound action surfaces. An `apps/*-model`
-        # crate is a record shape apps embed (the portability rules let apps
-        # depend on it), not an app, and neither is the `apps/*-model-wasm`
+        # crate is a record shape apps embed, not an app, and neither is the
+        # `apps/*-model-wasm`
         # guest crate a package carries it from: the apps embedding it publish
         # its actions.
         # A compute package runs for the action of the app that requested it.

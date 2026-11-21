@@ -4,8 +4,9 @@
 //! The evidence table is `tools/policy/app_capability_usage.toml`: production
 //! dependencies, `package/feature` selections, source paths (also inside
 //! `use a::{..}` groups) and method calls, each naming the capability it
-//! implies. The code read is the portability lint's: the shipped module trees
-//! without test items. `tilo-app check` and `tilo-app build` refuse an app
+//! implies. The code read is [`crate::sources::shipped_sources`]: the module
+//! trees an app ships, without its test items. `tilo-app check` and
+//! `tilo-app build` refuse an app
 //! whose code uses a capability its manifest does not declare; the
 //! workspace-wide audit in this crate's tests holds every app to it too.
 
@@ -17,7 +18,7 @@ use anyhow::{Context as _, Result};
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use serde::Deserialize;
 
-use crate::portability::{
+use crate::sources::{
     follows_dot, group_names, ident_is, is_doc_attribute, is_path_sep, manifest_key_line, path_at,
     shipped_dependency_tables, shipped_sources, wildcard, workspace,
 };

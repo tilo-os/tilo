@@ -7,7 +7,6 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::portability::PortabilityReport;
 use crate::standalone::SdkSource;
 use crate::{
     AddOutcome, CreateOutcome, DoctorReport, DoctorStatus, LocaleSyncOutcome, PackageOutcome,
@@ -139,40 +138,6 @@ impl PackageOutcome {
             "output": absolute(&self.output),
             "entrypoints": self.entrypoints.iter().map(|path| absolute(path)).collect::<Vec<_>>(),
             "size": self.size.to_json(),
-        })
-    }
-}
-
-impl PortabilityReport {
-    #[must_use]
-    pub fn to_json(&self) -> Value {
-        let findings = |findings: &[crate::portability::PortabilityFinding]| {
-            findings
-                .iter()
-                .map(|finding| {
-                    json!({
-                        "path": absolute(&finding.path),
-                        "line": finding.line,
-                        "kind": format!("{:?}", finding.kind),
-                        "rule": finding.kind.rule(),
-                        "severity": format!("{:?}", finding.severity),
-                        "what": finding.what,
-                        "help": finding.help,
-                    })
-                })
-                .collect::<Vec<_>>()
-        };
-        json!({
-            "app_dir": absolute(&self.app_dir),
-            "lint": crate::portability::LINT,
-            "passed": self.passed(),
-            "platforms": self.platforms.iter().map(|platform| platform.as_str()).collect::<Vec<_>>(),
-            "platform_reason": self.platform_reason,
-            "exempt": self.exempt,
-            "files": self.files,
-            "findings": findings(&self.findings),
-            "web_capable": self.web_capable(),
-            "web_findings": findings(&self.web),
         })
     }
 }

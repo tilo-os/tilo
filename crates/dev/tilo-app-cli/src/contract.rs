@@ -13,7 +13,7 @@
 //!   `tilo-app certify` compares the built binary with. An app missing the
 //!   file is the one place that comparison cannot happen.
 //!
-//! The checks read the same shipped module trees as the portability lint.
+//! The checks read the shipped module trees [`crate::sources::shipped_sources`] gives.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -104,7 +104,7 @@ impl ContractReport {
 pub fn check_app(start: &Path) -> Result<ContractReport> {
     let app_dir = &crate::resolve_app_dir(start)?;
     let mut report = ContractReport::default();
-    let sources = crate::portability::shipped_sources(app_dir)?;
+    let sources = crate::sources::shipped_sources(app_dir)?;
     let catalog = source_catalog(app_dir)?;
     for (path, tokens) in &sources {
         let relative = path.strip_prefix(app_dir).unwrap_or(path).to_path_buf();

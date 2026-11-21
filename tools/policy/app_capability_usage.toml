@@ -1,7 +1,7 @@
 # What in an app's code shows that it uses a capability (tilo-caps).
 #
-# One table, one reader, like app_portability_rules.toml: crates/dev/
-# tilo-app-cli/src/capability_usage.rs embeds this file, and `tilo-app check` /
+# One table, one reader: crates/dev/tilo-app-cli/src/capability_usage.rs
+# embeds this file, and `tilo-app check` /
 # `tilo-app build` refuse an app whose code uses a capability its tilo-app.toml
 # does not declare, with the line to add, before anything compiles. The
 # workspace-wide audit in that crate's tests holds every app to this before
@@ -14,7 +14,7 @@
 # usage string, and hosts grant only what the manifest lists.
 #
 # Evidence, all from shipped code only (tests, examples, benches, build.rs and
-# `#[cfg(test)]` items are exempt, as for the portability rules):
+# `#[cfg(test)]` items are exempt):
 #   crates    production dependencies, by package name (`*` matches a suffix);
 #   features  `package/feature` selections in a dependency or `[features]`;
 #   paths     `a::b` source paths, matched anywhere in a path, also as

@@ -47,7 +47,7 @@ app-registry = { path = "../../packaging/app-registry" }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 bounded-command = { path = "../../system/bounded-command" }
-# The portability rules table deserializes into typed rules.
+# The capability evidence table deserializes into typed entries.
 serde.workspace = true
 serde_json.workspace = true
 proc-macro2 = { version = "1.0", features = ["span-locations"] }

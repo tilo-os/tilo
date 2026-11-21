@@ -466,19 +466,10 @@ struct SetupArgs {
 
 const CHECK_EXAMPLES: &str = "\
 Lints:
-  portability  Apps call portable APIs; platform code lives in platform crates
-               (crates/platform). The rules are in
-               tools/policy/app_portability_rules.toml: target cfg (R1), std::os,
-               extern blocks and native binding crates (R2), platform paths and
-               environment (R3), OS tools (R4), platform and internal dependencies
-               (D1, D2), SDK backend features (F1), and the calls that fail on the
-               web: threads, std clocks, std fs/net (W1-W3, warnings for now).
-               tests/ and #[cfg(test)] are exempt. An inherently
-               platform-specific app narrows its platforms once in tilo-app.toml:
-
-                 [package]
-                 platforms = [\"linux\", \"macos\"]
-                 platform-reason = \"Writes OS images to block devices.\"
+  contract  The app's sources keep the contract the framework and its readers
+            rely on: verbs run on every replica, every label key is a message
+            of locales/en-US.ftl, every translation is complete, and an app
+            that opens a window commits its surface.toml.
 
 Examples:
   tilo-app check                     Everything, for the app in the current directory
@@ -487,25 +478,14 @@ Examples:
 
 #[derive(clap::Args)]
 struct LintScope {
-    /// Run only the lints (`portability` and the app contract); nothing is
-    /// built or run.
+    /// Run only the lints (the app contract); nothing is built or run.
     #[arg(long)]
     lint: bool,
 
-    /// The repository check: every app, app model crate and portable SDK crate
-    /// in the workspace containing PATH (or the current directory), counted
-    /// against `tools/policy/app_portability_baseline.toml`.
+    /// The repository check: the app contract of every app in the workspace
+    /// containing PATH (or the current directory).
     #[arg(long, requires = "lint")]
     all: bool,
-
-    /// With --all: print the baseline for the current tree and change nothing.
-    #[arg(long, requires = "all")]
-    print_baseline: bool,
-
-    /// With --all: list the sites behind the counts, of every package or of
-    /// the named ones.
-    #[arg(long, requires = "all", num_args = 0.., value_name = "PACKAGE")]
-    findings: Option<Vec<String>>,
 }
 
 #[derive(clap::Args)]
@@ -2415,22 +2395,12 @@ fn run_setup(args: &SetupArgs) -> Result<Value> {
 fn run_check(args: CheckArgs) -> Result<Value> {
     let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
     if args.lints.all {
-        return lint_workspace(&path, &args.lints);
+        return lint_workspace(&path);
     }
     if !args.target.is_empty() {
         return check_targets(&path, &args);
     }
     let mut stages = Vec::new();
-    println!("[check] lint: {}", tilo_app_cli::portability::LINT);
-    let lint = tilo_app_cli::lint_portability(&path)?;
-    print!("{}", lint.render());
-    stages.push(json!({"stage": "lint", "passed": lint.passed(), "report": lint.to_json()}));
-    if !lint.passed() {
-        return Err(failed(
-            format!("lint `{}` failed", tilo_app_cli::portability::LINT),
-            json!({"stages": stages}),
-        ));
-    }
     check_contract(&path, &mut stages)?;
     if args.lints.lint {
         return Ok(json!({"stages": stages}));
@@ -2658,24 +2628,10 @@ fn check_platforms(requested: &[CheckPlatformArg]) -> Vec<tilo_app_cli::PackageP
 /// A `check` stage: its JSON name, its progress label, and the work.
 type CheckStage<'a> = (&'static str, &'static str, &'a dyn Fn() -> Result<()>);
 
-fn lint_workspace(start: &Path, lints: &LintScope) -> Result<Value> {
-    let check = tilo_app_cli::portability::check(start)?;
-    if lints.print_baseline {
-        print!("{}", check.baseline_table());
-        return Ok(json!({"baseline": check.baseline_table()}));
-    }
-    if let Some(packages) = &lints.findings {
-        print!("{}", check.render_sites(packages));
-        return Ok(json!({"findings": check.render_sites(packages)}));
-    }
-    let reports: Vec<Value> = check
-        .apps()
-        .iter()
-        .map(tilo_app_cli::portability::PortabilityReport::to_json)
-        .collect();
-    let mut failures = check.print_failures();
-    let apps = tilo_app_cli::portability::workspace_apps(start)?;
+fn lint_workspace(start: &Path) -> Result<Value> {
+    let apps = tilo_app_cli::sources::workspace_apps(start)?;
     let mut contracts = Vec::new();
+    let mut failures = Vec::new();
     for app in &apps {
         let report = tilo_app_cli::contract::check_app(app)?;
         contracts.push(json!({"app": app, "findings": report.to_json()}));
@@ -2690,12 +2646,11 @@ fn lint_workspace(start: &Path, lints: &LintScope) -> Result<Value> {
         print!("{}", report.render());
         failures.push(app.display().to_string());
     }
-    let summary = json!({"apps": reports, "contracts": contracts});
+    let summary = json!({"contracts": contracts});
     if !failures.is_empty() {
         return Err(failed(
             format!(
-                "lint `{}` or the {} failed for {} of {} app(s): {}",
-                tilo_app_cli::portability::LINT,
+                "the {} failed for {} of {} app(s): {}",
                 tilo_app_cli::contract::CHECK,
                 failures.len(),
                 apps.len(),
@@ -2705,8 +2660,7 @@ fn lint_workspace(start: &Path, lints: &LintScope) -> Result<Value> {
         ));
     }
     println!(
-        "lint `{}` and the {} passed for {} app(s)",
-        tilo_app_cli::portability::LINT,
+        "the {} passed for {} app(s)",
         tilo_app_cli::contract::CHECK,
         apps.len()
     );

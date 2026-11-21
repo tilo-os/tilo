@@ -3,7 +3,7 @@
 
 An app runs on macOS when its `tilo-app.toml` lists `macos` in
 `package.platforms`, or names no platforms at all (the default is Linux, macOS
-and the web, as in crates/dev/tilo-app-cli/src/portability.rs).
+and the web, `tilo_app_package::DEFAULT_PLATFORMS`).
 
     cargo build --locked $(python3 tools/ci/macos_apps.py)
 """
