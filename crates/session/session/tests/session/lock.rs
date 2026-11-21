@@ -300,14 +300,16 @@ pub(super) fn until_back(
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
         let now = pictures(session, displays);
-        let back = now.iter().zip(was).all(|(now, was)| apart(now, was) < 24.0);
+        let distances: Vec<f64> = now.iter().zip(was).map(|(now, was)| apart(now, was)).collect();
+        let back = distances.iter().all(|distance| *distance < 24.0);
         if back && settled.as_ref() == Some(&now) {
             return now;
         }
         settled = Some(now);
         assert!(
             Instant::now() < deadline,
-            "{displays:?} never showed the shots again"
+            "{displays:?} never showed the shots again: each is {distances:.0?} from its shot, \
+             and 24 is close enough"
         );
         session.step(REFRESH).expect("a turn of the session");
     }
