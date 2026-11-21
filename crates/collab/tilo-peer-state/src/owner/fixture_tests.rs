@@ -743,7 +743,9 @@ fn documents(
 /// reopens with, and still changes with every write.
 #[tokio::test]
 async fn a_write_commits_at_what_it_changed_however_many_documents() {
-    const WRITES: usize = 21;
+    // Enough writes per size that the median holds while the machine runs other work: one
+    // write takes a few milliseconds, so a few dozen of them can each be slowed by a burst.
+    const WRITES: usize = 101;
     const SIZES: [usize; 2] = [300, 3_000];
     let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
     let digest = |owner: &NativeWorkspaceOwner| {
@@ -780,16 +782,29 @@ async fn a_write_commits_at_what_it_changed_however_many_documents() {
             assert_ne!(digest(&fixture.owner), before, "a write changes the digest");
         }
     }
-    // The median of each: what a write costs, without the odd write that
-    // settles what the workspace's admissions hold.
+    // A write at each size is timed right after the one at the other, so a burst of other
+    // work slows the pair alike: the median of the pairs' ratios is what the larger workspace
+    // costs a write, whatever the machine did meanwhile. It catches what grows with the
+    // workspace outside the documents a write walks (an index it looks in, a map it keeps).
+    let mut ratios: Vec<f64> = times[0]
+        .iter()
+        .zip(&times[1])
+        .map(|(early, late)| late.as_secs_f64() / early.as_secs_f64().max(f64::MIN_POSITIVE))
+        .collect();
+    ratios.sort_by(f64::total_cmp);
+    let ratio = ratios[WRITES / 2];
     let [early, late] = times.map(|mut times| {
         times.sort();
         times[WRITES / 2]
     });
-    println!("a write commits at 300 documents in {early:?}, at 3,000 in {late:?}");
+    println!(
+        "a write commits at 300 documents in {early:?}, at 3,000 in {late:?}; \
+         a pair's median ratio {ratio:.2}"
+    );
     assert!(
-        late.as_secs_f64() <= early.as_secs_f64() * 1.5,
-        "a write commits in {late:?} at 3,000 documents, in {early:?} at 300"
+        ratio <= 1.5,
+        "a write at 3,000 documents costs {ratio:.2} times one at 300 \
+         (medians {late:?} and {early:?})"
     );
     let [_, fixture] = fixtures;
     let path = fixture.directory.path().join("owner.json");
