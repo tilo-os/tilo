@@ -543,15 +543,14 @@ fn run_prepared_inner(
     let out_reader = std::thread::spawn(move || read_bounded(stdout, stdout_limit));
     let err_reader =
         std::thread::spawn(move || read_bounded_observed(stderr, stderr_limit, stderr_capture));
-    let deadline = tilo_clock::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
+    // A timeout past what the clock can name (`Duration::MAX`) is no deadline at all.
+    let deadline = tilo_clock::now().checked_add(timeout);
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break Some(status);
         }
         let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
-        if cancelled || tilo_clock::now() >= deadline {
+        if cancelled || deadline.is_some_and(|deadline| tilo_clock::now() >= deadline) {
             kill_tree(&mut child);
             let _ = child.wait();
             break None;
@@ -694,6 +693,12 @@ mod tests {
 
         phase timeouts_and_dropped_handles_terminate_children_promptly;
         {
+            {
+                // A timeout no deadline can name waits for the child; it never ends it at once.
+                let output = run("sh", &["-c", "sleep 0.05; printf done"], None, 64, Duration::MAX)
+                    .unwrap();
+                assert_eq!(output.stdout, b"done");
+            }
             {
                 let directory = tempfile::tempdir().unwrap();
                 let helper = directory.path().join("helper");
