@@ -1620,7 +1620,6 @@ mod tests {
         assert!(running.owner.quiescent.load(Ordering::Acquire));
     }
     #[test]
-    #[ignore = "measurement; run with --ignored --nocapture"]
     fn cancellation_and_revocation_latency() {
         let mut running = Running::with_script(WAITING_PROVIDER);
         let tid = running.worker_tid.to_string();

@@ -1277,66 +1277,6 @@ fn large_catalogue(h: &Harness, count: usize) {
     publish_snapshot_of(&h.storage, &h.allowlist, &h.owner, entries);
 }
 
-fn p50(samples: &mut [std::time::Duration]) -> std::time::Duration {
-    samples.sort_unstable();
-    samples.get(samples.len() / 2).copied().unwrap_or_default()
-}
-
-/// What a client of a busy store waits for: the catalogue, and a missing blob asked for while other
-/// clients fetch the catalogue. Prints the numbers; the regression checks are the counters in the
-/// next test.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "measurement; run with --ignored --nocapture"]
-async fn entries_and_missing_blob_latency_with_a_large_catalogue() {
-    let h = spawn_server(true).await;
-    large_catalogue(&h, 1_000);
-    let client = tilo_net::http::client().build().expect("http client");
-    let entries = url(h.addr, "/entries");
-    let missing = url(h.addr, &format!("/blobs/{}", "0".repeat(64)));
-
-    let started = std::time::Instant::now();
-    let first = client.get(&entries).send().await.unwrap();
-    assert_eq!(first.status(), reqwest::StatusCode::OK);
-    let body = first.bytes().await.unwrap();
-    let cold = started.elapsed();
-
-    let mut warm = Vec::new();
-    for _ in 0..20 {
-        let started = std::time::Instant::now();
-        let response = client.get(&entries).send().await.unwrap();
-        assert_eq!(response.bytes().await.unwrap(), body);
-        warm.push(started.elapsed());
-    }
-
-    // Eight clients fetch the catalogue while a ninth asks for a blob the store does not have.
-    let mut busy = Vec::new();
-    for _ in 0..10 {
-        let fetches: Vec<_> = (0..8)
-            .map(|_| {
-                let request = client.get(&entries).send();
-                tokio::spawn(async move { request.await.unwrap().bytes().await.unwrap().len() })
-            })
-            .collect();
-        // Let the catalogue requests reach the server first.
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        let started = std::time::Instant::now();
-        let response = client.get(&missing).send().await.unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
-        busy.push(started.elapsed());
-        for fetch in fetches {
-            assert_eq!(fetch.await.unwrap(), body.len());
-        }
-    }
-    eprintln!(
-        "perf registry /entries ({} KB, 1000 entries): first {:?}, then p50 {:?}; \
-         missing blob beside 8 catalogue fetches p50 {:?}",
-        body.len() / 1024,
-        cold,
-        p50(&mut warm),
-        p50(&mut busy),
-    );
-}
-
 /// The catalogue is read, verified and encoded once per published revision, however many clients
 /// ask and in whichever form, and every client gets the whole body.
 #[tokio::test]

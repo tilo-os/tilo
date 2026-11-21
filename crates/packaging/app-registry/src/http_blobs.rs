@@ -976,31 +976,4 @@ mod tests {
             assert!(sink.0.iter().all(|(_, body)| body != &blob));
         }
     }
-
-    /// The payload from a registry a round trip away. Each chunked blob is
-    /// located in one round trip, and its chunks follow the previous blob's
-    /// without a pause, so the whole payload costs about one round trip to
-    /// locate and one per window of chunks. Located in three round trips and
-    /// fetched blob by blob, the same payload took twice as long.
-    #[test]
-    #[ignore = "measurement; run with --ignored --nocapture"]
-    fn a_chunked_payload_streams_without_a_round_trip_per_blob() {
-        const ROUND_TRIP: Duration = Duration::from_millis(150);
-        let (objects, hashes, expected) = chunked_payload();
-        let url = slow_server(objects, ROUND_TRIP);
-        let mut sink = Collected::default();
-        let started = std::time::Instant::now();
-        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
-        let elapsed = started.elapsed();
-        eprintln!(
-            "perf 3 chunked blobs of 6 chunks and 3 whole blobs, {ROUND_TRIP:?} round trip: {elapsed:?}"
-        );
-        assert_eq!(sink.0, expected);
-        // Locating, then 18 chunks in windows of IN_FLIGHT + 1.
-        assert!(
-            elapsed < ROUND_TRIP * 4,
-            "the payload took {elapsed:?}, {:.1} round trips",
-            elapsed.as_secs_f64() / ROUND_TRIP.as_secs_f64()
-        );
-    }
 }

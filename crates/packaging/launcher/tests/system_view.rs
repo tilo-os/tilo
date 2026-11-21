@@ -46,7 +46,6 @@ fn the_view_exposes_exactly_what_per_path_binds_did() {
         .args([
             "--exact",
             "system_view::compare_inside_a_user_namespace",
-            "--ignored",
             "--nocapture",
             "--test-threads=1",
         ])
@@ -61,14 +60,13 @@ fn the_view_exposes_exactly_what_per_path_binds_did() {
     );
 }
 
+/// The comparison the test above runs again in a user namespace of its own;
+/// an ordinary run of the suite returns at once.
 #[test]
-#[ignore = "entered by the_view_exposes_exactly_what_per_path_binds_did, in a user namespace"]
 fn compare_inside_a_user_namespace() {
-    assert_eq!(
-        std::env::var(INNER_ENV).as_deref(),
-        Ok("1"),
-        "run through the_view_exposes_exactly_what_per_path_binds_did"
-    );
+    if std::env::var(INNER_ENV).as_deref() != Ok("1") {
+        return;
+    }
     let work = tempfile::tempdir().unwrap();
     let root = work.path().join("views");
     let built = launcher::sandbox_view::build(&root).unwrap();
@@ -140,14 +138,13 @@ fn compare_inside_a_user_namespace() {
     assert_eq!(argv, before);
 }
 
+/// The lister the comparison runs inside each sandbox as its program; an
+/// ordinary run of the suite returns at once.
 #[test]
-#[ignore = "the program the comparison runs inside each sandbox"]
 fn list_the_visible_filesystem() {
-    assert_eq!(
-        std::env::var(LIST_ENV).as_deref(),
-        Ok("1"),
-        "run inside a sandbox by compare_inside_a_user_namespace"
-    );
+    if std::env::var(LIST_ENV).as_deref() != Ok("1") {
+        return;
+    }
     let mut lines = Vec::new();
     walk(Path::new("/"), 0, &mut lines);
     println!("{}", lines.join("\n"));
@@ -263,7 +260,6 @@ fn listing(argv: &[String]) -> BTreeMap<String, String> {
         .args([
             "--exact",
             "system_view::list_the_visible_filesystem",
-            "--ignored",
             "--nocapture",
             "--test-threads=1",
         ])
