@@ -258,6 +258,24 @@ impl Workspaces {
         Ok(claimed)
     }
 
+    /// Give back the claim on `ask` ([`Self::claim_ask`]) before anything of its answer was
+    /// carried out: the next look reads its question again and carries the answer out then, or
+    /// forgets it where the question was taken back meanwhile.
+    ///
+    /// # Errors
+    /// The ask could not be written: it stays claimed, and a restart says it was interrupted.
+    pub fn release_ask(&self, ask: &KeptAsk) -> Result<(), String> {
+        let released = self.with_asks(|open| {
+            let kept = open.iter_mut().find(|kept| kept.ask == ask.ask)?;
+            kept.started = false;
+            Some(kept.clone())
+        });
+        match released {
+            Some(released) => write_ask(&self.inner.dir, &released),
+            None => Ok(()),
+        }
+    }
+
     /// Forget `ask`.
     pub fn forget_ask(&self, ask: &KeptAsk) {
         self.with_asks(|open| open.retain(|kept| kept.ask != ask.ask));

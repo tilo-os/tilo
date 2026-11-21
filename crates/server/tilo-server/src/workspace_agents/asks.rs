@@ -971,10 +971,14 @@ impl Agents {
                 .settle_ask(at, &outside, found, (chat::question::STARTED, None))
                 .await
         {
-            // It cannot be said to have started (the question was taken back
-            // meanwhile): nothing is done, and the ask is spent.
+            // It cannot be said to have started, and nothing of it was done: the claim is given
+            // back, so the next look reads the question again. Taken back meanwhile, it is
+            // forgotten there; a write that did not land in time is tried again, and the
+            // person's answer is never lost to it.
             tracing::warn!(%workspace, %error, "an agent's question did not take that it started");
-            self.workspaces.forget_ask(&claimed);
+            if let Err(error) = self.workspaces.release_ask(&claimed) {
+                tracing::warn!(%workspace, %error, "an agent's question stays claimed");
+            }
             return;
         }
         // What they allowed for good stands before anything is done, so the

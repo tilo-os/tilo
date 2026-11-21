@@ -174,3 +174,42 @@ async fn an_answer_is_claimed_once_also_across_a_restart_of_the_server() {
     );
     server.shutdown().await;
 }
+
+/// A claim given back before anything of the answer was carried out leaves the answer waiting:
+/// the next reader claims it, also after the server restarted, and it is not read back as
+/// interrupted, so the person's answer is carried out once all the same.
+#[tokio::test]
+async fn an_answer_whose_claim_is_given_back_is_claimed_again_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let answered = workspaces
+        .keep_ask(&ADA, asking("w", 0))
+        .unwrap()
+        .expect("kept");
+    let claimed = workspaces.claim_ask(&answered.ask).expect("the first reader");
+    workspaces.release_ask(&claimed).expect("given back");
+    let again = workspaces
+        .claim_ask(&answered.ask)
+        .expect("the next reader claims it");
+    workspaces.release_ask(&again).expect("given back again");
+    server.shutdown().await;
+
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let kept = workspaces.open_asks("w");
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(
+        !kept[0].started && !kept[0].interrupted,
+        "nothing of it was carried out: {:?}",
+        kept[0]
+    );
+    assert!(workspaces.claim_ask(&answered.ask).is_ok());
+    assert_eq!(
+        workspaces.claim_ask(&answered.ask),
+        Err(CARRIED_OUT.to_owned()),
+        "claimed again, it is still one reader's"
+    );
+    server.shutdown().await;
+}
