@@ -137,13 +137,17 @@ async fn a_refused_call_is_logged_by_its_tool_and_its_arguments_names_and_sizes(
         "the refusal names the action the call asked for: {answers:?}"
     );
 
+    // Nothing of the call stands anywhere in the log; its own lines are those of its turn.
     let logged = String::from_utf8_lossy(&lines.0.lock().unwrap()).into_owned();
-    let refused: Vec<&str> = logged
-        .lines()
+    let turn = lines.of_turns_on(&workspace);
+    let refused: Vec<&str> = turn
+        .iter()
+        .map(String::as_str)
         .filter(|line| line.contains(REFUSED))
         .collect();
-    let told: Vec<&str> = logged
-        .lines()
+    let told: Vec<&str> = turn
+        .iter()
+        .map(String::as_str)
         .filter(|line| line.contains(ANSWERED))
         .collect();
     assert_eq!(
@@ -230,14 +234,17 @@ async fn a_call_that_succeeds_is_logged_without_what_it_wrote_or_its_tool_answer
         "a tool answered a whole line: {answers:?}"
     );
 
+    // Nothing of either call stands anywhere in the log; their own lines are those of its turn.
     let logged = String::from_utf8_lossy(&lines.0.lock().unwrap()).into_owned();
+    let turn = lines.of_turns_on(&workspace);
     assert_eq!(
-        logged.lines().filter(|line| line.contains(REFUSED)).count(),
+        turn.iter().filter(|line| line.contains(REFUSED)).count(),
         0,
         "neither call is refused: {answers:?}"
     );
-    let told: Vec<&str> = logged
-        .lines()
+    let told: Vec<&str> = turn
+        .iter()
+        .map(String::as_str)
         .filter(|line| line.contains(ANSWERED))
         .collect();
     assert_eq!(

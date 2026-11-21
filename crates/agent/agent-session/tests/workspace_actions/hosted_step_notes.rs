@@ -139,9 +139,10 @@ async fn a_note_holds_no_tool_back_and_the_reply_still_says_each_step_in_order()
     answered(&served, &workspace, &said, model).await;
 
     // When each note went, as the server's log says of each step.
-    let logged = String::from_utf8_lossy(&lines.0.lock().unwrap()).into_owned();
-    let timing: Vec<&str> = logged
-        .lines()
+    let turn = lines.of_turns_on(&workspace);
+    let timing: Vec<&str> = turn
+        .iter()
+        .map(String::as_str)
         .filter(|line| line.contains("timing tool"))
         .collect();
     assert_eq!(timing.len(), 4, "{timing:#?}");

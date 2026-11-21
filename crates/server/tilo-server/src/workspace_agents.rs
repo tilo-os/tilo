@@ -62,6 +62,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
+use tracing::Instrument as _;
 
 use crate::workspace_bots::events::PersonEvents;
 use crate::workspace_bots::initiative::Initiative;
@@ -2595,7 +2596,12 @@ async fn work(
         at: tokio::sync::Mutex::new((turn, reply)),
         server: &server,
     };
-    let (outcome, cost) = tilo_agent_turn::work(&server, model, &asked, &answering).await;
+    // Every line the turn writes names its workspace and its agent: a server runs the turns of
+    // many workspaces at once, and its log says whose step each line is.
+    let span = tracing::info_span!("turn", workspace = %scope.workspace, %agent);
+    let (outcome, cost) = tilo_agent_turn::work(&server, model, &asked, &answering)
+        .instrument(span)
+        .await;
     if let Outcome::Answered(words) = &outcome {
         tracing::info!(%agent, cost, said = words.len(), "an agent on the workspace's server answered");
     }

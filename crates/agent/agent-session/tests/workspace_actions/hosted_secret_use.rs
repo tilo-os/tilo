@@ -46,6 +46,19 @@ impl std::io::Write for Lines {
     }
 }
 
+impl Lines {
+    /// Each line written inside a turn on `workspace`. The process's other tests run their own
+    /// turns beside this one's, each on a workspace of its own, into the same lines.
+    pub(super) fn of_turns_on(&self, workspace: &str) -> Vec<String> {
+        let inside = format!("turn{{workspace={workspace} ");
+        String::from_utf8_lossy(&self.0.lock().unwrap())
+            .lines()
+            .filter(|line| line.contains(&inside))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
     type Writer = Self;
 

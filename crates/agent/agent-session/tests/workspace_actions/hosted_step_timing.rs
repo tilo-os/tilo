@@ -78,9 +78,10 @@ async fn every_tool_step_of_a_turn_says_what_it_cost_and_nothing_it_was_asked() 
     let answers = tools_answered(&asked);
     assert_eq!(answers.len(), 3, "three tools answered: {answers:?}");
 
-    let logged = String::from_utf8_lossy(&lines.0.lock().unwrap()).into_owned();
-    let timing: Vec<&str> = logged
-        .lines()
+    let turn = lines.of_turns_on(&workspace);
+    let timing: Vec<&str> = turn
+        .iter()
+        .map(String::as_str)
         .filter(|line| line.contains("timing tool"))
         .collect();
     assert_eq!(
