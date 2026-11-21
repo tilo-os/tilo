@@ -7,7 +7,8 @@
 //! finished while someone is at the machine: they are away when the screen is locked or blanked and
 //! no input has come since. A desktop restart and a machine restart share one clock, so those days'
 //! updates apply together; an always-on host has nobody to ask and finishes whenever it is away.
-//! How an update ended is told here too, once per report ([`Finish::tell_went_back`]).
+//! How an update ended is told here too, once each: a deployment the machine went back from
+//! ([`Finish::tell_went_back`]) and a live update that did not finish ([`Finish::tell_live_failed`]).
 
 use std::sync::mpsc::Receiver;
 use std::sync::{OnceLock, mpsc};
@@ -51,11 +52,12 @@ pub(crate) struct Finish {
     /// When the person was last asked to restart, or the desktop or machine last restarted, as
     /// recorded in `asked` .
     asked: Option<Kept>,
-    /// Where the ids of the deployment fallbacks the person was told about are recorded; `None`
-    /// where there is nowhere to keep them.
+    /// Where what the person was told of how updates ended is recorded: the ids of the deployment
+    /// fallbacks, and `live:` and the digest of each live update that did not finish. `None` where
+    /// there is nowhere to keep them.
     heard: Option<Kept>,
-    /// The fallbacks the person was told about, as the record names them;
-    /// `None` until the record in `heard` is read.
+    /// What the person was told of, as the record names it; `None` until the record in `heard`
+    /// is read.
     told: Option<Vec<String>>,
     /// What the person asked of the update's notice, from the notifications service's taps, which
     /// run wherever it publishes.
@@ -77,7 +79,7 @@ impl Finish {
                 .map(|state| Kept::open(state, crate::kept::UPDATE_ASKED)),
             state
                 .as_deref()
-                .map(|state| Kept::open(state, crate::kept::FALLBACKS_TOLD)),
+                .map(|state| Kept::open(state, crate::kept::UPDATES_TOLD)),
             desktop.map(crate::desktop_services::DesktopServices::notifications),
         )
     }
@@ -198,23 +200,59 @@ impl Finish {
         fell_back: &[Fallback],
         mut tell: impl FnMut(&crate::platform::notice::Notice),
     ) {
-        if fell_back.is_empty() {
+        for fallback in fell_back {
+            self.tell_once(
+                &fallback.id,
+                || crate::notices::went_back_notice(fallback),
+                &mut tell,
+            );
+        }
+    }
+
+    /// Tell the person, once per update, that the staged update `update` could not be applied
+    /// while the computer ran and was taken back, offering the restart that completes it. The
+    /// desktop that comes back after a failed desktop half reads the failure at its start, and a
+    /// failed system half reaches the reading as the live update writes it; either way it is said
+    /// once, and recorded beside the fallbacks so a later session says nothing of it.
+    pub(crate) fn tell_live_failed(
+        &mut self,
+        update: &Update,
+        mut tell: impl FnMut(&crate::platform::notice::Notice),
+    ) {
+        if update.failed.is_none() {
             return;
         }
+        let digest = update
+            .staged
+            .as_ref()
+            .and_then(|staged| staged.digest.as_deref())
+            .unwrap_or_default();
+        self.tell_once(
+            &format!("live:{digest}"),
+            crate::notices::live_failed_notice,
+            &mut tell,
+        );
+    }
+
+    /// Tell the notice `notice` makes unless what `id` names was told already, and record it.
+    fn tell_once(
+        &mut self,
+        id: &str,
+        notice: impl FnOnce() -> crate::platform::notice::Notice,
+        tell: &mut impl FnMut(&crate::platform::notice::Notice),
+    ) {
         // Nothing is told that could not be recorded: it would be said at every sign-in instead of
         // once.
         let Some(heard) = &self.heard else {
             return;
         };
         let told = self.told.get_or_insert_with(|| heard_ids(heard));
-        for fallback in fell_back {
-            if told.contains(&fallback.id) {
-                continue;
-            }
-            tell(&crate::notices::went_back_notice(fallback));
-            told.push(fallback.id.clone());
-            record_heard(heard, told);
+        if told.iter().any(|told| told == id) {
+            return;
         }
+        tell(&notice());
+        told.push(id.to_owned());
+        record_heard(heard, told);
     }
 
     /// When the person was last asked, or the desktop or machine last restarted.
@@ -252,8 +290,7 @@ fn record_asked_at(asked: &Kept, now: SystemTime) {
     asked.replace(seconds.to_string().into_bytes());
 }
 
-/// The fallbacks the person was told about, as recorded in `heard` : one report's directory name
-/// per line.
+/// What the person was told of, as recorded in `heard` : one id per line.
 fn heard_ids(heard: &Kept) -> Vec<String> {
     let record = match heard.read() {
         Ok(record) => record.unwrap_or_default(),
@@ -270,7 +307,7 @@ fn heard_ids(heard: &Kept) -> Vec<String> {
         .collect()
 }
 
-/// Record the fallbacks the person was told about in `heard` , one per line.
+/// Record what the person was told of in `heard` , one id per line.
 fn record_heard(heard: &Kept, ids: &[String]) {
     let mut text = ids.join("\n");
     text.push('\n');
@@ -346,6 +383,9 @@ impl Session {
             .tell_went_back(&update.fell_back, |notice| {
                 shared.notifications.borrow().tell(notice);
             });
+        self.update_finish.tell_live_failed(&update, |notice| {
+            shared.notifications.borrow().tell(notice);
+        });
         let Some(due) =
             self.update_finish
                 .step(now, SystemTime::now(), presence, &update, host(), wanted)
@@ -409,7 +449,10 @@ mod tests {
 
     fn pending_desktop() -> Update {
         Update {
-            staged: Some("sha256:aa".into()),
+            staged: Some(update::Deployment {
+                digest: Some("sha256:aa".into()),
+                ..update::Deployment::default()
+            }),
             desktop_pending: true,
             ..Update::default()
         }
@@ -433,7 +476,7 @@ mod tests {
         // of it.
         {
             let dir = tempdir();
-            let heard = || Kept::open(dir.path(), crate::kept::FALLBACKS_TOLD);
+            let heard = || Kept::open(dir.path(), crate::kept::UPDATES_TOLD);
             let notifications = Notifications::new();
             let id = "20261025T101010Z-0a1b2c3d4e5f6a7b";
             let fallback = update::Fallback {
@@ -501,7 +544,7 @@ mod tests {
         // record what was told says nothing rather than saying it at every sign-in.
         {
             let dir = tempdir();
-            let heard = || Kept::open(dir.path(), crate::kept::FALLBACKS_TOLD);
+            let heard = || Kept::open(dir.path(), crate::kept::UPDATES_TOLD);
             let notifications = Notifications::new();
             let fallback = |id: &str| update::Fallback {
                 id: id.into(),
@@ -536,6 +579,60 @@ mod tests {
                 crate::notifications::tell_daemon(notice, &notifications);
             });
             assert_eq!(notifications.live().len(), 2, "nothing repeats");
+        }
+
+        phase a_live_update_that_did_not_finish_is_told_once_with_the_restart_that_completes_it;
+        // The desktop half failed and was taken back: the desktop that comes back reads the
+        // failure and the person hears it once, offered the restart; a later session, and the
+        // same failure read again, say nothing.
+        {
+            let dir = tempdir();
+            let heard = || Kept::open(dir.path(), crate::kept::UPDATES_TOLD);
+            let notifications = Notifications::new();
+            let staged = |digest: &str| update::Deployment {
+                digest: Some(digest.into()),
+                ..update::Deployment::default()
+            };
+            let failed = |digest: &str| Update {
+                staged: Some(staged(digest)),
+                restart_needed: true,
+                failed: Some("the desktop did not come back".into()),
+                ..Update::default()
+            };
+            let tell = |finish: &mut Finish, update: &Update| {
+                finish.tell_live_failed(update, |notice| {
+                    crate::notifications::tell_daemon(notice, &notifications);
+                });
+            };
+            let mut finish = Finish::new(Instant::now(), None, Some(heard()), None);
+            tell(&mut finish, &pending_desktop());
+            assert!(notifications.live().is_empty(), "an update that waits failed nowhere");
+
+            tell(&mut finish, &failed("sha256:new"));
+            let live = notifications.live();
+            assert_eq!(live.len(), 1);
+            let notice = &live[0];
+            assert_eq!(notice.summary, "The update needs a restart");
+            assert!(
+                notice.body.contains("Restart the computer to complete it"),
+                "{}",
+                notice.body
+            );
+            assert!(
+                notice.actions.iter().any(|(key, _)| key == RESTART_ACTION),
+                "the notice offers the restart"
+            );
+
+            tell(&mut finish, &failed("sha256:new"));
+            // The session ends; the next one holds the record.
+            drop(finish);
+            let mut later = Finish::new(Instant::now(), None, Some(heard()), None);
+            tell(&mut later, &failed("sha256:new"));
+            assert_eq!(notifications.live().len(), 1, "one failure, one notice");
+
+            tell(&mut later, &failed("sha256:newer"));
+            assert_eq!(notifications.live().len(), 2, "another update's failure is news");
+            assert_eq!(heard_ids(&heard()), ["live:sha256:new", "live:sha256:newer"]);
         }
     }
 
@@ -671,7 +768,10 @@ mod tests {
             // It ended with part of it waiting for the machine: the person hears so at once, not at the
             // next two-day turn of the clock.
             let kernel = Update {
-                staged: Some("sha256:aa".into()),
+                staged: Some(update::Deployment {
+                digest: Some("sha256:aa".into()),
+                ..update::Deployment::default()
+            }),
                 restart_needed: true,
                 ..Update::default()
             };
@@ -693,7 +793,10 @@ mod tests {
             let asked = || Kept::open(dir.path(), crate::kept::UPDATE_ASKED);
             let clock = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
             let staged = Update {
-                staged: Some("sha256:aa".into()),
+                staged: Some(update::Deployment {
+                digest: Some("sha256:aa".into()),
+                ..update::Deployment::default()
+            }),
                 restart_needed: true,
                 ..Update::default()
             };

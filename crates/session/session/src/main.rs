@@ -1271,6 +1271,7 @@ fn services(
             if let Err(error) = system.follow_location() {
                 tracing::warn!(%error, "the time zone does not follow the device");
             }
+            system.follow_update();
             services.push(Box::new(system));
         }
         Err(error) => tracing::warn!(%error, "system service not started"),

@@ -510,6 +510,18 @@ pub(crate) fn version_mismatch_notice(
     Notice::new(t("system-update-app-name"), 1, title, body)
 }
 
+/// The notice that the staged update could not be applied while the computer ran and was taken
+/// back, offering the restart that completes it. It stays until the person dismisses it.
+pub(crate) fn live_failed_notice() -> Notice {
+    Notice::new(
+        t("system-update-app-name"),
+        2,
+        t("system-update-live-failed-title"),
+        t("system-update-live-failed-body"),
+    )
+    .choosing(vec![(RESTART_ACTION.to_owned(), t("power-restart"))])
+}
+
 /// The notice of a deployment this machine went back from, and it stays until the person dismisses
 /// it: a computer that went back from an update is not news to lose.
 pub(crate) fn went_back_notice(fallback: &update::Fallback) -> Notice {

@@ -72,5 +72,4 @@
 1 crates/system/tilo-auth/src/client.rs
 1 crates/system/tilo-auth/src/daemon/server.rs
 1 crates/system/tilo-auth/src/sibling/enrol.rs
-1 crates/system/tilo-cli/src/status.rs
 2 crates/windows/compat-service/src/session.rs

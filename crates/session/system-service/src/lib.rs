@@ -6,8 +6,12 @@
 //! * `power`: the power mode, and the session's power actions (lock,
 //!   switch user, sleep, restart, power off, log out; the last three ask for
 //!   confirmation);
-//! * `system-update`: what the update service staged and what finishing it
-//!   needs, with updating now and restarting to finish it;
+//! * `system-update`: what is booted, what the update service staged and
+//!   what finishing it needs, with updating now and restarting to finish it.
+//!   The live update's state is followed as it is written
+//!   ([`SystemService::follow_update`]), so the reading and the actions it
+//!   offers change the moment an update applies, finishes or fails, whoever
+//!   started it;
 //! * `time-zone`: the zone, whether it follows where the device is, and
 //!   network time. While it follows the device, the service looks where the
 //!   device is when that is turned on and every [`LOOK_AGAIN`] after, and
@@ -36,6 +40,7 @@ mod i18n {
 pub mod model;
 pub mod update;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -90,6 +95,8 @@ fn read(system: &dyn System) -> Readings {
 /// What lands from the worker.
 enum Landed {
     Read(Box<Readings>),
+    /// The update read again, alone: its state changed.
+    Update(Box<Update>),
     Changed {
         part: Part,
         action: String,
@@ -105,6 +112,8 @@ pub struct SystemService {
     /// Stops the zone follower when the service goes.
     stopped: Arc<AtomicBool>,
     follower: Option<std::thread::Thread>,
+    /// Follows the live update's state, once [`Self::follow_update`] started it.
+    update_watch: Option<StateWatch>,
 }
 
 impl SystemService {
@@ -118,6 +127,7 @@ impl SystemService {
             worker: Worker::spawn("tilo-system", system, wake)?,
             stopped: Arc::new(AtomicBool::new(false)),
             follower: None,
+            update_watch: None,
         };
         refresh(&service.worker.jobs());
         Ok(service)
@@ -141,6 +151,23 @@ impl SystemService {
             })?;
         self.follower = Some(follower.thread().clone());
         Ok(())
+    }
+
+    /// Read the update again whenever the live update writes its state: the system's own timer
+    /// staging an update, an admin applying one, the desktop half finishing or failing. Nothing
+    /// polls; the reading follows the state's directory.
+    pub fn follow_update(&mut self) {
+        self.follow_update_in(Path::new(crate::update::LIVE_STATE).parent().map_or_else(
+            || PathBuf::from(crate::update::LIVE_STATE),
+            Path::to_path_buf,
+        ));
+    }
+
+    /// [`Self::follow_update`] with the state in `dir`.
+    pub fn follow_update_in(&mut self, dir: PathBuf) {
+        let mut watch = StateWatch::new(dir, self.worker.jobs());
+        watch.arm();
+        self.update_watch = Some(watch);
     }
 
     /// Read the machine again.
@@ -188,6 +215,13 @@ impl SystemService {
     fn land(&mut self, landed: Landed) {
         match landed {
             Landed::Read(readings) => self.take(*readings),
+            Landed::Update(update) => {
+                let readings = Readings {
+                    update: *update,
+                    ..self.readings.clone()
+                };
+                self.take(readings);
+            }
             Landed::Changed {
                 part,
                 action,
@@ -243,6 +277,107 @@ impl Drop for SystemService {
 
 fn refresh(jobs: &Jobs<dyn System, Landed>) {
     jobs.run(|system| Landed::Read(Box::new(read(system))));
+}
+
+fn reread_update(jobs: &Jobs<dyn System, Landed>) {
+    jobs.run(|system| Landed::Update(Box::new(system.update())));
+}
+
+/// The live update's state as it is written: its directory watched, and until the first live
+/// update makes that directory, its parent watched for it.
+struct StateWatch {
+    dir: PathBuf,
+    jobs: Jobs<dyn System, Landed>,
+    /// The state's own directory, once it exists.
+    state: Option<tilo_files::native::ChangeWatch>,
+    /// Its parent, until it exists.
+    parent: Option<tilo_files::native::ChangeWatch>,
+    /// The directory appeared or went: [`Self::arm`] again, on the service's thread.
+    moved: Arc<AtomicBool>,
+}
+
+impl StateWatch {
+    fn new(dir: PathBuf, jobs: Jobs<dyn System, Landed>) -> Self {
+        Self {
+            dir,
+            jobs,
+            state: None,
+            parent: None,
+            moved: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Watch the state's directory where it is, else its parent for it; read the update
+    /// either way, since it may have changed before the watch began.
+    fn arm(&mut self) {
+        let state_name = Path::new(crate::update::LIVE_STATE)
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string);
+        let jobs = self.jobs.clone();
+        let dir = self.dir.clone();
+        let named = self.dir.clone();
+        let moved = Arc::clone(&self.moved);
+        let watched = tilo_files::native::watch_changes(
+            &self.dir,
+            move |path| path == named || path.file_name() == state_name.as_deref(),
+            move || {
+                // The directory went (a test, a tidy-up): its parent is watched for it again.
+                if !dir.is_dir() {
+                    moved.store(true, Ordering::Release);
+                }
+                reread_update(&jobs);
+            },
+        );
+        match watched {
+            Ok(watch) => {
+                self.state = Some(watch);
+                self.parent = None;
+            }
+            Err(error) => {
+                self.state = None;
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(%error, dir = %self.dir.display(), "the live update's state is not followed");
+                }
+                self.watch_parent();
+            }
+        }
+        reread_update(&self.jobs);
+    }
+
+    fn watch_parent(&mut self) {
+        if self.parent.is_some() {
+            return;
+        }
+        let Some(parent) = self.dir.parent() else {
+            return;
+        };
+        let dir = self.dir.clone();
+        let jobs = self.jobs.clone();
+        let moved = Arc::clone(&self.moved);
+        match tilo_files::native::watch_changes(
+            parent,
+            move |path| path == dir,
+            move || {
+                moved.store(true, Ordering::Release);
+                // A reading that lands wakes the service, which arms the watch then.
+                reread_update(&jobs);
+            },
+        ) {
+            Ok(watch) => self.parent = Some(watch),
+            Err(error) => tracing::warn!(
+                %error,
+                dir = %parent.display(),
+                "the live update's state is not followed until the desktop restarts"
+            ),
+        }
+    }
+
+    /// Arm again where the directory appeared or went.
+    fn follow(&mut self) {
+        if self.moved.swap(false, Ordering::AcqRel) {
+            self.arm();
+        }
+    }
 }
 
 /// Set the zone where the device is, when it follows the device.
@@ -503,6 +638,9 @@ impl Service for SystemService {
     }
 
     fn poll(&mut self) -> bool {
+        if let Some(watch) = &mut self.update_watch {
+            watch.follow();
+        }
         let landed = self.worker.landed();
         let changed = !landed.is_empty();
         for landed in landed {

@@ -73,14 +73,20 @@ impl System for OsSystem {
     }
 
     fn update(&self) -> Update {
-        let live = crate::update::live_state();
-        let staged = live.is_none() && crate::update::staged();
+        let deployments = crate::update::deployments()
+            .inspect_err(|error| tracing::debug!(%error, "the deployments are not listed"))
+            .ok();
+        let staged = deployments.is_none() && crate::update::staged_marked();
         Update {
             firmware: os_actions::get_firmware_updates()
                 .ok()
                 .map(|offered| offered.len()),
             fell_back: crate::update::fallbacks(),
-            ..Update::of(staged, live.as_ref())
+            ..Update::of(
+                deployments.as_ref(),
+                staged,
+                crate::update::live_state().as_ref(),
+            )
         }
     }
 

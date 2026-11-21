@@ -18872,6 +18872,7 @@ dependencies = [
  "tilo-clock",
  "tilo-control",
  "tilo-delivery-protocol",
+ "tilo-deployment-status",
  "tilo-device-identity",
  "tilo-enrollment",
  "tilo-files",
@@ -19272,6 +19273,18 @@ dependencies = [
  "tilo-user-identity",
  "tilo-workspace-join",
  "tokio",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-deployment-status"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-files",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -23068,9 +23081,12 @@ dependencies = [
  "settings-store",
  "tempfile",
  "tilo-actions",
+ "tilo-deployment-status",
+ "tilo-files",
  "tilo-location",
  "tilo-resource",
  "tilo-service",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]
@@ -29782,6 +29798,7 @@ dependencies = [
  "tilo-crypto",
  "tilo-dav",
  "tilo-delivery-protocol",
+ "tilo-deployment-status",
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",

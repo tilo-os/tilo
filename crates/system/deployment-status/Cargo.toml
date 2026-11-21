@@ -1,0 +1,24 @@
+[package]
+name = "tilo-deployment-status"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "What is booted, staged and rolled back to on this machine, asked of the deployment status socket the device admin reaches without root."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# Reaching the socket by a path of any length.
+tilo-files = { path = "../../platform/tilo-files" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

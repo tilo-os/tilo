@@ -372,3 +372,95 @@ fn the_keyboard_keys_step_the_keyboard_light_through_its_levels() {
         Err(ApiError::Unavailable { .. })
     ));
 }
+
+/// Wait for the service's worker to wake it, then take in what landed, until `done` holds or the
+/// wait gives up.
+fn until(
+    service: &mut SystemService,
+    woken: &std::sync::mpsc::Receiver<()>,
+    done: impl Fn(&SystemService) -> bool,
+) -> bool {
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !done(service) {
+        let left = give_up.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        let _ = woken.recv_timeout(left);
+        service.poll();
+    }
+    true
+}
+
+/// An update staged and applied by the system's own timer, or by an admin in a root shell, is
+/// read the moment the live update writes its state, not at the next look: the reading changes,
+/// and with it whether finishing on the desktop is offered. Before the first live update the
+/// state's directory does not exist yet; it is followed from its parent until it does.
+#[test]
+fn the_reading_follows_the_live_update_as_it_writes_its_state() {
+    let fake = Fake::new();
+    let (wake, woken) = std::sync::mpsc::channel();
+    let wake = Mutex::new(wake);
+    let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
+    let mut service = SystemService::new(
+        system,
+        Some(Arc::new(move || {
+            let _ = wake.lock().unwrap().send(());
+        })),
+    )
+    .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("live-update");
+    service.follow_update_in(dir.clone());
+    service.settle();
+    assert!(
+        matches!(
+            service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
+            Err(ApiError::Unavailable { .. })
+        ),
+        "nothing waits for the desktop yet"
+    );
+
+    // The first live update makes the directory and writes the state.
+    *fake.update.lock().unwrap() = Update {
+        desktop_pending: true,
+        ..Update::default()
+    };
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("state.json"), "{}").unwrap();
+    assert!(
+        until(&mut service, &woken, |service| service
+            .readings()
+            .update
+            .desktop_pending),
+        "the new state is read without anyone asking"
+    );
+    assert!(
+        service
+            .invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new())
+            .is_ok(),
+        "and finishing on the desktop is offered"
+    );
+    service.settle();
+
+    // The desktop half fails and is taken back: rewritten in place, as the live update does.
+    *fake.update.lock().unwrap() = Update {
+        restart_needed: true,
+        failed: Some("the desktop did not come back".into()),
+        ..Update::default()
+    };
+    let written = dir.join(".state.json.new");
+    std::fs::write(&written, "{\"failed\":true}").unwrap();
+    std::fs::rename(&written, dir.join("state.json")).unwrap();
+    assert!(
+        until(&mut service, &woken, |service| service
+            .readings()
+            .update
+            .failed
+            .is_some()),
+        "the failure is read as it is written"
+    );
+    let reading = service.read(SYSTEM_UPDATE).unwrap();
+    assert_eq!(reading["failed"], json!("the desktop did not come back"));
+    assert_eq!(reading["restart-needed"], json!(true));
+}

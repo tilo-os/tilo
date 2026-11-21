@@ -32,8 +32,9 @@ pub(crate) const WALLPAPERS: &str = "so.tilo.session-wallpapers";
 pub(crate) const NOTIFICATIONS: &str = "so.tilo.session-notifications";
 /// When a restart for an update was last asked for, or done ([`crate::update_finish`]).
 pub(crate) const UPDATE_ASKED: &str = "so.tilo.session-update-asked";
-/// The deployment fallbacks the person was told about ([`crate::update_finish`]).
-pub(crate) const FALLBACKS_TOLD: &str = "so.tilo.session-fallbacks-told";
+/// How updates ended that the person was told about: the deployment fallbacks and the live updates
+/// that did not finish ([`crate::update_finish`]).
+pub(crate) const UPDATES_TOLD: &str = "so.tilo.session-fallbacks-told";
 
 /// The store of a session whose state directory is `state`: one per directory in this process.
 pub(crate) fn store(state: &Path) -> Arc<app_state::FsStore> {

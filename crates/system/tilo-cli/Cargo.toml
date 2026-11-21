@@ -31,6 +31,8 @@ toml.workspace = true
 # The times imported sources write (`createdAt` in Linear's and Forgejo's
 # answers) as milliseconds since the epoch.
 jiff.workspace = true
+# What is booted, staged and rolled back to, asked of the status socket (`tilo status`).
+tilo-deployment-status = { path = "../deployment-status" }
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }

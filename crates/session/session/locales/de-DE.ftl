@@ -60,6 +60,12 @@ system-update-went-back-unnamed = Die neue Version
 system-update-went-back-several-tries = mehreren
 system-update-went-back-runs-before = die vorherige Version
 
+## Das bereitgestellte Update ließ sich nicht im laufenden Betrieb anwenden und
+## wurde zurückgenommen: einmal je Update gesagt, mit dem Neustart, der es
+## abschließt.
+system-update-live-failed-title = Das Update braucht einen Neustart
+system-update-live-failed-body = Es ließ sich nicht im laufenden Betrieb abschließen, deshalb hat sich noch nichts geändert. Starte den Computer neu, um es abzuschließen.
+
 ## Die Liste der eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat,
 ## ließ sich nicht lesen: er beginnt die Liste neu, statt nichts zu zeigen.
 workspaces-app-name = Arbeitsbereiche

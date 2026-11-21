@@ -60,6 +60,11 @@ system-update-went-back-unnamed = The new version
 system-update-went-back-several-tries = several
 system-update-went-back-runs-before = the version before
 
+## The staged update could not be applied while the computer ran and was
+## taken back: said once per update, with the restart that completes it.
+system-update-live-failed-title = The update needs a restart
+system-update-live-failed-body = It could not finish while the computer was running, so nothing changed yet. Restart the computer to complete it.
+
 ## The list of the person's own workspaces that this computer kept could not
 ## be read: it starts the list again instead of showing nothing.
 workspaces-app-name = Workspaces

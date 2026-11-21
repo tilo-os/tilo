@@ -1229,6 +1229,7 @@ doc = false
 "tilo-crypto" = { path = "../../../crates/system/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
 "tilo-dav" = { path = "../../../crates/system/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-delivery-protocol" = { path = "../../../crates/server/tilo-delivery-protocol", default-features = false, features = [] }
+"tilo-deployment-status" = { path = "../../../crates/system/deployment-status", default-features = false, features = [] }
 "tilo-desktop" = { path = "../../../crates/session/desktop", default-features = false, features = ["default", "peer-view"] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = ["appimage"] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
@@ -3858,6 +3859,7 @@ doc = false
 "tilo-crypto" = { path = "../../../crates/system/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
 "tilo-dav" = { path = "../../../crates/system/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-delivery-protocol" = { path = "../../../crates/server/tilo-delivery-protocol", default-features = false, features = [] }
+"tilo-deployment-status" = { path = "../../../crates/system/deployment-status", default-features = false, features = [] }
 "tilo-desktop" = { path = "../../../crates/session/desktop", default-features = false, features = ["default", "peer-view"] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = ["appimage"] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
