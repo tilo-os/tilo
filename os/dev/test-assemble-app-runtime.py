@@ -171,6 +171,47 @@ class AssemblyNamespaces(unittest.TestCase):
                                                        cohort='notes,terminal')
                     self.assertEqual(argv[argv.index('--cohort') + 1], 'notes,terminal')
 
+    def test_the_images_font_seed_stays_readable_in_the_private_namespace(self):
+        with tempfile.TemporaryDirectory(prefix='assembly-test-') as directory:
+            stage = Path(directory)
+            seed = stage / 'font-artifacts'
+            seed.mkdir()
+            with patch.object(ASSEMBLER, 'FONT_SEED', seed):
+                argv = ASSEMBLER.namespace_command(SOURCE.parents[2], stage, stage,
+                                                   'thin-app')
+            self.assertEqual(argv[argv.index(str(seed)) - 1], '--ro-bind')
+            with patch.object(ASSEMBLER, 'FONT_SEED', stage / 'missing'):
+                argv = ASSEMBLER.namespace_command(SOURCE.parents[2], stage, stage,
+                                                   'thin-app')
+            self.assertNotIn(str(stage / 'missing'), argv)
+
+    def test_the_images_font_seed_prepares_the_catalog_without_a_network(self):
+        # The assembly replaces /usr/share/tilo for its pins, so the image's
+        # seed has to be bound back: the namespace has no network to fetch a
+        # font with once the runtime bundle prepares its catalog.
+        if not ASSEMBLER.FONT_SEED.is_dir():
+            self.skipTest('this host carries no Tilo image font seed')
+        repo = SOURCE.parents[2]
+        with tempfile.TemporaryDirectory(prefix='assembly-seed-') as directory:
+            stage = Path(directory)
+            argv = ASSEMBLER.namespace_command(repo, stage, stage, 'thin-app')
+            inside = argv.index('python3')
+            script = (
+                "import pathlib, subprocess, sys\n"
+                f"stage = pathlib.Path({str(stage)!r})\n"
+                f"seed = pathlib.Path({str(ASSEMBLER.FONT_SEED)!r})\n"
+                "assert seed.is_dir(), 'the font seed is not in the namespace'\n"
+                "subprocess.run([sys.executable, "
+                f"{str(repo / 'tools/font-catalog.py')!r}, 'prepare', "
+                f"{str(repo / 'crates/sdk/ui-core/assets/fonts')!r}, "
+                "str(stage / 'work/fonts'), '--scope', 'product', "
+                "'--cache', str(stage / 'work/font-cache')], check=True)\n"
+                "assert (stage / 'work/fonts/manifest.toml').is_file()\n"
+            )
+            result = subprocess.run(argv[:inside] + ['python3', '-c', script],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_builder_temporary_directory_cannot_escape_private_stage(self):
         with tempfile.TemporaryDirectory(prefix='assembly-test-') as directory:
             stage = Path(directory)

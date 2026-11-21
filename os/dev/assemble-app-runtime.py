@@ -21,6 +21,11 @@ import tempfile
 import tomllib
 
 
+# Where a Tilo image keeps the verified font artifacts the runtime bundle's
+# catalog is prepared from (tools/font-catalog.py's IMAGE_SEED).
+FONT_SEED = Path('/usr/share/tilo/font-artifacts')
+
+
 def run(argv, *, env=None, capture=False):
     return subprocess.run(argv, check=True, env=env,
                           stdout=subprocess.PIPE if capture else None,
@@ -187,6 +192,12 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None,
     for pin in sorted(pins.iterdir()):
         readonly = packaging and pin.name != 'app-publisher.hex'
         argv += ['--ro-bind' if readonly else '--bind', str(pin), '/usr/share/tilo/' + pin.name]
+    # The image's font seed, read only: `/usr/share/tilo` is replaced here for
+    # the pins above, and the runtime bundle's font catalog is prepared from
+    # this seed. Without it a swap on a Tilo image has to fetch every font into
+    # a namespace that has no network.
+    if FONT_SEED.is_dir():
+        argv += ['--ro-bind', str(FONT_SEED), str(FONT_SEED)]
     for variable in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME',
                      'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR'):
         argv += ['--setenv', variable, str(stage / 'home')]
