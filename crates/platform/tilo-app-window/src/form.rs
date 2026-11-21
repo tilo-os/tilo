@@ -130,7 +130,10 @@ impl Shown {
             self.picked.set(false);
             return Some(ToApp::FormSubmit { form: self.id });
         }
-        if self.answers.submit.take() && self.ready.get() {
+        // A submit pressed while the app has not read the field it typed yet waits for it to: the
+        // form it answered reads whole a frame later, and the press is the person's, taken then.
+        if self.answers.submit.get() && self.ready.get() {
+            self.answers.submit.set(false);
             return Some(ToApp::FormSubmit { form: self.id });
         }
         if self.answers.cancel.take() {
