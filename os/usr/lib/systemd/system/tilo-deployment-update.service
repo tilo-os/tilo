@@ -35,7 +35,14 @@ ProtectHostname=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
+# No RestrictSUIDSGID=: systemd's filter for it fails openat2() with ENOSYS, and
+# bootc opens the registry credentials that way without falling back, so every
+# fetch ended before it reached the registry:
+#
+#   Switching: Composefs Switching: Loading global authfile: Opening runtime
+#   auth file: Function not implemented (os error 38)
+#
+# os/tests/os_image_gc_sandbox.sh holds this unit and the collection's to it.
 RemoveIPC=yes
 SystemCallArchitectures=native
 StandardOutput=journal
