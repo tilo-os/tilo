@@ -1726,11 +1726,6 @@ reason = "one flow of the e2e check's, on a whole tilo.sh of its own (the stack,
 check = "onboarding"
 
 [[unrequired]]
-suite = "os/containers/tilo-lounge/test-page-tour.sh"
-reason = "a newcomer's tour kept as pictures for a person to review, judging nothing on looks; needs the built web desktop bundle, headless Chromium and the built server, CLI and crypto programs; the page-tour check runs it on request"
-check = "page-tour"
-
-[[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-notes.sh"
 reason = "walks a workspace's page, its Notes and every app it opens in a headless browser against the Lounge, keeping what each step saw and a picture of it for a reviewer; needs the built web desktop bundle, the built server, crypto and font programs; the page-notes check runs it on request"
 check = "page-notes"
