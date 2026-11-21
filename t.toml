@@ -2478,7 +2478,7 @@ arch = ["x86_64", "aarch64"]
 name = "staging-loop"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "command -v mkfs.vfat >/dev/null && command -v mcopy >/dev/null && command -v mkfs.btrfs >/dev/null || dnf install -y -q --setopt=install_weak_deps=False dosfstools mtools btrfs-progs\ncargo build --locked -p imager --bin imager\nIMAGER=$CARGO_TARGET_DIR/debug/imager bash os/tests/staging_helper_loop.sh\nbash os/tests/staging_reclaim_loop.sh\n"
+run = "command -v mkfs.vfat >/dev/null && command -v mcopy >/dev/null && command -v mkfs.btrfs >/dev/null || dnf install -y -q --setopt=install_weak_deps=False dosfstools mtools btrfs-progs\ncargo build --locked -p imager --features installation --bin imager\nIMAGER=$CARGO_TARGET_DIR/debug/imager bash os/tests/staging_helper_loop.sh\nbash os/tests/staging_reclaim_loop.sh\n"
 requires = ["disk-100g", "/dev/loop-control"]
 isolation = "vm"
 on = ["schedule:40 2 * * *", "dispatch"]

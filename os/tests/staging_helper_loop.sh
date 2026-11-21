@@ -106,7 +106,7 @@ for c in m['components']:
 m['source_image_bytes'] = offset + (1 << 20)
 raw = json.dumps(m, separators=(',', ':')).encode()
 open(os.path.join(bundle, 'manifest.json'), 'wb').write(raw)
-catalog = {'schema': 1, 'tag': 'imager-v0.0.0-loop-test', 'releases': [{
+catalog = {'schema': 2, 'tag': 'imager-v0.0.0-loop-test', 'releases': [{
     'purpose': 'tilo-internal-installer', 'layout': 'internal-bundle-v2',
     'release_id': 'loop-test', 'arch': arch,
     'manifest_url': 'https://code.tilo.so/tilo/loop-test/manifest.json',
