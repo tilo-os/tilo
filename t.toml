@@ -7682,15 +7682,17 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = '''set -eu
 dnf install -y --setopt=install_weak_deps=False podman >/dev/null
 podman=(podman --cgroup-manager=cgroupfs --events-backend=file)
-busybox=docker.io/library/busybox@sha256:f10e809bcf667d8e9f01d2baf82869049a495cd448cdfe1f4dee94078b960ae9
-buildkit=docker.io/moby/buildkit@sha256:5a8cd84cb3fcfd082789a08f92bd36f8e745c6231edd78e24a3bf34fd471a823
+busybox=docker.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+buildkit=docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+coreutils=docker.io/library/debian@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 "${podman[@]}" pull -q "$busybox" >/dev/null
 "${podman[@]}" pull -q "$buildkit" >/dev/null
+"${podman[@]}" pull -q "$coreutils" >/dev/null
 python3 os/tests/rootfs_firmware_cache.py
 python3 os/tests/container_build_context.py
 bash os/tests/named_public_trust_context.sh podman
 python3 os/tests/prove_kernel_failure_cache_local.py --output /target/kernel-failure-cache-local
-tools=$("${podman[@]}" image inspect --format '{{.Id}}' "$busybox")
+tools=$("${podman[@]}" image inspect --format '{{.Id}}' "$coreutils")
 python3 os/tests/trust_input_copy_equivalence.py --tools-image "$tools"
 '''
 requires = ["arch=x86_64", "disk-100g"]

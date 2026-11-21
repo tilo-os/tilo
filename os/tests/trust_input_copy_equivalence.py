@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Compare the production trust-input copy with its previous filesystem contract.
 
-Requires rootful local Podman and an already-present image with /bin/sh, mkdir,
-cp and rm. It never pulls, exports a registry cache, or builds OS components.
+Requires rootful local Podman and an already-present image whose /bin/sh runs
+GNU coreutils, so its cp -a preserves user xattrs. It never pulls, exports a
+registry cache, or builds OS components.
 """
 import argparse
 import hashlib

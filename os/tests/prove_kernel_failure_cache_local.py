@@ -2,7 +2,7 @@ import pathlib,tempfile,subprocess,time,json,uuid,argparse,hashlib
 parser=argparse.ArgumentParser(description="Offline rootful Podman/BuildKit failed-RUN cache proof; requires pinned images already cached")
 parser.add_argument("--output",type=pathlib.Path,required=True)
 args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=True)
-base=args.output;image='docker.io/moby/buildkit@sha256:5a8cd84cb3fcfd082789a08f92bd36f8e745c6231edd78e24a3bf34fd471a823';busybox='docker.io/library/busybox@sha256:f10e809bcf667d8e9f01d2baf82869049a495cd448cdfe1f4dee94078b960ae9'
+base=args.output;image='docker.io/moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8';busybox='docker.io/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec'
 name='tilo-kernel-cache-proof-'+uuid.uuid4().hex[:10];cid=None;receipt={}
 def run(args,**kwargs):return subprocess.run(args,capture_output=True,timeout=kwargs.pop('timeout',90),**kwargs)
 with tempfile.TemporaryDirectory(prefix='tilo-failure-cache-proof-',dir='/var/tmp') as tmp:
