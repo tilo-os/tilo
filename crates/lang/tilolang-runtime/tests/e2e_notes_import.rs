@@ -220,7 +220,7 @@ mod cases {
 
     /// Every node of `kind` in the tree, in the order they stand.
     fn of_kind<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-        let mut out: Vec<&UiNode> = Vec::new();
+        /// Every node of `kind` under `node`, in the order they stand.
         fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
             if node.kind == kind {
                 out.push(node);
@@ -229,6 +229,7 @@ mod cases {
                 walk(child, kind, out);
             }
         }
+        let mut out: Vec<&UiNode> = Vec::new();
         walk(node, kind, &mut out);
         out
     }

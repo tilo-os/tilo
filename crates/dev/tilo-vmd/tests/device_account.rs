@@ -92,6 +92,7 @@ impl Device {
     fn app(&self) -> App {
         App {
             json: false,
+            local: false,
             target: None,
             worktree: None,
             registry_path: self.dir.path().join("vms.toml"),

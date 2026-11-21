@@ -88,6 +88,7 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
     let run = |args: &[&str]| {
         let mut app = App {
             json: false,
+            local: false,
             target: None,
             worktree: None,
             registry_path: registry_path.clone(),
