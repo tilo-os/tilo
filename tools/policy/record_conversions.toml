@@ -63,13 +63,13 @@ conversion = "apps/chat/src/drafts.rs:import_previous"
 kind = "chat.learned"
 app = "chat"
 change = "left-own"
-conversion = "crates/session/session/src/conversations.rs:learned"
+lost = "What a person told the native Chat's agents to remember about them. Only the session's agent turns for the native Chat read it, and those are gone with it; the tilolang Chat keeps no learned facts, so they are not carried."
 
 [[change]]
 kind = "chat.learned"
 app = "chat"
 change = "removed"
-conversion = "crates/session/session/src/conversations.rs:learned"
+lost = "What a person told the native Chat's agents to remember about them. Only the session's agent turns for the native Chat read it, and those are gone with it; the tilolang Chat keeps no learned facts, so they are not carried."
 
 [[change]]
 kind = "tilo.chain-unsent"

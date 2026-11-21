@@ -118,8 +118,8 @@ class BrowserRuntimeRelease(unittest.TestCase):
         self.assertFalse(release.engine_dependency(dict(environment, REQUESTED_PUBLISH='false')))
         self.assertFalse(release.engine_dependency(dict(environment, ENGINE_RUNTIME_ONLY='true')))
         self.assertFalse(release.engine_dependency(dict(environment, SIGNAL_PROVIDER_ONLY='true')))
-        self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='notes')))
-        self.assertTrue(release.engine_dependency(dict(environment, SELECTED_APPS='notes', COMPLETE='true')))
+        self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='calculator')))
+        self.assertTrue(release.engine_dependency(dict(environment, SELECTED_APPS='calculator', COMPLETE='true')))
         self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='', COMPLETE='true')))
 
     def test_workflow_admits_engine_dependencies_after_authorization_and_confines_keys(self):

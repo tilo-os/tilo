@@ -25,9 +25,6 @@ include = ["file-explorer", "settings", "terminal"]
 music = ["audio", "live", "runtime-engine"]
 video-player = ["decode"]
 camera = ["live-capture"]
-# Account credentials with the IMAP client, and the contact directory, from their
-# engine libraries beside the runtime.
-mail = ["live", "runtime-engine"]
 disks = ["live"]
 video-editor = ["decode", "gst"]
 # Typst from its engine library beside the runtime.

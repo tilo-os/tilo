@@ -182,10 +182,6 @@ aarch64 = 6000000
 x86_64 = 786432
 aarch64 = 786432
 
-[apps."so.tilo.mail"]
-x86_64 = 4063232
-aarch64 = 2555904
-
 [apps."so.tilo.maps"]
 x86_64 = 1572864
 aarch64 = 1310720

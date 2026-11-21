@@ -67,8 +67,6 @@ description = "Find apps, windows, files and actions from one search, and start 
 description = "Search and understand system logs without a wall of noise."
 [apps.messages]
 description = "Keep direct conversations together with a clear choice of contact and messaging account."
-[apps.mail]
-description = "Read, write, and organize mail in a calm native client."
 [apps.maps]
 description = "Find places, plan routes, and orient yourself visually."
 [apps.model-providers]
@@ -77,8 +75,6 @@ description = "Add AI model providers, keep their keys on this device, and choos
 description = "Watch processes, memory, storage, and system resources."
 [apps.music]
 description = "Listen to your library with playback that feels at home in Tilo."
-[apps.notes]
-description = "Write durable notes that stay useful alone or together."
 [apps.osk]
 description = "An on-screen keyboard built for touch and accessibility."
 [apps.passwords]
@@ -121,8 +117,6 @@ description = "Explore and shape the colors and appearance of your desktop."
 description = "Lets your other devices make photo thumbnails for this one when it is the better place to do it."
 [apps.totp]
 description = "Generate time-based verification codes without losing your flow."
-[apps.tube]
-description = "Browse and watch video in a native, focused experience."
 [apps.typst-editor]
 description = "Write polished Typst documents with a native editing workspace."
 [apps.video-editor]
