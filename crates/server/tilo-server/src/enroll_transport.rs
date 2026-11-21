@@ -11,11 +11,9 @@ use tilo_user_identity::Dial;
 
 use anyhow::{Context, bail};
 
-use tilo_enrollment::protocol::{
-    PAIR_MAGIC, PairSolicitation, decrypt_pair_offer, verify_finalized,
-};
+use tilo_enrollment::protocol::{PAIR_MAGIC, PairSolicitation, decrypt_pair_offer};
 use tilo_enrollment::transport::{
-    ALPN, address_of, dial_of, endpoint_for, parse_relay, receive, runtime, send,
+    ALPN, RequestExchange, address_of, dial_of, endpoint_for, parse_relay, receive, runtime, send,
 };
 use tilo_enrollment::{WindowClosed, socket_timeout};
 
@@ -65,16 +63,8 @@ fn join_one(
         Some(RelayMap::from(parse_relay(&named.relay_url)?))
     };
     let address = address_of(named)?;
-    let PreparedJoin {
-        token,
-        request,
-        request_bytes,
-        response_secret,
-        device,
-        ..
-    } = prepared;
-    let connection = runtime.block_on(async {
-        let endpoint = endpoint_for(device, relays.as_ref()).await?;
+    let (endpoint, connection) = runtime.block_on(async {
+        let endpoint = endpoint_for(&prepared.device, relays.as_ref()).await?;
         let connection = tokio::time::timeout(
             socket_timeout(options.timeout),
             endpoint.connect(address, ALPN),
@@ -82,37 +72,31 @@ fn join_one(
         .await
         .map_err(|_| anyhow::anyhow!("the enrollment window closed"))?
         .map_err(|error| anyhow::anyhow!("dial the person's device: {error}"))?;
-        send(&connection, request_bytes).await?;
-        let answered = tokio::time::timeout(socket_timeout(options.timeout), receive(&connection))
-            .await
-            .map_err(|_| anyhow::anyhow!("the approving device did not answer"))??;
-        Ok::<_, anyhow::Error>((endpoint, connection, answered))
+        Ok::<_, anyhow::Error>((endpoint, connection))
     })?;
-    let (endpoint, connection, response_bytes) = connection;
-    let (payload, approver_public_key) =
-        tilo_enrollment::open_answer(&response_bytes, token, request, response_secret)?;
-    let mut confirm = |ack: &[u8]| -> anyhow::Result<()> {
-        let finalized = runtime.block_on(async {
-            send(&connection, ack).await?;
-            let finalized =
-                tokio::time::timeout(socket_timeout(options.timeout), receive(&connection))
-                    .await
-                    .map_err(|_| {
-                        anyhow::anyhow!("the approving device did not confirm enrollment")
-                    })??;
-            Ok::<_, anyhow::Error>(finalized)
-        })?;
-        verify_finalized(
-            &finalized,
-            &response_bytes,
-            token.nonce,
-            device.verifying_key().to_bytes(),
-            approver_public_key,
-        )
-    };
-    let installed = install_answer(prepared, options, &payload, &response_bytes, &mut confirm);
+    let installed = enroll_on_connection(runtime, &connection, prepared, options);
     runtime.block_on(endpoint.close());
     installed
+}
+
+fn enroll_on_connection(
+    runtime: &tokio::runtime::Runtime,
+    connection: &iroh::endpoint::Connection,
+    prepared: &PreparedJoin,
+    options: JoinOptions<'_>,
+) -> anyhow::Result<Option<PathBuf>> {
+    RequestExchange {
+        token: &prepared.token,
+        request: &prepared.request,
+        request_bytes: &prepared.request_bytes,
+        response_secret: &prepared.response_secret,
+    }
+    .install(
+        runtime,
+        connection,
+        socket_timeout(options.timeout),
+        |payload, response, confirm| install_answer(prepared, options, payload, response, confirm),
+    )
 }
 
 /// Wait for one of the person's devices to dial this machine and approve it,
@@ -171,43 +155,7 @@ pub(super) fn wait_for_approval(
         Ok::<_, anyhow::Error>((endpoint, connection, token_text))
     })?;
     let prepared = prepare_join(token_text.trim(), options)?;
-    let PreparedJoin {
-        token,
-        request,
-        request_bytes,
-        response_secret,
-        device,
-        ..
-    } = &prepared;
-    let response_bytes = runtime.block_on(async {
-        send(&connection, request_bytes).await?;
-        let answered = tokio::time::timeout(socket_timeout(options.timeout), receive(&connection))
-            .await
-            .map_err(|_| anyhow::anyhow!("the approving device did not answer"))??;
-        Ok::<_, anyhow::Error>(answered)
-    })?;
-    let (payload, approver_public_key) =
-        tilo_enrollment::open_answer(&response_bytes, token, request, response_secret)?;
-    let mut confirm = |ack: &[u8]| -> anyhow::Result<()> {
-        let finalized = runtime.block_on(async {
-            send(&connection, ack).await?;
-            let finalized =
-                tokio::time::timeout(socket_timeout(options.timeout), receive(&connection))
-                    .await
-                    .map_err(|_| {
-                        anyhow::anyhow!("the approving device did not confirm enrollment")
-                    })??;
-            Ok::<_, anyhow::Error>(finalized)
-        })?;
-        verify_finalized(
-            &finalized,
-            &response_bytes,
-            token.nonce,
-            device.verifying_key().to_bytes(),
-            approver_public_key,
-        )
-    };
-    let installed = install_answer(&prepared, options, &payload, &response_bytes, &mut confirm);
+    let installed = enroll_on_connection(&runtime, &connection, &prepared, options);
     connection.close(0u32.into(), b"enrolled");
     runtime.block_on(endpoint.close());
     installed?;

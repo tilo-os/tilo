@@ -26,15 +26,17 @@ use anyhow::Context;
 use iroh::RelayUrl;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, PublicKey};
-use tilo_user_identity::Dial;
+use tilo_user_identity::{Dial, EnrollmentToken};
 
 use crate::approval::{
     ApprovalIdentity, ApprovalOptions, PreparedApproval, accept_request, commit_approval,
     expected_pair, load_approval_identity, prepare_approval, waiting_of,
 };
-use crate::protocol::{PairSolicitation, encrypt_pair_offer, verify_ack};
+use crate::protocol::{
+    PairSolicitation, Request, ResponsePayload, encrypt_pair_offer, verify_ack, verify_finalized,
+};
 use crate::waiting::{Decision, Person, WaitingMachine};
-use crate::{valid_solicitation, validity_start_ns};
+use crate::{open_answer, valid_solicitation, validity_start_ns};
 
 /// What both sides of an enrollment speak over iroh.
 pub const ALPN: &[u8] = b"tilo/enrollment/1";
@@ -140,6 +142,56 @@ pub async fn receive(connection: &iroh::endpoint::Connection) -> anyhow::Result<
         .read_to_end(MAX_MESSAGE)
         .await
         .map_err(|error| anyhow::anyhow!("read an enrollment message: {error}"))
+}
+
+/// Carry the requester half of a verified enrollment over a connected peer.
+pub struct RequestExchange<'a> {
+    pub token: &'a EnrollmentToken,
+    pub request: &'a Request,
+    pub request_bytes: &'a [u8],
+    pub response_secret: &'a tilo_seal::SecretKey,
+}
+
+impl RequestExchange<'_> {
+    /// Exchange a request, answer and acknowledgement. The installer stages
+    /// the answer, sends its acknowledgement through the provided callback,
+    /// then commits only after the approver authenticates completion.
+    pub fn install<T>(
+        self,
+        runtime: &tokio::runtime::Runtime,
+        connection: &iroh::endpoint::Connection,
+        window: Duration,
+        install_answer: impl FnOnce(
+            &ResponsePayload,
+            &[u8],
+            &mut dyn FnMut(&[u8]) -> anyhow::Result<()>,
+        ) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let response = runtime.block_on(async {
+            send(connection, self.request_bytes).await?;
+            tokio::time::timeout(window, receive(connection))
+                .await
+                .context("the approving device did not answer")?
+        })?;
+        let (payload, approver) =
+            open_answer(&response, self.token, self.request, self.response_secret)?;
+        let mut confirm = |ack: &[u8]| {
+            let finalized = runtime.block_on(async {
+                send(connection, ack).await?;
+                tokio::time::timeout(window, receive(connection))
+                    .await
+                    .context("the approving device did not confirm enrollment")?
+            })?;
+            verify_finalized(
+                &finalized,
+                &response,
+                self.token.nonce,
+                self.request.device_public_key,
+                approver,
+            )
+        };
+        install_answer(&payload, &response, &mut confirm)
+    }
 }
 
 /// What became of one machine that dialed this device.
