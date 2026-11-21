@@ -57,7 +57,7 @@ pub struct Dropdown {
     groups: Vec<Option<String>>,
     shortcuts: Vec<(String, String)>,
     binding: Option<BoxedBinding<String>>,
-    on_change: Option<SelectionChangeCallback>,
+    chosen: Option<SelectionChangeCallback>,
     action: Option<ActionEmitter<String>>,
     change_verb: Option<super::control_verb::ControlVerb<String>>,
     placeholder: String,
@@ -221,7 +221,7 @@ impl Dropdown {
             groups: Vec::new(),
             shortcuts: Vec::new(),
             binding: Some(crate::doc_source::text_key(value_path)),
-            on_change: None,
+            chosen: None,
             change_verb: None,
             action: None,
             placeholder: String::new(),
@@ -315,20 +315,12 @@ impl Dropdown {
         }
     }
 
-    /// Observe selections produced by user interaction.
-    #[must_use]
-    pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        if self.action.is_none() {
-            self.on_change = Some(Box::new(callback));
-        }
-        self
-    }
-
     /// Route every committed selection through an exported resource action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
-        self.on_change = None;
+        self.change_verb = None;
+        self.chosen = None;
         self
     }
 
@@ -345,7 +337,7 @@ impl Dropdown {
                 CHANGE_DROPDOWN,
                 super::control_verb::VerbArgument::Text,
             ));
-            self.on_change = Some(Box::new(callback));
+            self.chosen = Some(Box::new(callback));
         }
         self
     }
@@ -396,7 +388,7 @@ impl Dropdown {
 
     /// A menu button: the control is `icon` alone, its list opens at least
     /// as wide as a utility panel, aligned to the control's trailing edge, and
-    /// choosing an option reports it (to [`Self::on_change`] or
+    /// choosing an option reports it (to [`Self::on_change_view`] or
     /// [`Self::on_action`]) without the control keeping it as its value.
     /// Name it with [`Self::with_accessible_name`]: it shows no text.
     #[must_use]
@@ -930,8 +922,6 @@ impl Dropdown {
                 let _ = action.emit(value.to_string());
             } else if let Some(verb) = &mut self.change_verb {
                 verb.emit(value.to_string());
-            } else if let Some(callback) = self.on_change.as_mut() {
-                callback(value);
             } else if let Some(binding) = &mut self.binding {
                 binding.publish(&value.to_string());
             }
@@ -952,12 +942,10 @@ impl Dropdown {
         if self.action.is_none() {
             self.publish_local_state();
         }
-        if self.action.is_none() {
-            if let Some(verb) = &mut self.change_verb {
-                verb.emit(value.to_string());
-            } else if let Some(callback) = self.on_change.as_mut() {
-                callback(value);
-            }
+        if self.action.is_none()
+            && let Some(verb) = &mut self.change_verb
+        {
+            verb.emit(value.to_string());
         }
     }
 
@@ -1617,7 +1605,7 @@ impl Widget for Dropdown {
         if let Some(idx) = self.values.iter().position(|value| *value == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());
         }
-        if self.action.is_none() && self.on_change.is_none() {
+        if self.action.is_none() && self.change_verb.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
         }
         if self.open && self.supports_filter() {
@@ -1736,7 +1724,7 @@ impl crate::widget::ResourceOperations for Dropdown {
         if self.menu.is_none() {
             self.selected.clone_from(&value);
         }
-        if let Some(callback) = self.on_change.as_mut() {
+        if let Some(callback) = self.chosen.as_mut() {
             callback(&value);
         }
         Ok(Some(super::ResourceOperationStart::Completed(
@@ -1777,7 +1765,7 @@ impl crate::widget::controls::ActionControls for Dropdown {
             control_id,
             self.action.as_ref(),
             self.binding.as_ref().and_then(|b| b.document_key()),
-            self.on_change.is_some(),
+            false,
         )
     }
     fn refresh_control_action_availability(

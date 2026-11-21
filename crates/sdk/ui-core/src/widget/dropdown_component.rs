@@ -60,8 +60,8 @@ impl Described for Dropdown {
         } = props;
         let edits = value.clone();
         let mut dropdown = Self::from_state(options, &value.state)
-            .on_change(move |chosen| edits.edited(Value::Text(chosen.to_owned())))
             .with_id(key)
+            .on_change_view(move |chosen| edits.edited(Value::Text(chosen.to_owned())))
             .with_enabled(enabled)
             .control_size(size);
         if let Some(placeholder) = &placeholder {

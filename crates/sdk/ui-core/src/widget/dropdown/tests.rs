@@ -1034,8 +1034,7 @@ tilo_test_env::scenario! {
         }
 
         fn action_binding_owns_accessibility_selection() {
-            let mut dropdown = Dropdown::new(opts(), "legacy")
-                .on_change(|_| panic!("legacy callback must be suppressed"))
+            let mut dropdown = Dropdown::new(opts(), "tz")
                 .on_action(crate::widget::test_string_action_binding());
             let mut doc = AutoCommit::new();
             crate::widget::controls::refresh_control_action_availability(
@@ -1058,7 +1057,7 @@ tilo_test_env::scenario! {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
-            assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+            assert!(doc.get(&automerge::ROOT, "tz").unwrap().is_none());
             assert_eq!(
                 crate::widget::controls::take_control_invocation(&mut dropdown)
                     .unwrap()
@@ -1472,7 +1471,7 @@ tilo_test_env::scenario! {
     {
         let _settled = crate::motion::testing::settled();
         let mut dropdown =
-            Dropdown::new(opts(), "legacy").on_action(crate::widget::test_string_action_binding());
+            Dropdown::new(opts(), "tz").on_action(crate::widget::test_string_action_binding());
         let allowed =
             std::collections::HashSet::from([tilo_actions::ActionAddress::new("test:control", "set")]);
         crate::widget::controls::refresh_control_action_availability(&mut dropdown, &allowed);
@@ -1495,7 +1494,7 @@ tilo_test_env::scenario! {
         assert!(crate::widget::controls::take_control_invocation(&mut dropdown).is_none());
 
         // Unavailable capture-only fixtures retain their authored open state.
-        let mut capture = Dropdown::new(opts(), "legacy")
+        let mut capture = Dropdown::new(opts(), "tz")
             .on_action(crate::widget::test_string_action_binding())
             .open();
         crate::widget::controls::refresh_control_action_availability(

@@ -1551,8 +1551,9 @@ impl Reconciler {
             let placeholder = crate::date::shown(node, "placeholder").unwrap_or_default();
             Box::new(
                 Dropdown::from_state(labels, &state)
+                    .with_id(&node.key)
                     .with_placeholder(&placeholder)
-                    .on_change(move |label| {
+                    .on_change_view(move |label| {
                         if let Some(case) = chosen
                             .iter()
                             .position(|shown| shown == label)
