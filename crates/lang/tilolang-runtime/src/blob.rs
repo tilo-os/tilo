@@ -105,6 +105,72 @@ impl FileValue {
     }
 }
 
+/// The size a file states when the caller named none: `.size()` answers the content's own
+/// length instead.
+pub const UNSTATED_SIZE: i64 = -1;
+
+/// The `File` a caller names as JSON: the content it already put into the workspace, and what
+/// the file is.
+///
+/// The keys are the ones a read answers ([`crate::project`]) and a caller writes:
+///
+/// - `content`: the reference a put answered, `tilo.content:<reference>`;
+/// - `hash`: the reference itself, as [`FileValue`] is stored;
+/// - `url`: the address a picture takes, `tilo-blob://<reference>`.
+///
+/// One of the three names the bytes; a `File` that names none has none. `name` is what the
+/// file is called, `media` its media type (read from the name when left out), and `size` how
+/// many bytes it is — [`UNSTATED_SIZE`] when the caller names none, which reads the content
+/// when an action asks.
+///
+/// Naming a reference grants nothing: the bytes stay where they are, and an action that reads
+/// what this device does not hold is told so. A caller names content its workspace holds, as
+/// the put that answered the reference kept it there.
+///
+/// # Errors
+///
+/// Why the object is no file: no content, no name, or a `content` that is no reference.
+pub fn file_from_json(json: &serde_json::Value) -> Result<FileValue, String> {
+    use serde_json::Value as Json;
+    let Json::Object(fields) = json else {
+        return Err(format!("a file is an object, and this is {json}"));
+    };
+    let text = |key: &str| fields.get(key).and_then(Json::as_str);
+    let hash = if let Some(content) = text("content") {
+        tilo_actions::named_reference(content)
+            .ok_or_else(|| {
+                format!(
+                    "`{content}` names no content: give the `tilo.content:<reference>` a put \
+                     answered"
+                )
+            })?
+            .to_owned()
+    } else if let Some(hash) = text("hash") {
+        hash.to_owned()
+    } else if let Some(url) = text("url") {
+        url.strip_prefix(SCHEME)
+            .ok_or_else(|| {
+                format!("`{url}` is no file's content: they read `{SCHEME}<reference>`")
+            })?
+            .to_owned()
+    } else {
+        return Err(
+            "a file names its content: the `tilo.content:<reference>` a put answered".to_owned(),
+        );
+    };
+    let name = text("name")
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| "a file names what it is called (`name`)".to_owned())?;
+    let media = text("media").map_or_else(|| media_of(name), str::to_owned);
+    let size = match fields.get("size") {
+        None => UNSTATED_SIZE,
+        Some(size) => size.as_i64().filter(|size| *size >= 0).ok_or_else(|| {
+            format!("a file's `size` is how many bytes it is, and {size} is none")
+        })?,
+    };
+    Ok(FileValue::new(name, media, size, hash))
+}
+
 /// What a person is asked for when they choose a file: what it is for (the chooser's title, in
 /// the person's words), a name to start from, and the media types it may be.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -235,7 +301,24 @@ impl Core {
             }
             Imp::FileSize => {
                 let file = self.file_arg(a.h(0)?)?;
-                ret_i64(file.size)
+                let size = if file.size >= 0 {
+                    file.size
+                } else {
+                    // The caller named no size: the content answers how long it is.
+                    let bytes = self
+                        .blobs
+                        .borrow()
+                        .as_ref()
+                        .and_then(|blobs| blobs.read(&file.hash));
+                    let Some(bytes) = bytes else {
+                        return trap(format!(
+                            "the content of `{}` is not on this device",
+                            file.name
+                        ));
+                    };
+                    i64::try_from(bytes.len()).unwrap_or(i64::MAX)
+                };
+                ret_i64(size)
             }
             Imp::FileText => {
                 let file = self.file_arg(a.h(0)?)?;
@@ -392,10 +475,7 @@ fn within(name: &str, len: usize, limit: usize) -> Result<i64, String> {
 /// [`MAX_TEXT`], or bytes that are not UTF-8.
 fn read_text(blobs: &dyn BlobHost, file: &FileValue) -> Result<String, String> {
     if file.size > MAX_TEXT_BYTES {
-        return Err(format!(
-            "`{}` is {} bytes: more than the {MAX_TEXT} an action reads as text",
-            file.name, file.size
-        ));
+        return Err(too_large(&file.name, file.size, MAX_TEXT, "an action reads as text"));
     }
     let Some(bytes) = blobs.read(&file.hash) else {
         return Err(format!(
@@ -403,7 +483,18 @@ fn read_text(blobs: &dyn BlobHost, file: &FileValue) -> Result<String, String> {
             file.name
         ));
     };
+    // The size a caller named no word of is the bound the bytes read are held to: naming none
+    // never lets a larger file through.
+    let len = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+    if len > MAX_TEXT_BYTES {
+        return Err(too_large(&file.name, len, MAX_TEXT, "an action reads as text"));
+    }
     String::from_utf8(bytes).map_err(|_| format!("`{}` is not text", file.name))
+}
+
+/// Why a file of `len` bytes is no file `within_a`: it holds more than `limit`.
+fn too_large(name: &str, len: i64, limit: usize, within_a: &str) -> String {
+    format!("`{name}` is {len} bytes: more than the {limit} {within_a}")
 }
 
 /// The files an archive holds, each kept in the device's content store under the name it has
@@ -412,9 +503,11 @@ fn read_text(blobs: &dyn BlobHost, file: &FileValue) -> Result<String, String> {
 /// person's, and one that holds more than an importer reads is refused with why.
 fn files_of(blobs: &dyn BlobHost, file: &FileValue) -> Result<Vec<Value>, String> {
     if u64::try_from(file.size).unwrap_or(u64::MAX) > MAX_ARCHIVE_BYTES {
-        return Err(format!(
-            "`{}` is {} bytes: more than the {MAX_ARCHIVE_BYTES} an archive may be",
-            file.name, file.size
+        return Err(too_large(
+            &file.name,
+            file.size,
+            usize::try_from(MAX_ARCHIVE_BYTES).unwrap_or(usize::MAX),
+            "an archive may be",
         ));
     }
     let Some(bytes) = blobs.read(&file.hash) else {
@@ -423,6 +516,16 @@ fn files_of(blobs: &dyn BlobHost, file: &FileValue) -> Result<Vec<Value>, String
             file.name
         ));
     };
+    // The size a caller named no word of is the bound the bytes read are held to.
+    let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if len > MAX_ARCHIVE_BYTES {
+        return Err(too_large(
+            &file.name,
+            i64::try_from(len).unwrap_or(i64::MAX),
+            usize::try_from(MAX_ARCHIVE_BYTES).unwrap_or(usize::MAX),
+            "an archive may be",
+        ));
+    }
     let parts = bounded_zip::read_zip_parts(&bytes, &ARCHIVE)
         .map_err(|why| format!("`{}` is not an archive that reads: {why}", file.name))?;
     let mut out = Vec::with_capacity(parts.len());
@@ -458,6 +561,76 @@ mod tests {
             assert!(accepts(&one, "image/webp"));
             assert!(!accepts(&one, "image/png"));
             assert!(accepts(&[], "anything/at-all"), "no type asked, any file");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_caller_names_a_file_by_the_content_it_put;
+
+        phase a_content_reference_names_the_file_it_is;
+        {
+            let hash = "a".repeat(64);
+            let given = serde_json::json!({
+                "content": format!("tilo.content:{hash}"),
+                "name": "Plan.md",
+            });
+            let file = file_from_json(&given).expect("a content reference names a file");
+            assert_eq!(file.hash, hash, "the reference names the content");
+            assert_eq!(file.name, "Plan.md");
+            assert_eq!(file.media, "text/markdown", "read from the name it came in as");
+            assert_eq!(
+                file.size,
+                UNSTATED_SIZE,
+                "a caller that states no size leaves it unstated"
+            );
+        }
+
+        phase what_a_read_answers_is_what_a_caller_can_name;
+        {
+            // The encoded form a read answers is the one a caller passes on: same file.
+            let read = serde_json::json!({
+                "file": {
+                    "name": "fox.png",
+                    "media": "image/png",
+                    "size": 12,
+                    "content": tilo_actions::content_resource(&"b".repeat(64)),
+                    "url": format!("{SCHEME}{}", "b".repeat(64)),
+                },
+            });
+            let file = crate::value::from_json(&read).expect("a read is a file");
+            let Value::File(file) = file else {
+                panic!("a read of a file is a file");
+            };
+            assert_eq!((file.name.as_str(), file.size), ("fox.png", 12));
+            assert_eq!(file.hash, "b".repeat(64));
+            // The address a picture takes names the same content.
+            let as_url = serde_json::json!({"name": "fox.png", "url": file.url()});
+            assert_eq!(file_from_json(&as_url).expect("an address names it").hash, file.hash);
+        }
+
+        phase no_content_or_no_name_is_refused_with_why;
+        {
+            let unnamed = serde_json::json!({"name": "Plan.md"});
+            assert!(
+                file_from_json(&unnamed)
+                    .unwrap_err()
+                    .contains("names its content"),
+                "a file names the content it is"
+            );
+            let nameless = serde_json::json!({"content": format!("tilo.content:{}", "a".repeat(64))});
+            assert!(
+                file_from_json(&nameless)
+                    .unwrap_err()
+                    .contains("what it is called"),
+                "a file names itself"
+            );
+            let no_reference = serde_json::json!({"content": "not a hash", "name": "Plan.md"});
+            assert!(
+                file_from_json(&no_reference)
+                    .unwrap_err()
+                    .contains("names no content"),
+                "words that name no content are refused"
+            );
         }
     }
 }

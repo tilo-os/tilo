@@ -58,13 +58,9 @@ mod cases {
         }
 
         fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            // The content's own address: the same bytes are one file, as a content store keeps
-            // them.
-            let mut digest = 0xcbf2_9ce4_8422_2325_u64;
-            for byte in bytes {
-                digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-            }
-            let hash = format!("k{digest:x}");
+            // The content's own address, as a content store keeps it: the same bytes are one
+            // file, named by their hash.
+            let hash = blake3::hash(bytes).to_hex().to_string();
             self.content
                 .borrow_mut()
                 .insert(hash.clone(), bytes.to_vec());
@@ -533,6 +529,54 @@ mod cases {
                 .written_text()
                 .contains("Three ideas"),
             "the note is the person's now, as they left it"
+        );
+    }
+
+    /// What a caller outside the window gives a `File` parameter: the content it put into the
+    /// workspace, as `tilo_put_finish` answered it, and the file's own name and media type. The
+    /// action imports it as the person's own chooser would.
+    #[test]
+    fn a_file_named_by_content_imports_as_the_chooser_would() {
+        let device = Device::default();
+        let words = "# Imported\n\nWords from a file.\n";
+        let put = device.keeping("Plan.md", "text/markdown", words.as_bytes());
+        let n = Notes::new(device);
+        let named = serde_json::json!({"file": {
+            "content": tilo_actions::content_resource(&put.hash).expect("a reference"),
+            "name": put.name,
+            "media": put.media,
+        }});
+        let file = tilolang_runtime::value::from_json(&named).expect("a reference names a file");
+        let made = returned_ref(n.call("import_markdown", vec![Value::resource(&n.nb), file]));
+        assert_eq!(n.title_of(&made), "Imported");
+        assert!(
+            n.body_of(&made).written_text().contains("Words from a file."),
+            "the file's words are the note's"
+        );
+        assert_eq!(
+            n.text_of(&made, "origin"),
+            "Plan.md",
+            "the note keeps the name the file came in as"
+        );
+    }
+
+    /// A reference this workspace's store holds no content for is no file: the action still runs,
+    /// and what it answers says why the content it was given could not be read. Naming a
+    /// reference never reaches bytes the store does not hold.
+    #[test]
+    fn a_reference_this_device_holds_no_content_for_is_refused() {
+        let device = Device::default();
+        let n = Notes::new(device);
+        let named = serde_json::json!({"file": {
+            "content": tilo_actions::content_resource(&"0".repeat(64)).expect("a reference"),
+            "name": "Gone.md",
+        }});
+        let file = tilolang_runtime::value::from_json(&named).expect("a reference names a file");
+        let made = returned_ref(n.call("import_markdown", vec![Value::resource(&n.nb), file]));
+        let body = n.body_of(&made).written_text();
+        assert!(
+            body.contains("the content of `Gone.md` is not on this device"),
+            "the note says why the file was no words: {body}"
         );
     }
 }

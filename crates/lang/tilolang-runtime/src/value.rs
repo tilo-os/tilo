@@ -766,8 +766,7 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
         return Ok(Value::some(from_json(inner)?));
     }
     if let Some(file) = m.get("file") {
-        let file = serde_json::from_value(file.clone()).map_err(|e| e.to_string())?;
-        return Ok(Value::File(Rc::new(file)));
+        return Ok(Value::File(Rc::new(crate::blob::file_from_json(file)?)));
     }
     if m.contains_key("none") {
         return Ok(Value::none());

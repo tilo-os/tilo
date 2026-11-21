@@ -607,6 +607,23 @@ tilo_test_env::scenario! {
             .map(|a| a.name.as_str())
             .collect();
         assert_eq!(offered, ["place", "rename"], "both are offered as they are");
+        // An action that takes a `File` is offered as any other: a person gives the file with
+        // the chooser, and a caller outside the window names content it put in the workspace.
+        let with_file = crate::common::compile_body(
+            "type Note {\n    body: Text\n}\n\n\
+         action import(n: Note, file: File) {\n    n.body = file.name\n}\n",
+        );
+        let import = with_file
+            .meta
+            .actions
+            .iter()
+            .find(|a| a.name == "import")
+            .unwrap();
+        assert!(import.takes_a_file());
+        assert!(
+            with_file.meta.offered_actions().any(|a| a.name == "import"),
+            "an action that takes a file is offered"
+        );
         // `internal` is no word an action is marked with: it names nothing at the start of an item.
         assert_eq!(
             crate::common::codes(

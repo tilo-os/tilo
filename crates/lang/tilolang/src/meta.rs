@@ -657,8 +657,9 @@ impl ActionMeta {
         self.is_migration() || self.is_initial()
     }
 
-    /// Whether it takes a `File`, the person's own: then no command, only a control's
-    /// ([`Self::unbound`]'s exception).
+    /// Whether it takes a `File`. A form cannot ask it — the person gives it with the chooser —
+    /// but a caller outside the window names the content it already put into the workspace
+    /// (`tilolang_runtime::value::from_json`), so the action is offered like any other.
     #[must_use]
     pub fn takes_a_file(&self) -> bool {
         self.params.iter().any(|param| param.ty.trim() == "File")
@@ -847,13 +848,16 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The actions the platform offers: not the hidden ones of scenarios, the ones only the
-    /// platform applies or the ones that take a `File`. This is the one list every surface draws
-    /// from — the header's buttons and menu, an item's menu, the palette.
+    /// The actions the platform offers: not the hidden ones of scenarios and the ones only the
+    /// platform applies. One that takes a `File` is offered too: the person gives the file with
+    /// the chooser, and a caller outside the window names content it put in the workspace
+    /// ([`ActionMeta::takes_a_file`]). This is the one list every surface draws
+    /// from — the header's buttons and menu, an item's menu, the palette, the published
+    /// surface and the API.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
-            .filter(|a| !a.scenario && !a.platform_applies() && !a.takes_a_file())
+            .filter(|a| !a.scenario && !a.platform_applies())
     }
 
     /// The actions code may call by name: not the hidden ones of scenarios and the ones only the

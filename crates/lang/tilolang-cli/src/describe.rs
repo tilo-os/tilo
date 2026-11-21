@@ -265,6 +265,34 @@ mod tests {
     }
 
     #[test]
+    fn a_package_that_takes_files_offers_those_actions_too() {
+        let dir = package(
+            "app t.import \"Import\" (\n    icon: .file_plus,\n)\n\n\
+             type Page {\n    body: Text\n}\n\n\
+             root pages: Page\n\n\
+             default view pages for Page\n\n\
+             view pages(p: Page) {\n    text(\"Pages\")\n}\n\n\
+             /// Imports a file as a page.\n\
+             action import_page(p: Page, file: File) {\n    p.body = file.name\n}\n",
+        );
+        // The surface the SDK and the fleet read names the action that takes a file, and the
+        // declarations name the parameter as the file it is.
+        let entry = fleet(dir.path(), &[])
+            .expect("the package reads")
+            .expect("it declares an app");
+        assert!(
+            entry.surface.contains("Imports a file as a page"),
+            "the published surface lists it: {}",
+            entry.surface
+        );
+        let declared = describe(dir.path(), &[]).expect("the package describes");
+        assert!(
+            declared.contains("action import_page(p: Page, file: File)"),
+            "{declared}"
+        );
+    }
+
+    #[test]
     fn a_package_that_declares_no_app_is_no_fleet_app() {
         let dir = package("type N {\n    a: Int\n}\n");
         assert!(fleet(dir.path(), &[]).expect("the source reads").is_none());

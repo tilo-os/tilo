@@ -82,12 +82,15 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
                 .collect(),
         ),
         Value::Offered(offered) => json!({ "action": offered.label }),
-        // A file an agent reads: what it is called and where its bytes are, never the bytes.
+        // A file an agent reads: what it is called, what it is, and the reference to its
+        // content it passes back to an action that takes a file. Never the bytes.
         Value::File(file) => json!({
             "file": {
                 "name": file.name,
                 "media": file.media,
                 "size": file.size,
+                "content": tilo_actions::content_resource(&file.hash)
+                    .unwrap_or_else(|| file.url()),
                 "url": file.url(),
             },
         }),
