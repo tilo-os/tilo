@@ -41,7 +41,7 @@ fn long_body(paragraphs: usize) -> String {
         }
         let _ = write!(body, "Paragraph {n}: ");
         for word in 0..40 {
-            body.push_str(["server ", "workspace ", "record ", "sync "][(n + word) % 4]);
+            body.push_str(["server ", "workspace ", "resource ", "sync "][(n + word) % 4]);
         }
         body.push_str("\n\n");
     }

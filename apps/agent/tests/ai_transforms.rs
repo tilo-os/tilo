@@ -1,6 +1,6 @@
 //! Shortcuts running `Ai` steps against the transforms the agent publishes.
 //!
-//! The host below offers exactly [`transform::descriptors`] and answers an
+//! The service below offers exactly [`transform::descriptors`] and answers an
 //! invocation the way the agent does — binding the wire argument and running
 //! the transform — with a scripted model in place of the gateway. So the
 //! checker reads the real published parameters and result specs, and the
@@ -73,7 +73,7 @@ impl TransformModel for Scripted {
     }
 }
 
-/// How the host answers: as the agent does, or passing the model's raw
+/// How the service answers: as the agent does, or passing the model's raw
 /// value through unchecked, as a misbehaving publisher would.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answering {
@@ -236,7 +236,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
         .poll(&mut Context::from_waker(Waker::noop()))
     {
         Poll::Ready(value) => value,
-        Poll::Pending => panic!("the host answers at once"),
+        Poll::Pending => panic!("the service answers at once"),
     }
 }
 
@@ -269,12 +269,12 @@ fn ai_shortcut(prompt: &str, output: Option<Value>, input: Option<Binding>) -> S
 }
 
 fn run_shortcut(
-    host: &AgentService,
+    service: &AgentService,
     shortcut: &Shortcut,
     inputs: Map<String, Value>,
 ) -> InvocationReport {
     block_on(run(
-        host,
+        service,
         &Unattended,
         InvocationRequest {
             shortcut,
@@ -301,7 +301,7 @@ fn failure(report: &InvocationReport) -> Option<&StepFailure> {
 
 #[test]
 fn a_summary_step_succeeds_against_the_published_descriptor() {
-    let host = AgentService::new(&[r#"{"result": "Two notes, both about the launch."}"#]);
+    let service = AgentService::new(&[r#"{"result": "Two notes, both about the launch."}"#]);
     let digest = ai_shortcut(
         "Summarise this briefly",
         None,
@@ -309,15 +309,15 @@ fn a_summary_step_succeeds_against_the_published_descriptor() {
             "A long note about the launch. Another about the launch."
         ))),
     );
-    assert_eq!(check(&digest, &host.catalog(), &NoShortcuts), Ok(()));
+    assert_eq!(check(&digest, &service.catalog(), &NoShortcuts), Ok(()));
 
-    let report = run_shortcut(&host, &digest, Map::new());
+    let report = run_shortcut(&service, &digest, Map::new());
     assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
     assert_eq!(
         report.output,
         Some(json!("Two notes, both about the launch."))
     );
-    assert_eq!(host.model.asked().len(), 1);
+    assert_eq!(service.model.asked().len(), 1);
 }
 
 /// A shortcut whose only step starts a task.
@@ -337,7 +337,7 @@ fn task_shortcut(instruction: &str, output: Option<Value>) -> Shortcut {
 
 #[test]
 fn a_task_step_runs_against_the_published_task_descriptor() {
-    let host = AgentService::new(&[r#"{"result": {"tidied": 3}}"#]);
+    let service = AgentService::new(&[r#"{"result": {"tidied": 3}}"#]);
     let tidy = task_shortcut(
         "Tidy the inbox",
         Some(json!({
@@ -346,12 +346,12 @@ fn a_task_step_runs_against_the_published_task_descriptor() {
             "required": ["tidied"]
         })),
     );
-    assert_eq!(check(&tidy, &host.catalog(), &NoShortcuts), Ok(()));
+    assert_eq!(check(&tidy, &service.catalog(), &NoShortcuts), Ok(()));
 
-    let report = run_shortcut(&host, &tidy, Map::new());
+    let report = run_shortcut(&service, &tidy, Map::new());
     assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
     assert_eq!(report.output, Some(json!({"tidied": 3})));
-    assert_eq!(host.model.asked().len(), 1);
+    assert_eq!(service.model.asked().len(), 1);
 }
 
 tilo_test_env::scenario! {
@@ -365,7 +365,7 @@ tilo_test_env::scenario! {
             "required": ["due", "owner"],
             "additionalProperties": false
         });
-        let host = AgentService::new(&[
+        let service = AgentService::new(&[
             r#"{"result": {"due": "Friday"}}"#,
             r#"{"result": {"due": "Friday", "owner": "Ada"}}"#,
         ]);
@@ -374,22 +374,22 @@ tilo_test_env::scenario! {
             Some(schema),
             Some(Binding::Literal(json!("Ada ships it by Friday."))),
         );
-        assert_eq!(check(&extract, &host.catalog(), &NoShortcuts), Ok(()));
+        assert_eq!(check(&extract, &service.catalog(), &NoShortcuts), Ok(()));
 
-        let report = run_shortcut(&host, &extract, Map::new());
+        let report = run_shortcut(&service, &extract, Map::new());
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(
             report.output,
             Some(json!({"due": "Friday", "owner": "Ada"}))
         );
-        let asked = host.model.asked();
+        let asked = service.model.asked();
         assert_eq!(asked.len(), 2);
         assert!(asked[1].contains("owner"), "the repair names the reason");
     }
 
     phase an_answer_that_misses_the_schema_twice_fails_the_step;
     {
-        let host = AgentService::new(&[r#"{"result": {"due": 5}}"#, "Sure! The owner is Ada."]);
+        let service = AgentService::new(&[r#"{"result": {"due": 5}}"#, "Sure! The owner is Ada."]);
         let extract = ai_shortcut(
             "Pull out the due date",
             Some(json!({
@@ -399,7 +399,7 @@ tilo_test_env::scenario! {
             })),
             Some(Binding::Literal(json!("Ada ships it by Friday."))),
         );
-        let report = run_shortcut(&host, &extract, Map::new());
+        let report = run_shortcut(&service, &extract, Map::new());
         match failure(&report) {
             Some(StepFailure::Action { error }) => {
                 assert_eq!(error.code, transform::code::INVALID_OUTPUT);
@@ -407,20 +407,20 @@ tilo_test_env::scenario! {
             }
             other => panic!("expected a typed agent failure, got {other:?}"),
         }
-        assert_eq!(host.model.asked().len(), 2, "one attempt and one repair");
+        assert_eq!(service.model.asked().len(), 2, "one attempt and one repair");
     }
 
     phase the_published_result_spec_fails_a_step_whose_answer_skipped_the_check;
     {
         // A publisher returning the model's value without checking it is caught
         // by the result spec the agent declares.
-        let host = AgentService::unchecked(&[r#"{"result": 42}"#]);
+        let service = AgentService::unchecked(&[r#"{"result": 42}"#]);
         let digest = ai_shortcut(
             "Summarise this",
             None,
             Some(Binding::Literal(json!("text"))),
         );
-        let report = run_shortcut(&host, &digest, Map::new());
+        let report = run_shortcut(&service, &digest, Map::new());
         assert!(
             matches!(failure(&report), Some(StepFailure::Contract { .. })),
             "{report:?}"
@@ -429,28 +429,28 @@ tilo_test_env::scenario! {
 
     phase a_classification_is_one_of_the_labels;
     {
-        let host = AgentService::new(&[r#"{"result": "maybe"}"#, r#"{"result": "urgent"}"#]);
+        let service = AgentService::new(&[r#"{"result": "maybe"}"#, r#"{"result": "urgent"}"#]);
         let triage = ai_shortcut(
             "Label this urgent or later",
             Some(json!({"type": "string", "enum": ["urgent", "later"]})),
             Some(Binding::Literal(json!("The server is down."))),
         );
-        assert_eq!(check(&triage, &host.catalog(), &NoShortcuts), Ok(()));
-        let report = run_shortcut(&host, &triage, Map::new());
+        assert_eq!(check(&triage, &service.catalog(), &NoShortcuts), Ok(()));
+        let report = run_shortcut(&service, &triage, Map::new());
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!("urgent")));
     }
 
     phase a_secret_never_reaches_the_agent;
     {
-        let host = AgentService::new(&[r#"{"result": "leaked"}"#]);
+        let service = AgentService::new(&[r#"{"result": "leaked"}"#]);
         let mut leak = ai_shortcut("Summarise this", None, Some(Binding::Input("token".into())));
         leak.inputs = vec![ActionParam::required(
             "token",
             ParamType::Secret,
             "An API token",
         )];
-        let errors = check(&leak, &host.catalog(), &NoShortcuts).unwrap_err();
+        let errors = check(&leak, &service.catalog(), &NoShortcuts).unwrap_err();
         assert!(
             errors.iter().any(|error| matches!(
                 &error.kind,
@@ -461,22 +461,22 @@ tilo_test_env::scenario! {
 
         let mut inputs = Map::new();
         inputs.insert("token".into(), json!("s3cret"));
-        let report = run_shortcut(&host, &leak, inputs);
+        let report = run_shortcut(&service, &leak, inputs);
         assert!(
             matches!(failure(&report), Some(StepFailure::Binding { reason }) if reason.contains("secret")),
             "{report:?}"
         );
-        assert!(host.model.asked().is_empty());
+        assert!(service.model.asked().is_empty());
     }
 
     phase a_task_says_what_it_may_not_do_when_it_has_no_authority;
     {
-        let host = AgentService::new(&[r#"{"result": "I cannot reach the mailbox."}"#]);
+        let service = AgentService::new(&[r#"{"result": "I cannot reach the mailbox."}"#]);
         let tidy = task_shortcut("Tidy the inbox", None);
-        let report = run_shortcut(&host, &tidy, Map::new());
+        let report = run_shortcut(&service, &tidy, Map::new());
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         assert_eq!(report.output, Some(json!("I cannot reach the mailbox.")));
-        let asked = host.model.asked();
+        let asked = service.model.asked();
         assert_eq!(
             asked.len(),
             1,
