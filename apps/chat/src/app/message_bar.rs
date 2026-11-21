@@ -51,7 +51,9 @@ impl BarMotion {
     fn follow(&mut self, over: Option<&Id>, theme: &ui::theme::Theme) -> f32 {
         if self.over.as_ref() != over {
             self.over = over.cloned();
-            let now = ui::time::now();
+            // The frame's instant, which the frame lays this bar out at: at the clock, a bar
+            // arriving during a frame was read a step past where the frame drew it.
+            let now = ui::motion::frame_now();
             self.presence = ui::motion::Presence::closed();
             if over.is_some() {
                 self.presence.show(
@@ -71,7 +73,7 @@ impl BarMotion {
             self.animating = false;
             return 1.0;
         }
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         self.animating = self.presence.is_moving(now);
         ui::motion::unit_opacity(self.presence.progress(now))
     }

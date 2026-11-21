@@ -45,16 +45,18 @@ impl CallChromeMotion {
             self.target_open = open;
             self.initialized = true;
         } else if open != self.target_open {
+            // The frame's instant, which its layout and paint read the huddle at: started at the
+            // clock, a frame drew the reveal a little further than it had laid it out.
             self.transition.show(
                 open,
                 ui::motion::Disclose::SPEC,
                 theme.motion(),
                 ui::tokens::MotionSource::Pointer,
-                ui::time::now(),
+                ui::motion::frame_now(),
             );
             self.target_open = open;
         }
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         self.sampled = ui::motion::unit_opacity(self.transition.progress(now));
         self.animating = self.transition.is_moving(now);
     }

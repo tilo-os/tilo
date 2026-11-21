@@ -316,10 +316,12 @@ impl ChatApp {
         if !keeps && let Some(speaker) = heard.iter().find(|person| **person != me) {
             self.call.featured = Some(speaker.clone());
         }
+        // The frame's instant, the one its layout reads the rings at: at the clock, a ring still
+        // on its way was read past where the frame had laid it out.
         self.speaking.reconcile(
             heard.iter().map(|person| person.id().to_owned()).collect(),
             theme.motion(),
-            ui::time::now(),
+            ui::motion::frame_now(),
         );
     }
 
