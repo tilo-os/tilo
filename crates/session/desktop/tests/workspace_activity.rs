@@ -479,6 +479,74 @@ tilo_test_env::scenario! {
         pane.finish_view(tree.active);
     }
 
+    phase workspace_activity_names_where_a_change_happened_as_a_person_knows_it;
+    // A change in an app's own collection (its messages, its folder) is placed in the app, by the
+    // app's name; one in a record of its own (a channel) is placed in that record. Showing the
+    // collection's kind ("Messages", "Folder") or an app's id as the place must fail this
+    // regression.
+    {
+        use automerge::transaction::CommitOptions;
+        use tilo_actions::{ActionContext, ActionKey, Described, Did};
+        use tilo_desktop::activity::*;
+        use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+        let did = |app: &str, kind: &str, verb: &str| {
+            Described::new(Did::verb(ActionKey::new(app, kind, verb), []))
+        };
+        let places = [
+            ActionContext::for_resource(
+                "chain:derived:messages@derived:default@tab:0000000000000000",
+                "chat.messages",
+                "Messages",
+            )
+            .with_app("so.tilo.chat", "Chat")
+            .with_described(did("so.tilo.chat", "chat.messages", "post")),
+            ActionContext::for_resource("files.folder", "files.folder", "Folder")
+                .with_app("so.tilo.file-explorer", "so.tilo.file-explorer")
+                .with_described(did("so.tilo.file-explorer", "files.folder", "write-file")),
+            ActionContext::for_resource("chat.channel:c", "chat.channel", "general")
+                .with_app("so.tilo.chat", "Chat")
+                .with_described(did("so.tilo.chat", "chat.channel", "rename")),
+        ];
+        let mut tree = design();
+        let mut records = Vec::new();
+        for (tab, context) in (0u32..).zip(places.iter()) {
+            let mut document = AutoCommit::new();
+            document.put(ROOT, "value", i64::from(tab)).unwrap();
+            document.commit_with(
+                CommitOptions::default()
+                    .with_time(1_800_000_000 + i64::from(tab))
+                    .with_message(context.change_message().unwrap()),
+            );
+            records.push(DetachedRecordHistory {
+                app: context.app.as_ref().unwrap().id.clone(),
+                checkout: DocumentCheckout::new(
+                    DocumentId::for_tab(u64::from(tab) + 1),
+                    ResourceType::new(context.resource.as_ref().unwrap().kind.clone()),
+                ),
+                tree_chunks: Vec::new(),
+                document: Some(document),
+            });
+        }
+        let mut pane = WorkspaceActivityPane::new();
+        pane.refresh(&mut tree);
+        pane.refresh_detached_records(&mut tree, records);
+        let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+        let placed = feed
+            .entries
+            .iter()
+            .map(|entry| (entry.app.as_deref(), entry.resource.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            placed,
+            [
+                (Some("Chat"), Some("general")),
+                (Some("Files"), None),
+                (Some("Chat"), None),
+            ],
+            "newest first, each placed where a person knows it"
+        );
+    }
+
     phase workspace_activity_unsettled_refresh_retains_only_current_admission_rows;
     {
         use tilo_desktop::activity::*;
