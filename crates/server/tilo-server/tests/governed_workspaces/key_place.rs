@@ -10,11 +10,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use automerge::{AutoCommit, ReadDoc as _};
 use tilo_actions::remote::{CatalogueQuery, RemoteActionFrame, RemoteActionMessage};
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DeviceWrites as _, DocumentRead};
 use tilo_server::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_server::{Envelope, Server, ServerClient, ServerConfig, WorkspaceId};
+use tilo_session_client::device::Device;
+use tilo_session_client::{Cmd, MemoryPeerStore, Outbox as _, PeerConfig, PeerStore};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::own_device;
@@ -330,6 +333,90 @@ async fn held_epoch(keys: &tilo_workspace_keys::SharedKeys, what: &str) -> u64 {
     }
 }
 
+/// The epoch the server's key service holds the workspace's group at, once its change counter
+/// has sat still for [`SETTLE`]: everything the group had to commit, it committed.
+async fn settled_epoch(server: &Server, what: &str) -> u64 {
+    let keys = server
+        .workspace_keys()
+        .expect("the server governs its workspaces and holds their keys");
+    settled(&keys, what).await;
+    held_epoch(&keys, what).await
+}
+
+/// The layout's `front`, as `doc` holds it.
+fn front(doc: &AutoCommit) -> Option<String> {
+    doc.get(automerge::ROOT, "front")
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.into_string().ok())
+}
+
+/// The layout as `device`'s session reads it: what only a session the workspace's group
+/// admitted opens.
+fn read_front(device: &Device) -> Option<String> {
+    let read = device
+        .session()
+        .documents()
+        .read(
+            &WORKSPACE.to_string(),
+            DESKTOP_APP,
+            DESKTOP_DOCUMENT,
+            None,
+        )
+        .ok()?;
+    let DocumentRead::Whole { bytes, .. } = read else {
+        return None;
+    };
+    front(&AutoCommit::load(&bytes).ok()?)
+}
+
+/// A grant device's session over the store its grant keeps, as the API server opens one for a
+/// run.
+fn grant_session(
+    server: &Server,
+    host: &TestDevice,
+    grant: &TestDevice,
+    store: Arc<dyn PeerStore>,
+) -> Device {
+    Device::kept_in(
+        PeerConfig {
+            host: tilo_server_client::ServerAddress::at(server.node_addr()),
+            cert: grant.cert.clone(),
+            server_cert: host.cert.clone(),
+            revocations: RevocationList::new(),
+            entering: None,
+        },
+        Arc::new(grant.sk.clone()),
+        "grant",
+        store,
+    )
+}
+
+/// Join the workspace and open the sealed layout, waiting until the session reads it.
+async fn reads_the_layout(device: &Device, what: &str) -> String {
+    device
+        .join(&WORKSPACE.to_string())
+        .await
+        .expect("the workspace admits the device");
+    device
+        .session()
+        .send(Cmd::OpenRoute(layout_route()))
+        .expect("the session stays open");
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(30))
+        .expect("the test's wait fits");
+    loop {
+        if let Some(front) = read_front(device) {
+            return front;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what}: the session did not read the sealed layout"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_server_keeps_one_place_in_a_workspaces_key_group_when_its_actions_member_joins() {
     let alice = TestUser::fresh("Alice");
@@ -453,6 +540,85 @@ async fn a_restarted_server_keeps_its_place_in_the_key_group_when_its_actions_me
     );
 
     drop(client);
+    drop(laptop_keys);
+    laptop_service.shutdown().await;
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_devices_session_started_again_over_its_kept_store_keeps_its_place_in_the_key_group() {
+    let alice = TestUser::fresh("Alice");
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let grant = alice.enrol("api-grant", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = crate::common::start_server(
+        ServerConfig {
+            state_root: state.path().to_path_buf(),
+            ..ServerConfig::default()
+        },
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: alice.user_pk,
+            device_signing_key: host.sk.clone(),
+            device_cert: host.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    crate::common::hold_workspace(&server, WORKSPACE, &[&laptop.cert, &grant.cert]).await;
+    let (laptop_service, laptop_keys) =
+        laptop_holds(&state.path().join("laptop"), &server, &laptop).await;
+
+    // The one store a grant's sessions keep between them, as the API server keeps it per grant
+    // device: a session started again over it asks with the member key the last one held.
+    let store: Arc<dyn PeerStore> = Arc::new(MemoryPeerStore::for_session());
+
+    // A run's session: it asks for the workspace's keys, is admitted, and reads the sealed
+    // layout.
+    let first = grant_session(&server, &host, &grant, Arc::clone(&store));
+    assert_eq!(
+        reads_the_layout(&first, "the first session reads the layout").await,
+        "Main"
+    );
+    let admitted = settled_epoch(&server, "after the first session was admitted").await;
+
+    // The run ends and the next starts over the same store: the device keeps the one place it
+    // holds, so the group commits nothing, and the session reads the record too.
+    first.close();
+    let second = grant_session(&server, &host, &grant, Arc::clone(&store));
+    assert_eq!(
+        reads_the_layout(&second, "the session started again reads the layout").await,
+        "Main"
+    );
+    let again = settled_epoch(&server, "after the session started again over its kept store").await;
+    assert_eq!(
+        again,
+        admitted,
+        "the workspace's key group moved {} epochs when the device's session started again over \
+         its kept store (from {admitted} to {again}): it asked with a new key, which took the \
+         device's place from the session before it",
+        again.saturating_sub(admitted)
+    );
+
+    // And with the session before it still alive while the next one opens: one device, one
+    // place, and the group commits nothing more.
+    let overlapping = grant_session(&server, &host, &grant, Arc::clone(&store));
+    assert_eq!(
+        reads_the_layout(&overlapping, "the overlapping session reads the layout").await,
+        "Main"
+    );
+    let together = settled_epoch(&server, "while two sessions of the device are open").await;
+    assert_eq!(
+        together,
+        admitted,
+        "the workspace's key group moved {} epochs while two sessions of the device were open \
+         (from {admitted} to {together}): the second asked with a new key",
+        together.saturating_sub(admitted)
+    );
+
+    overlapping.close();
+    second.close();
     drop(laptop_keys);
     laptop_service.shutdown().await;
     server.shutdown().await;

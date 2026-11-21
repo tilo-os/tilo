@@ -173,6 +173,12 @@ pub struct Server {
     /// Its certificate and iroh address, when they are known already: a server reached over
     /// iroh only (behind a NAT, through a packet relay) has no origin to ask them of.
     known: std::sync::OnceLock<ServerInfo>,
+    /// What each grant's device keeps between its sessions, by its device key: its place in
+    /// the key group of each workspace it reads. A grant's session ends with its last run and
+    /// the next run opens another; that one takes the place up again, where a session with a
+    /// state of its own asked with a new key, took the device's place from the session before
+    /// it and was handed it back, commit after commit.
+    kept: Mutex<HashMap<[u8; 32], Arc<tilo_session_client::MemoryPeerStore>>>,
 }
 
 impl Server {
@@ -189,6 +195,7 @@ impl Server {
             name,
             origin: origin.trim_end_matches('/').to_owned(),
             known: std::sync::OnceLock::new(),
+            kept: Mutex::default(),
         }
     }
 
@@ -256,7 +263,12 @@ impl Server {
                 ServerError::Unavailable("it publishes no device address".to_owned())
             })?;
         let label = key.cert().device_label.clone();
-        let device = Device::over(
+        let kept = Arc::clone(
+            lock(&self.kept)
+                .entry(key.cert().device_public_key)
+                .or_insert_with(|| Arc::new(tilo_session_client::MemoryPeerStore::for_session())),
+        );
+        let device = Device::kept_in(
             PeerConfig {
                 host,
                 cert: key.cert().clone(),
@@ -266,6 +278,7 @@ impl Server {
             },
             Arc::new(key.key().clone()),
             &label,
+            kept,
         );
         let connection = Connection {
             device,

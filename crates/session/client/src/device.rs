@@ -64,7 +64,25 @@ impl Device {
     /// A session for the device `config` certifies, in no workspace yet.
     #[must_use]
     pub fn over(config: PeerConfig, signer: Arc<dyn DeviceSigner>, label: &str) -> Self {
-        let store = Arc::new(MemoryPeerStore::for_session()) as Arc<dyn PeerStore>;
+        Self::kept_in(
+            config,
+            signer,
+            label,
+            Arc::new(MemoryPeerStore::for_session()),
+        )
+    }
+
+    /// [`Self::over`] keeping the device's state in `store`: a session started again over the
+    /// same store takes up the place in each workspace's key group the last one held, where one
+    /// over a store of its own asks with a new key and takes the device's place from the session
+    /// before it.
+    #[must_use]
+    pub fn kept_in(
+        config: PeerConfig,
+        signer: Arc<dyn DeviceSigner>,
+        label: &str,
+        store: Arc<dyn PeerStore>,
+    ) -> Self {
         Self::of(
             crate::session::start_session(config.clone(), signer, store),
             config.cert,
