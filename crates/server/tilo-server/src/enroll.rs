@@ -4,10 +4,9 @@
 //! theirs finds a machine on the local network and approves that. Which of
 //! those an image offers it declares once (`tilo_identity::enrollment`).
 //!
-//! The protocol itself — the messages, the answer, and serving a machine that
-//! dials over the internet — is [`tilo_enrollment`], so the person's session
-//! answers with the same code this binary does. What is here is the command
-//! line, the machine's own side of an enrollment, and the local network.
+//! The requester exchange, the protocol and the approval service live in
+//! [`tilo_enrollment`]. This binary handles the command line, discovery, and
+//! the console for a machine enrolling over iroh.
 
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::PathBuf;
@@ -18,11 +17,10 @@ use clap::{Parser, Subcommand};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::certification_ceremony::pairing_code;
-use tilo_identity::device_fleet::{DeviceFleet, DeviceFleetStore};
+use tilo_identity::device_fleet::DeviceFleet;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, decode_enrollment_token, verify_device_cert_at,
-    verify_enrollment_token,
 };
 
 use tilo_enrollment::approval::{
@@ -30,20 +28,19 @@ use tilo_enrollment::approval::{
     await_approval_ack, commit_approval, expected_pair, load_approval_identity, prepare_approval,
     received_packet,
 };
-use tilo_enrollment::install::{PersonalInstall, validate_requester};
+use tilo_enrollment::client::PairingStatus;
+use tilo_enrollment::install::PersonalInstall;
 use tilo_enrollment::protocol::{
-    EnrollmentKind, MAX_PACKET, NEARBY_PORT, PAIR_MAGIC, PairCandidate, PairSolicitation, Request,
-    ResponsePayload, decrypt_pair_offer, encrypt_pair_offer, encrypt_request, make_ack,
-    verify_finalized,
+    EnrollmentKind, MAX_PACKET, NEARBY_PORT, PairCandidate, PairSolicitation, ResponsePayload,
+    encrypt_pair_offer,
 };
+use tilo_enrollment::request::{JoinOptions, PairingProgress, join_with_token, pair_device};
 use tilo_enrollment::root::{RootSigner, load_root};
 use tilo_enrollment::transport;
 use tilo_enrollment::{
-    WindowClosed, deadline_after, fleet_store, hardware_summary, now_ns, public_identity_document,
-    restore_owner_from_parent, share_directory_like_parent, sign_root_cert, socket_timeout,
+    deadline_after, fleet_store, now_ns, public_identity_document, sign_root_cert, socket_timeout,
     valid_solicitation, validity_start_ns,
 };
-use tilo_identity::enrollment::NonceStore;
 
 #[path = "enroll_transport.rs"]
 mod join_transport;
@@ -316,28 +313,6 @@ struct RevokeArgs {
     reason: String,
 }
 
-/// Send `bytes` to `destination`, which this machine's own broadcast address
-/// takes when the kernel refuses the LAN broadcast: a sandboxed network
-/// namespace has no LAN, and the person's own surfaces on this machine listen
-/// on the same port.
-fn send_solicitation(
-    socket: &UdpSocket,
-    bytes: &[u8],
-    destination: &mut SocketAddrV4,
-    port: u16,
-) -> std::io::Result<()> {
-    match socket.send_to(bytes, *destination) {
-        Err(error)
-            if error.kind() == std::io::ErrorKind::PermissionDenied
-                && *destination.ip() == Ipv4Addr::BROADCAST =>
-        {
-            *destination = SocketAddrV4::new(Ipv4Addr::new(127, 255, 255, 255), port);
-            socket.send_to(bytes, *destination).map(|_| ())
-        }
-        result => result.map(|_| ()),
-    }
-}
-
 /// Bind a LAN-discovery listener on `port` without making an already-running
 /// discovery view or approval sheet prevent another Tilo surface from joining
 /// the same nearby-device flow.  UDP broadcast is deliberately delivered to
@@ -466,6 +441,7 @@ fn enroll(request: EnrollRequest<'_>) -> anyhow::Result<()> {
         identity_dir: None,
         requester_lease: None,
         port: NEARBY_PORT,
+        person_uid: PERSON_UID.get().copied(),
         recovery_key: recovery_key.as_deref(),
     };
     match method {
@@ -477,7 +453,8 @@ fn enroll(request: EnrollRequest<'_>) -> anyhow::Result<()> {
             // A token that names where the person's devices are is dialed; one
             // that names none is presented on this network.
             if decode_enrollment_token(token)?.dial.is_empty() {
-                join_with_token(token, options)?;
+                let (_, label) = join_with_token(token, options)?;
+                println!("enrolled {label}");
             } else {
                 join_transport::join(token, options)?;
             }
@@ -519,492 +496,6 @@ fn write_nonce(path: &std::path::Path, nonce: &[u8; 16]) -> anyhow::Result<()> {
     file.sync_all()?;
     std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
         .with_context(|| format!("restrict {}", path.display()))
-}
-
-/// What an enrollment request is made of, before any transport carries it:
-/// the token it presents, the device it presents from, and where its answer
-/// must be sealed.
-struct PreparedJoin {
-    token: tilo_user_identity::EnrollmentToken,
-    request: Request,
-    request_bytes: Vec<u8>,
-    response_secret: tilo_seal::SecretKey,
-    device: ed25519_dalek::SigningKey,
-    paths: IdentityPaths,
-}
-
-/// Check the token, make this machine's key, and seal the request that asks
-/// for its certificate. Over the local network and over iroh alike.
-fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<PreparedJoin> {
-    let JoinOptions {
-        identity_root,
-        label,
-        kind,
-        identity_dir,
-        requester_lease,
-        recovery_key,
-        ..
-    } = options;
-    validate_requester(requester_lease)?;
-    let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
-    verify_enrollment_token(&token, now_ns()?).context("verify enrollment token")?;
-    if !token.capabilities.can_own_workspaces {
-        bail!("enrollment token does not admit a device");
-    }
-    let paths = IdentityPaths::under(identity_root);
-    paths.ensure_directories()?;
-    if kind == EnrollmentKind::PersonalDevice {
-        PersonalInstall::new(
-            identity_root,
-            identity_dir.context("identity directory is required")?,
-            PERSON_UID.get().copied(),
-        )
-        .recover(requester_lease)?;
-    }
-    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
-    let request = Request {
-        token: token_text.to_owned(),
-        device_public_key: device.verifying_key().to_bytes(),
-        server_node_id: tilo_server::daemon::server_node_id(&device),
-        label: label.chars().take(80).collect(),
-        hardware: hardware_summary(),
-        kind,
-        recovery_key: recovery_key.map(str::to_owned),
-    };
-    let (request_bytes, response_secret) =
-        encrypt_request(&request, token.issuer_device_public_key)?;
-    Ok(PreparedJoin {
-        token,
-        request,
-        request_bytes,
-        response_secret,
-        device,
-        paths,
-    })
-}
-
-/// What this machine installs once its signed answer arrived, whatever carried
-/// it: the home-peer configuration, its staged personal enrollment, and — once
-/// `confirm` has sent the acknowledgement and checked the approver's Finalized —
-/// its certificate. The personal commit point stays the durable marker this
-/// stages; a crash before it publishes nothing.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered install: every step depends on the certificate the answer carried"
-)]
-fn install_answer(
-    prepared: &PreparedJoin,
-    options: JoinOptions<'_>,
-    payload: &ResponsePayload,
-    response_bytes: &[u8],
-    confirm: &mut dyn FnMut(&[u8]) -> anyhow::Result<()>,
-) -> anyhow::Result<Option<PathBuf>> {
-    let PreparedJoin {
-        token,
-        device,
-        paths,
-        ..
-    } = prepared;
-    let JoinOptions {
-        identity_root,
-        kind,
-        home_peer_output,
-        identity_dir,
-        requester_lease,
-        ..
-    } = options;
-    if kind == EnrollmentKind::HomePeer {
-        let home_peer_toml = payload
-            .home_peer_toml
-            .as_ref()
-            .context("approving device omitted home-peer configuration")?;
-        let _: fs::full_replica::HomePeerSet = toml::from_str(home_peer_toml)
-            .context("approving device returned an invalid home-peer configuration")?;
-        tilo_files::native::atomic::write(
-            home_peer_output.context("home-peer output is required")?,
-            home_peer_toml.as_bytes(),
-        )?;
-        // The person's earlier servers, which take this one in among them when
-        // it starts.
-        let earlier = tilo_server::checked_home_peers(
-            payload
-                .home_peers_json
-                .as_deref()
-                .context("approving device omitted the person's servers")?,
-        )
-        .context("the approval's servers are not a registry this build accepts")?;
-        if earlier
-            .iter()
-            .any(|entry| entry.user_public_key != hex::encode(token.user_public_key))
-        {
-            bail!("approval named another person's servers");
-        }
-        tilo_server::write_home_peers(
-            &tilo_server::home_peer_registry_path(identity_root),
-            &earlier,
-        )?;
-        // The person's own store, kept here under the identity this machine
-        // was enrolled into: it lists every device they certified, which is
-        // how a machine with no session of theirs finds the devices it may
-        // ask.
-        let identity_id = hex::encode(token.user_public_key);
-        let store = DeviceFleetStore::of_device(paths.clone(), &identity_id);
-        let fleet = store
-            .accept_transferred(
-                &identity_id,
-                payload
-                    .fleet_json
-                    .as_deref()
-                    .context("approving device omitted the person's devices")?,
-                payload.cert.device_public_key,
-            )
-            .context("approval returned an invalid device fleet")?;
-        share_directory_like_parent(&{
-            let fleets = store.fleet_file(&identity_id);
-            fleets
-                .parent()
-                .context("the device fleet has no directory")?
-                .to_path_buf()
-        })?;
-        store
-            .adopt_transferred(&fleet)
-            .context("install the person's devices")?;
-    }
-    let mut confirm_answer = || {
-        let ack = make_ack(response_bytes, token.nonce, device)?;
-        confirm(&ack)
-    };
-    let resource_path = if kind == EnrollmentKind::PersonalDevice {
-        Some(
-            PersonalInstall::new(
-                identity_root,
-                identity_dir.context("identity directory is required")?,
-                PERSON_UID.get().copied(),
-            )
-            .install(payload, requester_lease, confirm_answer)?,
-        )
-    } else {
-        confirm_answer()?;
-        validate_requester(requester_lease)?;
-        // The home-peer path has no multi-file member projection, but still waits
-        // for Finalized before changing its active identity binding.
-        tilo_device_identity::persist::write_public_key(
-            &paths.user_pubkey,
-            &payload.cert.user_public_key,
-        )?;
-        None
-    };
-    // Publish the default cert as the completion marker only after the approver
-    // durably registers us, authenticates Finalized, and the member projection
-    // is fully installed. A crash can therefore only leave a retryable partial
-    // enrollment, never a bootable one.
-    if kind == EnrollmentKind::HomePeer {
-        let per_user_cert = paths.device_cert_for_user(&payload.cert.user_public_key);
-        share_directory_like_parent(
-            per_user_cert
-                .parent()
-                .context("per-user certificate has no directory")?,
-        )?;
-        tilo_device_identity::persist::write_device_cert(&per_user_cert, &payload.cert)?;
-        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &payload.cert)?;
-    }
-    // The identity directories themselves are image layout and keep their owner
-    // and group; only what this enrollment created below them takes its
-    // directory's.
-    let per_user_cert = paths.device_cert_for_user(&payload.cert.user_public_key);
-    let home_peer_fleet = (kind == EnrollmentKind::HomePeer).then(|| {
-        DeviceFleetStore::of_device(paths.clone(), &hex::encode(token.user_public_key))
-            .fleet_file(&hex::encode(token.user_public_key))
-    });
-    for output in [
-        per_user_cert.parent(),
-        Some(per_user_cert.as_path()),
-        Some(paths.user_pubkey.as_path()),
-        Some(paths.device_privkey.as_path()),
-        Some(paths.device_cert.as_path()),
-        home_peer_fleet.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        restore_owner_from_parent(output)?;
-    }
-    NonceStore::under(identity_root).record(&token.nonce, device.verifying_key().to_bytes())?;
-    if kind == EnrollmentKind::PersonalDevice {
-        println!(
-            "{}",
-            serde_json::json!({
-                "identity": hex::encode(payload.cert.user_public_key),
-                "resource_path": resource_path.as_ref().context("record path is required")?,
-                "label": payload.cert.device_label,
-            })
-        );
-    } else {
-        println!("enrolled {}", payload.cert.device_label);
-    }
-    Ok(resource_path)
-}
-
-/// Join with `token_text` over the local network; a personal device gets back
-/// the identity it joined.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered join exchange; each step relies on the token and identity checks before it"
-)]
-fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Option<PathBuf>> {
-    let JoinOptions {
-        timeout,
-        requester_lease,
-        port,
-        ..
-    } = options;
-    let prepared = prepare_join(token_text, options)?;
-    let PreparedJoin {
-        token,
-        request,
-        request_bytes,
-        response_secret,
-        device,
-        ..
-    } = &prepared;
-    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
-    socket.set_broadcast(true)?;
-    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let deadline = deadline_after(socket_timeout(timeout))?;
-    let mut destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
-    let mut reply = vec![0_u8; MAX_PACKET];
-    while std::time::Instant::now() < deadline {
-        validate_requester(requester_lease)?;
-        send_solicitation(&socket, request_bytes, &mut destination, port)?;
-        match socket.recv_from(&mut reply) {
-            Ok((len, sender)) => {
-                let response_bytes = received_packet(&reply, len)?.to_vec();
-                validate_requester(requester_lease)?;
-                let Ok((payload, approver_public_key)) =
-                    tilo_enrollment::open_answer(&response_bytes, token, request, response_secret)
-                else {
-                    continue;
-                };
-                let mut confirm = |ack: &[u8]| -> anyhow::Result<()> {
-                    socket.set_read_timeout(Some(Duration::from_millis(300)))?;
-                    // The approver commits (durable writes) before it sends
-                    // Finalized, so its storage latency, not a fixed allowance,
-                    // bounds this wait; the enrollment window is the budget.
-                    let completion_deadline = deadline_after(socket_timeout(timeout))?;
-                    while std::time::Instant::now() < completion_deadline {
-                        validate_requester(requester_lease)?;
-                        socket.send_to(ack, sender)?;
-                        match socket.recv_from(&mut reply) {
-                            Ok((final_len, final_sender)) if final_sender == sender => {
-                                if verify_finalized(
-                                    received_packet(&reply, final_len)?,
-                                    &response_bytes,
-                                    token.nonce,
-                                    device.verifying_key().to_bytes(),
-                                    approver_public_key,
-                                )
-                                .is_ok()
-                                {
-                                    return Ok(());
-                                }
-                            }
-                            Ok(_) => {}
-                            Err(error)
-                                if matches!(
-                                    error.kind(),
-                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                                ) => {}
-                            Err(error) => return Err(error.into()),
-                        }
-                    }
-                    bail!("approving device did not confirm enrollment; retrying is safe")
-                };
-                return install_answer(&prepared, options, &payload, &response_bytes, &mut confirm);
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err(
-        WindowClosed("no approving Tilo device answered before the enrollment window closed")
-            .into(),
-    )
-}
-
-fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyhow::Result<()> {
-    let JoinOptions {
-        identity_root,
-        label,
-        timeout,
-        kind,
-        requester_lease,
-        port,
-        ..
-    } = options;
-    // Desktop first-use always supplies a compositor lease. Agent hosts pass
-    // `--headless` so the lease is absent on purpose; validate_requester is a
-    // no-op for None.
-    validate_requester(requester_lease)?;
-    let paths = IdentityPaths::under(identity_root);
-    paths.ensure_directories()?;
-    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)?;
-    let server_node_id = tilo_server::daemon::server_node_id(&device);
-    let label: String = label.chars().take(80).collect();
-    if !tilo_server::valid_home_peer_label(&label) {
-        bail!("home-server label must be a printable single-line name");
-    }
-    let solicitation = postcard::to_stdvec(&PairSolicitation {
-        magic: PAIR_MAGIC,
-        device_public_key: device.verifying_key().to_bytes(),
-        server_node_id,
-        label: label.clone(),
-        hardware: hardware_summary(),
-        kind,
-    })?;
-    let code = pairing_code(device.verifying_key().to_bytes(), server_node_id);
-    if let Some(path) = status_file {
-        write_pairing_status(
-            path,
-            &serde_json::json!({
-                "state": "waiting_for_approval",
-                "verification_code": code,
-                "label": label,
-            }),
-        )?;
-    }
-    println!("Nearby pairing code: {code}");
-    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
-    socket.set_broadcast(true)?;
-    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let deadline = deadline_after(socket_timeout(timeout))?;
-    let mut destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
-    let mut reply = vec![0_u8; MAX_PACKET];
-    while std::time::Instant::now() < deadline {
-        validate_requester(requester_lease)?;
-        send_solicitation(&socket, &solicitation, &mut destination, port)?;
-        match socket.recv_from(&mut reply) {
-            Ok((len, _sender)) => {
-                let Ok(token_text) = decrypt_pair_offer(received_packet(&reply, len)?, &device)
-                else {
-                    continue;
-                };
-                let Ok(token) = decode_enrollment_token(token_text.trim()) else {
-                    continue;
-                };
-                if verify_enrollment_token(&token, now_ns()?).is_err()
-                    || !token.capabilities.can_own_workspaces
-                {
-                    continue;
-                }
-                println!("Nearby Tilo device approved code {code}");
-                let resource_path = join_with_token(
-                    token_text.trim(),
-                    JoinOptions {
-                        label: &label,
-                        ..options
-                    },
-                )?;
-                if let Some(path) = status_file {
-                    // The first-use UI completes from this record alone; it
-                    // must not depend on reading this process's output.
-                    write_pairing_status(
-                        path,
-                        &serde_json::json!({
-                            "state": "complete",
-                            "verification_code": code,
-                            "identity": hex::encode(token.user_public_key),
-                            "resource_path": resource_path,
-                        }),
-                    )?;
-                }
-                return Ok(());
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err(
-        WindowClosed("no trusted Tilo device approved nearby pairing before the window closed")
-            .into(),
-    )
-}
-
-/// Publish first-use pairing progress for the UI that started this process.
-fn write_pairing_status(path: &std::path::Path, status: &serde_json::Value) -> anyhow::Result<()> {
-    tilo_files::native::atomic::write_with_mode(path, &serde_json::to_vec(status)?, 0o644)?;
-    restore_owner_from_parent(path)
-}
-
-/// What made pairing fail, as the status file names it for the first-use UI:
-/// `permission_denied`, `storage_full`, `read_only`, `unreachable`,
-/// `timed_out`, or `unknown` when the error carries no cause the person can
-/// act on.
-fn pairing_failure_cause(error: &anyhow::Error) -> &'static str {
-    use std::io::ErrorKind;
-
-    if error
-        .chain()
-        .any(<dyn std::error::Error>::is::<WindowClosed>)
-    {
-        return "timed_out";
-    }
-    error
-        .chain()
-        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
-        .find_map(|io| match io.kind() {
-            ErrorKind::PermissionDenied => Some("permission_denied"),
-            ErrorKind::StorageFull | ErrorKind::QuotaExceeded => Some("storage_full"),
-            ErrorKind::ReadOnlyFilesystem => Some("read_only"),
-            ErrorKind::NetworkUnreachable
-            | ErrorKind::HostUnreachable
-            | ErrorKind::NetworkDown
-            | ErrorKind::AddrNotAvailable
-            | ErrorKind::ConnectionRefused => Some("unreachable"),
-            ErrorKind::TimedOut => Some("timed_out"),
-            _ => None,
-        })
-        .unwrap_or("unknown")
-}
-
-/// Record why pairing ended without joining, so the first-use UI shows the
-/// reason and offers a retry instead of waiting on a process that is gone.
-fn report_pairing_failure(path: &std::path::Path, error: &anyhow::Error) {
-    let _ = write_pairing_status(
-        path,
-        &serde_json::json!({
-            "state": "failed",
-            "error": format!("{error:#}"),
-            "cause": pairing_failure_cause(error),
-        }),
-    );
-}
-
-/// How one requester-side enrollment runs: where its identity lives, the
-/// label it asks for, the window, the device role, where a home peer's
-/// descriptor goes, the requester lease that must stay live and the
-/// nearby port.
-#[derive(Clone, Copy)]
-struct JoinOptions<'a> {
-    identity_root: &'a std::path::Path,
-    label: &'a str,
-    timeout: u64,
-    kind: EnrollmentKind,
-    home_peer_output: Option<&'a std::path::Path>,
-    identity_dir: Option<&'a std::path::Path>,
-    requester_lease: Option<tilo_server::ProcessLease>,
-    port: u16,
-    /// The disk recovery key this machine installs with, when it installs
-    /// with nobody at its screen: it travels with the request, and the
-    /// person's devices keep it in their own store.
-    recovery_key: Option<&'a str>,
 }
 
 fn handle_solicitation(
@@ -1375,7 +866,8 @@ fn pair_device_cli(
 ) -> anyhow::Result<()> {
     let result = personal_device_requester_lease(headless, requester_pid, requester_start_time)
         .and_then(|requester_lease| {
-            pair(
+            let joined = pair_device(
+                declared_methods(),
                 JoinOptions {
                     identity_root,
                     label,
@@ -1385,13 +877,39 @@ fn pair_device_cli(
                     identity_dir: Some(identity_dir),
                     requester_lease,
                     port: NEARBY_PORT,
+                    person_uid: PERSON_UID.get().copied(),
                     recovery_key: None,
                 },
-                status_file,
-            )
+                |progress| match progress {
+                    PairingProgress::Waiting { code, label } => {
+                        if let Some(path) = status_file {
+                            PairingStatus::waiting(code, label).write(path)?;
+                        }
+                        println!("Nearby pairing code: {code}");
+                        Ok(())
+                    }
+                    PairingProgress::Approved { code } => {
+                        println!("Nearby Tilo device approved code {code}");
+                        Ok(())
+                    }
+                },
+            )?;
+            let identity = hex::encode(joined.identity);
+            println!(
+                "{}",
+                serde_json::json!({
+                    "identity": identity,
+                    "resource_path": joined.record_path,
+                    "label": joined.label,
+                })
+            );
+            if let Some(path) = status_file {
+                PairingStatus::complete(joined.code, identity, joined.record_path).write(path)?;
+            }
+            Ok(())
         });
     if let (Err(error), Some(path)) = (&result, status_file) {
-        report_pairing_failure(path, error);
+        let _ = PairingStatus::failed(error).write(path);
     }
     result
 }

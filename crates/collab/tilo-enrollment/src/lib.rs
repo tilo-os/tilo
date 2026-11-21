@@ -17,9 +17,13 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod approval;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod client;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod install;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod protocol;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod request;
 pub mod requester;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod root;

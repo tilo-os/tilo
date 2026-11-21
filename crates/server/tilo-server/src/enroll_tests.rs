@@ -1,14 +1,19 @@
 use super::*;
 use tilo_enrollment::approval::{ApprovalOptions, register_home_peer};
+use tilo_enrollment::client::PairingCause;
 use tilo_enrollment::protocol::{
-    Approver, Response, ResponseRoute, decrypt_pair_offer, decrypt_request, decrypt_response,
-    encrypt_response, make_finalized, v2_body, verify_ack,
+    Approver, PAIR_MAGIC, Request, Response, ResponseRoute, decrypt_pair_offer, decrypt_request,
+    decrypt_response, encrypt_request, encrypt_response, make_ack, make_finalized, v2_body,
+    verify_ack, verify_finalized,
 };
+use tilo_enrollment::request::{install_answer, prepare_join};
 
 use tilo_enrollment::ISSUANCE_CLOCK_ALLOWANCE_NS;
 use tilo_enrollment::sign_response;
-use tilo_enrollment::{open_answer, response_statement_digest, verify_response};
+use tilo_enrollment::{WindowClosed, open_answer, response_statement_digest, verify_response};
 use tilo_identity::certification_ceremony::pairing_code;
+use tilo_identity::device_fleet::DeviceFleetStore;
+use tilo_identity::enrollment::NonceStore;
 use tilo_server::HomePeerRegistration;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::verify_device_cert;
@@ -468,6 +473,7 @@ fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
         identity_dir: None,
         requester_lease: None,
         port: 0,
+        person_uid: None,
         recovery_key: None,
     };
     let prepared = prepare_join(&token_text, options).unwrap();
@@ -718,7 +724,8 @@ fn pair_device_rejects_an_expired_requester_before_creating_identity_state() {
     let identity_root = tempfile::tempdir().unwrap();
     let identity_dir = tempfile::tempdir().unwrap();
     assert!(
-        pair(
+        pair_device(
+            tilo_identity::enrollment::Methods::ALL,
             JoinOptions {
                 identity_root: identity_root.path(),
                 label: "New laptop",
@@ -728,9 +735,10 @@ fn pair_device_rejects_an_expired_requester_before_creating_identity_state() {
                 identity_dir: Some(identity_dir.path()),
                 requester_lease: Some(lease),
                 port: 0,
+                person_uid: None,
                 recovery_key: None,
             },
-            None,
+            |_| Ok(()),
         )
         .is_err()
     );
@@ -852,7 +860,8 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     let _other_surfaces: Vec<UdpSocket> =
         (0..3).map(|_| bind_pair_listener(port).unwrap()).collect();
     let requester = tilo_server::ProcessLease::capture(std::process::id()).unwrap();
-    pair(
+    pair_device(
+        tilo_identity::enrollment::Methods::ALL,
         JoinOptions {
             identity_root: new_root.path(),
             label: "New laptop",
@@ -862,9 +871,10 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             identity_dir: Some(new_identities.path()),
             requester_lease: Some(requester),
             port,
+            person_uid: None,
             recovery_key: None,
         },
-        None,
+        |_| Ok(()),
     )
     .unwrap();
     approval.join().unwrap().unwrap();
@@ -1066,7 +1076,8 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         Ok(port) => port,
         Err(error) => panic!("the member did not listen ({error}): {:?}", approval.join()),
     };
-    pair(
+    pair_device(
+        tilo_identity::enrollment::Methods::ALL,
         JoinOptions {
             identity_root: new_root.path(),
             label: "New laptop",
@@ -1076,9 +1087,10 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
             identity_dir: Some(new_identities.path()),
             requester_lease: Some(tilo_server::ProcessLease::capture(std::process::id()).unwrap()),
             port,
+            person_uid: None,
             recovery_key: None,
         },
-        None,
+        |_| Ok(()),
     )
     .unwrap();
     approval.join().unwrap().unwrap();
@@ -1140,18 +1152,17 @@ tilo_test_env::scenario! {
     {
         let denied = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EACCES))
             .context("publish the enrollment commit");
-        assert_eq!(pairing_failure_cause(&denied), "permission_denied");
+        assert_eq!(PairingStatus::failed(&denied).cause, Some(PairingCause::PermissionDenied));
         let full = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC));
-        assert_eq!(pairing_failure_cause(&full), "storage_full");
+        assert_eq!(PairingStatus::failed(&full).cause, Some(PairingCause::StorageFull));
         let read_only = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EROFS));
-        assert_eq!(pairing_failure_cause(&read_only), "read_only");
+        assert_eq!(PairingStatus::failed(&read_only).cause, Some(PairingCause::ReadOnly));
         let unreachable = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENETUNREACH));
-        assert_eq!(pairing_failure_cause(&unreachable), "unreachable");
+        assert_eq!(PairingStatus::failed(&unreachable).cause, Some(PairingCause::Unreachable));
         let closed = anyhow::Error::from(WindowClosed("the window closed"));
-        assert_eq!(pairing_failure_cause(&closed), "timed_out");
+        assert_eq!(PairingStatus::failed(&closed).cause, Some(PairingCause::TimedOut));
         assert_eq!(
-            pairing_failure_cause(&anyhow::anyhow!("first-use requester exited")),
-            "unknown"
+            PairingStatus::failed(&anyhow::anyhow!("first-use requester exited")).cause, Some(PairingCause::Unknown)
         );
     }
 }

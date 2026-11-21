@@ -3020,8 +3020,7 @@ mod tests {
     use durable_store::{DurableStore, StorageKey, WriteOp};
     use journal::{clear_progress, journal_store, progress_key, store_progress};
     use os_actions::codec_pack::PackState;
-    use std::os::unix::process::CommandExt as _;
-    use std::process::{Command, Stdio};
+    use std::process::Command;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3050,23 +3049,45 @@ mod tests {
     fn cancelling_nearby_pairing_revokes_the_entire_process_group() {
         let dir = tempfile::tempdir().expect("tempdir");
         let started = dir.path().join("descendant");
-        let child = Command::new("sh")
-            .args(["-c", r#"trap '' TERM; sleep 30 & touch "$STARTED"; wait"#])
-            .env("STARTED", &started)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn_locked()
-            .expect("spawn pairing-shaped process tree");
-        let pgid = i32::try_from(child.id()).expect("test process ID");
-        // The descendant that used to survive when only its leader was killed.
-        tilo_test_env::wait_until("the shell to start its descendant", || started.exists());
-        let mut child = Some(child);
+        let status = dir.path().join("pairing.json");
+        let mut helper = Command::new("sh");
+        helper
+            .args([
+                "-c",
+                r#"trap '' TERM; sleep 30 & printf '%s' "$$" > "$STARTED"; wait"#,
+            ])
+            .env("STARTED", &started);
+        let (mut view, _) = view();
+        view.flow.begin_existing();
+        view.flow.choose_nearby();
+        view.nearby_status_path = Some(status.clone());
+        view.nearby = Some(
+            crate::nearby::NearbyPairing::spawn(
+                helper,
+                dir.path(),
+                &status,
+                Duration::from_secs(60),
+            )
+            .expect("start pairing"),
+        );
+        tilo_test_env::wait_until("the shell to start its descendant", || {
+            std::fs::read_to_string(&started).is_ok_and(|text| !text.is_empty())
+        });
+        let pgid = std::fs::read_to_string(started)
+            .unwrap()
+            .parse::<i32>()
+            .expect("test process group");
 
-        crate::nearby::terminate(&mut child);
+        let mut doc = AutoCommit::new();
+        press(&view, &mut doc, KEY_CONNECT_CANCEL);
+        view.sync(&doc, &automerge::ROOT);
 
-        assert!(child.is_none());
+        assert!(view.nearby.is_none());
+        assert!(view.nearby_code.is_none());
+        assert_eq!(
+            view.nearby_status,
+            Some(tilo_onboarding::t("onboarding-nearby-cancelled"))
+        );
         let deadline = tilo_test_env::hang_deadline();
         loop {
             // A killed grandchild can remain as a zombie until the host's PID

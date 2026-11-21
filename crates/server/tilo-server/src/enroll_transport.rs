@@ -15,9 +15,11 @@ use tilo_enrollment::protocol::{PAIR_MAGIC, PairSolicitation, decrypt_pair_offer
 use tilo_enrollment::transport::{
     ALPN, RequestExchange, address_of, dial_of, endpoint_for, parse_relay, receive, runtime, send,
 };
-use tilo_enrollment::{WindowClosed, socket_timeout};
+use tilo_enrollment::{WindowClosed, hardware_summary, socket_timeout};
 
-use crate::{JoinOptions, PreparedJoin, install_answer, pairing_code, prepare_join};
+use tilo_enrollment::request::{JoinOptions, PreparedJoin, install_answer, prepare_join};
+
+use crate::pairing_code;
 
 /// Enroll this machine over iroh, using `token_text`'s signed addresses: dial
 /// the person's devices in the order the token names them until one answers.
@@ -95,7 +97,22 @@ fn enroll_on_connection(
         runtime,
         connection,
         socket_timeout(options.timeout),
-        |payload, response, confirm| install_answer(prepared, options, payload, response, confirm),
+        |payload, response, confirm| {
+            let installed = install_answer(prepared, options, payload, response, confirm)?;
+            if let Some(path) = &installed {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "identity": hex::encode(payload.cert.user_public_key),
+                        "resource_path": path,
+                        "label": payload.cert.device_label,
+                    })
+                );
+            } else {
+                println!("enrolled {}", payload.cert.device_label);
+            }
+            Ok(installed)
+        },
     )
 }
 
@@ -135,7 +152,7 @@ pub(super) fn wait_for_approval(
             device_public_key: device.verifying_key().to_bytes(),
             server_node_id,
             label: options.label.chars().take(80).collect(),
-            hardware: super::hardware_summary(),
+            hardware: hardware_summary(),
             kind: options.kind,
         };
         let accepting = tokio::time::timeout(socket_timeout(options.timeout), endpoint.accept())

@@ -21261,6 +21261,7 @@ dependencies = [
  "tilo-clock",
  "tilo-desktop",
  "tilo-device-identity",
+ "tilo-enrollment",
  "tilo-files",
  "tilo-handoff",
  "tilo-identity",

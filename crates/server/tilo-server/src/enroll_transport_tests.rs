@@ -163,6 +163,7 @@ impl Machine {
             identity_dir: Some(self.identities.path()),
             requester_lease: None,
             port: 0,
+            person_uid: None,
             recovery_key: None,
         }
     }
@@ -377,6 +378,7 @@ fn a_code_shown_on_a_machine_enrolls_it_over_a_packet_relay() {
                     identity_dir: Some(&identities),
                     requester_lease: None,
                     port: 0,
+                    person_uid: None,
                     recovery_key: None,
                 },
                 Some(&relays),

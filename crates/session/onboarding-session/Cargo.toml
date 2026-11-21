@@ -39,6 +39,7 @@ sha2.workspace = true
 tempfile.workspace = true
 threshold-identity = { path = "../../collab/threshold-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 tilo-handoff = { path = "../../platform/tilo-handoff" }
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }

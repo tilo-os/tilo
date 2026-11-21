@@ -24,6 +24,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
 use tilo_device_identity::IdentityPaths;
+use tilo_enrollment::client::{PairingState, PairingStatus, pair_device_command};
 use tilo_server::daemon::ServerIdentity;
 use tilo_server::{Envelope, HomePeerRegistration, ServerClient, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -207,23 +208,19 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let enroll = tilo_test_env::package_binary!("tilo-enroll");
     let status_file = recipient_identities.join("pairing-status.json");
     let requester = tilo_server::ProcessLease::capture(std::process::id()).unwrap();
-    let recipient_process = Command::new(&enroll)
-        .args(["pair-device", "--identity-root"])
-        .arg(&recipient_root)
-        .args(["--identity-dir"])
-        .arg(&recipient_identities)
-        .args(["--label", "New laptop", "--timeout"])
-        .arg(enrollment_window())
-        .arg("--status-file")
-        .arg(&status_file)
-        .arg("--requester-pid")
-        .arg(requester.pid().to_string())
-        .arg("--requester-start-time")
-        .arg(requester.start_time().to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn_locked()
-        .unwrap();
+    let recipient_process = pair_device_command(
+        std::path::Path::new(&enroll),
+        &recipient_root,
+        &recipient_identities,
+        "Headless board",
+        enrollment_window().parse().unwrap(),
+        &status_file,
+        requester,
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn_locked()
+    .unwrap();
     wait_for_file(&status_file, "recipient pairing status");
 
     // The recipient's persisted waiting state is the barrier. It can safely
@@ -398,6 +395,15 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
         .spawn_locked()
         .unwrap();
     wait_for_file(&status_file, "recipient pairing status");
+    let waiting = PairingStatus::read(&status_file).unwrap();
+    assert!(matches!(waiting.state, PairingState::WaitingForApproval));
+    assert_eq!(
+        waiting.verification_code,
+        Some(tilo_identity::certification_ceremony::pairing_code(
+            recipient.verifying_key().to_bytes(),
+            tilo_server::daemon::server_node_id(&recipient),
+        ))
+    );
     let approval = Command::new(&enroll)
         .args(["approve-device", "--identity-root"])
         .arg(&approver_root)
@@ -416,6 +422,17 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
         .spawn_locked()
         .unwrap();
     both_succeed(recipient_process, approval);
+
+    let complete = PairingStatus::read(&status_file).unwrap();
+    assert!(matches!(complete.state, PairingState::Complete));
+    assert_eq!(complete.verification_code, waiting.verification_code);
+    assert_eq!(complete.identity, Some(hex::encode(user)));
+    assert_eq!(complete.record_path, complete.resource_path);
+    assert_eq!(
+        complete.record_path,
+        tilo_identity_client::resolve_active_identity(&recipient_identities)
+    );
+    assert!(complete.record_path.is_some());
 
     let member_cert =
         tilo_device_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
