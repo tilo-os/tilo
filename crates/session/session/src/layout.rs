@@ -1951,6 +1951,23 @@ impl Layouts {
         let Some(person) = self.person.borrow().clone() else {
             return;
         };
+        // What the person arranged of this workspace before the action is a step of its own, kept
+        // under their own name and named before the action's: the action's step carries only what
+        // the action changed, so taking it back never takes a window they opened earlier with it.
+        if let Some((id, earlier)) = tree
+            .active_workspace()
+            .filter(|workspace| !workspace.id().is_nil())
+            .and_then(|workspace| {
+                let id = workspace.id();
+                before
+                    .workspaces
+                    .iter()
+                    .find(|held| held.id() == id)
+                    .map(|held| (id, held))
+            })
+        {
+            self.remember(&(id, Route::layout()), earlier, None, &person);
+        }
         let message = tilo_session_core::layout::step_context(asked, action)
             .change_message()
             .unwrap_or_else(|| {
