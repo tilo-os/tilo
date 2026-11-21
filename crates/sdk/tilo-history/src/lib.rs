@@ -516,7 +516,7 @@ impl<'a> Reader<'a> {
             "now",
             scope
                 .now
-                .or(scope.item.filter(|_| !scope.within))
+                .or_else(|| scope.item.filter(|_| !scope.within))
                 .map_or_else(|| self.item_unnamed(), str::to_owned),
         );
         args
