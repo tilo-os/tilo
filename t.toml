@@ -4831,8 +4831,8 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "dev-installer-medium-{arch}"
 # Pinned: it runs in the OS assembler image, which carries the install's tools (as
-# server-installer-medium does), so nothing comes from Fedora's mirrors, and the only image it
-# pulls is the scratch registry's, by digest (os/scratch-registry.env).
+# server-installer-medium does), so nothing comes from Fedora's mirrors, and the disk step
+# installs from container storage, so it pulls no image.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/installer-medium.sh {arch} /target/os/{arch}/image /target/publish/dev-installer-medium/{arch}"
 needs = ["os-image-{arch}", "bootc-alongside-{arch}"]
