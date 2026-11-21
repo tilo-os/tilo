@@ -1164,10 +1164,9 @@ impl Reconciler {
         let key = node.key.clone();
         let label = crate::date::shown(node, "label").unwrap_or_default();
         let control = Checkbox::from_state(&state)
-            .on_change(move |checked| {
+            .on_view(&node.key, move |checked| {
                 sink.push(UiEvent::Toggle(key.clone(), checked));
             })
-            .with_id(&node.key)
             .with_enabled(prop(node, "enabled").is_none() || flag(node, "enabled"));
         Box::new(labeled_check(label, control))
     }
@@ -1477,7 +1476,7 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let label = crate::date::shown(node, "label").unwrap_or_default();
-        let control = Toggle::from_state(&state).on_change(move |checked| {
+        let control = Toggle::from_state(&state).on_view(&node.key, move |checked| {
             sink.push(UiEvent::Toggle(key.clone(), checked));
         });
         Box::new(FormSection::untitled().field(Field::new(label, control)))

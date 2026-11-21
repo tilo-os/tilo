@@ -305,8 +305,7 @@ impl Checkbox {
     ///
     /// Pointer, keyboard, and accessibility activation update `state`;
     /// mutations through any clone of `state` update this checkbox on the
-    /// next synchronization pass. Use [`Self::on_change`] only to observe
-    /// user changes, not to keep the model in sync.
+    /// next synchronization pass.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
         Self::with_control(BoolControl::local(state, None))
     }
@@ -874,7 +873,7 @@ impl Widget for Checkbox {
         .with_semantic_key(self.test_id().unwrap_or("checkbox"))
         .with_optional_name(name)
         .with_state(state);
-        if self.control.action.is_none() && self.control.on_change.is_none() {
+        if self.control.is_bare() {
             node = node.with_action_target(self.test_id().unwrap_or("checkbox"));
         }
         Some(node)
@@ -1421,8 +1420,7 @@ mod tests {
         }
 
         fn action_binding_owns_accessibility_activation() {
-            let mut checkbox = Checkbox::bound("native", "legacy")
-                .on_view("checkbox", |_| panic!("legacy callback must be suppressed"))
+            let mut checkbox = Checkbox::bound("native", "checked")
                 .on_action(crate::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
             crate::widget::controls::refresh_control_action_availability(
@@ -1452,14 +1450,14 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
-            assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+            assert!(doc.get(&automerge::ROOT, "checked").unwrap().is_none());
             let intent = crate::widget::controls::take_control_invocation(&mut checkbox).unwrap();
             assert_eq!(intent.arguments["value"], true);
             assert!(matches!(
                 crate::widget::controls::control_action_bindings(&checkbox)[0].kind,
                 crate::widget::ControlBindingKind::Action(_)
             ));
-            doc.put(&automerge::ROOT, "legacy", false).unwrap();
+            doc.put(&automerge::ROOT, "checked", false).unwrap();
             Widget::sync(&mut checkbox, &doc, &automerge::ROOT);
             assert!(
                 !checkbox.is_checked(),

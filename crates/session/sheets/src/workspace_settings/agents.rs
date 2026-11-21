@@ -470,9 +470,10 @@ fn moderation_row(moderation: &Moderation, parts: &Parts) -> Element {
     let press = parts.clone();
     // The switch stands where the workspace's grant does; a press asks the shell to change it.
     let switch = Toggle::from_state(&ui::LocalState::new(moderation.on))
-        .with_id("ws-bots-moderation-switch")
         .with_accessible_name(&moderation.name)
-        .on_change(move |on| press.ask(WorkspaceSettingsEffect::SetModeration { on }));
+        .on_view("ws-bots-moderation-switch", move |on| {
+            press.ask(WorkspaceSettingsEffect::SetModeration { on });
+        });
     Box::new(row.trailing(Box::new(switch)))
 }
 

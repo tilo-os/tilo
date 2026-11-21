@@ -9,7 +9,7 @@ use crate::widget::{ActionEmitter, AppModel, ControlBindingMetadata, ModelPath};
 use vello::kurbo::Rect;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-pub(super) type BoolChangeCallback = Box<dyn FnMut(bool)>;
+pub(super) type BoolViewHandler = Box<dyn FnMut(bool)>;
 
 pub(crate) enum BoolAction {
     Value(ActionEmitter<bool>),
@@ -101,7 +101,8 @@ pub(super) struct BoolControl {
     pub accessible_name: Option<String>,
     pub name_resolved: bool,
     pub binding: Option<BoxedBinding<bool>>,
-    pub on_change: Option<BoolChangeCallback>,
+    /// What setting the value through the control's own view action does.
+    pub view_handler: Option<BoolViewHandler>,
     pub action: Option<BoolAction>,
     pub view_resource: Option<tilo_actions::ResourceSpec>,
     pub interaction: crate::interaction::InteractionEnvironment,
@@ -157,7 +158,7 @@ impl BoolControl {
             accessible_name,
             name_resolved: false,
             binding: None,
-            on_change: None,
+            view_handler: None,
             action: None,
             view_resource: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -168,7 +169,7 @@ impl BoolControl {
         clippy::expect_used,
         reason = "the generated boolean action binds the value it is handed"
     )]
-    pub(super) fn publish_view(&mut self, id: &str, handler: BoolChangeCallback) {
+    pub(super) fn publish_view(&mut self, id: &str, handler: BoolViewHandler) {
         use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
         let control = id.to_owned();
         let spec = ActionSpec::typed_operation(
@@ -205,7 +206,7 @@ impl BoolControl {
         self.id_override = Some(id.to_owned());
         self.action = Some(BoolAction::Value(ActionEmitter::new(binding)));
         self.view_resource = Some(resource);
-        self.on_change = Some(handler);
+        self.view_handler = Some(handler);
     }
 
     pub(super) fn start_view(
@@ -230,7 +231,7 @@ impl BoolControl {
         if let Some(binding) = &mut self.binding {
             binding.publish(&set.value);
         }
-        if let Some(handler) = self.on_change.as_mut() {
+        if let Some(handler) = self.view_handler.as_mut() {
             handler(set.value);
         }
         Ok(Some(super::ResourceOperationStart::Completed(
@@ -268,7 +269,7 @@ impl BoolControl {
     /// Whether nothing but the value's own binding answers a flip, so an
     /// assistive tool may target the control directly.
     pub fn is_bare(&self) -> bool {
-        self.action.is_none() && self.on_change.is_none()
+        self.action.is_none()
     }
 
     pub fn set_checked(&mut self, checked: bool) {
@@ -281,8 +282,7 @@ impl BoolControl {
     }
 
     /// Flip the value the way a click does: through the action when there is
-    /// one, else through the binding. `on_change` hears the new value only
-    /// when no action owns it.
+    /// one, else through the binding.
     ///
     /// A control whose action writes a value it also follows (an action and
     /// a binding) shows the value the store holds, never its own guess: it
@@ -300,11 +300,6 @@ impl BoolControl {
         }
         if self.action.is_none() || self.binding.is_none() {
             self.is_checked = flipped;
-        }
-        if self.action.is_none()
-            && let Some(callback) = self.on_change.as_mut()
-        {
-            callback(flipped);
         }
     }
 
@@ -391,26 +386,13 @@ impl BoolControl {
             id,
             None,
             self.binding.as_ref().and_then(|b| b.document_key()),
-            self.on_change.is_some(),
+            false,
         )
     }
 }
 
 macro_rules! bool_control_api {
     () => {
-        /// Observe changes produced by user interaction.
-        ///
-        /// Model synchronization and [`Self::set_checked`] do not invoke this
-        /// callback, so validation or action dispatch cannot mistake a model
-        /// refresh for new user intent.
-        #[must_use]
-        pub fn on_change(mut self, callback: impl FnMut(bool) + 'static) -> Self {
-            if self.control.action.is_none() {
-                self.control.on_change = Some(Box::new(callback));
-            }
-            self
-        }
-
         /// Called with the value a flip sets: the control, as `id`,
         /// publishes setting it as its view action `set`, so a person, a
         /// screen reader, a script and an agent set it through the same
@@ -427,7 +409,7 @@ macro_rules! bool_control_api {
                 crate::widget::ActionEmitter::new(binding),
             ));
             self.control.view_resource = None;
-            self.control.on_change = None;
+            self.control.view_handler = None;
             self
         }
 
@@ -437,7 +419,7 @@ macro_rules! bool_control_api {
                 crate::widget::ActionEmitter::new(binding),
             ));
             self.control.view_resource = None;
-            self.control.on_change = None;
+            self.control.view_handler = None;
             self
         }
 
@@ -447,8 +429,8 @@ macro_rules! bool_control_api {
 
         /// Replace the presented value and publish it to a bound local model.
         ///
-        /// This is a programmatic model mutation and does not invoke
-        /// [`Self::on_change`]. Document-bound controls should mutate their
+        /// This is a programmatic model mutation and does not run the
+        /// control's view action. Document-bound controls should mutate their
         /// Automerge path instead and let [`Widget::sync`] adopt the result.
         pub fn set_checked(&mut self, checked: bool) {
             self.control.set_checked(checked);

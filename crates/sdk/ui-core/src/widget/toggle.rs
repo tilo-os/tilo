@@ -225,8 +225,7 @@ impl Toggle {
     ///
     /// Pointer, keyboard, and accessibility activation update `state`;
     /// mutations through any clone of `state` update this switch on the next
-    /// synchronization pass. Use [`Self::on_change`] only to observe user
-    /// changes, not to keep the model in sync.
+    /// synchronization pass.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
         Self::with_control("toggle", BoolControl::local(state, None))
     }
@@ -1533,9 +1532,8 @@ mod tests {
         }
 
         {
-            let mut toggle = Toggle::bound("native", "legacy")
-                .on_view("toggle", |_| panic!("legacy callback must be suppressed"))
-                .on_action(crate::widget::test_bool_action_binding());
+            let mut toggle =
+                Toggle::bound("native", "on").on_action(crate::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
             crate::widget::controls::refresh_control_action_availability(
                 &mut toggle,
@@ -1557,17 +1555,12 @@ mod tests {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
-            assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+            assert!(doc.get(&automerge::ROOT, "on").unwrap().is_none());
             assert_eq!(
                 crate::widget::controls::take_control_invocation(&mut toggle)
                     .unwrap()
                     .arguments["value"],
                 true
-            );
-            assert_eq!(
-                crate::testing::answer_controls(&mut toggle),
-                0,
-                "the bound action answers the press, not the view"
             );
         }
     }
