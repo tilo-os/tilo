@@ -19,7 +19,7 @@ const NEW_CHANNEL: &str = "create-channel";
 
 /// A document of `app` begun on the page and written to the workspace; `None` for an app that
 /// begins no document of its own here.
-fn begun(browser: &Browser, app: &str) -> Option<DocumentRoute> {
+fn begun_document(browser: &Browser, app: &str) -> Option<DocumentRoute> {
     let mut page = crate::common::open_in(
         &browser.cluster_id,
         app,
@@ -161,22 +161,37 @@ async fn a_carrier_names_no_edit_its_caller_is_then_refused() {
     let server = start(&root, &device, state.path()).await;
     let browser = Browser::open(&server, &browser_device, &device).await;
     let mut providers = Vec::new();
+    let mut begun: Vec<(String, DocumentRoute)> = Vec::new();
     let mut not_begun = Vec::new();
     for definition in crate::common::catalogue().iter() {
         let app = definition.app_id();
-        match begun(&browser, app) {
-            Some(route) => providers.push((
-                app.to_owned(),
-                format!(
-                    "{}:{app}:{}",
-                    tilo_actions::remote::RESOURCE_PROVIDER,
-                    route.document
-                ),
-            )),
+        match begun_document(&browser, app) {
+            Some(route) => {
+                providers.push((
+                    app.to_owned(),
+                    format!(
+                        "{}:{app}:{}",
+                        tilo_actions::remote::RESOURCE_PROVIDER,
+                        route.document
+                    ),
+                ));
+                begun.push((app.to_owned(), route));
+            }
             None => not_begun.push(app.to_owned()),
         }
     }
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    // Each app's document is answered for by the workspace: asked one at a
+    // time, so one that is never answered names its app rather than hanging.
+    for (app, route) in &begun {
+        let saved = browser
+            .peer
+            .barrier_for(std::slice::from_ref(route))
+            .unwrap();
+        tilo_test_env::within(format!("{app}'s document to be saved"), saved)
+            .await
+            .unwrap_or_else(|_| panic!("{app}'s document was never answered"))
+            .unwrap();
+    }
     let membership = Membership::of(
         &server,
         &device,
