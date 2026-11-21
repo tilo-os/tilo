@@ -2079,7 +2079,6 @@ tilo_test_env::scenario! {
             .args([
                 "--exact",
                 "chromium::tests::private_packaged_helper_discovery_failure_child",
-                "--ignored",
             ])
             .env_remove(runtime::HOST_OVERRIDE_ENV)
             .env(runtime::RUNTIME_DIR_ENV, fixture.path())
@@ -2111,7 +2110,6 @@ tilo_test_env::scenario! {
             .args([
                 "--exact",
                 "chromium::tests::private_process_lifecycle_child",
-                "--ignored",
             ])
             .env("TILO_TEST_PRIVATE_HOST", &host)
             .env("TILO_TEST_PRIVATE_ROOT", &root)
@@ -2463,11 +2461,15 @@ fn wait_until_removed(root: &Path) {
     tilo_test_env::wait_until("the profile root to be removed", || !root.exists());
 }
 
+/// The isolated helper-discovery failure the test above runs again as its
+/// own process; an ordinary run of the suite returns at once.
 #[test]
-#[ignore = "child entry point for isolated packaged-helper discovery"]
 #[cfg(unix)]
 fn private_packaged_helper_discovery_failure_child() {
-    let root = PathBuf::from(std::env::var_os("TILO_TEST_PRIVATE_ROOT").unwrap());
+    let Some(root) = std::env::var_os("TILO_TEST_PRIVATE_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
     let result = ChromiumEngine::new_private(&root);
     assert!(
         result.is_err(),
@@ -2479,11 +2481,14 @@ fn private_packaged_helper_discovery_failure_child() {
     );
 }
 
+/// The private process lifecycle the test above runs again as its own
+/// process; an ordinary run of the suite returns at once.
 #[test]
-#[ignore = "child entry point for the real process-lifecycle regression"]
 #[cfg(unix)]
 fn private_process_lifecycle_child() {
-    let host = std::env::var_os("TILO_TEST_PRIVATE_HOST").unwrap();
+    let Some(host) = std::env::var_os("TILO_TEST_PRIVATE_HOST") else {
+        return;
+    };
     let root = PathBuf::from(std::env::var_os("TILO_TEST_PRIVATE_ROOT").unwrap());
     let engine = ChromiumEngine::with_private_host(Path::new(&host), &root).unwrap();
     assert!(root.exists());

@@ -317,7 +317,6 @@ tilo_test_env::scenario! {
                 .args([
                     "--exact",
                     "chromium::shared_tests::shared_owner_child",
-                    "--ignored",
                 ])
                 .env("TILO_TEST_SHARED_HOST", &host)
                 .env("TILO_TEST_SHARED_PROFILE", &profile)
@@ -395,7 +394,6 @@ tilo_test_env::scenario! {
             .args([
                 "--exact",
                 "chromium::shared_tests::shared_owner_child",
-                "--ignored",
             ])
             .env("TILO_TEST_SHARED_HOST", &host)
             .env("TILO_TEST_SHARED_PROFILE", &profile)
@@ -433,11 +431,15 @@ tilo_test_env::scenario! {
     }
 }
 
+/// The owner process of the cross-process test above, run again as its own
+/// process; an ordinary run of the suite returns at once.
 #[test]
-#[ignore = "child entry point for the cross-process shared engine test"]
 #[cfg(unix)]
 fn shared_owner_child() {
-    let host = PathBuf::from(std::env::var_os("TILO_TEST_SHARED_HOST").unwrap());
+    let Some(host) = std::env::var_os("TILO_TEST_SHARED_HOST") else {
+        return;
+    };
+    let host = PathBuf::from(host);
     let profile = PathBuf::from(std::env::var_os("TILO_TEST_SHARED_PROFILE").unwrap());
     let owner = ChromiumEngine::with_host(&host, &profile).unwrap();
     assert!(owner.runtime.link.is_none());
