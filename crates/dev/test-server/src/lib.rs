@@ -120,7 +120,20 @@ struct Running {
     thread: Option<std::thread::JoinHandle<()>>,
     _state: tempfile::TempDir,
     cert: DeviceCert,
+    /// Where the host puts its questions to a person's approving devices.
+    #[cfg_attr(
+        not(feature = "questions"),
+        expect(dead_code, reason = "only a host that asks reads it")
+    )]
+    confirmations: Confirmations,
 }
+
+/// Where a host puts its questions to a person's approving devices: nothing in a build that asks
+/// none.
+#[cfg(feature = "questions")]
+type Confirmations = tilo_server::certification::CertificationProtocol;
+#[cfg(not(feature = "questions"))]
+type Confirmations = ();
 
 impl Drop for Running {
     fn drop(&mut self) {
@@ -198,8 +211,12 @@ impl Running {
                             None => None,
                         };
                         let (stop, stopped) = tokio::sync::oneshot::channel();
+                        #[cfg(feature = "questions")]
+                        let confirmations: Confirmations = server.confirmations();
+                        #[cfg(not(feature = "questions"))]
+                        let confirmations: Confirmations = ();
                         ready
-                            .send((handle, relays, workspaces, workspace, stop))
+                            .send((handle, relays, workspaces, workspace, stop, confirmations))
                             .expect("the host is awaited");
                         let _ = stopped.await;
                         server.shutdown().await;
@@ -207,7 +224,7 @@ impl Running {
                 }
             })
             .expect("the host's thread starts");
-        let (runtime, relays, workspaces, workspace, stop) =
+        let (runtime, relays, workspaces, workspace, stop, confirmations) =
             started.recv().expect("the host starts");
         Self {
             runtime,
@@ -218,6 +235,7 @@ impl Running {
             thread: Some(thread),
             _state: state,
             cert,
+            confirmations,
         }
     }
 
@@ -479,6 +497,23 @@ impl Host {
                 },
             ))
             .expect("the host takes the person out");
+    }
+
+    /// Put `question` to `person`'s approving devices, as the host does before it runs an action
+    /// their access leaves to them: their answer, or why there is none, once it is settled.
+    #[cfg(feature = "questions")]
+    #[must_use]
+    pub fn ask(
+        &self,
+        person: [u8; 32],
+        question: tilo_server::certify::PendingConfirmation,
+    ) -> mpsc::Receiver<Result<tilo_server::certify::ConfirmationAnswer, String>> {
+        let (answered, answer) = mpsc::channel();
+        let confirmations = self.0.confirmations.clone();
+        self.0.runtime.spawn(async move {
+            let _ = answered.send(confirmations.confirm_for(person, question).await);
+        });
+        answer
     }
 
     /// Where this host is reached for its workspace, as it signed it: what a device of the person

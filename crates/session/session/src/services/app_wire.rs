@@ -311,6 +311,7 @@ pub(crate) fn start_app_wire(
             resources,
             service,
             endpoint: sync.map(|sync| sync.endpoint_handle()),
+            answering: sync.map(crate::sync::Client::answering),
             journal_root: options.state.as_deref().map(app_wire::journal_root),
             // What each installed app declares it may do on the action API,
             // read by search's own worker off the session's thread.

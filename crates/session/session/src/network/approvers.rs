@@ -1,15 +1,18 @@
 //! Questions this person's agents on their workspace hosts put to them.
 //! An agent a host runs for the person never confirms an action its grants leave to them by its own
 //! word: the host asks the person's devices about that one invocation. This device, when it is one
-//! of the person's own (no agent's key), keeps an approver session with each host it connects to,
+//! of the person's own (no agent's key), keeps an approver session with each host it reaches: the
+//! hosts the peer network connects to, and the hosts of the workspaces placed away from it,
 //! puts every question on the session's question sheet, and sends the answer back: the person is
 //! asked on whichever of their devices they are at. A question that is withdrawn or expires, or
 //! that another of their devices answered, takes its sheet away.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
+use tilo_lock::MutexRecover as _;
 use tilo_network_actor::DeviceIdentity;
 use tilo_network_actor::services::Approvers;
 use tilo_server_client::Approver;
@@ -28,41 +31,44 @@ const POLL: Duration = Duration::from_millis(250);
 /// The longest wait before an approver session that failed is opened again.
 const RETRY_MAX: Duration = Duration::from_secs(30);
 
-/// The approver sessions this device keeps, one per host.
-#[derive(Default)]
+/// The approver sessions this device keeps, one per host: the one set the peer network's hosts
+/// and the hosts of the workspaces placed away from this device share, each host answered on one
+/// session however this device came to reach it. Two sessions with one host would put each of its
+/// questions on the sheet twice, the second taking the first's place and answering it no.
+#[derive(Clone, Default)]
 pub(crate) struct Answering {
     questions: Option<Questions>,
-    sessions: HashMap<EndpointId, tokio::task::JoinHandle<()>>,
+    sessions: Arc<Mutex<HashMap<EndpointId, tokio::task::JoinHandle<()>>>>,
 }
 
 impl Answering {
     pub(crate) fn new(questions: Option<Questions>) -> Self {
         Self {
             questions,
-            sessions: HashMap::new(),
+            sessions: Arc::default(),
         }
     }
-}
 
-impl Approvers for Answering {
-    /// Answer `host` 's questions from now on, when this device may: an agent's key is no device
-    /// of the person's and answers nothing for them. A host this device's person has nothing at
-    /// refuses the session, which is tried again later.
-    fn start(&mut self, endpoint: &Endpoint, host: EndpointAddr, identity: &DeviceIdentity) {
+    /// Answer `host` 's questions from now on, on `endpoint`, when this device may: an agent's key
+    /// or a stand-in is no device of the person's and answers nothing for them. A host already
+    /// answered keeps its session. A host this device's person has nothing at refuses the session,
+    /// which is tried again later. Called inside the runtime the session runs on.
+    pub(crate) fn answer(&self, endpoint: &Endpoint, host: EndpointAddr, identity: &DeviceIdentity) {
         let capabilities = &identity.device_cert.capabilities;
-        if capabilities.agent.is_some()
-            || capabilities.stand_in
-            || self
-                .sessions
-                .get(&host.id)
-                .is_some_and(|session| !session.is_finished())
-        {
+        if capabilities.agent.is_some() || capabilities.stand_in {
             return;
         }
         let Some(questions) = self.questions.clone() else {
             return;
         };
-        let key = std::sync::Arc::clone(&identity.signer);
+        let mut sessions = self.sessions.lock_recover();
+        if sessions
+            .get(&host.id)
+            .is_some_and(|session| !session.is_finished())
+        {
+            return;
+        }
+        let key = Arc::clone(&identity.signer);
         let id = host.id;
         let session = tokio::spawn(answer_host(
             endpoint.clone(),
@@ -71,11 +77,18 @@ impl Approvers for Answering {
             key,
             questions,
         ));
-        self.sessions.insert(id, session);
+        sessions.insert(id, session);
+    }
+}
+
+impl Approvers for Answering {
+    fn start(&mut self, endpoint: &Endpoint, host: EndpointAddr, identity: &DeviceIdentity) {
+        self.answer(endpoint, host, identity);
     }
 
     fn stop(&mut self, host: EndpointId) {
-        if let Some(session) = self.sessions.remove(&host) {
+        let ended = self.sessions.lock_recover().remove(&host);
+        if let Some(session) = ended {
             session.abort();
         }
     }
@@ -87,7 +100,7 @@ async fn answer_host(
     endpoint: Endpoint,
     host: EndpointAddr,
     cert: DeviceCert,
-    key: std::sync::Arc<dyn collab_types::signer::DeviceSigner>,
+    key: Arc<dyn collab_types::signer::DeviceSigner>,
     questions: Questions,
 ) {
     let mut wait = POLL;

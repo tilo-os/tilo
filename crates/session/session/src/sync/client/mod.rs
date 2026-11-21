@@ -1289,6 +1289,11 @@ pub struct Client {
     /// Where this device was given and reached its hosts ([`live_session::Reached`]).
     #[cfg(target_os = "linux")]
     reached: network::Reached,
+    /// The approver sessions this device keeps with the hosts it reaches, one per host: the peer
+    /// network's hosts and the hosts of its workspaces placed away from it answer the person's
+    /// questions on the same ones.
+    #[cfg(target_os = "linux")]
+    answering: crate::network::Answering,
 }
 
 impl std::fmt::Debug for Client {
@@ -1392,7 +1397,8 @@ impl Client {
             lan.clone(),
         );
         // What the actor serves is installed before it starts: every actor built after answers it.
-        let versions = crate::network::install(fabric.as_ref(), questions);
+        let answering = crate::network::Answering::new(questions.clone());
+        let versions = crate::network::install(fabric.as_ref(), questions, &answering);
         // The channels' side of the peer network is the engine's, opened before the peer network starts.
         let link = engine.as_ref().and_then(|engine| engine.link());
         let network_link = link.clone();
@@ -1465,6 +1471,7 @@ impl Client {
             outgoing,
             thread: Some(thread),
             reached,
+            answering,
         };
         // The person's other devices are heard from the start, so a list one of them published is
         // taken even when this session shows none of their workspaces yet.
@@ -1507,6 +1514,8 @@ impl Client {
             #[cfg(target_os = "linux")]
             #[cfg(target_os = "linux")]
             reached: network::Reached::default(),
+            #[cfg(target_os = "linux")]
+            answering: crate::network::Answering::default(),
         }
     }
 
@@ -1569,6 +1578,8 @@ impl Client {
             outgoing: outbox,
             thread: None,
             reached: network::Reached::default(),
+            #[cfg(target_os = "linux")]
+            answering: crate::network::Answering::default(),
         };
         for host in hosts {
             let _ = client.outgoing.send(Cmd::Connect(host));
@@ -1810,6 +1821,12 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn reached(&self) -> Reached {
         self.reached.clone()
+    }
+
+    /// The approver sessions this device keeps with the hosts it reaches, one per host.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn answering(&self) -> crate::network::Answering {
+        self.answering.clone()
     }
 
     /// This device's collaboration endpoint, once it has bound.

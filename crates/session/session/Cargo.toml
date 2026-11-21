@@ -526,7 +526,7 @@ tilo-nm = { path = "../../system/tilo-nm" }
 tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 # A server host on this machine's loopback, which is what a test's devices relay through.
-test-server = { path = "../../dev/test-server" }
+test-server = { path = "../../dev/test-server", features = ["questions"] }
 futures-util.workspace = true
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The threshold signature material a test identity key is made of, as the
