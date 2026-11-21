@@ -956,7 +956,7 @@ if [ "$(grep -Fxc 'ExecStopPost=-/usr/bin/umount --lazy /var/workspace' <<<"$fs_
   bad 'fs.service lost its lazy-umount backstop for a killed daemon'
   fs_stop_fail=1
 fi
-grep -Fq 'config.mount_options.push(MountOption::AutoUnmount);' "$repo/crates/system/fs/src/main.rs" \
+grep -Fq 'config.mount_options.push(MountOption::AutoUnmount);' "$repo/crates/system/fs/src/mount.rs" \
   || { bad 'fs no longer mounts with auto_unmount, so a stopped daemon can leave /var/workspace attached'; fs_stop_fail=1; }
 if sed 's/;.*//' "$repo/os/usr/share/tilo/selinux/tilo-base.cil" | grep -Eq '\(allow init_t fusermount_exec_t'; then
   bad 'tilo-base.cil lets init_t execute fusermount3; stop fs.service without it'
