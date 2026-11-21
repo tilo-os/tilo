@@ -187,32 +187,45 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     reason = "Hosted::stop consumes each holder after the assertions"
 )]
 async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
+    use tilo_test_env::within;
     let site = TestUser::fresh("Site");
     let made_on_server = site.enrol("server", DeviceCapabilities::member());
     let other = TestUser::fresh("Other");
     let other_server = other.enrol("server", DeviceCapabilities::member());
-    let made_on = serve_on(&site, &made_on_server, WorkSetting::own_person()).await;
+    let made_on = within(
+        "the server the workspace is made on starts",
+        serve_on(&site, &made_on_server, WorkSetting::own_person()),
+    )
+    .await;
     let workspaces = made_on.host.workspaces().clone();
-    let workspace = workspaces.create("Notes").await.unwrap();
+    let workspace = within("the workspace is made", workspaces.create("Notes"))
+        .await
+        .unwrap();
     let mut takes = WorkSetting::own_person();
     takes.from =
         tilo_server_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
-    let holder = serve_on(&other, &other_server, takes).await;
-    workspaces
-        .attach_server(
+    let holder = within(
+        "the holder starts",
+        serve_on(&other, &other_server, takes),
+    )
+    .await;
+    within(
+        "the server it was made on attaches the holder",
+        workspaces.attach_server(
             &workspace.workspace,
             other_server.device_pubkey(),
             holder.host.node_addr(),
             CopyRole::KeyHolder,
-        )
-        .await
-        .unwrap();
-    let named = holder
-        .host
-        .workspaces()
-        .hosts(&workspace.workspace)
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
+    let named = within(
+        "the holder names the workspace's holders",
+        holder.host.workspaces().hosts(&workspace.workspace),
+    )
+    .await
+    .unwrap();
     assert!(
         named
             .iter()
@@ -223,10 +236,12 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
         key_holders: 2,
         stores: 0,
     };
-    workspaces
-        .choose_copies(&workspace.workspace, Some(wanted))
-        .await
-        .unwrap();
+    within(
+        "the server it was made on chooses two key holders",
+        workspaces.choose_copies(&workspace.workspace, Some(wanted)),
+    )
+    .await
+    .unwrap();
     copies_once(
         &holder,
         &workspace.workspace,
@@ -234,6 +249,6 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
         |status| status.chosen && status.policy == wanted,
     )
     .await;
-    holder.stop().await;
-    made_on.stop().await;
+    within("the holder stops", holder.stop()).await;
+    within("the server it was made on stops", made_on.stop()).await;
 }
