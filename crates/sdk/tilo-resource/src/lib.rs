@@ -751,7 +751,7 @@ pub mod __private {
     macro_rules! declared_number {
         ($($ty:ty),*) => {$(
             impl DeclaredNumber for $ty {
-                #[allow(clippy::cast_precision_loss, clippy::cast_lossless, reason = "bounds are compared, not stored")]
+                #[allow(clippy::cast_precision_loss, clippy::cast_lossless, reason = "a range bound is a numeric limit far below 2^53")]
                 fn declared_number(&self) -> Option<f64> {
                     Some(*self as f64)
                 }

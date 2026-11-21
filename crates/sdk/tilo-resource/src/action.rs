@@ -724,13 +724,13 @@ impl<R, P> Copy for Undoing<'_, R, P> {}
 
 /// A model error as the action's refusal: a function, not a closure per
 /// operation type.
-#[allow(clippy::needless_pass_by_value, reason = "what `map_err` hands it")]
+#[allow(clippy::needless_pass_by_value, reason = "`map_err` hands it the error by value")]
 fn model_refused(error: crate::ModelError) -> ActionError {
     ActionError::Refused(error.to_string())
 }
 
 /// A document error as the action's refusal.
-#[allow(clippy::needless_pass_by_value, reason = "what `map_err` hands it")]
+#[allow(clippy::needless_pass_by_value, reason = "`map_err` hands it the error by value")]
 fn automerge_refused(error: automerge::AutomergeError) -> ActionError {
     ActionError::Refused(error.to_string())
 }
