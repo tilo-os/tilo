@@ -19,19 +19,16 @@ use std::path::Path;
 use std::time::Duration;
 
 use install_profile_model::plan::Drive;
-use tilo_workspace_service::workspaces::Workspaces;
+use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 use tilo_workspace_service::workspaces::servers::machine::{self, Step};
 use tilo_workspace_service::workspaces::servers::{Servers, device, device_id};
 
-use super::{apply, read};
+use super::{SERVERS, admin_workspace_id, apply, read};
 
 /// Where the token's nonce is kept for this machine: written by
 /// `tilo-enroll enroll` when it enrolled with a plan's token, and read here
 /// after the enrollment.
 pub const NONCE: &str = "install-plan.nonce";
-
-/// How often this machine reads its entry back while it waits for an answer.
-const LOOK_EVERY: Duration = Duration::from_secs(2);
 
 /// How long this machine waits for the root helper to say it applied the
 /// configuration: longer than the helper's own window for a network it must
@@ -146,6 +143,9 @@ pub async fn install(
 ) -> Result<(), String> {
     tracing::info!(%nonce, "this machine installs from its plan");
     let mut told_arriving = false;
+    // Heard from before the first read, so a change that lands between a read and the wait
+    // after it still wakes the wait.
+    let mut changes = EntryChanges::of(workspaces);
     loop {
         let servers = read(workspaces).await?;
         // Holding the workspace comes before its document has all reached this machine: the
@@ -159,7 +159,7 @@ pub async fn install(
                 tracing::info!("this machine waits for its plan to reach it");
                 told_arriving = true;
             }
-            wait_for_entry().await;
+            changes.next().await?;
             continue;
         };
         // What this machine has is its own report: the entry is told once,
@@ -193,7 +193,7 @@ pub async fn install(
             }
             Step::Wait(choices) => {
                 tracing::info!(?choices, "this machine waits for its person to answer");
-                wait_for_entry().await;
+                changes.next().await?;
             }
             Step::Install(plan) => {
                 tracing::info!(plan = %plan.plan, "this machine installs with its plan");
@@ -242,11 +242,46 @@ async fn apply_device_config(paths: &device::Paths, entry: &super::Server) -> Re
     Err("the root helper did not apply the configuration of this machine".to_owned())
 }
 
-/// Wait a moment and read the entry again: an answer one of the person's
-/// devices wrote reaches this copy through a holder's, which the write watch
-/// does not always hear, so the entry is read back as the document stands.
-async fn wait_for_entry() {
-    tokio::time::sleep(LOOK_EVERY).await;
+/// What wakes a machine waiting at its entry: a change to its person's Servers document, or to
+/// the governance of the workspace that holds it.
+struct EntryChanges {
+    admin: String,
+    writes: tokio::sync::broadcast::Receiver<ResourceWrite>,
+    governance: tokio::sync::broadcast::Receiver<String>,
+}
+
+impl EntryChanges {
+    fn of(workspaces: &Workspaces) -> Self {
+        Self {
+            admin: admin_workspace_id(&workspaces.serving_certificate().user_public_key),
+            writes: workspaces.document_writes(),
+            governance: workspaces.governance_changes(),
+        }
+    }
+
+    /// Wait until the Servers document or its workspace's governance changed, as a write
+    /// another device made reaches this one or this device writes it.
+    ///
+    /// # Errors
+    /// This device's workspaces are closing, and nothing will change again.
+    async fn next(&mut self) -> Result<(), String> {
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            let ours = tokio::select! {
+                write = self.writes.recv() => write.map(|ResourceWrite { workspace, app, .. }| {
+                    workspace == self.admin && app == SERVERS.0
+                }),
+                workspace = self.governance.recv() => workspace.map(|workspace| workspace == self.admin),
+            };
+            match ours {
+                Ok(true) | Err(RecvError::Lagged(_)) => return Ok(()),
+                Ok(false) => {}
+                Err(RecvError::Closed) => {
+                    return Err("this device's workspaces closed while it installed".to_owned());
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
