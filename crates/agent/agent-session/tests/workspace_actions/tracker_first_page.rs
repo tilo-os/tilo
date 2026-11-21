@@ -61,7 +61,7 @@ async fn first_page_after_a_restart(size: usize) -> Duration {
         assert_eq!(status, 201, "{workspace}");
         let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
         agent.act(&base, "tasks", "open", &json!({})).await;
-        agent.act(&base, "notes", "open", &json!({})).await;
+        agent.act(&base, "contacts", "open", &json!({})).await;
         for start in (0..size).step_by(LONG_LIST) {
             let list: Vec<Value> = (start..(start + LONG_LIST).min(size))
                 .map(|at| {
@@ -96,7 +96,7 @@ async fn first_page_after_a_restart(size: usize) -> Duration {
     };
     // The first call after the restart joins the workspace, whatever it lists.
     let (status, page) = agent
-        .get(&format!("{base}/resources?path=notes&limit=40"))
+        .get(&format!("{base}/resources?path=contacts&limit=40"))
         .await;
     assert_eq!(status, 200, "{page}");
     let began = Instant::now();

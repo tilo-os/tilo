@@ -455,7 +455,7 @@ async fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts_after_a_r
         assert_eq!(status, 201, "{workspace}");
         let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
         agent.act(&base, "tasks", "open", &json!({})).await;
-        agent.act(&base, "notes", "open", &json!({})).await;
+        agent.act(&base, "contacts", "open", &json!({})).await;
         fill(&agent, &base, SIZES[1]).await;
         base
     };
@@ -464,18 +464,18 @@ async fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts_after_a_r
         api: &on_server.api,
         token,
     };
-    let notes = format!("{base}/resources?path=notes&limit=40");
-    let list_notes = || async {
+    let contacts = format!("{base}/resources?path=contacts&limit=40");
+    let list_contacts = || async {
         let began = Instant::now();
-        let (status, page) = agent.get(&notes).await;
+        let (status, page) = agent.get(&contacts).await;
         assert_eq!(status, 200, "{page}");
         began.elapsed()
     };
     // The first listing after the restart joins the workspace.
-    list_notes().await;
+    list_contacts().await;
     let mut alone = Vec::new();
     for _ in 0..5 {
-        alone.push(list_notes().await);
+        alone.push(list_contacts().await);
     }
     let alone = quantile(&alone, 0.5);
     let issues = format!("{base}/resources?path=tasks/Issues&limit=40");
@@ -488,15 +488,15 @@ async fn another_apps_listing_waits_for_no_tracker_taking_in_its_parts_after_a_r
     let beside = async {
         // The tracker's listing starts taking in its parts first.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        list_notes().await
+        list_contacts().await
     };
     let (tracker, beside) = tokio::join!(tracker, beside);
     eprintln!(
-        "the tracker's first listing after a restart took {tracker:?}; the notes listed beside it in {beside:?}, alone in {alone:?}"
+        "the tracker's first listing after a restart took {tracker:?}; the contacts listed beside it in {beside:?}, alone in {alone:?}"
     );
     assert!(
         beside <= alone * 8 + Duration::from_secs(2),
-        "the notes listed in {beside:?} beside the tracker's first listing ({tracker:?}), alone in {alone:?}"
+        "the contacts listed in {beside:?} beside the tracker's first listing ({tracker:?}), alone in {alone:?}"
     );
 }
 

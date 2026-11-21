@@ -25,10 +25,14 @@
 //! and an import's next write started between two of them held the next page for the whole
 //! write, so `tilo ls` during an import waited for one write per page. For [`READ_PAUSE`] after
 //! an agent's read was served, no agent's write that came since is started while nothing else
-//! waits: the listing's next page finds the thread free. A write that already waited
+//! waits: the listing's next page finds the thread free. A write the pause held back for
 //! [`READ_PAUSE`] goes before the next read, so a listing that keeps reading holds each write
 //! for one pause at most, never for a turn: held until [`AGENT_TURN`], every write of an import
 //! beside a listing that kept going took two seconds, in an empty tracker as in a full one.
+//! Only the pause counts, not how long the write waited before it: an import's next list that
+//! waited while a page of the listing asked the app for its rows had waited longer than a pause
+//! by the time that page was answered, went in before the next page, and the listing waited
+//! for the whole list.
 //!
 //! An agent is never stopped for good: a person whose page asks again and
 //! again would otherwise hold every agent off for as long as it stays open.
@@ -80,8 +84,8 @@ pub(super) struct Queue {
     agents_waiting: Option<Instant>,
     /// When an agent's read was last answered ([`READ_PAUSE`]).
     agent_read: Option<Instant>,
-    /// The request last taken is an agent's read: answered once the thread asks for the next.
-    reading: bool,
+    /// Since when the pause holds the agents' next write back ([`READ_PAUSE`]).
+    write_held: Option<Instant>,
     /// Nobody sends any more requests: the thread ends once these are served.
     closed: bool,
 }
@@ -193,9 +197,6 @@ impl Queue {
     /// has paused ([`Self::paused_until`]); an agent's first once the agents waited their longest
     /// ([`AGENT_TURN`]).
     pub(super) fn next(&mut self) -> Option<Waiting> {
-        if std::mem::take(&mut self.reading) {
-            self.agent_read = Some(Instant::now());
-        }
         if !self.agents_due()
             && let Some(at) = most_urgent(self.person.iter().map(|(waiting, _)| waiting))
             && let Some((waiting, pauses)) = self.person.remove(at)
@@ -210,21 +211,35 @@ impl Queue {
         }
         let at = most_urgent(self.agents.iter())?;
         if self.reading_until(at).is_some() {
+            self.write_held.get_or_insert_with(Instant::now);
             return None;
         }
         let waiting = self.agents.remove(at)?;
-        self.reading = waiting.urgency() == Urgency::Read;
+        if waiting.urgency() != Urgency::Read || self.agents.is_empty() {
+            self.write_held = None;
+        }
         self.agents_waiting = (!self.agents.is_empty()).then(Instant::now);
         Some(waiting)
     }
 
+    /// An agent's read was answered now, wherever the thread served it: taken from this queue,
+    /// or applied again once the call it handed off or the part it waited for came. A read
+    /// applied again that way was served as the service's own work, which started no pause, and
+    /// an import's next list went in between two pages of a listing whenever one of its pages
+    /// had waited for a call: the next page waited for that whole list.
+    pub(super) fn agent_read_answered(&mut self) {
+        self.agent_read = Some(Instant::now());
+    }
+
     /// Until when the agent's write at `at` waits for the next read of a listing whose last
-    /// page was just served ([`READ_PAUSE`]): never a read, nor a write that already waited a
-    /// pause.
+    /// page was just served ([`READ_PAUSE`]): never a read, nor a write the pause held back
+    /// for a pause already.
     fn reading_until(&self, at: usize) -> Option<Instant> {
         let waiting = self.agents.get(at)?;
         if waiting.urgency() == Urgency::Read
-            || waiting.queued.elapsed() >= READ_PAUSE
+            || self
+                .write_held
+                .is_some_and(|since| since.elapsed() >= READ_PAUSE)
             || self.closed
         {
             return None;
@@ -264,6 +279,12 @@ impl Queue {
     pub(super) const fn close(&mut self) {
         self.closed = true;
     }
+}
+
+/// Whether `job` is an agent's read: answered, it holds the agents' writes back for the
+/// listing's next page ([`Queue::agent_read_answered`]).
+pub(super) fn agent_read(job: &Job, log: &std::sync::Mutex<InvocationLog>) -> bool {
+    job.urgency() == Urgency::Read && asker(job, log) == Asker::Agent
 }
 
 /// Where among `jobs` the most urgent is, the oldest of its kind.

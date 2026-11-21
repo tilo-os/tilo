@@ -1311,6 +1311,9 @@ struct Worker {
     part_waits: part_wait::PartWaits,
     /// Requests whose operation goes on off the thread, and what waits for them ([`call_wait`]).
     call_waits: call_wait::CallWaits,
+    /// An agent's read was answered since the queue last heard of one
+    /// ([`queue::Queue::agent_read_answered`]).
+    agent_read_answered: bool,
     /// Callers' replicas taking in their parts off the thread ([`part_load`]).
     part_loads: part_load::PartLoads,
     /// The caller's device whose request it serves now ([`publish::Worker::writer`](publish)).
@@ -1444,6 +1447,7 @@ impl Worker {
             joining: HashMap::new(),
             part_waits: part_wait::PartWaits::default(),
             call_waits: call_wait::CallWaits::default(),
+            agent_read_answered: false,
             part_loads: part_load::PartLoads::default(),
             writing_as: None,
             pages: pages::Pages::default(),
@@ -1477,6 +1481,9 @@ impl Worker {
             }
             queue.take_sent(jobs, &self.shared.log);
             self.try_parts_again(None);
+            if std::mem::take(&mut self.agent_read_answered) {
+                queue.agent_read_answered();
+            }
             if let Some(queue::Waiting { queued, job, from }) = queue.next() {
                 self.expire_watchers();
                 match from {
@@ -1807,8 +1814,14 @@ impl Worker {
         // One applied again after waiting off this thread, for parts or for a call's answer,
         // is the request it was, not one more.
         let again = self.part_waits.again() || self.call_waits.taking_an_answer();
+        let agent_read = queue::agent_read(&job, &self.shared.log);
         self.call_waits.begin();
         self.take(queued, job);
+        // Answered, not held for a call or a part: the listing it is a page of reads its next
+        // page before the agents' next write starts.
+        if agent_read && !self.call_waits.held() && !self.part_waits.held() {
+            self.agent_read_answered = true;
+        }
         // What it ended, it ended now, as a listing of runs says.
         self.log().stamp_ended();
         let (waited, ran) = (started.duration_since(queued), started.elapsed());
