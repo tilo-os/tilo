@@ -353,8 +353,8 @@ fn read_handshake(reader: &mut BufReader<UnixStream>) -> Option<Handshake> {
 }
 
 impl Connection {
-    /// Write `reply` as its line; a reply the wire cannot carry, or an app that stopped reading,
-    /// is logged.
+    /// Write `reply` as its line; a reply the wire cannot carry is logged, and an app that stopped
+    /// reading has gone.
     fn say(&self, reply: &Reply) {
         let Ok(mut frame) = serde_json::to_vec(reply) else {
             return;
@@ -365,9 +365,10 @@ impl Connection {
         }
         frame.push(b'\n');
         let mut writer = self.writer.lock_recover();
-        if let Err(error) = writer.write_all(&frame).and_then(|()| writer.flush()) {
-            tracing::info!(app = %self.app, %error, "an app stopped reading its chooser");
-        }
+        let _ = tilo_failure::ignored!(
+            "an app that closed its end of the chooser asked nothing more: no one is left to answer",
+            writer.write_all(&frame).and_then(|()| writer.flush())
+        );
     }
 
     /// Answer a request that waits for the session's loop.
