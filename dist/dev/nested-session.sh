@@ -226,7 +226,7 @@ fi
 # tree's build as this tree's fixes failing).
 "$repo_root/dist/dev/build-provenance.sh" verify "$build_out" "$thin"
 for name in tilo-session tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
-            tilo-model-gateway tilo-ush tilo-control; do
+            tilo-model-gateway tilo-ush tilo-control fs; do
     [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
     chmod +x "$bin/$name"
 done

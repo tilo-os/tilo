@@ -103,7 +103,7 @@ host_profile=nested
 # admitted agent runs against the staged build without building its own.
 host_bins=(tilo-session tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
            tilo-model-gateway tilo-ush tilo-control tilolang-process tilolang nested-session-bus
-           tilo-quick-settings)
+           tilo-quick-settings fs)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
