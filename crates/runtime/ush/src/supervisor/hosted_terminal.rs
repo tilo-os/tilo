@@ -101,17 +101,6 @@ pub(super) fn serve_hosted(
         }
         Route::Opened { session, stream } => (session, stream),
     };
-    if !transport.persistent {
-        let reason = "a hosted workspace's shell is carried only on a session's own lease";
-        reply(
-            writer,
-            &ServeResponse::Denied {
-                reason: reason.into(),
-            },
-            None,
-        )?;
-        return Ok(Some(Served::Refused));
-    }
     let (master, slave) = super::open_pty(*cols, *rows)?;
     let slave = OwnedFd::from(slave);
     // Keys and what is drawn pass through untouched: the host's terminal does the rest.

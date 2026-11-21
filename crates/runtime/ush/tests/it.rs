@@ -21,3 +21,6 @@ pub mod helper_runtime;
 
 #[path = "shell.rs"]
 pub mod shell;
+
+#[path = "support/control.rs"]
+pub mod control;

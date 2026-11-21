@@ -25,7 +25,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_environment::{DEFAULT_RECORD, Environment, PackageId, Target};
 use ush::records::Records;
 use ush::store::Store;
-use ush::supervisor::{ServeRequest, ServeResponse, decide_serve, recv_with_fd};
+use ush::supervisor::{ServeRequest, ServeResponse, decide_serve};
 
 macro_rules! require_trusted_loader {
     () => {
@@ -168,19 +168,12 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
     let socket = dir.path().join("ush.sock");
     serve_in_background(&socket, &store);
 
-    let stream = UnixStream::connect(&socket).expect("connect");
+    let stream = crate::control::connect(&socket, None);
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("read timeout");
     let ask = |request: &ServeRequest| {
-        let mut line = serde_json::to_vec(request).unwrap();
-        line.push(b'\n');
-        (&stream).write_all(&line).expect("write request");
-        let (payload, fd) = recv_with_fd(&stream).expect("recvmsg");
-        let text = String::from_utf8_lossy(&payload).into_owned();
-        let response: ServeResponse =
-            serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
-        (response, fd)
+        crate::control::ask(&stream, &serde_json::to_value(request).unwrap())
     };
     let open = ServeRequest::OpenSession {
         target: Target::default_environment(),
@@ -196,9 +189,9 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         host_session: None,
     };
 
-    let (response, fd) = ask(&open);
+    let (response, session) = ask(&open);
     assert!(
-        fd.is_none(),
+        session.is_none(),
         "a pty was handed out for a guest that cannot be built"
     );
     let ServeResponse::NoRuntime { reason } = response else {
@@ -209,8 +202,8 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         "the reason names what is missing: {reason}"
     );
 
-    let (again, fd) = ask(&open);
-    assert!(fd.is_none());
+    let (again, session) = ask(&open);
+    assert!(session.is_none());
     assert!(
         matches!(again, ServeResponse::NoRuntime { .. }),
         "{again:?}"
@@ -566,8 +559,8 @@ fn open_session(
     commands: Option<&str>,
     command: Vec<String>,
 ) -> (UnixStream, OwnedFd) {
-    let stream = UnixStream::connect(socket).expect("connect");
-    let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
+    let stream = crate::control::connect(socket, None);
+    let request = serde_json::to_value(&ServeRequest::OpenSession {
         target: Target::default_environment(),
         cols: 100,
         rows: 30,
@@ -581,14 +574,7 @@ fn open_session(
         host_session: None,
     })
     .unwrap();
-    request.push(b'\n');
-    (&stream).write_all(&request).expect("write request");
-    (&stream).flush().expect("flush");
-
-    let (payload, fd) = recv_with_fd(&stream).expect("recvmsg");
-    let text = String::from_utf8_lossy(&payload);
-    let response: ServeResponse =
-        serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
+    let (response, session) = crate::control::ask(&stream, &request);
     match &response {
         ServeResponse::Session { environment, .. } => assert_eq!(environment, DEFAULT_RECORD),
         ServeResponse::Denied { reason }
@@ -603,8 +589,9 @@ fn open_session(
             panic!("a session request answered with something else")
         }
     }
-    let fd = fd.expect("no pty descriptor arrived with the reply");
-    (stream, fd)
+    let session = session.expect("no pty descriptor arrived with the reply");
+    drop(stream);
+    (session.lease, session.master)
 }
 
 /// Serve the supervisor on `socket` with `store` in the background, and wait
@@ -748,11 +735,8 @@ fn serve_with_files(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, Pa
 }
 
 fn launched_in(socket: &Path, workspace: Option<&str>) -> UnixStream {
-    let stream = UnixStream::connect(socket).expect("connect");
-    (&stream)
-        .write_all(&ush::host::encode_launch_handoff("so.tilo.terminal", workspace).unwrap())
-        .unwrap();
-    stream
+    let handoff = ush::host::encode_launch_handoff("so.tilo.terminal", workspace).unwrap();
+    crate::control::connect(socket, Some(&handoff))
 }
 
 fn ask_line(stream: &UnixStream, request: &serde_json::Value) -> ServeResponse {
@@ -805,7 +789,7 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
         listed(&ask_line(&launched_in(&socket, Some(W1)), &list)),
         vec!["Agent one"]
     );
-    let session = UnixStream::connect(&socket).unwrap();
+    let session = crate::control::connect(&socket, None);
     assert_eq!(
         listed(&ask_line(
             &session,
@@ -859,7 +843,7 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
 
 fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
     let stream = launched_in(socket, Some(workspace));
-    let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
+    let request = serde_json::to_value(&ServeRequest::OpenSession {
         target: Target::default_environment(),
         cols: 100,
         rows: 30,
@@ -873,19 +857,13 @@ fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
         host_session: None,
     })
     .unwrap();
-    request.push(b'\n');
-    (&stream).write_all(&request).unwrap();
-    let (payload, fd) = recv_with_fd(&stream).expect("recvmsg");
-    let text = String::from_utf8_lossy(&payload);
-    let response: ServeResponse = serde_json::from_str(text.trim()).unwrap();
+    let (response, session) = crate::control::ask(&stream, &request);
     assert!(
         matches!(&response, ServeResponse::Session { environment, .. } if environment == DEFAULT_RECORD),
         "{response:?}"
     );
-    (
-        stream,
-        fd.expect("no pty descriptor arrived with the reply"),
-    )
+    let session = session.expect("no pty descriptor arrived with the reply");
+    (session.lease, session.master)
 }
 
 #[test]
@@ -968,16 +946,7 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
         )
         .unwrap();
 
-    let stream = UnixStream::connect(&socket).expect("connect");
-    (&stream)
-        .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
-        .unwrap();
-    let (ready, _) = runtime_portal::fd_transport::recv_with_fds(&stream).expect("hello answer");
-    assert!(
-        String::from_utf8_lossy(&ready).contains("\"ready\""),
-        "{}",
-        String::from_utf8_lossy(&ready)
-    );
+    let stream = crate::control::connect(&socket, None);
     let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
         target: Target::default_environment(),
         cols: 100,

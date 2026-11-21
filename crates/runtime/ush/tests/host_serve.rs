@@ -18,7 +18,7 @@ use tilo_action_policy::Lifetime;
 use tilo_test_env::{DiesWithTheTest as _, SpawnUnderEnvLock as _};
 use ush::host::{TERMINAL_APP_ID, encode_handoff};
 use ush::store::Store;
-use ush::supervisor::{ServeResponse, recv_with_fd};
+use ush::supervisor::ServeResponse;
 
 const OWNER: [u8; 32] = [7; 32];
 
@@ -62,34 +62,32 @@ fn serving(dir: &Path) -> (PathBuf, Store) {
     (socket, store)
 }
 
+fn control(socket: &Path, app: Option<&str>) -> UnixStream {
+    let handoff = app.map(|app| encode_handoff(app).unwrap());
+    crate::control::connect(socket, handoff.as_deref())
+}
+
+/// Ask for a Host session: its answer, its pty, and the lease that holds it.
 fn ask(
     socket: &Path,
     app: Option<&str>,
     requested_by: &str,
-) -> (ServeResponse, Option<OwnedFd>, UnixStream) {
-    let stream = UnixStream::connect(socket).unwrap();
-    if let Some(app) = app {
-        (&stream).write_all(&encode_handoff(app).unwrap()).unwrap();
-    }
+) -> (ServeResponse, Option<OwnedFd>, Option<UnixStream>) {
+    let stream = control(socket, app);
     let request = serde_json::json!({
         "op": "open-session",
         "target": {"kind": "host"},
         "requested_by": requested_by,
     });
-    let mut line = serde_json::to_vec(&request).unwrap();
-    line.push(b'\n');
-    (&stream).write_all(&line).unwrap();
-    let (payload, fd) = recv_with_fd(&stream).unwrap();
-    let response = serde_json::from_slice(String::from_utf8_lossy(&payload).trim().as_bytes())
-        .unwrap_or_else(|e| panic!("bad reply {payload:?}: {e}"));
-    (response, fd, stream)
+    let (response, session) = crate::control::ask(&stream, &request);
+    match session {
+        Some(session) => (response, Some(session.master), Some(session.lease)),
+        None => (response, None, None),
+    }
 }
 
 fn allow(socket: &Path, app: Option<&str>, lifetime: Option<Lifetime>) -> ServeResponse {
-    let stream = UnixStream::connect(socket).unwrap();
-    if let Some(app) = app {
-        (&stream).write_all(&encode_handoff(app).unwrap()).unwrap();
-    }
+    let stream = control(socket, app);
     let mut line = serde_json::to_vec(&serde_json::json!({
         "op": "allow-host",
         "expiry": lifetime,
@@ -273,28 +271,22 @@ fn a_host_shell_ends_with_the_supervisor_that_served_it() {
     );
 
     // Open the Host session, as Terminal does.
-    let session = UnixStream::connect(&socket).expect("connect");
-    (&session)
-        .write_all(&encode_handoff(TERMINAL_APP_ID).unwrap())
-        .unwrap();
+    let control = control(&socket, Some(TERMINAL_APP_ID));
     let request = serde_json::json!({
         "op": "open-session",
         "target": {"kind": "host"},
         "requested_by": "person",
         "end_report": true,
     });
-    let mut line = serde_json::to_vec(&request).unwrap();
-    line.push(b'\n');
-    (&session).write_all(&line).unwrap();
-    let (payload, fd) = recv_with_fd(&session).expect("the supervisor answers");
-    let response: ServeResponse =
-        serde_json::from_slice(String::from_utf8_lossy(&payload).trim().as_bytes())
-            .unwrap_or_else(|e| panic!("bad reply {payload:?}: {e}"));
+    let (response, session) = crate::control::ask(&control, &request);
     assert!(
         matches!(response, ServeResponse::Session { .. }),
         "{response:?}"
     );
-    let master = fd.expect("a pty arrives with the session");
+    let crate::control::Session {
+        master,
+        lease: session,
+    } = session.expect("a pty arrives with the session");
     let mut writer = std::fs::File::from(master);
     writer.write_all(b"echo shell-$((6*7))\n").unwrap();
     let seen = read_until(&writer, "shell-42", tilo_test_env::hang_bound());
@@ -392,7 +384,7 @@ pub(crate) fn read_until(master: &std::fs::File, needle: &str, timeout: Duration
 }
 
 fn directory(socket: &Path, request: &serde_json::Value) -> Vec<(String, String)> {
-    let stream = UnixStream::connect(socket).unwrap();
+    let stream = control(socket, None);
     let mut line = serde_json::to_vec(request).unwrap();
     line.push(b'\n');
     (&stream).write_all(&line).unwrap();

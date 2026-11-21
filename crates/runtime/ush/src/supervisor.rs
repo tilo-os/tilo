@@ -658,12 +658,6 @@ pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<(
     Ok(())
 }
 
-/// Requests one connection may make. A refused open spends nothing — the
-/// connection is the app's one way to ask — so the app may ask again on it
-/// (the device's own shell after an environment could not be built), but not
-/// without end.
-const MAX_REQUESTS_PER_CONNECTION: usize = 8;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Served {
     /// Answered for good: a session ran, or the request was not one to retry.
@@ -678,21 +672,28 @@ const MAX_SERVICE_LINE: u64 = 4096;
 
 struct SessionTransport<'a> {
     stream: &'a UnixStream,
-    persistent: bool,
     active: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
+/// One app's control connection: it opens with a hello naming
+/// [`SERVICE_PROTOCOL`], then asks as often as it likes, each session on a
+/// lease of its own.
 fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Hello {
+        op: String,
+        protocol: u16,
+    }
     let mut writer = stream.try_clone()?;
     let mut raw = stream.try_clone()?;
     let (caller, launched, carried) = crate::host::read_handoff(&mut raw)?;
     let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
-    let mut transport = SessionTransport {
+    let transport = SessionTransport {
         stream,
-        persistent: false,
         active: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
-    let mut legacy_requests = 0usize;
+    let mut negotiated = false;
     loop {
         let mut line = String::new();
         if reader
@@ -707,33 +708,26 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
             u64::try_from(line.len())? <= MAX_SERVICE_LINE,
             "ush request exceeds its bound"
         );
-        if serde_json::from_str::<serde_json::Value>(&line)
-            .ok()
-            .is_some_and(|value| {
-                value.get("op").and_then(serde_json::Value::as_str) == Some("hello")
-            })
-        {
-            #[derive(serde::Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct Hello {
-                op: String,
-                protocol: u16,
+        if !negotiated {
+            let hello = serde_json::from_str::<Hello>(&line)
+                .ok()
+                .filter(|hello| hello.op == "hello" && hello.protocol == SERVICE_PROTOCOL);
+            if hello.is_none() {
+                reply(
+                    &mut writer,
+                    &ServeResponse::Denied {
+                        reason: format!(
+                            "a connection opens with a hello for ush control protocol {SERVICE_PROTOCOL}"
+                        ),
+                    },
+                    None,
+                )?;
+                return Ok(());
             }
-            let hello: Hello = serde_json::from_str(&line)?;
-            anyhow::ensure!(
-                hello.op == "hello" && hello.protocol == SERVICE_PROTOCOL,
-                "ush control protocol is unsupported"
-            );
-            transport.persistent = true;
+            negotiated = true;
             writer.write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")?;
             writer.flush()?;
             continue;
-        }
-        if !transport.persistent {
-            if legacy_requests >= MAX_REQUESTS_PER_CONNECTION {
-                return Ok(());
-            }
-            legacy_requests = legacy_requests.saturating_add(1);
         }
         let served = serve_request(
             &transport,
@@ -743,7 +737,7 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
             (&caller, launched.as_deref()),
             &line,
         )?;
-        if served == Served::Malformed || (!transport.persistent && served == Served::Done) {
+        if served == Served::Malformed {
             return Ok(());
         }
     }
@@ -753,8 +747,7 @@ fn session_limit_reached(
     transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
 ) -> anyhow::Result<bool> {
-    if !transport.persistent
-        || transport.active.load(std::sync::atomic::Ordering::Acquire) < MAX_ACTIVE_SESSIONS
+    if transport.active.load(std::sync::atomic::Ordering::Acquire) < MAX_ACTIVE_SESSIONS
     {
         return Ok(false);
     }
@@ -907,7 +900,7 @@ fn serve_guest_session(
 
 fn open_environment(
     transport: &SessionTransport<'_>,
-    writer: &mut UnixStream,
+    writer: &UnixStream,
     store: &Store,
     host_root: &Path,
     environment: Option<&str>,
@@ -1008,7 +1001,7 @@ impl Drop for PendingSessionChild {
 
 fn hand_off_session(
     transport: &SessionTransport<'_>,
-    writer: &mut UnixStream,
+    writer: &UnixStream,
     store: &Store,
     response: &ServeResponse,
     master: std::fs::File,
@@ -1044,32 +1037,6 @@ fn hand_off_session(
         );
         error
     };
-    if !transport.persistent {
-        if let Some(app) = &editor {
-            let mut bytes = serde_json::to_vec(response)?;
-            bytes.push(b'\n');
-            runtime_portal::fd_transport::send_with_fds(
-                &*writer,
-                &bytes,
-                &[master.as_fd(), app.as_fd()],
-            )
-            .map_err(|error| undelivered(error.into()))?;
-        } else {
-            reply(writer, response, Some(master.as_fd())).map_err(undelivered)?;
-        }
-        drop(editor);
-        drop(master);
-        // The legacy lease carries no report: it only closes.
-        let watch = on_started().map(|watch| EndWatch {
-            report: false,
-            ..watch
-        });
-        let termination = finish_session(transport.stream, child.transfer()?, watch);
-        AuditLog::at(audit_dir).append(
-            &crate::audit::AuditEntry::new(&id, &record, close_event, true).because(termination),
-        );
-        return Ok(());
-    }
     let (supervisor_lease, terminal_lease) = UnixStream::pair()?;
     let mut bytes = serde_json::to_vec(&Leased {
         response,
@@ -1080,7 +1047,7 @@ fn hand_off_session(
     if let Some(app) = &editor {
         rights.push(app.as_fd());
     }
-    runtime_portal::fd_transport::send_with_fds(&*writer, &bytes, &rights)
+    runtime_portal::fd_transport::send_with_fds(writer, &bytes, &rights)
         .map_err(|error| undelivered(error.into()))?;
     drop(editor);
     drop(master);
@@ -1807,7 +1774,6 @@ mod tests {
                 let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let transport = SessionTransport {
                     stream: &server.try_clone().unwrap(),
-                    persistent: true,
                     active: active.clone(),
                 };
                 let (master, slave) = open_pty(80, 24).unwrap();
@@ -1823,7 +1789,7 @@ mod tests {
                 }
                 let handed = hand_off_session(
                     &transport,
-                    &mut server,
+                    &server,
                     &store,
                     &ServeResponse::Session {
                         session: "exact".into(),
@@ -1879,7 +1845,6 @@ mod tests {
             let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let transport = SessionTransport {
                 stream: &server.try_clone().unwrap(),
-                persistent: true,
                 active: active.clone(),
             };
             for index in 0..13 {
@@ -1891,7 +1856,7 @@ mod tests {
                 let id = uuid::Uuid::new_v4().simple().to_string();
                 hand_off_session(
                     &transport,
-                    &mut server,
+                    &server,
                     &store,
                     &ServeResponse::Session {
                         session: id.clone(),
