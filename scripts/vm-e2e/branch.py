@@ -649,10 +649,12 @@ def open_passwords(vm: TiloVm) -> None:
 
 def password_items(vm: TiloVm) -> set[str]:
     """The logins in the vault, by their opaque item ids, as Passwords' own list-logins action
-    answers: the vault's rows in the listing name an item only once a query reaches it."""
+    answers: the vault's rows in the listing name an item only once a query reaches it. Empty while
+    Passwords refuses to list a vault still opening, so a wait asks again."""
     answer = app_action(vm, "", "list-logins", None, PASSWORDS)
     logins = found_key(answer, "logins")
-    expect(isinstance(logins, list), f"list-logins answered no logins: {json.dumps(answer)[:600]}")
+    if not isinstance(logins, list):
+        return set()
     return {login["item"] for login in logins if login.get("name") == PASSWORD_TITLE}
 
 

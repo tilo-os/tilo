@@ -1849,7 +1849,18 @@ impl Core {
                 }
             }
             effect @ PasswordsEffect::SaveLogin { .. } => self.save_login(effect)?,
-            PasswordsEffect::ListLogins => {}
+            PasswordsEffect::ListLogins => {
+                // An empty list from a vault not open yet would read as an empty vault.
+                if let Some(why) = self
+                    .model
+                    .as_ref()
+                    .and_then(crate::PasswordsModel::unreachable)
+                {
+                    return Err(why);
+                }
+                // What the vault holds now is listed, not the rows the window last drew.
+                self.refresh_model();
+            }
             PasswordsEffect::Cancel => self.cancel_edit(),
             PasswordsEffect::Generate => {
                 if !self.is_editing() {

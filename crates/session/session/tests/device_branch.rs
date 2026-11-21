@@ -366,15 +366,23 @@ const MODEL_PROVIDERS: &str = "so.tilo.model-providers";
 const LOGIN: &str = "Branch mail";
 
 /// The logins Passwords on `device` lists, by name, as its own `list-logins` answers.
+/// Passwords refuses the list while its vault is still opening, so this asks until it lists.
 fn logins(device: &Device) -> Vec<String> {
-    let answer = device.app_act(PASSWORDS, "list-logins", &serde_json::json!({}));
-    let update = &answer["answer"]["receipt"]["update"];
-    assert_eq!(
-        update["state"], "succeeded",
-        "{} Passwords' list-logins: {answer}",
-        device.label
-    );
-    update["output"]["value"]["logins"]
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    let answer = loop {
+        let answer = device.app_act(PASSWORDS, "list-logins", &serde_json::json!({}));
+        if answer["answer"]["receipt"]["update"]["state"] == "succeeded" {
+            break answer;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} Passwords never listed its logins: {answer}\n{}",
+            device.label,
+            device.warnings()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+    answer["answer"]["receipt"]["update"]["output"]["value"]["logins"]
         .as_array()
         .into_iter()
         .flatten()
@@ -384,8 +392,8 @@ fn logins(device: &Device) -> Vec<String> {
 
 /// What a person keeps in their vault on one device is theirs on a machine copied from it: Ada
 /// saves a login through Passwords' own action with the host up, her laptop is copied and the copy
-/// re-keyed, and the copy, started with the host up as a branch is, lists that login and runs
-/// Model Providers' actions (`e2e-branch` S07).
+/// re-keyed, and the copy, started with the host up and the laptop booted beside it as a branch
+/// is, lists that login and runs Model Providers' actions (`e2e-branch` S07).
 #[test]
 fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     let ada = Person::new("Ada");
@@ -399,6 +407,11 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     show(&laptop, &site);
     laptop.open(PASSWORDS);
     laptop.wait_for_window(PASSWORDS);
+    // Saved once the window shows the vault, as a person sees it open before saving into it.
+    assert!(
+        logins(&laptop).is_empty(),
+        "a new person's vault starts empty"
+    );
     let saved = laptop.app_act(
         PASSWORDS,
         "save-login",
@@ -410,8 +423,10 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
         }),
     );
     assert_eq!(
-        saved["answer"]["receipt"]["update"]["state"], "succeeded",
-        "save-login: {saved}"
+        saved["answer"]["receipt"]["update"]["state"],
+        "succeeded",
+        "save-login: {saved}\n{}",
+        laptop.warnings()
     );
     assert!(logins(&laptop).contains(&LOGIN.to_owned()));
     laptop.open(MODEL_PROVIDERS);
@@ -429,13 +444,17 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     start(&mut copy, &site);
     // Opened once the host took the copy in: Passwords joins the workspace as the copy's own.
     wait_admitted(&copy, &site);
+    // The vault's keys are its readers', never the site's: the copy, a further device of Ada's,
+    // is let into them by the laptop, booted beside it as a branch's source boots beside it.
+    laptop.start();
     copy.open(PASSWORDS);
     copy.wait_for_window(PASSWORDS);
     let listed = logins(&copy);
     assert!(
         listed.contains(&LOGIN.to_owned()),
-        "the copy's Passwords lists {listed:?}, not the login its source saved\n{}",
-        copy.warnings()
+        "the copy's Passwords lists {listed:?}, not the login its source saved\n{}\nthe laptop warned:\n{}",
+        copy.warnings(),
+        laptop.warnings()
     );
     copy.open(MODEL_PROVIDERS);
     copy.wait_for_window(MODEL_PROVIDERS);
@@ -494,9 +513,9 @@ fn wait_admitted(device: &Device, site: &Site) {
 /// A copy whose windows come back before its host took it in holds them, and starts each once the
 /// host admitted the copy: its app joins the workspace as the copy's own. Ada leaves Passwords open
 /// on her laptop; the copy boots beside the site, as a branch boots beside its host, and restores
-/// it; Passwords lists the login the laptop saved. Started at once, before the host took the copy
-/// in, an app was refused the workspace for good and published nothing (`e2e-branch` S07-a,
-/// S07-b). Model Providers opened once admitted is
+/// it; Passwords lists the login the laptop, booted beside it again, saved. Started at once,
+/// before the host took the copy in, an app was refused the workspace for good and published
+/// nothing (`e2e-branch` S07-a, S07-b). Model Providers opened once admitted is
 /// [`a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions`]'s.
 #[test]
 fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
@@ -510,6 +529,11 @@ fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
     show(&laptop, &site);
     laptop.open(PASSWORDS);
     laptop.wait_for_window(PASSWORDS);
+    // Saved once the window shows the vault, as a person sees it open before saving into it.
+    assert!(
+        logins(&laptop).is_empty(),
+        "a new person's vault starts empty"
+    );
     let saved = laptop.app_act(
         PASSWORDS,
         "save-login",
@@ -521,8 +545,10 @@ fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
         }),
     );
     assert_eq!(
-        saved["answer"]["receipt"]["update"]["state"], "succeeded",
-        "save-login: {saved}"
+        saved["answer"]["receipt"]["update"]["state"],
+        "succeeded",
+        "save-login: {saved}\n{}",
+        laptop.warnings()
     );
 
     laptop.stop();
@@ -530,11 +556,14 @@ fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
     copy.start();
     wait_admitted(&copy, &site);
     copy.wait_for_window(PASSWORDS);
+    // The vault's keys are its readers', never the site's: the laptop lets the copy into them.
+    laptop.start();
     let listed = logins(&copy);
     assert!(
         listed.contains(&LOGIN.to_owned()),
-        "the copy's Passwords lists {listed:?}, not the login its source saved\n{}",
-        copy.warnings()
+        "the copy's Passwords lists {listed:?}, not the login its source saved\n{}\nthe laptop warned:\n{}",
+        copy.warnings(),
+        laptop.warnings()
     );
 }
 
