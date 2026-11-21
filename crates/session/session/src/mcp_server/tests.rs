@@ -1,4 +1,5 @@
 use super::*;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// An agent's `open` and `place` naming nothing to stand beside stand beside the conversation
 /// of its turn; one that names its own anchor, and every other action, keep their arguments.
@@ -53,11 +54,11 @@ fn the_shell_runtime_proves_it_holds_the_device_identity() {
     let store = CallerKey::derive(&[7; 32]).unwrap();
     let mut runtime = std::process::Command::new("sleep")
         .arg("30")
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let mut other = std::process::Command::new("sleep")
         .arg("30")
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let pid = runtime.id();
     let op = runtime_portal::workspace_terminal::OP;
@@ -116,7 +117,7 @@ fn the_shell_runtime_proves_it_holds_the_device_identity() {
 fn a_process_holding_the_device_key_is_hidden_from_the_session() {
     let mut shown = std::process::Command::new("sleep")
         .arg("30")
-        .spawn()
+        .spawn_locked()
         .unwrap();
     assert_eq!(shares_security_namespaces(shown.id()), Some(true));
     let _ = shown.kill();
