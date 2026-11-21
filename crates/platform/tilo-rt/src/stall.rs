@@ -41,9 +41,11 @@ pub const QUIET: Duration = Duration::from_secs(30);
 const LOOK: Duration = Duration::from_millis(500);
 
 /// The most of the stacks' text one report carries.
+#[cfg(target_os = "linux")]
 const MOST_STACK_TEXT: usize = 256 * 1024;
 
 /// The longest a stack reader may take before it is given up.
+#[cfg(target_os = "linux")]
 const STACK_READ: Duration = Duration::from_secs(20);
 
 #[cfg(not(target_family = "wasm"))]
