@@ -1313,6 +1313,14 @@ impl Instance {
     /// Show what a person's press made, and what search hits or agents asked the window to
     /// show.
     fn take_open_requests(&mut self) -> bool {
+        // An open asked for before the window shows its root waits for it, and is shown on the
+        // frame that opens the root: a window opened on a search hit is asked to show the hit as
+        // it starts, before it has read anything. Taken then, the ask would be dropped for want of
+        // a document, or opened as a page the root then closes as it opens, and the window would
+        // stand on the app's root either way.
+        let Some(host) = self.host().filter(|_| self.started) else {
+            return false;
+        };
         // What a press made comes to the front as the person's input does, and takes the
         // keyboard; a search hit or an agent's `open` moved no hand, and lands at once.
         let anchors: Vec<(crate::effects::OpenEffect, ui::Front, u64)> =
@@ -1335,9 +1343,6 @@ impl Instance {
         if anchors.is_empty() && shows.is_empty() {
             return false;
         }
-        let Some(host) = self.host() else {
-            return false;
-        };
         for (open, front, press) in anchors {
             // A hit names the published resource (`tl:<app>:<id>`) or the resource's id.
             let anchor = open.anchor();

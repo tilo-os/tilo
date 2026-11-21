@@ -904,6 +904,33 @@ fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
     );
 }
 
+/// A window opened on a search hit is asked to show the hit as it starts, before it has read the
+/// workspace, as Ctrl+Enter on a search row opens the task in a window of its own: the ask waits
+/// for the window's root and the window shows the task, never the app's root over it.
+#[test]
+fn a_window_asked_to_show_a_task_as_it_opens_shows_it_once_it_has_read_the_workspace() {
+    let _motion = ui::motion::testing::settled();
+    let title = "Sort the paper mail";
+    let first = staged(TASKS, "a busy week");
+    let hit = first
+        .index_deltas()
+        .into_iter()
+        .flat_map(|delta| delta.upsert)
+        .find(|entry| entry.title == title)
+        .unwrap_or_else(|| panic!("the workspace indexes {title:?}"))
+        .resource;
+    let chunks = super::cost::own(&first.instance().record().chunks());
+    let route = collaboration::RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut opening = Session::tasks_over_launched(&route, chunks, None);
+    opening.instance_mut().reveal(hit);
+    opening.settle();
+    assert_eq!(
+        opening.hosted().window_title(),
+        Some(title),
+        "the window opened on the task it was asked to show"
+    );
+}
+
 // ----- the Action API ----------------------------------------------------------------------
 
 /// What the host's operation labelled `label` answers an agent session given `arguments`.
