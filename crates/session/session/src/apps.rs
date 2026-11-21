@@ -210,6 +210,19 @@ pub(crate) struct TakenBack {
     pub(crate) killed: Vec<tilo_app_launch::kept::KeptLaunch>,
 }
 
+/// What starts the process of `launch`'s app. A hosted app's file reaches its window's instance as
+/// content, never its command line: the process it starts is the app's, and the file rides with
+/// the instance.
+fn process_launch(launch: &Launch, hosted: bool) -> Launch {
+    match (hosted, launch) {
+        (true, Launch::Content { app, .. }) => Launch::Package {
+            app: app.clone(),
+            open: None,
+        },
+        _ => launch.clone(),
+    }
+}
+
 /// A window whose tab the session asked the shell for: the launch that starts it once the shell asks
 /// back, and how — the item it shows when one was named, whether it is a window of its own beside
 /// the app's, the workspace it was launched into when that is not where the shell made its tab, and
@@ -1838,16 +1851,7 @@ impl Apps {
             .map_err(|error| failed(error.to_string()))?;
         let launch = launch.as_ref();
         let opens = window_opens(launch, reveal, hosted).map_err(failed)?;
-        // A hosted app's file reaches its window's instance as content, never its command line: the
-        // process it starts is the app's, and the file rides with the instance.
-        let planned_launch = match (hosted, launch) {
-            (true, Launch::Content { app, .. }) => Launch::Package {
-                app: app.clone(),
-                open: None,
-            },
-            _ => launch.clone(),
-        };
-        let planned_launch = &planned_launch;
+        let planned_launch = &process_launch(launch, hosted);
         // A window of a hosted app whose tab this session named itself, which happens only in a
         // session with no shell behind it: the tab is the window's instance, and it is the only
         // name the window has.
@@ -1902,18 +1906,13 @@ impl Apps {
             Ok(reservation) => reservation,
         };
         if hosted {
-            // The process is the app's windows alone: its link carries each window's patch
-            // connection, and the host of its workspace and author runs their instances.
-            if reservation.is_none() || !links.host_instances(&planned.app, &workspace.id) {
-                tilo_startup_metrics::launch_failed(timed);
-                return Err(ApiError::Failed(format!(
-                    "{} has no window link, which its hosted windows open through",
-                    planned.app
-                )));
-            }
-            planned
-                .args
-                .push(tilo_app_launch::tilolang_processes::PROCESS_ARG.to_owned());
+            Self::hosted_through_link(
+                &links,
+                &mut planned,
+                workspace,
+                reservation.is_some(),
+                timed,
+            )?;
         }
         tilo_startup_metrics::launch_phase(app, "routed");
         let link = links.hold(&planned.app, &workspace.id);
@@ -1998,6 +1997,29 @@ impl Apps {
 
     /// Plan `launch` against `workspace`, reporting the launch's failure for the timing it was
     /// opened for when it cannot be planned.
+    /// A hosted app's process is its windows alone: its link carries each window's patch
+    /// connection, and the host of its workspace and author runs their instances. Without a
+    /// reserved link the window has nothing to open through.
+    fn hosted_through_link(
+        links: &Links,
+        planned: &mut Planned,
+        workspace: &Workspace,
+        reserved: bool,
+        timed: u64,
+    ) -> Result<(), ApiError> {
+        if !reserved || !links.host_instances(&planned.app, &workspace.id) {
+            tilo_startup_metrics::launch_failed(timed);
+            return Err(ApiError::Failed(format!(
+                "{} has no window link, which its hosted windows open through",
+                planned.app
+            )));
+        }
+        planned
+            .args
+            .push(tilo_app_launch::tilolang_processes::PROCESS_ARG.to_owned());
+        Ok(())
+    }
+
     fn planned_or_failed(
         &self,
         launch: &Launch,
