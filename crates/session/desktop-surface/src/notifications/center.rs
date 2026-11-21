@@ -112,26 +112,6 @@ pub struct CenterMetrics {
     theme: Option<std::sync::Arc<Theme>>,
 }
 
-impl From<(f64, f64)> for CenterMetrics {
-    fn from(lines: (f64, f64)) -> Self {
-        Self {
-            lines,
-            title_width: 0.0,
-            cleared_width: 0.0,
-            back_width: 2.0 * qs::TARGET,
-            reader_back_width: 3.0 * qs::TARGET,
-            clear_width: 2.0 * qs::TARGET,
-            undo_width: 2.0 * qs::TARGET,
-            height: qs::TARGET,
-            choice_height: qs::TARGET,
-            choice_gap: qs::RELATED_GAP,
-            choice_lead: qs::RELATED_GAP,
-            choice_foot: qs::CONTROL_PAD,
-            theme: None,
-        }
-    }
-}
-
 impl From<&CenterMetrics> for CenterMetrics {
     fn from(metrics: &CenterMetrics) -> Self {
         metrics.clone()
@@ -368,8 +348,7 @@ impl CenterLayout {
         (line(TextRole::Caption), line(TextRole::Label))
     }
 
-    /// Use [`Self::metrics`] for measured shared actions. Legacy line-box tuples from
-    /// [`Self::type_lines`] remain accepted.
+    /// Use [`Self::metrics`] for measured shared actions.
     pub fn new(panel: Rect, metrics: impl Into<CenterMetrics>) -> Self {
         let actions = metrics.into();
         Self {
@@ -2581,8 +2560,26 @@ mod tests {
         notification
     }
 
+    fn line_metrics(lines: (f64, f64)) -> CenterMetrics {
+        CenterMetrics {
+            lines,
+            title_width: 0.0,
+            cleared_width: 0.0,
+            back_width: 2.0 * qs::TARGET,
+            reader_back_width: 3.0 * qs::TARGET,
+            clear_width: 2.0 * qs::TARGET,
+            undo_width: 2.0 * qs::TARGET,
+            height: qs::TARGET,
+            choice_height: qs::TARGET,
+            choice_gap: qs::RELATED_GAP,
+            choice_lead: qs::RELATED_GAP,
+            choice_foot: qs::CONTROL_PAD,
+            theme: None,
+        }
+    }
+
     fn layout() -> CenterLayout {
-        CenterLayout::new(Rect::new(0.0, 0.0, 360.0, 560.0), (12.0, 14.0))
+        CenterLayout::new(Rect::new(0.0, 0.0, 360.0, 560.0), line_metrics((12.0, 14.0)))
     }
 
     tilo_test_env::scenario! {
