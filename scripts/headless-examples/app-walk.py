@@ -511,7 +511,8 @@ class Walk:
 
     def op_wait_for(self, value) -> dict:
         """Wait for what a person waits for before going on: a control of the
-        app's, its window, the actions it publishes, or a note it holds."""
+        app's, its window, the actions it publishes, a note it holds, or the
+        title its window wears (the note it shows)."""
         if value == "window":
             until_value(f"the window of {self.v['id']}", self.window_of, 120)
             return {"window": True}
@@ -535,9 +536,47 @@ class Walk:
                 return None if count is None else {"held": count}
 
             return {"notes": until_value("the app to read its own notes", held_now, 30)["held"]}
+        if isinstance(value, dict) and "title" in value:
+            # The window names what it shows: the note open reads in the bar of
+            # the desktop, where a person sees which note their window is on.
+            wanted = value["title"]
+            until_value(f"the window to name {wanted!r}",
+                        lambda: (self.window_of() or {}).get("title") == wanted, 30)
+            return {"title": wanted}
         selector = pick(value, self.variant)
         until_value(f"the control {selector!r}", lambda: control(self.session, selector), 30)
         return {"control": selector}
+
+    def op_tree(self, value) -> dict:
+        """What a person sees of the notes' tree: `{"rows": [...]}` that each of
+        them is a row the window draws, all at one leading edge (rows at the top
+        of the tree, in the order they read), and `{"under": [child, parent]}`
+        that the child stands indented under the parent — the note an action
+        made under the note it was made in. A row that is not drawn is the
+        finding: the app may hold what its window does not show."""
+        def drawn(name: str) -> dict:
+            return until_value(
+                f"the row {name!r} in the window",
+                lambda: control(self.session, name), 30)
+
+        if "under" in value:
+            child_name, parent_name = value["under"]
+            child = drawn(child_name)
+            parent = drawn(parent_name)
+            cx, cy = child["rect"][0], child["rect"][1]
+            px, py = parent["rect"][0], parent["rect"][1]
+            if not (cx > px and cy > py):
+                raise Failed(
+                    f"{child_name!r} is not drawn indented under {parent_name!r}: "
+                    f"its row stands at {child['rect']}, the note's at {parent['rect']}")
+            return {"under": value["under"], "child": child["rect"], "parent": parent["rect"]}
+        rows = [drawn(name) for name in value["rows"]]
+        lefts = sorted({round(row["rect"][0]) for row in rows})
+        if len(lefts) != 1:
+            raise Failed(
+                f"the rows {value['rows']!r} are not drawn at one leading edge: "
+                f"{[(row.get('name'), row['rect']) for row in rows]}")
+        return {"rows": value["rows"], "left": lefts[0], "rects": [row["rect"] for row in rows]}
 
     def op_search(self, value) -> dict:
         """Find a note the way a person does: the system's search, opened on the

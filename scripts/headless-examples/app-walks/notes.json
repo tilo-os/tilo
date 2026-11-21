@@ -24,6 +24,9 @@
           "wait_for": "actions"
         },
         {
+          "wait_for": "New note"
+        },
+        {
           "targets": true
         }
       ]
@@ -150,25 +153,28 @@
     {
       "id": "sub-note",
       "said": "Make a sub-note under it",
-      "ops": {
-        "rust": [
-          {
-            "chord": [
-              "Control",
-              "Shift",
-              "n"
+      "ops": [
+        {
+          "chord": [
+            "Control",
+            "Shift",
+            "n"
+          ]
+        },
+        {
+          "tree": {
+            "under": [
+              "Untitled",
+              "Trip to Lisbon"
             ]
           }
-        ],
-        "tl": [
-          {
-            "press_any": [
-              "New sub-note",
-              "tl:so.tilo.lang.notes:root-v7cub7aw\u001fnew_child"
-            ]
+        },
+        {
+          "wait_for": {
+            "title": "Untitled"
           }
-        ]
-      }
+        }
+      ]
     },
     {
       "id": "tag",
@@ -291,6 +297,19 @@
           },
           {
             "questions": true
+          },
+          {
+            "wait_for": {
+              "title": "Lisbon in May"
+            }
+          },
+          {
+            "tree": {
+              "rows": [
+                "Trip to Lisbon",
+                "Lisbon in May"
+              ]
+            }
           }
         ]
       }
