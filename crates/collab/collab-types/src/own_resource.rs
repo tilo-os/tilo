@@ -162,7 +162,7 @@ pub fn own_kinds(app: &str) -> Vec<String> {
         "so.tilo.lang.views" => &["tl.so.tilo.lang.views"],
         "so.tilo.shell" => &["tl.so.tilo.shell"],
         // The tilolang Mail's record, and the native Mail's, which its migration carries.
-        tilo_app_id::apps::MAIL | "dev.tilo.mail" => &[
+        "so.tilo.mail" | "dev.tilo.mail" => &[
             "tl.so.tilo.mail",
             "mail.mailbox",
             "mail.trusted-senders",
@@ -206,7 +206,7 @@ pub fn own_kinds(app: &str) -> Vec<String> {
             | "dev.tilo.contacts"
             | tilo_app_id::apps::FEEDS
             | "dev.tilo.feeds"
-            | tilo_app_id::apps::MAIL
+            | "so.tilo.mail"
             | "dev.tilo.mail"
             | "so.tilo.notes"
             | "dev.tilo.notes"

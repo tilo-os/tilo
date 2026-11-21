@@ -703,7 +703,7 @@ pub fn starting_point_rank(package_id: &str) -> i32 {
         apps::STORE => 85,
 
         apps::CALENDAR => 74,
-        apps::MAIL => 73,
+        "so.tilo.mail" => 73,
         apps::CONTACTS => 72,
         apps::CHAT => 71,
         apps::CALCULATOR => 70,

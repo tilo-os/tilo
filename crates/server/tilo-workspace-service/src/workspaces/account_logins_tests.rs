@@ -36,7 +36,7 @@ const ADDRESS: &str = "team@example.test";
 /// Its password: made up, and nobody's.
 const PASSWORD: &str = "made-up team password";
 /// The app whose engine signs in.
-const MAIL: &str = tilo_app_id::apps::MAIL;
+const MAIL: &str = "so.tilo.mail";
 
 /// A stand-in mail server taking the account's one login, and the account's settings that
 /// name it.

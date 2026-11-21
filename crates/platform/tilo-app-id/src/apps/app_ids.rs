@@ -33,7 +33,6 @@ first_party_apps! {
     IMAGER => "so.tilo.imager",
     LAUNCHER => "so.tilo.launcher",
     LOGS => "so.tilo.logs",
-    MAIL => "so.tilo.mail",
     MAPS => "so.tilo.maps",
     MESSAGES => "so.tilo.messages",
     MODEL_PROVIDERS => "so.tilo.model-providers",

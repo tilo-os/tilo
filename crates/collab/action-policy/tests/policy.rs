@@ -41,7 +41,7 @@ fn answer(grants: &[Grant], node: &TreePath, kind: ActionKind) -> Answer {
 
 /// The workspace's mail and vault resources, at the nodes every reader decides them on.
 fn workspace_mail_and_vault() -> Vec<TreePath> {
-    let mail = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
+    let mail = TreePath::workspace("r").app("so.tilo.mail");
     vec![
         mail.clone().resource(""),
         mail.clone().kind("mail.mailbox").resource(""),
@@ -125,7 +125,7 @@ fn an_owner_closes_the_workspace_vault_and_shares_it_with_one_member() {
 
 #[test]
 fn an_agent_reaches_workspace_mail_through_a_grant_scoped_to_mail() {
-    let mail = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
+    let mail = TreePath::workspace("r").app("so.tilo.mail");
     let key = Grantee::member(tilo_action_policy::MemberId::Agent("key".into()));
     let mut grants = roles::workspace_role_grants("r", &alice());
     let mailbox = mail.clone().resource("");

@@ -43,7 +43,7 @@ pub(super) struct Store {
 impl Store {
     /// The workspace's mail accounts, in Mail.
     pub(super) const MAIL: Self = Self {
-        app: tilo_app_id::apps::MAIL,
+        app: "so.tilo.mail",
         kind: tilo_actions::remote::person_accounts::PROVIDER,
     };
     /// The workspace's calendar accounts, in Calendar: only agents' hosts keep them.

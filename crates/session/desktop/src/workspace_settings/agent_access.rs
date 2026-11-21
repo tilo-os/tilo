@@ -350,7 +350,7 @@ mod tests {
 
     const OWNER: &str = "owner-user";
     const AGENT: &str = "scribe";
-    const MAIL: &str = tilo_app_id::apps::MAIL;
+    const MAIL: &str = "so.tilo.mail";
 
     /// A workspace where the agent may change it all and asks before reaching outside.
     fn ws() -> Workspace {

@@ -25,10 +25,10 @@ pub const SCENARIOS: &[&str] = &[
     "library", "editor", "review", "saved", "empty", "blocks", "drafted", "picker",
 ];
 
-use ui::apps::MAIL;
-
 /// The app that keeps the workspace's notes.
 const NOTES: &str = "so.tilo.notes";
+/// The app that keeps the workspace's mail.
+const MAIL: &str = "so.tilo.mail";
 fn resource(id: &str, kind: &str, label: &str) -> CatalogueResource {
     CatalogueResource {
         id: id.into(),

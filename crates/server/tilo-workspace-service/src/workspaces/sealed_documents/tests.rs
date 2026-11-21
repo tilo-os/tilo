@@ -2971,7 +2971,7 @@ async fn a_document_that_needs_keys_of_its_own_opens_its_group_for_a_read() {
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Demo").await.unwrap();
     let route = tilo_peer_state::document_frame::DocumentRoute {
-        app_id: tilo_app_id::apps::MAIL.into(),
+        app_id: "so.tilo.mail".into(),
         cluster_id: created.workspace,
         document: tilo_action_policy::roles::WORKSPACE_MAIL_COPIES_DOCUMENT.into(),
     };

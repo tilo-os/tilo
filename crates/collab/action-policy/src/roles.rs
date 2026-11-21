@@ -97,7 +97,7 @@ pub fn protected_resource_kind(app: &str, document: &str) -> Option<&'static str
         }
         // The tilolang Mail keeps its record where the native Mail kept its mailbox; the native
         // app's other documents keep their kinds, so its carrying migration still reads them.
-        (tilo_app_id::apps::MAIL | "dev.tilo.mail", document) => match document {
+        ("so.tilo.mail" | "dev.tilo.mail", document) => match document {
             "" => Some("tl.so.tilo.mail"),
             WORKSPACE_MAIL_COPIES_DOCUMENT => Some("mail.copies"),
             WORKSPACE_MAIL_TRUST_DOCUMENT => Some("mail.trusted-senders"),

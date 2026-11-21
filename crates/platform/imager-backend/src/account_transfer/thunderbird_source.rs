@@ -43,7 +43,7 @@ const CACHE_VERSION: u32 = 1;
 /// than read whole or overwritten.
 const MAX_CACHE: u64 = 256 * 1024 * 1024;
 const CACHE_ATTEMPTS: usize = 3;
-use tilo_app_id::apps::MAIL as MAIL_APP;
+const MAIL_APP: &str = "so.tilo.mail";
 const MAIL_ARTIFACT: Frame = Frame::new(
     b"TILOTB01",
     b"tilo-thunderbird-password/v1\0",
