@@ -380,6 +380,51 @@ impl HeldAccess {
 /// The tree a view publishes, shared with what reads it.
 type PublishedTree = std::rc::Rc<Vec<tilo_actions::ResourceSpec>>;
 
+/// What a listing walks ([`Replica::survey_page_of`]): the tree the view
+/// publishes, kept as the view keeps it when a listing keeps its place in it,
+/// or the level of a chain as its parts publish it.
+#[derive(Clone, Copy)]
+enum Listed<'a> {
+    Tree(&'a [tilo_actions::ResourceSpec], Option<&'a PublishedTree>),
+    Chain(&'a ui::framework::ChainLevel),
+}
+
+/// The level a listing walks: resources of the published tree, or a chain's
+/// items, each built when the walk reaches it.
+#[derive(Clone, Copy)]
+enum Level<'a> {
+    Tree(&'a [tilo_actions::ResourceSpec]),
+    Chain(&'a ui::framework::ChainLevel),
+}
+
+impl Level<'_> {
+    /// How many resources the level holds.
+    fn len(self) -> usize {
+        match self {
+            Self::Tree(level) => level.len(),
+            Self::Chain(level) => level.len(),
+        }
+    }
+}
+
+/// What a listing that keeps its place counted ([`SurveyProgress`]): the
+/// tree or chain level as it was published, so a later page counts on only
+/// from the same one.
+enum Walked {
+    Tree(PublishedTree),
+    Chain(ui::framework::ChainLevel),
+}
+
+impl Walked {
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Tree(one), Self::Tree(other)) => std::rc::Rc::ptr_eq(one, other),
+            (Self::Chain(one), Self::Chain(other)) => one.same(other),
+            _ => false,
+        }
+    }
+}
+
 /// The parameter an effect is told where on a device to write by. An agent
 /// is never offered it, so what the effect makes is kept as content.
 pub const PATH_PARAM: &str = "path";
@@ -825,16 +870,26 @@ impl Replica {
         // answered from the view as it stands: an action just done leaves
         // the view to lay out its change when it is read, and what the
         // lookup names is there already unless only that frame would add
-        // it. A listing reads the view laid out.
+        // it. A listing reads the view laid out, or a chain's level as its
+        // parts publish it, which needs no frame.
         if (query.target.is_some() || query.resource_name.is_some()) && !self.view.laid_out() {
             let tree = self.view.published_without_layout();
-            let without_layout = self.survey_page_of(tree.as_slice(), None, true, query, window);
+            let listed = Listed::Tree(tree.as_slice(), None);
+            let without_layout = self.survey_page_of(listed, true, query, window);
             if without_layout.0 > 0 {
                 return without_layout;
             }
         }
+        // A chain's level is walked as its parts publish it: after a write,
+        // the view's whole tree, every item of every part, would be laid out
+        // and built again for a page of forty.
+        if let Some(parent) = query.parent_resource.as_deref()
+            && let Some(level) = self.view.chain_level(parent)
+        {
+            return self.survey_page_of(Listed::Chain(&level), false, query, window);
+        }
         let tree = self.view.published();
-        self.survey_page_of(tree.as_slice(), Some(&tree), false, query, window)
+        self.survey_page_of(Listed::Tree(tree.as_slice(), Some(&tree)), false, query, window)
     }
 
     /// The page a lookup `query` asks for, answered from the one resource it
@@ -936,9 +991,10 @@ impl Replica {
         rows
     }
 
-    /// [`Self::survey_page`] of `resources`, the tree the view publishes:
-    /// `identity` the tree as the view keeps it, for a plain listing that
-    /// keeps its place in it ([`SurveyProgress`]); `without_layout` when the
+    /// [`Self::survey_page`] of what is `listed`: the tree the view publishes,
+    /// with the tree as the view keeps it for a plain listing that keeps its
+    /// place in it ([`SurveyProgress`]), or a chain's level as its parts
+    /// publish it, whose place is kept the same way; `without_layout` when the
     /// view has not laid out what changed, which then reads past the
     /// published pages only the items a name finds.
     #[expect(
@@ -948,8 +1004,7 @@ impl Replica {
     )]
     fn survey_page_of(
         &self,
-        resources: &[tilo_actions::ResourceSpec],
-        identity: Option<&PublishedTree>,
+        listed: Listed<'_>,
         without_layout: bool,
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
@@ -959,19 +1014,28 @@ impl Replica {
         // names (the top for none), so the resources further down, a
         // notebook's thousands of notes or a chain's issues, are not walked.
         let parent = query.parent_resource.as_deref().unwrap_or("");
-        let Some((level, level_in_chain)) = level_of(resources, parent) else {
-            return (0, Vec::new());
+        let (resources, identity) = match listed {
+            Listed::Tree(resources, identity) => {
+                (resources, identity.map(|tree| Walked::Tree(std::rc::Rc::clone(tree))))
+            }
+            Listed::Chain(level) => (&[][..], Some(Walked::Chain(level.clone()))),
+        };
+        let (level, level_in_chain) = match listed {
+            Listed::Tree(..) => match level_of(resources, parent) {
+                Some((level, in_chain)) => (Level::Tree(level), in_chain),
+                None => return (0, Vec::new()),
+            },
+            Listed::Chain(level) => (Level::Chain(level), true),
         };
         // A level a chain keeps is all of its items, so no set of them is
         // built; elsewhere only the chains among them are.
-        let mut in_chains: std::collections::HashSet<String> = if level_in_chain {
-            std::collections::HashSet::new()
-        } else {
-            level
+        let mut in_chains: std::collections::HashSet<String> = match level {
+            Level::Tree(level) if !level_in_chain => level
                 .iter()
                 .filter(|child| ui::resource::chain_of_resource_id(child.id.as_str()).is_some())
                 .map(|child| child.id.as_str().to_owned())
-                .collect()
+                .collect(),
+            _ => std::collections::HashSet::new(),
         };
         // A plain listing keeps its place: the rows each resource of the
         // level admits are counted once, and a page starts at the resource
@@ -979,8 +1043,8 @@ impl Replica {
         // and not every resource before it.
         let plain = identity.is_some() && plain_listing(query, self.app_id());
         let mut kept = if plain { self.walked.take() } else { None };
-        if let (Some(progress), Some(tree)) = (&kept, identity)
-            && !(std::rc::Rc::ptr_eq(&progress.tree, tree)
+        if let (Some(progress), Some(tree)) = (&kept, &identity)
+            && !(progress.tree.same(tree)
                 && progress.parent == parent
                 && progress.can_render == can_render)
         {
@@ -1081,12 +1145,12 @@ impl Replica {
         let mut complete = level_complete;
         let mut counted: Vec<usize> = Vec::new();
         if !level_complete {
-            let items = level.get(start..).unwrap_or_default();
+            let items = level.len().saturating_sub(start);
             let mut item_rows = 0usize;
             let mut previous: Option<usize> = None;
-            complete = tilo_actions::api::survey_placed_level_items(
-                items,
-                parent,
+            complete = self.survey_level_from(
+                level,
+                (start, parent),
                 &mut |local, placed| {
                     if previous != Some(local) {
                         // The resources before this one admitted what they did;
@@ -1112,7 +1176,7 @@ impl Replica {
                 if previous.is_some() {
                     counted.push(item_rows);
                 }
-                counted.resize(items.len(), 0);
+                counted.resize(items, 0);
             }
         }
         // The items past the published pages, built only as far as the page
@@ -1207,7 +1271,10 @@ impl Replica {
             // level's own items offered each. A window is counted in rows, and an
             // issue offers a couple of dozen, so building as many items as
             // there are rows left would build every item to the end.
-            let rows_each = level_rows.checked_div(level.len()).unwrap_or(1).max(1);
+            let rows_each = level_rows
+                .checked_div(level.len())
+                .unwrap_or(1)
+                .max(1);
             while complete && walk.total < walk.end && next_child < past_len {
                 // The items the rows the page still needs take: each item may
                 // offer fewer, so the walk asks again from where this window
@@ -1269,7 +1336,17 @@ impl Replica {
             // A resource of the level that offers nothing itself but holds
             // what does stands in a row of its own, which a caller reading a
             // level at a time goes on into.
-            for child in level {
+            for at in 0..level.len() {
+                // A chain's item that offers is not built again to say so.
+                if let Level::Chain(chain) = level
+                    && chain.id(at).is_some_and(|id| walk.offering.contains(id))
+                {
+                    continue;
+                }
+                let Some(child) = self.level_item(level, at) else {
+                    continue;
+                };
+                let child = child.as_ref();
                 if !walk.offering.contains(child.id.as_str())
                     && self.offers_below(
                         child,
@@ -1316,7 +1393,7 @@ impl Replica {
             counts.extend(counted.iter().copied());
             let rows_before = start_total.saturating_add(counted.iter().copied().sum::<usize>());
             *self.walked.borrow_mut() = Some(SurveyProgress {
-                tree: std::rc::Rc::clone(tree),
+                tree,
                 parent: parent.to_owned(),
                 can_render,
                 counts,
@@ -1329,6 +1406,50 @@ impl Replica {
             });
         }
         (walk.total, walk.rows)
+    }
+
+    /// The resource at `at` of `level`, as the member may reach it: a chain's
+    /// item is built only here, when the walk reaches it.
+    fn level_item<'a>(
+        &self,
+        level: Level<'a>,
+        at: usize,
+    ) -> Option<std::borrow::Cow<'a, tilo_actions::ResourceSpec>> {
+        match level {
+            Level::Tree(level) => level.get(at).map(std::borrow::Cow::Borrowed),
+            Level::Chain(level) => self
+                .view
+                .chain_level_item(level, at)
+                .map(std::borrow::Cow::Owned),
+        }
+    }
+
+    /// [`tilo_actions::api::survey_placed_level_items`] of `level` from its
+    /// `start`th resource on, each placed under `parent` and told to `visit`
+    /// with its index counted from `start`: a chain's items are built one at
+    /// a time as the walk reaches them, and none past where it stopped.
+    fn survey_level_from(
+        &self,
+        level: Level<'_>,
+        (start, parent): (usize, &str),
+        visit: &mut dyn FnMut(usize, tilo_actions::api::PlacedAction) -> bool,
+    ) -> bool {
+        match level {
+            Level::Tree(level) => tilo_actions::api::survey_placed_level_items(
+                level.get(start..).unwrap_or_default(),
+                parent,
+                visit,
+            ),
+            Level::Chain(chain) => (start..chain.len()).all(|at| {
+                self.level_item(level, at).is_none_or(|item| {
+                    tilo_actions::api::survey_placed_level_items(
+                        std::slice::from_ref(item.as_ref()),
+                        parent,
+                        &mut |_, placed| visit(at.saturating_sub(start), placed),
+                    )
+                })
+            }),
+        }
     }
 
     /// Whether anything below `resource` is offered ([`Self::offered`]), its
@@ -1990,8 +2111,8 @@ impl SurveyWalk<'_> {
 /// ended instead of at the level's first resource. Kept for the published
 /// tree it counted; a change to that tree drops it.
 struct SurveyProgress {
-    /// The published tree the counts are of.
-    tree: PublishedTree,
+    /// The published tree, or chain level, the counts are of.
+    tree: Walked,
     /// The level listed: the resource whose children it holds (`""` the top).
     parent: String,
     /// Whether this device renders rows, which decides what is admitted.

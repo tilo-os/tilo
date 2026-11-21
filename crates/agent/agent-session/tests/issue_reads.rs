@@ -320,8 +320,8 @@ fn an_issue_named_by_its_id_is_acted_on_without_building_the_tree() {
 }
 
 /// A tracker listed again by a member whose access was read again since, unchanged, lists
-/// from the tree it published the first time: the workspace reads a caller's access again every
-/// half minute, and taking the same access in again laid the view out and built its whole
+/// without laying its view out or building its tree: the workspace reads a caller's access again
+/// every half minute, and taking the same access in again laid the view out and built its whole
 /// tree, which for a tracker of thousands of issues cost the next listing most of its time.
 #[test]
 fn a_tracker_listed_again_after_its_access_is_read_again_reuses_its_tree() {
@@ -384,8 +384,8 @@ fn a_tracker_listed_again_after_its_access_is_read_again_reuses_its_tree() {
     assert!(first >= 20, "every issue is listed: {first} rows");
     assert_eq!(
         built(&built_first).0,
-        1,
-        "the first listing builds the tree"
+        0,
+        "the first listing walks the chain's level, not the tree the view publishes"
     );
 
     // The workspace reads the member's access again a minute later: nothing of it moved.

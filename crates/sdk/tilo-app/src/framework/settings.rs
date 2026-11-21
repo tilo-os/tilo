@@ -552,6 +552,17 @@ impl ViewStorage {
             .unwrap_or_default()
     }
 
+    /// The chain `id` as it publishes its items, shared: the nodes of the parts it holds,
+    /// built again only for a part that changed, without the frame of the view or the rest of
+    /// what it publishes. `None` for a chain the views did not open, or one another provider
+    /// keeps, which is built whole for that provider to name on every action.
+    pub(crate) fn chain_published(&self, id: &str) -> Option<ui_core::published::SharedResource> {
+        if self.kept_by.borrow().contains_key(id) {
+            return None;
+        }
+        self.chain_api(id).map(|api| api.publish_shared())
+    }
+
     /// The chain `id`, among the chains the views opened.
     fn chain_api(&self, id: &str) -> Option<Rc<dyn super::resources::ResourceApi>> {
         self.chains.apis().into_iter().find(|api| api.id() == id)

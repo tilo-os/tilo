@@ -46,6 +46,8 @@ tilo_agent_session::app_worker!();
 mod action_cost;
 #[path = "app_coverage.rs"]
 mod app_coverage;
+#[path = "chain_listing.rs"]
+mod chain_listing;
 #[path = "chain_reads.rs"]
 mod chain_reads;
 #[path = "empty_state_actions.rs"]

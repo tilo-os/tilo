@@ -55,6 +55,41 @@ impl ActionTransport for Landed {
     }
 }
 
+/// The items of a chain's level as its parts publish them
+/// ([`AttachedView::chain_level`]), in the order a listing walks them: each
+/// is made a resource only when a page reaches it
+/// ([`AttachedView::chain_level_item`]).
+#[derive(Clone)]
+pub struct ChainLevel(ui_core::published::SharedResource);
+
+impl ChainLevel {
+    /// How many items the level holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.children().len()
+    }
+
+    /// The id of the item at `at`, read without building it.
+    #[must_use]
+    pub fn id(&self, at: usize) -> Option<&str> {
+        self.0.children().as_slice().get(at).map(ui_core::published::SharedResource::id)
+    }
+
+    /// Whether the level holds no item.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.children().is_empty()
+    }
+
+    /// Whether `other` is this level as it was published, nothing in it
+    /// changed since: what a listing keeping its place from one page to the
+    /// next compares.
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+
 /// The tree an [`AttachedView`] published, and the state it was published
 /// in: kept until that state moves.
 struct Published {
@@ -730,6 +765,41 @@ impl AttachedView {
             .into_iter()
             .filter_map(|resource| self.permitted(resource))
             .collect()
+    }
+
+    /// The level the chain `parent` keeps, as its parts publish it, without
+    /// a frame of the view or the tree the view publishes: after a write, a
+    /// page of the chain's listing builds the part that changed and the items
+    /// it shows ([`Self::chain_level_item`]), not the whole chain, however
+    /// many items it holds. `None` when no chain the view opened is
+    /// `parent`, or another provider keeps it.
+    #[must_use]
+    pub fn chain_level(&self, parent: &str) -> Option<ChainLevel> {
+        super::chain_of_resource_id(parent)?;
+        let lookup = |frame: &mut FrameHarness| {
+            frame
+                .widget_mut::<super::root::ResourceRoot>()
+                .and_then(|root| root.storage.chain_published(parent))
+        };
+        let mut found = lookup(&mut self.frame.borrow_mut());
+        if found.is_none() && self.unsettled.get() {
+            // A chain only a view opens: lay the view out once.
+            drop(self.frame());
+            found = lookup(&mut self.frame.borrow_mut());
+        }
+        found.map(ChainLevel)
+    }
+
+    /// The item at `at` of `level`, with what it holds, as the member may
+    /// reach it: `None` past the level's end or when nothing of it is theirs.
+    #[must_use]
+    pub fn chain_level_item(
+        &self,
+        level: &ChainLevel,
+        at: usize,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        let item = level.0.children().as_slice().get(at)?.to_resource();
+        self.permitted(item)
     }
 
     /// The chains the view opened that `name` names at the app's own level,
