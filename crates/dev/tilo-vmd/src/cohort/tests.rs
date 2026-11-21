@@ -91,6 +91,9 @@ fn runtime(layer: &Path, work: &Path, case: &str) -> String {
         if matches!(case, "pair" | "membership_missing") {
             apps.push("so.tilo.sibling".into());
         }
+        if case.starts_with("tilolang") {
+            apps.push("so.tilo.lang.fixture".into());
+        }
         fs::write(
             &membership,
             serde_json::to_vec(&super::SystemMembership {
@@ -157,6 +160,131 @@ fn engine(layer: &Path, work: &Path, case: &str) {
     pin(layer, "browser-runtime-publisher.hex", &trusted);
 }
 
+/// The tilolang runtime a package executes, beside the toolkit at the version
+/// its packages name: `bin/tilolang-app`, signed by the publisher that signed
+/// the toolkit (unless the case says otherwise).
+fn tilolang_runtime(layer: &Path, work: &Path, case: &str) -> String {
+    let identity = if case == "tilolang_publisher" {
+        let other = work.join("other-identity.json");
+        fs::write(
+            &other,
+            serde_json::json!({"secret_key_hex": "43".repeat(32)}).to_string(),
+        )
+        .unwrap();
+        other
+    } else {
+        work.join("identity.json")
+    };
+    let binary = work.join("tilolang-app");
+    fs::write(&binary, elf(&["libruntime_dylib.so"], false)).unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    let version = "0.1.0+tilolang";
+    runtime_bundle::build_binaries_bundle(
+        &layer.join("usr/lib/tilo-runtime").join(version),
+        version,
+        Some(std::env::consts::ARCH),
+        Some(&identity),
+        &[binary],
+    )
+    .unwrap();
+    version.to_owned()
+}
+
+/// A tilolang package as `tilolang build` signs it: its entrypoint executes the
+/// tilolang runtime's binary, and its payload is the module that runtime runs.
+fn tilolang_package(
+    layer: &Path,
+    work: &Path,
+    toolkit: &str,
+    runtime: &str,
+    case: &str,
+) -> InstalledPackage {
+    let name = "lang-fixture";
+    let id = "so.tilo.lang.fixture";
+    let payload = work.join("tilolang-payload");
+    fs::create_dir_all(&payload).unwrap();
+    fs::write(payload.join("app.ids"), b"# fixture ids\n").unwrap();
+    if case != "tilolang_module" {
+        fs::write(payload.join("app.wasm"), b"\0asm fixture module").unwrap();
+    }
+    let source = format!(
+        r#"
+[package]
+id = "{id}"
+kind = "app"
+version = "0.1.0"
+runtime = "tilo-runtime/{toolkit}"
+optional-runtimes = ["tilolang/{runtime}"]
+
+[package.isa]
+x86_64 = "baseline"
+aarch64 = "aarch64"
+
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "mount"]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+runtime = "tilolang/{runtime}"
+bin  = "bin/tilolang-app"
+type = "gui"
+"#,
+        "00".repeat(32)
+    );
+    let identity = SigningIdentity::from_seed(&[23; 32]);
+    let publisher = hex::encode(identity.public_key_bytes());
+    let mut manifest = Manifest::from_toml_str(&source).unwrap();
+    manifest.publisher.identity = format!("ed25519:{publisher}");
+    let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+    let store = layer.join("usr/share/tilo-apps");
+    tilo_app_package::tapp::write(
+        fs::File::create(work.join("tilolang-signed.tapp")).unwrap(),
+        &packed.meta,
+        Some(&packed),
+    )
+    .unwrap();
+    let actual = store.join(format!("payload/{name}"));
+    let record = store.join(format!("packages/{name}"));
+    fs::create_dir_all(&actual).unwrap();
+    fs::create_dir_all(&record).unwrap();
+    for file in ["app.wasm", "app.ids"] {
+        if payload.join(file).exists() {
+            fs::copy(payload.join(file), actual.join(file)).unwrap();
+        }
+    }
+    fs::write(
+        record.join(package_store::layout::SIGNED_ROOT_FILE),
+        packed.meta.signed_root_bytes(),
+    )
+    .unwrap();
+    fs::write(
+        record.join(package_store::layout::MANIFEST_FILE),
+        &packed.meta.manifest_bytes,
+    )
+    .unwrap();
+    fs::write(
+        record.join(package_store::layout::COLLECTION_FILE),
+        &packed.meta.collection_bytes,
+    )
+    .unwrap();
+    pin(layer, "app-publisher.hex", &publisher);
+    serde_json::from_value(serde_json::json!({
+        "id":id, "version":"0.1.0", "package_id_hex":packed.meta.id.to_hex(),
+        "manifest_path":format!("/usr/share/tilo-apps/packages/{name}/manifest.toml"),
+        "payload_root":format!("/usr/share/tilo-apps/payload/{name}"), "publisher_key_hex":publisher,
+        "runtime":format!("tilo-runtime/{toolkit}")
+    }))
+    .unwrap()
+}
+
 fn pin(layer: &Path, name: &str, key: &str) {
     let path = layer.join("usr/share/tilo").join(name);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -214,6 +342,13 @@ fn package_named(
     } else {
         ""
     };
+    // An engine the cohort ships is pinned by the app that needs it, as the
+    // Browser pins its Chromium runtime.
+    let optional = if matches!(case, "engine" | "engine_publisher" | "engine_directory") {
+        "optional-runtimes = [\"tilo-runtime/2026.10.9-chromium\"]"
+    } else {
+        ""
+    };
     let source = format!(
         r#"
 [package]
@@ -222,6 +357,7 @@ kind = "{kind}"
 version = "0.1.0"
 runtime = "tilo-runtime/{version}"
 {platform}
+{optional}
 [package.isa]
 {isa}
 [publisher]
@@ -300,6 +436,17 @@ pub(crate) fn fixture(root: &Path, case: &str) {
     let row = package(&layer, &work, claimed, case);
     let mut registry = Registry::default();
     registry.upsert(row.clone());
+    if case.starts_with("tilolang") {
+        let runtime = if case == "tilolang_runtime_missing" {
+            "0.1.0+tilolang".to_owned()
+        } else {
+            tilolang_runtime(&layer, &work, case)
+        };
+        registry.upsert(tilolang_package(&layer, &work, &version, &runtime, case));
+    }
+    if case == "runtime_unpinned" {
+        tilolang_runtime(&layer, &work, case);
+    }
     save(&registry, &layer.join("usr/share/tilo-apps/registry.toml"));
     let base = root.join("base");
     fs::create_dir_all(&base).unwrap();
@@ -486,6 +633,7 @@ fn verify_subject(root: &Path, case: &str) {
             | "engine"
             | "engine_app"
             | "stale_archive"
+            | "tilolang"
     ) {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
@@ -560,6 +708,11 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         "app_publisher",
         "payload_escape",
         "stale_archive",
+        "tilolang",
+        "tilolang_publisher",
+        "tilolang_module",
+        "tilolang_runtime_missing",
+        "runtime_unpinned",
     ] {
         let root = tempfile::tempdir().unwrap();
         fixture(root.path(), case);

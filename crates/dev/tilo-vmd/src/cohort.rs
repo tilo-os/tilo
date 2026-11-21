@@ -282,13 +282,21 @@ fn record(package: &InstalledPackage) -> Result<package_store::integrity::Record
     Ok(record)
 }
 
+/// What a package starts: a binary of its own payload, or the binary of the
+/// runtime bundle its entrypoint names (a tilolang package, whose payload is the
+/// module that runtime runs).
+enum Entrypoint {
+    Native(PathBuf),
+    Runtime(PathBuf),
+}
+
 fn application(
     layer: &Path,
     row: &InstalledPackage,
     publisher: &str,
     runtime: &str,
     arch: &str,
-) -> Result<(PathBuf, Installed), DaemonError> {
+) -> Result<(Entrypoint, Installed), DaemonError> {
     let mut package = row.clone();
     package.manifest_path = installed_path(layer, &row.manifest_path)?;
     package.payload_root = installed_path(layer, &row.payload_root)?;
@@ -337,23 +345,57 @@ fn application(
             row.id
         )));
     }
-    let entry = &manifest
+    let entrypoint = manifest
         .entrypoint
         .as_ref()
-        .ok_or_else(|| invalid("no native entrypoint"))?
-        .bin;
-    let entry = within(&package.payload_root, &package.payload_root.join(entry))?;
-    if fs::metadata(&entry).map_err(invalid)?.mode() & 0o111 == 0 {
-        return Err(invalid("the native app entrypoint is not executable"));
-    }
-    native(&entry, arch)?;
-    if launcher::loader_preflight::read_dynamic_section(&entry)
-        .map_err(invalid)?
-        .is_none()
-    {
-        return Err(invalid("the app ELF cannot be inspected"));
-    }
-    Ok((entry, Installed { package, record }))
+        .ok_or_else(|| invalid("no native entrypoint"))?;
+    let started = if let Some(reference) = entrypoint.runtime.as_deref() {
+        // The entrypoint executes its runtime bundle's binary and points it at
+        // the payload, so the payload promises no ELF of its own (a tilolang
+        // app's compiled module) and the runtime's binary is what must reach
+        // the shipped toolkit.
+        let (name, version) = reference
+            .split_once('/')
+            .ok_or_else(|| invalid("an entrypoint runtime is malformed"))?;
+        if name != "tilolang" {
+            return Err(invalid("an entrypoint names a runtime no app can execute"));
+        }
+        let runtime_dir = layer.join("usr/lib/tilo-runtime").join(version);
+        if !runtime_dir.try_exists().map_err(invalid)? {
+            return Err(invalid(
+                "a package executes a runtime the cohort does not ship",
+            ));
+        }
+        let runtime_dir = within(layer, &runtime_dir)?;
+        let binary = within(&runtime_dir, &runtime_dir.join(&entrypoint.bin))?;
+        if fs::metadata(&binary).map_err(invalid)?.mode() & 0o111 == 0 {
+            return Err(invalid("the runtime's app binary is not executable"));
+        }
+        native(&binary, arch)?;
+        let module = package.payload_root.join("app.wasm");
+        if !module.try_exists().map_err(invalid)? {
+            return Err(invalid("a runtime-hosted package carries no app.wasm"));
+        }
+        within(&package.payload_root, &module)?;
+        Entrypoint::Runtime(binary)
+    } else {
+        let entry = within(
+            &package.payload_root,
+            &package.payload_root.join(&entrypoint.bin),
+        )?;
+        if fs::metadata(&entry).map_err(invalid)?.mode() & 0o111 == 0 {
+            return Err(invalid("the native app entrypoint is not executable"));
+        }
+        native(&entry, arch)?;
+        if launcher::loader_preflight::read_dynamic_section(&entry)
+            .map_err(invalid)?
+            .is_none()
+        {
+            return Err(invalid("the app ELF cannot be inspected"));
+        }
+        Entrypoint::Native(entry)
+    };
+    Ok((started, Installed { package, record }))
 }
 
 /// Every native file `entries` reach through their `DT_NEEDED` inside `runtime`, the entries
@@ -395,32 +437,122 @@ fn closure(
     Ok(seen)
 }
 
-/// The engines a cohort ships beside its toolkit (the runtimes its apps pin):
-/// each signed by the image's browser-runtime publisher, for this
-/// architecture, in the directory its signed version names.
-fn verify_engines(layer: &Path, engines: &[&fs::DirEntry], arch: &str) -> Result<(), DaemonError> {
-    if engines.is_empty() {
-        return Ok(());
+/// The publisher a further runtime is trusted under, by the pin that names it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimeKind {
+    /// The tilolang runtime its packages execute, signed by the publisher that
+    /// signed the toolkit: one trust root covers both.
+    Tilolang,
+    /// An engine runtime, such as the Browser's Chromium, under its own pin.
+    Engine,
+}
+
+/// Every further runtime the installed packages name, `version -> kind`, read
+/// from their signed manifests: a tilolang package's entrypoint runtime and an
+/// app's `[package].optional-runtimes` engines. A cohort ships exactly the
+/// runtimes its packages pin, so this is also what a shipped bundle directory
+/// must appear in.
+fn runtime_pins(
+    layer: &Path,
+    rows: &Registry,
+) -> Result<BTreeMap<String, RuntimeKind>, DaemonError> {
+    let mut pins = BTreeMap::new();
+    for row in rows.entries() {
+        let mut package = row.clone();
+        package.manifest_path = installed_path(layer, &row.manifest_path)?;
+        package.payload_root = installed_path(layer, &row.payload_root)?;
+        let record = record(&package)?;
+        let manifest = tilo_app_package::Manifest::from_toml_str(
+            std::str::from_utf8(&record.manifest_bytes).map_err(invalid)?,
+        )
+        .map_err(invalid)?;
+        for pin in &manifest.package.required_runtimes {
+            let (name, version) = pin
+                .split_once('/')
+                .ok_or_else(|| invalid("a required runtime pin is malformed"))?;
+            let kind = match name {
+                "tilolang" => RuntimeKind::Tilolang,
+                "tilo-runtime" => RuntimeKind::Engine,
+                _ => {
+                    return Err(invalid(
+                        "a required runtime pin names no runtime this cohort offers",
+                    ));
+                }
+            };
+            if let Some(prior) = pins.insert(version.to_owned(), kind)
+                && prior != kind
+            {
+                return Err(invalid(
+                    "a runtime version is pinned as two different runtimes",
+                ));
+            }
+        }
     }
-    let engine_key = publisher(layer, "browser-runtime-publisher.hex")?;
-    for engine in engines {
-        let engine = within(layer, &engine.path())?;
+    Ok(pins)
+}
+
+/// The cohort's one native toolkit, named by its payload-derived ABI, after
+/// verifying every other bundle as a runtime the cohort's packages pin, shipped
+/// at the exact version so the swapped apps find it. A tilolang runtime is
+/// signed by the toolkit's publisher; an engine has its own pin, read only when
+/// one ships.
+fn toolkit_after_runtimes(
+    layer: &Path,
+    arch: &str,
+    runtime_key: &str,
+    pins: &BTreeMap<String, RuntimeKind>,
+) -> Result<PathBuf, DaemonError> {
+    let bundles = fs::read_dir(layer.join("usr/lib/tilo-runtime"))
+        .map_err(invalid)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(invalid)?;
+    let (toolkits, further): (Vec<_>, Vec<_>) = bundles.iter().partition(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| runtime_bundle::split_abi_version(name).is_some())
+    });
+    if toolkits.len() != 1 {
+        return Err(invalid("the cohort must carry exactly one native toolkit"));
+    }
+    let mut engine_key: Option<String> = None;
+    for entry in &further {
+        let bundle = within(layer, &entry.path())?;
+        let name = entry.file_name();
+        let version = name
+            .to_str()
+            .ok_or_else(|| invalid("a cohort runtime directory is not UTF-8"))?;
+        let key = match pins.get(version) {
+            Some(RuntimeKind::Tilolang) => runtime_key.to_owned(),
+            Some(RuntimeKind::Engine) => {
+                if engine_key.is_none() {
+                    engine_key = Some(publisher(layer, "browser-runtime-publisher.hex")?);
+                }
+                engine_key.clone().unwrap_or_default()
+            }
+            None => {
+                return Err(invalid("the cohort ships a runtime no package pins"));
+            }
+        };
         let manifest = verify_bundle_with(
-            &engine,
+            &bundle,
             &VerifyOptions {
-                require_publisher: Some(engine_key.clone()),
+                require_publisher: Some(key),
                 require_signature: true,
                 require_arch: Some(arch.into()),
             },
         )
         .map_err(invalid)?;
-        if engine.file_name().and_then(|name| name.to_str()) != Some(manifest.version.as_str()) {
+        if manifest.version != version {
             return Err(invalid(
-                "an engine directory disagrees with its signed version",
+                "a runtime directory disagrees with its signed version",
             ));
         }
     }
-    Ok(())
+    Ok(toolkits
+        .first()
+        .ok_or_else(|| invalid("no native toolkit"))?
+        .path())
 }
 
 /// Membership is part of the signed toolkit payload, not an editable registry. Replacing that
@@ -459,30 +591,6 @@ fn membership(bundle: &Path) -> Result<Option<SystemMembership>, DaemonError> {
     Ok(Some(membership))
 }
 
-/// The cohort's one native toolkit, named by its payload-derived ABI, after verifying every other
-/// bundle as an engine the cohort's apps pin, shipped at the exact version so the swapped apps find
-/// it.
-fn toolkit_after_engines(layer: &Path, arch: &str) -> Result<PathBuf, DaemonError> {
-    let bundles = fs::read_dir(layer.join("usr/lib/tilo-runtime"))
-        .map_err(invalid)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(invalid)?;
-    let (toolkits, engines): (Vec<_>, Vec<_>) = bundles.iter().partition(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| runtime_bundle::split_abi_version(name).is_some())
-    });
-    if toolkits.len() != 1 {
-        return Err(invalid("the cohort must carry exactly one native toolkit"));
-    }
-    verify_engines(layer, &engines, arch)?;
-    Ok(toolkits
-        .first()
-        .ok_or_else(|| invalid("no native toolkit"))?
-        .path())
-}
-
 /// Verify the apps+runtime cohort in `layer`, and derive each package's
 /// complete archive into a private directory under `staging`.
 pub(crate) fn verify(
@@ -493,7 +601,9 @@ pub(crate) fn verify(
 ) -> Result<VerifiedCohort, DaemonError> {
     let runtime_key = publisher(layer, "runtime-bundle-publisher.hex")?;
     let app_key = publisher(layer, "app-publisher.hex")?;
-    let bundle = toolkit_after_engines(layer, arch)?;
+    let rows = registry(&layer.join("usr/share/tilo-apps"))?;
+    let pins = runtime_pins(layer, &rows)?;
+    let bundle = toolkit_after_runtimes(layer, arch, &runtime_key, &pins)?;
     let bundle = within(layer, &bundle)?;
     let manifest = verify_bundle_with(
         &bundle,
@@ -512,7 +622,6 @@ pub(crate) fn verify(
             "runtime directory disagrees with its signed native ABI",
         ));
     }
-    let rows = registry(&layer.join("usr/share/tilo-apps"))?;
     let ids = rows
         .entries()
         .iter()
@@ -546,28 +655,32 @@ pub(crate) fn verify(
         .iter()
         .map(|row| application(layer, row, &app_key, &runtime, arch))
         .collect::<Result<Vec<_>, _>>()?;
-    let entries = admitted
-        .iter()
-        .map(|(entry, _)| entry.clone())
-        .collect::<Vec<_>>();
     let toolkit = within(&bundle, &bundle.join("lib").join("libruntime_dylib.so"))?;
-    for (entry, row) in entries.iter().zip(rows.entries()) {
-        let interpreter = launcher::loader_preflight::read_interpreter(entry)
-            .map_err(invalid)?
-            .ok_or_else(|| invalid("a thin app has no ELF interpreter"))?;
-        if !launcher::sandbox::CANONICAL_LOADER_PATHS.contains(&interpreter.as_str()) {
-            return Err(invalid("the interpreter is not a canonical bundled loader"));
-        }
-        let loader = within(
-            &bundle,
-            &bundle.join("lib").join(interpreter.trim_start_matches('/')),
-        )?;
-        native(&loader, arch)?;
-        closure(&bundle, vec![loader], arch)?;
+    for ((started, _), row) in admitted.iter().zip(rows.entries()) {
+        let entry = match started {
+            Entrypoint::Native(entry) => {
+                let interpreter = launcher::loader_preflight::read_interpreter(entry)
+                    .map_err(invalid)?
+                    .ok_or_else(|| invalid("a thin app has no ELF interpreter"))?;
+                if !launcher::sandbox::CANONICAL_LOADER_PATHS.contains(&interpreter.as_str()) {
+                    return Err(invalid("the interpreter is not a canonical bundled loader"));
+                }
+                let loader = within(
+                    &bundle,
+                    &bundle.join("lib").join(interpreter.trim_start_matches('/')),
+                )?;
+                native(&loader, arch)?;
+                closure(&bundle, vec![loader], arch)?;
+                entry.clone()
+            }
+            // The runtime the app executes is a thin app binary of its own; it
+            // must reach the shipped toolkit just as a native app's entry does.
+            Entrypoint::Runtime(binary) => binary.clone(),
+        };
         // An app reaches the toolkit as the graph it maps, not necessarily through its own entry:
         // what must hold is that the app's closure reaches the toolkit this cohort ships, rather
         // than a copy packed into the app.
-        if !closure(&bundle, vec![entry.clone()], arch)?.contains(&toolkit) {
+        if !closure(&bundle, vec![entry], arch)?.contains(&toolkit) {
             return Err(invalid(format!(
                 "the app {} does not link the shipped toolkit",
                 row.id

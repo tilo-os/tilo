@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -99,6 +100,43 @@ def named_applications(repo, cohort, app=None):
     return [entry for entry in entries if entry['dir'] in set(names)]
 
 
+def image_plan(repo):
+    """The app set this assembly ships, planned from the sources as the image plans one.
+
+    The image's compile writes the plan of its `image` collection
+    (tools/apps/app_release.py): every native app, and the tilolang packages under
+    `apps/tl` that ship beside the native app they replace. The packing below reads
+    the same plan, so a swap installs exactly the apps the image installs, and an app
+    the collection does not name yet is not installed by either."""
+    plan = json.loads(run([sys.executable, '-I', str(repo / 'tools/apps/app_release.py'),
+                           '--collection', 'image'], capture=True).stdout)
+    tilolang_apps(plan)
+    return plan
+
+
+def tilolang_apps(plan):
+    """The tilolang packages a plan names, checked for the shape the packer reads.
+
+    Each is built and installed by the release's own steps
+    (os/scripts/pack-apps.sh through tools/apps/tilolang_packages.sh), so this only
+    refuses a plan whose entries are outside `apps/tl` or name a runtime the
+    launcher could not resolve."""
+    apps = plan.get('tilolang', [])
+    for app in apps:
+        if not re.fullmatch(r'tl-[A-Za-z0-9_-]+', app.get('app', '')):
+            raise ValueError(f'invalid tilolang package name {app.get("app")!r}')
+        if not re.fullmatch(r'apps/tl/[A-Za-z0-9_.-]+', app.get('dir', '')):
+            raise ValueError(f'{app["app"]} is outside apps/tl')
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+', app.get('id', '')):
+            raise ValueError(f'{app["app"]} names no app id')
+        if not re.fullmatch(r'tilolang/[0-9A-Za-z][0-9A-Za-z._+-]*', app.get('runtime', '')):
+            raise ValueError(f'{app["app"]} names no tilolang runtime')
+    names = [app['app'] for app in apps]
+    if len(set(names)) != len(names):
+        raise ValueError('the plan names a tilolang package twice')
+    return apps
+
+
 def private_ancestors(path, outputs):
     """Copy directory structure only along outputs; host siblings stay readonly."""
     argv = ['--dir', str(path)]
@@ -115,7 +153,7 @@ def private_ancestors(path, outputs):
 
 
 def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None, compiler=None,
-                      source_inventory=None, cohort=None):
+                      source_inventory=None, cohort=None, app_plan=None):
     """Final-path binds preserve registry paths, with only owned outputs writable."""
     tree = stage / 'tree'
     runtime = tree / 'usr/lib/tilo-runtime'
@@ -161,6 +199,8 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None,
         argv += ['--source-inventory', source_inventory]
     if cohort is not None:
         argv += ['--cohort', cohort]
+    if app_plan is not None:
+        argv += ['--app-plan', str(app_plan)]
     if app is not None:
         argv += ['--app', app]
     if compiler is not None:
@@ -307,9 +347,36 @@ def source_membership(destination, digest, apps):
     return destination
 
 
+def bake_tilolang_runtime(repo, target, profile, identity, runtime_root):
+    """Bake the tilolang runtime bundle beside the Tilo runtime, as the image bakes it.
+
+    The bundle is the two binaries alone (`--binaries-only` in
+    tools/apps/tilolang_packages.sh, the release's and the image's own packing): the
+    launcher runs them on the Tilo runtime their libraries come from. It is signed
+    by the identity that signed the Tilo runtime, so one publisher pin trusts both,
+    and it lands at `/<version>`, where the launcher resolves the
+    `tilolang/<version>` every package names. Returns the version baked."""
+    packer = shlex.quote(str(repo / 'tools/apps/tilolang_packages.sh'))
+    script = '\n'.join([
+        'set -euo pipefail',
+        f'. {packer}',
+        f'version="$(tilolang_runtime_version {shlex.quote(str(repo))})"',
+        'tilolang_bake_runtime '
+        f'{shlex.quote(str(target / "release/tilo-runtime-bundle"))} '
+        f'{shlex.quote(str(target / profile_directory(profile) / "tilolang-app"))} '
+        f'{shlex.quote(str(target / "release/tilolang-process"))} '
+        f'{shlex.quote(str(identity))} "$1/$version" "$version"',
+        'printf "%s\\n" "$version"',
+        '',
+    ])
+    return run(['bash', '-c', script, 'bake-tilolang-runtime', str(runtime_root)],
+               capture=True).stdout.strip()
+
+
 def assemble_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
     entries = named_applications(repo, args.cohort, args.app)
+    tilolang = tilolang_apps(args.plan) if args.plan is not None else []
     binaries = [target / profile_directory(args.profile) / entry['binary']
                 for entry in entries]
     if any(not binary.is_file() for binary in binaries):
@@ -330,9 +397,9 @@ def assemble_inside(args):
     if model_entries(repo, entries) and (model_runtime / 'runtime.json').is_file():
         includes.append(model_runtime)
     if args.source_inventory is not None:
-        includes.append(source_membership(stage / 'work/system-app-cohort.json',
-                                          args.source_inventory,
-                                          [entry['id'] for entry in entries]))
+        includes.append(source_membership(
+            stage / 'work/system-app-cohort.json', args.source_inventory,
+            [entry['id'] for entry in entries] + [app['id'] for app in tilolang]))
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'
     run([str(bundle), 'key', 'generate', '--out', str(identity)])
@@ -350,6 +417,15 @@ def assemble_inside(args):
             raise ValueError('runtime publisher is malformed')
         (stage / 'tree/usr/share/tilo/runtime-bundle-publisher.hex').write_text(publisher + '\n')
         (stage / 'work/trusted-publishers.txt').write_text(publisher + '\n')
+        # The tilolang runtime the cohort's packages execute, beside the Tilo
+        # runtime and under the same publisher: `tilo-install` refuses a package
+        # whose runtime is absent, so it is in place before packing runs.
+        if tilolang:
+            tilolang_version = bake_tilolang_runtime(
+                repo, target, args.profile, identity, Path('/usr/lib/tilo-runtime'))
+            run([str(bundle), 'verify', str(Path('/usr/lib/tilo-runtime') / tilolang_version),
+                 '--require-publisher', publisher, '--require-signature',
+                 '--require-arch', platform.machine()])
         if args.compiler_interface_out is not None:
             # Seal the runtime first; only then bind a separate developer bundle.
             # It is outside the component tree and never reaches end users.
@@ -501,17 +577,27 @@ def stage_engine_runtimes(stage, bundle, sources):
 def package_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
     entries = named_applications(repo, args.cohort, args.app)
+    tilolang = tilolang_apps(args.plan) if args.plan is not None and args.app is None else []
     version = (stage / 'work/runtime-version').read_text().strip()
     bundle = target / 'release/tilo-runtime-bundle'
+    # The tilolang packages are packed by the release's own steps
+    # (os/scripts/pack-apps.sh through tools/apps/tilolang_packages.sh), from the
+    # plan the image's packing reads: this names the plan and the compiler that
+    # builds each package, never a second packer.
+    cohort = [entry['dir'] for entry in entries] + [app['app'] for app in tilolang]
     env = dict(os.environ, REPO=str(repo), STORE='/usr/share/tilo-apps',
                BIN_DIR=str(target / profile_directory(args.profile)),
                PKG_BIN=str(target / 'release/tilo-app-package'),
                INSTALL_BIN=str(target / 'release/tilo-install'),
                BUNDLE_BIN=str(bundle), SHIM_BIN=str(target / 'release/tilo-cli-shim'),
                PUBKEY_OUT=str(stage / 'tree/usr/share/tilo/app-publisher.hex'),
-               RUNTIME_ID='tilo-runtime/' + version, REQUIRE_MIN=str(len(entries)),
-               COHORT_APPS=' '.join(entry['dir'] for entry in entries),
+               RUNTIME_ID='tilo-runtime/' + version, REQUIRE_MIN=str(len(cohort)),
+               COHORT_APPS=' '.join(cohort),
                TAPP_BUDGET=packaging_budget(repo, args.profile, os.environ))
+    if args.app_plan is not None:
+        env['APP_PLAN'] = str(args.app_plan)
+    if tilolang:
+        env['TILOLANG_BIN'] = str(target / 'release/tilolang')
     # A complete cohort carries each app once, as its installed tree and signed
     # record; tilo-vmd rebuilds the archive it installs from those.
     if args.app is not None:
@@ -520,7 +606,7 @@ def package_inside(args):
     run(['bash', str(repo / 'os/scripts/pack-apps.sh')], env=env)
 
 
-def prepare_tools(args):
+def prepare_tools(args, tilolang=False):
     """The tools this assembly runs itself, including the registry fallback for
     a pinned engine: locating one is what decides the cohort."""
     cargo = os.environ.get('CARGO', 'cargo')
@@ -530,12 +616,17 @@ def prepare_tools(args):
              '-p', 'tilo-app-package-cli', '-p', 'install', '-p', 'cli-shim',
              # `app runtime install`: the registry fallback for a pinned engine.
              '-p', 'app-cli']
+    if tilolang:
+        # `tilolang build`, and the host the tilolang runtime bundle ships: the
+        # image builds both when its app set names a tilolang package.
+        tools += ['-p', 'tilolang-cli', '-p', 'tilolang-process']
     if args.compiler_interface_out is not None:
         tools += ['-p', 'tilo-app-cli']
     run(tools, env=tools_env)
 
 
-def prepare_applications(args, entries):
+def application_build_env(args, entries):
+    """What os/scripts/build-thin-apps.sh reads to build this cohort."""
     repo, target = args.repo.resolve(), args.target_dir.resolve()
     env = dict(os.environ, REPO=str(repo), TARGET_DIR=str(target),
                PROFILE=args.profile, APP_FEATURES=args.features)
@@ -548,6 +639,12 @@ def prepare_applications(args, entries):
         entry['package'] for entry in application_entries(repo) if entry not in entries)
     if args.compiler_interface_out is not None:
         env['SDK_COMPILER_UNITS'] = str(args.compiler_capture.parent / 'compiler-units.jsonl')
+    return env
+
+
+def prepare_applications(args, entries):
+    repo, target = args.repo.resolve(), args.target_dir.resolve()
+    env = application_build_env(args, entries)
     run(['bash', str(repo / 'os/scripts/build-thin-apps.sh')], env=env)
     if args.compiler_interface_out is not None:
         run([str(target / 'release/tilo-app'), 'sdk', 'capture',
@@ -557,6 +654,24 @@ def prepare_applications(args, entries):
     for entry in entries:
         if not (target / profile_directory(args.profile) / entry['binary']).is_file():
             raise ValueError('full cohort build did not produce all applications')
+
+
+def prepare_tilolang_applications(args, entries):
+    """Build the tilolang runtime's app binary beside the cohort's apps.
+
+    It is the binary every tilolang package's entrypoint executes
+    (`bin/tilolang-app`, a thin app). build-thin-apps.sh selects a
+    `tilo-runtime.toml` binary only when BUILD_PACKAGES names it, so this is a
+    build of its own, as the image makes it, and the cohort's own build keeps
+    selecting every app."""
+    repo, target = args.repo.resolve(), args.target_dir.resolve()
+    env = dict(application_build_env(args, entries), BUILD_PACKAGES='tilolang-app')
+    # The developer SDK's unit inventory is the cohort's apps, already captured.
+    env.pop('SDK_COMPILER_UNITS', None)
+    run(['bash', str(repo / 'os/scripts/build-thin-apps.sh')], env=env)
+    binary = target / profile_directory(args.profile) / 'tilolang-app'
+    if not binary.is_file():
+        raise ValueError('the cohort build did not produce the tilolang runtime binary')
 
 
 def model_entries(repo, entries):
@@ -591,21 +706,33 @@ def assemble(args):
         stage = Path(directory)
         args.compiler_capture = (stage / 'compiler-capture'
                                  if args.compiler_interface_out is not None else None)
-        prepare_tools(args)
+        # The plan the image's packing reads, written where both namespaces can
+        # read it. A single selected app ships alone, so it plans nothing.
+        args.plan = None
+        args.app_plan = None
+        if args.app is None:
+            args.plan = image_plan(repo)
+            (stage / 'work').mkdir(parents=True, exist_ok=True)
+            args.app_plan = stage / 'work/app-plan.json'
+            args.app_plan.write_text(json.dumps(args.plan, indent=2) + '\n')
+        tilolang = bool(tilolang_apps(args.plan)) if args.plan is not None else False
+        prepare_tools(args, tilolang=tilolang)
         fetch_runtime_fonts(repo, target)
         sources, unavailable = engine_sources(repo, stage, target / 'release/app')
         entries, left_out = cohort_entries(repo, sources, args.app)
         report_left_out(left_out, unavailable)
         prepare_applications(args, entries)
+        if tilolang:
+            prepare_tilolang_applications(args, entries)
         prepare_models(args, entries)
         cohort = ','.join(entry['dir'] for entry in entries)
         run(namespace_command(repo, stage, target, args.profile, app=args.app,
-                              compiler=args.compiler_capture,
+                              compiler=args.compiler_capture, app_plan=args.app_plan,
                               source_inventory=args.source_inventory, cohort=cohort))
         if args.app is None:
             stage_engine_runtimes(stage, target / 'release/tilo-runtime-bundle', sources)
         run(namespace_command(repo, stage, target, args.profile, packaging=True,
-                              app=args.app, cohort=cohort))
+                              app=args.app, cohort=cohort, app_plan=args.app_plan))
         if args.app is not None:
             shutil.copyfile(stage / 'work/selected.tapp', args.tapp_out)
             return
@@ -630,6 +757,8 @@ def main():
     parser.add_argument('--features')
     parser.add_argument('--source-inventory', help='verified complete source inventory digest')
     parser.add_argument('--app')
+    parser.add_argument('--app-plan', type=Path,
+                        help='the app set this assembly ships, as the image plans it')
     parser.add_argument('--cohort', help='the app directories this assembly ships')
     parser.add_argument('--tapp-out', type=Path)
     parser.add_argument('--dest', type=Path)
@@ -660,6 +789,10 @@ def main():
             parser.error('private assembly needs its owned stage')
         if args.cohort is None:
             parser.error('private assembly needs the cohort it ships')
+        if args.app_plan is not None:
+            args.plan = json.loads(args.app_plan.read_text())
+        else:
+            args.plan = None
         if args.packaging:
             package_inside(args)
         else:

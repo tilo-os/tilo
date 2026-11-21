@@ -237,7 +237,8 @@ class AssemblyNamespaces(unittest.TestCase):
             cohort = ','.join(entry['dir']
                               for entry in ASSEMBLER.named_applications(SOURCE.parents[2], None))
             args = SimpleNamespace(repo=SOURCE.parents[2], target_dir=stage, stage=stage,
-                                   profile='thin-app', app=None, cohort=cohort)
+                                   profile='thin-app', app=None, cohort=cohort,
+                                   plan=None, app_plan=None)
             with patch.object(ASSEMBLER, 'run') as run:
                 ASSEMBLER.package_inside(args)
             environment = run.call_args.kwargs['env']
@@ -504,7 +505,8 @@ class PackagingBudgets(unittest.TestCase):
             (stage / 'work/runtime-version').write_text('2026.07\n')
             args = SimpleNamespace(repo=repo, target_dir=target, stage=stage,
                                    profile='thin-app', features='', app=None, cohort=None,
-                                   compiler_interface_out=None, compiler_capture=None)
+                                   compiler_interface_out=None, compiler_capture=None,
+                                   plan=None, app_plan=None)
             with patch.object(ASSEMBLER, 'run') as run:
                 ASSEMBLER.package_inside(args)
             self.assertEqual(run.call_args.kwargs['env']['TAPP_BUDGET'], 'report')
@@ -512,6 +514,78 @@ class PackagingBudgets(unittest.TestCase):
                     patch.object(ASSEMBLER, 'run') as run:
                 ASSEMBLER.package_inside(args)
             self.assertEqual(run.call_args.kwargs['env']['TAPP_BUDGET'], 'enforce')
+
+
+class TilolangPackages(unittest.TestCase):
+    """The tilolang packages the image plans ship in a swap too, through the
+    release's own packing, never a second one."""
+
+    PLAN = {'apps': ['notes'], 'tilolang': [
+        {'app': 'tl-discussion', 'dir': 'apps/tl/discussion',
+         'id': 'so.tilo.lang.discussion', 'version': '0.1.0',
+         'runtime': 'tilolang/0.1.0+tilolang'},
+        {'app': 'tl-notes', 'dir': 'apps/tl/notes',
+         'id': 'so.tilo.lang.notes', 'version': '0.1.0',
+         'runtime': 'tilolang/0.1.0+tilolang'},
+    ]}
+
+    def test_the_source_plan_names_the_tilolang_packages_beside_their_app(self):
+        plan = ASSEMBLER.image_plan(SOURCE.parents[2])
+        apps = {app['app']: app for app in ASSEMBLER.tilolang_apps(plan)}
+        self.assertIn('tl-notes', apps)
+        self.assertEqual(apps['tl-notes']['dir'], 'apps/tl/notes')
+        self.assertEqual(apps['tl-notes']['id'], 'so.tilo.lang.notes')
+
+    def test_a_package_outside_apps_tl_or_naming_no_runtime_is_refused(self):
+        for entry in (
+            {'app': 'tl-notes', 'dir': '../notes', 'id': 'so.tilo.lang.notes',
+             'runtime': 'tilolang/0.1.0+tilolang'},
+            {'app': 'tl-notes', 'dir': 'apps/tl/notes', 'id': '',
+             'runtime': 'tilolang/0.1.0+tilolang'},
+            {'app': 'tl-notes', 'dir': 'apps/tl/notes', 'id': 'so.tilo.lang.notes',
+             'runtime': 'tilo-runtime/2026.07'},
+            {'app': 'notes', 'dir': 'apps/tl/notes', 'id': 'so.tilo.lang.notes',
+             'runtime': 'tilolang/0.1.0+tilolang'},
+        ):
+            with self.subTest(entry=entry):
+                with self.assertRaises(ValueError):
+                    ASSEMBLER.tilolang_apps({'tilolang': [entry]})
+
+    def test_the_packer_is_told_the_plan_and_the_tilolang_compiler(self):
+        with tempfile.TemporaryDirectory(prefix='tilolang-pack-') as directory:
+            stage = Path(directory)
+            (stage / 'work').mkdir()
+            (stage / 'work/runtime-version').write_text('2026.07+native.' + 'a' * 32)
+            plan_path = stage / 'work/app-plan.json'
+            plan_path.write_text(json.dumps(self.PLAN))
+            args = SimpleNamespace(
+                repo=SOURCE.parents[2], target_dir=stage, stage=stage,
+                profile='thin-app', features='', app=None, cohort='notes',
+                compiler_interface_out=None, compiler_capture=None,
+                plan=self.PLAN, app_plan=plan_path)
+            with patch.object(ASSEMBLER, 'run') as run:
+                ASSEMBLER.package_inside(args)
+            environment = run.call_args.kwargs['env']
+            self.assertEqual(environment['APP_PLAN'], str(plan_path))
+            self.assertEqual(environment['TILOLANG_BIN'], str(stage / 'release/tilolang'))
+            self.assertEqual(environment['COHORT_APPS'], 'notes tl-discussion tl-notes')
+            self.assertEqual(environment['REQUIRE_MIN'], '3')
+
+    def test_the_runtime_is_baked_by_the_shared_script_beside_the_toolkit(self):
+        with patch.object(ASSEMBLER, 'run',
+                          return_value=SimpleNamespace(stdout='0.1.0+tilolang\n')) as run:
+            version = ASSEMBLER.bake_tilolang_runtime(
+                Path('/repo'), Path('/target'), 'thin-app',
+                Path('/identity.json'), Path('/usr/lib/tilo-runtime'))
+        self.assertEqual(version, '0.1.0+tilolang')
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:2], ['bash', '-c'])
+        self.assertIn('. /repo/tools/apps/tilolang_packages.sh', argv[2])
+        self.assertIn('tilolang_bake_runtime', argv[2])
+        self.assertIn('"$1/$version" "$version"', argv[2])
+        self.assertEqual(argv[3:], ['bake-tilolang-runtime', '/usr/lib/tilo-runtime'])
+        self.assertIn('/target/thin-app/tilolang-app', argv[2])
+        self.assertIn('/target/release/tilolang-process', argv[2])
 
 
 class RuntimeFonts(unittest.TestCase):
