@@ -394,7 +394,10 @@ impl Worker {
                 Some((*workspace_id, bounded::Bounded::clone(who), route.clone())),
             ),
             Some(HeldPage::Home { workspace_id }) => (Some(*workspace_id), None),
-            None => return Some(Err(unavailable("the page was closed"))),
+            None => {
+                tracing::warn!(page, "a page's act found no page held here");
+                return Some(Err(unavailable("the page was closed")));
+            }
         };
         // The workspace's front page holds no document and nothing acts on
         // it: a pass over it answers that nothing changed. It is read again
