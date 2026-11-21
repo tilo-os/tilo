@@ -1053,13 +1053,20 @@ cmd_entries() {
 #
 # So Tilo runs that step itself: right after the staged entry has its try counter
 # (from the same update hook), and at every boot, where a staged plan still
-# present is one whose shutdown never came. The step is bootc's own and
-# unchanged. Like the boot counters it is idempotent: once the entries are
-# exchanged there is no staged plan left to exchange, so the shutdown hook that
-# runs it as well (bootc-finalize-staged.service.d/10-tilo-finalize.conf) has
-# nothing to do, and a finalize that failed halfway is simply retried by the next
-# boot. bootc keeps reporting the deployment as staged until the next boot, which
-# is what tilo-extension live:session finishes the update from.
+# present is one whose shutdown never came. The shutdown hook runs it as well
+# (bootc-finalize-staged.service.d/10-tilo-finalize.conf), and that one matters
+# for /etc: the computer may stay up for weeks after staging (a live update
+# applies the rest of the update without a restart) while /etc keeps changing.
+# Every finalize of a staged deployment merges its /etc again, from the staged
+# image's own /etc, so the deployment boots with /etc as it was when the
+# computer went down, deletions included; a machine that loses power instead
+# boots it with /etc as it was at the last finalize. bootc exchanges the entries
+# only while they are still staged (os/external-assets/bootc-runtime/0006), and
+# builds the merged /etc beside the deployment's and exchanges the two in one
+# rename, so a power cut during the merge leaves the previous one. A finalize
+# that failed halfway is retried by the next one. bootc keeps reporting the
+# deployment as staged until the next boot, which is what tilo-extension
+# live:session finishes the update from.
 cmd_finalize() {
   [ "$(id -u)" = 0 ] || die "finalize needs root"
   local esp status
@@ -1068,12 +1075,6 @@ cmd_finalize() {
   [ -n "$status" ] || die "bootc status said nothing"
   if [ -z "$(status_field "$status" staged-image)" ]; then
     log "no staged deployment to finalize"
-    return 0
-  fi
-  # No conf left under entries.staged means this deployment is already the boot
-  # plan: bootc would fail exchanging a directory that is not there.
-  if ! compgen -G "$esp/loader/entries.staged/*.conf" >/dev/null; then
-    log "the staged deployment is already the boot plan"
     return 0
   fi
   bootc composefs-finalize-staged \
@@ -1085,7 +1086,7 @@ cmd_finalize() {
     warn "bootc reported the staged deployment finalized, but its staged entries are still there; the next boot tries again"
     return 1
   fi
-  log "$(image_label "$status" staged) boots next"
+  log "$(image_label "$status" staged) boots next, with /etc as it is now"
 }
 
 # Derive the repair-mode boot entry from whichever UKI the running deployment

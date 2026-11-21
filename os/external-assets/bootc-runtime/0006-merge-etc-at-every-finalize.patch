@@ -1,0 +1,390 @@
+From: Tilo <noreply@tilo.so>
+Subject: [PATCH] composefs: merge the staged deployment's /etc again at every finalize
+
+Tilo finalizes a staged deployment right after staging, so that a machine
+that loses power instead of shutting down still boots the update, and again
+at shutdown. The /etc merge was made only by the finalize that exchanged the
+boot loader entries, so whatever /etc became after staging (a connection, an
+account, a unit drop-in) was missing in the deployment that booted next. And
+the merge wrote into the deployment's etc itself, so a second merge into its
+result would have kept a file deleted since the first.
+
+Now every finalize of a staged deployment merges its /etc again, from the
+staged image's own /etc, and exchanges the entries only while they are still
+staged. The merge is built beside the deployment's etc as etc.next, synced to
+disk and exchanged with etc in one rename, so a power loss at any point
+leaves the previous merge or the new one, each whole. Staging lays the image's
+/etc down with the same copy.
+---
+diff --git a/crates/etc-merge/src/lib.rs b/crates/etc-merge/src/lib.rs
+index 66d74ad..e4c1dac 100644
+--- a/crates/etc-merge/src/lib.rs
++++ b/crates/etc-merge/src/lib.rs
+@@ -10,6 +10,7 @@ use std::io::Write;
+ use std::os::fd::{AsFd, AsRawFd};
+ use std::os::unix::ffi::OsStrExt;
+ use std::path::{Path, PathBuf};
++use std::process::Command;
+ 
+ use anyhow::Context;
+ use cap_std_ext::cap_std;
+@@ -20,7 +21,8 @@ use composefs::generic_tree::{Directory, FileSystem, Inode, Leaf, LeafContent, L
+ use composefs::tree::ImageError;
+ use composefs_ctl::composefs;
+ use rustix::fs::{
+-    AtFlags, Gid, Uid, XattrFlags, lgetxattr, llistxattr, lsetxattr, readlinkat, symlinkat,
++    AtFlags, Gid, RenameFlags, Uid, XattrFlags, fsync, lgetxattr, llistxattr, lsetxattr,
++    readlinkat, renameat_with, symlinkat, syncfs,
+ };
+ 
+ /// Metadata associated with a file, directory, or symlink entry.
+@@ -938,6 +940,94 @@ pub fn merge(
+     Ok(())
+ }
+ 
++/// The tree a deployment's next /etc is built in, beside its `etc`, until the two are exchanged.
++pub const NEXT_ETC: &str = "etc.next";
++
++/// Copies an image's own /etc (`image_etc`, in a mounted image) into `dest`, an existing directory,
++/// as the image has it: owners, modes, extended attributes and times. `.updated` is left out, so
++/// that the services gated on `ConditionNeedsUpdate=/etc` (systemd-sysusers, systemd-tmpfiles) run
++/// at the first boot of the deployment, as ostree arranges it.
++#[context("Copying {image_etc:?} to {dest:?}")]
++pub fn copy_image_etc(image_etc: &Path, dest: &Path) -> anyhow::Result<()> {
++    let output = Command::new("cp")
++        .args(["-a", "--remove-destination"])
++        .arg(image_etc.join("."))
++        .arg(dest.join("."))
++        .output()
++        .context("Starting cp")?;
++    if !output.status.success() {
++        anyhow::bail!(
++            "cp failed ({}): {}",
++            output.status,
++            String::from_utf8_lossy(&output.stderr).trim()
++        );
++    }
++    let dest = CapStdDir::open_ambient_dir(dest, cap_std::ambient_authority())?;
++    dest.remove_file_optional(".updated")
++        .context("Removing .updated")?;
++    Ok(())
++}
++
++/// Gives the deployment whose state directory is `deployment` the /etc it is to boot with: its
++/// image's own /etc (`image_etc`), with every change the running system made to its booted
++/// image's /etc (`pristine_etc`, as `current_etc` has it now) carried over.
++///
++/// It starts from the image's /etc each time instead of merging into the deployment's present
++/// `etc`, so it can be repeated: a merge when the deployment is staged and another when the system
++/// shuts down end as if only the second had been made. A file the running system deleted after
++/// the first is gone after the second too; merging into the first one's result would keep it.
++///
++/// The new tree is built beside `etc`, as [`NEXT_ETC`], written to disk and exchanged with `etc` in
++/// one rename, so a boot after a power loss at any point finds the deployment's previous /etc or
++/// the new one, each whole.
++#[context("Merging /etc into {deployment:?}")]
++pub fn merge_deployment_etc(
++    deployment: &Path,
++    image_etc: &Path,
++    pristine_etc: &CapStdDir,
++    current_etc: &CapStdDir,
++) -> anyhow::Result<()> {
++    let deployment_dir = CapStdDir::open_ambient_dir(deployment, cap_std::ambient_authority())
++        .context("Opening the deployment")?;
++    // What a merge that was cut short left.
++    deployment_dir
++        .remove_all_optional(NEXT_ETC)
++        .context("Removing an unfinished merge")?;
++    deployment_dir.create_dir(NEXT_ETC)?;
++    copy_image_etc(image_etc, &deployment.join(NEXT_ETC))?;
++    let next_etc = deployment_dir.open_dir(NEXT_ETC)?;
++
++    let (pristine_files, current_files, next_files) =
++        traverse_etc(pristine_etc, current_etc, Some(&next_etc))?;
++    let next_files =
++        next_files.ok_or_else(|| anyhow::anyhow!("Failed to get dirtree for new etc"))?;
++    let diff = compute_diff(&pristine_files, &current_files, &next_files)?;
++    merge(current_etc, &current_files, &next_etc, &next_files, &diff)?;
++    // The running system's `.updated` says its own /etc is up to date, not the deployment's.
++    next_etc
++        .remove_file_optional(".updated")
++        .context("Removing .updated")?;
++    drop(next_etc);
++
++    let deployment_fd = deployment_dir.reopen_as_ownedfd()?;
++    // All of the new tree on disk before it is the deployment's /etc.
++    syncfs(&deployment_fd).context("syncfs")?;
++    renameat_with(
++        &deployment_fd,
++        NEXT_ETC,
++        &deployment_fd,
++        "etc",
++        RenameFlags::EXCHANGE,
++    )
++    .context("Exchanging the merged etc with the deployment's etc")?;
++    fsync(&deployment_fd).context("fsync")?;
++    // The previous /etc. Leaving it is harmless: the next merge removes it first.
++    if let Err(e) = deployment_dir.remove_all_optional(NEXT_ETC) {
++        tracing::warn!("Could not remove the deployment's previous etc: {e:#}");
++    }
++    Ok(())
++}
++
+ #[cfg(test)]
+ mod tests {
+     use cap_std::fs::PermissionsExt;
+@@ -1299,4 +1389,87 @@ mod tests {
+ 
+         Ok(())
+     }
++    /// A directory with a path, for what runs `cp`, removed when the test ends.
++    struct PathDir(PathBuf);
++
++    impl PathDir {
++        fn new(name: &str) -> anyhow::Result<Self> {
++            let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
++            let _ = std::fs::remove_dir_all(&path);
++            std::fs::create_dir_all(&path)?;
++            Ok(Self(path))
++        }
++
++        fn dir(&self, rel: &str) -> anyhow::Result<CapStdDir> {
++            std::fs::create_dir_all(self.0.join(rel))?;
++            Ok(CapStdDir::open_ambient_dir(
++                self.0.join(rel),
++                cap_std::ambient_authority(),
++            )?)
++        }
++    }
++
++    impl Drop for PathDir {
++        fn drop(&mut self) {
++            let _ = std::fs::remove_dir_all(&self.0);
++        }
++    }
++
++    /// The deployment's /etc is merged when it is staged and again when the system shuts down.
++    /// Every change made to /etc between the two is in what the deployment boots with: a file
++    /// added, a file changed, and files that were there at staging (a default of the booted image
++    /// and one the system added itself) and deleted since.
++    #[test]
++    fn test_merge_deployment_etc_again() -> anyhow::Result<()> {
++        let root = PathDir::new("etc-merge-deployment")?;
++        let pristine = root.dir("pristine")?;
++        let current = root.dir("current")?;
++        let image = root.dir("image")?;
++        let deployment = root.0.join("deployment");
++        root.dir("deployment/etc")?;
++
++        for (file, booted, next) in [
++            ("unchanged", "a", "b"),
++            ("tweaked", "a", "b"),
++            ("default-deleted", "a", "b"),
++        ] {
++            pristine.write(file, booted)?;
++            current.write(file, booted)?;
++            image.write(file, next)?;
++        }
++        image.write(".updated", "")?;
++        current.write("tweaked", "mine at staging")?;
++        current.write("added-before", "mine")?;
++
++        // Staging lays down the image's /etc, then merges.
++        copy_image_etc(&root.0.join("image"), &deployment.join("etc"))?;
++        merge_deployment_etc(&deployment, &root.0.join("image"), &pristine, &current)?;
++        let etc = CapStdDir::open_ambient_dir(deployment.join("etc"), cap_std::ambient_authority())?;
++        assert_eq!(etc.read_to_string("unchanged")?, "b");
++        assert_eq!(etc.read_to_string("tweaked")?, "mine at staging");
++        assert_eq!(etc.read_to_string("added-before")?, "mine");
++        assert_eq!(etc.read_to_string("default-deleted")?, "b");
++        drop(etc);
++
++        // The system goes on changing /etc after staging.
++        current.write("added-after", "new")?;
++        current.write("tweaked", "mine at shutdown")?;
++        current.remove_file("added-before")?;
++        current.remove_file("default-deleted")?;
++        current.write(".updated", "")?;
++        // And an earlier merge was cut short.
++        root.dir("deployment/etc.next")?.write("half-written", "x")?;
++
++        merge_deployment_etc(&deployment, &root.0.join("image"), &pristine, &current)?;
++        let etc = CapStdDir::open_ambient_dir(deployment.join("etc"), cap_std::ambient_authority())?;
++        assert_eq!(etc.read_to_string("added-after")?, "new");
++        assert_eq!(etc.read_to_string("tweaked")?, "mine at shutdown");
++        assert!(!etc.try_exists("added-before")?, "a file deleted after staging came back");
++        assert!(!etc.try_exists("default-deleted")?, "a default deleted after staging came back");
++        assert_eq!(etc.read_to_string("unchanged")?, "b");
++        assert!(!etc.try_exists(".updated")?);
++        assert!(!etc.try_exists("half-written")?);
++        assert!(!deployment.join(NEXT_ETC).exists(), "the previous etc was left behind");
++        Ok(())
++    }
+ }
+diff --git a/crates/lib/src/bootc_composefs/finalize.rs b/crates/lib/src/bootc_composefs/finalize.rs
+index 8864ca6..827177d 100644
+--- a/crates/lib/src/bootc_composefs/finalize.rs
++++ b/crates/lib/src/bootc_composefs/finalize.rs
+@@ -4,7 +4,7 @@ use crate::bootc_composefs::boot::BootType;
+ use crate::bootc_composefs::gc::{GCOpts, composefs_gc};
+ use crate::bootc_composefs::rollback::{rename_exchange_bls_entries, rename_exchange_user_cfg};
+ use crate::bootc_composefs::status::get_composefs_status;
+-use crate::composefs_consts::STATE_DIR_ABS;
++use crate::composefs_consts::{STAGED_BOOT_LOADER_ENTRIES, STATE_DIR_ABS, USER_CFG_STAGED};
+ use crate::spec::BootloaderKind;
+ use crate::store::{BootedComposefs, Storage};
+ use anyhow::{Context, Result};
+@@ -14,7 +14,7 @@ use cap_std_ext::cap_std::{ambient_authority, fs::Dir};
+ use cap_std_ext::dirext::CapStdExtDirExt;
+ use composefs::generic_tree::{FileSystem, Stat};
+ use composefs_ctl::composefs;
+-use etc_merge::{Diff, compute_diff, merge, traverse_etc};
++use etc_merge::{Diff, compute_diff, merge_deployment_etc, traverse_etc};
+ use rustix::fs::fsync;
+ 
+ use fn_error_context::context;
+@@ -95,48 +95,55 @@ pub(crate) async fn composefs_backend_finalize(
+         "Staged deployment is not a composefs deployment"
+     ))?;
+ 
+-    // Mount the booted EROFS image to get pristine etc
++    // The staged deployment's /etc is merged again, from its image's own /etc, every time: a
++    // finalize at shutdown after one that already made the deployment the boot plan (run right
++    // after staging, so that a machine that loses power instead of shutting down still boots the
++    // update) carries over what /etc became since, deletions included.
+     let sysroot_fd = storage.physical_root.reopen_as_ownedfd()?;
+-    let composefs_fd = mount_composefs_image(
++    let allow_missing_fsverity = booted_cfs.cmdline.allow_missing_fsverity;
++    let booted_image = TempMount::mount_fd(&mount_composefs_image(
+         &sysroot_fd,
+         &booted_composefs.verity,
+-        booted_cfs.cmdline.allow_missing_fsverity,
+-    )?;
+-
+-    let erofs_tmp_mnt = TempMount::mount_fd(&composefs_fd)?;
+-
+-    // Perform the /etc merge
++        allow_missing_fsverity,
++    )?)?;
++    let staged_image = TempMount::mount_fd(&mount_composefs_image(
++        &sysroot_fd,
++        &staged_composefs.verity,
++        allow_missing_fsverity,
++    )?)?;
+     let pristine_etc =
+-        Dir::open_ambient_dir(erofs_tmp_mnt.dir.path().join("etc"), ambient_authority())?;
++        Dir::open_ambient_dir(booted_image.dir.path().join("etc"), ambient_authority())?;
+     let current_etc = Dir::open_ambient_dir("/etc", ambient_authority())?;
+-
+-    let new_etc_path = Path::new(STATE_DIR_ABS)
+-        .join(&staged_composefs.verity)
+-        .join("etc");
+-
+-    let new_etc = Dir::open_ambient_dir(new_etc_path, ambient_authority())?;
+-
+-    let (pristine_files, current_files, new_files) =
+-        traverse_etc(&pristine_etc, &current_etc, Some(&new_etc))?;
+-
+-    let new_files =
+-        new_files.ok_or_else(|| anyhow::anyhow!("Failed to get dirtree for new etc"))?;
+-
+-    let diff = compute_diff(&pristine_files, &current_files, &new_files)?;
+-    merge(&current_etc, &current_files, &new_etc, &new_files, &diff)?;
+-
+-    // Remove /etc/.updated from the new deployment so that ConditionNeedsUpdate=|/etc
+-    // services (systemd-sysusers, systemd-tmpfiles) run on the first boot, mirroring
+-    // what ostree does in sysroot_finalize_deployment.
+-    new_etc
+-        .remove_file_optional(".updated")
+-        .context("Removing /etc/.updated from staged deployment")?;
+-
+-    // Unmount EROFS
+-    drop(erofs_tmp_mnt);
++    merge_deployment_etc(
++        &Path::new(STATE_DIR_ABS).join(&staged_composefs.verity),
++        &staged_image.dir.path().join("etc"),
++        &pristine_etc,
++        &current_etc,
++    )?;
++    drop(staged_image);
++    drop(booted_image);
+ 
+     let boot_dir = storage.require_boot_dir()?;
+ 
++    // An earlier finalize exchanged the entries already: the /etc merge was all there was to do.
++    let staged_entries_pending = match (
++        booted_composefs.bootloader.kind()?,
++        &staged_composefs.boot_type,
++    ) {
++        (BootloaderKind::GRUBClassic, BootType::Uki) => {
++            boot_dir.open_dir("grub2")?.try_exists(USER_CFG_STAGED)?
++        }
++        _ => staged_bls_entries_pending(&boot_dir.open_dir("loader")?)?,
++    };
++    if !staged_entries_pending {
++        tracing::info!(
++            message_id = COMPOSEFS_FINALIZE_JOURNAL_ID,
++            bootc.operation = "finalize",
++            "Staged deployment already is the boot plan; merged its /etc again"
++        );
++        return Ok(());
++    }
++
+     match booted_composefs.bootloader.kind()? {
+         BootloaderKind::GRUBClassic => match staged_composefs.boot_type {
+             BootType::Bls => {
+@@ -167,6 +174,20 @@ pub(crate) async fn composefs_backend_finalize(
+     Ok(())
+ }
+ 
++/// Whether `loader/entries.staged` still holds an entry to exchange with `loader/entries`. An empty
++/// one is not exchanged: that would leave the boot loader nothing to boot.
++fn staged_bls_entries_pending(loader: &Dir) -> Result<bool> {
++    let Some(staged) = loader.open_dir_optional(STAGED_BOOT_LOADER_ENTRIES)? else {
++        return Ok(false);
++    };
++    for entry in staged.entries()? {
++        if entry?.file_name().as_encoded_bytes().ends_with(b".conf") {
++            return Ok(true);
++        }
++    }
++    Ok(false)
++}
++
+ #[context("Grub: Finalizing staged UKI")]
+ fn finalize_staged_grub_uki(boot_fd: &Dir) -> Result<()> {
+     let entries_dir = boot_fd.open_dir("grub2")?;
+diff --git a/crates/lib/src/bootc_composefs/state.rs b/crates/lib/src/bootc_composefs/state.rs
+index e43447a..ae56692 100644
+--- a/crates/lib/src/bootc_composefs/state.rs
++++ b/crates/lib/src/bootc_composefs/state.rs
+@@ -135,25 +135,10 @@ pub(crate) fn initialize_state(
+             .run_capture_stderr()?;
+     }
+ 
+-    Command::new("cp")
+-        .args([
+-            "-a",
+-            "--remove-destination",
+-            &format!("{}/etc/.", tempdir.dir.path().as_str()?),
+-            &format!("{state_path}/etc/."),
+-        ])
+-        .run_capture_stderr()?;
+-
+-    // Remove /etc/.updated so that ConditionNeedsUpdate=|/etc services
+-    // (e.g. systemd-sysusers, systemd-tmpfiles) run on the first boot of
+-    // this deployment, mirroring what ostree does in sysroot_finalize_deployment.
+-    // Without this, systemd sees /etc/.updated from the container image and
+-    // concludes /etc is already up-to-date, causing sysusers to be skipped.
+-    let state_etc = Dir::open_ambient_dir(format!("{state_path}/etc"), ambient_authority())
+-        .context("Opening state etc dir")?;
+-    state_etc
+-        .remove_file_optional(".updated")
+-        .context("Removing /etc/.updated")?;
++    etc_merge::copy_image_etc(
++        &tempdir.dir.path().join("etc"),
++        state_path.join("etc").as_std_path(),
++    )?;
+ 
+     Ok(())
+ }

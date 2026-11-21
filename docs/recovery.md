@@ -113,9 +113,15 @@ gets there and keeps booting its old deployment, however often it is
 restarted. So Tilo finalizes as soon as the staged entry carries its counter,
 and at every boot for a staged plan whose shutdown never came
 (`tilo-deployment-finalize.service`, running bootc's own
-`composefs-finalize-staged`). A deployment that already is the boot plan has
-nothing left to exchange, which keeps that step idempotent and leaves bootc's
-shutdown hook as the last chance.
+`composefs-finalize-staged`). Shutdown finalizes once more. Finalizing merges
+the staged deployment's /etc (the new image's /etc with the changes made to the
+running one), and every finalize merges it again from the new image's /etc, so
+the deployment boots with /etc as it was when the computer went down: a file
+added, changed or deleted after staging, days or weeks earlier, stays that way.
+A deployment that already is the boot plan only gets its /etc merged again.
+The merged /etc is built beside the deployment's and exchanged with it in one
+rename, so a machine that loses power, even during that merge, boots the update
+with /etc as it was at the last finalize.
 
 The counter is only removed when the boot is declared good.
 `tilo-boot-health.service` is what declares it: it is ordered before

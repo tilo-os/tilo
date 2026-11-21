@@ -503,6 +503,9 @@ ENV CARGO_INCREMENTAL=0 \
 # most of the new image's layers already stored refused to upgrade.
 # And the installer's copy of the booted image writes its layers uncompressed
 # (0005): they were gzipped on one thread only to be unpacked again.
+# And every finalize of a staged deployment merges its /etc again (0006), so
+# the one at shutdown carries over what /etc became after the finalize Tilo
+# makes right after staging.
 # It builds in the OS builder (the base's own libraries, Fedora's Rust), with
 # the ostree, zstd and OpenSSL headers it links against from the frozen RPM snapshot: the CI
 # builder image is an older Fedora, whose installed libraries the snapshot's
@@ -526,7 +529,8 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch \
     os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch \
     os/external-assets/bootc-runtime/0004-composefs-rs-from-its-source-archive.patch \
-    os/external-assets/bootc-runtime/0005-export-uncompressed-layers.patch /patches/
+    os/external-assets/bootc-runtime/0005-export-uncompressed-layers.patch \
+    os/external-assets/bootc-runtime/0006-merge-etc-at-every-finalize.patch /patches/
 # zlink-macros with its generated enum variants in a fixed order (0002 patches
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
@@ -547,7 +551,7 @@ RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-
     && cd "/bootc-${BOOTC_VERSION}" \
     && for p in /patches/*.patch; do patch -p1 < "$p"; done \
     && export CARGO_NET_RETRY=6 \
-    && cargo test --locked -p bootc-internal-blockdev \
+    && cargo test --locked -p bootc-internal-blockdev -p etc-merge \
     && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols \
        cargo build --locked --release -p bootc \
     && install -D -m 0755 target/release/bootc /out/usr/bin/bootc \
