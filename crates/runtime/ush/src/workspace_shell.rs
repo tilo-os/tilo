@@ -42,7 +42,7 @@ use ush_tilo::{Acted, Environment, Keeping, NativeFiles, NoPrograms, Place, Prog
 
 use crate::content::EnvironmentContent;
 use crate::file_actions::{FileAction, Recoverable};
-use crate::hosted_vm::{HostedPrograms, HostedTarget, TerminalSlot, shares_of};
+use crate::hosted_vm::{HostedPrograms, HostedTarget, HeldTerminal, shares_of};
 use crate::machine_programs::MachinePrograms;
 use crate::policy::Policy;
 
@@ -133,7 +133,7 @@ struct Session {
     stopped: Arc<AtomicBool>,
     /// The terminal the shell is on while it runs interactively; its programs and its line
     /// editor find it here.
-    terminal: TerminalSlot,
+    terminal: HeldTerminal,
     secrets: Secrets,
 }
 
@@ -443,7 +443,7 @@ impl WorkspaceShells {
             content: EnvironmentContent::at(root.join("content")),
         });
         let refused = Arc::new(Mutex::new(None));
-        let terminal = TerminalSlot::default();
+        let terminal = HeldTerminal::default();
         let secrets = Secrets::default();
         let programs: Arc<dyn Programs> = match target {
             Some(target) => {
@@ -502,8 +502,8 @@ impl WorkspaceShells {
 
 impl Session {
     fn interactive(&mut self, terminal: OwnedFd, io: Stdio, runs_key: Option<String>) -> i32 {
-        let slot = || self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
-        *slot() = Some(terminal);
+        let held = || self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
+        *held() = Some(terminal);
         self.stopped.store(false, Ordering::SeqCst);
         self.shell.set_stdio(io);
         self.shell.set_render(Render::Text);
@@ -511,7 +511,7 @@ impl Session {
         self.shell.set_var("TERM", TERMINAL);
         let status = self.shell.interactive(&ush_shell::Session { runs_key });
         self.shell.set_stdio(Stdio::null());
-        *slot() = None;
+        *held() = None;
         status
     }
 
@@ -674,7 +674,7 @@ impl Environment for Files {
 
 struct HostPlace {
     stopped: Arc<AtomicBool>,
-    terminal: TerminalSlot,
+    terminal: HeldTerminal,
     cooked: Mutex<Option<libc::termios>>,
 }
 

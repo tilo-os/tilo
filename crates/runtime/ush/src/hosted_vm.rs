@@ -129,7 +129,7 @@ pub trait MachineAgents: Send + Sync {
 
 /// The terminal a session's programs run on, when it has one: its pseudo-terminal's slave,
 /// shared by whoever needs it while the session is attached to it.
-pub type TerminalSlot = std::sync::Arc<std::sync::Mutex<Option<OwnedFd>>>;
+pub type HeldTerminal = std::sync::Arc<std::sync::Mutex<Option<OwnedFd>>>;
 
 pub struct HostedPrograms {
     target: HostedTarget,
@@ -141,7 +141,7 @@ pub struct HostedPrograms {
     /// The workspace's files, which the VM's programs see as `~`.
     home: PathBuf,
     shares: Box<Shares>,
-    terminal: TerminalSlot,
+    terminal: HeldTerminal,
     refusals: Option<std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>>,
     secrets: Option<crate::workspace_shell::Secrets>,
     /// Who serves the machine's agent socket to the programs, and the session they are of.
@@ -166,7 +166,7 @@ impl HostedPrograms {
             environment,
             home,
             shares,
-            terminal: TerminalSlot::default(),
+            terminal: HeldTerminal::default(),
             refusals: None,
             secrets: None,
             agents: None,
@@ -206,11 +206,11 @@ impl HostedPrograms {
         }))
     }
 
-    /// Start each program with what `slot` holds when it starts, set over the shell's
+    /// Start each program with what `secrets` holds when it starts, set over the shell's
     /// variables of the same names: the secrets of the run in progress.
     #[must_use]
-    pub(crate) fn carrying_secrets(mut self, slot: crate::workspace_shell::Secrets) -> Self {
-        self.secrets = Some(slot);
+    pub(crate) fn carrying_secrets(mut self, secrets: crate::workspace_shell::Secrets) -> Self {
+        self.secrets = Some(secrets);
         self
     }
 
@@ -219,8 +219,8 @@ impl HostedPrograms {
     fn environment(&self, env: &[(String, String)]) -> Vec<(String, String)> {
         let mut started: Vec<(String, String)> = match &self.secrets {
             None => env.to_vec(),
-            Some(slot) => {
-                let secrets = slot
+            Some(kept) => {
+                let secrets = kept
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let mut started: Vec<(String, String)> = env
@@ -262,14 +262,14 @@ impl HostedPrograms {
         ]
     }
 
-    /// Tell `slot` each refusal that ends a program, so the caller can
+    /// Tell `refusals` each refusal that ends a program, so the caller can
     /// answer it typed (a run's answer to the agent that asked for it).
     #[must_use]
     pub fn reporting_refusals(
         mut self,
-        slot: std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>,
+        refusals: std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>,
     ) -> Self {
-        self.refusals = Some(slot);
+        self.refusals = Some(refusals);
         self
     }
 
@@ -283,11 +283,11 @@ impl HostedPrograms {
         self
     }
 
-    /// Run programs on whatever terminal `slot` holds when each starts: a session whose
+    /// Run programs on whatever terminal `held` holds when each starts: a session whose
     /// terminal comes and goes ([`crate::workspace_shell::WorkspaceShells::interactive`]).
     #[must_use]
-    pub fn on_terminal_of(mut self, slot: TerminalSlot) -> Self {
-        self.terminal = slot;
+    pub fn on_terminal_of(mut self, held: HeldTerminal) -> Self {
+        self.terminal = held;
         self
     }
 
@@ -469,8 +469,8 @@ impl HostedPrograms {
                 if refusal.awaits_the_account() {
                     self.mark(io, &|key| held_mark(key, agent, &refusal));
                 }
-                if let Some(slot) = &self.refusals {
-                    *slot
+                if let Some(told) = &self.refusals {
+                    *told
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(refusal.clone());
                 }
