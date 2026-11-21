@@ -137,7 +137,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.lang.notes.Note`."""
-    __surface__ = "so.tilo.lang.notes@0f7ba6ca9d5c382a"
+    __surface__ = "so.tilo.lang.notes@2574c97af6c5e5f3"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -158,6 +158,10 @@ class Note(Resource):
     @_2od7mwir.setter
     def _2od7mwir(self, value: str) -> None:
         self.edit("2od7mwir", value=value)
+
+    def new_child(self) -> Note:
+        """Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row. It is `n`'s action, so the window offers it for the note it shows and a person reaches it by the shortcut or the note's row."""
+        return self.action("new_child")
 
     def pin(self,
         *,
@@ -275,12 +279,12 @@ class Note(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "insert_image", "insert_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
+    __actions__ = frozenset({"new_child", "pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "insert_image", "insert_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
 
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.lang.notes.Notebook`."""
-    __surface__ = "so.tilo.lang.notes@0f7ba6ca9d5c382a"
+    __surface__ = "so.tilo.lang.notes@2574c97af6c5e5f3"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
 
@@ -296,10 +300,6 @@ class Notebook(Resource):
         if body is not None:
             args["body"] = body
         return self.action("new_note", **args)
-
-    def new_child(self, *, n: Note) -> Note:
-        """Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row."""
-        return self.action("new_child", n=n)
 
     def move_to(self,
         *,
@@ -419,10 +419,10 @@ class Notebook(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_note", "new_child", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "export_notebook", "import_markdown", "import_page", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
+    __actions__ = frozenset({"new_note", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "export_notebook", "import_markdown", "import_page", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
 
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.lang.notes`."""
-    __surface__ = "so.tilo.lang.notes@0f7ba6ca9d5c382a"
+    __surface__ = "so.tilo.lang.notes@2574c97af6c5e5f3"
 
