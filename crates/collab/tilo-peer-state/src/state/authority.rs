@@ -71,9 +71,13 @@ fn access_of(
 }
 
 /// What [`StatePeer::authorize_document`] decided of a change.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "matched where it is decided, never kept or moved far"
+// On the page's target the variants are near enough in size that the lint holds nothing back.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::large_enum_variant,
+        reason = "matched where it is decided, never kept or moved far"
+    )
 )]
 pub(super) enum Authorized {
     /// It is its author's to make, under `member`. `history` when its
@@ -800,11 +804,10 @@ impl StatePeer {
             .judged_under(app, document, write, true)
             .map_err(|_| MembershipError::GovernanceMissing)?
         {
-            Under::Now => self.written_as(app, document, write, now)?,
+            Under::Now | Under::Unresolved(None) => self.written_as(app, document, write, now)?,
             Under::Past(judged) | Under::Unresolved(Some(judged)) => {
                 judged.written_as(app, document, write, now)?
             }
-            Under::Unresolved(None) => self.written_as(app, document, write, now)?,
             Under::Missing => return Err(MembershipError::GovernanceMissing),
         };
         written

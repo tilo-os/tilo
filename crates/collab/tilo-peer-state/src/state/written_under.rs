@@ -109,6 +109,42 @@ fn forked(doc: &CachedDocument, heads: &BTreeSet<ChangeHash>) -> Result<CachedDo
     Ok(fork)
 }
 
+/// How a write that names the governance heads `named` was written, as `doc` holds them, and
+/// the changes of `doc` the governance it was written under is the one at.
+fn written_at(
+    doc: &CachedDocument,
+    named: &BTreeSet<[u8; 4]>,
+    retained: bool,
+) -> (Written, BTreeSet<ChangeHash>) {
+    let changes = doc.changes_named();
+    let mut heads = BTreeSet::new();
+    let mut unknown = Vec::new();
+    for head in named {
+        match changes.by_head.get(head) {
+            Some(found) => heads.extend(found.iter().copied()),
+            None => unknown.push(*head),
+        }
+    }
+    let written = if named.is_empty() {
+        Written::Unnamed
+    } else if unknown.is_empty() {
+        Written::Named
+    } else {
+        // Heads this copy does not hold: of the history a base replaced,
+        // or on their way.
+        let replaced = workspace::base::replaced(doc);
+        let based = workspace::base::generation(doc) > 0
+            && (retained || unknown.iter().all(|head| replaced.contains(head)));
+        if based {
+            heads.extend(changes.roots.iter().copied());
+            Written::BeforeBase
+        } else {
+            Written::Unresolved
+        }
+    };
+    (written, heads)
+}
+
 impl StatePeer {
     /// The governance `write`, a write to `document` of `app`, is judged by:
     /// the one at the heads it names, with every change since that took its
@@ -140,31 +176,7 @@ impl StatePeer {
             return Ok(Under::Now);
         }
         let changes = doc.changes_named();
-        let mut heads = BTreeSet::new();
-        let mut unknown = Vec::new();
-        for head in &named {
-            match changes.by_head.get(head) {
-                Some(found) => heads.extend(found.iter().copied()),
-                None => unknown.push(*head),
-            }
-        }
-        let written = if named.is_empty() {
-            Written::Unnamed
-        } else if unknown.is_empty() {
-            Written::Named
-        } else {
-            // Heads this copy does not hold: of the history a base replaced,
-            // or on their way.
-            let replaced = workspace::base::replaced(doc);
-            let based = workspace::base::generation(doc) > 0
-                && (retained || unknown.iter().all(|head| replaced.contains(head)));
-            if based {
-                heads.extend(changes.roots.iter().copied());
-                Written::BeforeBase
-            } else {
-                Written::Unresolved
-            }
-        };
+        let (written, mut heads) = written_at(doc, &named, retained);
         let author = write.author.as_bytes();
         let person = self
             .core
