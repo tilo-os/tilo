@@ -193,7 +193,7 @@ impl FollowBanner {
         following: Option<Option<RosterRow>>,
     ) -> bool {
         let BannerFrame { cursor, motion, .. } = place;
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         let stopped = self
             .stopped
             .filter(|at| now.saturating_duration_since(*at) < STOPPED_FOR);

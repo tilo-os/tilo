@@ -1550,7 +1550,7 @@ impl PeopleOverlay {
     }
 
     pub fn needs_animation_frame(&self) -> bool {
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         self.reveal.is_moving(now)
             || self.scroll_theme.as_ref().is_some_and(|theme| {
                 self.scroll

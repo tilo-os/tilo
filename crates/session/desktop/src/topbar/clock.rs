@@ -82,7 +82,7 @@ impl TopBarChrome {
     ) {
         let area_w = self.center_band_width(theme, text_renderer);
         let target_w = self.center_pill_width(theme, text_renderer, area_w);
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         if (self.center_area.width() - area_w).abs() > 0.5 {
             // A new area (the bar's first layout, a resized display): the selector takes its width
             // as it is.
@@ -368,7 +368,7 @@ impl TopBarChrome {
         }
         let content_cx = self.paint_center_band(scene, transform, theme);
         // The time and a live activity cross-fade in place.
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         let mut layers = Vec::with_capacity(2);
         if let Some((activity, opacity)) = self.center_fade.outgoing(now) {
             layers.push((*activity, opacity));

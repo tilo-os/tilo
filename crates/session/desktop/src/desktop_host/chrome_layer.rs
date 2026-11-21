@@ -2827,11 +2827,12 @@ impl Widget for DesktopChrome {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.hints.needs_animation_frame(ui::time::now())
+        let now = ui::motion::frame_now();
+        self.hints.needs_animation_frame(now)
             || self.emoji.needs_animation_frame()
-            || self.peek.is_moving(ui::time::now())
-            || self.identify.is_moving(ui::time::now())
-            || self.navigator.needs_animation_frame(ui::time::now())
+            || self.peek.is_moving(now)
+            || self.identify.is_moving(now)
+            || self.navigator.needs_animation_frame(now)
             || self
                 .children()
                 .iter()

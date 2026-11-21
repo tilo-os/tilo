@@ -305,7 +305,7 @@ impl WidgetLayer {
     pub fn lift(&self, id: WidgetId) -> f64 {
         self.lifts
             .get(&id)
-            .map_or(0.0, |lift| lift.get(ui::time::now()).clamp(0.0, 1.0))
+            .map_or(0.0, |lift| lift.get(ui::motion::frame_now()).clamp(0.0, 1.0))
     }
 
     /// Lift `id` under the hand, or set it down.
@@ -1206,7 +1206,7 @@ impl Widget for WidgetLayer {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         self.motion = theme.motion();
         self.tick(now);
         let today = ui::clock::local_now().date();

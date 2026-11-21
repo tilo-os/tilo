@@ -2115,7 +2115,7 @@ impl Widget for Panel {
     /// a bubble or a reaction is playing, or the banner is still on its way in or out. A shell where
     /// a remote pointer rests where it was drawn asks for no frame.
     fn needs_redraw(&self) -> bool {
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         if self.shown.borrow().pinned.is_some() {
             // The pinned roster draws while its cards arrive and move, and when what the workspace
             // says of its people changed: a pointer at rest asks for no frame.

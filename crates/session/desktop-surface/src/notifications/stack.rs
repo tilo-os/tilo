@@ -1707,7 +1707,7 @@ impl NotificationStack {
 
     /// Whether a banner on screen is mid-entry or mid-exit.
     pub fn needs_animation_frame(&self) -> bool {
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         if self.slots.iter().any(|(_, slot)| slot.is_moving(now))
             || self.slides.iter().any(|slide| slide.x.is_moving(now))
             || self.swipe.is_some_and(|drag| drag.dragging)
