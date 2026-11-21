@@ -321,17 +321,32 @@ fn missing_in(
     names.filter(|name| !held.contains(name.as_bytes())).count()
 }
 
-/// What `server`'s tool `name` answers with `arguments`, which must succeed.
+/// What `server`'s tool `name` answers with `arguments`, which must end well: a call still
+/// running past the session's hold is followed through `tilo_status` until it ends, as
+/// `tilo do` follows it.
 async fn did(
     server: &tilo_mcp::McpServer<tilo_session_actions::SessionActions>,
     name: &str,
     arguments: Value,
 ) -> String {
-    let answer = server
-        .handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": name, "arguments": arguments}}))
-        .await
-        .expect("a call is answered");
+    let mut answer = call(server, name, arguments.clone()).await;
+    // An action larger than the hold answers `pending <invocation>`: the product's way on is
+    // the invocation's status, which answers once it ended.
+    while let Some(invocation) = pending_of(&answer) {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "{name} {arguments}: the invocation never ended"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let status = call(server, "tilo_status", json!({"invocation_id": invocation})).await;
+            if pending_of(&status).is_none() {
+                answer = status;
+                break;
+            }
+        }
+    }
     let text = answer["result"]["content"]
         .as_array()
         .into_iter()
@@ -344,6 +359,30 @@ async fn did(
         "{name} {arguments}: {answer}"
     );
     text
+}
+
+/// The invocation `answer` says is still pending, if it says so.
+fn pending_of(answer: &Value) -> Option<String> {
+    let text = answer["result"]["content"]
+        .as_array()?
+        .iter()
+        .filter_map(|block| block["text"].as_str())
+        .find(|text| text.starts_with("pending "))?;
+    let rest = text.strip_prefix("pending ")?;
+    rest.split(':').next().map(str::to_owned)
+}
+
+/// What `server`'s tool `name` answers with `arguments`, unanswered or not.
+async fn call(
+    server: &tilo_mcp::McpServer<tilo_session_actions::SessionActions>,
+    name: &str,
+    arguments: Value,
+) -> Value {
+    server
+        .handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": name, "arguments": arguments}}))
+        .await
+        .expect("a call is answered")
 }
 
 /// The note id an answer names after `"page":`.
