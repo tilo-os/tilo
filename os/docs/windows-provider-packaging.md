@@ -74,7 +74,9 @@ Refresh the ARM OS RPM snapshot after changing these roots.
 
 The assembly record is `/usr/share/tilo/windows/provider.json`. It records both
 input digests and validated payload inventories. No global binfmt registration
-is introduced. VM fallback, Proton, Steam runtime and UMU assets remain included.
+is introduced. The VM fallback remains available. An ARM extension carries FEX,
+the x86 guest root and the Windows VM media only: Proton and its catalogue stay
+an x86 extension input, because an ARM computer plans no Proton route.
 
 ## Acceptance still required
 

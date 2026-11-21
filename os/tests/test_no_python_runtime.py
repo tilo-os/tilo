@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The finished rootfs ships no Python beyond umu-launcher and the reviewed packages."""
+"""The finished rootfs ships no Python beyond the reviewed packages."""
 import json
 import os
 from pathlib import Path
@@ -63,11 +63,9 @@ class PythonCheck(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_rejected(self.run_check([(path, content, 0o755)]), path)
 
-    def test_rpm_owned_files_umu_and_comments_pass(self):
+    def test_rpm_owned_files_and_comments_pass(self):
         files = [
             ('/usr/bin/firewall-cmd', '#!/usr/bin/python3\n', 0o755),
-            ('/usr/libexec/tilo-umu-run', '#!/usr/bin/env python3\n', 0o755),
-            ('/usr/libexec/umu_run.py', 'import os\n', 0o644),
             ('/usr/libexec/tilo-install', '#!/bin/bash\n# no python3 here, only a mention\necho ok\n', 0o755),
             ('/usr/libexec/tilo-session', '#!/bin/sh\nexec /usr/bin/tilo-session\n', 0o755),
             ('/usr/share/doc/tilo/notes.txt', 'run python3 tools/x.py\n', 0o644),

@@ -148,7 +148,9 @@ them the translator is the Steam Runtime's own container nested inside the
 capsule, which a capsule's sandbox refuses. Windows Apps therefore refuses a
 Proton start on an ARM computer and says why, naming that the program opens
 with Wine here. Choosing Proton on such a computer is kept, and the refusal
-comes when the program is started; Wine on ARM is unaffected.
+comes when the program is started; Wine on ARM is unaffected. The ARM Windows
+extension therefore carries FEX, the x86 guest root and the Windows VM media,
+and no Proton; an x86 extension carries Proton and no Steam Runtime.
 
 In a capsule Proton uses Wine's own synchronization: its esync and fsync keep
 shared memory in `/dev/shm`, which a capsule cannot write, and this Proton's
@@ -391,8 +393,9 @@ service shows a repair state.
 Every operation is a Tilo action on a resource, so assistive technology,
 automation, members and tests use the same surface as the window.
 
-The image ships one pinned Wine runner and one pinned UMU/Proton runtime, so a
-fresh installation works offline after it acquires applications. Other runners
+An x86 image ships one pinned Wine runner and one pinned UMU/Proton runtime, so a
+fresh installation works offline after it acquires applications; an ARM image
+ships Wine through its pinned FEX and x86 guest root, and no Proton. Other runners
 are verified, content-addressed objects, activated atomically; a capsule keeps
 its previous runner until a migration succeeds. Catalogue updates are versioned
 and authenticated, and a bad update rolls back without touching program state. A

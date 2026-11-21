@@ -11,8 +11,6 @@ bind_file() {
 }
 bind_file /inputs/tilo-launcher /usr/libexec/tilo/tilo-launcher
 bind_file /inputs/tilo-windows-runtime /usr/libexec/tilo-windows-runtime
-bind_file /inputs/umu_run.py /usr/libexec/umu_run.py
-bind_file /inputs/umu_run.py /usr/libexec/tilo-umu-run
 for name in fex-emulator.json fex-graphics-provider.json; do
     bind_file "/inputs/$name" "/usr/share/tilo/windows/$name"
 done

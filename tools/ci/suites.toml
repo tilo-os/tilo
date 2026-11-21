@@ -2039,10 +2039,6 @@ check = "image-fex-buildroot"
 reason = "proves the pinned NASM 2.16.03 the FEX build uses keeps the SMSW operand-size encodings; image-fex-buildroot runs it while it builds that assembler, and the system NASM is a newer major on purpose"
 
 [[unrequired]]
-suite = "os/tests/fex-proton-smoke.py"
-reason = "needs a verified Proton runtime and x86 guest rootfs, native ARM pressure-vessel and FEX inside a disposable container; no check produces those runtimes, and the payload image that carries FEX runs nothing"
-
-[[unrequired]]
 suite = "os/tests/fex-wine-smoke.py"
 reason = "needs an installed native FEX runtime, a verified x86 guest rootfs and an init process in a disposable container; t builds FEX only into the artifact payload image (image-fex-payload, which runs nothing) and the guest rootfs only inside the windows-compat OS layer, so no check has an environment to give it"
 
@@ -2087,7 +2083,7 @@ reason = "needs real root, loop devices and vfat/Btrfs mounts, which only a micr
 
 [[unrequired]]
 suite = "os/tests/kernel-arm-capsule-smoke.py"
-reason = "boots QEMU on native ARM from a native OCI root, with the FEX, Proton and Steam runtime inputs and the exported capsule plans no check builds"
+reason = "boots QEMU on native ARM from a native OCI root, with the FEX and x86 guest root inputs and the exported capsule plans no check builds"
 
 [[unrequired]]
 suite = "os/tests/kernel-landlock-private-tmp.sh"

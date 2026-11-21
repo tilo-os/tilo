@@ -643,17 +643,14 @@ COPY --from=windows-provider /out/usr/ /usr/
 RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/tilo-windows-provider.py,ro \
     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["provider"] in ("none","fex-traditional-wine","native-wine"), d["provider"]' \
       /usr/share/tilo/windows/provider.json
-# Windows compatibility on demand: the FEX payload, the x86 guest root, Proton,
-# the Steam runtime and the virtio-win media (about 3.1 GB, a quarter of /usr)
-# are NOT in this image. They are the signed system extension built by the
-# windows-compat-sysext stage, which a person installs with an explicit
-# action the first time they enable Windows apps or create a Windows VM
-# (tilo-extension install:windows-compat). It overlays the same /usr paths, so
-# nothing that names them changes. What stays here is small: the UMU launcher,
-# the catalogues, the provider record with the payload's pinned hashes, and the
+# Windows compatibility on demand: the FEX payload, the x86 guest root, Proton
+# and the virtio-win media are NOT in this image. They are the signed system
+# extension built by the windows-compat-sysext stage, which a person installs
+# with an explicit action the first time they enable Windows apps or create a
+# Windows VM (tilo-extension install:windows-compat). It overlays the same /usr
+# paths, so nothing that names them changes. What stays here is small: the
+# catalogues, the provider record with the payload's pinned hashes, and the
 # contracts the host needs to explain an absent payload.
-COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/tilo-umu-run
-COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
 COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/tilo/windows/catalogues/
 # The VM is defined only after an owner supplies installation media. These
 # immutable host/guest contracts deliberately ship no Windows image or key.

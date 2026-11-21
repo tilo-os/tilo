@@ -40,7 +40,7 @@ if [[ $revision != "$T_COMMIT" ]]; then
   git merge-base --is-ancestor "$revision" "$T_COMMIT" || die "$revision is not on main before $T_COMMIT"
   mapfile -t reads < <(python3 -I tools/ci/os/pieces.py inputs windows-compat --given '')
   # What decides the payload besides the files its stages copy: the stages themselves, the
-  # pinned downloads (Proton, the Steam runtime, UMU) and the base its tools work in.
+  # pinned downloads (Proton, its catalogue) and the base its tools work in.
   reads+=(os/image/helpers os/image/args.Containerfile os/image/layers.toml
     os/external-assets/github-assets.tsv os/base-snapshot.env)
   paths=()

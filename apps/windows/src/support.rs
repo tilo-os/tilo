@@ -297,12 +297,12 @@ mod tests {
     #[test]
     fn a_program_page_shows_the_size_the_catalogue_publishes() {
         let catalogue = SizeDisclosure {
-            download_bytes: 3_400_000_000,
-            installed_bytes: 3_400_000_000,
+            download_bytes: 2_518_488_726,
+            installed_bytes: 2_518_488_726,
         };
         assert_eq!(
             missing_message(&catalogue),
-            "This program needs it to open. It's a download of about 3.4 GB."
+            "This program needs it to open. It's a download of about 2.6 GB."
         );
         let staged = SizeDisclosure {
             download_bytes: 2_100_000_000,
@@ -316,8 +316,8 @@ mod tests {
     #[test]
     fn support_arriving_from_another_view_is_announced() {
         let disclosure = SizeDisclosure {
-            download_bytes: 3_400_000_000,
-            installed_bytes: 3_400_000_000,
+            download_bytes: 2_518_488_726,
+            installed_bytes: 2_518_488_726,
         };
         assert!(arrived(
             &Readiness::NeedsInstall(disclosure),

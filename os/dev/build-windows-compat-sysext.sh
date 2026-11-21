@@ -3,8 +3,8 @@
 #
 #   build-windows-compat-sysext.sh TREE OUT.raw
 #
-# TREE holds only /usr content (the FEX payload, the x86 guest root, Proton, the
-# Steam runtime, the virtio-win media). The image overlays those exact paths on
+# TREE holds only /usr content (the FEX payload, the x86 guest root, Proton on
+# x86, the virtio-win media). The image overlays those exact paths on
 # the sealed /usr, so every hard-coded path keeps working once it is merged. It
 # is a bare read-only file system, no partition table, named
 # tilo-windows-compat.raw so systemd-sysext reads

@@ -87,10 +87,11 @@ the disk or the desktop. Nothing is published and the disk is uncompressed (a
 
 ## Windows support (Proton) on a dev image
 
-Proton and the Steam runtime are not in the image: they are the `windows-compat`
-download (`/usr/share/tilo/system-extensions/README.md`), a 3.4 GB system
-extension a device installs from a signed manifest. A manifest exists only for
-an image CI resolved it for, keyed by that image's package set, so test it on a
+The Windows runners are not in the image: they are the `windows-compat`
+download (`/usr/share/tilo/system-extensions/README.md`), a system extension of
+about 2.5 GB a device installs from a signed manifest. On x86 it carries Proton;
+on ARM it carries FEX and the x86 guest root, and no Proton. A manifest exists
+only for an image CI resolved it for, keyed by that image's package set, so test it on a
 published dev image, not on a disk of your own tree (its packages resolve anew
 and match no manifest: the install answers "Not available for this version of
 Tilo yet").
@@ -113,7 +114,7 @@ install it the way Settings does:
 ```sh
 sudo systemctl start tilo-extension@install:windows-compat.service
 sudo /usr/libexec/tilo-extension status:windows-compat   # installing -> installed
-ls /usr/lib/tilo/windows-runners                          # proton, steam-runtime
+ls /usr/lib/tilo/windows-runners                          # proton on x86; x86 on ARM
 ```
 
 An image that would change `/usr` when merged (an entry not owned by root,

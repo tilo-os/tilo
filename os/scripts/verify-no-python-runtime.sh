@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
 # Runtime code in the image is compiled. The finished rootfs ships no Python
-# program of Tilo's own and no Tilo file that runs one; the one Python program
-# Tilo ships on purpose is umu-launcher, through which Proton runs Windows
-# games. python3 is installed for umu-launcher and for the distribution
-# packages listed below, and for nothing else. Run inside the finished rootfs
-# after the last package change.
+# program of Tilo's own and no file that runs one. python3 is installed for the
+# Windows extension's Proton, whose own script the compatibility service starts
+# with it, and for the distribution packages listed below, and for nothing
+# else. Run inside the finished rootfs after the last package change.
 set -euo pipefail
 rpm_bin="${TILO_RPM_BIN:-rpm}"
 root="${TILO_ROOTFS:-/}"
 root="${root%/}"
 
-# Python programs shipped outside any RPM, by path, then why.
-shipped_exceptions='/usr/libexec/tilo-umu-run umu-launcher, the Proton runtime launcher (a Python zipapp); no compiled equivalent exists
-/usr/libexec/umu_run.py umu-launcher, the module tilo-umu-run imports'
-
 # Distribution packages that require Python, then why. An entry is a
 # replacement still owed or a reviewed distribution dependency, not a licence
 # for Tilo code: python3 must not become a dependency of anything else.
-package_exceptions='python3 the interpreter, for umu-launcher
-python3-libs the interpreter, for umu-launcher
-python-unversioned-command the interpreter, for umu-launcher
+package_exceptions='python3 the interpreter, for the Proton script in the Windows extension
+python3-libs the interpreter, for the Proton script in the Windows extension
+python-unversioned-command the interpreter, for the Proton script in the Windows extension
 firewalld the system firewall: firewalld, firewall-cmd and firewall-offline-cmd are Python
 crypto-policies-scripts update-crypto-policies is Python
 policycoreutils-python-utils semanage, audit2allow and chcat (SELinux policy management) are Python
@@ -63,14 +58,9 @@ fi
   | LC_ALL=C sort -u >"$present"
 # The image holds tens of thousands of unowned files: the loop below reads
 # each one's first line without starting a process, so it takes seconds.
-declare -A allowed_files=()
-while read -r allowed _; do
-  [ -n "$allowed" ] && allowed_files[$allowed]=1
-done <<<"$shipped_exceptions"
 python_files=()
 while IFS= read -r path; do
   [ -n "$path" ] || continue
-  [ -z "${allowed_files[$path]:-}" ] || continue
   file="$root$path"
   case "$path" in
     *.pyc) continue ;;
@@ -98,4 +88,4 @@ fi
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
-echo 'no Python on the runtime path beyond umu-launcher and the reviewed packages'
+echo 'no Python on the runtime path beyond the reviewed packages'

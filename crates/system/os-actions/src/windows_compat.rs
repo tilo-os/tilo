@@ -10,11 +10,19 @@ pub const ID: &str = "windows-compat";
 /// The one sysext part of the extension.
 pub const PART: &str = "tilo-windows-compat";
 /// Files whose presence means the merged payload is there; the compatibility service and the Windows VM
-/// definition both name them.
-pub const PAYLOAD_MARKERS: [&str; 2] = [
-    "/usr/lib/tilo/windows-runners/proton",
-    "/usr/share/virtio-win/virtio-win.iso",
-];
+/// definition both name them. An x86 extension carries Proton; an ARM extension carries the x86
+/// guest root Wine is translated from and plans no Proton, so the runner marker differs.
+pub const PAYLOAD_MARKERS: [&str; 2] = if cfg!(target_arch = "aarch64") {
+    [
+        "/usr/lib/tilo/windows-runners/x86",
+        "/usr/share/virtio-win/virtio-win.iso",
+    ]
+} else {
+    [
+        "/usr/lib/tilo/windows-runners/proton",
+        "/usr/share/virtio-win/virtio-win.iso",
+    ]
+};
 
 #[must_use]
 pub fn id() -> ExtensionId {
@@ -253,8 +261,8 @@ mod tests {
 
     fn disclosure() -> SizeDisclosure {
         SizeDisclosure {
-            download_bytes: 3_400_000_000,
-            installed_bytes: 3_400_000_000,
+            download_bytes: 2_518_488_726,
+            installed_bytes: 2_518_488_726,
         }
     }
 
@@ -265,7 +273,7 @@ mod tests {
         {
             let shipped = SizeDisclosure::parse(CATALOGUE).expect("size disclosure in the catalogue");
             assert_eq!(shipped, disclosure());
-            assert_eq!(shipped.sentence().matches("about 3.4 GB").count(), 2, "{}", shipped.sentence());
+            assert_eq!(shipped.sentence().matches("about 2.6 GB").count(), 2, "{}", shipped.sentence());
         }
 
         phase a_catalogue_without_sizes_discloses_nothing;
@@ -288,7 +296,8 @@ mod tests {
         {
             let root = tempfile::tempdir().unwrap();
             assert!(!payload_present_under(root.path()));
-            std::fs::create_dir_all(root.path().join("usr/lib/tilo/windows-runners/proton")).unwrap();
+            let runner = root.path().join(PAYLOAD_MARKERS[0].trim_start_matches('/'));
+            std::fs::create_dir_all(&runner).unwrap();
             assert!(
                 !payload_present_under(root.path()),
                 "virtio media is missing"
@@ -311,7 +320,7 @@ mod tests {
             assert_eq!(needs, Readiness::NeedsInstall(disclosure()));
             assert!(needs.can_install());
             assert!(needs.message().contains("not installed"));
-            assert!(needs.message().contains("about 3.4 GB"));
+            assert!(needs.message().contains("about 2.6 GB"));
             assert!(matches!(
                 Readiness::from_facts(false, offered, &status(r#"{"state":"installing"}"#)),
                 Readiness::Installing(None)

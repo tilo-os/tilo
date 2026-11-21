@@ -2512,11 +2512,13 @@ mod payload_tests {
             let containerfile = include_str!("../../../../os/Containerfile");
             for packed in [
                 "/tree/usr/lib/tilo/windows-runners/proton/",
-                "/tree/usr/lib/tilo/windows-runners/steam-runtime/",
                 "/payload/usr/lib/tilo/windows-runners",
             ] {
                 assert!(containerfile.contains(packed), "{packed}");
             }
+            // Proton starts on the system's libraries, never in the Steam
+            // Runtime's nested sandbox, so the runtime is not payload.
+            assert!(!containerfile.contains("steam-runtime"));
             for host in [PROTON_HOST, X86_ROOTFS_HOST] {
                 assert!(
                     PAYLOAD_PATHS.iter().any(|prefix| host.starts_with(prefix)),

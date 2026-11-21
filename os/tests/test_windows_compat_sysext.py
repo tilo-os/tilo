@@ -1,10 +1,11 @@
 """Contract: Windows compatibility is a signed system extension, not image content.
 
-The payload (FEX, the x86 guest root, Proton, the Steam runtime, virtio-win) is
-about 3 GB. It must stay out of the final rootfs, be packed by one named stage,
-overlay the paths the hard-coded readers use, be offered by the image's
-extension catalogue. Only a CI image build can prove the bytes; this proves
-the payload paths cannot silently drift back into the image.
+The payload (FEX, the x86 guest root, Proton on x86, virtio-win) is about 2.5 GB.
+It must stay out of the final rootfs, be packed by one named stage, overlay the
+paths the hard-coded readers use, be offered by the image's extension catalogue.
+Only a CI image build can prove the bytes; this proves the payload paths cannot
+silently drift back into the image, and that payload nothing starts is not
+packed at all.
 """
 
 import json
@@ -21,7 +22,6 @@ PLAN = (REPO / "crates/windows/compat-service/src/plan.rs").read_text()
 # What the compatibility service and the Windows VM name by absolute path.
 PAYLOAD_PATHS = (
     "/usr/lib/tilo/windows-runners/proton/",
-    "/usr/lib/tilo/windows-runners/steam-runtime/",
     "/usr/share/virtio-win/virtio-win.iso",
     "/usr/share/virtio-win/installer/virtio-win-guest-tools.exe",
 )
@@ -56,6 +56,11 @@ class FinalImageCarriesNoPayload(unittest.TestCase):
         for path in ("/usr/lib/tilo/windows-runners", "/usr/share/virtio-win"):
             self.assertNotRegex(final, rf"(?m)^COPY .* {re.escape(path)}",
                                 f"{path} must come from the sysext, not the rootfs")
+        # Nothing starts Proton through the UMU launcher any more: an x86
+        # capsule starts Proton's own script, and an ARM computer plans no
+        # Proton route at all.
+        self.assertNotIn("/usr/libexec/tilo-umu-run", final)
+        self.assertNotIn("/usr/libexec/umu_run.py", final)
 
 
 class SysextStagePacksThePayload(unittest.TestCase):
@@ -65,14 +70,19 @@ class SysextStagePacksThePayload(unittest.TestCase):
             self.assertIn(f"/tree{path}", packed, f"{path} is missing from the sysext tree")
         self.assertIn("COPY --from=windows-provider /payload/ /tree/", packed)
 
+    def test_the_withdrawn_steam_runtime_is_not_packed(self):
+        # A capsule's Landlock refuses the Steam Runtime's nested sandbox, so
+        # Proton starts on the system's libraries and the runtime ships nowhere.
+        self.assertNotIn("steam-runtime", STAGES["windows-compat-sysext-build"])
+
 
 class CatalogueOffersIt(unittest.TestCase):
 
 
     def test_planner_probes_exactly_the_paths_the_sysext_provides(self):
         # Every host path the planner names must live under the tree the
-        # sysext overlays. Proton runs on the system's libraries, so the Steam
-        # runtime is packed for the game path but no host constant names it.
+        # sysext overlays. Proton runs on the system's libraries, so no host
+        # constant names a Steam runtime or a launcher.
         hosts = dict(re.findall(r'(?m)^const ([A-Z0-9_]+_HOST): &str = "([^"]+)";', PLAN))
         self.assertEqual(sorted(hosts), ["PROTON_HOST", "X86_ROOTFS_HOST"])
         for name, value in hosts.items():

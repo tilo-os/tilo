@@ -53,11 +53,9 @@ static void prepare(void) {
     directory("/scratch/upper"); directory("/scratch/work");
     attach("overlay", "/vm", "overlay", 0,
            "lowerdir=/native,upperdir=/scratch/upper,workdir=/scratch/work");
-    const char *tags[] = {"inputs", "x86", "proton", "steam"};
+    const char *tags[] = {"inputs", "x86"};
     const char *targets[] = {
-        "/vm/inputs", "/vm/usr/lib/tilo/windows-runners/x86",
-        "/vm/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4",
-        "/vm/usr/lib/tilo/windows-runners/steam-runtime/SteamLinuxRuntime_sniper"
+        "/vm/inputs", "/vm/usr/lib/tilo/windows-runners/x86"
     };
     for (size_t i = 0; i < sizeof(tags)/sizeof(tags[0]); ++i) {
         if (guest_block && i == 1) {

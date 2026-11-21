@@ -29,8 +29,8 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("kernel", "modules", "x86-rootfs", "proton", "steam-runtime",
-                 "umu", "test-binary", "launcher", "helper", "manifests", "output"):
+    for name in ("kernel", "modules", "x86-rootfs",
+                 "test-binary", "launcher", "helper", "manifests", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--native-image", required=True)
     parser.add_argument("--guest-squashfs", type=Path,
@@ -92,7 +92,7 @@ def main():
     if modules:
         raise RuntimeError(f"missing modules: {modules}")
     artifacts = {"compat-tests": args.test_binary, "tilo-launcher": args.launcher,
-                 "tilo-windows-runtime": args.helper, "umu_run.py": args.umu,
+                 "tilo-windows-runtime": args.helper,
                  "run.sh": fixtures / "arm-capsule-vm-run.sh"}
     for name in ("fex-emulator.json", "fex-graphics-provider.json"):
         artifacts[name] = args.manifests / name
@@ -131,8 +131,7 @@ def main():
                 "-nic", "none", "-kernel", str(args.kernel.resolve()),
                 "-initrd", str(out / "initramfs.cpio.gz"),
                 "-append", "console=ttyAMA0 rdinit=/init panic=1"]
-        shares = {"native": Path(native), "inputs": inputs, "x86": args.x86_rootfs,
-                  "proton": args.proton, "steam": args.steam_runtime}
+        shares = {"native": Path(native), "inputs": inputs, "x86": args.x86_rootfs}
         if args.guest_squashfs:
             del shares["x86"]
             if "," in str(args.guest_squashfs):

@@ -257,7 +257,7 @@ manifest bytes, as `cosign sign-blob` writes it. Verified by
 
 Not every optional extension is assembled from upstream packages. Windows
 compatibility (`windows-compat`: the FEX payload and x86 guest root on ARM,
-Proton, the Steam runtime and the virtio-win media, about 3 GB) is built by Tilo
+Proton on x86, and the virtio-win media) is built by Tilo
 CI as one read-only file-system image, `tilo-windows-compat.raw`
 (`windows-compat-sysext` in `os/Containerfile`, `os/dev/build-windows-compat-sysext.sh`),
 and is **not part of the OS image**. It overlays exactly the `/usr` paths the
