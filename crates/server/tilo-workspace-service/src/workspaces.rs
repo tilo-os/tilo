@@ -1747,8 +1747,12 @@ impl Workspaces {
         self.inner.changes.subscribe()
     }
 
-    /// Each member write to a record the governor's copy took in. A slow
-    /// receiver may lag; it then re-reads the records it follows.
+    /// Each write to a record a workspace held here took in: a member's write to
+    /// a workspace this host governs, and every write the device serving a
+    /// member copy here sends it (this device's own writes are not told: its
+    /// apps made them and read them back). A slow receiver may lag, and then
+    /// reads again every record it follows: a write it missed is in the copy,
+    /// never told again.
     #[must_use]
     pub fn document_writes(&self) -> tokio::sync::broadcast::Receiver<ResourceWrite> {
         self.inner.document_writes.subscribe()

@@ -25,7 +25,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::direct::DirectSync;
+use tilo_peer_state::direct::{Answered, DirectSync, Kept};
 use tilo_peer_state::join::{
     JoinBootstrap, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
     JoinTransportResponse, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
@@ -91,6 +91,13 @@ pub(super) struct Members {
     /// or a member copy: the embedder hands it to the apps following the
     /// workspace's records ([`Workspaces::admitted_writes`]).
     pub(super) writes: tokio::sync::broadcast::Sender<AdmittedWrite>,
+    /// Each write this device made to a member copy that the serving device
+    /// has not answered yet, by workspace: what [`Workspaces::served`] waits
+    /// on, and what a link that caught up asks again.
+    served: std::sync::Mutex<std::collections::HashMap<WorkspaceId, ServedWrites>>,
+    /// Told whenever a served write is noted, answered or refused: a `served`
+    /// that waits subscribes before it reads, and reads again after each tick.
+    served_changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl Default for Members {
@@ -104,6 +111,8 @@ impl Default for Members {
             materials: std::sync::Mutex::default(),
             held: Arc::default(),
             writes: tokio::sync::broadcast::channel(WRITES_HELD).0,
+            served: std::sync::Mutex::default(),
+            served_changed: tokio::sync::watch::channel(0).0,
         }
     }
 }
@@ -140,6 +149,9 @@ struct MemberSyncing {
     following: tokio::task::AbortHandle,
     /// The wait for the group's keys, which takes in what the copy kept before it held them.
     keying: Option<tokio::task::AbortHandle>,
+    /// What the serving device answers of this device's writes there
+    /// ([`Workspaces::answer_member_writes`]).
+    answering: tokio::task::AbortHandle,
 }
 
 impl MemberSyncing {
@@ -149,6 +161,7 @@ impl MemberSyncing {
         if let Some(keying) = &self.keying {
             keying.abort();
         }
+        self.answering.abort();
     }
 }
 
@@ -158,6 +171,125 @@ impl Members {
         if self.device.set(device).is_err() {
             tracing::warn!("the service's member device was already set; it is kept");
         }
+    }
+
+    /// Note the write `message`, named by the hash `write` of its frame, as one of this device's
+    /// to `app`'s `document` of `workspace` that the device serving it has not answered yet.
+    fn note_served(
+        &self,
+        workspace: WorkspaceId,
+        write: [u8; 32],
+        (app, document): (&str, &str),
+        message: &NeighbourMsg,
+    ) {
+        let Ok(mut served) = self.served.lock() else {
+            return;
+        };
+        served.entry(workspace).or_default().waiting.insert(
+            write,
+            WaitingWrite {
+                app: app.to_owned(),
+                document: document.to_owned(),
+                message: message.clone(),
+            },
+        );
+        drop(served);
+        self.served_changed
+            .send_modify(|tick| *tick = tick.wrapping_add(1));
+    }
+
+    /// What the device serving `workspace` answered of one of this device's writes there.
+    fn answered_served(&self, workspace: WorkspaceId, answered: Answered) {
+        let Ok(mut served) = self.served.lock() else {
+            return;
+        };
+        let Some(writes) = served.get_mut(&workspace) else {
+            return;
+        };
+        let Some(answered_write) = writes.waiting.remove(&answered.write) else {
+            return;
+        };
+        if answered.kept == Kept::Refused {
+            // A write the workspace refused for good is no write here either: the next `served`
+            // over its document says so, once, and the caller decides what to do about it.
+            writes.refused.insert(
+                answered.write,
+                (answered_write.app, answered_write.document),
+            );
+        }
+        drop(served);
+        self.served_changed
+            .send_modify(|tick| *tick = tick.wrapping_add(1));
+    }
+
+    /// The writes this device made to `workspace` that no serving device has answered yet.
+    fn served_waiting(&self, workspace: WorkspaceId) -> Vec<NeighbourMsg> {
+        let Ok(served) = self.served.lock() else {
+            return Vec::new();
+        };
+        served
+            .get(&workspace)
+            .map(|writes| {
+                writes
+                    .waiting
+                    .values()
+                    .map(|waiting| waiting.message.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// A write this device made to a member copy, before the device serving the workspace answers it.
+#[derive(Clone)]
+struct WaitingWrite {
+    app: String,
+    document: String,
+    /// The frame this device sent, kept to be sent once more after a link catches up: an answer
+    /// can be lost with the link it was written on.
+    message: NeighbourMsg,
+}
+
+/// The writes of this device a member copy's serving device has not answered yet, and those it
+/// refused.
+#[derive(Default)]
+struct ServedWrites {
+    /// By the hash of the write's frame.
+    waiting: std::collections::BTreeMap<[u8; 32], WaitingWrite>,
+    /// The writes it refused for good, by their frame's hash: each is said once, to the next
+    /// [`Workspaces::served`] over its document.
+    refused: std::collections::BTreeMap<[u8; 32], (String, String)>,
+}
+
+impl ServedWrites {
+    /// The writes of `documents` the serving device has not answered yet.
+    fn waiting_of(&self, documents: &[(String, String)]) -> std::collections::BTreeSet<[u8; 32]> {
+        self.waiting
+            .iter()
+            .filter(|(_, waiting)| {
+                documents
+                    .iter()
+                    .any(|(app, document)| app == &waiting.app && document == &waiting.document)
+            })
+            .map(|(write, _)| *write)
+            .collect()
+    }
+
+    /// Why the serving device refused a write of `documents`, said once: the refusal is no longer
+    /// this copy's to say after.
+    fn take_refusal(&mut self, documents: &[(String, String)]) -> Option<String> {
+        let write = self.refused.iter().find_map(|(write, (app, document))| {
+            documents
+                .iter()
+                .any(|(wanted_app, wanted_document)| {
+                    app == wanted_app && document == wanted_document
+                })
+                .then_some(*write)
+        })?;
+        let (app, document) = self.refused.remove(&write)?;
+        Some(format!(
+            "the device serving the workspace refused this device's write to {app}/{document}"
+        ))
     }
 }
 
@@ -707,6 +839,22 @@ impl Workspaces {
         ids
     }
 
+    /// Whether the history the device serving `workspace` keeps is in hand on
+    /// this copy's link, and a watch of it: true once the link caught up, false
+    /// again while a link being made catches up.
+    ///
+    /// Only once it is true does this copy's [`crate::workspace_documents::DocumentRead::Absent`]
+    /// mean the workspace holds nothing, rather than that what it holds has not
+    /// arrived: a folder synced from this copy reads what is absent here as
+    /// absent there.
+    #[must_use]
+    pub fn member_caught_up(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<tokio::sync::watch::Receiver<bool>> {
+        Some(self.member_link(workspace)?.caught_up())
+    }
+
     /// `workspace`'s member copy as this device holds it: the name its
     /// governance gives it, and the replica it syncs. `None` for a workspace
     /// this service does not hold as a member copy.
@@ -815,8 +963,164 @@ impl Workspaces {
             let mut governed = state.lock().await;
             self.follow_member_document(&mut governed, device.device(), &message);
         }
+        if let NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            ..
+        } = &message
+        {
+            // The frame's hash is what the serving device names its answer by; the write is
+            // noted before it goes out, so an answer that comes back at once finds it.
+            self.inner.member.note_served(
+                workspace_id,
+                *blake3::hash(&body).as_bytes(),
+                (app_id, document_id),
+                &message,
+            );
+        }
         self.forward_member_document(workspace_id, message);
         Ok(order)
+    }
+
+    /// Wait until the device serving `workspace`, a member copy, has answered every write this
+    /// device made to `documents` — each an app and one of its documents — before this call: `Ok`
+    /// once it holds each of them, `Err` with why once it refused one.
+    ///
+    /// `None` for a governed workspace or one this device does not hold as a member copy: its own
+    /// store kept the write, and no other device answers for it. A write is sent to the serving
+    /// device as it is made
+    /// ([`Self::commit_member_document`]); an answer can be lost with the link it came on, so a
+    /// write still waiting is sent again once a link catches up ([`Self::answer_member_writes`]).
+    #[must_use]
+    pub fn served(
+        &self,
+        workspace: &str,
+        documents: &[(&str, &str)],
+    ) -> Option<crate::workspace_documents::DocumentServing> {
+        let workspace = WorkspaceId::parse(workspace)?;
+        // A workspace this device governs, or one it holds nothing of, is answered here and by no
+        // other device: its own store kept the write.
+        self.member_link(workspace)?;
+        let documents: Vec<(String, String)> = documents
+            .iter()
+            .map(|(app, document)| ((*app).to_owned(), (*document).to_owned()))
+            .collect();
+        let workspaces = self.clone();
+        Some(Box::pin(async move {
+            workspaces.wait_served(workspace, &documents).await
+        }))
+    }
+
+    /// Lose the next `count` answers the device serving `workspace` gives this device's writes,
+    /// as a link that ended after the write was kept and before its answer came: what a test
+    /// makes a write wait for the next link's catch-up.
+    #[cfg(test)]
+    pub(super) fn lose_member_answers(&self, workspace: WorkspaceId, count: usize) {
+        if let Some(link) = self.member_link(workspace) {
+            link.lose_answers(count);
+        }
+    }
+
+    /// [`Self::served`], over `workspace`'s id and documents already owned.
+    async fn wait_served(
+        &self,
+        workspace: WorkspaceId,
+        documents: &[(String, String)],
+    ) -> Result<(), String> {
+        // Subscribed before the first read: a write answered between the two ticks a receiver
+        // that subscribed after it.
+        let mut changed = self.inner.member.served_changed.subscribe();
+        let mut waiting = std::collections::BTreeSet::new();
+        let mut first = true;
+        loop {
+            {
+                let Ok(mut served) = self.inner.member.served.lock() else {
+                    return Err("this device's member copies closed".into());
+                };
+                let Some(writes) = served.get_mut(&workspace) else {
+                    return Ok(());
+                };
+                if let Some(refused) = writes.take_refusal(documents) {
+                    return Err(refused);
+                }
+                let of_documents = writes.waiting_of(documents);
+                waiting = if first {
+                    first = false;
+                    of_documents
+                } else {
+                    // A write made while this waits is not one it asked after: the caller named
+                    // the writes before it.
+                    waiting.intersection(&of_documents).copied().collect()
+                };
+                if waiting.is_empty() {
+                    return Ok(());
+                }
+            }
+            changed.changed().await.map_err(|_| {
+                "this device's workspace service ended before the write was answered".to_owned()
+            })?;
+        }
+    }
+
+    /// Take what the device serving `workspace` answers of this device's writes there, and ask
+    /// again the writes it has not answered once the link catches up: an answer lost with the
+    /// link it was written on is asked for again on the next one.
+    fn answer_member_writes(
+        &self,
+        workspace: WorkspaceId,
+        link: &DirectSync,
+    ) -> tokio::task::AbortHandle {
+        let mut answers = link.answers();
+        let mut caught_up = link.caught_up();
+        let workspaces = self.downgrade();
+        tokio::spawn(async move {
+            loop {
+                let answered = tokio::select! {
+                    answered = answers.recv() => Some(answered),
+                    changed = caught_up.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        None
+                    }
+                };
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                match answered {
+                    Some(Ok(answered)) => workspaces.inner.member.answered_served(workspace, answered),
+                    Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(missed))) => {
+                        tracing::debug!(
+                            %workspace,
+                            missed,
+                            "a member copy's answers fell behind; its waiting writes are asked again"
+                        );
+                        workspaces.reask_member_writes(workspace);
+                    }
+                    Some(Err(tokio::sync::broadcast::error::RecvError::Closed)) => return,
+                    None if *caught_up.borrow() => workspaces.reask_member_writes(workspace),
+                    None => {}
+                }
+            }
+        })
+        .abort_handle()
+    }
+
+    /// Send this device's writes to `workspace` the serving device has not answered yet once
+    /// more: what a write whose answer was lost with its link waits for.
+    fn reask_member_writes(&self, workspace: WorkspaceId) {
+        let waiting = self.inner.member.served_waiting(workspace);
+        if waiting.is_empty() {
+            return;
+        }
+        let Some(link) = self.member_link(workspace) else {
+            return;
+        };
+        for message in waiting {
+            if let Err(error) = link.send(message) {
+                tracing::debug!(%workspace, %error, "a member copy's waiting write did not go again");
+            }
+        }
     }
 
     pub(super) async fn wait_member_link(&self, workspace_id: WorkspaceId) -> Result<(), String> {
@@ -1161,7 +1465,7 @@ impl Workspaces {
     }
 
     /// The link of `workspace`'s member copy, while it is up.
-    fn member_link(&self, workspace: WorkspaceId) -> Option<DirectSync> {
+    pub(crate) fn member_link(&self, workspace: WorkspaceId) -> Option<DirectSync> {
         self.inner
             .member
             .links
@@ -1414,6 +1718,7 @@ impl Workspaces {
             ups.insert(workspace_id, up.clone());
         }
         let endpoint = self.inner.host.endpoint.clone();
+        let answering = self.answer_member_writes(workspace_id, &link);
         let dialing = tokio::spawn(async move {
             loop {
                 match link.dial(&endpoint, member.addr.clone(), serving).await {
@@ -1435,6 +1740,7 @@ impl Workspaces {
             dialling: dialing.abort_handle(),
             following,
             keying,
+            answering,
         };
         if let Ok(mut all) = self.inner.member.syncing.lock()
             && let Some(before) = all.insert(workspace_id, syncing)

@@ -12,7 +12,9 @@
 use futures::executor::block_on;
 
 use crate::service::ServiceSlot;
-use crate::workspace_documents::{DeviceDocuments, DeviceWrites, DocumentRead, DocumentWrite};
+use crate::workspace_documents::{
+    DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite,
+};
 use crate::workspaces::Workspaces;
 
 /// The most bytes of one document a session's own read hands out.
@@ -210,5 +212,9 @@ impl DeviceWrites for ServiceWrites {
                 )
                 .await
         })
+    }
+
+    fn served(&self, workspace: &str, documents: &[(&str, &str)]) -> Option<DocumentServing> {
+        self.0.copies()?.served(workspace, documents)
     }
 }

@@ -55,7 +55,8 @@ pub struct HostCommit {
 /// every process that holds documents for them: the service implements it here, and a page
 /// implements it over its replicated copy.
 pub use tilo_peer_state::workspace_documents::{
-    DeviceDocuments, DeviceWrites, DocumentRead, DocumentWrite, WriteAnswer,
+    DeviceDocuments, DeviceWrites, DocumentRead, DocumentServed, DocumentServing, DocumentWrite,
+    WriteAnswer,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

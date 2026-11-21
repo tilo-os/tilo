@@ -562,6 +562,10 @@ struct Inner {
     /// The other device's store, for a device that keeps none: where a reader
     /// that fell behind takes the frames it missed ([`Reader`]).
     other_store: Arc<std::sync::Mutex<Option<OtherStore>>>,
+    /// Answers a test loses, as a link that ended before they came
+    /// ([`DirectSync::lose_answers`]).
+    #[cfg(feature = "test-support")]
+    lost_answers: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// The geneses of a workspace's group its host carries, each with its
@@ -627,6 +631,8 @@ impl DirectSync {
             channels: None,
             geneses: Geneses::default(),
             other_store: Arc::default(),
+            #[cfg(feature = "test-support")]
+            lost_answers: Arc::default(),
         }))
     }
 
@@ -649,6 +655,8 @@ impl DirectSync {
             channels: self.0.channels.clone(),
             geneses: Arc::clone(&self.0.geneses),
             other_store: Arc::clone(&self.0.other_store),
+            #[cfg(feature = "test-support")]
+            lost_answers: Arc::clone(&self.0.lost_answers),
         }
     }
 
@@ -869,8 +877,20 @@ impl DirectSync {
         self.0.replay.notify_one();
     }
 
-    /// Whether the other device's retained history is in hand yet: true once
-    /// this device has asked its store (or, in process, replayed it).
+    /// Lose the next `count` answers this device's links bring, as a link that
+    /// ended after the other device kept a write and before its answer came:
+    /// what a write waits for the next link's catch-up to be asked again on.
+    #[cfg(feature = "test-support")]
+    pub fn lose_answers(&self, count: usize) {
+        self.0
+            .lost_answers
+            .store(count, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the other device's retained history is in hand on the link this
+    /// device dialled: true once this link has taken its store in, and false
+    /// again while a link being made takes it in. The device that was dialled
+    /// takes the other device's history in as it answers, and says so then.
     #[must_use]
     pub fn caught_up(&self) -> watch::Receiver<bool> {
         self.0.caught_up.subscribe()
@@ -1264,6 +1284,10 @@ impl DirectSync {
                 self.0.caught_up.send_replace(true);
                 return std::future::pending().await;
             }
+            // A link being made has the other device's history to take in again,
+            // however much of it an earlier link brought: what waits for this
+            // link to catch up knows it is not in hand until this one says so.
+            self.0.caught_up.send_replace(false);
             self.ask_store(&mut control).await?;
             history_in_hand.send_replace(true);
             // The history is in hand: the frames from here on are the live
@@ -1710,6 +1734,20 @@ impl DirectSync {
         while let Some(bytes) = crate::frames::read_frame(&mut recv, MAX_FRAME_BYTES).await? {
             let answered: Answered =
                 postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+            #[cfg(feature = "test-support")]
+            if self
+                .0
+                .lost_answers
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |lost| lost.checked_sub(1),
+                )
+                .is_ok()
+            {
+                tracing::debug!("a test loses an answer this link brought");
+                continue;
+            }
             let _ = self.0.answered.send(answered);
         }
         std::future::pending().await

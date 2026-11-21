@@ -14,6 +14,7 @@ use super::super::WorkspaceSummary;
 use super::super::fixtures::{TestHost, device_cert, governor, signed_pre_admission, test_host};
 use super::MemberDevice;
 use ed25519_dalek::SigningKey;
+use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 /// A device serving workspace `name`, the device it invited, and the
@@ -317,6 +318,353 @@ async fn a_members_write_reaches_the_device_serving_the_workspace() {
         }
     })
     .await;
+}
+
+/// A document holding `value` under `key`.
+fn snapshot(key: &str, value: &str) -> Vec<u8> {
+    use automerge::transaction::Transactable as _;
+
+    let mut document = automerge::AutoCommit::new();
+    document
+        .put(automerge::ROOT, key, value)
+        .expect("the record's field");
+    document.save()
+}
+
+/// The device serving `workspace` founds `(app, document)` holding `value` under `key`.
+async fn serving_writes(
+    serving: &TestHost,
+    workspace: &str,
+    (app, document): (&str, &str),
+    (key, value): (&str, &str),
+) {
+    serving
+        .workspaces()
+        .own_write(
+            workspace,
+            (app, document),
+            None,
+            &snapshot(key, value),
+            true,
+            true,
+            None,
+        )
+        .await
+        .expect("the serving device writes its record");
+}
+
+/// `workspace`'s member copy caught up with the history its serving device keeps: what it did not
+/// hold before it arrived, it holds now.
+async fn catching_up(copies: &super::Workspaces, workspace: WorkspaceId) {
+    let mut caught_up = copies
+        .member_caught_up(workspace)
+        .expect("the copy is linked to the device serving it");
+    tilo_test_env::within(
+        "the member copy catches up with its serving device",
+        async {
+            caught_up
+                .wait_for(|caught_up| *caught_up)
+                .await
+                .expect("the copy's link stays open");
+        },
+    )
+    .await;
+}
+
+/// A change of `workspace`'s member copy to `(app, document)`: `value` under `key`, on what the
+/// copy reads of it now.
+async fn change_of(
+    copies: &super::Workspaces,
+    workspace: &str,
+    (app, document): (&str, &str),
+    (key, value): (&str, &str),
+) -> Vec<u8> {
+    use automerge::transaction::Transactable as _;
+    use collab_types::claim::CommitNamed as _;
+    use tilo_peer_state::workspace_documents::DocumentRead;
+
+    let read = copies
+        .own_read(workspace, (app, document), &[], 64 * 1024 * 1024)
+        .await
+        .expect("the record reads");
+    let DocumentRead::Whole { bytes, .. } = read else {
+        panic!("a record the copy holds reads whole, not {read:?}");
+    };
+    let mut opened = automerge::AutoCommit::load(&bytes).expect("the record opens");
+    let heads = opened.get_heads();
+    opened
+        .put(automerge::ROOT, key, value)
+        .expect("the record's field");
+    // A change names the action it makes: the debug build refuses to sign one that does not.
+    opened.commit_edit(app, key);
+    opened.save_after(&heads)
+}
+
+/// What the serving device's copy of a record holds under `key`.
+async fn served_value(
+    workspaces: &super::Workspaces,
+    workspace: &str,
+    (app, document): (&str, &str),
+    key: &str,
+) -> Option<String> {
+    use automerge::ReadDoc as _;
+
+    let bytes = workspaces
+        .resource_document(workspace, app, document)
+        .await
+        .ok()
+        .flatten()?;
+    let opened = automerge::AutoCommit::load(&bytes).expect("the record opens");
+    match opened
+        .get(automerge::ROOT, key)
+        .expect("the record's field")
+    {
+        Some((automerge::Value::Scalar(value), _)) => value.as_str().map(str::to_owned),
+        _ => None,
+    }
+}
+
+/// A member copy writes a record the serving device founds; `served` answers only once that
+/// device holds the write, and reading its copy of the record shows the change there.
+#[tokio::test]
+async fn served_answers_once_the_serving_device_holds_the_write() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Answered", 41).await;
+    let workspace = created.workspace.clone();
+    serving_writes(
+        &serving,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "by-the-serving-device"),
+    )
+    .await;
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    copies
+        .own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &change_of(
+                &copies,
+                &workspace,
+                ("test.app", "record"),
+                ("value", "written"),
+            )
+            .await,
+            false,
+            false,
+            None,
+        )
+        .await
+        .expect("the write is taken here");
+    tilo_test_env::within("the serving device answers the write", async {
+        copies
+            .served(&workspace, &[("test.app", "record")])
+            .expect("a member copy is answered by the device serving it")
+            .await
+            .expect("the serving device answers the write");
+    })
+    .await;
+    assert_eq!(
+        served_value(
+            serving.workspaces(),
+            &workspace,
+            ("test.app", "record"),
+            "value"
+        )
+        .await
+        .as_deref(),
+        Some("written"),
+        "the serving device held the write served answered for"
+    );
+    drop(copies);
+    member.shutdown().await;
+}
+
+/// The serving device refuses a write; `served` answers with the refusal rather than waiting.
+#[tokio::test]
+async fn served_answers_with_the_refusal_of_a_write_the_workspace_refused() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Refused", 42).await;
+    let workspace = created.workspace.clone();
+    serving_writes(
+        &serving,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "by-the-serving-device"),
+    )
+    .await;
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let change = change_of(
+        &copies,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "a-change"),
+    )
+    .await;
+    let write = copies
+        .own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &change,
+            false,
+            false,
+            None,
+        )
+        .await
+        .expect("the change is taken here");
+    copies
+        .served(&workspace, &[("test.app", "record")])
+        .expect("a member copy is answered by the device serving it")
+        .await
+        .expect("the change is kept");
+    // The same signed change sent as another document's: the device serving the workspace refuses
+    // it, since its op names the record it may not stand for.
+    let elsewhere = neighbour_wire::NeighbourMsg::AppDocument {
+        peer: write.peer,
+        app_id: write.app_id.clone(),
+        cluster_id: write.cluster_id.clone(),
+        document_id: "elsewhere".into(),
+        envelope: Box::new(write.envelope.clone()),
+        own: write.own.clone(),
+        readers: None,
+    };
+    let (channel, retention) =
+        neighbour_wire::retention(&elsewhere, false).expect("the write's channel");
+    copies
+        .commit_member_document(
+            &workspace,
+            crate::workspace_documents::HostCommit {
+                body: postcard::to_stdvec(&elsewhere).expect("the write encodes"),
+                channel,
+                checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+            },
+        )
+        .await
+        .expect("the write is taken here");
+    let refused = tilo_test_env::within("the serving device refuses the write", async {
+        copies
+            .served(&workspace, &[("test.app", "elsewhere")])
+            .expect("a member copy is answered by the device serving it")
+            .await
+    })
+    .await;
+    assert!(
+        refused.is_err(),
+        "the workspace refused the write, so served says so: {refused:?}"
+    );
+    drop(copies);
+    member.shutdown().await;
+}
+
+/// An answer lost with the link it was written on leaves the write waiting; the copy asks for it
+/// again once a link caught up, and `served` answers then.
+#[tokio::test]
+async fn served_answers_a_write_whose_answer_was_lost_once_it_is_asked_again() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Lost", 43).await;
+    let workspace = created.workspace.clone();
+    serving_writes(
+        &serving,
+        &workspace,
+        ("test.app", "record"),
+        ("value", "by-the-serving-device"),
+    )
+    .await;
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    // The serving device keeps the write; its answer is lost on the way back.
+    copies.lose_member_answers(workspace_id, 1);
+    copies
+        .own_write(
+            &workspace,
+            ("test.app", "record"),
+            None,
+            &change_of(
+                &copies,
+                &workspace,
+                ("test.app", "record"),
+                ("value", "written"),
+            )
+            .await,
+            false,
+            false,
+            None,
+        )
+        .await
+        .expect("the write is taken here");
+    let unasked = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        copies
+            .served(&workspace, &[("test.app", "record")])
+            .expect("a member copy is answered by the device serving it"),
+    )
+    .await;
+    assert!(
+        unasked.is_err(),
+        "a write whose answer was lost waits: {unasked:?}"
+    );
+    // What a link that caught up does with a write still waiting.
+    copies.reask_member_writes(workspace_id);
+    tilo_test_env::within("the write is answered once it is asked again", async {
+        copies
+            .served(&workspace, &[("test.app", "record")])
+            .expect("a member copy is answered by the device serving it")
+            .await
+            .expect("the write is answered once it is asked again");
+    })
+    .await;
+    drop(copies);
+    member.shutdown().await;
+}
+
+/// A member copy says when the history of the device serving it is in hand, and a workspace this
+/// device governs has no such link to wait on.
+#[tokio::test]
+async fn a_member_copy_says_when_it_caught_up_with_its_serving_device() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Caught", 44).await;
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let caught_up = copies
+        .member_caught_up(workspace_id)
+        .expect("the copy is linked to the device serving it");
+    assert!(*caught_up.borrow());
+    let governed =
+        WorkspaceId::parse(&created.workspace).expect("the serving device's workspace id");
+    assert!(
+        serving.workspaces().member_caught_up(governed).is_none(),
+        "a workspace this device governs answers through no serving device"
+    );
+    drop(copies);
+    member.shutdown().await;
 }
 
 /// The front `workspace`'s layout stands on, as its member copy reads it now.

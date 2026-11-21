@@ -113,6 +113,19 @@ pub type DocumentWrite =
 pub type DocumentWrite =
     std::pin::Pin<Box<dyn std::future::Future<Output = WriteAnswer> + 'static>>;
 
+/// Whether the device serving a workspace answered this device's last writes to it: `Ok` once it
+/// holds each of them, or why it refused one.
+pub type DocumentServed = Result<(), String>;
+
+/// The wait for a workspace's serving device to answer this device's writes there.
+#[cfg(not(target_arch = "wasm32"))]
+pub type DocumentServing =
+    std::pin::Pin<Box<dyn std::future::Future<Output = DocumentServed> + Send + 'static>>;
+/// The wait for a workspace's serving device to answer this device's writes there.
+#[cfg(target_arch = "wasm32")]
+pub type DocumentServing =
+    std::pin::Pin<Box<dyn std::future::Future<Output = DocumentServed> + 'static>>;
+
 /// The documents of the workspaces a device's service holds, written as that device itself: what
 /// the session's own roles write on work of their own, without an app or a peer asking.
 ///
@@ -143,4 +156,16 @@ pub trait DeviceWrites: collab_types::signer::MaybeSendSync + 'static {
         snapshot: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> DocumentWrite;
+
+    /// The wait for the device serving `workspace` to answer every write this device made to
+    /// `documents` — each an app and a document of it — before this call: the wait answers `Ok`
+    /// once the serving device holds each of them, and `Err` with why once it refused one.
+    ///
+    /// `None` when this holder has no serving device to ask: a workspace it governs and keeps
+    /// itself, and a copy whose writes the device's own link carries and follows
+    /// ([`crate::owner::AppWrite`]). Whoever waits then waits on that link instead.
+    fn served(&self, workspace: &str, documents: &[(&str, &str)]) -> Option<DocumentServing> {
+        let _ = (workspace, documents);
+        None
+    }
 }
