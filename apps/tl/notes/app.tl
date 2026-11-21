@@ -872,17 +872,16 @@ view note_outline(headings: List<Text>, levels: List<Int>, reveal: State<Option<
 /// The notebook's controls in the sidebar's header, given the note open beside the tree: its own
 /// menu, which holds the open note's commands too. What makes a note is the window's primary
 /// action, which the bar offers once, so no button of the head's draws it again; a note under
-/// the open one is in that menu and on `Ctrl+Shift+N`, and a row's hover offers the same under
-/// the note it will stand in (`add_child`).
+/// the open one is in that menu, and a row's hover offers the same under the note it will stand
+/// in (`add_child`).
 view notebook_head(open: Option<Note>) {
     notebook_menu(root Notebook, open)
 }
 
 /// The notebook's own commands: a Markdown file or a zip of them in, the whole notebook out,
 /// and — while a note is open — a note under it, a picture into it and the note out as a file of
-/// its own. They stand in the window's bar's menu and the sidebar's header, where the notebook's
-/// controls stand, so the page keeps no file control of its own and every command has one place
-/// at every width.
+/// its own. They stand in the sidebar's header, where the notebook's controls stand, so the page
+/// keeps no file control of its own and every command has one place at every width.
 view notebook_menu(nb: Notebook, open: Option<Note>) {
     ui.MenuButton("File", icon: .file_plus) {
         ui.MenuItem("Import Markdown…", icon: .file_plus) {
