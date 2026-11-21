@@ -8,13 +8,28 @@
   "steps": [
     {
       "id": "open",
-      "said": "Open YouTube for the first time",
+      "said": "Open YouTube for the first time, and let it use the internet when it asks",
       "ops": [
         {
           "theme": false
         },
         {
-          "launch": true
+          "launch": {
+            "wait": false
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Allow"
+          }
+        },
+        {
+          "press_any": [
+            "Allow"
+          ]
+        },
+        {
+          "wait_for": "window"
         },
         {
           "wait_for": "actions"
@@ -35,11 +50,16 @@
           "select_row": "Search YouTube"
         },
         {
-          "click_any": [
-            {
-              "prefix": "Search YouTube"
+          "wait_for": {
+            "shown": {
+              "menuitem": "Search YouTube"
             }
-          ]
+          }
+        },
+        {
+          "click": {
+            "menuitem": "Search YouTube"
+          }
         },
         {
           "type": "lofi hip hop"
