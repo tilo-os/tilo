@@ -106,10 +106,11 @@ ADD_NEXTCLOUD = "Add Nextcloud"
 # The sign-in form's server field and its finish.
 SERVER_FIELD = "Server URL"
 CONTINUE = "Continue"
-# The account's calendars are chosen from its row's More menu, and saved from
-# the form. The row's one button browses files; the menu holds the rest. The
-# conformance suite's seed gives Ada a calendar named this (servers.sh).
-ACCOUNT_MORE = "More for Nextcloud"
+# The account's calendars are chosen from its row's More menu, named after the
+# user the account signs in as, and saved from the form. The row's one button
+# browses files; the menu holds the rest. The conformance suite's seed gives Ada
+# a calendar named this (servers.sh).
+ACCOUNT_MORE = "More for {user}"
 CONNECT_CALENDARS = "Connect calendars"
 SAVE = "Save account"
 SELECT_CALENDAR = "Select"
@@ -372,8 +373,8 @@ def connect_account(story, one, server: str, user: str, password: str,
 
     # Nextcloud's flow answers the app's poll with the app password; Settings
     # keeps the account and lists it. A person sees the account on the page.
-    until("the Nextcloud account listed in Settings",
-          lambda: one.target("Nextcloud") or next(
+    until("the Nextcloud account listed in Settings, by the user it signs in as",
+          lambda: one.target(user) or next(
               (t for t in one.targets()
                if (t.get("identity") or "").startswith("settings.account:")), None),
           60, 0.25)
@@ -390,7 +391,7 @@ def connect_account(story, one, server: str, user: str, password: str,
         return
     # The calendars she keeps on the server are read from it and chosen here:
     # a new account has none kept until the person confirms the choice.
-    press_settled(one, ACCOUNT_MORE, "the account row's More menu")
+    press_settled(one, ACCOUNT_MORE.format(user=user), "the account row's More menu")
     until("the account's menu open", lambda: one.target(CONNECT_CALENDARS), 15, 0.2)
     story.note("account-menu", one.names()[:60])
     press_settled(one, CONNECT_CALENDARS, "the account menu's Connect calendars")

@@ -670,7 +670,11 @@ fn account_view(kind: AccountKind, account: &accounts::Account) -> Option<Accoun
             AccountView {
                 id,
                 kind,
-                label: account.display_name.clone(),
+                // The user it signs in as, not the kind its section already names.
+                label: match config_str(account, "username") {
+                    "" => account.display_name.clone(),
+                    user => user.to_owned(),
+                },
                 summary: short_url(config_str(account, url)),
                 enabled: account.enabled,
                 tint: account.tint,
