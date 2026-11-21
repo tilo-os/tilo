@@ -550,3 +550,194 @@ fn content_the_server_let_go_of_comes_back_from_the_writer_that_was_away() {
     drop(member);
     run(server.shutdown());
 }
+
+const CLONE_TEST: &str = "standalone::files::replica::tests::\
+    a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole";
+
+/// Writes a repository into `folder` as `git clone` does: the pack grows in a
+/// temporary file renamed into place once whole, its index likewise, then
+/// more worktree files land at once than one folder pass carries, and git's
+/// index replaces its lock file. Answers every file it leaves, with its bytes.
+fn clone_like_git(folder: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    use std::io::Write as _;
+
+    let repo = folder.join("repo");
+    let pack_dir = repo.join(".git").join("objects").join("pack");
+    std::fs::create_dir_all(&pack_dir).unwrap();
+    let mut files = vec![(
+        repo.join(".git").join("HEAD"),
+        b"ref: refs/heads/main\n".to_vec(),
+    )];
+    std::fs::write(&files[0].0, &files[0].1).unwrap();
+    // The pack, written a step at a time while the folder's passes see it.
+    let temporary = pack_dir.join("tmp_pack_x0Ab9z");
+    let mut pack = Vec::new();
+    {
+        let mut file = std::fs::File::create(&temporary).unwrap();
+        for step in 0..8_u32 {
+            let part = content(step.saturating_add(100), 1024 * 1024);
+            file.write_all(&part).unwrap();
+            file.flush().unwrap();
+            pack.extend_from_slice(&part);
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
+    let packed = pack_dir.join("pack-5f0c.pack");
+    std::fs::rename(&temporary, &packed).unwrap();
+    files.push((packed, pack));
+    let index = content(200, 200_000);
+    std::fs::write(pack_dir.join("tmp_idx_q1"), &index).unwrap();
+    let indexed = pack_dir.join("pack-5f0c.idx");
+    std::fs::rename(pack_dir.join("tmp_idx_q1"), &indexed).unwrap();
+    files.push((indexed, index));
+    // The worktree: more small files than one pass carries, across many
+    // directories.
+    for file in 0..700_u32 {
+        let dir = repo.join(format!("crates/c{}/src", file % 30));
+        std::fs::create_dir_all(&dir).unwrap();
+        let length = usize::try_from(file % 7).unwrap().saturating_mul(300);
+        let bytes = content(file.saturating_add(1000), length.saturating_add(600));
+        let path = dir.join(format!("m{file}.rs"));
+        std::fs::write(&path, &bytes).unwrap();
+        files.push((path, bytes));
+    }
+    // The index, as git writes it: a lock file renamed over it.
+    let staged = content(300, 150_000);
+    let lock = repo.join(".git").join("index.lock");
+    std::fs::write(&lock, &staged).unwrap();
+    std::fs::rename(&lock, repo.join(".git").join("index")).unwrap();
+    files.push((repo.join(".git").join("index"), staged));
+    files
+}
+
+/// Wait until `person_folder` holds every file of `cloned`, made in
+/// `member_folder`, failing with what the member (its log at `said`) and the
+/// person's device (under `person_root`) said.
+fn wait_for_clone(
+    cloned: &[(PathBuf, Vec<u8>)],
+    member_folder: &Path,
+    person_folder: &Path,
+    said: &Path,
+    person_root: &Path,
+) {
+    let started = std::time::Instant::now();
+    let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
+    loop {
+        let missing: Vec<&Path> = cloned
+            .iter()
+            .filter(|(path, bytes)| {
+                let at = person_folder.join(path.strip_prefix(member_folder).unwrap());
+                std::fs::read(at).ok().as_ref() != Some(bytes)
+            })
+            .map(|(path, _)| path.as_path())
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        assert!(
+            started.elapsed() <= bound,
+            "{} of the {} files cloned on the VM host are not on the person's device, {:?} \
+             among them\nthe member:\n{}\nthe person's device:\n{}",
+            missing.len(),
+            cloned.len(),
+            missing.first(),
+            std::fs::read_to_string(said).unwrap_or_default(),
+            std::fs::read_to_string(person_root.join("device.err")).unwrap_or_default(),
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// A repository cloned into the VM host's folder reaches a person's device
+/// whole, the member it was cloned on taking part in the workspace all along:
+/// its changes are never refused as if the workspace were no longer held.
+#[test]
+fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole() {
+    if let Some(invitation) = std::env::var_os(PERSON_INVITATION) {
+        let profile = isolated_root(CLONE_TEST).unwrap();
+        let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+        device.joiner().unwrap()(invitation.to_str().unwrap()).unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+    // The member, in the process `isolated_root` starts, says what it does
+    // into a file the test reads.
+    if let Some(profile) = std::env::var_os(super::super::super::tests::PROCESS_ROOT) {
+        let file = std::fs::File::create(PathBuf::from(profile).with_extension("log")).unwrap();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("warn,fs=info,tilo_runtime=debug")
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file))
+            .try_init();
+    }
+    let Some(profile) = isolated_root(CLONE_TEST) else {
+        return;
+    };
+    let scenario = profile.parent().unwrap().to_path_buf();
+    let said = profile.with_extension("log");
+    let member = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let (_, member_device) =
+        tilo_identity::broker::trusted_current_device(member.workspace()).unwrap();
+    let operator = SigningKey::from_bytes(&[71; 32]);
+    let shell = certificate(
+        &operator,
+        &SigningKey::from_bytes(&[73; 32]),
+        DeviceCapabilities::primary(),
+    );
+    let server = run(server(&scenario.join("server"), &operator));
+    let workspaces = server.workspaces().unwrap();
+    let workspace = run(async {
+        let created = workspaces.create(WORKSPACE_NAME).await?;
+        workspaces
+            .enter(&created.workspace, &shell)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(created.workspace)
+    })
+    .unwrap();
+    let joined = member.joiner().unwrap()(&run(invitation(
+        &server,
+        &workspace,
+        &shell,
+        Some(member_device.user_public_key),
+        1,
+    )))
+    .unwrap();
+    assert_eq!(joined, workspace);
+    let member_folder = member
+        .joined_files_folder(&workspace)
+        .expect("the member holds the joined workspace's files");
+
+    let person_root = scenario.join("person");
+    std::fs::create_dir_all(&person_root).unwrap();
+    let log = person_root.join("device.log");
+    let mut person = isolated_command(CLONE_TEST, &person_root)
+        .env(
+            PERSON_INVITATION,
+            run(invitation(&server, &workspace, &shell, None, 2)),
+        )
+        .env(
+            tilo_test_env::hang::HANG_BOUND_ENV,
+            super::super::super::tests::helper_hang_bound(),
+        )
+        .stdout(std::fs::File::create(&log).unwrap())
+        .stderr(std::fs::File::create(person_root.join("device.err")).unwrap())
+        .spawn_locked()
+        .unwrap();
+    let person_folder: PathBuf = isolated_home(&person_root)
+        .join("Tilo")
+        .join(WORKSPACE_NAME);
+
+    let cloned = clone_like_git(&member_folder);
+    wait_for_clone(&cloned, &member_folder, &person_folder, &said, &person_root);
+    let said = std::fs::read_to_string(&said).unwrap_or_default();
+    assert!(
+        !said.contains("no longer hosted"),
+        "the member's own changes were refused:\n{said}"
+    );
+    let _ = person.kill();
+    let _ = person.wait();
+    drop(member);
+    run(server.shutdown());
+}

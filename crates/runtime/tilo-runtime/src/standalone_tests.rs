@@ -20,7 +20,7 @@ use tilo_workspace_service::apps::services::{
 /// exact path.
 const PROCESS_TEST: &str =
     "standalone::tests::sdk_apps_join_a_standalone_session_and_publish_to_mcp";
-const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
+pub(super) const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
 const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 
 /// A certificate authority over one held workspace and device, for the
