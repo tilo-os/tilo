@@ -190,7 +190,7 @@ pub fn own_kinds(app: &str) -> Vec<String> {
             "browser.page-record",
             "browser.personal-bookmarks",
         ],
-        tilo_app_id::apps::TUBE | "dev.tilo.tube" => &["tube.watch-history"],
+        "so.tilo.tube" | "dev.tilo.tube" => &["tube.watch-history"],
         _ => &[],
     };
     for &kind in legacy {

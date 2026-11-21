@@ -41,7 +41,7 @@ pub fn lacks_private_record_owner(app: &str, document: &str) -> bool {
             tilo_app_id::apps::MESSAGES | "dev.tilo.messages",
             WORKSPACE_MESSAGE_DRAFTS_DOCUMENT
         ) | (
-            tilo_app_id::apps::TUBE | "dev.tilo.tube",
+            "so.tilo.tube" | "dev.tilo.tube",
             WORKSPACE_TUBE_HISTORY_DOCUMENT
         )
     )
@@ -53,7 +53,7 @@ pub fn has_member_reader(app: &str, kind: &str) -> bool {
     matches!(
         (app, kind),
         (
-            tilo_app_id::apps::TUBE | "dev.tilo.tube",
+            "so.tilo.tube" | "dev.tilo.tube",
             "tube.watch-history"
         ) | (
             tilo_app_id::apps::MESSAGES | "dev.tilo.messages",
@@ -92,7 +92,7 @@ pub fn protected_resource_kind(app: &str, document: &str) -> Option<&'static str
             tilo_app_id::apps::TERMINAL | "dev.tilo.terminal",
             WORKSPACE_TERMINAL_HISTORY_DOCUMENT,
         ) => Some("terminal.history"),
-        (tilo_app_id::apps::TUBE | "dev.tilo.tube", WORKSPACE_TUBE_HISTORY_DOCUMENT) => {
+        ("so.tilo.tube" | "dev.tilo.tube", WORKSPACE_TUBE_HISTORY_DOCUMENT) => {
             Some("tube.watch-history")
         }
         // The tilolang Mail keeps its record where the native Mail kept its mailbox; the native

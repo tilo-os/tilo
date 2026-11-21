@@ -715,7 +715,7 @@ pub fn starting_point_rank(package_id: &str) -> i32 {
         apps::TYPST_EDITOR => 55,
 
         apps::MUSIC => 49,
-        apps::TUBE => 48,
+        "so.tilo.tube" => 48,
         apps::VIDEO_PLAYER => 47,
         apps::PHOTOS => 46,
         apps::CAMERA => 45,
