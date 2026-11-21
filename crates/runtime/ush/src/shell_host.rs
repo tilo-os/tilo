@@ -213,7 +213,7 @@ impl Host for DeviceHost {
             recoverable: self.recoverable.clone(),
             progress: false,
         };
-        let run = call.run.map(|run| crate::broker::RunGroup {
+        let run = call.command.map(|run| crate::broker::RunGroup {
             id: run.id.clone(),
             label: run.label.clone(),
         });

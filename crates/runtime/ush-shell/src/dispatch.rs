@@ -124,7 +124,7 @@ impl Shell {
                 args: operands,
                 cwd: &self.cwd,
                 io: &io,
-                run: self.run.as_deref(),
+                command: self.run.as_deref(),
             });
         }
         if let Some(command) = crate::commands::lookup(name) {

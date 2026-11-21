@@ -60,7 +60,7 @@ pub struct Ctx<'a> {
     /// resolution, never a fork or an exec.
     pub dispatch: &'a dyn Dispatch,
     pub render: Render,
-    pub run: Option<&'a crate::host::Run>,
+    pub command: Option<&'a crate::host::Run>,
 }
 
 /// Who a command's output is for. A command works out typed values first
@@ -147,7 +147,7 @@ impl Ctx<'_> {
             args,
             cwd: self.cwd,
             io: self.io,
-            run: self.run,
+            command: self.command,
         })
     }
 

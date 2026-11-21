@@ -87,12 +87,12 @@ pub struct FileCall<'a> {
     pub args: &'a [String],
     pub cwd: &'a Path,
     pub io: &'a Stdio,
-    /// The run it is part of, if the shell is running one.
-    pub run: Option<&'a Run>,
+    /// The command it is part of, if the shell is running one.
+    pub command: Option<&'a Run>,
 }
 
 /// A program the shell hands on, as a host that runs tools itself (a WebAssembly tool of the
-/// environment's, tier 2) is asked it: with the run its writes are part of.
+/// environment's, tier 2) is asked it: with the command its writes are part of.
 #[derive(Clone, Copy)]
 pub struct ToolCall<'a> {
     pub argv: &'a [String],
@@ -100,9 +100,9 @@ pub struct ToolCall<'a> {
     pub env: &'a [(String, String)],
     pub cwd: &'a Path,
     pub io: &'a Stdio,
-    /// The run it is part of, if the shell is running one: every file it changes is a change of
-    /// that run's.
-    pub run: Option<&'a Run>,
+    /// The command it is part of, if the shell is running one: every file it changes is a change
+    /// of that command's.
+    pub command: Option<&'a Run>,
     /// Whether to stop it: Ctrl-C, `timeout`, or its job ended.
     pub stop: &'a dyn Fn() -> bool,
 }

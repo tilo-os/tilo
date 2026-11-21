@@ -566,7 +566,7 @@ impl Shell {
                     args: operands,
                     cwd: &self.cwd,
                     io: &io,
-                    run: self.run.as_deref(),
+                    command: self.run.as_deref(),
                 }))
             }
             Resolved::Other => Ok(self.run_other(&argv)),
@@ -681,7 +681,7 @@ impl Shell {
             name,
             dispatch: &dispatch,
             render: self.render(),
-            run: self.run.as_deref(),
+            command: self.run.as_deref(),
         };
         command(&ctx, args)
     }
@@ -726,7 +726,7 @@ impl Shell {
             env: &env,
             cwd: &self.cwd,
             io: &io,
-            run: self.run.as_deref(),
+            command: self.run.as_deref(),
             stop: &stop,
         };
         let ran = self

@@ -289,7 +289,7 @@ fn verb(c: &Caller<'_, State>, name: &str, args: &[String]) -> Result<(), i32> {
         args,
         cwd: Path::new("/"),
         io: &io,
-        run: run.as_ref(),
+        command: run.as_ref(),
     };
     match host.file_action(&call) {
         0 => Ok(()),

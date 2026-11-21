@@ -449,7 +449,7 @@ impl Host for TiloHost {
             }
         };
         let verb = action.verb();
-        match self.0.environment.act(action, call.run) {
+        match self.0.environment.act(action, call.command) {
             Ok(acted) => cli::answer_done(
                 &mut out,
                 json,
@@ -475,7 +475,7 @@ impl Host for TiloHost {
                 env: call.env,
                 cwd: call.cwd,
                 io: call.io,
-                run: call.run,
+                run: call.command,
                 stop: &stop,
             },
         ))

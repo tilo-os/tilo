@@ -443,7 +443,7 @@ impl Host for MemoryHost {
             args,
             cwd,
             io,
-            run,
+            command: run,
         } = *call;
         if let Some(run) = run {
             self.runs

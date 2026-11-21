@@ -40,7 +40,7 @@ fn run_on(
         name,
         dispatch: &ush_shell::commands::NoDispatch,
         render: ush_shell::commands::Render::Text,
-        run: None,
+        command: None,
     };
     let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
     let command = lookup(name).unwrap();
@@ -204,7 +204,7 @@ fn run_broken(host: &MemoryHost, stdin: Input, name: &str, args: &[&str]) -> Ran
         name,
         dispatch: &ush_shell::commands::NoDispatch,
         render: ush_shell::commands::Render::Text,
-        run: None,
+        command: None,
     };
     let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
     let status = lookup(name).unwrap()(&ctx, &args);
@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
                     name: "yes",
                     dispatch: &ush_shell::commands::NoDispatch,
                     render: ush_shell::commands::Render::Text,
-                    run: None,
+                    command: None,
                 };
                 lookup("yes").unwrap()(&ctx, &["ok".to_string()])
             })
@@ -262,7 +262,7 @@ tilo_test_env::scenario! {
             name: "head",
             dispatch: &ush_shell::commands::NoDispatch,
             render: ush_shell::commands::Render::Text,
-            run: None,
+            command: None,
         };
         assert_eq!(lookup("head").unwrap()(&ctx, &["-n".into(), "3".into()]), 0);
         drop(io);
@@ -313,7 +313,7 @@ tilo_test_env::scenario! {
             name: "head",
             dispatch: &ush_shell::commands::NoDispatch,
             render: ush_shell::commands::Render::Text,
-            run: None,
+            command: None,
         };
         assert_eq!(lookup("head").unwrap()(&ctx, &["-n1".into()]), 0);
         assert_eq!(out.take(), b"1\n");
@@ -1100,7 +1100,7 @@ tilo_test_env::scenario! {
                 name: "ls",
                 dispatch: &ush_shell::commands::NoDispatch,
                 render: ush_shell::commands::Render::Text,
-                run: None,
+                command: None,
             };
             assert_eq!(lookup("ls").unwrap()(&ctx, &["c".into()]), 0);
             String::from_utf8(out.take()).unwrap()
