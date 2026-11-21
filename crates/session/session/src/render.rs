@@ -160,20 +160,19 @@ impl Broker {
             next_connection: AtomicU64::new(1),
             checked: AtomicU64::new(generation),
         });
-        // Warm before the first app asks, where there is a GPU whose pipelines an app would
-        // otherwise wait on: a machine that draws on the CPU has nothing to build ahead of the
-        // first frame.
-        if inner.node.is_some() {
-            let warm = Arc::clone(&inner);
-            std::thread::Builder::new()
-                .name("tilo-render-warm".into())
-                .spawn(move || {
-                    if let Err(error) = warm.service(PRIVATE) {
-                        tracing::warn!(%error, "the private workspaces' render service did not start");
-                    }
-                })
-                .map_err(|error| format!("render broker: {error}"))?;
-        }
+        // Warm before the first app asks: starting a service opens its device and builds every
+        // vello pipeline, which the first app's first frame would otherwise wait on. A machine
+        // that draws on the CPU builds them too, in its software adapter, and slower than a GPU
+        // does: a cold service there held the first app's window for over a second.
+        let warm = Arc::clone(&inner);
+        std::thread::Builder::new()
+            .name("tilo-render-warm".into())
+            .spawn(move || {
+                if let Err(error) = warm.service(PRIVATE) {
+                    tracing::warn!(%error, "the private workspaces' render service did not start");
+                }
+            })
+            .map_err(|error| format!("render broker: {error}"))?;
         let acceptor = Arc::clone(&inner);
         std::thread::Builder::new()
             .name("tilo-render-accept".into())
