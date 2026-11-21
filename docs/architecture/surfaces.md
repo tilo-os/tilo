@@ -209,8 +209,7 @@ its own screen (`--shell screen`), it is the shell's view
 (`apps/tl/shell/overview.tl`): it reads the shell the session publishes and
 draws every workspace's windows as places on their strips, the shell's bar
 staying above it. The default chrome draws the same overview with
-`tilo_desktop::overview_panel::OverviewPanel` and a `WindowFlight`, the widget
-the browser desktop draws.
+`tilo_desktop::overview_panel::OverviewPanel` and a `WindowFlight`.
 
 Either way it pictures other apps' windows, whose buffers belong to other
 clients, and never copies them: the shell's places hold a `ui.WindowPreview`

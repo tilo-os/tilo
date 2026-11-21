@@ -367,7 +367,7 @@ sibling unlock that already asks another device to release half of a disk key. T
   display, and what will unlock.
 - On approval it returns its half, encrypted to the requesting machine's device key.
   The request is single-use and bound to that screen.
-- A phone approves through the Tilo web desktop with a passkey, so no separate app is
+- A phone approves through Tilo's web page with a passkey, so no separate app is
   needed.
 
 The machine must have network before sign-in, which it does only through networks

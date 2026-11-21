@@ -316,9 +316,8 @@ output, not rendering speed. Sources:
 The browser bundles have their own Cargo profiles, and a browser frame-rate
 number is only comparable at one of them. `wasm-release` is the shipping
 build; `wasm-assert` is the same optimisation (`opt-level=3`, fat LTO) with
-`debug-assertions` and `overflow-checks` on, the two `wasm-split` and
-`wasm-assert-split` variants keep the symbol table the desktop bundle's
-splitter reads, and `wasm-dev` is the quick loop. Build a measured or
+`debug-assertions` and `overflow-checks` on, and `wasm-dev` is the quick
+loop. Build a measured or
 qualified bundle with `crates/browser/tilo-browser-runtime/scripts/build.sh
 --profile assert`, or `tilo-app build --platform web --release --assertions`,
 and record the profile `build.json` names. A plain `release` bundle has the

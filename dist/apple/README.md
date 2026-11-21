@@ -259,8 +259,7 @@ kept by the host that runs their workspace, and the host answers them only to th
 device of theirs: it decides by the device's certificate, which the transport verified. Tilo's
 page is that device, and its script already asks the host as the person (`web/peer.mjs`,
 `actions`); it puts no handle on that session where another script finds it. To a native app
-that holds it, the page hands the entry of its device, once
-([`web/native-host.mjs`](../../crates/browser/tilo-browser-runtime/web/native-host.mjs)): the
+that holds it, the page hands the entry of its device, once: the
 engine's script says it is there before any of the page's code runs, keeps what it is handed
 in its own scope, and gives the app's code `TiloEngine.ask` for exactly the providers in
 `PersonProvider`, with typed calls for the models and the vault (`Person.swift`). No new
