@@ -185,14 +185,18 @@ case ${1:-} in
     compiled=${2:?usage: hosted-guest.sh session COMPILED OUT}
     out=${3:?usage: hosted-guest.sh session COMPILED OUT}
     # The components' files come from os/components.toml: the guest names a
-    # component and cannot place a file of its own choosing. Their programs are
-    # the compiled tree's, built once with the guest's apps and Browser and
+    # component and cannot place a file of its own choosing. Every layer of
+    # those components lands, whatever layer a file sits in: a program, the
+    # image's consumer programs (`tilo-install`, `tilo-runtime-bundle`) and the
+    # interface declaration the session and the launcher read. Only the `direct`
+    # font tree is left out, which the catalog prepares below. Their programs
+    # are the compiled tree's, built once with the guest's apps and Browser and
     # their settings: a build of its own here, with the release profile's fat
     # LTO and one codegen unit per program, took an hour and 71 GiB for the same
     # eleven programs.
     rm -rf "$out"
     mkdir -p "$out"
-    python3 os/scripts/install-components.py --layer desktop-binaries \
+    python3 os/scripts/install-components.py --skip-layer direct \
       --from "$compiled" --dest "$out" "${session_components[@]}"
     # The fonts the session draws with, from the pinned catalog by digest: the
     # system's copy, which fontconfig finds for the session and every app it
@@ -202,6 +206,8 @@ case ${1:-} in
       --cache "${TILO_FONT_ASSET_CACHE:-$scratch/tilo-font-seed}" >/dev/null
     test -x "$out/usr/bin/tilo-session"
     test -x "$out/usr/libexec/tilo/tilo-launcher"
+    test -x "$out/usr/libexec/tilo/tilo-install"
+    test -x "$out/usr/libexec/tilo/tilo-runtime-bundle"
     test -s "$out/usr/share/tilo/system-interfaces.toml"
     test -s "$out"/usr/share/fonts/tilo/manifest.toml
     du -sh "$out"
