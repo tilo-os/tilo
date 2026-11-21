@@ -1803,16 +1803,36 @@ impl Core {
         self.screen == Screen::Editor
     }
 
+    /// The item `id` names, opened, or the reason it is gone.
+    fn open_item(&mut self, id: &str) -> Result<(), String> {
+        if self.open(&SecretId(item_of(id).to_owned())) {
+            Ok(())
+        } else {
+            Err("That item is no longer in your vault".to_owned())
+        }
+    }
+
+    /// Save the draft being edited, and say why it did not save when it stays open.
+    fn save_edited(&mut self) -> Result<(), String> {
+        if !self.is_editing() {
+            return Err("No item is being edited".into());
+        }
+        self.toast = None;
+        self.save_draft();
+        if self.is_editing() {
+            return Err(self
+                .draft_error
+                .as_ref()
+                .map(|(_, message)| message.clone())
+                .or_else(|| self.toast.clone())
+                .unwrap_or_else(|| "The item was not saved".to_owned()));
+        }
+        Ok(())
+    }
+
     /// Answer an effect invoked by the palette, an agent, a script or a search hit.
     pub(crate) fn perform(&mut self, effect: PasswordsEffect) -> Result<(), String> {
         self.refresh_model();
-        let open = |core: &mut Self, id: String| {
-            if core.open(&SecretId(item_of(&id).to_owned())) {
-                Ok(())
-            } else {
-                Err("That item is no longer in your vault".to_owned())
-            }
-        };
         match effect {
             PasswordsEffect::ShowAccess => self.navigate("app-access"),
             PasswordsEffect::RevokeAccess { grant } => {
@@ -1833,21 +1853,7 @@ impl Core {
                 self.decide_request(&proposal, accounts::AccessDecision::Deny)?;
             }
             PasswordsEffect::Add => self.begin_add(),
-            PasswordsEffect::Save => {
-                if !self.is_editing() {
-                    return Err("No item is being edited".into());
-                }
-                self.toast = None;
-                self.save_draft();
-                if self.is_editing() {
-                    return Err(self
-                        .draft_error
-                        .as_ref()
-                        .map(|(_, message)| message.clone())
-                        .or_else(|| self.toast.clone())
-                        .unwrap_or_else(|| "The item was not saved".to_owned()));
-                }
-            }
+            PasswordsEffect::Save => self.save_edited()?,
             effect @ PasswordsEffect::SaveLogin { .. } => self.save_login(effect)?,
             PasswordsEffect::ListLogins => {
                 // An empty list from a vault not open yet would read as an empty vault.
@@ -1869,29 +1875,29 @@ impl Core {
                 self.generate_password();
             }
             PasswordsEffect::Edit { item } => {
-                open(self, item)?;
+                self.open_item(&item)?;
                 self.begin_edit();
             }
             PasswordsEffect::Copy { item } => {
-                open(self, item)?;
+                self.open_item(&item)?;
                 self.copy_secret();
             }
             PasswordsEffect::CopyIdentity { item } => {
-                open(self, item)?;
+                self.open_item(&item)?;
                 self.copy_identity();
             }
             PasswordsEffect::CopyOrigins { item } => {
-                open(self, item)?;
+                self.open_item(&item)?;
                 self.copy_origins();
             }
             PasswordsEffect::Reveal { item } => {
-                open(self, item)?;
+                self.open_item(&item)?;
                 if self.revealed.is_none() {
                     self.reveal_secret();
                 }
             }
             PasswordsEffect::Hide { item } => {
-                open(self, item)?;
+                self.open_item(&item)?;
                 self.hide_revealed();
             }
             PasswordsEffect::Delete { item } => {
@@ -1913,7 +1919,7 @@ impl Core {
                 }
                 self.select_filter(parsed);
             }
-            PasswordsEffect::Open { item } => open(self, item)?,
+            PasswordsEffect::Open { item } => self.open_item(&item)?,
         }
         Ok(())
     }
