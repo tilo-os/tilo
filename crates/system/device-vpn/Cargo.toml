@@ -33,7 +33,7 @@ required-features = ["service"]
 default = ["service"]
 # The root helper. The shell speaks its protocol and depends on this crate
 # without it.
-service = ["dep:tilo-peer-facts", "dep:tilo-files"]
+service = ["dep:tilo-peer-facts"]
 # The tunnel between two of a person's devices, over their iroh connection.
 tunnel = ["dep:iroh", "dep:tokio", "dep:bytes", "dep:postcard", "dep:tracing"]
 # What the session runs: the route through another device decided, and the
@@ -48,7 +48,8 @@ libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-peer-facts = { path = "../peer-facts", optional = true }
-tilo-files = { path = "../../platform/tilo-files", optional = true }
+# The client connects to the helper's socket through the safe path, with or without the service.
+tilo-files = { path = "../../platform/tilo-files" }
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "net", "sync", "time", "macros"], optional = true }
 bytes = { workspace = true, optional = true }
