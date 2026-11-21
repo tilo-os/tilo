@@ -1601,3 +1601,60 @@ async fn a_compaction_covers_no_write_the_server_has_not_taken() {
         "after a renewal",
     );
 }
+
+#[tokio::test]
+async fn a_write_the_holder_signed_and_admitted_is_published_once() {
+    // A holder signs its device's write and admits it into the replica the owner keeps: what a
+    // page does over its own owner. Publishing it takes it into ownership as it is, once.
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let key = member_key();
+    let author = key.verifying_key().to_bytes();
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "title", "Published once").unwrap();
+    let frame = DocumentMutation::Snapshot(document.save())
+        .encode()
+        .expect("the founding frame encodes");
+    let request = owner
+        .with_current(workspace, |view| {
+            let mut op = view
+                .peer()
+                .draft_write((APP, ""), None, &frame, None, author, 0, now)?;
+            collab_types::sign_op(&mut op, &key).map_err(|error| error.to_string())?;
+            view.replica()
+                .write(|peer| {
+                    peer.admit_new_local_document(APP, "", op.clone(), now)
+                        .map_err(|refused| refused.to_string())
+                })?;
+            Ok(OwnerCommitRequest {
+                workspace: workspace.to_string(),
+                operation: CommitOperation::Document {
+                    app: APP.into(),
+                    document: String::new(),
+                    envelope: Box::new(op),
+                    own: None,
+                    readers: None,
+                },
+            })
+        })
+        .expect("the replica holds this device's write");
+    let committed = owner
+        .commit_admitted(workspace, vec![request.clone()], now)
+        .expect("the write is published");
+    assert_eq!(committed.len(), 1, "the write is published as it was signed");
+    assert_eq!(
+        ownership(owner, workspace, now).len(),
+        1,
+        "ownership holds it once"
+    );
+    // Published again, it is appended no second time: one write, one publication.
+    let again = owner
+        .commit_admitted(workspace, vec![request], now)
+        .expect("publishing it again is harmless");
+    assert!(again.is_empty(), "nothing is published twice");
+    assert_eq!(
+        ownership(owner, workspace, now).len(),
+        1,
+        "still one publication"
+    );
+}

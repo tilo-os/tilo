@@ -478,6 +478,117 @@ impl NativeWorkspaceOwner {
     /// [`WriteRefusal::ChangeRefused`] when the workspace's rules refuse a change: `refused` then
     /// names the message of the write refused, for the verdict its author's session is told and
     /// the workspace keeps.
+    /// Publish `writes`, this device's own document writes that it signed and its replica
+    /// admitted already, as its outgoing ownership: what a write made through [`Self::write`]
+    /// leaves behind, without drafting, numbering or admitting them a second time. Each op goes
+    /// out as it was signed, once; ownership carries it until its host answers.
+    ///
+    /// # Errors
+    /// [`WriteRefusal::HistoryFull`] when a document's history has no room, and
+    /// [`WriteRefusal::Refused`] when the workspace is not held here, or a write is not this
+    /// device's, not for `workspace`, or not admitted by this replica. Nothing is committed
+    /// then.
+    pub fn commit_admitted(
+        &self,
+        workspace: WorkspaceId,
+        writes: Vec<OwnerCommitRequest>,
+        now: SystemTime,
+    ) -> Result<Vec<Committed>, WriteRefusal> {
+        if writes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let candidate = self.view(workspace)?;
+        let device = candidate.device().device_public_key;
+        let runs = self.ownership(workspace);
+        let mut full = None;
+        let mut waiting: Option<WriteRefusal> = None;
+        let changed = {
+            let _turn = self.0.mutation.lock();
+            candidate.change(|live, stored| {
+                let mut taken = Vec::new();
+                for request in writes {
+                    let CommitOperation::Document {
+                        app,
+                        document,
+                        envelope,
+                        ..
+                    } = &request.operation
+                    else {
+                        return Err("unsupported native owner commit family".into());
+                    };
+                    if WorkspaceId::parse(&request.workspace) != Some(workspace) {
+                        return Err("native document write names another workspace".into());
+                    }
+                    if envelope.author.as_bytes() != &device {
+                        return Err(
+                            "native local publication signer differs from selected device".into()
+                        );
+                    }
+                    // The replica must hold this exact op as this device's own write: what the
+                    // holder signed and admitted, and nothing else.
+                    match live.lookup_exact_local_document(app, document, envelope, now) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            return Err(
+                                "a published write is not admitted by this replica".into()
+                            );
+                        }
+                        Err(AdmissionError::ChangeRefused(change)) => {
+                            waiting = Some(WriteRefusal::ChangeRefused(change));
+                            return Err("the workspace refuses the change".into());
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
+                    let outgoing = publication::prepare(&request)?;
+                    // Published once: a write ownership already carries is not appended again.
+                    if publication::has_exact(stored, &outgoing, runs)? {
+                        continue;
+                    }
+                    if !live.sealed_history_takes(app, document, envelope) {
+                        full = Some((app.clone(), document.clone()));
+                        return Err("sealed record history is full".into());
+                    }
+                    publication::append_local(stored, outgoing)?;
+                    answers::note_unanswered(stored, envelope)?;
+                    taken.push(request);
+                }
+                if taken.is_empty() {
+                    return Ok(Vec::new());
+                }
+                stored.generation = stored
+                    .generation
+                    .checked_add(1)
+                    .ok_or("native owner generation exhausted")?;
+                let generation = stored.generation;
+                let aggregate_hash = live.durable_hash()?;
+                taken
+                    .into_iter()
+                    .map(|request| {
+                        let binding = request.binding()?;
+                        Ok((
+                            request,
+                            OwnerCommitReceipt {
+                                binding,
+                                generation,
+                                aggregate_hash,
+                            },
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+        };
+        let (committed, stored) = changed.map_err(|error| match (full, waiting) {
+            (Some((app, record)), _) => WriteRefusal::HistoryFull { app, record },
+            (None, Some(refusal)) => refusal,
+            (None, None) => WriteRefusal::Refused(error),
+        })?;
+        if stored.generation != candidate.generation() {
+            // One durable publication for every write taken.
+            self.publish_document(workspace, &candidate, stored, None)?;
+        }
+        Ok(committed)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one owner turn: numbering, admission, the verdict a refused change leaves, and \
