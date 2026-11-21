@@ -228,12 +228,31 @@ impl Workspaces {
         &self,
         workspace: &str,
         administrator: &DeviceCert,
-        mut request: IssueInvitationRequest,
+        request: IssueInvitationRequest,
         makes_administrator: bool,
         wait_list_entry: Option<[u8; 32]>,
     ) -> Result<IssuedInvitation, CollaborationError> {
+        self.issue_from(
+            workspace,
+            administrator,
+            request,
+            makes_administrator,
+            wait_list_entry,
+            self.invitation_addr().await,
+        )
+        .await
+    }
+
+    pub(super) async fn issue_from(
+        &self,
+        workspace: &str,
+        administrator: &DeviceCert,
+        mut request: IssueInvitationRequest,
+        makes_administrator: bool,
+        wait_list_entry: Option<[u8; 32]>,
+        address: iroh_base::EndpointAddr,
+    ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        let address = self.invitation_addr().await;
         let issued = {
             let governed = self.workspace(workspace).await?;
             let mut governed = governed.lock().await;

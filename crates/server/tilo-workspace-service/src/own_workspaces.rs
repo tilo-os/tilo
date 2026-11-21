@@ -17,10 +17,6 @@ use tilo_user_identity::DeviceCert;
 
 use crate::service::{WorkspaceService, local_caller};
 
-/// How long the invitation a device redeems into a workspace placed on its own
-/// host stays redeemable.
-const OWN_INVITATION_SECONDS: u64 = 600;
-
 impl WorkspaceService {
     /// Ask this host its own operation `action` with `arguments`, as
     /// `caller`, a device of the host's own person, in process: the result
@@ -56,19 +52,15 @@ impl WorkspaceService {
     ) -> Result<Value, String> {
         let pending = self
             .actions()
-            .serve_host(&local_caller(caller), caller, message(target, arguments))
+            .serve_host(
+                &local_caller(caller),
+                caller,
+                RemoteActionMessage::Invoke(invocation(target, arguments)),
+            )
             .ok_or("this workspace service does not answer in process")?;
         answered(pending).await
     }
 
-    /// Place `workspace`, a workspace called `name`, on this host for `caller`, a
-    /// device of the host's own person: the host creates the workspace unless it
-    /// holds it already (a placement cut short after the workspace was made goes
-    /// on from there, the workspace it is, never another), and answers the
-    /// invitation, as text, that `caller`'s replica redeems to hold it.
-    ///
-    /// # Errors
-    /// The host refused to create or enter the workspace, or made another workspace.
     /// Hold `workspace`, a workspace called `name`, on this host for `caller`,
     /// a device of the host's own person: the host creates the workspace
     /// unless it holds it already. The embedder writes into it through the
@@ -97,6 +89,10 @@ impl WorkspaceService {
         Ok(())
     }
 
+    /// Hold a workspace and return the invitation this device redeems in process.
+    ///
+    /// # Errors
+    /// The host refused to hold or enter the workspace, or made another workspace.
     pub async fn place_own_workspace(
         &self,
         workspace: &str,
@@ -106,9 +102,19 @@ impl WorkspaceService {
         self.hold_own_workspace(workspace, name, caller).await?;
         let mut arguments = Map::new();
         arguments.insert("workspace".into(), workspace.into());
-        arguments.insert("expires_in_seconds".into(), OWN_INVITATION_SECONDS.into());
-        let entered: EnteredWorkspace =
-            answer(self.ask_own(caller, ENTER_WORKSPACE, arguments).await?)?;
+        let request = invocation(
+            RemoteActionTarget {
+                provider: HOST_ACTIONS_PROVIDER.to_owned(),
+                address: ActionAddress::new(HOST_WORKSPACES_RESOURCE.to_owned(), ENTER_WORKSPACE),
+            },
+            arguments,
+        );
+        let entered: EnteredWorkspace = answer(
+            self.workspaces()
+                .enter_here(caller, &request)
+                .await
+                .map_err(|error| error.to_string())?,
+        )?;
         Ok(tilo_peer_state::join::encode_invitation_text(
             &entered.invitation.decode()?.signed_invitation,
         ))
@@ -132,8 +138,8 @@ async fn answered(pending: Pending<RemoteActionMessage>) -> Result<Value, String
 }
 
 /// The question `target` with `arguments` asks, as a connection asks the service.
-fn message(target: RemoteActionTarget, arguments: Map<String, Value>) -> RemoteActionMessage {
-    RemoteActionMessage::Invoke(InvokeRequest {
+fn invocation(target: RemoteActionTarget, arguments: Map<String, Value>) -> InvokeRequest {
+    InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target,
         argument: InvokeArgument::Json(arguments),
@@ -143,7 +149,7 @@ fn message(target: RemoteActionTarget, arguments: Map<String, Value>) -> RemoteA
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
-    })
+    }
 }
 
 fn answer<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
@@ -172,7 +178,7 @@ mod tests {
         let created = server.workspaces().create("Home").await.unwrap();
         let mut arguments = Map::new();
         arguments.insert("role".to_owned(), "editor".into());
-        let RemoteActionMessage::Invoke(request) = message(
+        let request = invocation(
             RemoteActionTarget {
                 provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
                 address: ActionAddress::new(
@@ -181,9 +187,7 @@ mod tests {
                 ),
             },
             arguments,
-        ) else {
-            unreachable!("a question is an invocation");
-        };
+        );
         let caller = local_caller(&cert).in_workspace(created.workspace.as_str());
         let receipt = server
             .host()

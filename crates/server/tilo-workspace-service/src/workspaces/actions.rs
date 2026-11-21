@@ -1373,7 +1373,7 @@ impl Workspaces {
                             && caller.user_public_key() == Some(&certificate.user_public_key)
                     })
                     .ok_or(ActionCallError::UnknownAction)?;
-                self.account_invoke(workspace_id, caller, certificate, request)
+                self.account_invoke(workspace_id, caller, certificate, request, None)
                     .await
             }
             (mcp_server::PROVIDER, _) => {

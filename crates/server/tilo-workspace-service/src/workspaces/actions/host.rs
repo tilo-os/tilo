@@ -571,6 +571,7 @@ impl Workspaces {
         caller: &Caller,
         device: &DeviceCert,
         request: &InvokeRequest,
+        local_address: Option<iroh_base::EndpointAddr>,
     ) -> Result<Value, ActionCallError> {
         let (verb, operation) = self.account_operation(device, request)?;
         let now = tilo_clock::unix_now_ns();
@@ -641,8 +642,14 @@ impl Workspaces {
                     expires_at_ns: expiry(now, seconds),
                     inviter_name: None,
                 };
+                // The local device redeems in process. An invitation sent to
+                // another device needs to wait for the host's reachable address.
+                let address = match local_address {
+                    Some(address) => address,
+                    None => self.invitation_addr().await,
+                };
                 let issued = self
-                    .issue(workspace, device, own)
+                    .issue_from(workspace, device, own, false, None, address)
                     .await
                     .map_err(|error| refused(&error))?;
                 answer(&EnteredWorkspace {
@@ -663,6 +670,24 @@ impl Workspaces {
             }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+
+    /// Enter through the host action for redemption on this same endpoint.
+    pub(crate) async fn enter_here(
+        &self,
+        device: &DeviceCert,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        let address = self.endpoint_addr();
+        if &device.device_public_key != address.id.as_bytes()
+            || request.target.provider != HOST_ACTIONS_PROVIDER
+            || request.target.address.action != ENTER_WORKSPACE
+        {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let caller = crate::service::local_caller(device);
+        self.account_invoke(None, &caller, device, request, Some(address))
+            .await
     }
 
     /// The operation `request` names, which `device` may carry out.
