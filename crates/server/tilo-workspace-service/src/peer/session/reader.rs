@@ -291,6 +291,28 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, '_, R> {
         }
     }
 
+    /// Drive `operation` while the commits still being saved go on to their
+    /// answers ([`Commits::settle`]), reading nothing ahead. A save waits for
+    /// the workspace's lock; one left unpolled after the lock was handed to it
+    /// holds the lock for as long as `operation` runs, and an `operation`
+    /// that takes the same lock never ends.
+    async fn settle_while<F, T>(
+        &mut self,
+        mut operation: std::pin::Pin<Box<F>>,
+    ) -> Result<T, PeerError>
+    where
+        F: std::future::Future<Output = Result<T, PeerError>>,
+    {
+        loop {
+            let settling = !self.commits.is_empty();
+            tokio::select! {
+                biased;
+                result = &mut operation => break result,
+                settled = self.commits.settle(self.replies), if settling => settled?,
+            }
+        }
+    }
+
     /// Hand `batch` to the writer, reading ahead and settling commits while
     /// the writer's queue is full ([`Self::step`]).
     async fn hand_off_reply(
@@ -317,6 +339,52 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, '_, R> {
             }
         }
         Ok(())
+    }
+
+    /// The next of `running` to end: the oldest of those that ended while a
+    /// reply was handed off ([`Self::hand_off_beside`]), or else the next to
+    /// end, meanwhile reading ahead and settling commits. `None` once all
+    /// have ended.
+    async fn next_of<F, T>(
+        &mut self,
+        running: &mut n0_future::FuturesUnordered<F>,
+        ready: &mut VecDeque<T>,
+        cx: SessionLoop<'_, '_>,
+    ) -> Result<Option<T>, PeerError>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        use n0_future::StreamExt as _;
+        if let Some(next) = ready.pop_front() {
+            return Ok(Some(next));
+        }
+        let next = Box::pin(async { Ok(running.next().await) });
+        self.overtake_while(next, cx).await
+    }
+
+    /// [`Self::hand_off_reply`], polling `running` until the writer takes
+    /// `batch` and keeping what ends in `ready`. One of them handed the
+    /// workspace's lock and left unpolled would hold it.
+    async fn hand_off_beside<F, T>(
+        &mut self,
+        batch: ReplayWrite,
+        running: &mut n0_future::FuturesUnordered<F>,
+        ready: &mut VecDeque<T>,
+        cx: SessionLoop<'_, '_>,
+    ) -> Result<(), PeerError>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        use n0_future::StreamExt as _;
+        let handing = self.hand_off_reply(batch, cx);
+        tokio::pin!(handing);
+        loop {
+            tokio::select! {
+                biased;
+                handed = &mut handing => break handed,
+                Some(next) = running.next(), if !running.is_empty() => ready.push_back(next),
+            }
+        }
     }
 
     /// Until every commit admitted so far is answered and its answer handed
@@ -499,7 +567,9 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
                 Ok(resume.map(EnvelopeV2::State))
             }
             () = crate::peer::access_audit::until(audit_due) => {
-                let watched = audit_subscriber_access(cx.peer, cx.session, self.subscribed).await?;                self.access_audit.audited(cx.peer, cx.session.agents, self.subscribed, watched);
+                let audit = Box::pin(audit_subscriber_access(cx.peer, cx.session, self.subscribed));
+                let watched = self.inbound.settle_while(audit).await?;
+                self.access_audit.audited(cx.peer, cx.session.agents, self.subscribed, watched);
                 Ok(None)
             }
             // The epoch's sender is a process-wide static and never
@@ -655,9 +725,12 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
                     })
                 })
                 .collect();
+            // Every subscription is polled until it ends, also while an
+            // earlier one's reply waits for the writer.
+            let mut ready = VecDeque::new();
             loop {
-                let next = Box::pin(async { Ok(running.next().await) });
-                let Some(subscribed) = self.inbound.overtake_while(next, cx).await? else {
+                let Some(subscribed) = self.inbound.next_of(&mut running, &mut ready, cx).await?
+                else {
                     break Ok(());
                 };
                 let (ticket, reply) = match subscribed {
@@ -673,6 +746,9 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
                         // The session ends; what the rest of the run
                         // entered meanwhile is still left with it.
                         while let Some(rest) = running.next().await {
+                            ready.push_back(rest);
+                        }
+                        for rest in ready {
                             if let Ok(Subscribed::Replaying(slot)) = rest {
                                 entered.push(slot.0);
                             }
@@ -686,7 +762,8 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
                     reply,
                     replaying: true,
                 };
-                if let Err(error) = self.inbound.hand_off_reply(batch, cx).await {
+                let handed = self.inbound.hand_off_beside(batch, &mut running, &mut ready, cx);
+                if let Err(error) = handed.await {
                     break Err(error);
                 }
             }
@@ -733,5 +810,64 @@ impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
             answer
         }));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reader's own wait on the workspace's lock (an access audit)
+    /// still lets a commit's save queued ahead of it on that lock take it,
+    /// finish and be answered: a save left unpolled once the lock is handed
+    /// to it would hold it with the wait queued behind it, and the
+    /// connection, and every other on the workspace, would stall.
+    #[tokio::test]
+    async fn a_wait_on_the_lock_lets_a_save_queued_ahead_of_it_finish() {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let held = lock.clone().lock_owned().await;
+        let (_peer, stream) = tokio::io::duplex(64);
+        let mut reader = SessionReader::new(stream);
+        let (replies, mut written) = mpsc::channel(1);
+        let mut inbound = Inbound {
+            reader: &mut reader,
+            backlog: VecDeque::new(),
+            open: true,
+            replies: &replies,
+            commits: Commits {
+                saving: n0_future::FuturesOrdered::new(),
+                answered: VecDeque::new(),
+            },
+        };
+        let saving = lock.clone();
+        inbound.commits.saving.push_back(Box::pin(async move {
+            drop(saving.lock().await);
+            Ok(Some(Envelope::Ping))
+        }));
+        // The save is queued on the lock before the wait is.
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                inbound.commits.settle(&replies)
+            )
+            .await
+            .is_err(),
+            "the save took a lock the test holds"
+        );
+        let waiting = lock.clone();
+        let wait = Box::pin(async move {
+            drop(held);
+            drop(waiting.lock().await);
+            Ok(())
+        });
+        tilo_test_env::within("the wait behind a save", inbound.settle_while(wait))
+            .await
+            .unwrap();
+        assert!(inbound.commits.saving.is_empty());
+        while !inbound.commits.is_empty() {
+            inbound.commits.settle(&replies).await.unwrap();
+        }
+        let answer = written.recv().await.unwrap();
+        assert!(matches!(answer.reply, Some(Envelope::Ping)));
     }
 }
