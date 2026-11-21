@@ -1445,3 +1445,87 @@ fn two_devices_first_durability_receipts_both_survive_a_merge() {
     let held = crate::durability::entries(&a).unwrap();
     assert_eq!(held.len(), 2, "both routes' receipts keep: {held:?}");
 }
+
+/// Another device of the owner's: the owner's root certifies a key of its own.
+fn owners_other_device(seed: u8) -> DeviceCert {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: format!("device {seed}"),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    cert
+}
+
+/// The workspace document `founder` seeds, started over from a base `bases` times, as a
+/// governor does at each admission.
+fn founded_by(founder: &DeviceCert, bases: u64) -> AutoCommit {
+    let seed = crate::seed_workspace(WORKSPACE, founder, std::slice::from_ref(founder)).unwrap();
+    let mut doc = crate::workspace::candidate(None, &seed).unwrap();
+    for _ in 0..bases {
+        doc = super::super::base::rebase(&doc, automerge::ActorId::random()).unwrap();
+    }
+    doc
+}
+
+/// The owner's restored computer, which never held the workspace, founds one of its own under
+/// the workspace's id. Neither its founding nor any base of it, however many admissions it went
+/// through, replaces what the host holds or merges beside it; the host's own next base still
+/// replaces the document as before.
+#[test]
+fn a_workspace_founded_again_under_its_id_replaces_nothing_its_host_holds() {
+    let (_, host) = owner_device();
+    let mut held = founded_by(&host, 1);
+    hold_document(&mut held, "file:/plan.md");
+    held.commit();
+    let restored = owners_other_device(0x77);
+    let restored_key = hex::encode(restored.device_public_key);
+    for (bases, what) in [
+        (0, "its founding"),
+        (1, "a base as old as the host's"),
+        (5, "a newer base"),
+    ] {
+        let refounded = all_changes(&founded_by(&restored, bases));
+        assert_eq!(
+            admit(
+                Some(&held),
+                member(&restored_key, owner_root()),
+                &owner_root(),
+                &refounded,
+            )
+            .map(|admitted| admitted.rebased),
+            Err(WorkspaceRefusal::Refounded),
+            "{what} of another founding is refused"
+        );
+        // A receiver refusing it does not take itself for behind its governor.
+        assert!(!matches!(
+            super::super::base::lineage(Some(&held), &refounded),
+            super::super::base::Lineage::Newer { .. }
+        ));
+    }
+    let next =
+        all_changes(&super::super::base::rebase(&held, automerge::ActorId::random()).unwrap());
+    let admitted = admit(
+        Some(&held),
+        member(&restored_key, owner_root()),
+        &owner_root(),
+        &next,
+    )
+    .expect("the host's own next base is the workspace's");
+    assert!(
+        admitted.rebased,
+        "a newer base of the same founding replaces the document"
+    );
+    assert_eq!(
+        crate::workspace::policy_of(&admitted.candidate, WORKSPACE),
+        crate::workspace::policy_of(&held, WORKSPACE),
+        "the base holds the workspace's authority as the document held it"
+    );
+}

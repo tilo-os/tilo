@@ -1071,6 +1071,7 @@ session-awaiting-admission = This device isn't in { $name } yet
 session-awaiting-admission-body = { $host } hosts { $name } and has to take this device in first. Its apps here wait until this device reaches { $host } once.
 desktop-no-workspace = There is no workspace called { $name }
 desktop-joined-workspace-unknown = That workspace shares a workspace this computer cannot join
+desktop-workspace-not-held = This computer is not in that workspace yet. Join it with an invitation first
 shell-first-workspace = This is the first workspace
 shell-last-workspace = This is the last workspace
 shell-first-strip = This is the first strip

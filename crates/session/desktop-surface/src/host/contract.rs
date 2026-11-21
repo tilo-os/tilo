@@ -94,6 +94,17 @@ pub trait DesktopRules {
         self.may_create_workspace()
     }
 
+    /// Whether the workspace `workspace` , which exists already, may be put on this shell: it is
+    /// one this device holds. One it holds nothing of is entered (its host takes the device in)
+    /// or joined (by an invitation) before it comes on the shell; put here bare, it would be a
+    /// fresh workspace of its own under that id.
+    ///
+    /// # Errors
+    /// The refusal, in words for the person.
+    fn may_open_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
+        Ok(())
+    }
+
     /// The person made `strip` : it is theirs from now on.
     fn made_strip(&self, _strip: StripId) {}
 

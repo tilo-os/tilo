@@ -1543,6 +1543,12 @@ impl DesktopChrome {
                 self.handle.replace_tree(tree);
                 return;
             }
+            // A workspace that exists comes on this shell once this device holds it: put on bare,
+            // it would be a second workspace under its id.
+            if let Err(refusal) = self.rules.may_open_workspace(joined) {
+                self.handle.acknowledge(refusal);
+                return;
+            }
             Workspace::new(joined, crate::workspace_names::made(name, &tree.workspaces))
         } else {
             if let Err(refusal) = self.rules.may_create_workspace() {

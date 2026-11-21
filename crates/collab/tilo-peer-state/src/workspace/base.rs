@@ -69,6 +69,26 @@ pub(crate) enum Lineage {
         base: Box<AutoCommit>,
         changes: Vec<Vec<u8>>,
     },
+    /// It starts a history of another founding of the workspace: a document
+    /// some device founded afresh under the workspace's id, naming a founder
+    /// other than the one the receiver's document names. A workspace is
+    /// founded once, and what that founding holds is never replaced by
+    /// another's, whatever its generation, nor merged beside it as a second
+    /// root whose rows would compete with the held ones.
+    Refounded,
+}
+
+/// Who `doc` names as the workspace's founder ([`crate::state::seed::FOUNDER`]):
+/// the founding device, or the person a workspace of their own is founded by.
+/// Every base carries it on from the state it was made of.
+fn founder(doc: &AutoCommit) -> Option<String> {
+    match doc.get(ROOT, crate::state::seed::FOUNDER) {
+        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+            ScalarValue::Str(founder) => Some(founder.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Sort `changes` against `before`. A change with no dependencies starts a
@@ -92,9 +112,12 @@ pub(crate) enum Lineage {
 ///   of another history. This applies to the batch and to the changes
 ///   already waiting in `before`, and to what builds on such a change.
 ///
-/// A document that never had a base takes the batch as it comes.
+/// A document that never had a base takes the batch as it comes, unless the
+/// batch starts a history of another founding: then it is
+/// [`Lineage::Refounded`], however new its base.
 pub(crate) fn lineage(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Lineage {
     let held = before.map_or(0, generation);
+    let founded = before.and_then(founder);
     let decoded: Vec<Option<automerge::Change>> = changes
         .iter()
         .map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
@@ -110,6 +133,12 @@ pub(crate) fn lineage(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Linea
         let Ok(started) = super::candidate(None, std::slice::from_ref(bytes)) else {
             continue;
         };
+        if founded.is_some()
+            && founder(&started) != founded
+            && !applied(before.map(AutoCommit::committed_document), &change.hash())
+        {
+            return Lineage::Refounded;
+        }
         let at = generation(&started);
         if at > held
             && newest
@@ -503,6 +532,7 @@ mod tests {
             Lineage::Newer { base, changes } => {
                 super::super::candidate_on(*base, &changes).unwrap()
             }
+            Lineage::Refounded => panic!("a workspace of one founding takes the batch"),
         }
     }
 

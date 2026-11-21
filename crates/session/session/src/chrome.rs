@@ -652,6 +652,18 @@ impl ChromeSource for SessionChrome {
         }
     }
 
+    /// A workspace that exists comes on the shell once this device's engine holds it: entered
+    /// from the person's list or joined by an invitation, the session puts it there itself. One
+    /// it holds nothing of would be founded here afresh under the existing workspace's id.
+    fn may_open_workspace(&self, workspace: tilo_desktop_model::WorkspaceId) -> Result<(), String> {
+        match &self.engine {
+            Some(engine) if !engine.holds(workspace) => {
+                Err(tilo_desktop_surface::i18n::t("desktop-workspace-not-held"))
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn may_delete_workspace(
         &self,
         workspace: tilo_desktop_model::WorkspaceId,

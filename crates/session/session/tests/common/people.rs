@@ -370,6 +370,16 @@ impl Site {
         });
     }
 
+    /// The workspace as the site's governance summarises it now: its people, their devices and
+    /// the generation its governance is at.
+    pub fn runtime_summary(
+        &self,
+    ) -> Result<tilo_server_session::workspaces::WorkspaceSummary, String> {
+        self.runtime
+            .block_on(self.workspaces.summary(&self.workspace))
+            .map_err(|error| error.to_string())
+    }
+
     /// The records of the workspace this site holds, by the app and record they belong to: what its
     /// people wrote there, as their host keeps it.
     pub fn records(&self) -> Vec<(String, String)> {

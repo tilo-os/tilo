@@ -550,6 +550,14 @@ pub trait ChromeSource {
     fn may_branch_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
         Ok(())
     }
+    /// Whether the existing workspace `workspace` may be put on this shell: it is one this
+    /// device holds.
+    ///
+    /// # Errors
+    /// The refusal, in words for the person.
+    fn may_open_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
+        Ok(())
+    }
     /// Where the workspace shown is hosted (`example.org`); `None` on a desktop of the person's
     /// own.
     fn workspace_host(&self) -> Option<String> {
@@ -744,6 +752,10 @@ impl<S: ChromeSource + ?Sized> DesktopRules for HostChrome<S> {
     fn may_branch_workspace(&self, workspace: WorkspaceId) -> Result<(), String> {
         self.may_create_workspace()?;
         self.source.may_branch_workspace(workspace)
+    }
+
+    fn may_open_workspace(&self, workspace: WorkspaceId) -> Result<(), String> {
+        self.source.may_open_workspace(workspace)
     }
 
     fn made_strip(&self, strip: StripId) {

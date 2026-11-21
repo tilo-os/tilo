@@ -1103,6 +1103,7 @@ session-awaiting-admission = Dieses Gerät ist noch nicht in { $name }
 session-awaiting-admission-body = { $host } stellt { $name } bereit und muss dieses Gerät zuerst aufnehmen. Seine Apps warten hier, bis dieses Gerät { $host } einmal erreicht.
 desktop-no-workspace = Es gibt keinen Arbeitsbereich namens { $name }
 desktop-joined-workspace-unknown = Dieser Arbeitsbereich liegt in einem Arbeitsbereich, dem dieser Rechner nicht beitreten kann
+desktop-workspace-not-held = Dieser Rechner ist noch nicht in diesem Arbeitsbereich. Tritt ihm zuerst mit einer Einladung bei
 shell-first-workspace = Das ist der erste Arbeitsbereich
 shell-last-workspace = Das ist der letzte Arbeitsbereich
 shell-first-strip = Das ist die erste Leiste

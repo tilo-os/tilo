@@ -110,6 +110,10 @@ pub enum WorkspaceRefusal {
     /// The batch changes governance the writer's role does not permit, or
     /// governance no operation of its own names.
     GovernanceWriter,
+    /// The batch starts the workspace over from another founding: a document
+    /// founded afresh under the workspace's id, by a device that never held
+    /// what the workspace holds ([`super::base::Lineage::Refounded`]).
+    Refounded,
     /// A member's membership change is not theirs to make.
     Membership(String),
     /// The batch rewrites an effect receipt.
@@ -153,6 +157,10 @@ impl std::fmt::Display for WorkspaceRefusal {
             | Self::Membership(error) => f.write_str(error),
             Self::DeclaredWorkspaceMismatch => f.write_str("declared workspace mismatch"),
             Self::GovernanceWriter => f.write_str("governance is not this writer's to change"),
+            Self::Refounded => f.write_str(
+                "the workspace was founded once already: a document founded again under its id \
+                 replaces nothing it holds",
+            ),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::RedemptionImmutable => {
                 f.write_str("governed invitation has conflicting redemption receipts")
@@ -278,6 +286,7 @@ pub fn admit_workspace_changes(
             })
         }
         super::base::Lineage::Newer { .. } => Err(WorkspaceRefusal::GovernanceWriter.into()),
+        super::base::Lineage::Refounded => Err(WorkspaceRefusal::Refounded.into()),
     }
 }
 

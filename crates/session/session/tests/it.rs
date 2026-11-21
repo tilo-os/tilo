@@ -203,6 +203,8 @@ mod power;
 mod primary_display;
 #[path = "questions.rs"]
 mod questions;
+#[path = "refounded_workspace.rs"]
+mod refounded_workspace;
 #[path = "refused_writes.rs"]
 mod refused_writes;
 #[path = "region_formats.rs"]
