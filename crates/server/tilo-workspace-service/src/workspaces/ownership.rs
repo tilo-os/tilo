@@ -57,9 +57,11 @@ impl Workspaces {
     }
 
     /// Hand `governed` to the person it is kept for, when this host owns it:
-    /// the person an earlier build's grant named, else the person whose own
-    /// workspace this host records it as. That grant goes first, while this
-    /// host may still take it back, and the workspace changes owner after.
+    /// the person this host records it as the own workspace of, else the one
+    /// an earlier build's grant named. An earlier build could name several;
+    /// each other one it named stays an administrator, as that grant let them
+    /// govern. Those grants go first, while this host may still take them
+    /// back, and the workspace changes owner after.
     pub(super) async fn hand_kept_workspace_over(
         &self,
         governed: &mut GovernedWorkspace,
@@ -69,22 +71,22 @@ impl Workspaces {
             return Ok(());
         }
         let policy = governed.peer().governance().governed_policy()?;
-        let kept: Vec<GrantId> = policy
+        let mut kept: Vec<(GrantId, [u8; 32])> = policy
             .grants
             .iter()
-            .filter(|grant| grant.id.as_str().starts_with(KEPT_FOR))
-            .map(|grant| grant.id.clone())
-            .collect();
-        let named = kept.iter().find_map(|id| {
-            let mut person = [0; 32];
-            hex::decode_to_slice(id.as_str().strip_prefix(KEPT_FOR)?, &mut person).ok()?;
-            Some(person)
-        });
-        let Some(person) = named
-            .or_else(|| {
-                self.own()
-                    .and_then(|own| own.owner_of(governed.workspace()))
+            .filter_map(|grant| {
+                let mut person = [0; 32];
+                hex::decode_to_slice(grant.id.as_str().strip_prefix(KEPT_FOR)?, &mut person)
+                    .ok()?;
+                Some((grant.id.clone(), person))
             })
+            .collect();
+        kept.sort_by_key(|(id, _)| id.clone());
+        let own = self
+            .own()
+            .and_then(|own| own.owner_of(governed.workspace()));
+        let Some(person) = own
+            .or_else(|| kept.first().map(|(_, person)| *person))
             .filter(|person| *person != host)
         else {
             return Ok(());
@@ -93,13 +95,17 @@ impl Workspaces {
             let key = &self.inner.host.key;
             let now = tilo_clock::wall();
             let mut candidate = governed.peer().clone();
-            if candidate
-                .governance_mut()
-                .remove_governed_grants(&kept, key, now)?
-            {
-                let state = governed.collaboration().clone();
-                governed.commit(candidate, key, now, |_, _| Ok(state))?;
+            for (_, other) in kept.iter().filter(|(_, kept)| *kept != person) {
+                candidate
+                    .governance_mut()
+                    .set_member_administrator(*other, None, key, now)?;
             }
+            let ids: Vec<GrantId> = kept.iter().map(|(id, _)| id.clone()).collect();
+            candidate
+                .governance_mut()
+                .remove_governed_grants(&ids, key, now)?;
+            let state = governed.collaboration().clone();
+            governed.commit(candidate, key, now, |_, _| Ok(state))?;
         }
         self.give_ownership(governed, person, None).await?;
         tracing::info!(workspace = %governed.workspace(), owner = %hex::encode(person),
@@ -169,5 +175,50 @@ mod tests {
             assert!(policy.is_administrator(&host_person));
             server.shutdown().await;
         }
+    }
+
+    /// An earlier build could keep a workspace for more than one person. One
+    /// of them is its owner once the host starts again, and each other one
+    /// it was kept for still governs it, as an administrator: nobody it was
+    /// kept for is left without a say.
+    #[tokio::test]
+    async fn every_other_person_a_workspace_was_kept_for_stays_its_administrator() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = governor();
+        let host_person = hex::encode(host.1.user_public_key);
+        let [ada, bo] = [[9; 32], [10; 32]].map(|seed| {
+            hex::encode(SigningKey::from_bytes(&seed).verifying_key().to_bytes())
+        });
+        let server = test_host(dir.path(), &host.0, &host.1).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Kept").await.unwrap().workspace;
+        let grants = vec![
+            kept_for(&workspace, &ada, &host_person),
+            kept_for(&workspace, &bo, &host_person),
+        ];
+        workspaces
+            .put_workspace_grants(&workspace, &host.1, [5; 32], grants)
+            .await
+            .unwrap();
+        server.shutdown().await;
+
+        let server = test_host(dir.path(), &host.0, &host.1).await;
+        let workspaces = server.workspaces();
+        let policy = workspaces.policy_of(&workspace).await.unwrap();
+        let owner = policy.owner().expect("the workspace has an owner").to_owned();
+        assert!(owner == ada || owner == bo, "{owner} is one it was kept for");
+        let other = if owner == ada { &bo } else { &ada };
+        assert!(
+            policy.is_administrator(other),
+            "the other person it was kept for governs it still"
+        );
+        assert!(
+            policy
+                .grants
+                .iter()
+                .all(|grant| !grant.id.as_str().starts_with(super::KEPT_FOR)),
+            "no grant of the earlier build's is left"
+        );
+        server.shutdown().await;
     }
 }
