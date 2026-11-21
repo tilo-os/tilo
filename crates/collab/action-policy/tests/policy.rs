@@ -39,179 +39,131 @@ fn answer(grants: &[Grant], node: &TreePath, kind: ActionKind) -> Answer {
     decide(grants, &[alice()], node, kind, &cx()).answer
 }
 
-#[test]
-fn vault_documents_require_explicit_access_even_for_editors() {
-    let node = TreePath::workspace("r")
-        .app(tilo_app_id::apps::PASSWORDS)
-        .resource(roles::WORKSPACE_VAULT_DOCUMENT);
-    let mut grants = roles::workspace_role_grants("r", &alice());
-    for role in [Role::Viewer, Role::Commenter, Role::Editor, Role::Moderator] {
-        assert_eq!(
-            decide(
-                &grants,
-                &[Grantee::role(role)],
-                &node,
-                ActionKind::Read,
-                &cx()
-            )
-            .answer,
-            Answer::Deny,
-        );
-    }
-    grants.push(Grant::new(
-        "vault-reviewers",
-        Grantee::CustomRole("reviewers".into()),
-        node.clone(),
-        KindSet::READ,
-        Answer::Allow,
-        alice(),
-    ));
-    let reviewer = [
-        Grantee::role(Role::Editor),
-        Grantee::CustomRole("reviewers".into()),
-    ];
-    assert_eq!(
-        decide(&grants, &reviewer, &node, ActionKind::Read, &cx()).answer,
-        Answer::Allow
-    );
-    assert_eq!(
-        decide(&grants, &reviewer, &node, ActionKind::Undoable, &cx()).answer,
-        Answer::Deny
-    );
-}
-
-#[test]
-fn the_workspace_mailbox_starts_private_and_an_explicit_grant_opens_it() {
-    let mailbox = TreePath::workspace("r")
-        .app(tilo_app_id::apps::MAIL)
-        .resource("");
-    let encoded = serde_json::to_string(&mailbox).unwrap();
-    assert_eq!(serde_json::from_str::<TreePath>(&encoded).unwrap(), mailbox);
-    let mut grants = roles::workspace_role_grants("r", &alice());
-    let editor = [Grantee::role(Role::Editor)];
-    assert_eq!(
-        decide(&grants, &editor, &mailbox, ActionKind::Read, &cx()).answer,
-        Answer::Deny
-    );
-
-    grants.push(Grant::new(
-        "shared-inbox",
-        Grantee::role(Role::Viewer),
-        mailbox.clone(),
-        KindSet::READ,
-        Answer::Allow,
-        alice(),
-    ));
-    assert_eq!(
-        decide(&grants, &editor, &mailbox, ActionKind::Read, &cx()).answer,
-        Answer::Allow
-    );
-    assert_eq!(
-        decide(&grants, &editor, &mailbox, ActionKind::Undoable, &cx()).answer,
-        Answer::Deny
-    );
-    assert!(roles::requires_document_keys(tilo_app_id::apps::MAIL, ""));
-    assert!(!roles::requires_document_keys(
-        tilo_app_id::apps::MAIL,
-        "other"
-    ));
-}
-
-#[test]
-fn the_workspace_mailbox_and_vault_are_their_keepers_as_an_owners() {
-    // A host is the structural owner of a workspace it keeps for someone; the person it keeps
-    // it for is an Editor in its governance, and its private records are theirs all the same.
-    let mut grants = roles::workspace_role_grants("r", &Grantee::person(CAROL));
-    grants.push(roles::keeper_grant("r", ALICE, Grantee::person(CAROL)));
-    let keeper = [alice(), Grantee::role(Role::Editor)];
-    let editor = [Grantee::person(BOB), Grantee::role(Role::Editor)];
-    let app = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
-    for node in [
-        app.clone().resource(""),
-        app.clone().kind("mail.mailbox").resource(""),
-        app.clone()
+/// The workspace's mail and vault records, at the nodes every reader decides them on.
+fn workspace_mail_and_vault() -> Vec<TreePath> {
+    let mail = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
+    vec![
+        mail.clone().resource(""),
+        mail.clone().kind("mail.mailbox").resource(""),
+        mail.clone()
             .kind("mail.copies")
             .resource(roles::WORKSPACE_MAIL_COPIES_DOCUMENT),
+        mail.clone()
+            .kind("mail.trusted-senders")
+            .resource(roles::WORKSPACE_MAIL_TRUST_DOCUMENT),
         TreePath::workspace("r")
             .app(tilo_app_id::apps::PASSWORDS)
+            .kind("passwords.workspace-vault")
             .resource(roles::WORKSPACE_VAULT_DOCUMENT),
-    ] {
+    ]
+}
+
+#[test]
+fn members_reach_the_workspace_mail_and_vault_through_their_role() {
+    let grants = roles::workspace_role_grants("r", &alice());
+    let editor = [Grantee::person(BOB), Grantee::role(Role::Editor)];
+    let viewer = [Grantee::person(CAROL), Grantee::role(Role::Viewer)];
+    for node in workspace_mail_and_vault() {
         for kind in [ActionKind::Read, ActionKind::Undoable] {
             assert_eq!(
-                decide(&grants, &keeper, &node, kind, &cx()).answer,
-                Answer::Allow,
-                "{node} {kind:?}"
-            );
-            assert_eq!(
                 decide(&grants, &editor, &node, kind, &cx()).answer,
-                Answer::Deny,
-                "another Editor: {node} {kind:?}"
+                Answer::Allow,
+                "an Editor: {node} {kind:?}"
             );
         }
-        // An outside effect asks them, as their role asks it everywhere.
         assert_eq!(
-            decide(&grants, &keeper, &node, ActionKind::Outside, &cx()).answer,
+            decide(&grants, &viewer, &node, ActionKind::Read, &cx()).answer,
+            Answer::Allow,
+            "a Viewer reads {node}"
+        );
+        assert_eq!(
+            decide(&grants, &viewer, &node, ActionKind::Undoable, &cx()).answer,
+            Answer::Deny,
+            "a Viewer changes nothing in {node}"
+        );
+        // Sending mail out reaches past the workspace: the role asks it, as everywhere.
+        assert_eq!(
+            decide(&grants, &editor, &node, ActionKind::Outside, &cx()).answer,
             Answer::Ask
         );
     }
-    // A keeper grant taken back, or given to someone else, opens nothing.
-    let mut taken = grants.clone();
-    taken.retain(|grant| grant.id != roles::keeper_grant_id(ALICE));
-    let mailbox = app.resource("");
+}
+
+#[test]
+fn an_owner_closes_the_workspace_vault_and_shares_it_with_one_member() {
+    let vault = TreePath::workspace("r")
+        .app(tilo_app_id::apps::PASSWORDS)
+        .resource(roles::WORKSPACE_VAULT_DOCUMENT);
+    let mut grants = roles::workspace_role_grants("r", &alice());
+    grants.push(Grant::new(
+        "vault-closed",
+        Grantee::role(Role::Viewer),
+        vault.clone(),
+        KindSet::READ,
+        Answer::Deny,
+        alice(),
+    ));
+    // Shared with one member: a personal grant comes before the role's.
+    grants.push(Grant::new(
+        "vault-bob",
+        Grantee::person(BOB),
+        vault.clone(),
+        KindSet::READ,
+        Answer::Allow,
+        alice(),
+    ));
+    let editor = [Grantee::person(BOB), Grantee::role(Role::Editor)];
+    let other = [Grantee::person(CAROL), Grantee::role(Role::Editor)];
     assert_eq!(
-        decide(&taken, &keeper, &mailbox, ActionKind::Read, &cx()).answer,
-        Answer::Deny
+        decide(&grants, &editor, &vault, ActionKind::Read, &cx()).answer,
+        Answer::Allow
     );
-    let mut misnamed = roles::keeper_grant("r", ALICE, Grantee::person(CAROL));
-    misnamed.grantee = Grantee::person(BOB);
-    taken.push(misnamed);
     assert_eq!(
-        decide(&taken, &editor, &mailbox, ActionKind::Read, &cx()).answer,
+        decide(&grants, &other, &vault, ActionKind::Read, &cx()).answer,
         Answer::Deny
     );
 }
 
 #[test]
-fn changing_workspace_mail_requires_a_write_grant() {
-    let app = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
-    let editors = [Grantee::role(Role::Editor)];
-    for (record, kind, verb) in [
-        (
-            roles::WORKSPACE_MAIL_TRUST_DOCUMENT,
-            "mail.trusted-senders",
-            "trust",
-        ),
-        (
-            roles::WORKSPACE_MAIL_COPIES_DOCUMENT,
-            "mail.copies",
-            "keep-copies",
-        ),
-    ] {
-        let route = app.clone().resource(record);
-        let mail = app.clone().kind(kind).resource(record);
-        let mut grants = roles::workspace_role_grants("r", &alice());
-        let write = mail.clone().action(verb);
+fn an_agent_reaches_workspace_mail_through_a_grant_scoped_to_mail() {
+    let mail = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
+    let key = Grantee::member(tilo_action_policy::MemberId::Agent("key".into()));
+    let mut grants = roles::workspace_role_grants("r", &alice());
+    let mailbox = mail.clone().resource("");
+    assert_eq!(
+        decide(&grants, &[key.clone()], &mailbox, ActionKind::Read, &cx()).answer,
+        Answer::Deny,
+        "nothing granted, nothing read"
+    );
+    grants.push(Grant::new(
+        "key-mail",
+        key.clone(),
+        mail,
+        KindSet::READ,
+        Answer::Allow,
+        alice(),
+    ));
+    for node in workspace_mail_and_vault().into_iter().take(4) {
         assert_eq!(
-            decide(&grants, &editors, &mail, ActionKind::Read, &cx()).answer,
-            Answer::Deny
-        );
-        grants.push(Grant::new(
-            "read-mail",
-            editors[0].clone(),
-            route,
-            KindSet::READ,
+            decide(&grants, &[key.clone()], &node, ActionKind::Read, &cx()).answer,
             Answer::Allow,
-            alice(),
-        ));
-        assert_eq!(
-            decide(&grants, &editors, &mail, ActionKind::Read, &cx()).answer,
-            Answer::Allow
-        );
-        assert_eq!(
-            decide(&grants, &editors, &write, ActionKind::Undoable, &cx()).answer,
-            Answer::Deny
+            "{node}"
         );
     }
+    assert_eq!(
+        decide(
+            &grants,
+            &[key],
+            &TreePath::workspace("r")
+                .app(tilo_app_id::apps::PASSWORDS)
+                .resource(roles::WORKSPACE_VAULT_DOCUMENT),
+            ActionKind::Read,
+            &cx()
+        )
+        .answer,
+        Answer::Deny,
+        "a Mail grant opens no vault"
+    );
 }
 
 const ANSWERS: [Answer; 3] = [Answer::Deny, Answer::Ask, Answer::Allow];

@@ -362,13 +362,10 @@ pub fn keeper_grant_id(person: &str) -> GrantId {
 /// workspace's signed governance like every grant, so every member reads who
 /// holds it.
 ///
-/// It gives the owner's authority over administrators: its holder makes
+/// It gives the owner's authority over administrators and nothing else: its holder makes
 /// administrators ([`administrators_node`]) and unmakes and removes them
 /// ([`crate::WorkspacePolicy::may_unmake_administrators`]), whatever their own
-/// role. And the workspace's private records ([`protected_resource_kind`]:
-/// its mailbox, its vault) are theirs as they are an owner's: their role's
-/// grants on the workspace reach them, where everyone else's need a grant
-/// scoped to the record's app ([`crate::decide`]).
+/// role.
 #[must_use]
 pub fn keeper_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
