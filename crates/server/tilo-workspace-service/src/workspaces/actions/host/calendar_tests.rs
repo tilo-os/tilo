@@ -35,16 +35,32 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, caller, governed, settled};
-use super::accounts_tests::key_of;
 use crate::workspaces::fixtures::TestHost as TestHolder;
 use crate::workspaces::person_asking::Allowing;
 use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
 use crate::workspaces::tests::{governor, test_host as test_holder};
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
+
+/// A device of the person `root`.
+fn key_of(root: &SigningKey, label: &str) -> DeviceCert {
+    let key = SigningKey::from_bytes(&rand::random());
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities: DeviceCapabilities::primary(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
 
 /// A turn this server carries out reads her calendars and changes nothing.
 #[path = "calendar_turn_tests.rs"]

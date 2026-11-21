@@ -11,34 +11,15 @@
     reason = "the server handle a test binds is kept until the test ends; dropping it earlier closes the host it drives"
 )]
 
-use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::person_accounts::{self, MailAccounts, MailArrivals};
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::tests::{governor, test_host};
-
-/// A device of the person `root`.
-pub(super) fn key_of(root: &SigningKey, label: &str) -> DeviceCert {
-    let key = SigningKey::from_bytes(&rand::random());
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: DeviceCapabilities::primary(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
-}
 
 /// A request of one of the accounts actions, with `argument` when it has one.
 pub(super) fn asking(action: &str, argument: Value) -> InvokeRequest {
