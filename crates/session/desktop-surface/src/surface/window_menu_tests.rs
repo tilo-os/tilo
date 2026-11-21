@@ -1517,6 +1517,25 @@ fn a_close_says_what_closed_and_its_undo_reopens_it() {
     assert!(!handle.press_notice(&undo.id), "an Undo is pressed once");
 }
 
+/// A window the system opened for something now over (a sign-in's page) closes without saying
+/// so: the person did not close it, so nothing offers to undo it.
+#[test]
+fn a_window_the_system_dismisses_closes_without_an_undo() {
+    let (surface, handle) = one_window_shell(1);
+    let mut frame = present(surface);
+    let route = first_route(&handle);
+    let said = handle.notice();
+
+    assert!(handle.dismiss_window(route.tab));
+    settle(&mut frame);
+    assert!(
+        handle.read(|tree| tree.workspaces[0].strips[0].window_groups.is_empty()),
+        "the window closed"
+    );
+    assert!(said.borrow().get().is_none(), "and nothing was said of it");
+    assert!(!handle.dismiss_window(route.tab), "a window that is gone is not dismissed");
+}
+
 /// A window running an app that controls the desktop offers to end that,
 /// and the row is gone once the grant is taken back.
 #[test]

@@ -102,8 +102,9 @@ enum Stage {
     Form,
     Waiting {
         /// A login URL still to be opened (Nextcloud learns it from the
-        /// server first).
-        urls: Option<Receiver<String>>,
+        /// server first), and whether the session already shows it in a
+        /// window it closes once the sign-in is over.
+        urls: Option<Receiver<(String, bool)>>,
         launch: Option<ui::portal::LaunchChannel>,
         result: Receiver<Outcome>,
         cancel: Option<Cancel>,
@@ -827,8 +828,8 @@ impl SignInFlow {
         let _ = crate::device_read::thread(
             "settings-cloud-sign-in",
             Box::new(move || {
-                let page = |url: String| {
-                    let _ = url_sender.send(url);
+                let page = |url: String, shown: bool| {
+                    let _ = url_sender.send((url, shown));
                 };
                 // Settings' sandbox has no network: the session follows the sign-in where it
                 // connects for Settings, and Settings does only where it has a network itself.
@@ -844,7 +845,7 @@ impl SignInFlow {
                         .map(|login| (login.server, login.login_name, login.app_password)),
                     None => nextcloud::begin(&server)
                         .and_then(|flow| {
-                            page(flow.login_url().to_string());
+                            page(flow.login_url().to_string(), false);
                             flow.wait(&cancel, nextcloud::POLL_INTERVAL, nextcloud::FLOW_LIFETIME)
                         })
                         .map(|login| (login.server, login.login_name, login.app_password))
@@ -992,9 +993,11 @@ impl SignInFlow {
             return (None, false);
         };
         let changed = if let Some(receiver) = urls
-            && let Ok(url) = receiver.try_recv()
+            && let Ok((url, shown)) = receiver.try_recv()
         {
-            *launch = Some(self.opener.open(&url));
+            if !shown {
+                *launch = Some(self.opener.open(&url));
+            }
             *urls = None;
             self.message = Some(
                 "Continue in your browser: sign in to Nextcloud and grant access. This page \
@@ -1119,7 +1122,8 @@ impl SignInFlow {
         };
         if let Some(receiver) = urls.take() {
             match receiver.recv_timeout(remaining()) {
-                Ok(url) => *launch = Some(self.opener.open(&url)),
+                Ok((url, false)) => *launch = Some(self.opener.open(&url)),
+                Ok((_, true)) => {}
                 Err(channel::RecvTimeoutError::Timeout) => return false,
                 Err(channel::RecvTimeoutError::Disconnected) => {}
             }

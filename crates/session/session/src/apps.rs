@@ -158,6 +158,10 @@ struct State {
     /// The windows apps asked this session for, by app and in ask order: each starts in the tab the
     /// shell holds for it once the shell asks back ([`Apps::start_asked`]).
     planned: BTreeMap<String, VecDeque<WindowAsk>>,
+    /// The tab each sign-in page shows in, by page, while its sign-in goes on.
+    sign_in_tabs: BTreeMap<u64, u64>,
+    /// Sign-in pages whose sign-in ended before the shell made their tab.
+    sign_ins_over: std::collections::BTreeSet<u64>,
     /// What the tool a launch opens was asked to show, for the one launch being planned
     /// (`TILO_TOOL_CONTEXT`): set only while a launch a service asked for is being started, and
     /// read where it is planned.
@@ -233,6 +237,9 @@ struct WindowAsk {
     new_window: bool,
     workspace: Option<String>,
     tool_context: Option<String>,
+    /// The sign-in page this window shows, when the session opened it for one
+    /// ([`Apps::show_sign_in`]).
+    sign_in: Option<u64>,
 }
 
 /// How far a launch this session started has got, as everything that waits for its window reads
@@ -355,6 +362,8 @@ impl Apps {
                 me: Weak::new(),
                 held: BTreeMap::new(),
                 planned: BTreeMap::new(),
+                sign_in_tabs: BTreeMap::new(),
+                sign_ins_over: std::collections::BTreeSet::new(),
                 tool_context: None,
                 broker: None,
                 wake,
@@ -1192,6 +1201,9 @@ impl Apps {
         let Some(tab) = tab else {
             return;
         };
+        if let Some(page) = planned.sign_in {
+            self.sign_in_landed(page, tab);
+        }
         // A launch into a workspace the shell is not showing: its tab goes there, and the window
         // starts in that workspace's records whether the shell holds it or not.
         let workspace = match &planned.workspace {
@@ -1275,6 +1287,7 @@ impl Apps {
             new_window: true,
             workspace: None,
             tool_context: None,
+            sign_in: None,
         });
         if !desktop.with_policy(|policy| policy.hold(app, anchor, (background, floated), reveal)) {
             self.give_up_planned(app);
@@ -1306,6 +1319,7 @@ impl Apps {
         workspace: &Workspace,
         new_window: bool,
         reveal: Option<&str>,
+        sign_in: Option<u64>,
     ) -> Result<bool, ApiError> {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return Ok(false);
@@ -1323,6 +1337,7 @@ impl Apps {
             new_window,
             workspace: elsewhere.then(|| workspace.id.clone()),
             tool_context,
+            sign_in,
         };
         self.plan_window(ask);
         let held = desktop.with_policy(|policy| {
@@ -1340,6 +1355,62 @@ impl Apps {
             return Err(ApiError::Failed(format!("the shell took no open of {app}")));
         }
         Ok(true)
+    }
+
+    /// Show the page of a sign-in in the shown workspace, in a window of its own that the
+    /// session closes once the sign-in is over ([`Self::sign_in_over`]): a window the person was
+    /// reading is never navigated away to it, and they never close a page that did its job.
+    /// Whether a window was asked for it; when none was, the app that signs in opens the page.
+    pub(crate) fn show_sign_in(&self, page: u64, url: &str) -> bool {
+        let person = self.state.borrow().person.clone();
+        let shell = self
+            .desktop
+            .borrow()
+            .clone()
+            .map(|desktop| desktop.with_policy(|policy| policy.handle().clone()));
+        let workspace = self.active_workspace();
+        let Some(launch) = crate::documents::opener(shell.as_ref(), &workspace.id, &person, url)
+        else {
+            return false;
+        };
+        match self.ask_shell(&launch, &workspace, true, None, Some(page)) {
+            Ok(asked) => asked,
+            Err(error) => {
+                tracing::warn!(%error, "a sign-in's page did not open");
+                false
+            }
+        }
+    }
+
+    /// The sign-in `page` was shown for is over: its window closes, as the system's close of a
+    /// page that did its job, with no Undo.
+    pub(crate) fn sign_in_over(&self, page: u64) {
+        let tab = {
+            let mut state = self.state.borrow_mut();
+            let tab = state.sign_in_tabs.remove(&page);
+            if tab.is_none() {
+                state.sign_ins_over.insert(page);
+            }
+            tab
+        };
+        if let (Some(tab), Some(desktop)) = (tab, self.desktop.borrow().clone()) {
+            desktop.with_policy(|policy| policy.handle().dismiss_window(tab));
+        }
+    }
+
+    /// Keep the tab sign-in `page` shows in, or close it at once when that sign-in already ended.
+    fn sign_in_landed(&self, page: u64, tab: u64) {
+        let over = {
+            let mut state = self.state.borrow_mut();
+            let over = state.sign_ins_over.remove(&page);
+            if !over {
+                state.sign_in_tabs.insert(page, tab);
+            }
+            over
+        };
+        if over && let Some(desktop) = self.desktop.borrow().clone() {
+            desktop.with_policy(|policy| policy.handle().dismiss_window(tab));
+        }
     }
 
     /// Take back the plan `app`'s last launch queued, the shell having taken no open for it.
@@ -1837,7 +1908,7 @@ impl Apps {
         let hosted = launch.package().is_some() && self.runs_in_process(app);
         if instance.is_none() {
             window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
-            if self.ask_shell(launch, workspace, new_window, reveal)? {
+            if self.ask_shell(launch, workspace, new_window, reveal, None)? {
                 return Ok(true);
             }
         }

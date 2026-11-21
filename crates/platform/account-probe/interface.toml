@@ -43,6 +43,7 @@ roots = ["Request", "Reply"]
 "Reply::failed" = "struct"
 "Reply::failed.message" = "String"
 "Reply::nextcloud_page" = "struct"
+"Reply::nextcloud_page.shown" = "bool optional"
 "Reply::nextcloud_page.url" = "String"
 "Reply::nextcloud_signed_in" = "struct"
 "Reply::nextcloud_signed_in.app_password" = "String"

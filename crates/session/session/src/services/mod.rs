@@ -44,7 +44,7 @@ use crate::app_wire::LayoutAuthority;
 use crate::render;
 use crate::tools;
 
-mod accounts;
+pub(crate) mod accounts;
 pub(crate) mod app_wire;
 pub(crate) mod chooser;
 
@@ -312,7 +312,7 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                 served.windows = windows(&mut serving);
             }
             Service::Accounts => {
-                served.accounts = accounts::serve()
+                served.accounts = accounts::serve(serving.wake.clone())
                     .inspect_err(
                         |error| tracing::warn!(%error, "the accounts service is unavailable"),
                     )
@@ -342,6 +342,11 @@ impl Served {
     /// The typed opens an app asks this session for, while it serves them.
     pub(crate) fn tools(&self) -> Option<&tools::Handle> {
         self.tools.as_ref().map(tools::Tools::handle)
+    }
+
+    /// The sign-in pages Settings' account sign-ins ask this session for, while it serves them.
+    pub(crate) const fn accounts(&self) -> Option<&accounts::Served> {
+        self.accounts.as_ref()
     }
 
     /// The files and links the apps ask this session for, while it serves them.

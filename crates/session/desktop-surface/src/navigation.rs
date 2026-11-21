@@ -893,6 +893,9 @@ impl From<ScrollAction> for ui::widget::PrimaryScrollAction {
 pub enum Admitted {
     Select(RouteIds),
     Close(RouteIds),
+    /// Close a window the system opened for something that is now over (the page a sign-in
+    /// asked for, once it signed in): it goes without the Undo a person's own close offers.
+    Dismiss(RouteIds),
     /// Reopen the newest close of the active workspace, of the app when one is named.
     Reopen(WorkspaceId, Option<String>),
     Width(RouteIds, u32),

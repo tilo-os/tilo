@@ -170,6 +170,16 @@ impl DesktopSurface {
                             });
                         }
                     }
+                    Admitted::Dismiss(ids) if live(&shared.tree, ids) => {
+                        if let Some(removed) = shared.tree.close_tab(ids.tab) {
+                            ops.push(RowOp::Close {
+                                strip: removed.strip,
+                                group: removed.group,
+                                tab: ids.tab,
+                                group_removed: removed.group_removed,
+                            });
+                        }
+                    }
                     // The window comes back where it was, its app launched again if that is what it
                     // takes: the row takes it in as it takes a window a peer added, and the strip
                     // comes to it as it does to a launched one.

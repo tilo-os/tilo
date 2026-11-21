@@ -83,9 +83,13 @@ pub enum Reply {
     Calendars {
         calendars: Vec<Calendar>,
     },
-    /// The page the person approves the Nextcloud sign-in on.
+    /// The page the person approves the Nextcloud sign-in on. `shown` when the session opened
+    /// it in a window of its own, which it closes once the sign-in is over; else Settings opens
+    /// it.
     NextcloudPage {
         url: String,
+        #[serde(default)]
+        shown: bool,
     },
     /// The person has not approved it yet.
     NextcloudWaiting,
@@ -101,14 +105,63 @@ pub enum Reply {
     },
 }
 
+/// Where a sign-in's page shows: a window the system opens for it alone and closes once the
+/// sign-in it was for is over, so the person never closes a page that did its job, and a page
+/// they were reading is never navigated away to sign in.
+pub trait SignInPages {
+    /// Show `url` in a window of its own: the page's id, or `None` when nothing here can show it
+    /// (Settings then opens it itself).
+    fn show(&self, url: &str) -> Option<u64>;
+    /// The sign-in page `page` was shown for is over: signed in, failed, cancelled or left.
+    fn over(&self, page: u64);
+}
+
+/// No window of its own for a sign-in's page: Settings opens it.
+pub struct NoSignInPages;
+
+impl SignInPages for NoSignInPages {
+    fn show(&self, _url: &str) -> Option<u64> {
+        None
+    }
+
+    fn over(&self, _page: u64) {}
+}
+
+/// A Nextcloud sign-in this connection follows, and the page shown for it.
+struct Following<'a> {
+    flow: Option<account_credentials::nextcloud::LoginFlow>,
+    page: Option<u64>,
+    pages: &'a dyn SignInPages,
+}
+
+impl Following<'_> {
+    /// The sign-in is over: its page goes.
+    fn end(&mut self) {
+        self.flow = None;
+        if let Some(page) = self.page.take() {
+            self.pages.over(page);
+        }
+    }
+}
+
+impl Drop for Following<'_> {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
 /// Serve one connection until it closes: each request answered with what the account's servers
-/// said, through `tester` and the Nextcloud login flow.
-pub fn serve(stream: UnixStream, tester: &dyn AccountTester) {
+/// said, through `tester` and the Nextcloud login flow, whose page `pages` shows.
+pub fn serve(stream: UnixStream, tester: &dyn AccountTester, pages: &dyn SignInPages) {
     let Ok(mut writing) = stream.try_clone() else {
         return;
     };
     let mut reader = BufReader::new(stream);
-    let mut nextcloud: Option<account_credentials::nextcloud::LoginFlow> = None;
+    let mut nextcloud = Following {
+        flow: None,
+        page: None,
+        pages,
+    };
     loop {
         let reply = match read_line(&mut reader) {
             Ok(Some(line)) => match serde_json::from_slice::<Request>(&line) {
@@ -126,11 +179,7 @@ pub fn serve(stream: UnixStream, tester: &dyn AccountTester) {
     }
 }
 
-fn answer(
-    request: Request,
-    tester: &dyn AccountTester,
-    nextcloud: &mut Option<account_credentials::nextcloud::LoginFlow>,
-) -> Reply {
+fn answer(request: Request, tester: &dyn AccountTester, nextcloud: &mut Following<'_>) -> Reply {
     use account_credentials::nextcloud;
     let failed = |message: String| Reply::Failed { message };
     match request {
@@ -150,21 +199,25 @@ fn answer(
                     .collect(),
             }),
         Request::NextcloudBegin { server } => {
-            *nextcloud = None;
+            nextcloud.end();
             match nextcloud::begin(&server) {
                 Ok(flow) => {
                     let url = flow.login_url().to_owned();
-                    *nextcloud = Some(flow);
-                    Reply::NextcloudPage { url }
+                    nextcloud.flow = Some(flow);
+                    nextcloud.page = nextcloud.pages.show(&url);
+                    Reply::NextcloudPage {
+                        url,
+                        shown: nextcloud.page.is_some(),
+                    }
                 }
                 Err(error) => failed(error.to_string()),
             }
         }
-        Request::NextcloudPoll => match nextcloud.as_ref().map(nextcloud::LoginFlow::poll) {
+        Request::NextcloudPoll => match nextcloud.flow.as_ref().map(nextcloud::LoginFlow::poll) {
             None => failed("no Nextcloud sign-in was started".into()),
             Some(Ok(None)) => Reply::NextcloudWaiting,
             Some(Ok(Some(login))) => {
-                *nextcloud = None;
+                nextcloud.end();
                 Reply::NextcloudSignedIn {
                     server: login.server,
                     login_name: login.login_name,
@@ -172,12 +225,12 @@ fn answer(
                 }
             }
             Some(Err(error)) => {
-                *nextcloud = None;
+                nextcloud.end();
                 failed(error.to_string())
             }
         },
         Request::NextcloudEnd => {
-            *nextcloud = None;
+            nextcloud.end();
             Reply::NextcloudWaiting
         }
     }
@@ -260,15 +313,16 @@ impl Connection {
     }
 
     /// Sign in at the Nextcloud server `server`: `page` is handed the page the person approves it
-    /// on, and the sign-in is followed until they did, `cancel` is sent on or dropped, or
-    /// `lifetime` passed.
+    /// on, and whether the session already shows it in a window of its own (which it closes when
+    /// the sign-in is over), and the sign-in is followed until they did, `cancel` is sent on or
+    /// dropped, or `lifetime` passed.
     ///
     /// # Errors
     /// The server could not be reached or is no Nextcloud, the sign-in was cancelled or timed out.
     pub fn nextcloud_sign_in(
         &self,
         server: &str,
-        page: impl FnOnce(String),
+        page: impl FnOnce(String, bool),
         cancel: &std::sync::mpsc::Receiver<()>,
         interval: Duration,
         lifetime: Duration,
@@ -277,7 +331,7 @@ impl Connection {
         match self.ask(&Request::NextcloudBegin {
             server: server.to_owned(),
         })? {
-            Reply::NextcloudPage { url } => page(url),
+            Reply::NextcloudPage { url, shown } => page(url, shown),
             Reply::Failed { message } => return Err(message),
             _ => return Err(unexpected()),
         }
@@ -432,7 +486,7 @@ mod tests {
     #[test]
     fn settings_asks_and_the_session_answers_what_the_servers_said() {
         let (settings, session) = UnixStream::pair().expect("a pair");
-        let serving = std::thread::spawn(move || serve(session, &Echo));
+        let serving = std::thread::spawn(move || serve(session, &Echo, &NoSignInPages));
         let connection = Connection::new(settings).expect("a connection");
 
         assert_eq!(
@@ -454,7 +508,7 @@ mod tests {
         let refused = connection
             .nextcloud_sign_in(
                 "ftp://cloud.example.test",
-                |_| panic!("no page for a server that is not one"),
+                |_, _| panic!("no page for a server that is not one"),
                 &cancel,
                 Duration::from_millis(10),
                 Duration::from_secs(5),
@@ -474,7 +528,7 @@ mod tests {
     #[test]
     fn a_line_past_the_bound_ends_the_connection() {
         let (mut settings, session) = UnixStream::pair().expect("a pair");
-        let serving = std::thread::spawn(move || serve(session, &Echo));
+        let serving = std::thread::spawn(move || serve(session, &Echo, &NoSignInPages));
         let long = vec![b'x'; MAX_LINE_BYTES + 2];
         let _ = settings.write_all(&long);
         serving.join().expect("the session's end");

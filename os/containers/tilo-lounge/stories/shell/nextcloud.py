@@ -315,6 +315,10 @@ def signs_in_on_the_page(story, one, server: str, user: str, password: str) -> N
         before = said
 
         def moved_on():
+            # The sign-in's page closes itself once Nextcloud gave this device its password: the
+            # page saying so may be gone before it is read.
+            if not one.window_rect(BROWSER):
+                return CONNECTED_PAGE[0]
             now = page_says(one)
             return now if now != before and says_any(now, known) else None
 
@@ -334,21 +338,19 @@ def kept_accounts(one) -> list[dict]:
             if account.get("type_id") == "nextcloud"]
 
 
-def closes_the_browser(one) -> None:
-    """Ada closes Tilo's Browser once its page says she may, with the Close its window's header
-    draws: the window is done, and the next app she opens takes its place."""
-    def close_button():
-        area = one.window_rect(BROWSER)
-        if not area:
-            return None
-        left, _, width, _ = area
-        return next((t for t in one.targets() if t.get("name") == "Close"
-                     and left <= (t.get("rect") or (0,))[0] < left + width), None)
-
-    button = until("the Close of Tilo's Browser window", close_button, 15, 0.25)
-    x, y, width, height = button["rect"]
-    one.session.click_at(x + width / 2, y + height / 2)
-    until("Tilo's Browser window to close", lambda: not one.window_rect(BROWSER), 15, 0.25)
+def sign_in_page_closes(one) -> None:
+    """The sign-in's page in Tilo's Browser closes by itself once the sign-in is over: Ada never
+    closes a page that did its job, and nothing offers to undo a close she did not make."""
+    try:
+        until("the sign-in's page in Tilo's Browser to close by itself",
+              lambda: not one.window_rect(BROWSER), 30, 0.25)
+    except Failed as error:
+        raise Failed(f"Settings keeps the account, but the sign-in's page in Tilo's Browser "
+                     f"stayed open; it says {page_shown(one)}") from error
+    undo = [name for name in one.names() if name.endswith(" closed")]
+    if undo:
+        raise Failed(f"the sign-in's page closed, and the shell says {undo}, as if Ada had "
+                     f"closed it")
 
 
 def connect_account(story, one, server: str, user: str, password: str,
@@ -381,7 +383,7 @@ def connect_account(story, one, server: str, user: str, password: str,
                      f"{error}") from error
     story.note("nextcloud-account-kept",
                [{key: account.get(key) for key in ("id", "type_id", "label")} for account in kept])
-    closes_the_browser(one)
+    sign_in_page_closes(one)
     if not calendar:
         return
     # The calendars she keeps on the server are read from it and chosen here:

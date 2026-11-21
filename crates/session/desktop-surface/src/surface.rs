@@ -647,6 +647,18 @@ impl DesktopHandle {
         Ok(())
     }
 
+    /// Close `tab`, a window the system opened for something that is now over, on the next pass:
+    /// the person did not close it, so nothing offers to undo it. Whether the tab was there.
+    pub fn dismiss_window(&self, tab: TabId) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some(ids) = route_of(&shared.tree, tab) else {
+            return false;
+        };
+        shared.queue.push(Admitted::Dismiss(ids));
+        shared.wake.wake();
+        true
+    }
+
     /// The logical width of the surface, which window widths are fractions of. Hosts call this on
     /// every resize.
     pub fn set_viewport_width(&self, width: f64) {
