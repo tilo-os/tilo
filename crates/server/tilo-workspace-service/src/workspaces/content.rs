@@ -86,9 +86,12 @@ const MAX_OWED: usize = 16_384;
 /// asking device, with the ask it sent.
 #[derive(Default)]
 pub(super) struct OwedAsks {
-    asks: BTreeMap<(String, String), (u64, BTreeMap<[u8; 32], Vec<u8>>)>,
+    asks: BTreeMap<(String, String), (u64, Askers)>,
     made: u64,
 }
+
+/// Each asking device, by key, with the ask it sent.
+type Askers = BTreeMap<[u8; 32], Vec<u8>>;
 
 impl OwedAsks {
     fn owe(&mut self, workspace: &str, hash: String, asker: [u8; 32], ask: &[u8]) {

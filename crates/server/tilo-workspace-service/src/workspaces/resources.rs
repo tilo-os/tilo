@@ -772,6 +772,7 @@ impl Workspaces {
             self.tell_followers(&governed, author, written, &message, false)
                 .await;
         }
+        drop(governed);
         // The workspace's own replica keeps the document the store indexed, as it keeps every
         // document a member wrote: a change of it is drafted after it, and the workspace's other
         // members follow it as they follow any.
