@@ -207,7 +207,7 @@ pub struct Server {
     /// This device's part in the channels of the workspaces it governs:
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
-    _workspace_keys: Option<Arc<tilo_workspace_service::own_device::KeyService>>,
+    workspace_keys: Option<Arc<tilo_workspace_service::own_device::KeyService>>,
     /// What puts its workspaces' questions about running commands unattended
     /// to people: the server's confirmations, held here so that its workspaces
     /// hold them only weakly and nothing of the server outlives it.
@@ -939,7 +939,7 @@ impl Server {
             content,
             #[cfg(feature = "web")]
             content_links: Arc::default(),
-            _workspace_keys: workspace_keys,
+            workspace_keys,
             _asks_people: asks_people,
             iroh_packet_relay: packet_relay,
             #[cfg(feature = "agents")]
@@ -1048,6 +1048,14 @@ impl Server {
                 .await;
         }
         Ok(())
+    }
+
+    /// This device's key service: the one place the device holds in each key group of the
+    /// workspaces it governs, which every session of this device reads and asks with. `None` when
+    /// its certificate does not let it own workspaces.
+    #[must_use]
+    pub fn workspace_keys(&self) -> Option<tilo_workspace_keys::SharedKeys> {
+        self.workspace_keys.as_ref()?.keys().get()
     }
 
     /// The iroh endpoint address (node id + reachable addresses) —

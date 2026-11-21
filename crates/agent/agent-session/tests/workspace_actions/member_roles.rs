@@ -59,6 +59,7 @@ impl Membership {
                 ),
                 key: server.key.clone(),
                 runtime: tokio::runtime::Handle::current(),
+                keys: None,
             },
             workspaces: hosted.server.workspaces().unwrap().clone(),
             person: member.cert.user_public_key,

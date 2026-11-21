@@ -62,17 +62,21 @@ impl Member {
     /// requests wait hands `shared`'s thread [`Job::Joined`] for it.
     pub(super) fn start(own_device: &HostDevice, shared: &Arc<Shared>) -> Arc<Self> {
         let _runtime = own_device.runtime.enter();
-        let peer = tilo_session_client::start_session(
-            PeerConfig {
-                host: own_device.endpoint.host.clone(),
-                cert: own_device.endpoint.server_cert.clone(),
-                server_cert: own_device.endpoint.server_cert.clone(),
-                revocations: RevocationList::new(),
-                entering: None,
-            },
+        let config = PeerConfig {
+            host: own_device.endpoint.host.clone(),
+            cert: own_device.endpoint.server_cert.clone(),
+            server_cert: own_device.endpoint.server_cert.clone(),
+            revocations: RevocationList::new(),
+            entering: None,
+        };
+        let (key, store) = (
             Arc::new(own_device.key.clone()),
             Arc::new(MemoryPeerStore::default()),
         );
+        let peer = match own_device.keys.clone() {
+            Some(lent) => tilo_session_client::start_session_lent(config, key, store, lent),
+            None => tilo_session_client::start_session(config, key, store),
+        };
         let member = Arc::new(Self {
             sorted: Mutex::new(Sorted {
                 events: peer.events_where(kept),

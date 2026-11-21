@@ -539,6 +539,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             ),
             key: server.key.clone(),
             runtime: tokio::runtime::Handle::current(),
+            keys: None,
         },
         workspaces: hosted.server.workspaces().unwrap().clone(),
         person,

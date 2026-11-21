@@ -30,6 +30,11 @@ pub struct HostDevice {
     pub key: SigningKey,
     /// The runtime the member's sessions run on.
     pub runtime: tokio::runtime::Handle,
+    /// The host device's own key service, when it runs one: the member's session reads and asks
+    /// with it, since a device holds one place in each workspace's key group and a second
+    /// participant under the same key would take that place from the first each time it asked.
+    /// `None` when the member's session is the device's only participant and holds its own keys.
+    pub keys: Option<tilo_session_client::Lent>,
 }
 
 /// Current governed read policy supplied by the authenticated host boundary.

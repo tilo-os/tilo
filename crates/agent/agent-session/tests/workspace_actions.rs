@@ -614,6 +614,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
                 ),
                 key: host.key.clone(),
                 runtime: tokio::runtime::Handle::current(),
+                keys: None,
             },
             caller: caller.clone(),
             route: route.clone(),

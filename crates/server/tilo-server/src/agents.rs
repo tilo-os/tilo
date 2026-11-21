@@ -1564,6 +1564,13 @@ fn attach_resources(
                 endpoint: ServerEndpoint::iroh(server.node_addr(), server_cert.clone()),
                 key: server.workspace_documents().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
+                keys: server
+                    .workspace_keys()
+                    .map(|keys| tilo_session_client::Lent {
+                        keys: Some(keys),
+                        endpoint: None,
+                        own: false,
+                    }),
             },
         }))
         .map_err(ServerError::Identity)
