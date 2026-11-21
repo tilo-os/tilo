@@ -303,6 +303,78 @@ tilo_test_env::scenario! {
     }
 }
 
+tilo_test_env::scenario! {
+    fn the_served_feed_lists_the_newest_change_first;
+
+    phase renames_stamped_apart_read_newest_first;
+    {
+        let (mut tree, workspace) = workspace_a_peer_changed();
+        // Three renames, each committed a second after the last. Commits made in one test run can
+        // share a second, and equal timestamps would hide an order that only reverses.
+        let base = tilo_clock::unix_now_i64().saturating_add(60);
+        for (offset, name) in ["Order test one", "Order test two", "Order test three"]
+            .into_iter()
+            .enumerate()
+        {
+            let Some(state) = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|candidate| candidate.id() == workspace)
+            else {
+                panic!("the workspace is the active one");
+            };
+            state.name = name.into();
+            assert!(tree.write_governance(workspace), "a rename writes");
+            let at = base.saturating_add(i64::try_from(offset).unwrap_or_default());
+            assert!(
+                tilo_resource::history::commit_stamped_at(tree.governance_of(workspace), at)
+                    .is_some(),
+                "the rename is committed"
+            );
+        }
+        let mut pane = pane();
+        pane.refresh(&mut tree);
+        // The query the shell's Activity window reads the history with.
+        let feed = pane.serve_feed(
+            &wire::FeedQuery {
+                limit: 0,
+                ..wire::FeedQuery::default()
+            },
+            &tree,
+        );
+        let newest = feed.entries.first().expect("the history has changes");
+        assert_eq!(
+            newest.at_ms,
+            base.saturating_add(2).saturating_mul(1_000),
+            "the newest rename is the first entry: {:?}",
+            feed.entries
+                .iter()
+                .map(|entry| (entry.at_ms, entry.summary.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            newest.summary.contains("Order test three"),
+            "the first entry is the newest change: {}",
+            newest.summary
+        );
+        let renames: Vec<&str> = feed
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                ["Order test one", "Order test two", "Order test three"]
+                    .into_iter()
+                    .find(|name| entry.summary.contains(name))
+            })
+            .collect();
+        assert_eq!(
+            renames,
+            ["Order test three", "Order test two", "Order test one"],
+            "the feed reads the newest change first"
+        );
+    }
+}
+
 /// An agent's write reaches an app as the agent: its member name and colour, as software, for
 /// the person it acted for.
 #[test]

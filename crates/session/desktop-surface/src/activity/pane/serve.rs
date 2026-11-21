@@ -370,9 +370,10 @@ impl WorkspaceActivityPane {
             workspace: self.workspace_name.clone(),
             scope: wire_scope(self.scope),
             total: visible.len(),
+            // The timeline draws its visible changes newest first, and the feed reads them in the
+            // order a person reads the window it draws: the first page is the newest changes.
             entries: visible
                 .iter()
-                .rev()
                 .take(query.page())
                 .map(|entry| {
                     let refused = refused.get(&hex(&entry.id)).map(Vec::as_slice);

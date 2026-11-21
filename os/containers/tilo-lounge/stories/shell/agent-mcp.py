@@ -214,8 +214,12 @@ def steps(story: Story) -> None:
         # The shell's own history of the workspace: every change, each under who made it, in the
         # Activity window the shell opens on its explore view.
         tree = (ada.session.state_dump() or {}).get("workspace_tree") or {}
+        # History opens on the agent's changes alone, as Ada would narrow it with the person
+        # picker: her own window changes sit between the agent's, and all four of its changes must
+        # be in the shot.
         ada.session.invoke(SHELL, f"{CHROME}\u001factivity",
-                           {"workspace": tree.get("active"), "view": "explore"})
+                           {"workspace": tree.get("active"), "view": "explore",
+                            "author": AGENT})
         until("the Activity window on Ada's shell", lambda: next(
             (w for w in ada.session.windows()
              if w.get("app_id") == ACTIVITY and w.get("rect")), None), 60, 0.25)
