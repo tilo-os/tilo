@@ -2436,7 +2436,7 @@ impl TextInput {
         self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
         let available = (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0);
         let style = self.multiline_style(self.scale_for(theme.text_scale));
-        #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
+        #[allow(clippy::cast_possible_truncation, reason = "a widget width bounded by the screen fits f32")]
         let available_width = available as f32;
         self.ensure_shaped_layout(tr, theme, &style, available_width);
         let minimum =
@@ -3829,7 +3829,7 @@ impl TextInput {
 
     pub fn place_wrapped(&mut self, rect: Rect, tr: &mut TextRenderer, theme: &Theme) -> f64 {
         self.repaint = true;
-        #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
+        #[allow(clippy::cast_possible_truncation, reason = "a widget width bounded by the screen fits f32")]
         let height = self.measure_wrapped_content(rect.width() as f32, tr, theme);
         let height = f64::from(height);
         self.apply_layout_external(Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + height));

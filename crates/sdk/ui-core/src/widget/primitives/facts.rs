@@ -171,7 +171,7 @@ impl<'a> FactsFace<'a> {
             .filter_map(|&i| facts.get(i))
             .map(|fact| m.fact_width(fact, text))
             .sum();
-        #[allow(clippy::cast_precision_loss, reason = "a row holds a handful of facts")]
+        #[allow(clippy::cast_precision_loss, reason = "a row holds at most a dozen facts")]
         let gaps = shown.len().saturating_sub(1) as f64 * m.gap;
         widths + gaps
     }

@@ -403,7 +403,7 @@ impl YuvConverter {
 
         // A packed 4:2:2 frame has one texture; bind it twice so the layout is
         // satisfied without a second pipeline.
-        #[allow(clippy::expect_used, reason = "documented VideoPlanes invariant")]
+        #[allow(clippy::expect_used, reason = "`upload_planar` is the only builder, and it refuses fewer than two planes")]
         let luma_texture = planes
             .planes
             .first()

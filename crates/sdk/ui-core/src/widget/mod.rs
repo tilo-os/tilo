@@ -2044,12 +2044,12 @@ pub trait TaffyTreeExt {
 }
 
 impl TaffyTreeExt for TaffyTree<()> {
-    #[allow(clippy::unwrap_used, reason = "see TaffyTreeExt doc comment")]
+    #[allow(clippy::unwrap_used, reason = "taffy only refuses a `NodeId` from another tree, which the toolkit never passes")]
     fn leaf_node(&mut self, style: taffy::Style) -> NodeId {
         self.new_leaf(style).unwrap()
     }
 
-    #[allow(clippy::unwrap_used, reason = "see TaffyTreeExt doc comment")]
+    #[allow(clippy::unwrap_used, reason = "taffy only refuses a `NodeId` from another tree, which the toolkit never passes")]
     fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId {
         self.new_with_children(style, children).unwrap()
     }

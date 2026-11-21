@@ -1280,6 +1280,12 @@ impl Composed {
     }
 }
 
+/// Composes a widget's laid-out children on the ground it fills: the composed
+/// children, the address of each widget (0 for a layout node that is no widget),
+/// and whether they stood where the layout node put them.
+pub(crate) type ComposeChildren<'a> =
+    &'a mut dyn FnMut(Option<[u8; 4]>) -> (Vec<Composed>, Vec<usize>, bool);
+
 /// What a widget's [`html`](crate::widget::Widget::html) renders into: the element it is, what it shows
 /// of it, and its children.
 pub struct HtmlCx<'a> {
@@ -1289,9 +1295,7 @@ pub struct HtmlCx<'a> {
     /// theme its paint hands them there; whether they stand where its layout node put them.
     /// Composes its children; with them, the address of the widget each is (0 for a layout
     /// node that is no widget).
-    #[allow(clippy::type_complexity, reason = "the walk's one callback")]
-    pub(crate) compose_children:
-        &'a mut dyn FnMut(Option<[u8; 4]>) -> (Vec<Composed>, Vec<usize>, bool),
+    pub(crate) compose_children: ComposeChildren<'a>,
     /// The path each child widget composed at, by the widget's address: what [`Self::region`]
     /// and [`Self::restyle`] find a widget's element by, wherever the widget moved it since.
     pub(crate) child_widgets: Vec<(usize, String)>,

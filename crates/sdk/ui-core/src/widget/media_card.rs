@@ -757,7 +757,7 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
         }
         MediaBadge::Status { label, .. } => {
             let width = (art.width() - 4.0 * pad).max(1.0);
-            #[allow(clippy::cast_possible_truncation, reason = "a width in pixels")]
+            #[allow(clippy::cast_possible_truncation, reason = "a widget width fits f32")]
             let (w, h) = ctx.text.measure_style(label, Some(width as f32), &m.badge);
             let plate = Rect::new(
                 art.x0 + pad,
@@ -777,7 +777,7 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
                 &m.badge,
                 theme.text_primary,
                 Point::new(plate.center().x - f64::from(w) / 2.0, plate.y0 + pad / 2.0),
-                #[allow(clippy::cast_possible_truncation, reason = "a width in pixels")]
+                #[allow(clippy::cast_possible_truncation, reason = "a widget width fits f32")]
                 Some(width as f32),
             );
         }

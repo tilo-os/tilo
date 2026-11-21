@@ -2247,7 +2247,7 @@ impl AppHandler {
     /// `return`s — further fragmenting it risks changing frame-timing or
     /// error-path behaviour with no clippy/cargo loop available here to
     /// verify against.
-    #[allow(clippy::too_many_lines, reason = "see doc comment above")]
+    #[allow(clippy::too_many_lines, reason = "one frame's render handshake, whose phases share locals and early returns")]
     fn handle_redraw_requested(&mut self, window: &Arc<Window>) {
         let native_redraw_entry = self
             .native_input_origin

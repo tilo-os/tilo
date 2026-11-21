@@ -2377,7 +2377,10 @@ mod bound_lifetime_tests {
             IconDescriptor::Glyph("P")
         }
     }
-    #[allow(clippy::needless_pass_by_value, reason = "component factory contract")]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the factory trait fixes this signature, and `RestoreInput` is unused for a new resource"
+    )]
     fn factory(
         mut context: ProcessContext,
         target: LaunchTarget,

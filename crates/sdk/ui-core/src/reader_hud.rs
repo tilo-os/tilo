@@ -234,7 +234,7 @@ impl SelectionHud {
         let note_w = face(Rect::ZERO, "Note", None).intrinsic_width(tr, &on_panel);
         let all_w = face(Rect::ZERO, "Select all", Some("A")).intrinsic_width(tr, &on_panel);
         let swatches = controls.swatches;
-        #[allow(clippy::cast_precision_loss, reason = "a handful of highlight colours")]
+        #[allow(clippy::cast_precision_loss, reason = "at most a dozen highlight colours")]
         let n = swatches.len() as f64;
         let swatch_cell = m.control_h;
         let dots_w = n * swatch_cell;
