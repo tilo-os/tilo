@@ -30,6 +30,25 @@ pub enum Directory {
     NotHere,
 }
 
+/// Where a window's session opens, and what the open says while it waits.
+#[derive(Clone, Debug, Default)]
+pub struct Opening {
+    /// The workspace the window is in, when it knows.
+    pub workspace: Option<String>,
+    /// The Terminal session record the window shows, by its route: in a workspace a server
+    /// hosts, the session whose shell runs there.
+    pub record: Option<String>,
+    /// Set once the supervisor said the workspace's host is asked, which may wait for the
+    /// person to allow it on another device.
+    pub waiting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Opening {
+    pub(crate) fn workspace(&self) -> Option<&str> {
+        self.workspace.as_deref()
+    }
+}
+
 pub(crate) type OpenAnswer = (
     Requester,
     Option<String>,
@@ -75,6 +94,8 @@ pub struct Sessions {
     intent: Option<ui::widget::AppProcessIntent>,
     listing: Option<std::sync::mpsc::Receiver<Listing>>,
     window: Option<ui::hosted_window::HostedWindow>,
+    /// The Terminal session record the window shows, by its route.
+    record: Option<String>,
 }
 
 struct Listing {
@@ -113,6 +134,7 @@ impl Sessions {
             intent: None,
             listing: None,
             window: None,
+            record: None,
         }
     }
 
@@ -162,6 +184,19 @@ impl Sessions {
         self.window = window;
     }
 
+    /// The window shows the Terminal session record `route`.
+    pub(crate) fn show_record(&mut self, route: &str) {
+        self.record = Some(route.to_owned());
+    }
+
+    fn opening(&self) -> Opening {
+        Opening {
+            workspace: self.workspace(),
+            record: self.record.clone(),
+            waiting: std::sync::Arc::default(),
+        }
+    }
+
     pub(crate) fn workspace(&self) -> Option<String> {
         match &self.window {
             Some(window) => window.workspace(),
@@ -207,20 +242,20 @@ impl Sessions {
                 "agents may not open the device's own shell".into(),
             ));
         }
-        let workspace = self.workspace();
+        let opening = self.opening();
         match &mut self.source {
             Source::None => Err(OpenError::Unavailable(
                 "this terminal has no process service".into(),
             )),
             Source::Standalone => {
-                TerminalBackend::open(target, requested_by, relay_session, workspace.as_deref())
+                TerminalBackend::open(target, requested_by, relay_session, &opening)
             }
             Source::Hosted { first } => crate::HostedProcessServices::open_session(
                 first.take(),
                 target,
                 requested_by,
                 relay_session,
-                workspace.as_deref(),
+                &opening,
                 None,
             ),
             #[cfg(test)]
@@ -237,7 +272,7 @@ impl Sessions {
     ) -> Option<Result<TerminalBackend, OpenError>> {
         {
             self.pending = None;
-            let workspace = self.workspace();
+            let opening = self.opening();
             if let Source::Hosted { first } = &mut self.source {
                 if requester == Requester::Agent && target.is_host() {
                     return Some(Err(OpenError::Refused(
@@ -249,7 +284,7 @@ impl Sessions {
                     target.clone(),
                     requester,
                     attach.map(str::to_owned),
-                    workspace,
+                    opening,
                     waker,
                 ) {
                     Ok(pending) => {
@@ -262,6 +297,14 @@ impl Sessions {
             }
         }
         Some(self.open(target, requester, attach))
+    }
+
+    /// Whether the open under way waits for the workspace's host, which may be asking the
+    /// person on another device.
+    pub(crate) fn waits_for_host(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(crate::async_open::PendingOpen::waits_for_host)
     }
 
     pub(crate) fn take_open_answer(&mut self) -> Option<OpenAnswer> {

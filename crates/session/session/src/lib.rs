@@ -458,6 +458,8 @@ mod workspace_branch;
 mod workspace_delete;
 #[cfg(target_os = "linux")]
 mod workspace_nodes;
+#[cfg(target_os = "linux")]
+mod workspace_terminals;
 pub mod workspace_people;
 pub mod workspace_settings;
 #[cfg(target_os = "linux")]

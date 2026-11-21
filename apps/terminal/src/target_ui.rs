@@ -239,7 +239,7 @@ impl TerminalWidget {
 
     fn poll_session_open(&mut self) -> bool {
         let Some((requester, attach, result)) = self.sessions.take_open_answer() else {
-            return false;
+            return self.say_host_is_asked();
         };
         if let Some(target) = self.sessions.target.clone() {
             self.finish_session_open(&target, requester, attach.as_deref(), result);
@@ -357,6 +357,23 @@ impl TerminalWidget {
             OpenState::Failed(reason) => Err(reason.clone()),
             _ => Ok(()),
         }
+    }
+
+    /// While the workspace's host is asked for the session's shell, which waits for the person
+    /// when they are asked to allow it on another device, the window says so: once.
+    fn say_host_is_asked(&self) -> bool {
+        if !self.sessions.waits_for_host() {
+            return false;
+        }
+        let waiting = t("terminal-hosted-waiting");
+        let said = self
+            .session_status_message
+            .lock()
+            .is_ok_and(|status| *status == waiting);
+        if !said {
+            self.show_status(&waiting);
+        }
+        !said
     }
 
     fn show_status(&self, message: &str) {

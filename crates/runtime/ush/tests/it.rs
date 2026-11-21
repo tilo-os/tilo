@@ -5,6 +5,8 @@
 
 #[path = "host_serve.rs"]
 pub mod host_serve;
+#[path = "hosted_terminal.rs"]
+pub mod hosted_terminal;
 #[path = "network.rs"]
 pub mod network;
 #[path = "runtime_dir.rs"]

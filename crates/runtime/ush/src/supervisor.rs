@@ -31,7 +31,9 @@ use crate::policy::Policy;
 use crate::records::Records;
 use crate::store::Store;
 
+mod hosted_terminal;
 mod session_end;
+use hosted_terminal::serve_hosted;
 use session_end::{EndReport, EndWatch, GuestEnd, watch_setup};
 
 #[derive(Debug, Clone)]
@@ -474,6 +476,14 @@ pub enum ServeRequest {
         /// closes.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         end_report: bool,
+        /// The Terminal session record the window shows, by its route: in a workspace a
+        /// server hosts, the session whose shell runs there.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        record: Option<String>,
+        /// The session where a hosted workspace's shell runs to come back to, by the id an
+        /// earlier open answered ([`ServeResponse::Session::host_session`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host_session: Option<String>,
     },
     ListEnvironments,
     /// How long the person allows Terminal's Host target, `None` once they
@@ -552,6 +562,10 @@ pub enum ServeResponse {
         commands: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
+        /// The session's shell runs where a server runs the workspace's: the host's session
+        /// it is, to come back to after the connection is lost.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host_session: Option<String>,
     },
     Denied {
         reason: String,
@@ -576,6 +590,9 @@ pub enum ServeResponse {
         #[serde(flatten)]
         branched: crate::branch::Branched,
     },
+    /// The workspace's host is asked for the session's shell, which may wait for the person
+    /// to allow it on their devices: the session or the refusal follows on the connection.
+    Waiting,
 }
 
 /// Decide one request: the environment record it names (`None` for the
@@ -862,6 +879,14 @@ fn serve_guest_session(
         .unwrap_or(tilo_environment::DEFAULT_RECORD)
         .to_owned();
 
+    // A workspace a server hosts runs its default session's shell where the server runs it,
+    // never on this device: whether this device could build an environment is no matter.
+    if environment.is_none()
+        && let Some(served) = serve_hosted(transport, writer, store, &req)?
+    {
+        return Ok(served);
+    }
+
     // The record must resolve before a terminal is handed out: a guest that
     // cannot be built would print why on its pty and exit, leaving the app a
     // dead pane and no chance to offer anything else.
@@ -947,6 +972,7 @@ fn open_environment(
             environment: record,
             commands: commands.is_some(),
             editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
+            host_session: None,
         },
         master,
         child,
@@ -1321,6 +1347,7 @@ fn serve_host(
             environment: "host".into(),
             commands: commands.is_some(),
             editor_protocol: None,
+            host_session: None,
         },
         master,
         child,
@@ -1803,6 +1830,7 @@ mod tests {
                         environment: "default".into(),
                         commands: false,
                         editor_protocol: None,
+                        host_session: None,
                     },
                     master,
                     child,
@@ -1870,6 +1898,7 @@ mod tests {
                         environment: environment.into(),
                         commands: false,
                         editor_protocol: None,
+                        host_session: None,
                     },
                     master,
                     child,
@@ -2034,6 +2063,7 @@ mod tests {
                     environment: "default".into(),
                     commands: false,
                     editor_protocol: None,
+                    host_session: None,
                 },
                 Some(master.as_fd()),
             );
@@ -2122,6 +2152,7 @@ mod tests {
                 environment: "default".into(),
                 commands: true,
                 editor_protocol: None,
+                host_session: None,
             };
             assert_eq!(
                 serde_json::to_string(&reply).unwrap(),
@@ -2306,6 +2337,8 @@ mod tests {
             commands: None,
             editor_protocol: None,
             end_report: false,
+            record: None,
+            host_session: None,
         }
     }
 

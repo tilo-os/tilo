@@ -410,7 +410,7 @@ async fn write_line(send: &mut SendStream, value: &(impl Serialize + Sync)) -> i
 /// are done: whatever ends on one side ends on the other, so a client that
 /// leaves, a server that closes, or a connection that drops ends the whole
 /// connection.
-async fn splice(mut send: SendStream, mut recv: RecvStream, local: tokio::net::UnixStream) {
+pub async fn splice(mut send: SendStream, mut recv: RecvStream, local: tokio::net::UnixStream) {
     let (mut from_local, mut to_local) = local.into_split();
     let inbound = async move {
         let mut buffer = vec![0_u8; 16 * 1024];

@@ -16,6 +16,7 @@ terminal-held-add-card = Add a card
 terminal-held-cancel = Cancel
 terminal-reconnect-superseded = This session is open in another terminal
 terminal-host-awaiting-allow = Waiting for you to allow this device's own shell
+terminal-hosted-waiting = Opening the shell where this workspace runs. If another device of yours asks to allow it, allow it there.
 terminal-host-denied = This device's own shell was not allowed
 terminal-no-runtime = No environment can start here
 terminal-env-title = Environments

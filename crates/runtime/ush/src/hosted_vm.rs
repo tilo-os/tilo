@@ -740,7 +740,7 @@ fn is_terminal(fd: &OwnedFd) -> bool {
 }
 
 /// The terminal's size, 80x24 when it will not say.
-pub(crate) fn terminal_size(fd: &OwnedFd) -> TerminalSize {
+pub(crate) fn terminal_size(fd: &impl std::os::fd::AsRawFd) -> TerminalSize {
     // SAFETY: TIOCGWINSZ writes only into the struct, which lives across
     // the call.
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
@@ -757,13 +757,14 @@ pub(crate) fn terminal_size(fd: &OwnedFd) -> TerminalSize {
     }
 }
 
-struct Raw<'a> {
+/// A terminal in raw mode while this is held: keys and output pass through as they are.
+pub(crate) struct Raw<'a> {
     fd: &'a OwnedFd,
     cooked: Option<libc::termios>,
 }
 
 impl<'a> Raw<'a> {
-    fn new(fd: &'a OwnedFd) -> Self {
+    pub(crate) fn new(fd: &'a OwnedFd) -> Self {
         // SAFETY: tcgetattr and tcsetattr read and write only the termios
         // structs owned here.
         unsafe {
@@ -781,6 +782,13 @@ impl<'a> Raw<'a> {
                 cooked: set.then_some(cooked),
             }
         }
+    }
+}
+
+impl Raw<'_> {
+    /// Leave the terminal raw for good: the window it is lent to never has it cooked.
+    pub(crate) fn keep(mut self) {
+        self.cooked = None;
     }
 }
 

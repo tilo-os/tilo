@@ -54,6 +54,9 @@ pub mod service_socket;
 /// The actions connection a session hands a surface app.
 pub mod surface_actions;
 pub mod tools;
+/// A hosted workspace's shell on a terminal, asked of the session by the device's shell runtime.
+#[cfg(unix)]
+pub mod workspace_terminal;
 
 /// The app ↔ runtime interface's one version: what an app and the session
 /// services the launcher connects it to (collaboration, the filesystem and

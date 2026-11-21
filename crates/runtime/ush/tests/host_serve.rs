@@ -366,7 +366,7 @@ fn someone_else_signed_in_to_the_owners_device_gets_no_host_shell() {
     assert!(fd.is_none());
 }
 
-fn read_until(master: &std::fs::File, needle: &str, timeout: Duration) -> String {
+pub(crate) fn read_until(master: &std::fs::File, needle: &str, timeout: Duration) -> String {
     unsafe {
         let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
         libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);

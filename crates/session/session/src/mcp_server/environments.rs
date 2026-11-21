@@ -261,6 +261,17 @@ pub(super) fn answer_socket_requests(
         open(stream, request, pid, serving.clone());
         return None;
     }
+    if let Some(request) = runtime_portal::workspace_terminal::Request::of(first) {
+        // Only the device's shell runtime, outside every environment, carries a hosted
+        // workspace's shell to a Terminal window.
+        if *entrance != Origin::Host {
+            tracing::info!(pid, "MCP server: a program inside an environment asked for a workspace's terminal");
+            super::refuse(stream, &PeerRefusal::OutsideEnvironment);
+            return None;
+        }
+        crate::workspace_terminals::open(stream, request, serving.hosting.clone());
+        return None;
+    }
     if *entrance != Origin::Host && tilo_device_mcp::forward_request(first).is_some() {
         // A program in an environment works in that environment's workspace, on this device.
         tilo_device_mcp::refuse_forward(stream, word("mcp-server-environment-workspace"));

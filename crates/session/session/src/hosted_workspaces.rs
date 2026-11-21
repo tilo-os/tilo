@@ -102,6 +102,16 @@ impl ServerAddress {
     }
 }
 
+/// A hosted workspace's host, as a Terminal window's shell is opened there: its actions, where
+/// its terminal streams are dialled, and this device's endpoint they are dialled from (`None`
+/// until it bound).
+pub(crate) struct TerminalHost {
+    pub(crate) actions: Arc<dyn ActionProvider + Send + Sync>,
+    pub(crate) address: iroh::EndpointAddr,
+    pub(crate) endpoint: Option<iroh::Endpoint>,
+    pub(crate) runtime: tokio::runtime::Handle,
+}
+
 /// Where a workspace is placed: its host, as its signed hint names it.
 struct Placed {
     workspace: String,
@@ -259,6 +269,28 @@ impl HostedWorkspaces {
             workspace_id: placed.workspace_id,
             runtime: self.0.runtime.clone(),
         }))
+    }
+
+    /// What a Terminal window's shell in `workspace` opens through when a host other than this
+    /// device runs the workspace's work ([`crate::workspace_terminals`]); `None` when none does.
+    pub(crate) fn terminal_host(&self, workspace: &str) -> Option<TerminalHost> {
+        let placed = self.placed(workspace)?;
+        let host = self.host(&placed);
+        Some(TerminalHost {
+            address: placed.host.endpoint_addr.clone(),
+            endpoint: self
+                .0
+                .endpoint
+                .as_ref()
+                .and_then(|endpoint| endpoint.get().cloned()),
+            runtime: self.0.runtime.clone(),
+            actions: Arc::new(OnHost {
+                host,
+                workspace: placed.workspace,
+                workspace_id: placed.workspace_id,
+                runtime: self.0.runtime.clone(),
+            }),
+        })
     }
 
     /// The person's devices as the record on each host of a workspace `engine` holds lists them:

@@ -838,6 +838,9 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        if let Some(record) = cx.document_id() {
+            self.show_record(record.route());
+        }
         if let (Some(device), Some(me)) = (cx.device(), cx.me()) {
             self.runs_on(device, me);
         }
@@ -938,6 +941,9 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        if let Some(record) = cx.document_id() {
+            self.terminal_mut().show_record(record.route());
+        }
         if let (Some(device), Some(me)) = (cx.device(), cx.me()) {
             self.runs_on(device, me);
         }

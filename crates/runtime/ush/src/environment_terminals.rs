@@ -41,7 +41,7 @@ use tilo_actions::remote::environment_commands::Person;
 pub use crate::environment_programs::LEFT_AFTER;
 
 /// The protocol a device dials a host's terminal streams on.
-pub const ALPN: &[u8] = b"tilo-environment-terminal/1";
+pub use runtime_portal::workspace_terminal::ALPN;
 
 /// How long a stream handed out waits for its device to take it.
 pub const HANDED_FOR: Duration = Duration::from_secs(60);

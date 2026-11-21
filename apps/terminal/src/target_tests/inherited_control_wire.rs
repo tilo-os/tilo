@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
             &SessionTarget::default(),
             Requester::Person,
             None,
-            None,
+            &crate::sessions::Opening::default(),
         );
         assert!(matches!(answer, Err(crate::OpenError::Unavailable(_))));
         drop(client);
@@ -275,7 +275,7 @@ tilo_test_env::scenario! {
                 &SessionTarget::default(),
                 Requester::Person,
                 None,
-                None
+                &crate::sessions::Opening::default()
             ),
             Err(crate::OpenError::Failed(_))
         ));

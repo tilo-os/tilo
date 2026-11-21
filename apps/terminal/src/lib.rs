@@ -118,7 +118,7 @@ impl HostedProcessServices {
         target: &target::SessionTarget,
         requested_by: Requester,
         relay_session: Option<&str>,
-        workspace: Option<&str>,
+        opening: &sessions::Opening,
         cancellation: Option<&runtime_portal::pending_connection::Cancellation>,
     ) -> Result<TerminalBackend, OpenError> {
         let stream = first
@@ -136,7 +136,7 @@ impl HostedProcessServices {
                 )
                 .map_err(|e| OpenError::Failed(e.to_string()))?;
         }
-        crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session, workspace)
+        crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session, opening)
     }
 
     pub(crate) fn ask(

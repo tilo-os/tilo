@@ -112,6 +112,8 @@ tilo_test_env::scenario! {
                 commands: None,
                 editor_protocol: None,
                 end_report: false,
+                record: None,
+                host_session: None,
             })
             .expect_err("the host target was served");
             assert!(err.starts_with("not available"), "{err}");
@@ -191,6 +193,8 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         commands: None,
         editor_protocol: None,
         end_report: false,
+        record: None,
+        host_session: None,
     };
 
     let (response, fd) = ask(&open);
@@ -574,6 +578,8 @@ fn open_session(
         commands: commands.map(str::to_owned),
         editor_protocol: None,
         end_report: false,
+        record: None,
+        host_session: None,
     })
     .unwrap();
     request.push(b'\n');
@@ -592,6 +598,7 @@ fn open_session(
             panic!("the service refused the session: {reason}")
         }
         ServeResponse::Environments { .. }
+        | ServeResponse::Waiting
         | ServeResponse::Allowed
         | ServeResponse::Branched { .. } => {
             panic!("a session request answered with something else")
@@ -863,6 +870,8 @@ fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
         commands: None,
         editor_protocol: None,
         end_report: false,
+        record: None,
+        host_session: None,
     })
     .unwrap();
     request.push(b'\n');
@@ -982,6 +991,8 @@ fn a_guest_that_cannot_be_set_up_says_so_on_its_lease_and_nothing_on_its_termina
         commands: None,
         editor_protocol: None,
         end_report: true,
+        record: None,
+        host_session: None,
     })
     .unwrap();
     request.push(b'\n');

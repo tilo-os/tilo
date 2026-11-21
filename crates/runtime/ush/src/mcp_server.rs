@@ -39,7 +39,7 @@ fn workspace_of(store: &Store, id: &str) -> Option<String> {
     }
 }
 
-fn session_api() -> Option<PathBuf> {
+pub(crate) fn session_api() -> Option<PathBuf> {
     Some(
         tilo_paths::login::session_dir(
             tilo_paths::login::login_runtime_dir().map(PathBuf::into_os_string),

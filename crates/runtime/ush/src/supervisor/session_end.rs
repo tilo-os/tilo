@@ -1,6 +1,6 @@
 //! How a served session ended, as the supervisor learns it and tells the
 //! app on the session's lease: what `ush run` said while it set a guest
-//! up.
+//! up, or how the stream of a shell that runs elsewhere ended.
 
 use std::io::{BufRead, BufReader};
 use std::os::fd::OwnedFd;
@@ -23,6 +23,13 @@ pub(super) enum EndReport<'a> {
     Failed {
         reason: &'a str,
     },
+    /// The connection to a shell that runs elsewhere (a hosted workspace's) went away; the
+    /// shell is kept there a while for the window to come back to.
+    Lost {
+        reason: &'a str,
+    },
+    /// Another window took the shell that runs elsewhere.
+    Superseded,
 }
 
 impl<'a> From<&'a GuestEnd> for EndReport<'a> {

@@ -520,7 +520,7 @@ tilo_test_env::scenario! {
                 &SessionTarget::Host,
                 Requester::Person,
                 None,
-                None,
+                &crate::sessions::Opening::default(),
                 Some("0123456789abcdef"),
                 (80, 24),
             )
@@ -535,7 +535,7 @@ tilo_test_env::scenario! {
                     &SessionTarget::LinuxVm { vm: "linux".into() },
                     Requester::Person,
                     None,
-                    None,
+                    &crate::sessions::Opening::default(),
                     None,
                     (80, 24)
                 )
@@ -649,6 +649,31 @@ fn without_a_runtime_the_tab_opens_the_device_shell_and_says_nothing() {
         on_tab(&mut app, |widget| widget.grid_text()).trim(),
         "",
         "no error chain and no package names in the pane"
+    );
+    assert_eq!(recorded(&app), Some(SessionTarget::default_environment()));
+}
+
+#[test]
+fn a_hosted_workspace_never_opens_the_device_shell_in_place_of_its_hosts() {
+    // The supervisor answers a workspace a server hosts from the host, whatever this device
+    // could build: a host that does not open the shell is a refusal, never "no runtime".
+    let reason = "the workspace's host refused the terminal: not permitted";
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), move |target| {
+        if target.is_host() {
+            Ok(())
+        } else {
+            Err(OpenError::Refused(reason.into()))
+        }
+    });
+    assert_eq!(
+        opened.borrow().as_slice(),
+        &[(SessionTarget::default_environment(), Requester::Person)],
+        "the device's own shell is never opened for it"
+    );
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Failed(reason.into())
     );
     assert_eq!(recorded(&app), Some(SessionTarget::default_environment()));
 }

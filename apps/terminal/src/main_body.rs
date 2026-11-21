@@ -3412,6 +3412,12 @@ impl TerminalWidget {
 
     /// Record the session through `dispatcher`: the framework's, or a parent's when this terminal is
     /// nested in another resource.
+    /// The window shows the Terminal session record `route`: in a workspace a server hosts, the
+    /// session whose shell runs there.
+    pub fn show_record(&mut self, route: &str) {
+        self.sessions.show_record(route);
+    }
+
     pub fn bind(&mut self, dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>) {
         self.dispatch = Some(dispatcher);
     }
@@ -4998,12 +5004,12 @@ impl TerminalBackend {
         target: &crate::target::SessionTarget,
         requested_by: Requester,
         relay_session: Option<&str>,
-        workspace: Option<&str>,
+        opening: &crate::sessions::Opening,
     ) -> Result<Self, OpenError> {
         let program = launch_command_from_env();
         match confinement_route(target) {
             ConfineRoute::Service => {
-                ush_service_backend(&program, target, requested_by, relay_session, workspace)
+                ush_service_backend(&program, target, requested_by, relay_session, opening)
             }
             ConfineRoute::SelfHosted(bin) => {
                 let mut cmd = CommandBuilder::new(&bin);
@@ -5287,7 +5293,7 @@ fn ush_service_backend(
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
-    workspace: Option<&str>,
+    opening: &crate::sessions::Opening,
 ) -> Result<TerminalBackend, OpenError> {
     use runtime_portal::service_socket::ServiceSocketError;
 
@@ -5305,7 +5311,7 @@ fn ush_service_backend(
                 target,
                 requested_by,
                 relay_session,
-                workspace,
+                opening,
             )
         })
     }
@@ -5367,7 +5373,7 @@ pub(crate) fn ush_request(
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
-    workspace: Option<&str>,
+    opening: &crate::sessions::Opening,
     commands: Option<&str>,
     (cols, rows): (u16, u16),
 ) -> Result<Vec<u8>, OpenError> {
@@ -5393,7 +5399,7 @@ pub(crate) fn ush_request(
             fields.insert("command".to_string(), serde_json::json!(program));
         }
         if let Some(session) = relay_session {
-            fields.insert("relay_session".to_string(), serde_json::json!(session));
+            fields.insert("host_session".to_string(), serde_json::json!(session));
         }
         // The lease says how the session ended: only a shell that exited
         // closes the window; a lost connection to a remote shell reconnects,
@@ -5402,8 +5408,12 @@ pub(crate) fn ush_request(
         if let Some(key) = commands {
             fields.insert("commands".to_string(), serde_json::json!(key));
         }
+        // In a workspace a server hosts, the session whose shell runs there.
+        if let Some(record) = &opening.record {
+            fields.insert("record".to_string(), serde_json::json!(record));
+        }
     }
-    crate::sessions::with_workspace(&mut request, workspace);
+    crate::sessions::with_workspace(&mut request, opening.workspace());
     let mut request =
         serde_json::to_vec(&request).map_err(|error| OpenError::Failed(error.to_string()))?;
     request.push(b'\n');
@@ -5419,8 +5429,9 @@ struct UshSessionReply {
     result: String,
     session: String,
     environment: String,
+    /// The host's session, when the shell runs where a server hosts the workspace.
     #[serde(default)]
-    relay_session: Option<String>,
+    host_session: Option<String>,
     /// The session's shell marks its runs with the key the request named.
     #[serde(default)]
     commands: bool,
@@ -5445,7 +5456,7 @@ impl UshSessionReply {
             && hex_key(&self.session)
             && !self.environment.is_empty()
             && self.environment.len() <= 1024
-            && self.relay_session.as_deref().is_none_or(hex_key)
+            && self.host_session.as_deref().is_none_or(hex_key)
             && self
                 .editor_protocol
                 .is_none_or(|version| version == runtime_portal::editor::VERSION)
@@ -5462,7 +5473,7 @@ pub(crate) fn ush_backend_on(
     target: &crate::target::SessionTarget,
     requested_by: Requester,
     relay_session: Option<&str>,
-    workspace: Option<&str>,
+    opening: &crate::sessions::Opening,
 ) -> Result<TerminalBackend, OpenError> {
     // How long the answer may take. Before it answers, the supervisor checks
     // that the environment can be built, which on a device's first open reads
@@ -5496,7 +5507,7 @@ pub(crate) fn ush_backend_on(
         target,
         requested_by,
         relay_session,
-        workspace,
+        opening,
         Some(&key),
         (80, 24),
     )?;
@@ -5515,8 +5526,23 @@ pub(crate) fn ush_backend_on(
             .map_err(|e| failed(&e))?;
     }
 
-    let (payload, mut descriptors) =
+    let (mut payload, mut descriptors) =
         runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| failed(&e))?;
+    // A workspace a server hosts: its host is asked for the session's shell, which waits as
+    // long as the person takes to allow it on another device. The answer follows.
+    if let Some(rest) = after_waiting(&payload) {
+        opening
+            .waiting
+            .store(true, std::sync::atomic::Ordering::Release);
+        stream.set_read_timeout(None).map_err(|e| failed(&e))?;
+        if rest.is_empty() {
+            (payload, descriptors) =
+                runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| failed(&e))?;
+        } else {
+            // The answer arrived with it, in the same read.
+            payload = rest.to_vec();
+        }
+    }
     if descriptors.is_empty() {
         return Err(refusal(&payload));
     }
@@ -5556,7 +5582,7 @@ pub(crate) fn ush_backend_on(
             master: tilo_process::pty::Master::new(master),
         }),
         shell_name: if target.is_host() { "host" } else { "ush" }.into(),
-        relay_session: response.relay_session,
+        relay_session: response.host_session,
         supervisor_session: Some(response.session),
         commands: response.commands.then_some(key),
         native_editor,
@@ -5634,6 +5660,18 @@ fn fail_run(asked: crate::commands::Asked, reason: &str) {
         value: serde_json::to_value(settled).ok(),
         resources: Vec::new(),
     }));
+}
+
+/// What follows the supervisor's line saying the workspace's host is asked for the session, when
+/// `payload` starts with it: empty when nothing arrived after it yet.
+pub(crate) fn after_waiting(payload: &[u8]) -> Option<&[u8]> {
+    let (line, rest) = match payload.iter().position(|byte| *byte == b'\n') {
+        Some(end) => (payload.get(..end)?, payload.get(end.saturating_add(1)..)?),
+        None => (payload, &[][..]),
+    };
+    serde_json::from_slice::<serde_json::Value>(line)
+        .is_ok_and(|reply| reply.get("result").and_then(serde_json::Value::as_str) == Some("waiting"))
+        .then_some(rest)
 }
 
 pub(crate) fn refusal(payload: &[u8]) -> OpenError {

@@ -361,6 +361,9 @@ pub(crate) struct Loop {
     environments: environments::Sockets,
     /// The agent key the person started the session with, when they did.
     agent_key: Option<agent_key::AgentKey>,
+    /// The hosts of the workspaces this device takes part in but does not host, where a
+    /// Terminal window's shell in one of them is opened ([`crate::workspace_terminals`]).
+    hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
 }
 
 /// What serving one connection takes, on a thread of its own.
@@ -377,6 +380,7 @@ struct Serving {
     /// The places connections are served in: as many as the server serves at once.
     room: Room,
     environments: environments::Opener,
+    hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
 }
 
 impl Serving {
@@ -518,6 +522,7 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         device_agents: None,
         environments,
         agent_key,
+        hosting: None,
     };
     Ok(Mounted { server })
 }
@@ -545,6 +550,15 @@ impl Loop {
     pub(crate) fn hear_device_agents(&mut self, device_agents: Arc<DeviceAgents>) {
         device_agents.serve(self.room.clone());
         self.device_agents = Some(device_agents);
+    }
+
+    /// Open the shells of Terminal windows in the workspaces `hosting` reaches the hosts of
+    /// there, as the device's shell runtime asks.
+    pub(crate) fn open_terminals_on(
+        &mut self,
+        hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
+    ) {
+        self.hosting = hosting;
     }
 
     /// End the loop's wait when a client connects, so it is asked about on the
@@ -650,6 +664,7 @@ impl Loop {
             sessions: Arc::clone(&self.sessions),
             room: self.room.clone(),
             environments: self.environments.opener(),
+            hosting: self.hosting.clone(),
         }
     }
 
@@ -2566,6 +2581,8 @@ fn serve_connection(opened: Opened, serving: &Serving) {
 fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Serving) {
     if let Some(request) = runtime_portal::environment_socket::Request::of(first) {
         environments::open(stream, request, pid, serving.clone());
+    } else if let Some(request) = runtime_portal::workspace_terminal::Request::of(first) {
+        crate::workspace_terminals::open(stream, request, serving.hosting.clone());
     } else {
         tracing::info!(
             pid,

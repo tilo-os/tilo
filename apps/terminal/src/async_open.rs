@@ -9,6 +9,7 @@ pub(crate) struct PendingOpen {
     answer: PendingResponse<Result<TerminalBackend, OpenError>>,
     pub requester: Requester,
     pub attach: Option<String>,
+    waiting: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PendingOpen {
@@ -17,10 +18,11 @@ impl PendingOpen {
         target: SessionTarget,
         requester: Requester,
         attach: Option<String>,
-        workspace: Option<String>,
+        opening: crate::sessions::Opening,
         waker: Arc<Mutex<ui::WakeHandle>>,
     ) -> Result<Self, OpenError> {
         let worker_attach = attach.clone();
+        let waiting = Arc::clone(&opening.waiting);
         let answer = PendingResponse::start(
             "tilo-terminal-open",
             move |cancellation| {
@@ -29,7 +31,7 @@ impl PendingOpen {
                     &target,
                     requester,
                     worker_attach.as_deref(),
-                    workspace.as_deref(),
+                    &opening,
                     Some(&cancellation),
                 )
             },
@@ -40,7 +42,13 @@ impl PendingOpen {
             answer,
             requester,
             attach,
+            waiting,
         })
+    }
+
+    /// Whether the supervisor said the workspace's host is asked for the session.
+    pub fn waits_for_host(&self) -> bool {
+        self.waiting.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn take_answer(&self) -> Option<Result<TerminalBackend, OpenError>> {
@@ -78,13 +86,20 @@ mod tests {
     }
 
     fn grant_session(server: &UnixStream, session: &str) -> UnixStream {
+        grant(
+            server,
+            &format!(
+                "{{\"result\":\"session\",\"protocol\":2,\"session\":\"{session}\",\"environment\":\"default\"}}\n"
+            ),
+        )
+    }
+
+    /// Hand the tab a terminal and its lease with `reply`.
+    fn grant(server: &UnixStream, reply: &str) -> UnixStream {
         let pair = portable_pty::native_pty_system()
             .openpty(portable_pty::PtySize::default())
             .unwrap();
         let (supervisor_lease, terminal_lease) = UnixStream::pair().unwrap();
-        let reply = format!(
-            "{{\"result\":\"session\",\"protocol\":2,\"session\":\"{session}\",\"environment\":\"default\"}}\n"
-        );
         runtime_portal::fd_transport::send_with_fds(
             server,
             reply.as_bytes(),
@@ -164,6 +179,55 @@ mod tests {
                 assert_eq!(request["op"], "open-session");
                 assert!(request.get("workspace").is_none(), "{request}");
             }
+        }
+
+        phase a_hosted_workspaces_open_says_it_waits_for_the_host_until_its_shell_opens;
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
+            let hosts = "0123456789abcdef0123456789abcdef";
+            let (client, server) = UnixStream::pair().unwrap();
+            server.set_read_timeout(Some(hang_bound())).unwrap();
+            let (said, heard) = mpsc::channel::<()>();
+            let supervisor = std::thread::spawn(move || {
+                let mut reader = accept_hello(&server);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                (&server).write_all(b"{\"result\":\"waiting\"}\n").unwrap();
+                // The host answers once the person allowed it, long after a reply's bound.
+                heard.recv_timeout(hang_bound()).unwrap();
+                let lease = grant(
+                    &server,
+                    &format!(
+                        "{{\"result\":\"session\",\"protocol\":2,\"session\":\"{}\",\"environment\":\"default\",\"host_session\":\"{hosts}\"}}\n",
+                        "a".repeat(32)
+                    ),
+                );
+                (request, lease)
+            });
+            let mut widget = tab(client);
+            widget.show_record("uuid:5b0e2a6c-1f7d-4c3e-9a8b-2d4f6e8a0c1e");
+            let doc = automerge::AutoCommit::new();
+            widget.sync(&doc, &automerge::ROOT);
+            tilo_test_env::wait_until("the tab says it waits for the workspace's host", || {
+                widget.update(&doc, &automerge::ROOT);
+                widget.inspect_session()["transport_reason"]
+                    == crate::i18n::t("terminal-hosted-waiting")
+            });
+            assert_eq!(widget.inspect_session()["lifecycle"], "opening");
+            said.send(()).unwrap();
+            finish(&mut widget, &doc);
+            let (request, _lease) = supervisor.join().unwrap();
+            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(
+                request["record"], "uuid:5b0e2a6c-1f7d-4c3e-9a8b-2d4f6e8a0c1e",
+                "the open names the record whose shell the host runs"
+            );
+            let session = widget.inspect_session();
+            assert_eq!(session["lifecycle"], "open", "{session}");
+            assert_eq!(session["input_available"], true, "{session}");
+            assert_eq!(widget.read_session()["relay_session"], hosts, "kept to come back to");
         }
 
         phase deferred_host_constructs_without_a_socket_and_says_no_environment_can_start;
@@ -247,7 +311,7 @@ mod tests {
                 SessionTarget::default_environment(),
                 Requester::Person,
                 None,
-                None,
+                crate::sessions::Opening::default(),
                 Arc::new(Mutex::new(ui::WakeHandle::new())),
             )
             .unwrap();
