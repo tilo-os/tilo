@@ -784,10 +784,11 @@ fn ensure_collaboration_identity_in_context(
     // identity-keyed certificate for the same device key.
     let device_owner = claim_device_owner(&paths.user_pubkey, &root_public)?;
 
-    let device_label = approved_label.unwrap_or(if device_owner {
-        tilo_user_identity::UNNAMED_PRIMARY_DEVICE
-    } else {
-        tilo_user_identity::UNNAMED_SHARED_DEVICE
+    let machine = machine_label(Path::new("/"));
+    let device_label = approved_label.unwrap_or(match &machine {
+        Some(name) if device_owner => name.as_str(),
+        _ if device_owner => tilo_user_identity::UNNAMED_PRIMARY_DEVICE,
+        _ => tilo_user_identity::UNNAMED_SHARED_DEVICE,
     });
 
     // The device's certificate for this identity: the owner's is also the
@@ -1297,6 +1298,38 @@ fn protect_identity_record_at(
     Ok(())
 }
 
+/// What the machine under `root` calls itself, for a device nobody named yet: its pretty hostname,
+/// else a hostname that is not a distribution's default, else what kind of machine it is.
+fn machine_label(root: &Path) -> Option<String> {
+    let read = |path: &str| std::fs::read_to_string(root.join(path)).unwrap_or_default();
+    let pretty = read("etc/machine-info").lines().find_map(|line| {
+        let value = line.trim().strip_prefix("PRETTY_HOSTNAME=")?;
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(value);
+        Some(
+            value
+                .replace("\\\\", "\u{0}")
+                .replace('\\', "")
+                .replace('\u{0}', "\\"),
+        )
+    });
+    let host = read("proc/sys/kernel/hostname");
+    let host = host.trim();
+    let named = (!matches!(host, "" | "localhost" | "localhost.localdomain" | "fedora"))
+        .then(|| host.to_owned());
+    let chassis = match read("sys/class/dmi/id/chassis_type").trim() {
+        "8" | "9" | "10" | "14" | "31" | "32" => Some("Laptop".to_owned()),
+        "3" | "4" | "5" | "6" | "7" | "13" | "15" | "16" | "35" => Some("Desktop".to_owned()),
+        _ => None,
+    };
+    pretty
+        .filter(|name| !name.trim().is_empty())
+        .or(named)
+        .or(chassis)
+}
+
 #[cfg(test)]
 mod one_cert_tests;
 
@@ -1439,6 +1472,29 @@ mod tests {
             for (_, cert) in device_certificates(&paths, &personal) {
                 assert!(cert.capabilities.foreign);
             }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_unnamed_device_is_named_for_the_machine;
+
+        phase the_pretty_hostname_then_the_hostname_then_the_chassis;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let write = |path: &str, text: &str| {
+                let path = root.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            };
+            assert_eq!(machine_label(root.path()), None);
+            write("sys/class/dmi/id/chassis_type", "10\n");
+            assert_eq!(machine_label(root.path()).as_deref(), Some("Laptop"));
+            write("proc/sys/kernel/hostname", "fedora\n");
+            assert_eq!(machine_label(root.path()).as_deref(), Some("Laptop"));
+            write("proc/sys/kernel/hostname", "tower\n");
+            assert_eq!(machine_label(root.path()).as_deref(), Some("tower"));
+            write("etc/machine-info", "CHASSIS=laptop\nPRETTY_HOSTNAME=\"Ada's \\\"work\\\" laptop\"\n");
+            assert_eq!(machine_label(root.path()).as_deref(), Some("Ada's \"work\" laptop"));
         }
     }
 
