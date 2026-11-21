@@ -151,6 +151,25 @@ action add_text(n: Note, text: Text) (icon: .pencil, label: "Add text", did: "ad
     n.body = RichText(n.body, RichText.from_markdown(text))
 }
 
+/// Writes `text` (Markdown) at the end of the note titled `title`, the case of its letters aside:
+/// how an agent or a script that knows a note by its name ("add this to Meeting notes") writes
+/// into it without first looking up which note that is.
+action append_to_note(nb: Notebook, title: Text, text: Text) (
+    icon: .pencil,
+    label: "Add to a note",
+    did: "added to a note",
+) {
+    require titled(nb, title) != .none "No note is titled {title}"
+    if let n = titled(nb, title) {
+        n.body = RichText(n.body, RichText.from_markdown(text))
+    }
+}
+
+/// The note titled `title`, the case of its letters and the spaces around it aside.
+fn titled(nb: Notebook, title: Text) -> Option<Note> {
+    nb.notes.find(n -> n.title.trim().lower() == title.trim().lower())
+}
+
 /// Files a note titled `title` and tagged `tag` in one step: what another app writes down of
 /// what it did (Today's morning) without waiting on the note it made to name it.
 action file_note(nb: Notebook, title: Text, tag: Text) -> Note (

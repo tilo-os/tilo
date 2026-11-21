@@ -734,4 +734,47 @@ mod cases {
         assert_eq!(a, b, "both replicas hold the same body");
         assert_eq!(a, "Big Hello world", "and it keeps both people's words");
     }
+    /// An agent that knows a note by its name writes into it by that name, whatever case it
+    /// types it in, and one naming no note is refused with why, the notebook unchanged.
+    #[test]
+    fn markdown_added_to_a_note_named_by_its_title() {
+        let n = Notes::new();
+        let meeting = n.titled("Meeting notes");
+        n.titled("Groceries");
+        n.call(
+            "append_to_note",
+            vec![
+                Value::resource(&n.nb),
+                Value::text(" meeting NOTES"),
+                Value::text("- follow up with Sam"),
+            ],
+        );
+        let written = |note: &ResourceRef| match n.rt.read(note, "body").unwrap() {
+            Value::Rich(body) => body.written_text(),
+            other => panic!("the body is rich text, not {other:?}"),
+        };
+        assert!(
+            written(&meeting).contains("follow up with Sam"),
+            "the Markdown lands in the note of that title: {:?}",
+            written(&meeting)
+        );
+
+        let id = n.app.action("append_to_note");
+        let refused = n.rt.invoke_action(
+            &me(),
+            (
+                id.as_str(),
+                vec![Value::resource(&n.nb), Value::text("Errands"), Value::text("Bread")],
+            ),
+        );
+        let why = format!("{refused:?}");
+        assert!(why.contains("No note is titled Errands"), "{why}");
+        assert_eq!(
+            n.rt.project(&n.rt.read(&n.nb, "notes").unwrap())["count"]
+                .as_i64()
+                .unwrap(),
+            2,
+            "a refused write makes no note"
+        );
+    }
 }

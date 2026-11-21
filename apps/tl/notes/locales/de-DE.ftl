@@ -69,6 +69,11 @@ d-6fwsh5ui = Text hinzufügen
     .doc = Schreibt `text` (Markdown) ans Ende einer Notiz, unter das, was sie schon sagt: eine Zeile, eine Liste oder ein Absatz dazu.
     .did = hat einer Notiz etwas hinzugefügt
 
+d-4yaqj7z5 = Zu einer Notiz hinzufügen
+    .doc = Schreibt `text` (Markdown) ans Ende der Notiz mit dem Titel `title`, gleich ob groß oder klein geschrieben: so schreibt ein Agent oder ein Skript, das eine Notiz bei ihrem Namen kennt („schreib das zu Besprechungsnotizen“), hinein, ohne erst nachzusehen, welche Notiz das ist.
+    .did = hat einer Notiz etwas hinzugefügt
+    .w-no-note-is-titled = Keine Notiz heißt { $title }
+
 d-gc34cbhl = Notiz ablegen
     .doc = Legt in einem Schritt eine Notiz mit dem Titel `title` und dem Schlagwort `t` an: was eine andere App von dem aufschreibt, was sie getan hat (der Morgen in Heute), ohne auf die gemachte Notiz zu warten, um sie zu benennen.
 
@@ -104,6 +109,8 @@ d-m6rqg3kf = Angeheftet
 d-cn43mwee = Verschieben nach~present
 
 d-7in2x6ql = Danach verschieben~present
+
+d-dimkzymo = Zu einer Notiz hinzufügen~present
 
 d-ojfhuiuf = Untergeordnete hinzufügen
     .w-new-sub-note = Untergeordnete Notiz
@@ -179,6 +186,10 @@ d-qymo5lg2-title = Titel
 d-qymo5lg2-body = Text
 
 d-6fwsh5ui-text = Text
+
+d-4yaqj7z5-title = Titel
+
+d-4yaqj7z5-text = Text
 
 d-gc34cbhl-title = Titel
 

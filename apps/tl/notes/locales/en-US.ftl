@@ -108,6 +108,15 @@ d-6fwsh5ui = Add text
 
 d-6fwsh5ui-text = Text
 
+d-4yaqj7z5 = Add to a note
+    .doc = Writes `text` (Markdown) at the end of the note titled `title`, the case of its letters aside: how an agent or a script that knows a note by its name ("add this to Meeting notes") writes into it without first looking up which note that is.
+    .did = added to a note
+    .w-no-note-is-titled = No note is titled { $title }
+
+d-4yaqj7z5-title = Title
+
+d-4yaqj7z5-text = Text
+
 d-gc34cbhl = File a note
     .doc = Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it.
 
@@ -160,6 +169,8 @@ d-m6rqg3kf = Pin~present
 d-cn43mwee = Move to~present
 
 d-7in2x6ql = Move after~present
+
+d-dimkzymo = Append to note~present
 
 d-akcqjax3 = Notebook
 
