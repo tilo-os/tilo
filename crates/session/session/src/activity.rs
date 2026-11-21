@@ -507,7 +507,8 @@ impl Activity {
     }
 
     /// Whether this device kept no workspace to show, so the shell shows only the one it started
-    /// with.
+    /// with. The shell is the Linux session's ([`crate::platform::session`]).
+    #[cfg(target_os = "linux")]
     pub(crate) fn keeps_no_workspace(&self) -> bool {
         self.0.shown.keeps_no_workspace()
     }

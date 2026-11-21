@@ -138,7 +138,8 @@ impl DeviceState {
     }
 
     /// Whether this device kept no workspace to show: a shell opened over it shows only the one it
-    /// started with.
+    /// started with. The shell is the Linux session's ([`crate::platform::session`]).
+    #[cfg(target_os = "linux")]
     pub(crate) fn keeps_no_workspace(&self) -> bool {
         self.kept.borrow().workspaces.is_empty()
     }

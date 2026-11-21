@@ -804,6 +804,10 @@ impl Reads {
     }
 
     /// `changed`'s document changed again: a read of it out now reads what it held before.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(clippy::unused_self, reason = "a page reads its mentions at once and keeps no route")
+    )]
     fn renoted(&self, changed: &Changed) {
         #[cfg(target_os = "linux")]
         if let Way::Behind(behind) = &self.0 {
@@ -821,6 +825,13 @@ impl Reads {
 
     /// What `ask` reads of `changed`'s document: at once here, or pending until the worker's read
     /// of it lands.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            clippy::needless_pass_by_value,
+            reason = "the desktop's pending read takes the ask; a page's answers at once"
+        )
+    )]
     fn fetch(&self, changed: &Changed, ask: Ask, me: &BTreeSet<ui::MemberId>) -> Poll<Fetched> {
         match &self.0 {
             Way::Here(from) => Poll::Ready(fetch(from.as_ref(), changed, &ask, me)),
