@@ -667,6 +667,11 @@ pub struct InvocationState {
     /// caller is answered it with the change and asks for nothing more.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// The invocation is a followed read, and its item is the read's whole answer as it stands:
+    /// the read goes on following what it reads and never ends, so a wait for it to settle ends
+    /// here ([`settle_with`]). An operation's items are pieces of what it streams, never this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_answered: bool,
 }
 
 /// A caret or selection in a record, as the live session's selection anchors
@@ -686,7 +691,21 @@ impl InvocationState {
             untrusted: false,
             left_at: None,
             link: None,
+            read_answered: false,
         }
+    }
+
+    /// This state of a followed read: answered once it holds an item, the read's whole answer,
+    /// unless the item says the read is still to come (`"pending": true`, as a reader that has
+    /// not read what it serves yet answers).
+    #[must_use]
+    pub fn of_read(mut self) -> Self {
+        self.read_answered = matches!(
+            &self.update,
+            InvocationUpdate::Item { value, .. }
+                if value.get("pending") != Some(&serde_json::Value::Bool(true))
+        );
+        self
     }
 
     /// This state, saying where the invocation left its actor.

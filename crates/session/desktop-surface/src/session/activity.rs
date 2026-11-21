@@ -208,7 +208,9 @@ impl Api {
         if let Some(open) = state.follows.get(&invocation) {
             return if open.caller == *caller && open.action == action && open.arguments == arguments
             {
-                Ok(InvocationState::new(invocation, open.update.clone()).receipt())
+                Ok(InvocationState::new(invocation, open.update.clone())
+                    .of_read()
+                    .receipt())
             } else {
                 Err(ActionCallError::InvocationConflict)
             };
@@ -248,7 +250,7 @@ impl Api {
             .follows
             .get(id)
             .filter(|open| open.caller == *caller)
-            .map(|open| InvocationState::new(*id, open.update.clone()))
+            .map(|open| InvocationState::new(*id, open.update.clone()).of_read())
     }
 
     pub(super) fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {

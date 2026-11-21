@@ -276,6 +276,69 @@ fn the_app_reads_the_retained_history_and_follows_new_changes() {
     assert!(shell.surface.activity.is_none());
 }
 
+/// A tool that asks for the history and waits for it hears it as soon as the desktop has read it,
+/// not when its wait runs out: a followed read never ends, so its first whole answer is what a
+/// waiting caller is answered with.
+#[test]
+fn a_waiting_read_is_answered_once_the_history_is_read() {
+    use tilo_actions::remote::{InvokeRequest, RemoteActionMessage, serve};
+    let mut shell = Served::new(None);
+    let caller = person().in_workspace(WORKSPACE);
+    let invocation = tilo_actions::InvocationId::new();
+    let request = InvokeRequest {
+        invocation,
+        target: wire::target(wire::FEED),
+        argument: wire::argument(&wire::FeedQuery::default()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    serve(
+        &shell.session,
+        &caller,
+        RemoteActionMessage::Invoke(request),
+    )
+    .expect("an invoke is answered")
+    .wait_timeout(Duration::from_secs(5))
+    .ok()
+    .flatten()
+    .expect("the read is admitted");
+    let observe = RemoteActionMessage::Observe {
+        correlation: 1,
+        invocation,
+        seen: None,
+        wait_ms: Some(10_000),
+    };
+    let waiting = serve(&shell.session, &caller, observe).expect("an observe is answered");
+    let started = std::time::Instant::now();
+    shell.frame();
+    let answer = waiting
+        .wait_timeout(Duration::from_secs(5))
+        .ok()
+        .flatten()
+        .expect("answered with the history, not at the end of its ten-second wait");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    let RemoteActionMessage::Update {
+        state: Some(state), ..
+    } = answer
+    else {
+        panic!("an observe is answered with the read's state: {answer:?}");
+    };
+    let Item { value, .. } = state.update else {
+        panic!("the read's answer is its item: {:?}", state.update);
+    };
+    let feed: wire::Feed = serde_json::from_value(value).unwrap();
+    assert_eq!(feed.entries.len(), 1, "the rename, as the app reads it");
+}
+
 /// Asked for from outside the app (the bar's History, a person's changes,
 /// a command), Activity opens as a window, or comes forward, and the app
 /// is offered the view; closing it closes its window.

@@ -104,7 +104,8 @@ impl ActionProvider for Stepped {
             return None;
         }
         let update = self.update.lock().unwrap().clone()?;
-        Some(InvocationState::new(*id, update))
+        // Its items are a followed read's answers: an operation here never streams one.
+        Some(InvocationState::new(*id, update).of_read())
     }
 
     fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
@@ -285,6 +286,21 @@ tilo_test_env::scenario! {
         let state = state_of(answered(&mut next).expect("answered on the move"));
         assert_eq!(state.unwrap().update, succeeded(id()));
         assert_eq!(provider.parked(), 0, "nothing stays parked after the answer");
+    }
+
+    phase a_caller_that_saw_nothing_is_answered_with_a_reads_first_answer_not_its_placeholder;
+    {
+        let provider = Stepped::running(Signals::OnDemand, id());
+        let until = tilo_clock::now().checked_add(MAX_REMOTE_WAIT).unwrap();
+        let mut answer = super::settle_with(&provider, &alice(), id(), None, until);
+        let item = |sequence, value| InvocationUpdate::Item { invocation: id(), sequence, value };
+        provider.step(item(1, serde_json::json!({"pending": true})));
+        provider.signal();
+        assert!(answered(&mut answer).is_none(), "a read still to come is no answer");
+        provider.step(item(2, serde_json::json!({"entries": []})));
+        provider.signal();
+        let state = answered(&mut answer).flatten().expect("answered with the read");
+        assert_eq!(state.update, item(2, serde_json::json!({"entries": []})));
     }
 
     phase a_wait_is_capped_whatever_it_asks;

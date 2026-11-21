@@ -94,6 +94,11 @@ impl LiveViews {
             .map(|open| open.update.clone())
     }
 
+    /// Whether `id` is an open view.
+    pub(super) fn serves(&self, id: u64) -> bool {
+        self.lock().contains_key(&id)
+    }
+
     /// Ask open view `id` to stop, for `owner` when it is not already
     /// known to be the caller's. `None` when no view by that id is open.
     pub(super) fn cancel(

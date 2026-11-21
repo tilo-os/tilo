@@ -75,14 +75,13 @@ pub(super) fn deadline(wait_ms: u32) -> Instant {
     now.checked_add(wait).unwrap_or(now)
 }
 
-/// The state of `invocation`, as [`ActionProvider::observe`] reports it to
-/// `caller`, once it has moved past `seen` — or, with no `seen`, once it
-/// settles — or at `until`, whichever comes first. A caller following what
-/// it has seen hears the state as it stands at `until` too: no wait outlives
-/// the caller that asked it. A caller across a connection gives up on an
-/// answer that does not come and asks again, and a wait that only a move
-/// could end would answer that move once more for every ask it outlived, to
-/// an asker that takes each answer for its latest ask.
+/// The state of `invocation`, as [`ActionProvider::observe`] reports it to `caller`, once it has
+/// moved past `seen` — or, with no `seen`, once it settles, or once a followed read holds its
+/// answer ([`InvocationState::read_answered`]) — or at `until`, whichever comes first. A caller
+/// following what it has seen hears the state as it stands at `until` too: no wait outlives the
+/// caller that asked it. A caller across a connection gives up on an answer that does not come and
+/// asks again, and a wait that only a move could end would answer that move once more for every ask
+/// it outlived, to an asker that takes each answer for its latest ask.
 ///
 /// It answers at once when the invocation is already there, when `caller`
 /// may not see it (`None`), when the provider cannot signal changes, or when
@@ -154,6 +153,9 @@ impl<H: ActionProvider> Wait<H> {
     fn arrived(&self, state: Option<&InvocationState>) -> bool {
         state.is_none_or(|state| {
             state.is_terminal()
+                // A followed read never ends: its first whole answer is what a caller that saw
+                // nothing yet waits for.
+                || (self.seen.is_none() && state.read_answered)
                 || self
                     .seen
                     .is_some_and(|seen| UpdateMark::of(&state.update) != seen)

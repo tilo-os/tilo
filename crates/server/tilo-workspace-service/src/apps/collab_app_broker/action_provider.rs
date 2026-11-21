@@ -3293,8 +3293,14 @@ impl AppBrokerState {
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
         let job = self.remote_job(caller, id)?;
-        self.invocation_status(job)
-            .map(|update| InvocationState::new(*id, update).with_untrusted(self.untrusted_job(job)))
+        let state = InvocationState::new(*id, self.invocation_status(job)?)
+            .with_untrusted(self.untrusted_job(job));
+        // A live view is a followed read: each item is its whole answer.
+        Some(if self.live_views.serves(job) {
+            state.of_read()
+        } else {
+            state
+        })
     }
 
     /// Resolves once an invocation changes after what `seen` has seen, or
