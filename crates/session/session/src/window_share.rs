@@ -1008,10 +1008,17 @@ impl WindowShares {
             let placed = match hosted_tab_of(tree, shared, self.salt, &claimed) {
                 Some(place) => Some((place, false)),
                 None if held => {
-                    let place = if shown(tree, tab) {
-                        session.mint_id()
-                    } else {
-                        tab
+                    // The place this share stood in was one this device minted, and it is gone from
+                    // the shell: a whole-tree replacement — the workspace's layout folded over the
+                    // shell — took it along with what the workspace does not hold. Put the same
+                    // place back where it stood, so the stream that pictures the window goes on in
+                    // the tile it was decoded in, rather than starting over under a new id.
+                    let kept = state
+                        .filter(|place| peer_salt_of(*place) == self.salt && !shown(tree, *place));
+                    let place = match kept {
+                        Some(place) => place,
+                        None if shown(tree, tab) => session.mint_id(),
+                        None => tab,
                     };
                     changed = true;
                     Some((place, add_hosted_tab(tree, shared, place)))

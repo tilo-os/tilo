@@ -1401,7 +1401,12 @@ impl State {
         };
         self.pointer = Point::from((x, y));
         let location = self.pointer;
-        self.policy.pointer_moved(location.x, location.y);
+        // A locked session's pointer belongs to what shows the lock, as a finger's does: the
+        // desktop behind it follows neither, so a pointer reaching another display does not move
+        // the shell the person left, and unlocking comes back to the shell they left it in.
+        if !self.locked() {
+            self.policy.pointer_moved(location.x, location.y);
+        }
         if self.drag_motion(location, serial, time) {
             return;
         }
@@ -1478,7 +1483,9 @@ impl State {
             self.carry_window_under_pointer(serial, time);
         }
         if pressed {
-            self.policy.pointer_pressed(self.pointer.x, self.pointer.y);
+            if !self.locked() {
+                self.policy.pointer_pressed(self.pointer.x, self.pointer.y);
+            }
             let target = self.pointer_target;
             for (index, surface) in self.surfaces.iter_mut().enumerate() {
                 if target != PointerTarget::Surface(index) {
