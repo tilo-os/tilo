@@ -159,7 +159,7 @@ conversion = "apps/firewall/src/resource.rs:open"
 kind = "mail.copies"
 app = "mail"
 change = "left-own"
-conversion = "apps/mail/src/copies.rs:import_legacy"
+conversion = "apps/mail/src/copies.rs:convert_earlier"
 
 [[change]]
 kind = "mail.trusted-senders"
