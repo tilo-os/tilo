@@ -32,7 +32,7 @@ pub use app::{
 };
 pub use effect::{CHOICES, FIELDS, OnboardingEffect, SECRET_FIELDS};
 pub use page::{
-    Chooser, ChooserPurpose, Codecs, IdentityProblem, KeyCopy, Migration, Nearby,
+    Chooser, ChooserPurpose, Codecs, IdentityProblem, JoinedDevice, KeyCopy, Migration, Nearby,
     OnboardingContext, PackState, Page, Prepared, Screen, SecretText, Step, TourPage, Transfer,
     WordsCheck,
 };

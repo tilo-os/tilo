@@ -60,16 +60,6 @@ pub fn acknowledgement() -> String {
 }
 
 #[must_use]
-pub fn done_title() -> String {
-    t("onboarding-done-title")
-}
-
-#[must_use]
-pub fn done_body() -> String {
-    t("onboarding-done-body")
-}
-
-#[must_use]
 pub fn codecs_title() -> String {
     t("onboarding-codecs-title")
 }

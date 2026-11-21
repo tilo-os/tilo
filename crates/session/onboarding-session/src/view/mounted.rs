@@ -271,7 +271,7 @@ impl OnboardingView {
             migration,
             portable_backup_only: self.portable_backup_only,
             identity_ready_page: self.identity_ready_page,
-            joined_member: self.joined_member,
+            joined_device: self.joined_device.clone(),
             codec_page: self.codec_page,
             codecs: self.codecs_page(),
             tour_page: self.tour_page,

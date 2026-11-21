@@ -92,6 +92,28 @@ fn every_step_renders_without_a_screen() {
 }
 
 #[test]
+fn paired_device_confirmation_names_the_outcome_in_both_themes() {
+    let mut app = staged("ready-joined");
+    for theme in [ui::theme::Theme::light(), ui::theme::Theme::dark()] {
+        app.harness().set_theme(theme);
+        app.harness().resize((800, 600)).unwrap();
+        app.settle();
+
+        assert!(says(&mut app, "Kitchen laptop"));
+        assert!(says(&mut app, "Ada’s devices"));
+        assert!(!says(&mut app, "fingerprint"));
+        assert!(!says(&mut app, "backup"));
+        assert!(!says(&mut app, "System care"));
+        let footer = named(&mut app)
+            .into_iter()
+            .find(|(name, _)| name == "Continue to desktop")
+            .expect("the device can enter its desktop")
+            .1;
+        assert!(footer.y0 >= 0.0 && footer.y1 <= 600.0);
+    }
+}
+
+#[test]
 fn there_is_a_scenario_for_every_step() {
     let scenarios = OnboardingApp::scenarios();
     for step in [

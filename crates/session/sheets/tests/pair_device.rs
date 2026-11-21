@@ -60,6 +60,7 @@ tilo_test_env::scenario! {
         device.waiting = vec![machine()];
         assert!(says(&device, "", "Home server"), "{device:?}");
         assert!(!says(&device, "", &device.waiting_nothing), "{device:?}");
+        assert!(!says(&device, "", &device.alt), "{device:?}");
         assert!(says(&device, "", "482913"), "{device:?}");
         assert!(says(&device, "", "Approve Home server with code 482913"), "{device:?}");
         assert!(says(&device, "", "Deny Home server"), "{device:?}");

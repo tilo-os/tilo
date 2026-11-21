@@ -231,6 +231,13 @@ pub struct Chooser {
     pub roots: Vec<std::path::PathBuf>,
 }
 
+/// The device that joined, with names when its signed installation has them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct JoinedDevice {
+    pub label: Option<String>,
+    pub person: Option<String>,
+}
+
 /// Everything a setup page shows.
 #[allow(
     clippy::struct_excessive_bools,
@@ -252,7 +259,7 @@ pub struct Page {
     /// The backup step was handled: the hand-off shows.
     pub identity_ready_page: bool,
     /// This device joined an identity held elsewhere.
-    pub joined_member: bool,
+    pub joined_device: Option<JoinedDevice>,
     /// The media formats step shows.
     pub codec_page: bool,
     pub codecs: Codecs,

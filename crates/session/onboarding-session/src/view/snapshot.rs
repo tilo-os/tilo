@@ -66,7 +66,7 @@ impl OnboardingView {
         self.backup_was_verified = false;
         self.backup_copy_form_open = false;
         self.identity_ready_page = false;
-        self.joined_member = false;
+        self.joined_device = None;
         self.portable_backup_only = false;
         self.tour_page = None;
         self.tour_only = false;

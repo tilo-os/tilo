@@ -439,10 +439,8 @@ pub struct OnboardingView {
     /// `false` shows the post-mint backup step; `true` shows the concise
     /// desktop hand-off. Persisted separately so a crash cannot skip backup.
     identity_ready_page: bool,
-    /// This device joined the identity from another one and holds only its
-    /// public record: the root key stays on the approving device, so the
-    /// ready screen recommends no backup of this one.
-    joined_member: bool,
+    /// The paired device holds the public record and goes straight to the desktop.
+    joined_device: Option<tilo_onboarding::JoinedDevice>,
     /// Settings can reopen the proven backup ceremony for an existing
     /// identity. That is a short modal task, not a second first-login flow.
     portable_backup_only: bool,
@@ -785,7 +783,7 @@ impl OnboardingView {
             backup_copy_form_open: false,
             backup_skip_acknowledged: false,
             identity_ready_page: false,
-            joined_member: false,
+            joined_device: None,
             portable_backup_only: false,
             progress_error: None,
             journal: std::collections::VecDeque::new(),
@@ -1012,7 +1010,7 @@ impl OnboardingView {
         self.backup_copy_form_open = false;
         self.backup_skip_acknowledged = false;
         self.identity_ready_page = false;
-        self.joined_member = false;
+        self.joined_device = None;
         self.portable_backup_only = true;
         self.progress_error = None;
         // Steps another flow wrote the journal ahead of no longer apply, nor
@@ -1049,7 +1047,7 @@ impl OnboardingView {
             .unwrap_or_else(|| identity_dir.join("primary.json"));
         match crate::identity::existing_identity_at(&identity_path) {
             Ok(identity) => {
-                self.joined_member = crate::identity::holds_no_identity_secret(&identity_path);
+                self.joined_device = self.read_joined_device(&identity);
                 self.flow.resume_created(identity);
                 self.identity_ready_page = matches!(
                     stage,
@@ -1189,7 +1187,7 @@ impl OnboardingView {
                 }
             }
             AfterJournal::EnterReadyAfterJoin => {
-                if self.flow.is_done() && self.joined_member {
+                if self.flow.is_done() && self.joined_device.is_some() {
                     self.identity_ready_page = true;
                     self.codec_page = self.codec_step_offered;
                     self.invalidation.structure();
@@ -1703,14 +1701,49 @@ impl OnboardingView {
         }
         Ok(())
     }
+    /// Read display names only from the device certificate and its matching public record.
+    fn read_joined_device(
+        &self,
+        identity: &MintedIdentity,
+    ) -> Option<tilo_onboarding::JoinedDevice> {
+        use tilo_device_identity::persist::read_device_cert;
+
+        if !crate::identity::holds_no_identity_secret(&identity.path) {
+            return None;
+        }
+        let mut joined = tilo_onboarding::JoinedDevice::default();
+        if let Some(paths) = self.session.identity_paths()
+            && let Ok(profile) = tilo_identity_client::load_metadata_from_path(&identity.path)
+            && hex::encode(profile.group_public_key) == identity.fingerprint
+            && let Ok(cert) =
+                read_device_cert(&paths.device_cert_for_user(&profile.group_public_key))
+            && cert.user_public_key == profile.group_public_key
+            && tilo_user_identity::verify_device_cert(&cert).is_ok()
+        {
+            joined.label = tilo_user_identity::device_name(&cert.device_label).map(str::to_owned);
+            let name = &profile.display_name;
+            if tilo_identity::store::is_chosen_display_name(name)
+                && !tilo_identity::provisioning::is_throwaway_test_display_name(
+                    &identity.path,
+                    name,
+                )
+            {
+                joined.person = tilo_user_identity::display_name(name)
+                    .ok()
+                    .map(str::to_owned);
+            }
+        }
+        Some(joined)
+    }
+
     fn accept_connected_identity(&mut self, identity: MintedIdentity) -> Result<(), ()> {
+        let joined = self.read_joined_device(&identity);
         if !self.flow.complete_connected(identity) {
             return Err(());
         }
-        self.joined_member =
-            crate::identity::holds_no_identity_secret(&self.flow.minted().ok_or(())?.path);
+        self.joined_device = joined;
         self.identity_ready_page = false;
-        if self.joined_member {
+        if self.joined_device.is_some() {
             // A joined member holds no identity secret, so there is nothing
             // to back up. The journal records the hand-off first and the
             // ready screen follows it, so a restart resumes there.

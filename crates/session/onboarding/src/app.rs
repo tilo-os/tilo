@@ -339,12 +339,18 @@ fn scenario(name: &str) -> Page {
         },
         "ready-joined" => Page {
             identity_ready_page: true,
-            joined_member: true,
+            joined_device: Some(crate::JoinedDevice {
+                label: Some("Kitchen laptop".to_owned()),
+                person: Some("Ada".to_owned()),
+            }),
             ..identity()
         },
         "ready-host" => Page {
             identity_ready_page: true,
-            joined_member: true,
+            joined_device: Some(crate::JoinedDevice {
+                label: Some("Kitchen laptop".to_owned()),
+                person: Some("Ada".to_owned()),
+            }),
             context: OnboardingContext::HostDesktop,
             ..identity()
         },

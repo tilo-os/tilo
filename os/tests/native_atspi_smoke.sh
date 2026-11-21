@@ -495,7 +495,7 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       wait_for_names "Continue without backup"
       click_named "Continue without backup"
       # The media codecs step appears only where the codec pack is offered. A new
-      # identity ends on the welcome (a joined device's on "Your identity is ready").
+      # identity ends on the welcome (a joined device's on "Device added").
       for _ in $(seq 1 400); do
         collect_tree || { sleep 0.05; continue; }
         node_named "Welcome to Tilo" >/dev/null && break

@@ -182,29 +182,32 @@ pub fn sheet(
     let has_request = !device.waiting.is_empty();
     if has_request {
         body = body.push(waiting(device, ask));
+    } else {
+        let setup = match &device.refusal {
+            Some(reason) => Box::new(Text::new(reason).with_role(TextRole::Body)),
+            None => code(device, link, ask),
+        };
+        body = body
+            .push(setup)
+            .push(waiting(device, ask))
+            .push(device_link(device, typed, ask));
     }
-    match &device.refusal {
-        Some(reason) => body = body.push(Box::new(Text::new(reason).with_role(TextRole::Body))),
-        None => body = body.push(code(device, link, ask)),
-    }
-    if !has_request {
-        body = body.push(waiting(device, ask));
-    }
-    body = body.push(device_link(device, typed, ask));
     let dismissed = ask.clone();
     let escaped = ask.clone();
-    Box::new(presented(
-        presentation,
-        ModalDialog::new(device.title.clone(), body)
-            .with_test_id("pair-device")
-            .with_icon(Icon::MonitorSmartphone)
-            .with_description(device.description.clone())
-            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-            .secondary_action(device.close.clone(), move || {
-                dismissed(PairDeviceEffect::Done);
-            })
-            .on_dismiss(move || escaped(PairDeviceEffect::Done)),
-    ))
+    let dialog = ModalDialog::new(device.title.clone(), body)
+        .with_test_id("pair-device")
+        .with_icon(Icon::MonitorSmartphone)
+        .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
+        .secondary_action(device.close.clone(), move || {
+            dismissed(PairDeviceEffect::Done);
+        })
+        .on_dismiss(move || escaped(PairDeviceEffect::Done));
+    let dialog = if has_request {
+        dialog
+    } else {
+        dialog.with_description(device.description.clone())
+    };
+    Box::new(presented(presentation, dialog))
 }
 
 /// The code the sheet draws for `device`: the link it was handed, as squares a camera reads.

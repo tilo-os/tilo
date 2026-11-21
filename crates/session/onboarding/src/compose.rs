@@ -16,9 +16,9 @@ use crate::ceremony::{
     ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT, Ceremony, FOOTER_HEIGHT, PROGRESS_HEADER_HEIGHT,
 };
 use crate::copy::{
-    acknowledgement, codecs_background, codecs_note, codecs_title, done_body, done_title,
-    host_desktop_intro_body, host_desktop_intro_title, intro_body, intro_points, intro_title,
-    no_recovery_points, no_recovery_title,
+    acknowledgement, codecs_background, codecs_note, codecs_title, host_desktop_intro_body,
+    host_desktop_intro_title, intro_body, intro_points, intro_title, no_recovery_points,
+    no_recovery_title,
 };
 use crate::effect::OnboardingEffect;
 use crate::page::{KeyCopy, OnboardingContext, Screen, TourPage, Transfer, WordsCheck};
@@ -180,6 +180,10 @@ impl Ceremony {
                     .push(Box::new(
                         Text::new(&t(if self.page.recovery_only {
                             "onboarding-recovery-eyebrow"
+                        } else if self.page.screen == Screen::Nearby
+                            || self.page.joined_device.is_some()
+                        {
+                            "onboarding-device-setup"
                         } else {
                             "onboarding-progress-eyebrow"
                         }))
@@ -501,7 +505,7 @@ impl Ceremony {
         let acknowledgement = match self.page.screen {
             // A first session returns from creating its identity straight to
             // the desktop: there is nothing left to acknowledge or accept.
-            Screen::Done if self.page.joined_member => None,
+            Screen::Done if self.page.joined_device.is_some() => None,
             Screen::NoRecovery => Some(self.acknowledgement(
                 "onboarding.understood.row",
                 acknowledgement(),
@@ -1028,7 +1032,9 @@ impl Ceremony {
                     Some((title, message)) => {
                         Banner::error(title.clone()).with_message(message.clone())
                     }
-                    None => Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
+                    None => {
+                        Banner::error(t("onboarding-connect-failed")).with_message(error.clone())
+                    }
                 }
             };
             body = body.push(spaced_banner(banner, theme));
@@ -1503,83 +1509,46 @@ impl Ceremony {
     }
 
     fn done(&self, theme: &Theme, compact: bool) -> Box<dyn Widget> {
-        if !self.page.joined_member {
-            // The hand-off is the footer action, exactly like every other
-            // setup screen's: one control at the bottom edge, never a second
-            // way in floating inside the page.
-            return Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(if compact {
-                        theme.tokens.spacing.s3
-                    } else {
-                        theme.tokens.spacing.s4
-                    })
-                    .push(Box::new(
-                        Text::new(&t("onboarding-ready-welcome"))
-                            .with_id("onboarding.done.heading")
-                            .with_role(ui::tokens::typography::TextRole::LargeTitle),
-                    ))
-                    .push(paragraph_with_id(
-                        &t("onboarding-ready-next"),
-                        theme,
-                        "onboarding.done.body",
-                    )),
-            );
-        }
-        let (title, body, ready) = match self.page.context {
-            OnboardingContext::FullSystem => {
-                (done_title(), done_body(), t("onboarding-done-ready"))
+        let (title, body) = match &self.page.joined_device {
+            Some(device) => {
+                let outcome = device
+                    .label
+                    .as_ref()
+                    .zip(device.person.as_ref())
+                    .map_or_else(
+                        || t("onboarding-device-added"),
+                        |(label, person)| {
+                            t_args(
+                                "onboarding-device-added-to-person",
+                                &[
+                                    ("device", label.clone().into()),
+                                    ("person", person.clone().into()),
+                                ],
+                            )
+                        },
+                    );
+                (outcome, None)
             }
-            OnboardingContext::HostDesktop => (
-                t("onboarding-identity-done-title"),
-                t("onboarding-identity-done-body"),
-                t("onboarding-identity-done-ready"),
+            None => (
+                t("onboarding-ready-welcome"),
+                Some(t("onboarding-ready-next")),
             ),
         };
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            // Keep every hand-off block, with a full token between them. The
-            // ordinary-text surface uses `s3` so its complete hand-off
-            // decision fits a safe 800×600 panel without scrolling; large
-            // text and high contrast retain the roomier scrollable rhythm.
             .with_gap(if compact {
                 theme.tokens.spacing.s3
             } else {
                 theme.tokens.spacing.s4
             })
-            .push(heading(&title, theme))
-            .push(spaced_banner(
-                Banner::success(ready).with_icon(ui::icons::Icon::Check),
-                theme,
-            ))
-            .push(paragraph(&body, theme))
-            .push(Box::new(Section::titled(
-                t("onboarding-done-next-title"),
-                vec![paragraph(&t("onboarding-done-next-body"), theme)],
-            )))
-            .push(Box::new(Section::titled(
-                t(done_backup_title_key(
-                    self.page.joined_member,
-                    self.page.backup_was_verified,
-                )),
-                vec![paragraph_with_id(
-                    &t(done_backup_body_key(
-                        self.page.joined_member,
-                        self.page.backup_was_verified,
-                    )),
-                    theme,
-                    "onboarding.done.backup-guidance",
-                )],
-            )));
-
-        if self.page.context == OnboardingContext::FullSystem {
-            page = page.push(Box::new(Section::titled(
-                t("onboarding-done-system-care-title"),
-                vec![paragraph(&t("onboarding-done-system-care-body"), theme)],
-            )));
+            .push(Box::new(
+                Text::new(&title)
+                    .with_id("onboarding.done.heading")
+                    .with_role(ui::tokens::typography::TextRole::LargeTitle),
+            ));
+        if let Some(body) = body {
+            page = page.push(paragraph_with_id(&body, theme, "onboarding.done.body"));
         }
         Box::new(page)
     }
@@ -1921,29 +1890,6 @@ impl Ceremony {
         ])
     }
 }
-/// The ready screen's backup heading. A device that joined from another one
-/// holds no root key, so nothing on it needs a backup.
-fn done_backup_title_key(joined_member: bool, backup_verified: bool) -> &'static str {
-    if joined_member {
-        "onboarding-done-joined-key-elsewhere"
-    } else if backup_verified {
-        "onboarding-done-backup-verified"
-    } else {
-        "onboarding-done-backup-recommended"
-    }
-}
-
-/// The ready screen's backup guidance under [`done_backup_title_key`].
-fn done_backup_body_key(joined_member: bool, backup_verified: bool) -> &'static str {
-    if joined_member {
-        "onboarding-done-joined-key-elsewhere-body"
-    } else if backup_verified {
-        "onboarding-done-backup-verified-body"
-    } else {
-        "onboarding-done-backup-recommended-body"
-    }
-}
-
 /// The title at the top of an onboarding page.
 fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
     Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::LargeTitle))

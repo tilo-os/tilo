@@ -24,8 +24,7 @@ use std::path::{Path, PathBuf};
 
 pub use tilo_onboarding::Screen;
 pub use tilo_onboarding::copy::{
-    acknowledgement, done_body, done_title, intro_body, intro_points, intro_title,
-    no_recovery_points, no_recovery_title,
+    acknowledgement, intro_body, intro_points, intro_title, no_recovery_points, no_recovery_title,
 };
 
 /// The ceremony's state. Pure: no widgets, no I/O, no clock.

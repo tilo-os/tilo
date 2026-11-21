@@ -44,6 +44,26 @@ def shot(session, output, name):
     session.control({"op": "snapshot", "path": str(output / (name + ".png"))})
 
 
+def give_owner_a_name(owner):
+    def named_control():
+        return next((item["name"] for item in owner.control({"op": "list_targets"})["targets"]
+                     if item["name"].endswith(" (you): your profile")), None)
+    click(owner, until("Ada's profile control", named_control, 15))
+    field = until("Ada's name field", lambda: next(
+        (name for name in ("Add your name", "Your name") if target(owner, name)), None), 15)
+    click(owner, field)
+    owner.control({"op": "modifiers", "ctrl": True})
+    try:
+        owner.control({"op": "key_down", "key": "a"})
+        owner.control({"op": "key_up", "key": "a"})
+    finally:
+        owner.control({"op": "modifiers"})
+    owner.control({"op": "type", "text": "Ada"})
+    owner.control({"op": "key", "key": "Enter"})
+    until("Ada's chosen name on the desktop", lambda: named_control() == "Ada (you): your profile", 15)
+    owner.control({"op": "key", "key": "Escape"})
+
+
 def request_link(owner):
     owner.control({"op": "actions_invoke", "provider": "so.tilo.session",
                    "id": "session:invite\u001fshow-pair-device", "wait_ms": 20000})
@@ -107,6 +127,8 @@ def no_identity(profile):
 
 
 def verify(owner, phone, outcome, output):
+    if outcome == "approve":
+        give_owner_a_name(owner)
     link = request_link(owner)
     submit_link(phone, link, output, outcome)
     status = phone.profile / IDENTITY / ".nearby-enrollment-status.json"
@@ -126,14 +148,19 @@ def verify(owner, phone, outcome, output):
     if outcome == "approve":
         shot(owner, output, "approve-owner-inline")
         click(owner, approve)
-        until("the requester to report a completed install",
-              lambda: requester_progress(phone, status, "complete"), 15)
+        installed = until("the requester to report a completed install",
+                          lambda: requester_progress(phone, status, "complete"), 15)
         until("the ready screen to offer entry to the desktop",
               lambda: target(phone, "Continue to desktop"), 10)
         if (phone.profile / ROOT_KEY).read_bytes() != (owner.profile / ROOT_KEY).read_bytes():
             raise Failed("the device installed a different person's public key")
         if (phone.profile / CERTIFICATE).read_bytes() == (owner.profile / CERTIFICATE).read_bytes():
             raise Failed("the device retained the owner's device certificate")
+        record = Path(installed["record_path"]).resolve()
+        if not record.is_relative_to(phone.profile / IDENTITY):
+            raise Failed("the receiving profile does not own its installed record")
+        if json.loads(record.read_text()).get("display_name") != "Ada":
+            raise Failed("the approved device did not keep Ada's chosen name")
     elif outcome == "refuse":
         click(owner, "Deny ada-phone")
         until("the requester to report a refusal",
