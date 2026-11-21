@@ -281,7 +281,7 @@ impl IssueWork {
         let text = if note.is_empty() {
             None
         } else {
-            self.read_note(&note).await
+            self.read_note(&note)
         };
         Place {
             folder,
@@ -373,7 +373,7 @@ impl IssueWork {
     /// the value a tilolang action answered, so a note's text (`export_markdown`) has no way
     /// back to the server. A session writes the note and works from what it wrote; a later one
     /// is told there is nothing more to read rather than being told wrongly.
-    async fn read_note(&self, _note: &str) -> Option<String> {
+    fn read_note(&self, _note: &str) -> Option<String> {
         tracing::warn!(
             workspace = %self.workspace,
             issue = %self.issue,
