@@ -82,7 +82,7 @@ pub struct Standalone {
     policy_origin: tilo_workspace_service::apps::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
     workspaces: Arc<ServiceWorkspaces>,
-    _workspace_keys: tilo_workspace_service::apps::own_device::KeyService,
+    _workspace_keys: tilo_workspace_service::own_device::KeyService,
     _identity: IdentityBrokerHandle,
     workspace: String,
     actor: String,
@@ -1347,7 +1347,7 @@ impl Standalone {
 /// channel keys for the workspaces it holds.
 struct OpenedWorkspaces {
     workspaces: Arc<ServiceWorkspaces>,
-    keys: tilo_workspace_service::apps::own_device::KeyService,
+    keys: tilo_workspace_service::own_device::KeyService,
     key_sessions: Option<Arc<crate::key_sessions::KeySessions>>,
 }
 
@@ -1395,9 +1395,9 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
     });
     let opened = tilo_rt::app()
         .handle()
-        .block_on(tilo_workspace_service::apps::own_device::open(
+        .block_on(tilo_workspace_service::own_device::open(
             profile.join(HOST_STORE),
-            tilo_workspace_service::apps::own_device::Device {
+            tilo_workspace_service::own_device::Device {
                 cert: &cert,
                 signer: &identity.signer,
             },
@@ -1465,15 +1465,15 @@ pub(in crate::standalone) fn open_member_service(
             Arc::clone(&identity.signer),
             endpoint.clone(),
         );
-        let groups = tilo_workspace_service::apps::own_device::key_groups(
+        let groups = tilo_workspace_service::own_device::key_groups(
             tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
             None,
             None,
         );
         service::block_on_owned(async move {
-            tilo_workspace_service::apps::own_device::open(
+            tilo_workspace_service::own_device::open(
                 store,
-                tilo_workspace_service::apps::own_device::Device {
+                tilo_workspace_service::own_device::Device {
                     cert: &cert,
                     signer: &signer,
                 },

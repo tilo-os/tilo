@@ -13,7 +13,7 @@ use std::{io, path::Path, sync::Arc};
 use ed25519_dalek::SigningKey;
 use key_group::VaultKey;
 use tilo_workspace_keys::NoSealChecks;
-use tilo_workspace_service::apps::own_device::KeyService;
+use tilo_workspace_service::own_device::KeyService;
 
 /// Where the key service keeps its state under the state root.
 const STATE: &str = "groups";

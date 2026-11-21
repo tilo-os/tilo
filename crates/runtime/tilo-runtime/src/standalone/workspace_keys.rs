@@ -16,10 +16,8 @@ use std::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::provisioning::IdentityStorage;
-use tilo_workspace_service::apps::{
-    collab_core::{BrokerChannels, BrokerSealChecks},
-    own_device::KeyService,
-};
+use tilo_workspace_service::apps::collab_core::{BrokerChannels, BrokerSealChecks};
+use tilo_workspace_service::own_device::KeyService;
 
 /// Sealed group state, and where a Linux profile keeps the key that seals
 /// it (owner-only).

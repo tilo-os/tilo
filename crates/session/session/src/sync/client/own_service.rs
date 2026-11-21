@@ -41,7 +41,7 @@ pub(super) async fn open(
     reachability: &Reachability,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
     let handed = Arc::downgrade(engine);
-    let groups = tilo_workspace_service::apps::own_device::key_groups(
+    let groups = tilo_workspace_service::own_device::key_groups(
         engine.keys(),
         Some(Box::new(move |workspace| {
             tilo_desktop_model::WorkspaceId::parse(workspace)
@@ -67,9 +67,9 @@ pub(crate) async fn open_with_groups(
     let root = engine
         .service_root()
         .ok_or("this session keeps no state, so it opens no workspace service")?;
-    let service = tilo_workspace_service::apps::own_device::open(
+    let service = tilo_workspace_service::own_device::open(
         root,
-        tilo_workspace_service::apps::own_device::Device {
+        tilo_workspace_service::own_device::Device {
             cert: &identity.device_cert,
             signer: &identity.signer,
         },

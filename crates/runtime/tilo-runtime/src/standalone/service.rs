@@ -480,14 +480,14 @@ impl ServiceWorkspaces {
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         let identity = DeviceIdentity::kept(cert.clone(), key.clone());
         let endpoint = test_endpoint(&key).await;
-        let service = tilo_workspace_service::apps::own_device::open(
+        let service = tilo_workspace_service::own_device::open(
             directory.path().join("workspace-host"),
-            tilo_workspace_service::apps::own_device::Device {
+            tilo_workspace_service::own_device::Device {
                 cert: &cert,
                 signer: &identity.signer,
             },
             endpoint.clone(),
-            tilo_workspace_service::apps::own_device::key_groups(
+            tilo_workspace_service::own_device::key_groups(
                 tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
                 None,
                 None,

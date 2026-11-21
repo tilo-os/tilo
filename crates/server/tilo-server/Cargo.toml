@@ -284,7 +284,7 @@ tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 # The workspace host every device runs, which the server embeds. Every server build
 # follows the sealed records of the workspaces it governs and opens them with
 # the channels' keys it holds there, whether or not it serves pages.
-tilo-workspace-service = { path = "../tilo-workspace-service", features = ["web"] }
+tilo-workspace-service = { path = "../tilo-workspace-service", features = ["web", "device-keys"] }
 # Waiting for this machine to be reached through a relay before it says it is.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 # Retained-store primitives the workspace store keeps its retained data with.

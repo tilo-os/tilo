@@ -31,6 +31,9 @@ pub mod app_serving;
 /// The apps this device serves, on the devices that have any.
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub mod apps;
+/// How a device opens its own workspace service and the key service beside it.
+#[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
+pub mod own_device;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod attach;
 #[cfg(not(target_arch = "wasm32"))]

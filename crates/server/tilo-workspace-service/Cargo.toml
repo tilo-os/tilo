@@ -20,9 +20,12 @@ agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboratio
 # Pages reach the host: it follows the records its members write sealed and
 # opens them with the channels' keys it holds as a key holder.
 web = []
+# A device's own workspace service and the key service beside it: what every device and
+# the server open, whether or not they serve apps.
+device-keys = ["dep:tilo-workspace-keys"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-workspace-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
+apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.

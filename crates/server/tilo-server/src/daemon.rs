@@ -207,7 +207,7 @@ pub struct Server {
     /// This device's part in the channels of the workspaces it governs:
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
-    _workspace_keys: Option<Arc<tilo_workspace_service::apps::own_device::KeyService>>,
+    _workspace_keys: Option<Arc<tilo_workspace_service::own_device::KeyService>>,
     /// What puts its workspaces' questions about running commands unattended
     /// to people: the server's confirmations, held here so that its workspaces
     /// hold them only weakly and nothing of the server outlives it.
