@@ -14,9 +14,9 @@
 //! draft's sender, its account and address) reads as that record's fields too, each under the
 //! field's name and its own (`sender.email`); one at a document's root (the draft a composer
 //! writes, beside the collection of the others) is besides an item of its own, `of` the field.
-//! A document that is no record of
-//! that layout (one written before it, which carries neither `tilo:version` nor `tilo:record`)
-//! yields nothing: it is left where it is, unread.
+//! A document that is no record of that layout (one written before it, which carries neither
+//! `tilo:version` nor `tilo:record` nor any collection of the layout) yields nothing: it is left
+//! where it is, unread.
 
 use std::collections::BTreeMap;
 
@@ -210,7 +210,23 @@ fn version(doc: &AutoCommit) -> Option<i64> {
         doc.get(&automerge::ROOT, RECORD_KEY),
         Ok(Some((AmValue::Object(ObjType::Map), _)))
     );
-    stated.or_else(|| record.then_some(0))
+    // A record at the layout's first version says none, and an app's own record (its package's
+    // primary document) is not stamped with what names it: it is one by holding a collection of
+    // the layout.
+    stated
+        .or_else(|| record.then_some(0))
+        .or_else(|| holds_collection(doc).then_some(1))
+}
+
+/// Whether `doc` holds, at its root, a collection of the resource layout.
+fn holds_collection(doc: &AutoCommit) -> bool {
+    doc.keys(&automerge::ROOT).any(|key| {
+        !internal(&key)
+            && matches!(
+                doc.get(&automerge::ROOT, key.as_str()),
+                Ok(Some((value, obj))) if collection(doc, &key, &value, &obj, 1).is_some()
+            )
+    })
 }
 
 /// Whether `key` is the platform's own, not the record's: its version, its address, how its
