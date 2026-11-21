@@ -700,7 +700,9 @@ impl ToggleGroup {
                 )
                 .expect("generated segmented action payload is serializable")
             },
-        );
+        )
+        // A value verb is a view: what the app writes from it is decided as that write is.
+        .of_kind(crate::tilo_actions::ActionKind::Read);
         let resource =
             ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control.segmented", id)
                 .with_action(spec.clone());

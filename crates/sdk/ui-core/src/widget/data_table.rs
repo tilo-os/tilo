@@ -1476,6 +1476,8 @@ impl DataTableCore {
                 .expect("generated check payload is serializable")
             },
         )
+        // A value verb is a view: what the app writes from it is decided as that write is.
+        .of_kind(crate::tilo_actions::ActionKind::Read)
         .for_audience(crate::tilo_actions::Audience::Agents);
         let resource =
             ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", "Check a row")
@@ -1700,6 +1702,8 @@ impl DataTableCore {
                 .expect("generated click payload is serializable")
             },
         )
+        // A value verb is a view: what the app writes from it is decided as that write is.
+        .of_kind(crate::tilo_actions::ActionKind::Read)
         .for_audience(crate::tilo_actions::Audience::Agents);
         let resource =
             ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control", "Click a row")

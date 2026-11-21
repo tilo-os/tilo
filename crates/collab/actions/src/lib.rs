@@ -259,9 +259,8 @@ pub use resource::{
     NESTED_RESOURCE_FACET, Noun, PROMPTED_PARAM, ResourceId, ResourcePresentation,
     ResourceSemanticIdentity, ResourceSpec, ResourceType, ResourceViewMountSpec,
     ResourceViewRangeSpec, ResourceViewSpec, RunBy, SEMANTIC_OPERATION_TYPE, Target, action_label,
-    app_label, flatten,
-    in_words, kind_is_a_drawn_control, kind_mirrors_a_control, listed_for_people, listed_row,
-    listed_row_problems, plural, singular, sole_text_argument,
+    app_label, flatten, in_words, kind_is_a_drawn_control, kind_mirrors_a_control,
+    listed_for_people, listed_row, listed_row_problems, plural, singular, sole_text_argument,
 };
 pub use row_status::{RowStatus, apply_row_statuses};
 pub use schema::{

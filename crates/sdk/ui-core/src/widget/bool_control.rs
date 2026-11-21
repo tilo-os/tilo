@@ -192,7 +192,9 @@ impl BoolControl {
                 )
                 .expect("generated value payload is serializable")
             },
-        );
+        )
+        // A value verb is a view: what the app writes from the value is decided as that write is.
+        .of_kind(tilo_actions::ActionKind::Read);
         let resource =
             tilo_actions::ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control.value", id)
                 .with_action(spec.clone());
