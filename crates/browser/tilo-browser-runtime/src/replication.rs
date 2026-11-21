@@ -430,9 +430,11 @@ impl Joined {
         route: &DocumentRoute,
         kept: Option<&[[u8; 32]]>,
     ) -> Result<ResourceReading, String> {
-        let documents = self
-            .documents()
-            .ok_or("this device does not hold the workspace yet")?;
+        // The record was sent before this device held the workspace: it is read once it does,
+        // as one whose keys are on their way is.
+        let Some(documents) = self.documents() else {
+            return Ok(ResourceReading::Pending);
+        };
         match documents.read(&route.cluster_id, &route.app_id, &route.document, kept)? {
             DocumentRead::Whole {
                 revision,
