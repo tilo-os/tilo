@@ -1542,6 +1542,11 @@ impl Workspaces {
                 .ok_or(ActionCallError::UnknownAction)?,
             None => return Err(ActionCallError::UnknownAction),
         };
+        if check == CHOOSES_SERVERS {
+            let mut workspace = governed.lock().await;
+            self.hand_kept_workspace_to(&mut workspace, device.user_public_key)
+                .await;
+        }
         let workspace = {
             let workspace = governed.lock().await;
             // A key its person revoked acts no longer: the workspace's record

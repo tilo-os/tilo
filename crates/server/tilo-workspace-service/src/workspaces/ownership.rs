@@ -10,9 +10,13 @@
 //!
 //! A workspace an earlier build kept for a person while this host owned it
 //! is handed to that person when the host next starts, or, handed over by
-//! another holder, once this copy holds what that holder holds
-//! ([`Workspaces::hand_kept_workspace_over`]): every change made before is
-//! then decided under the governance it was made in.
+//! another holder, when the person first chooses its servers
+//! ([`Workspaces::hand_kept_workspace_to`]). Taking ownership from the host's
+//! person keeps of their writes only what this copy holds then
+//! ([`tilo_peer_state::standing`]); a copy only just handed the workspace
+//! holds part of it, and the rest of the holder's history would be decided as
+//! written after. By the time the person takes the servers in hand, the
+//! holder that handed it over has handed everything over.
 
 use tilo_action_policy::GrantId;
 
@@ -57,31 +61,33 @@ impl Workspaces {
         self.settle(governed).await
     }
 
-    /// [`Self::hand_kept_workspace_over`] for the workspace held here as
-    /// `workspace`, once this copy holds what another holder of it holds.
-    pub(super) async fn hand_kept_workspace_over_named(&self, workspace: &str) {
-        let Ok(governed) = self.workspace(workspace).await else {
+    /// [`Self::hand_kept_workspace_over`] when `person` is the one `governed`
+    /// is kept for: a person choosing the servers of a workspace an earlier
+    /// build kept for them does what only its owner does.
+    pub(super) async fn hand_kept_workspace_to(
+        &self,
+        governed: &mut GovernedWorkspace,
+        person: [u8; 32],
+    ) {
+        if self.kept_person(governed).ok().flatten() != Some(person) {
             return;
-        };
-        let mut governed = governed.lock().await;
-        if let Err(error) = self.hand_kept_workspace_over(&mut governed).await {
-            tracing::error!(%workspace, %error, "a workspace this host keeps for a person was not handed to them");
+        }
+        if let Err(error) = self.hand_kept_workspace_over(governed).await {
+            tracing::error!(workspace = %governed.workspace(), %error, "a workspace this host keeps for a person was not handed to them");
         }
     }
 
-    /// Hand `governed` to the person it is kept for, when this host owns it:
-    /// the person this host records it as the own workspace of, else the one
-    /// an earlier build's grant named. An earlier build could name several;
-    /// each other one it named stays an administrator, as that grant let them
-    /// govern. Those grants go first, while this host may still take them
-    /// back, and the workspace changes owner after.
-    pub(super) async fn hand_kept_workspace_over(
+    /// The grants an earlier build wrote to name the people `governed` was
+    /// kept for, by id, and the person it is kept for: the one this host
+    /// records it as the own workspace of, else the first one named. `None`
+    /// when this host does not own it, or keeps it for no one.
+    fn kept(
         &self,
-        governed: &mut GovernedWorkspace,
-    ) -> Result<(), String> {
+        governed: &GovernedWorkspace,
+    ) -> Result<Option<(Vec<(GrantId, [u8; 32])>, [u8; 32])>, String> {
         let host = self.inner.host.cert.user_public_key;
         if governed.peer().owner() != host {
-            return Ok(());
+            return Ok(None);
         }
         let policy = governed.peer().governance().governed_policy()?;
         let mut kept: Vec<(GrantId, [u8; 32])> = policy
@@ -98,10 +104,28 @@ impl Workspaces {
         let own = self
             .own()
             .and_then(|own| own.owner_of(governed.workspace()));
-        let Some(person) = own
+        Ok(own
             .or_else(|| kept.first().map(|(_, person)| *person))
             .filter(|person| *person != host)
-        else {
+            .map(|person| (kept, person)))
+    }
+
+    /// The person `governed` is kept for ([`Self::kept`]).
+    fn kept_person(&self, governed: &GovernedWorkspace) -> Result<Option<[u8; 32]>, String> {
+        Ok(self.kept(governed)?.map(|(_, person)| person))
+    }
+
+    /// Hand `governed` to the person it is kept for, when this host owns it:
+    /// the person this host records it as the own workspace of, else the one
+    /// an earlier build's grant named. An earlier build could name several;
+    /// each other one it named stays an administrator, as that grant let them
+    /// govern. Those grants go first, while this host may still take them
+    /// back, and the workspace changes owner after.
+    pub(super) async fn hand_kept_workspace_over(
+        &self,
+        governed: &mut GovernedWorkspace,
+    ) -> Result<(), String> {
+        let Some((kept, person)) = self.kept(governed)? else {
             return Ok(());
         };
         if !kept.is_empty() {

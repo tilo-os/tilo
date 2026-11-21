@@ -549,11 +549,6 @@ async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String
             .any(|(device, link)| *link == Link::Current && before.get(device) != Some(link))
         {
             drop(this.inner.reached.send(workspace.clone()));
-            // Holding what that holder holds, this copy has taken in every
-            // change made before: a workspace an earlier build kept for a
-            // person is handed to them now, and no change the earlier owner
-            // made is decided under the governance after.
-            this.hand_kept_workspace_over_named(&workspace).await;
         }
         before = now;
         let held = held_copy(&links);

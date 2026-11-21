@@ -319,9 +319,9 @@ async fn govern(
 /// A workspace never stays stuck on a server that is gone. Two servers of an
 /// operator keep a workspace for Alice: the first made it as an earlier build
 /// did, owning it itself under a grant that names her the person it keeps it
-/// for, and handed it to the second, which hands it to her as its owner. The
-/// first then stops for good. Alice, through a key of hers that reached the
-/// workspace on the second server, lists its servers there and takes the
+/// for, and handed it to the second. The first then stops for good. Alice,
+/// through a key of hers that reached the workspace on the second server,
+/// lists its servers there, which makes the workspace hers, and takes the
 /// stopped one out; the second then keeps the workspace alone and makes its
 /// base.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -375,20 +375,6 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     )
     .await
     .unwrap();
-    within(
-        "the server it was handed to hands it to the person it is kept for",
-        async {
-            while !remains
-                .host
-                .workspaces()
-                .is_owner(&workspace.workspace, alice.user_pk)
-                .await
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        },
-    )
-    .await;
     let workspaces = remains.host.workspaces();
     // The key joins as an API server's key of the person does, while both
     // servers keep the workspace: the server it reaches invites it and it
@@ -454,6 +440,10 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     .await
     .expect("the owner's key lists the workspace's servers");
     assert!(listed.to_string().contains(&old_key), "{listed}");
+    assert!(
+        workspaces.is_owner(&workspace.workspace, alice.user_pk).await,
+        "choosing its servers, the person it is kept for owns it"
+    );
     let removed = govern(
         &client,
         &main,

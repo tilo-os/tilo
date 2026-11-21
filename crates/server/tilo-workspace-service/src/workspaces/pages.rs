@@ -599,7 +599,9 @@ impl Workspaces {
         // workspace's own `server.*` actions decide it.
         let chooses = {
             let governed = self.workspace(&workspace).await?;
-            let governed = governed.lock().await;
+            let mut governed = governed.lock().await;
+            self.hand_kept_workspace_to(&mut governed, device.user_public_key)
+                .await;
             Self::chooses_servers(&governed, device)
         };
         if !chooses {

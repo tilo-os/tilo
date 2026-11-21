@@ -16,11 +16,12 @@
 #      governance action `server.add`, with this commit's server's site);
 #   4. this commit's server holds every record and member, and a write on the earlier server
 #      reaches it. The earlier build kept the workspace for its person while its server owned
-#      it; this commit's server hands it to that person, who is its owner from then on;
+#      it;
 #   5. the earlier stack stops, its state kept, as a server taken off the move does; the owner
 #      has this commit's server let it go (`server.remove`, naming it by its device key, since
 #      its site answers no more), and the workspace is still served, takes writes, and its
-#      owner's tilo reads through this commit's server what the earlier one was written. Nothing
+#      owner's tilo reads through this commit's server what the earlier one was written.
+#      Choosing its servers, the person it was kept for is its owner from then on. Nothing
 #      waits on the earlier server: the owner's key decides where the workspace is kept, and the
 #      next of its holders makes its base once the earlier one is gone.
 #
@@ -229,22 +230,30 @@ else
 fi
 data counts "$workspace" >"$steps/to-counts.json" 2>&1 || true
 say "this commit's server holds: $(cat "$steps/to-counts.json")"
-python3 -I - "$steps/from-counts.json" "$steps/to-counts.json" >"$steps/members.err" <<'PY' \
-  && pass '4c. this commit'\''s server holds every member at their role' \
-  || fail '4c. this commit'\''s server holds every member at their role' "$(cat "$steps/members.err")"
+# The members at their roles, as `before` names them, on this commit's server as `after` does:
+# the earlier build names the person it keeps the workspace for an editor beside its server, the
+# owner, and this commit names them so until the person chooses the workspace's servers, its
+# owner from then on. `owned` asks for the second.
+members() {
+  python3 -I - "$@" <<'PY'
 import json, sys
-before, after = (json.load(open(path)) for path in sys.argv[1:])
-# The earlier build names the person it keeps the workspace for an editor beside its server, the
-# owner; this commit names them its owner.
-wanted = dict(before.get("members") or {})
-if isinstance(before.get("members"), dict) and "owner" not in wanted and wanted.get("editor"):
-    wanted["editor"] -= 1
-    wanted["owner"] = 1
-    wanted = {role: count for role, count in wanted.items() if count}
-if wanted != after.get("members"):
-    print(f"members before: {before.get('members')}, wanted: {wanted}, after: {after.get('members')}")
+before, after = (json.load(open(path)) for path in sys.argv[1:3])
+owned = sys.argv[3:] == ["owned"]
+had = dict(before.get("members") or {})
+handed = dict(had)
+if isinstance(before.get("members"), dict) and "owner" not in handed and handed.get("editor"):
+    handed["editor"] -= 1
+    handed["owner"] = 1
+    handed = {role: count for role, count in handed.items() if count}
+wanted = [handed] if owned else [had, handed]
+if after.get("members") not in wanted:
+    print(f"members before: {had}, wanted: {' or '.join(map(str, wanted))}, after: {after.get('members')}")
     sys.exit(1)
 PY
+}
+members "$steps/from-counts.json" "$steps/to-counts.json" >"$steps/members.err" \
+  && pass '4c. this commit'\''s server holds every member at their role' \
+  || fail '4c. this commit'\''s server holds every member at their role' "$(cat "$steps/members.err")"
 api from
 data write "$workspace" earlier >"$steps/written-from.json" 2>"$steps/write-from.err" \
   || fail '4d. the earlier server takes a write' "$(cat "$steps/write-from.err")"
@@ -294,6 +303,10 @@ else
 fi
 data counts "$workspace" >"$steps/after-counts.json" 2>&1 || true
 say "this commit's server holds, alone: $(cat "$steps/after-counts.json")"
+members "$steps/from-counts.json" "$steps/after-counts.json" owned >"$steps/owned.err" \
+  && pass '5d. the person the earlier server kept the workspace for owns it, having chosen its servers' \
+  || fail '5d. the person the earlier server kept the workspace for owns it, having chosen its servers' \
+    "$(cat "$steps/owned.err")"
 # The owner's own tilo, against this commit's server alone, reads a message the earlier one was
 # written before the hand-over.
 earliest=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat/Messages"][0])' "$steps/written.json")
