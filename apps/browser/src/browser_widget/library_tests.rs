@@ -17,7 +17,7 @@ fn history_privacy_effects_are_local_truthful_and_recoverable() {
     {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut doc, root) = synced(&mut w);
+        synced(&mut w);
         w.history
             .document_at("https://private.example", "Private", 1);
         let resources = [w.published()];
@@ -91,7 +91,7 @@ fn history_privacy_effects_are_local_truthful_and_recoverable() {
 
     {
         let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-        let (mut doc, root) = synced(&mut w);
+        synced(&mut w);
         w.history
             .document_at("https://sensitive.example", "Sensitive", 1);
         let resources = [w.published()];
@@ -168,7 +168,7 @@ fn bookmark_rows_are_reversible_uniquely_addressed_actions() {
             "https://legacy.example/",
         ];
         w.present_state(&bookmarked(&urls.map(|url| (url, url))));
-        let (mut doc, root) = synced(&mut w);
+        let (doc, root) = synced(&mut w);
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
         w.build_layout(&mut tree, &Theme::dark(), &mut node_map);
@@ -447,7 +447,7 @@ fn private_discovery_failure_filter_worker_does_not_recreate_root_child() {
         !root.exists(),
         "Chromium discovery failure must remove the allocated root"
     );
-    let mut document = AutoCommit::new();
+    let document = AutoCommit::new();
     widget.sync(&document, &automerge::ROOT);
     tilo_test_env::wait_until("the legacy filter worker to finish", || done.exists());
     drop(widget);

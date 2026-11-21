@@ -68,11 +68,6 @@ mod holds_tests;
 mod http_fallback;
 mod library;
 #[cfg(test)]
-#[allow(
-    unused_mut,
-    unused_variables,
-    reason = "legacy layout helpers retain state handles for parity with live setup"
-)]
 mod library_tests;
 mod load_failure;
 #[cfg(test)]
@@ -100,11 +95,6 @@ mod sign_in;
 #[cfg(test)]
 mod sign_in_tests;
 #[cfg(test)]
-#[allow(
-    unused_mut,
-    unused_variables,
-    reason = "legacy layout helpers retain state handles for parity with live setup"
-)]
 mod tests;
 mod toolbar;
 mod window_bar;

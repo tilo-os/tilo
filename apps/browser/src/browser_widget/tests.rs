@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tilo_webview::WebViewEngine;
 
 pub(super) fn synced(widget: &mut BrowserWidget) -> (AutoCommit, ObjId) {
-    let mut state = AutoCommit::new();
+    let state = AutoCommit::new();
     let root = automerge::ROOT;
     widget.sync(&state, &root);
     (state, root)
@@ -137,7 +137,7 @@ pub(super) fn layout_keeping_tree(
     height: f32,
     theme: &Theme,
 ) -> (TaffyTree<()>, NodeId) {
-    let mut state = AutoCommit::new();
+    let state = AutoCommit::new();
     let root = automerge::ROOT;
     let mut text = TextRenderer::new();
     let mut tree = TaffyTree::<()>::new();
@@ -379,7 +379,7 @@ fn engine_navigation_drives_address_bar_and_history_controls() {
         use ui::gesture::NavDirection;
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
+        let (state, root) = synced(&mut w);
         // Build the composed tree so the gesture forwards down to the
         // WebView — this exercises the real trait-forwarding path
         // (BrowserWidget → Column → WebView), not a shortcut.
@@ -403,14 +403,14 @@ fn engine_navigation_drives_address_bar_and_history_controls() {
     {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine, true);
-        let (state, root) = synced(&mut w);
+        synced(&mut w);
         assert_eq!(w.address.with(Clone::clone), DEFAULT_URL);
     }
 
     {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
+        let (state, root) = synced(&mut w);
 
         engine.send(WebViewCommand::Navigate("https://example.test".into()));
         w.sync(&state, &root);
@@ -422,7 +422,7 @@ fn engine_navigation_drives_address_bar_and_history_controls() {
     {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
+        let (state, root) = synced(&mut w);
 
         engine.send(WebViewCommand::Navigate("https://a.test".into()));
         engine.send(WebViewCommand::Navigate("https://b.test".into()));
@@ -435,7 +435,7 @@ fn engine_navigation_drives_address_bar_and_history_controls() {
     {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
+        synced(&mut w);
 
         engine.send(WebViewCommand::Navigate("https://a.test".into()));
         engine.send(WebViewCommand::Navigate("https://b.test".into()));
@@ -489,7 +489,7 @@ fn visits_are_the_persons_history_and_workspace_exit_clears_it() {
     let engine = TestEngine::new();
     let mut w = BrowserWidget::with_engine(engine.clone(), true);
     w.attach_history(record.clone());
-    let (mut doc, root) = synced(&mut w);
+    let (doc, root) = synced(&mut w);
     engine.send(WebViewCommand::Navigate("https://visited.test/".into()));
     w.sync(&doc, &root);
     assert!(
@@ -964,7 +964,7 @@ fn address_validation_and_suggestions_dispatch_only_web_navigation() {
     {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut state, root) = synced(&mut w);
+        synced(&mut w);
 
         // Simulate events from an earlier navigation arriving after the user
         // entered a prohibited address. The error must remain actionable,
@@ -1141,7 +1141,7 @@ fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
     {
         let mut widget = BrowserWidget::new_headless();
         widget.debug_set_viewport_width(390);
-        let mut state = AutoCommit::new();
+        let state = AutoCommit::new();
         let root = automerge::ROOT;
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -1242,7 +1242,7 @@ fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
     {
         let mut widget = BrowserWidget::new_headless();
         widget.debug_show_loading();
-        let mut state = AutoCommit::new();
+        let state = AutoCommit::new();
         let root = automerge::ROOT;
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -1792,7 +1792,7 @@ fn pip_floats_the_video_or_falls_back_to_shell_selection() {
                 label: "The active film".into(),
             }));
             let mut w = BrowserWidget::with_engine(engine.clone(), true);
-            let (mut state, root) = synced(&mut w);
+            let (state, root) = synced(&mut w);
             w.rect = Rect::new(100.0, 50.0, 900.0, 650.0);
             *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
 
@@ -1876,7 +1876,7 @@ fn pip_floats_the_video_or_falls_back_to_shell_selection() {
         {
             let engine = TestEngine::new();
             let mut w = BrowserWidget::with_engine(engine, true);
-            let (mut state, root) = synced(&mut w);
+            let (state, root) = synced(&mut w);
 
             w.begin_pip_probe();
             w.sync(&state, &root);
@@ -1980,7 +1980,7 @@ fn pip_floats_the_video_or_falls_back_to_shell_selection() {
 
         {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            let (mut state, root) = synced(&mut w);
+            synced(&mut w);
             w.active_pip = true;
             w.active_pip_element = Some(MediaElementInfo {
                 element_id: "media:gone".into(),
@@ -2012,7 +2012,7 @@ fn pip_floats_the_video_or_falls_back_to_shell_selection() {
                 label: "Host video".into(),
             }));
             let mut w = BrowserWidget::with_engine(engine, true);
-            let (mut doc, root) = synced(&mut w);
+            let (doc, root) = synced(&mut w);
             w.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
             let resources = [w.published()];
             let page = resources[0]
@@ -2038,14 +2038,14 @@ fn pip_floats_the_video_or_falls_back_to_shell_selection() {
             );
             assert!(w.poll_invocation(invocation).is_none());
             w.sync(&doc, &root);
-            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. }) =
                 w.poll_invocation(invocation)
             else {
                 panic!("media acceptance must terminally succeed the admitted invocation");
             };
 
             let mut unavailable = BrowserWidget::with_engine(TestEngine::new(), true);
-            let (mut doc, root) = synced(&mut unavailable);
+            let (doc, root) = synced(&mut unavailable);
             let invocation = ui::tilo_actions::InvocationId::new();
             assert!(matches!(
                 unavailable
@@ -2153,7 +2153,7 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
     {
         let engine = TestEngine::new();
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
-        let (mut doc, root) = synced(&mut w);
+        let (doc, root) = synced(&mut w);
         let resources = [w.published()];
         assert_eq!(resources[0].id.0, crate::resource::Browser::KIND);
         for expected in [
