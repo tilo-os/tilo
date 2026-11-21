@@ -1731,6 +1731,7 @@ impl Task {
                 // call on one of them while this device holds no channel state of its own.
                 self.route_keys.insert(route.clone(), RouteKeys::Handed);
                 self.new_keys.push(route);
+                self.report_new_keys();
                 true
             }
             Command::Client(Cmd::OpenRoute(route)) => {
@@ -2261,6 +2262,8 @@ impl Task {
         if matches!(self.route_keys.get(route), Some(RouteKeys::Waiting)) && !self.read_keys(route)
         {
             self.pump_channels(false);
+        } else {
+            self.report_new_keys();
         }
     }
 
@@ -2278,6 +2281,7 @@ impl Task {
         if self.workspace_keys.generation() != self.keys_generation {
             self.read_all_keys();
         }
+        self.report_new_keys();
     }
 
     fn read_all_keys(&mut self) {
@@ -2311,6 +2315,22 @@ impl Task {
             self.new_keys.push(route.clone());
         }
         true
+    }
+
+    /// Say keys as they are taken up, ahead of the records they open, which
+    /// land only as the session settles its channels.
+    fn report_new_keys(&self) {
+        if !self.new_keys.is_empty() {
+            self.report_keys();
+        }
+    }
+
+    /// Say the key state ([`Self::describe_keys`]) when it changed.
+    fn report_keys(&self) {
+        let key_state = self.describe_keys();
+        if self.reports.read(|status| status.key_state != key_state) {
+            self.reports.change(|status| status.key_state = key_state);
+        }
     }
 
     /// Store channel state and held edits when either changed, so a
@@ -2367,10 +2387,7 @@ impl Task {
             }
         }
         self.persist_keys(false);
-        let key_state = self.describe_keys();
-        if self.reports.read(|status| status.key_state != key_state) {
-            self.reports.change(|status| status.key_state = key_state);
-        }
+        self.report_keys();
         delivered
     }
 
