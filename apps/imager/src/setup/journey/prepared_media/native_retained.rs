@@ -238,7 +238,13 @@ fn full_prepare_shared_files_via_owned_gpt_and_actual_root_helper() {
 
 // The owned-GPT actor runs only in the qualification build; keep it compiled
 // (and its imports used) for the build that runs it.
-#[cfg_attr(not(feature = "native-capture-qualification"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "native-capture-qualification"),
+    allow(
+        dead_code,
+        reason = "the owned-GPT actor runs only in the qualification build"
+    )
+)]
 fn run_owned_actor(selector: &str) {
     use std::os::unix::ffi::OsStrExt;
     assert_eq!(rustix::process::getuid().as_raw(), 0);
