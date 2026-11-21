@@ -203,6 +203,16 @@ impl EnvironmentTerminals {
     }
 }
 
+/// A host's terminals going away hang up every session they keep: nobody could attach to
+/// one again, so its shell and the program on its terminal end now.
+impl Drop for EnvironmentTerminals {
+    fn drop(&mut self) {
+        for kept in lock(&self.kept).drain().map(|(_, kept)| kept) {
+            kept.hang_up(None);
+        }
+    }
+}
+
 impl TerminalStream {
     /// The session's id, for [`EnvironmentTerminals::attach`]: 32 hex characters.
     #[must_use]
@@ -289,18 +299,8 @@ impl Drop for TerminalStream {
             .name("workspace-terminal-kept".into())
             .spawn(move || {
                 std::thread::sleep(left_after);
-                let mut state = lock(&kept.state);
-                if state.attached != 0 || state.streams != stream {
-                    return;
-                }
-                state.hung_up = true;
-                let ended = state.ended;
-                drop(state);
-                kept.changed.notify_all();
-                // Closing the master hangs the terminal up; the pump forgets the session
-                // once its shell ended.
-                lock(&kept.master).take();
-                if ended {
+                // The pump forgets the session once its shell ended.
+                if kept.hang_up(Some(stream)) == Some(true) {
                     forget(&table, &kept);
                 }
             });
@@ -308,6 +308,22 @@ impl Drop for TerminalStream {
 }
 
 impl Kept {
+    /// Close the terminal's master, which hangs it up, unless a stream attached since
+    /// `left_by` (the last stream) left. Answers whether it hung up, and whether the shell had
+    /// already ended.
+    fn hang_up(&self, left_by: Option<u64>) -> Option<bool> {
+        let mut state = lock(&self.state);
+        if left_by.is_some_and(|stream| state.attached != 0 || state.streams != stream) {
+            return None;
+        }
+        state.hung_up = true;
+        let ended = state.ended;
+        drop(state);
+        self.changed.notify_all();
+        lock(&self.master).take();
+        Some(ended)
+    }
+
     fn live(&self) -> bool {
         let state = lock(&self.state);
         !state.hung_up && !state.over

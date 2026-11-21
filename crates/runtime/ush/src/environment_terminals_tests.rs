@@ -203,9 +203,11 @@ tilo_test_env::scenario! {
         assert!(id.bytes().all(|b| b.is_ascii_hexdigit()));
         first.type_at_prompt("mkdir sub; cd sub; echo mo\"\"ved\r");
         first.until("moved");
+        // The next prompt is drawn to this stream, so the one coming back types at it.
+        first.until(&format!("\x1b]133;A;k={KEY}"));
         drop(first);
         let mut back = screen(host.terminals.attach(&id).unwrap());
-        back.type_at_prompt("echo \"at:$PWD\"\r");
+        back.type_now("echo \"at:$PWD\"\r");
         let here = host.files().join("sub");
         back.until(&format!("at:{}", here.display()));
     }
