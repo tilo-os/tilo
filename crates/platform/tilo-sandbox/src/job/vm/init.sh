@@ -116,6 +116,12 @@ mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
 mount -t tmpfs -o mode=1777 shm /dev/shm
 mount -t cgroup2 cgroup2 /sys/fs/cgroup
 [ -e /dev/fd ] || ln -s /proc/self/fd /dev/fd
+# Memory is promised as it is asked for and runs out where it is used. Under the kernel's
+# heuristic, a reservation past the guest's RAM failed outright: a nested QEMU asking for as much
+# as the guest has exited with ENOMEM and nothing was killed, so the host never learnt the step
+# needed more. Run out of where it is used, the guest's kernel kills for it, and the host reads that
+# as the step's memory being too small and runs it again with more.
+echo 1 >/proc/sys/vm/overcommit_memory
 S=$T/scratch
 # What tools write in bulk lands on the scratch disk itself, not in the overlay: podman's
 # overlay storage can't sit on overlayfs.
