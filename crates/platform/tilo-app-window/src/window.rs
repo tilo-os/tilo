@@ -1146,10 +1146,18 @@ impl AppWindow {
         // that action already: the state repeats no control standing over it.
         let folded = composed.props.contains_key(NOTHING_LISTED);
         if !folded {
-            crate::shell::offer_primary(&mut composed, &["content"]);
+            crate::shell::offer_primary(&mut composed, &["content"], None);
         }
         if self.standing == SidebarPlacement::Screen {
-            crate::shell::offer_primary(&mut composed, &["sidebar", "overview"]);
+            // The control is the state's own here, so the line under it names what it starts;
+            // where the columns stand beside each other the bar's control speaks for itself, and
+            // the state keeps its words alone.
+            let message = crate::i18n::t("tilolang-empty-start-here");
+            crate::shell::offer_primary(
+                &mut composed,
+                &["sidebar", "overview"],
+                Some(message.as_str()),
+            );
         }
         // Whether the body has anything in it: a body that holds only an empty state says nothing
         // is chosen or open, and a one-column window has nothing to show there. The column that

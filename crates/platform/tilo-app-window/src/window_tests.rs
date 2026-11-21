@@ -1516,6 +1516,24 @@ fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar
             "the window opens on the sidebar, which chooses, not on a body with nothing in it"
         );
     }
+    // The list's state carries the action, so the line naming what the control starts stands
+    // under its words, where the state does.
+    {
+        let state = state_in(
+            drawn_window(&mut harness).composed().expect("the window"),
+            "sidebar",
+        );
+        assert_eq!(
+            state.props.get("action"),
+            Some(&Value::text("New note")),
+            "the sidebar's state offers the primary action"
+        );
+        assert_eq!(
+            state.props.get("message"),
+            Some(&Value::text(crate::i18n::t("tilolang-empty-start-here"))),
+            "the line under it says what that control starts"
+        );
+    }
     // The state says what to do: it offers the app's primary action, and pressing it runs it.
     let action = named_node(&harness, "New note");
     harness
@@ -1557,9 +1575,19 @@ fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar
         NavPane::Content,
         "a body that shows something stays in front of the sidebar"
     );
-    // A width that stands both columns beside each other needs no choice, and makes none.
+}
+
+/// A width that stands both columns beside each other needs no choice, and makes none: each
+/// state keeps its words, and only the body's offers the bar's action, which has no control in
+/// the sidebar's row.
+#[test]
+fn a_docked_window_leaves_its_empty_states_their_words_alone() {
     let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
     let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let mut nothing = UiNode::empty(&kind("EmptyState"), "shell#unopened");
+    nothing
+        .props
+        .insert("title".to_owned(), Value::text("Nothing open"));
     send(&mut app, &chooser_page(vec![nothing]));
     window.receive();
     let mut harness =
@@ -1576,6 +1604,34 @@ fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar
         SidebarPlacement::Docked,
         "both columns stand beside each other, so no screen is chosen"
     );
+    // The bar's control stands beside the list, so the list's state keeps its words alone: a
+    // "start one here" there would point at nothing. The body's state, with no bar control of
+    // its own row, offers the action.
+    let composed = drawn_window(&mut harness).composed().expect("the window");
+    let sidebar = state_in(composed, "sidebar");
+    assert!(
+        !sidebar.props.contains_key("action") && !sidebar.props.contains_key("message"),
+        "the docked sidebar's state names no action and points at none: {sidebar:?}"
+    );
+    assert_eq!(
+        state_in(composed, "content").props.get("action"),
+        Some(&Value::text("New note")),
+        "the body's state offers the primary action"
+    );
+}
+
+/// The empty state `column` holds in `tree`, where it holds one.
+fn state_in(tree: &UiNode, column: &str) -> UiNode {
+    fn find(node: &UiNode) -> Option<UiNode> {
+        if node.kind == kind("EmptyState") {
+            return Some(node.clone());
+        }
+        node.children.iter().find_map(find)
+    }
+    crate::shell::part_children(tree, column)
+        .iter()
+        .find_map(find)
+        .unwrap_or_else(|| panic!("{column} holds an empty state: {tree:?}"))
 }
 
 fn overview_list(window: &mut AppWindow) -> &mut ui::widget::DescribedList {

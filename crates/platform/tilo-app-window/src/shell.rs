@@ -369,8 +369,8 @@ fn primary_action(shell: &UiNode) -> Option<(String, Event)> {
 /// nothing is there yet is also where the first one is made. A state that names its own action
 /// keeps it. At a size that stands the columns beside the body the window offers the action in
 /// its bar too; a one-column window's front column has no bar control of the body's, so its
-/// state is where the way to fill it stands.
-pub fn offer_primary(shell: &mut UiNode, columns: &[&str]) {
+/// state is where the way to fill it stands, with `message` naming it under the state's words.
+pub fn offer_primary(shell: &mut UiNode, columns: &[&str], message: Option<&str>) {
     let Some((label, press)) = primary_action(shell) else {
         return;
     };
@@ -385,20 +385,26 @@ pub fn offer_primary(shell: &mut UiNode, columns: &[&str]) {
             continue;
         };
         for node in &mut part.children {
-            offer_state(node, &label, &press);
+            offer_state(node, &label, &press, message);
         }
     }
 }
 
-/// Put `label` and `press` in the empty state `node` holds, where it names no action yet.
-fn offer_state(node: &mut UiNode, label: &str, press: &Event) {
+/// Put `label`, `press` and `message` in the empty state `node` holds, where it names no action
+/// yet: the line under the state's words says what the control beside it starts.
+fn offer_state(node: &mut UiNode, label: &str, press: &Event, message: Option<&str>) {
     if node.kind == kind("EmptyState") && !node.props.contains_key("action") {
         node.props.insert("action".to_owned(), Value::text(label));
+        if let Some(message) = message
+            && !node.props.contains_key("message")
+        {
+            node.props.insert("message".to_owned(), Value::text(message));
+        }
         node.events.insert("act".to_owned(), press.clone());
         return;
     }
     for child in &mut node.children {
-        offer_state(child, label, press);
+        offer_state(child, label, press, message);
     }
 }
 
