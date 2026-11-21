@@ -5405,8 +5405,10 @@ default = false
 [[check]]
 name = "os-assets-tools"
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
-run = "bash os/dev/cache-github-assets.sh doubletake-ae06722.tar.gz joycond-0df025a.tar.gz xwayland-satellite-779151f.tar.gz bootc-fa0d3f9.tar.gz composefs-rs-f720d6c.tar.gz"
-outputs = ["os/external-assets/cache/doubletake-ae06722.tar.gz", "os/external-assets/cache/joycond-0df025a.tar.gz", "os/external-assets/cache/xwayland-satellite-779151f.tar.gz", "os/external-assets/cache/bootc-fa0d3f9.tar.gz", "os/external-assets/cache/composefs-rs-f720d6c.tar.gz"]
+# The AirPlay sender also builds with the Go modules it pins, which its builder picks from the
+# manifest by their proxy.golang.org source.
+run = "bash os/dev/cache-github-assets.sh doubletake-ae06722.tar.gz joycond-0df025a.tar.gz xwayland-satellite-779151f.tar.gz bootc-fa0d3f9.tar.gz composefs-rs-f720d6c.tar.gz $(awk -F '\\t' '$1 !~ /^#/ && $3 ~ /^https:[/][/]proxy[.]golang[.]org[/]/ { print $2 }' os/external-assets/github-assets.tsv)"
+outputs = ["os/external-assets/cache/doubletake-ae06722.tar.gz", "os/external-assets/cache/joycond-0df025a.tar.gz", "os/external-assets/cache/xwayland-satellite-779151f.tar.gz", "os/external-assets/cache/bootc-fa0d3f9.tar.gz", "os/external-assets/cache/composefs-rs-f720d6c.tar.gz", "os/external-assets/cache/gomod-*"]
 default = false
 
 [[check]]
