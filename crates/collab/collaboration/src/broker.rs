@@ -2769,28 +2769,46 @@ impl CollaborationManager {
     /// on the calling thread for the broker's answer, for as long as it
     /// takes, and fails with the broker's reason or the connection's end. A
     /// manager with nothing to join is returned as it is.
-    pub fn finish_join(mut self) -> Result<Self, runtime_portal::NotAvailable> {
+    pub fn finish_join(self) -> Result<Self, runtime_portal::NotAvailable> {
+        self.finish_join_if(true).unwrap_or_else(Ok)
+    }
+
+    /// [`Self::finish_join`]; without `waiting`, the manager back (`Err`) until the broker answers.
+    pub fn finish_join_if(
+        mut self,
+        waiting: bool,
+    ) -> Result<Result<Self, runtime_portal::NotAvailable>, Self> {
         if !self.awaiting_primary {
-            return match &self.backend {
+            return Ok(match &self.backend {
                 super::Backend::Disabled(reason) if self.sync_expected => {
                     Err(runtime_portal::NotAvailable::ConnectionFailed(
                         std::io::Error::new(std::io::ErrorKind::BrokenPipe, reason.clone()),
                     ))
                 }
                 _ => Ok(self),
-            };
+            });
         }
         let super::Backend::Transport(transport) = &mut self.backend else {
-            return Ok(self);
+            return Ok(Ok(self));
         };
-        let answer = transport.wait_primary_route_result();
-        primary_route_outcome(transport.as_ref(), &mut self.primary_route, answer)?;
+        let answer = if waiting {
+            transport.wait_primary_route_result()
+        } else {
+            match transport.take_primary_route_result() {
+                None => return Err(self),
+                answer => answer,
+            }
+        };
+        let outcome = primary_route_outcome(transport.as_ref(), &mut self.primary_route, answer);
+        if let Err(refused) = outcome {
+            return Ok(Err(refused));
+        }
         self.awaiting_primary = false;
         tilo_startup_metrics::startup_mark("collab-primary-ready");
         // As for a manager connected before it is handed over: its owner's
         // first pump does the connect-time work on the joined route.
         self.reported_state = None;
-        Ok(self)
+        Ok(Ok(self))
     }
 
     fn for_route_from(

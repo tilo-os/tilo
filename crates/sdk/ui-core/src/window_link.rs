@@ -98,7 +98,7 @@ pub(crate) fn open_window(
                 // Told on the join's thread, or at once when it is already over; either
                 // way the window comes back to this thread only after it is in `back`,
                 // below.
-                arriving.when_done({
+                arriving.join.when_done({
                     let back = back.clone();
                     move || {
                         if !reopen(back) {

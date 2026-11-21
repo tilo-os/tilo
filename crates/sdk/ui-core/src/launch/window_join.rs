@@ -12,16 +12,13 @@ use crate::App;
 /// A launch whose record is not on this device yet: the workspace's join, waited for off the window's
 /// thread, and the wake scope the app built after it takes, which the join's manager wakes.
 pub(crate) struct Arriving {
-    join: crate::collaboration::NativeJoin,
+    pub(crate) join: crate::collaboration::NativeJoin,
     scope: crate::wake::WakeScope,
 }
 
 impl std::fmt::Debug for Arriving {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Arriving")
-            .field("join", &self.join)
-            .finish_non_exhaustive()
+        formatter.debug_struct("Arriving").finish_non_exhaustive()
     }
 }
 
@@ -33,11 +30,6 @@ impl Arriving {
     ) -> Result<Self, LaunchError> {
         let join = crate::collaboration::NativeJoin::start(manager)?;
         Ok(Self { join, scope })
-    }
-
-    /// Call `told` once the join is over (see [`crate::collaboration::NativeJoin::when_done`]).
-    pub(crate) fn when_done(&self, told: impl FnOnce() + Send + 'static) {
-        self.join.when_done(told);
     }
 }
 
@@ -95,7 +87,7 @@ pub(super) fn dispatch_live(
     match dispatch_local_first(spec, args) {
         LocalFirst::Built(dispatched) => Some(dispatched),
         LocalFirst::Arriving(arriving) => {
-            let arrived = wait_in_window(spec, arriving, dress)?;
+            let arrived = wait_in_window(arriving, dress)?;
             Some(dispatch_arrived(spec, args, arrived))
         }
     }
@@ -104,20 +96,19 @@ pub(super) fn dispatch_live(
 /// Show the window's loading state ([`arriving_window`], dressed by `dress`) until `arriving`'s join is
 /// over, then hand it back: the window gives its place to the app.
 pub(super) fn wait_in_window(
-    spec: &LaunchSpec,
     arriving: Arriving,
     dress: impl FnOnce(App) -> App,
 ) -> Option<Arriving> {
     if arriving.join.is_done() {
         return Some(arriving);
     }
-    let mut window = dress(arriving_window(spec));
+    let mut window = dress(arriving_window());
     // What the person types while the record arrives is the app's, which takes it once it stands.
     window.stand_in_for_arriving_app();
     {
         let _entry = window.enter_wake_scope();
         let wake = crate::wake::WakeHandle::new();
-        arriving.when_done(move || {
+        arriving.join.when_done(move || {
             WINDOW_GIVES_PLACE.store(true, std::sync::atomic::Ordering::Release);
             wake.wake();
         });
@@ -130,7 +121,7 @@ pub(super) fn wait_in_window(
 
 /// The window a launch shows while its record arrives with the workspace's join: the shape of the page
 /// that is on its way.
-fn arriving_window(_spec: &LaunchSpec) -> App {
+fn arriving_window() -> App {
     App::without_workspace(|| {
         Box::new(crate::widget::Skeleton::new(
             crate::widget::SkeletonShape::Page,
@@ -156,12 +147,7 @@ pub(crate) fn joins_its_workspace(spec: &LaunchSpec, args: &LaunchArgs) -> bool 
 
 /// Whether `args` open a live window of the native component `spec`.
 pub(super) fn live_native(spec: &LaunchSpec, args: &LaunchArgs) -> bool {
-    spec.component_native_services
-        && args.headless.is_none()
-        && args.shots.is_none()
-        && args.responsive_matrix.is_none()
-        && !args.native_audit
-        && !args.first_frame
+    spec.component_native_services && super::opens_native_window(args)
 }
 
 /// The live app `args` launch, built as the process's first window was (`crate::window_link`); `None`

@@ -1005,11 +1005,7 @@ fn dispatch_definition_with(
     manager: impl FnOnce() -> Result<crate::collaboration::CollaborationManager, LaunchError>,
 ) -> Result<DefinitionDispatch, Unbuilt> {
     validate_spec_args(args, spec)?;
-    let _selected_local = (args.headless.is_some()
-        || args.shots.is_some()
-        || args.responsive_matrix.is_some()
-        || args.native_audit
-        || args.first_frame)
+    let _selected_local = (!opens_native_window(args))
         .then(selected_local_construction)
         .transpose()?;
     let _wake_entry = scope.as_ref().map(crate::wake::WakeScope::enter);

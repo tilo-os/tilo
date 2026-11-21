@@ -23,15 +23,6 @@ enum JoinNews {
     Done,
 }
 
-impl std::fmt::Debug for NativeJoin {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("NativeJoin")
-            .field("done", &self.is_done())
-            .finish_non_exhaustive()
-    }
-}
-
 impl NativeJoin {
     /// Wait for `manager`'s join off this thread. The manager keeps the wake
     /// scope it was made in: the app that takes it is the one its worker
@@ -53,6 +44,15 @@ impl NativeJoin {
             }
         }
         let (sender, outcome) = mpsc::sync_channel(1);
+        // A join the broker answered already is over now, with no thread to wait for it.
+        let manager = match manager.finish_join_if(false) {
+            Ok(joined) => {
+                let _ = sender.send(joined.map_err(|error| native_launch_refusal(&error)));
+                let news = Arc::new(std::sync::Mutex::new(JoinNews::Done));
+                return Ok(Self { outcome, news });
+            }
+            Err(joining) => joining,
+        };
         let news = Arc::new(std::sync::Mutex::new(JoinNews::Joining(None)));
         let tell = Tell(Arc::clone(&news));
         std::thread::Builder::new()
