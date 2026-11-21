@@ -214,7 +214,7 @@ fn assert_connected_frame<A: ui::framework::ResourceApp>(
     assert!(!inspection.contains("google-drive://"));
     assert!(!inspection.contains("No Mail accounts"));
     assert!(!inspection.contains("Connect Google"));
-    for kind in settings::accounts::AccountKind::ALL {
+    for kind in settings::accounts::AccountKind::ADDABLE {
         let id = format!("settings.accounts.add.{}", kind.slug());
         assert!(
             bindings.iter().any(|binding| binding.control_id == id

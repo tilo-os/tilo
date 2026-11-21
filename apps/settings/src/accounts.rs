@@ -538,6 +538,13 @@ impl AccountKind {
         Self::ICloudDrive,
     ];
 
+    /// The kinds Settings' Add account list offers: those whose sign-in reaches the provider
+    /// and leaves a working account. Google Drive, `OneDrive`, Dropbox and iCloud Drive are not
+    /// among them: their sign-in exchanges the provider's tokens from Settings' own process,
+    /// which has no network, and no build carries the OAuth client registrations they need.
+    /// Accounts of those kinds kept from elsewhere still show and can be removed.
+    pub const ADDABLE: [Self; 4] = [Self::Mail, Self::CalDav, Self::WebDav, Self::Nextcloud];
+
     pub fn label(self) -> &'static str {
         match self {
             AccountKind::Mail => "Email",

@@ -935,6 +935,9 @@ pub struct AccountsPane {
     sessions_read: std::cell::RefCell<SessionsRead>,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
+    /// The sync statuses' file, followed: what the cloud mounts, Mail and Calendar report
+    /// about an account shows on its row as they report it.
+    statuses_followed: Option<crate::watch::Watched>,
     vault: Option<accounts::SecretVault>,
     vault_opening: Option<crate::device_read::Landing>,
     mail_grants: MailGrants,
@@ -1029,6 +1032,7 @@ impl AccountsPane {
         Self {
             dir,
             sync_statuses: accounts::AccountSyncStatusStore::default(),
+            statuses_followed: None,
             vault: None,
             vault_opening: None,
             mail_grants: MailGrants::default(),
@@ -1821,7 +1825,9 @@ impl AccountsPane {
         if let Some(linked) = self.linked_accounts_card(cx) {
             panel.push(linked);
         }
-        panel.push(self.browser_service_sessions_card(cx));
+        if let Some(sessions) = self.browser_service_sessions_card(cx) {
+            panel.push(sessions);
+        }
         // Connected services lead. Empty providers belong to the one chooser,
         // not to an inventory of accounts the person has not connected.
         for kind in AccountKind::ALL {
@@ -1879,7 +1885,15 @@ impl AccountsPane {
         sessions
     }
 
-    fn browser_service_sessions_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
+    /// The sites the person signed in to in Browser, to forget on this device: none, no section.
+    fn browser_service_sessions_card(&self, cx: &ViewCx<Settings>) -> Option<SettingsSection> {
+        let sessions = self.browser_service_sessions();
+        if sessions.is_empty()
+            && !self.browser_removal_pending
+            && self.browser_removal_error.is_none()
+        {
+            return None;
+        }
         let mut body = vec![note(&t("accounts-browser-sessions-about"))];
         if self.browser_removal_pending {
             body.push(note(&t("accounts-browser-sessions-removing")));
@@ -1887,7 +1901,7 @@ impl AccountsPane {
         if let Some(error) = &self.browser_removal_error {
             body.push(note(error));
         }
-        for account in self.browser_service_sessions() {
+        for account in sessions {
             let id = account.id.as_str();
             body.push(setting_row(
                 &account.display_name,
@@ -1904,7 +1918,7 @@ impl AccountsPane {
                 )),
             ));
         }
-        section(&t("accounts-browser-sessions-title"), rows(body))
+        Some(section(&t("accounts-browser-sessions-title"), rows(body)))
     }
 
     fn linked_accounts_card(&self, cx: &ViewCx<Settings>) -> Option<SettingsSection> {
@@ -2055,7 +2069,7 @@ impl AccountsPane {
     }
 
     fn add_account_card(cx: &ViewCx<Settings>) -> SettingsSection {
-        let providers = AccountKind::ALL
+        let providers = AccountKind::ADDABLE
             .into_iter()
             .map(|kind| {
                 let effect = AccountsEffect::AddAccount {
@@ -2260,11 +2274,7 @@ impl AccountsPane {
             } else if mount.is_some_and(|mount| mount.paused) {
                 (t("accounts-status-paused"), StatusTone::Neutral)
             } else {
-                account_status(
-                    self.is_sample,
-                    view.enabled,
-                    runtime.map(|status| status.health),
-                )
+                account_status(self.is_sample, view.enabled, runtime)
             };
 
         let mut tags: Vec<(String, StatusTone)> = Vec::new();
@@ -2288,7 +2298,7 @@ impl AccountsPane {
         let files = self.files_button(view, &mut details);
         let mut entries: Vec<AccountEntry> = Vec::new();
         if !self.is_sample {
-            details.push(sync_detail(runtime, import_only, granted_mail));
+            details.extend(sync_detail(runtime, import_only, granted_mail));
             entries.extend(self.cloud_row_entries(
                 view,
                 mount.map(|mount| mount.paused),
@@ -3710,6 +3720,7 @@ impl AccountsPane {
             }
             self.seen_accounts = revision;
         }
+        self.follow_statuses();
         self.advance_queue(false);
         self.poll_vault_opening();
         self.poll_mail_grants();
@@ -3724,6 +3735,42 @@ impl AccountsPane {
 }
 
 impl AccountsPane {
+    /// Read the sync statuses again when their file changed. The file's folder appears with the
+    /// first account, so the follow starts once it is there.
+    fn follow_statuses(&mut self) {
+        if self.is_sample {
+            return;
+        }
+        if !self
+            .statuses_followed
+            .as_ref()
+            .is_some_and(crate::watch::Watched::is_complete)
+        {
+            let Some(file) = self
+                .account_root
+                .path()
+                .map(|root| accounts::status::path_in(&root))
+            else {
+                return;
+            };
+            if !file.parent().is_some_and(std::path::Path::is_dir) {
+                return;
+            }
+            self.statuses_followed = Some(crate::watch::Watched::files(&[file]));
+        }
+        if self
+            .statuses_followed
+            .as_ref()
+            .is_some_and(crate::watch::Watched::take)
+        {
+            let statuses = self.account_root.statuses();
+            if statuses != self.sync_statuses {
+                self.sync_statuses = statuses;
+                self.changed = true;
+            }
+        }
+    }
+
     pub fn busy(&self) -> bool {
         self.form_probe.is_some()
             || self.reauth_probe.is_some()

@@ -1296,7 +1296,7 @@ impl CredentialStore {
     }
 
     pub fn signed_in(&self, id: &AccountId) -> Result<(), CredentialError> {
-        let _ = self.reporter(id).remove();
+        let _ = self.reporter(id).signed_in();
         self.publish(id, false)
     }
 

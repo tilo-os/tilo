@@ -49,6 +49,39 @@ impl AccountSyncReporter {
         self.transition(AccountSyncHealth::Healthy, true, Some("Up to date"))
     }
 
+    /// The person just signed in to the account, which proved its server takes the credential:
+    /// what the account says until whatever uses it reports its first sync. An earlier error or
+    /// sign-in requirement is over, so it goes; the last successful sync stays.
+    ///
+    /// # Errors
+    ///
+    /// See [`AccountSyncReporter::started`].
+    pub fn signed_in(&self) -> std::io::Result<()> {
+        let root = self
+            .config_root
+            .as_deref()
+            .ok_or_else(|| std::io::Error::other("no config dir"))?;
+        let _lock = StatusLock::acquire(root)?;
+        let mut store = AccountSyncStatusStore::load_in(root);
+        let previous_success = store
+            .get(&self.id)
+            .and_then(|status| status.last_success_unix);
+        let now = tilo_clock::unix_now_i64();
+        store.report(
+            &self.id,
+            AccountSyncStatus {
+                signed_in_unix: Some(now),
+                ..AccountSyncStatus::sanitized(
+                    AccountSyncHealth::Never,
+                    None,
+                    previous_success,
+                    None,
+                )
+            },
+        );
+        store.save_in_unlocked(root)
+    }
+
     /// # Errors
     ///
     /// See [`AccountSyncReporter::started`].
@@ -174,6 +207,10 @@ pub struct AccountSyncStatus {
     /// credential or server response body.
     #[serde(default)]
     pub message: Option<String>,
+    /// When the person last signed in, while nothing has synced since: a sign-in proves the
+    /// account works before its first sync does. Any later report clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_in_unix: Option<i64>,
 }
 
 impl AccountSyncStatus {
@@ -188,6 +225,7 @@ impl AccountSyncStatus {
             last_attempt_unix,
             last_success_unix,
             message: message.map(sanitize_message),
+            signed_in_unix: None,
         }
     }
 }
@@ -320,6 +358,27 @@ mod tests {
             assert_eq!(auth.health, AccountSyncHealth::NeedsAuthentication);
             assert_eq!(auth.last_success_unix, successful.last_success_unix);
             assert_eq!(auth.message.as_deref(), Some("Sign-in required"));
+
+            // Signing in again ends the sign-in requirement and says so until the next sync,
+            // keeping when the account last synced.
+            reporter.signed_in().unwrap();
+            let signed_in = AccountSyncStatusStore::load_in(&root)
+                .get(&id)
+                .unwrap()
+                .clone();
+            assert_eq!(signed_in.health, AccountSyncHealth::Never);
+            assert!(signed_in.signed_in_unix.is_some());
+            assert_eq!(signed_in.message, None);
+            assert_eq!(signed_in.last_success_unix, successful.last_success_unix);
+            reporter.started().unwrap();
+            let syncing = AccountSyncStatusStore::load_in(&root)
+                .get(&id)
+                .unwrap()
+                .clone();
+            assert_eq!(
+                syncing.signed_in_unix, None,
+                "a sync's report replaces the sign-in"
+            );
             std::fs::remove_dir_all(root).ok();
         }
 

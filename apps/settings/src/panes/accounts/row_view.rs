@@ -88,38 +88,40 @@ pub(super) fn kind_icon(kind: AccountKind) -> ui::icons::Icon {
     }
 }
 
+/// The line under an account's status about its syncs, when there is one to say: nothing for an
+/// account nothing has synced or tried to yet, whose status already says where it stands.
 pub(super) fn sync_detail(
     runtime: Option<&AccountSyncStatus>,
     import_only: bool,
     granted_mail: bool,
-) -> String {
+) -> Option<String> {
     if import_only && runtime.is_none_or(|status| status.message.is_none()) {
-        return t("accounts-import-no-sync");
+        return Some(t("accounts-import-no-sync"));
     }
-    let Some(status) = runtime else {
-        return t(if granted_mail {
-            "accounts-mail-not-synced"
-        } else {
-            "accounts-sync-none"
-        });
+    let status = runtime.filter(|status| {
+        status.health != AccountSyncHealth::Never || status.last_success_unix.is_some()
+    });
+    let Some(status) = status else {
+        return granted_mail.then(|| t("accounts-mail-not-synced"));
     };
     let when = status
         .last_success_unix
         .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
-    match status.message.as_deref() {
+    Some(match status.message.as_deref() {
         Some(message) => t_args(
             "accounts-sync-when-msg",
             &[("when", when.as_str().into()), ("message", message.into())],
         ),
         None => t_args("accounts-sync-when", &[("when", when.into())]),
-    }
+    })
 }
 
 pub(super) fn account_status(
     is_sample: bool,
     enabled: bool,
-    health: Option<AccountSyncHealth>,
+    runtime: Option<&AccountSyncStatus>,
 ) -> (String, StatusTone) {
+    let health = runtime.map(|status| status.health);
     if is_sample {
         (t("accounts-status-example"), StatusTone::Neutral)
     } else if !enabled {
@@ -133,6 +135,12 @@ pub(super) fn account_status(
                 (t("accounts-status-reauth"), StatusTone::Warning)
             }
             Some(AccountSyncHealth::Error) => (t("accounts-status-error"), StatusTone::Warning),
+            // A sign-in proved the account works; its first sync has not reported yet.
+            Some(AccountSyncHealth::Never)
+                if runtime.is_some_and(|status| status.signed_in_unix.is_some()) =>
+            {
+                (t("accounts-status-signed-in"), StatusTone::Success)
+            }
             Some(AccountSyncHealth::Never) | None => {
                 (t("accounts-status-never"), StatusTone::Neutral)
             }

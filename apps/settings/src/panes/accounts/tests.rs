@@ -469,19 +469,19 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         let labels = page_actions(pane);
         assert_eq!(
             labels.len(),
-            AccountKind::ALL.len() + 1,
+            AccountKind::ADDABLE.len() + 1,
             "every provider kind can be added and metadata imported over the sample: {labels:?}"
         );
         assert_eq!(
             labels
                 .iter()
-                .filter(|label| AccountKind::ALL.into_iter().any(|kind| **label
+                .filter(|label| AccountKind::ADDABLE.into_iter().any(|kind| **label
                     == t_args(
                         "accounts-add-provider",
                         &[("kind", kind_shown(kind).into())]
                     )))
                 .count(),
-            AccountKind::ALL.len(),
+            AccountKind::ADDABLE.len(),
             "one Add action per provider kind"
         );
         assert_eq!(
@@ -507,7 +507,7 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         let actions = page_actions(pane);
         assert_eq!(
             actions.len(),
-            AccountKind::ALL.len() + 1 + 16 + 1,
+            AccountKind::ADDABLE.len() + 1 + 16 + 1,
             "{actions:?}"
         );
     }
@@ -536,13 +536,13 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         assert_eq!(
             labels
                 .iter()
-                .filter(|label| AccountKind::ALL.into_iter().any(|kind| **label
+                .filter(|label| AccountKind::ADDABLE.into_iter().any(|kind| **label
                     == t_args(
                         "accounts-add-provider",
                         &[("kind", kind_shown(kind).into())]
                     )))
                 .count(),
-            AccountKind::ALL.len(),
+            AccountKind::ADDABLE.len(),
             "the single chooser retains every provider's add action"
         );
     }
