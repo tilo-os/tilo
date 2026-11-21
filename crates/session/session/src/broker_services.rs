@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use tilo_broker_core::services::{
     ContentStoreServices, DocumentChangeServices, DocumentIndexChanges, KeyboardShortcutServices,
-    LegacyWorkspaceProjection, LocalPersonServices, OwnDeviceActions, SearchIndexServices,
-    WorkspaceGovernanceServices, WorkspaceNodeActions,
+    LocalPersonServices, OwnDeviceActions, SearchIndexServices, WorkspaceGovernanceServices,
+    WorkspaceNodeActions,
 };
 use tilo_broker_core::steps::{ContinuationServices, HostStepServices};
 use tilo_workspace_keys::KeyProvider;
@@ -118,7 +118,7 @@ broker_services! {
     native_certificates: Arc<dyn tilo_workspace_service::apps::certificate_authority::CertificateAuthority>,
     local_person: Arc<dyn LocalPersonServices>,
     resource_changes: Arc<dyn DocumentChangeServices>,
-    legacy_workspace: Arc<dyn LegacyWorkspaceProjection>,
+    journal_root: Option<std::path::PathBuf> => default,
     launcher: Arc<dyn LauncherServices>,
     published: Arc<dyn PublishedResources>,
     workspace_governance: Arc<dyn WorkspaceGovernanceServices>,

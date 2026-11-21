@@ -70,10 +70,6 @@ impl WorkspaceAuthority for Workspaces {
         read(held.as_ref());
         Ok(())
     }
-
-    fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
-        self.profile.legacy_journal_root()
-    }
 }
 
 impl WorkspaceMembership for Workspaces {

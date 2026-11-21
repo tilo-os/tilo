@@ -416,7 +416,6 @@ impl AppBrokerState {
                 requests.remove(&id);
             }
             let _ = pending.tx.send(completion);
-            state.record_effect_receipt(&pending, &update);
         } else {
             drop(registry);
         }
@@ -1054,7 +1053,6 @@ impl AppBrokerState {
             requests.remove(&id);
         }
         let _ = invocation.tx.send(completion);
-        self.record_effect_receipt(invocation, &update);
     }
     pub(super) fn disconnect_file_transfers(&self, peer_id: u64) {
         if let Some(service) = self.services.browser_service_sessions.as_ref() {

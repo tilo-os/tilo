@@ -814,7 +814,6 @@ mod tests {
                 ..tilo_desktop_model::Layout::default()
             },
             crate::engine::revocations_of(None),
-            None,
             crate::app_wire::Names::default(),
         ));
         (layout, id.to_string())

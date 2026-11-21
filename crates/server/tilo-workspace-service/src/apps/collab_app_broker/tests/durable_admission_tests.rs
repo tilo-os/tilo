@@ -514,9 +514,6 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
                     resources: vec![],
                 },
             };
-            // Force receipt persistence to fail independently of the already opened journal.
-            fixture.membership.as_ref().unwrap().write().persist_path =
-                Some(root.path().to_owned());
             fixture
                 .complete_invocation(delivered_id, &terminal)
                 .await
@@ -545,16 +542,7 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
                     .is_err()
             );
             let membership = fixture.membership.clone().unwrap();
-            {
-                let mut tree = membership.write();
-                assert_eq!(tree.workspaces[0].effect_receipts.len(), 1);
-                assert!(
-                    !serde_json::to_string(&tree.workspaces[0].effect_receipts)
-                        .unwrap()
-                        .contains("private-result-token")
-                );
-                tree.persist_path = Some(root.path().join("state.json"));
-            }
+            membership.write().persist_path = Some(root.path().join("state.json"));
             let gone = fixture.state.gone();
             drop(fixture);
             broker_gone(gone).await;

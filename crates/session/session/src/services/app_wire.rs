@@ -248,7 +248,7 @@ pub(crate) fn start_app_wire(
         return Ok(None);
     };
     let link = app_wire::Link::new(options.wake.handle());
-    let layout = layout_authority(options, handle, revocations)?;
+    let layout = layout_authority(options, handle, revocations);
     // The workspace's activity as this session's apps read it: the shell's own model.
     let activity_wire = activity_provider::wire(activity.requests());
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
@@ -312,7 +312,13 @@ pub(crate) fn start_app_wire(
             service,
             endpoint: sync.map(|sync| sync.endpoint_handle()),
             answering: sync.map(crate::sync::Client::answering),
-            journal_root: options.state.as_deref().map(app_wire::journal_root),
+            journal_root: match options.state.as_deref() {
+                Some(state) => {
+                    std::fs::create_dir_all(state.join("tilo"))?;
+                    Some(app_wire::journal_root(state))
+                }
+                None => None,
+            },
             // What each installed app declares it may do on the action API,
             // read by search's own worker off the session's thread.
             lists: options.lists.clone(),
@@ -370,34 +376,20 @@ pub(crate) fn start_app_wire(
 }
 
 /// What the broker decides against, from this pass on: the shell as it is
-/// before the person touches anything, and every shell it shows after. It
-/// journals what it admits on the person's behalf beside this device's shell,
-/// so a shortcut a trigger starts survives the session stopping mid-run —
-/// once, as it would have run.
+/// before the person touches anything, and every shell it shows after.
 fn layout_authority(
     options: &Options,
     handle: &DesktopHandle,
     revocations: crate::engine::Revocations,
-) -> Result<std::sync::Arc<LayoutAuthority>, Error> {
-    let journal = match options.state.as_deref() {
-        Some(state) => {
-            let path = state.join("tilo").join("invocations.json");
-            if let Some(directory) = path.parent() {
-                std::fs::create_dir_all(directory)?;
-            }
-            Some(path)
-        }
-        None => None,
-    };
-    Ok(std::sync::Arc::new(LayoutAuthority::new(
+) -> std::sync::Arc<LayoutAuthority> {
+    std::sync::Arc::new(LayoutAuthority::new(
         handle.read(Clone::clone),
         revocations,
-        journal,
         crate::app_wire::Names {
             person: options.person.clone(),
             earlier: options.earlier.clone(),
         },
-    )))
+    ))
 }
 
 /// The calls the apps reach on this session's peer network, or none when it has no endpoint.

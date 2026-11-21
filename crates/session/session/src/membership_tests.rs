@@ -1794,7 +1794,6 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
     let session = std::sync::Arc::new(crate::app_wire::LayoutAuthority::new(
         tree(&workspace),
         crate::engine::revocations_of(None),
-        None,
         crate::app_wire::Names {
             person: person.clone(),
             earlier: Vec::new(),

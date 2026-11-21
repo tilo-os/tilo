@@ -687,7 +687,6 @@ impl AppBrokerState {
                 requests.remove(&id);
             }
             let _ = pending.tx.send(completion);
-            self.record_effect_receipt(&pending, &update);
         }
     }
     /// So tests can register inbound state before pushing signed
@@ -722,11 +721,11 @@ impl AppBrokerState {
     }
     pub(super) fn configured_journal(
         config: Option<&crate::apps::NativePeerBrokerConfig>,
-        membership: Option<&WorkspaceTreeHandle>,
+        services: &ProcessServices,
     ) -> Result<Option<InvocationJournal>, String> {
         config
             .map(|config| config.journal_root.clone())
-            .or_else(|| membership.and_then(|authority| authority.legacy_journal_root()))
+            .or_else(|| services.journal_root.clone())
             .map(|path| InvocationJournal::open(&path))
             .transpose()
     }
@@ -749,7 +748,7 @@ impl AppBrokerState {
         let (bridge_tx, bridge_rx) =
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
         let local_turn = std::sync::Arc::new(tokio::sync::Notify::new());
-        let journal = Self::configured_journal(config, membership.as_ref());
+        let journal = Self::configured_journal(config, &services);
         let next_invocation = journal
             .as_ref()
             .ok()

@@ -12,9 +12,7 @@ use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::broker::WorkspaceMembership;
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_workspace_service::apps::services::{
-    LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
-};
+use tilo_workspace_service::apps::services::{WorkspaceAuthority, WorkspaceGrants};
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
@@ -784,92 +782,6 @@ tilo_test_env::scenario! {
             read.workspaces[0].strips[0].id,
             made.workspaces[0].strips[0].id
         );
-    }
-
-    phase effect_records_persist_in_the_profile;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let tree = bootstrap();
-        let workspace_id = tree.workspaces[0].id().to_string();
-        std::fs::write(
-            temp.path().join(STANDALONE_WORKSPACE),
-            serde_json::to_vec_pretty(&tree).unwrap(),
-        )
-        .unwrap();
-        let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
-        let context = tilo_actions::ActionContext::default().with_described(
-            tilo_actions::Described::new(tilo_actions::Did::verb(
-                tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
-                [],
-            )),
-        );
-        let status = tilo_actions::EffectReceiptStatus::Succeeded;
-        for _ in 0..2 {
-            workspace
-                .record_effect(
-                    &workspace_id,
-                    invocation,
-                    &tilo_actions::MemberId::person("agent-1"),
-                    context.clone(),
-                    status.clone(),
-                )
-                .unwrap();
-        }
-        assert!(
-            workspace
-                .record_effect(
-                    &WorkspaceId::new().to_string(),
-                    invocation,
-                    &tilo_actions::MemberId::person("a"),
-                    context,
-                    status
-                )
-                .is_err()
-        );
-
-        let reopened = ProfileWorkspace::open(temp.path())
-            .unwrap()
-            .snapshot()
-            .unwrap();
-        let workspace = &reopened.workspaces[0];
-        assert_eq!(
-            workspace.effect_receipts.len(),
-            1,
-            "a retry keeps one receipt"
-        );
-        assert_eq!(workspace.effect_receipts[0].invocation, invocation);
-    }
-
-    phase the_desktop_sessions_workspace_refuses_records;
-    {
-        let temp = tempfile::tempdir().unwrap();
-        let mut tree = bootstrap();
-        tree.workspaces[0].set_owner("desktop-owner".to_owned());
-        let workspace_id = tree.workspaces[0].id().to_string();
-        let bytes = serde_json::to_vec_pretty(&tree).unwrap();
-        let desktop = temp.path().join(DESKTOP_WORKSPACE);
-        std::fs::write(&desktop, &bytes).unwrap();
-        let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
-        let status = tilo_actions::EffectReceiptStatus::Succeeded;
-        assert!(
-            workspace
-                .record_effect(
-                    &workspace_id,
-                    invocation,
-                    &tilo_actions::MemberId::person("agent-1"),
-                    tilo_actions::ActionContext::default(),
-                    status
-                )
-                .is_err()
-        );
-        assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
-        let tree = workspace.snapshot().unwrap();
-        assert!(tree.workspaces[0].effect_receipts.is_empty());
-        assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
     }
 
     phase the_desktop_sessions_workspace_is_served_read_only;

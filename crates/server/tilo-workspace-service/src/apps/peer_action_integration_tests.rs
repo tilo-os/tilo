@@ -251,21 +251,6 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
             );
             assert!(fixture.invocation_rx.try_recv().is_err());
             assert_eq!(std::fs::read_to_string(root.path().join("effect-counter")).unwrap(), "1");
-            let receipts = serde_json::to_string(
-                &fixture.membership.as_ref().unwrap().read().workspaces[0].effect_receipts,
-            )
-            .unwrap();
-            assert!(!receipts.contains("private"));
-            assert!(receipts.contains("succeeded"));
-            let recorded = fixture.membership.as_ref().unwrap().read().workspaces[0]
-                .effect_receipts[0]
-                .context
-                .what
-                .clone();
-            assert!(
-                matches!(&recorded, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == request.target.address.action),
-                "the receipt records the effect it was: {recorded:?}"
-            );
         })
         .await;
 }

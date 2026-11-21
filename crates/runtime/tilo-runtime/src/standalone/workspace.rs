@@ -1,6 +1,6 @@
 //! The profile's workspace as this host keeps it: its own `desktop.json`, or
-//! the desktop session's `workspace.json` adopted read only; and what the
-//! broker records in it (grants, effect and task records).
+//! the desktop session's `workspace.json` adopted read only; and the grants
+//! the broker records in it.
 
 use crate::apps;
 use std::{
@@ -10,9 +10,7 @@ use std::{
 };
 use tilo_desktop_model::{IdMinter, Layout, Strip, StripId, Workspace, WorkspaceId};
 use tilo_identity::broker::WorkspaceMembership;
-use tilo_workspace_service::apps::services::{
-    LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
-};
+use tilo_workspace_service::apps::services::{WorkspaceAuthority, WorkspaceGrants};
 
 /// The desktop session's workspace file. Read, never written, here: its
 /// native authority fields belong to that host.
@@ -24,7 +22,6 @@ pub(super) const STANDALONE_WORKSPACE: &str = "desktop.json";
 pub(super) const INVOCATION_JOURNAL: &str = "invocations";
 /// The profile's committed workspace tree.
 pub(super) struct ProfileWorkspace {
-    root: PathBuf,
     tree: RwLock<Layout>,
     /// Where this host keeps the tree; `None` when the desktop session's
     /// file is authoritative and read only.
@@ -40,7 +37,6 @@ impl ProfileWorkspace {
             // The desktop session versions this file by its native layout,
             // which only adds fields this host ignores; it is read only here.
             return Ok(Self {
-                root: root.to_path_buf(),
                 tree: RwLock::new(parse_tree(&std::fs::read(&desktop)?)?),
                 path: None,
             });
@@ -64,7 +60,6 @@ impl ProfileWorkspace {
             return Err(io::Error::other("runtime profile has no workspace"));
         }
         Ok(Self {
-            root: root.to_path_buf(),
             tree: RwLock::new(tree),
             path: Some(path),
         })
@@ -147,29 +142,6 @@ impl ProfileWorkspace {
         }
         drop(tree);
         Some(result)
-    }
-
-    /// Apply `change` to the workspace of `workspace` and persist it, refused
-    /// when this host does not govern the tree.
-    fn record(
-        &self,
-        workspace: &str,
-        change: impl FnOnce(&mut Layout, WorkspaceId) -> Option<()>,
-    ) -> Result<(), String> {
-        if !self.governs() {
-            return Err("the desktop session's workspace is read only in the runtime".into());
-        }
-        self.update(|tree| {
-            let workspace = tree
-                .workspaces
-                .iter()
-                .find(|held| held.id().to_string() == workspace)?
-                .id();
-            change(tree, workspace)
-        })
-        .ok_or_else(|| {
-            format!("workspace {workspace} has no such record target, or it was not saved")
-        })
     }
 }
 
@@ -271,36 +243,6 @@ impl ProfileGrants {
     }
 }
 
-/// Effect and task records the broker keeps in this host's own workspace.
-/// A profile adopted from the desktop session refuses them: its file is
-/// that host's to write.
-impl LegacyWorkspaceProjection for ProfileWorkspace {
-    fn record_effect(
-        &self,
-        workspace: &str,
-        invocation: tilo_actions::InvocationId,
-        actor: &tilo_actions::MemberId,
-        context: tilo_actions::ActionContext,
-        status: tilo_actions::EffectReceiptStatus,
-    ) -> Result<(), String> {
-        let completed_at = tilo_clock::unix_now_i64();
-        self.record(workspace, |tree, workspace| {
-            // A retried invocation keeps its first receipt.
-            tree.append_workspace_effect_receipt(
-                workspace,
-                tilo_desktop_model::WorkspaceEffectReceipt::redacted(
-                    invocation,
-                    actor,
-                    context,
-                    status,
-                    completed_at,
-                ),
-            );
-            Some(())
-        })
-    }
-}
-
 impl WorkspaceAuthority for ProfileWorkspace {
     fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
         let tree = self
@@ -309,12 +251,6 @@ impl WorkspaceAuthority for ProfileWorkspace {
             .map_err(|_| "runtime workspace lock poisoned".to_owned())?;
         read(&tree);
         Ok(())
-    }
-
-    /// This host's own journal, also for an adopted profile: the desktop
-    /// session's files stay untouched.
-    fn legacy_journal_root(&self) -> Option<PathBuf> {
-        Some(self.root.join(INVOCATION_JOURNAL))
     }
 }
 

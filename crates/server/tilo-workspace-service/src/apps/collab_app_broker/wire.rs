@@ -587,7 +587,7 @@ impl JoinedChannel {
 
     /// Record a terminal effect this app ran itself on one of the actions
     /// it publishes, as workspace activity: committed by the workspace's owner
-    /// where one keeps effect receipts, else projected here.
+    /// where one keeps effect receipts, else left to the app's own record.
     pub(super) fn record_local_effect_dispatch(
         &self,
         resource: &str,
@@ -674,22 +674,8 @@ impl JoinedChannel {
                 Ok(())
             }));
         }
-        context.purpose = None;
-        self.state
-            .services
-            .legacy_workspace
-            .as_ref()
-            .ok_or_else(|| "native effect projection unsupported".to_string())
-            .and_then(|projection| {
-                projection.record_effect(
-                    &surface.route.cluster_id,
-                    update.invocation(),
-                    &actor,
-                    context,
-                    status,
-                )
-            })
-            .map_err(BrokerError::failed)?;
+        // No owner keeps effect receipts for this workspace: the app's effect
+        // leaves no record beyond its own.
         Ok(Box::pin(std::future::ready(Ok(()))))
     }
 
@@ -1263,7 +1249,6 @@ impl JoinedChannel {
                 requests.remove(&id);
             }
             let _ = pending.tx.send(completion);
-            state.record_effect_receipt(&pending, &update);
             Ok(Reply::Done)
         })
     }

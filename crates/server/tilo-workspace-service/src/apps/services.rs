@@ -914,7 +914,9 @@ pub struct ProcessServices {
         Option<Arc<dyn crate::apps::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub resource_changes: Option<Arc<dyn DocumentChangeServices>>,
-    pub legacy_workspace: Option<Arc<dyn LegacyWorkspaceProjection>>,
+    /// Where a host with no [`NativePeerBrokerConfig`](crate::apps::NativePeerBrokerConfig)
+    /// keeps the invocation journal; without it the broker keeps none.
+    pub journal_root: Option<std::path::PathBuf>,
     pub launcher: Option<Arc<dyn LauncherServices>>,
     /// The resources this session's services publish, which its apps read, watch and invoke;
     /// without it those calls are refused.
@@ -1005,7 +1007,7 @@ impl ProcessServices {
         "native_certificates",
         "local_person",
         "resource_changes",
-        "legacy_workspace",
+        "journal_root",
         "launcher",
         "published",
         "workspace_governance",

@@ -696,7 +696,6 @@ pub struct LayoutAuthority {
     /// waits for a change hears it ([`Self::until`]).
     generation: tokio::sync::watch::Sender<u64>,
     revocations: crate::engine::Revocations,
-    journal: Option<std::path::PathBuf>,
     /// The person at this device, and the ids they went by before it had an identity: a workspace
     /// whose governance names them by one of those is theirs, and what the broker decides in it is
     /// as theirs.
@@ -715,14 +714,11 @@ pub struct Names {
 
 impl LayoutAuthority {
     /// The authority over `tree`, as the loop sees it now, deciding what each
-    /// of its workspaces revokes from `revocations`, and journalling what the
-    /// broker admits on the person's behalf under `journal` (`None` for a
-    /// session that keeps no state).
+    /// of its workspaces revokes from `revocations`.
     #[must_use]
     pub fn new(
         tree: tilo_desktop_model::Layout,
         revocations: crate::engine::Revocations,
-        journal: Option<std::path::PathBuf>,
         names: Names,
     ) -> Self {
         let mut tree = tree;
@@ -731,7 +727,6 @@ impl LayoutAuthority {
             tree: Mutex::new(tree),
             generation: tokio::sync::watch::Sender::new(0),
             revocations,
-            journal,
             names,
             people: Mutex::new(std::collections::HashMap::new()),
         }
@@ -854,16 +849,6 @@ impl WorkspaceAuthority for LayoutAuthority {
         let tree = self.tree.lock_recover();
         tilo_broker_core::services::workspace_in(&tree, workspace)?;
         Some(self.revocations.of(workspace).unwrap_or_default())
-    }
-
-    /// Where the broker keeps what it admitted on this device's behalf: a
-    /// native action — a shortcut a trigger starts, a schedule firing — is
-    /// recorded before it runs and settled after, so a session that stops
-    /// mid-run neither loses it silently nor runs it twice. The broker
-    /// refuses such actions without it, so a session that keeps state keeps
-    /// this beside the rest of it.
-    fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
-        self.journal.clone()
     }
 
     /// Every write the broker's checks read here is announced: the session on [`Self::publish`],
@@ -1241,13 +1226,9 @@ fn broker_services(
             "an agent's change to a record goes through the record's own app, not through \
              a record origin this session keeps",
         ),
-        // The session's own migration is the one reader of what an older
-        // session journaled, and it imports it once into this session's
-        // workspaces.
-        legacy_workspace: BrokerService::unserved(
-            "older workspaces are imported once by the session's migration, and no app feeds \
-             their journal through this session",
-        ),
+        // Where this session's broker keeps what it admits, when it keeps
+        // anything at all: no host above it supplies a durable owner.
+        journal_root: BrokerService::served(journal_root),
         launcher: BrokerService::served(launches),
         // The resources this session's services publish, which the apps it
         // admits read, watch and invoke.
@@ -1764,7 +1745,6 @@ mod tests {
             layout: std::sync::Arc::new(LayoutAuthority::new(
                 tilo_desktop_model::Layout::default(),
                 crate::engine::revocations_of(None),
-                None,
                 Names::default(),
             )),
             shortcuts: library(),

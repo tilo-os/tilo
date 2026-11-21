@@ -499,30 +499,4 @@ impl AppBrokerState {
         durable.wait().await?;
         Ok(finished)
     }
-    pub(super) fn record_effect_receipt(
-        &self,
-        pending: &PendingInvocation,
-        update: &tilo_actions::InvocationUpdate,
-    ) {
-        if self.durable_owner_required || self.publisher.records_effects_for(&pending.cluster_id) {
-            return;
-        }
-        if pending.operation_kind != tilo_actions::OperationKind::Effect {
-            return;
-        }
-        let Some(status) = tilo_actions::EffectReceiptStatus::from_terminal(update) else {
-            return;
-        };
-        if let Some(projection) = &self.services.legacy_workspace
-            && let Err(error) = projection.record_effect(
-                &pending.cluster_id,
-                update.invocation(),
-                &pending.actor,
-                pending.context.clone(),
-                status,
-            )
-        {
-            tracing::warn!(%error, "native effect projection unavailable");
-        }
-    }
 }

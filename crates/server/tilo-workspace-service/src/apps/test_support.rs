@@ -1,5 +1,5 @@
 //! Test-only mutable policy fixture. Production hosts implement `WorkspaceAuthority`.
-use crate::apps::services::{LegacyWorkspaceProjection, WorkspaceAuthority};
+use crate::apps::services::WorkspaceAuthority;
 use std::sync::Arc;
 pub use tilo_action_policy::{Answer, GrantId, Grantee, KindSet, Level, Role, TreePath};
 pub use tilo_desktop_model::{Workspace, WorkspaceId};
@@ -101,13 +101,22 @@ impl WorkspaceTreeHandle {
     }
     pub fn services(&self) -> crate::apps::services::ProcessServices {
         crate::apps::services::ProcessServices {
-            legacy_workspace: Some(Arc::new(self.clone())),
+            journal_root: self.journal_root(),
             // The workspaces' `chat.agent` records, as these fixtures keep
             // them: every agent a workspace grants anything works there,
             // kept by the workspace's owner.
             agents: Some(Arc::new(TreeAgents(self.clone()))),
             ..Default::default()
         }
+    }
+    /// The fixture's journal, beside the profile it persists to, as a host
+    /// keeping state keeps it.
+    fn journal_root(&self) -> Option<std::path::PathBuf> {
+        self.read().persist_path.as_ref().map(|p| {
+            let mut n = p.clone().into_os_string();
+            n.push(".invocations");
+            n.into()
+        })
     }
 }
 impl WorkspaceAuthority for WorkspaceTreeHandle {
@@ -119,47 +128,6 @@ impl WorkspaceAuthority for WorkspaceTreeHandle {
     }
     fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
         read(&self.read().desktop);
-        Ok(())
-    }
-    fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
-        self.read().persist_path.as_ref().map(|p| {
-            let mut n = p.clone().into_os_string();
-            n.push(".invocations");
-            n.into()
-        })
-    }
-}
-impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
-    fn record_effect(
-        &self,
-        workspace: &str,
-        invocation: tilo_actions::InvocationId,
-        actor: &tilo_actions::MemberId,
-        context: tilo_actions::ActionContext,
-        status: tilo_actions::EffectReceiptStatus,
-    ) -> Result<(), String> {
-        let mut tree = self.write();
-        let workspace = tree
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id().to_string() == workspace)
-            .ok_or("workspace missing")?;
-        if !workspace
-            .effect_receipts
-            .iter()
-            .any(|r| r.invocation == invocation)
-        {
-            workspace
-                .effect_receipts
-                .push(tilo_desktop_model::WorkspaceEffectReceipt::redacted(
-                    invocation,
-                    actor,
-                    context,
-                    status,
-                    tilo_clock::unix_now_i64(),
-                ));
-        }
-        drop(tree);
         Ok(())
     }
 }

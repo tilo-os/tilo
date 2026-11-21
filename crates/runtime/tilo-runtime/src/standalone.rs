@@ -59,7 +59,7 @@ use tilo_workspace_service::apps::{
     collab_core::BrokerChannels,
     collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
-    services::{LauncherServices, LegacyWorkspaceProjection, ProcessServices, WorkspaceAuthority},
+    services::{LauncherServices, ProcessServices, WorkspaceAuthority},
 };
 use tilo_workspace_service::workspaces::Refusal;
 use workspace::{ProfileGrants, ProfileWorkspace};
@@ -419,7 +419,7 @@ fn broker_services(
             workspace: Arc::clone(parts.workspace),
             apps: Arc::clone(parts.apps),
         })),
-        legacy_workspace: Some(Arc::clone(parts.workspace) as Arc<dyn LegacyWorkspaceProjection>),
+        journal_root: Some(parts.root.join(workspace::INVOCATION_JOURNAL)),
         document_content: Some(document_content),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.

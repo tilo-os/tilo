@@ -91,10 +91,6 @@ pub trait WorkspaceAuthority: Send + Sync {
         copy.ok_or_else(|| UNANSWERED.to_owned())
     }
 
-    fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
-        None
-    }
-
     /// Whether every write the broker's membership and context checks read here (this tree, the
     /// device fleet, the identity registry, the owner's task store) is announced, so the broker
     /// re-checks on the announcement instead of every second. The default keeps that re-check: a
@@ -159,18 +155,6 @@ impl dyn WorkspaceAuthority {
         })?;
         answer.ok_or_else(|| UNANSWERED.to_owned())
     }
-}
-/// Legacy native projection only; success is not an aggregate durability receipt.
-pub trait LegacyWorkspaceProjection: Send + Sync {
-    /// Records one effect receipt in the legacy projection.
-    fn record_effect(
-        &self,
-        workspace: &str,
-        invocation: tilo_actions::InvocationId,
-        actor: &tilo_action_policy::MemberId,
-        context: tilo_actions::ActionContext,
-        status: tilo_actions::EffectReceiptStatus,
-    ) -> Result<(), String>;
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
