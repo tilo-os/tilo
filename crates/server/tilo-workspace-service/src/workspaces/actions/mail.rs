@@ -7,7 +7,10 @@
 //! decides whether its person is asked before anything leaves. Adding and
 //! removing accounts and marking mail are no row.
 
-use tilo_actions::remote::{CatalogueRow, person_accounts};
+use tilo_actions::remote::{
+    CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_accounts, workspace_governance_child,
+    workspace_governance_resource,
+};
 #[cfg(feature = "agents")]
 use tilo_actions::{ActionContract, contract::Audience};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
@@ -337,5 +340,134 @@ impl super::super::Workspaces {
             rows.extend(super::calendars::assistant_rows());
         }
         rows
+    }
+}
+
+/// A workspace's mail accounts in its governance tree
+/// (`workspace/mail-accounts`): listing them, and adding one, which the
+/// workspace's server signs in to before it keeps it and seals its password
+/// in the workspace's vault. Each is `tilo.accounts`'s own action, decided by
+/// the workspace's policy on its mail as any call of it is.
+const ACCOUNT_VERBS: [(&Verb, &str); 2] = [
+    // Listing them is listing the accounts an agent of the workspace's reads.
+    (&VERBS[0], person_accounts::LIST),
+    (
+        &Verb {
+            id: "add",
+            label: "Add a mail account",
+            check: "",
+            kind: ActionKind::Outside,
+            params: add_account_params,
+        },
+        person_accounts::ADD_MAIL,
+    ),
+];
+
+fn add_account_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("address", ParamType::Text, "The account's address."),
+        ActionParam::optional(
+            "displayName",
+            ParamType::Text,
+            "The name its mail is sent under.",
+        ),
+        ActionParam::optional(
+            "username",
+            ParamType::Text,
+            "The sign-in name, when it is not the address.",
+        ),
+        ActionParam::optional(
+            "incomingHost",
+            ParamType::Text,
+            "The IMAP server; left out, the server finds both from the address.",
+        ),
+        ActionParam::optional("incomingPort", ParamType::Integer, "The IMAP port."),
+        ActionParam::optional("outgoingHost", ParamType::Text, "The SMTP server."),
+        ActionParam::optional("outgoingPort", ParamType::Integer, "The SMTP port."),
+        ActionParam::required(
+            "password",
+            ParamType::Secret,
+            "The account's password or app password: sealed in the workspace's vault, never \
+             answered back.",
+        ),
+        ActionParam::optional(
+            "identities",
+            ParamType::Array,
+            "Other names and addresses it sends as, each `Name <address>`.",
+        ),
+    ]
+}
+
+/// The `tilo.accounts` action `address` asks of the workspace's mail
+/// accounts in its governance tree, and the workspace it names.
+pub(super) fn account_action(address: &tilo_actions::ActionAddress) -> Option<(&str, &str)> {
+    let workspace = address
+        .resource
+        .strip_prefix(tilo_actions::remote::workspace_governance_resource("").as_str())?
+        .strip_suffix(WORKSPACE_MAIL_ACCOUNTS)?
+        .strip_suffix('/')?;
+    let action = ACCOUNT_VERBS
+        .iter()
+        .find(|(verb, _)| verb.id == address.action)
+        .map(|(_, action)| *action)?;
+    Some((workspace, action))
+}
+
+impl crate::workspaces::Workspaces {
+    /// The rows of `workspace`'s mail accounts (its UUID) `asked` is offered:
+    /// those the workspace's policy on its mail lets it ask.
+    pub(super) async fn mail_account_rows(
+        &self,
+        asked: super::Asked<'_>,
+        workspace: &str,
+    ) -> Vec<CatalogueRow> {
+        let root = workspace_governance_resource(workspace);
+        let resource = workspace_governance_child(workspace, Some(WORKSPACE_MAIL_ACCOUNTS));
+        let mut rows = Vec::new();
+        for (verb, action) in ACCOUNT_VERBS {
+            let effect = crate::workspaces::person_settings::mail_effect(action);
+            if self
+                .reaching(asked, Store::MAIL, action, effect)
+                .await
+                .is_ok()
+            {
+                let mut row = verb.row(super::GOVERNANCE, &resource, "Mail accounts");
+                row.parent_resource.clone_from(&root);
+                // Reading `workspace/mail-accounts` lists them.
+                if action == person_accounts::LIST
+                    && let Some(listing) = row.action.as_mut()
+                {
+                    listing
+                        .contract
+                        .tags
+                        .push(tilo_actions::DOCUMENT_READ_TAG.to_owned());
+                }
+                rows.push(row);
+            }
+        }
+        rows
+    }
+
+    /// Run `request`, one of the workspace's mail account actions in its
+    /// governance tree, as the `tilo.accounts` action `action` it is, in the
+    /// workspace `workspace` (its UUID) the request came through.
+    pub(super) async fn mail_account_invoke(
+        &self,
+        asked: super::Asked<'_>,
+        (workspace, action): (&str, &str),
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+        let (workspace_id, caller, certificate) = asked;
+        let here = match workspace_id {
+            Some(id) => self.workspace_identity(id).await,
+            None => None,
+        };
+        if here.as_deref() != Some(workspace) {
+            return Err(tilo_actions::remote::ActionCallError::UnknownAction);
+        }
+        let mut asking = request.clone();
+        asking.target = person_accounts::target(action);
+        self.person_accounts_invoke(workspace_id, caller, certificate, &asking)
+            .await
     }
 }

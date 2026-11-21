@@ -1,5 +1,5 @@
 //! The lines a person reads for a listing the API answers: the workspaces,
-//! keys, people, wait list and servers. Each answer carries them as its
+//! keys, people and wait list. Each answer carries them as its
 //! `text`, written here once, so `tilo`, a script and an SDK print one
 //! listing and never re-render the typed fields themselves.
 
@@ -178,28 +178,6 @@ pub fn wait_list(listed: &Value) -> String {
     said
 }
 
-/// The servers keeping a workspace (`Servers`): each by its device key, the
-/// one asked marked.
-#[must_use]
-pub fn servers(listed: &Value) -> String {
-    let mut said = String::from("kept by:");
-    for server in rows(listed, "servers") {
-        let here = if server.get("here").and_then(Value::as_bool) == Some(true) {
-            "  (asked here)"
-        } else {
-            ""
-        };
-        let _ = write!(said, "\n  {}{here}", text(server, "device"));
-    }
-    if listed.get("confirmed").and_then(Value::as_bool) == Some(false) {
-        said.push_str(
-            "\nthe server that was let go was not reached: it is no longer named, and lets the \
-             workspace go once it hears so",
-        );
-    }
-    said
-}
-
 /// `answer` with `lines` of it as its `text`, when it is an object.
 #[must_use]
 pub fn with_text(mut answer: Value, lines: fn(&Value) -> String) -> Value {
@@ -253,15 +231,6 @@ mod tests {
 
     #[test]
     fn a_listing_carries_its_lines_as_its_text() {
-        let listed = with_text(
-            json!({"servers": [{"device": "ab12", "here": true}], "confirmed": false}),
-            servers,
-        );
-        assert_eq!(
-            listed["text"],
-            "kept by:\n  ab12  (asked here)\nthe server that was let go was not reached: it is \
-             no longer named, and lets the workspace go once it hears so"
-        );
         assert_eq!(
             with_text(json!({"entries": []}), wait_list)["text"],
             "the wait list is empty"

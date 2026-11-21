@@ -103,6 +103,16 @@ impl Mcp<'_> {
         reply
     }
 
+    /// `tilo_ls` with `arguments`, as a person reads the listing.
+    pub(super) async fn tilo_ls(&mut self, arguments: Value) -> Value {
+        let (status, reply) = self
+            .post(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                         "params": {"name": "tilo_ls", "arguments": arguments}}))
+            .await;
+        assert_eq!(status, 200, "{reply}");
+        reply
+    }
+
     /// What `tilo_do` of `path` with `args` answered, which it ran.
     pub(super) async fn did(&mut self, path: &str, args: Value) -> Value {
         let reply = self.tilo_do(json!({"path": path, "args": args})).await;

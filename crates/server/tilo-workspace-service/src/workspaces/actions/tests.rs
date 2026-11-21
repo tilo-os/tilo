@@ -12,8 +12,8 @@ use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CatalogueQuery, Confirmation, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
+    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
 use tilo_peer_state::join::Role;
@@ -159,11 +159,28 @@ async fn offered(
         max_results: 100,
         ..CatalogueQuery::default()
     };
-    let page = settled(host.in_workspace(workspace_id).query(caller, query))
+    let provider = host.in_workspace(workspace_id);
+    let page = settled(provider.query(caller, query.clone()))
         .await
         .unwrap();
-    page.rows
-        .into_iter()
+    // And what the resources under the workspace's root hold, as browsing
+    // its tree finds them.
+    let mut rows = Vec::new();
+    for row in page.rows {
+        if row.has_children
+            && !rows
+                .iter()
+                .any(|known: &CatalogueRow| known.resource.id == row.resource.id)
+        {
+            let under = CatalogueQuery {
+                parent_resource: Some(row.resource.id.clone()),
+                ..query.clone()
+            };
+            rows.extend(settled(provider.query(caller, under)).await.unwrap().rows);
+        }
+        rows.push(row);
+    }
+    rows.into_iter()
         .filter_map(|row| row.action.map(|action| action.address.action))
         .collect()
 }

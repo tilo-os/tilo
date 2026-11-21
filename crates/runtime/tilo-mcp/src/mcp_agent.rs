@@ -1500,17 +1500,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 } else {
                     self.level(&provider, "", levels).await?
                 };
-                // A host service (the desktop's layout, on `desktop:session`)
-                // publishes everything on its one resource: its actions are
-                // the service's own, `desktop#<action>`. A resource's one
-                // container (Tasks' tracker) holds what the app offers more.
-                if provider.parse::<u64>().is_err()
-                    && root.own.is_empty()
-                    && let [only] = root.children.as_slice()
-                    && !only.container
-                {
-                    root.own = only.actions.clone();
-                }
+                as_the_service(&provider, &mut root);
                 root
             }
         };
@@ -2961,6 +2951,41 @@ fn no_read_action(resolved: &Resolved) -> Reply {
         text.push_str("; tilo_ls lists what is inside");
     }
     Reply::failed(text)
+}
+
+/// The top level `root` of the host service `provider`, as the service itself
+/// answers it.
+fn as_the_service(provider: &str, root: &mut Level) {
+    // A host service (the desktop's layout, on `desktop:session`)
+    // publishes everything on its one resource: its actions are
+    // the service's own, `desktop#<action>`. A resource's one
+    // container (Tasks' tracker) holds what the app offers more.
+    if provider.parse::<u64>().is_err()
+        && root.own.is_empty()
+        && let [only] = root.children.as_slice()
+        && !only.container
+    {
+        root.own = only.actions.clone();
+    }
+    // A host service's one top resource holding more (a workspace's
+    // governance, holding its servers and apps) is the service
+    // itself: its actions are the service's own (`workspace#member.list`),
+    // and what it holds is listed as the service's.
+    if provider.parse::<u64>().is_err()
+        && !tilo_actions::remote::is_resource_provider(provider)
+        && root.own.is_empty()
+        && let [only] = root
+            .children
+            .iter()
+            .filter(|node| node.parent.is_empty())
+            .collect::<Vec<_>>()
+            .as_slice()
+        && only.container
+    {
+        let only = (*only).clone();
+        root.own = only.actions;
+        root.children.retain(|node| node.id != only.id);
+    }
 }
 
 #[cfg(test)]

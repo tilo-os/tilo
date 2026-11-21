@@ -18,7 +18,6 @@ use neighbour_wire::NeighbourMsg;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
 };
 use tilo_endpoint_reachability::Reachability;
 use tilo_identity::identity_store::DeviceIdentity;
@@ -381,14 +380,9 @@ fn governance_request(
 ) -> InvokeRequest {
     InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(
-                workspace_governance_resource(workspace),
-                action,
-            ),
-        },
+        target: RemoteActionTarget::workspace_governance(workspace, action),
         argument: InvokeArgument::Json(arguments),
+
         context: None,
         confirmation: None,
         revision: None,

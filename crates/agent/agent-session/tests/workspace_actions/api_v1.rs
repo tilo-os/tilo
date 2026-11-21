@@ -1523,9 +1523,13 @@ async fn a_call_reaches_the_server_that_keeps_the_workspace_when_another_answers
         )
         .unwrap();
         let through = V1 { api: &front, token };
-        // Asked of the server itself, so the answer does not wait for the workspace's apps.
+        // The workspace's own governance, which the server keeping it answers.
         let (status, held) = through
-            .get(&format!("/v1/workspaces/{workspace}/servers"))
+            .post(
+                &format!("/v1/workspaces/{workspace}/resources/workspace/servers/actions/list"),
+                &serde_json::json!({}),
+                &[],
+            )
             .await;
         assert_eq!(
             status, 200,

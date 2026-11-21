@@ -58,10 +58,11 @@ use tilo_action_policy::roles::{self, governance};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
-    WORKSPACE_GOVERNANCE_PROVIDER, mcp_server, person_accounts, person_asking, person_connections,
-    person_formats, person_models, person_telling, person_vault, server_account,
-    workspace_governance_resource,
+    InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_SERVERS, mcp_server,
+    person_accounts, person_asking, person_connections, person_formats, person_models,
+    person_telling, person_vault, server_account, workspace_governance_address,
+    workspace_governance_operation, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -764,7 +765,10 @@ impl Publisher {
             app_id: self.provider.into(),
             workspace: workspace.to_owned(),
             document_id: String::new(),
-            browsable: false,
+            // A workspace's governance is a published tree from its root
+            // (`workspace`), listed beside its apps; the others are reached
+            // by name.
+            browsable: self.provider == WORKSPACE_GOVERNANCE_PROVIDER,
         }
     }
 }
@@ -832,6 +836,47 @@ impl Verb {
             surface: None,
         }
     }
+}
+
+impl Verb {
+    /// This verb's row in `workspace`'s governance tree, the workspace named
+    /// `name`: at the address the tree publishes it
+    /// ([`tilo_actions::remote::workspace_governance_address`]), on the root or
+    /// on the resource under it that holds it.
+    fn governance_row(&self, workspace: &str, name: &str) -> CatalogueRow {
+        let address = workspace_governance_address(workspace, self.id);
+        let root = workspace_governance_resource(workspace);
+        let child = address
+            .resource
+            .strip_prefix(root.as_str())
+            .and_then(|rest| rest.strip_prefix('/'));
+        let label = match child {
+            Some(WORKSPACE_SERVERS) => "Servers",
+            Some(WORKSPACE_APPS) => "Apps",
+            Some(other) => other,
+            None => name,
+        };
+        let mut row = self.row(GOVERNANCE, &address.resource, label);
+        if child.is_some() {
+            row.parent_resource.clone_from(&root);
+        }
+        if let Some(action) = row.action.as_mut() {
+            action.address = address;
+        }
+        row
+    }
+}
+
+/// `rows` of a workspace's governance tree, its root saying it holds what
+/// is offered under it.
+fn governance_tree(mut rows: Vec<CatalogueRow>) -> Vec<CatalogueRow> {
+    let holds = rows.iter().any(|row| !row.parent_resource.is_empty());
+    for row in &mut rows {
+        if row.parent_resource.is_empty() {
+            row.has_children = holds;
+        }
+    }
+    rows
 }
 
 /// The governance action `action` depends on, for one this provider names.
@@ -1253,7 +1298,6 @@ impl Workspaces {
                 let workspace = governed.lock().await;
                 offer.generation = workspace.record.generation;
                 let now = tilo_clock::unix_now_ns();
-                let resource = workspace_governance_resource(workspace.workspace());
                 let owner = device.user_public_key == self.inner.host.cert.user_public_key;
                 let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
                 let agent_may = |verb: &Verb| {
@@ -1286,12 +1330,21 @@ impl Workspaces {
                             now,
                         )
                     })
-                    .map(|verb| verb.row(GOVERNANCE, &resource, &workspace.name()))
+                    .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
                     .collect();
                 if operating.is_some() {
                     rows.extend(server::rows(&workspace));
                 }
-                offer.add(GOVERNANCE, workspace.workspace(), rows);
+                let id = workspace.workspace().to_owned();
+                drop(workspace);
+                // The workspace's mail accounts, as its policy on its mail
+                // lets the caller ask them.
+                #[cfg(not(target_arch = "wasm32"))]
+                rows.extend(
+                    self.mail_account_rows((Some(workspace_id), caller, certificate), &id)
+                        .await,
+                );
+                offer.add(GOVERNANCE, &id, governance_tree(rows));
             } else if let Some((governed, _device)) = operating {
                 // An agent of the person's asks what they ask of their
                 // servers: the workspace's governance is not theirs.
@@ -1392,16 +1445,34 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
         match (request.target.provider.as_str(), workspace_id) {
-            (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id))
-                if request.target.address.action
-                    == tilo_server_session::workspaces::RUN_UNATTENDED =>
-            {
-                self.unattended_invoke(workspace_id, caller, certificate, request)
-                    .await
-            }
             (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
-                self.governance_invoke(workspace_id, caller, certificate, request)
-                    .await
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(asked) = mail::account_action(&request.target.address) {
+                    return self
+                        .mail_account_invoke(
+                            (Some(workspace_id), caller, certificate),
+                            asked,
+                            request,
+                        )
+                        .await;
+                }
+                // The tree publishes each verb where a person looks for it
+
+                // (`workspace/servers#add`); the verb is what it is granted and
+                // checked as. An address the tree does not publish is unknown.
+                let (workspace, operation) =
+                    workspace_governance_operation(&request.target.address)
+                        .ok_or(ActionCallError::UnknownAction)?;
+                let mut asked = request.clone();
+                asked.target.address =
+                    ActionAddress::new(workspace_governance_resource(workspace), operation);
+                if operation == tilo_server_session::workspaces::RUN_UNATTENDED {
+                    self.unattended_invoke(workspace_id, caller, certificate, &asked)
+                        .await
+                } else {
+                    self.governance_invoke(workspace_id, caller, certificate, &asked)
+                        .await
+                }
             }
             (HOST_ACTIONS_PROVIDER, _) => {
                 let certificate = Self::host_actions_certificate(caller, certificate)?;
@@ -2875,6 +2946,59 @@ impl GovernedServer {
 }
 
 impl GovernedServer {
+    /// Whether `message` browses everything the workspace publishes: a
+    /// catalogue page naming no provider, which the apps answer and the
+    /// governance's own publishers join.
+    fn browses(message: &RemoteActionMessage) -> bool {
+        matches!(
+            message,
+            RemoteActionMessage::CatalogueRequest { query, .. }
+                if query.provider.is_none()
+                    && query.view_resource.is_none()
+                    && query.canonical_route.is_none()
+                    && query.target.is_none()
+                    && query.action.is_none()
+        )
+    }
+
+    /// `answered`, the apps' page `caller` browsed, with the browsable
+    /// publishers of `governance` beside the apps': the workspace's own tree
+    /// (`workspace`) is listed among its apps, and its rows are its own to
+    /// list when asked by provider.
+    fn beside_apps(
+        &self,
+        governance: &impl ActionProvider,
+        caller: &Caller,
+        answered: Pending<RemoteActionMessage>,
+    ) -> Pending<RemoteActionMessage> {
+        let publishers = governance.query(caller, CatalogueQuery::default());
+        let (completer, merged) = tilo_actions::remote::pending();
+        self.governance.shared.runtime.spawn(async move {
+            // An answer the apps abandoned is abandoned here too.
+            let Some(mut answer) = answered.await else {
+                return;
+            };
+            if let RemoteActionMessage::CatalogueResponse {
+                result: Ok(page), ..
+            } = &mut answer
+                && let Some(Ok(governed)) = publishers.await
+            {
+                for publisher in governed.providers {
+                    if publisher.browsable
+                        && !page.providers.iter().any(|listed| {
+                            listed.provider == publisher.provider
+                                && listed.workspace == publisher.workspace
+                        })
+                    {
+                        page.providers.push(publisher);
+                    }
+                }
+            }
+            completer.complete(answer);
+        });
+        merged
+    }
+
     /// Where a frame of `workspace_id`'s goes: this host's own governance
     /// stays here, and what its embedder's apps place elsewhere (a Browser
     /// window on a VM host) is theirs, with the caller's certificate where
@@ -2924,7 +3048,17 @@ impl AppActionServer for GovernedServer {
                 message,
             );
         }
-        self.apps.as_ref()?.serve(workspace_id, caller, message)
+        let browses = Self::browses(&message);
+        let answered = self.apps.as_ref()?.serve(workspace_id, caller, message)?;
+        Some(if browses {
+            self.beside_apps(
+                &self.governance.in_workspace(workspace_id),
+                caller,
+                answered,
+            )
+        } else {
+            answered
+        })
     }
 
     fn serve_certified(
@@ -2941,9 +3075,20 @@ impl AppActionServer for GovernedServer {
                 message,
             );
         }
-        self.apps
-            .as_ref()?
-            .serve_certified(workspace_id, caller, certificate, message)
+        let browses = Self::browses(&message);
+        let answered =
+            self.apps
+                .as_ref()?
+                .serve_certified(workspace_id, caller, certificate, message)?;
+        Some(if browses {
+            self.beside_apps(
+                &self.governance.in_workspace_as(workspace_id, certificate),
+                caller,
+                answered,
+            )
+        } else {
+            answered
+        })
     }
 
     fn serve_host(

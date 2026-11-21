@@ -141,12 +141,11 @@ pub(super) fn verb(action: &str) -> Option<&'static ServerVerb> {
 
 /// The rows of what a person asks of their servers, published on `workspace`.
 pub(super) fn rows(workspace: &crate::workspaces::GovernedWorkspace) -> Vec<CatalogueRow> {
-    let resource = super::workspace_governance_resource(workspace.workspace());
     SERVER_VERBS
         .iter()
         .map(|verb| {
             verb.verb
-                .row(super::GOVERNANCE, &resource, &workspace.name())
+                .governance_row(workspace.workspace(), &workspace.name())
         })
         .collect()
 }

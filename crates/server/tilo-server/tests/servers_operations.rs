@@ -14,11 +14,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
+use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
 };
-use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server::WorkspaceId;
 use tilo_server::servers::{self, person_workspace_id, applied};
 use tilo_server::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer};
@@ -73,10 +72,7 @@ async fn try_ask(
     let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
     let message = RemoteActionMessage::Invoke(InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
-            address: ActionAddress::new(workspace_governance_resource(workspace), action),
-        },
+        target: RemoteActionTarget::workspace_governance(workspace, action),
         argument: InvokeArgument::Json(match argument {
             Value::Object(object) => object,
             _ => return Err("arguments are an object".into()),

@@ -260,20 +260,14 @@ async fn govern(
 ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
     use tilo_actions::remote::{
         InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-        RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
+        RemoteActionTarget,
     };
     let serde_json::Value::Object(argument) = argument else {
         panic!("arguments are an object");
     };
     let message = RemoteActionMessage::Invoke(InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(
-                workspace_governance_resource(&workspace.workspace),
-                action,
-            ),
-        },
+        target: RemoteActionTarget::workspace_governance(&workspace.workspace, action),
         argument: InvokeArgument::Json(argument),
         context: None,
         confirmation: None,

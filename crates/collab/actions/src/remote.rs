@@ -187,20 +187,114 @@ pub const WORKSPACE_GOVERNANCE_PROVIDER: &str =
 pub const WORKSPACE_GOVERNANCE_KIND: &str = "workspace.permissions";
 
 impl RemoteActionTarget {
-    /// The governance action `verb` (one of
-    /// `tilo_action_policy::roles::governance`) on the workspace `workspace`.
+    /// The governance action granted as `verb` (one of
+    /// `tilo_action_policy::roles::governance`, `server.add` and the like) on
+    /// the workspace `workspace`, at the address its tree publishes it
+    /// ([`workspace_governance_address`]).
     #[must_use]
     pub fn workspace_governance(workspace: &str, verb: &str) -> Self {
         Self {
             provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
-            address: ActionAddress::new(workspace_governance_resource(workspace), verb),
+            address: workspace_governance_address(workspace, verb),
         }
     }
 }
 
+/// The root of a workspace's governance tree: the workspace itself, the
+/// resource an agent's path `workspace` names.
 #[must_use]
 pub fn workspace_governance_resource(workspace: &str) -> String {
     format!("{WORKSPACE_GOVERNANCE_KIND}:{workspace}")
+}
+
+/// The servers keeping a workspace, under its governance root
+/// (`workspace/servers`).
+pub const WORKSPACE_SERVERS: &str = "servers";
+/// The apps and bots a workspace uses, under its governance root
+/// (`workspace/apps`).
+pub const WORKSPACE_APPS: &str = "apps";
+/// The mail accounts a workspace keeps on its server, under its governance
+/// root (`workspace/mail-accounts`): `tilo.accounts`'s, reached by path.
+pub const WORKSPACE_MAIL_ACCOUNTS: &str = "mail-accounts";
+
+/// Where a workspace's governance tree publishes the actions it grants by
+/// another name: the operation a grant and a policy name it by, the resource
+/// under the root it is on (none for the root itself) and its id there, as a
+/// person names it. An operation not listed is published on the root under its
+/// own name.
+pub const WORKSPACE_GOVERNANCE_PUBLISHED: [(&str, Option<&str>, &str); 10] = [
+    ("server.list", Some(WORKSPACE_SERVERS), "list"),
+    ("server.add", Some(WORKSPACE_SERVERS), "add"),
+    ("server.remove", Some(WORKSPACE_SERVERS), "remove"),
+    ("server.move", Some(WORKSPACE_SERVERS), "move"),
+    ("copies.set", Some(WORKSPACE_SERVERS), "copies"),
+    ("install-app", Some(WORKSPACE_APPS), "install-app"),
+    ("uninstall-app", Some(WORKSPACE_APPS), "uninstall-app"),
+    ("upload-app-file", Some(WORKSPACE_APPS), "upload-app-file"),
+    ("request-bot", Some(WORKSPACE_APPS), "request-bot"),
+    (
+        "withdraw-bot-request",
+        Some(WORKSPACE_APPS),
+        "withdraw-bot-request",
+    ),
+];
+
+/// The resource `child` of `workspace`'s governance tree: the root for `None`.
+#[must_use]
+pub fn workspace_governance_child(workspace: &str, child: Option<&str>) -> String {
+    let root = workspace_governance_resource(workspace);
+    match child {
+        Some(child) => format!("{root}/{child}"),
+        None => root,
+    }
+}
+
+/// The address `workspace`'s governance tree publishes the operation
+/// `operation` at.
+#[must_use]
+pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionAddress {
+    match WORKSPACE_GOVERNANCE_PUBLISHED
+        .iter()
+        .find(|(granted, _, _)| *granted == operation)
+    {
+        Some((_, child, action)) => {
+            ActionAddress::new(workspace_governance_child(workspace, *child), *action)
+        }
+        None => ActionAddress::new(workspace_governance_resource(workspace), operation),
+    }
+}
+
+/// The workspace and the operation `address` asks of that workspace's
+/// governance, when its tree publishes one there: what
+/// [`workspace_governance_address`] maps back. An operation published
+/// elsewhere, asked by its grant's name, is none.
+#[must_use]
+pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, &str)> {
+    let named = address
+        .resource
+        .strip_prefix(workspace_governance_resource("").as_str())?;
+    let (workspace, child) = match named.split_once('/') {
+        Some((workspace, child)) => (workspace, Some(child)),
+        None => (named, None),
+    };
+    if workspace.is_empty() {
+        return None;
+    }
+    let action = address.action.as_str();
+    let published = WORKSPACE_GOVERNANCE_PUBLISHED
+        .iter()
+        .find(|(_, at, published)| *at == child && *published == action);
+    match published {
+        Some((granted, _, _)) => Some((workspace, granted)),
+        None if child.is_none()
+            && !WORKSPACE_GOVERNANCE_PUBLISHED
+                .iter()
+                .any(|(granted, _, _)| *granted == action) =>
+        {
+            Some((workspace, action))
+        }
+        None => None,
+    }
 }
 
 /// Pairing a nearby device with the person's identity. The provider runs it —

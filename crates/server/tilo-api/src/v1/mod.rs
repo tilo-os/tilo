@@ -769,39 +769,6 @@ impl<'a> Caller<'a> {
                 shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
                     .map(|typed| Answer::ok(lines::with_text(typed, lines::wait_list)))
             }
-            "listServers" => {
-                let listed = self
-                    .call("tilo_do", json!({"path": "workspace/servers#list"}))
-                    .await?;
-                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::servers)))
-            }
-            "addServer" => {
-                let new: answers::NewServer = self.json_body()?;
-                let added = json!({"path": "workspace/servers#add", "args": new});
-                let listed = self.call("tilo_do", added).await?;
-                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::servers)))
-            }
-            "removeServer" => {
-                let server = self.params.get("server").to_owned();
-                let removed =
-                    json!({"path": "workspace/servers#remove", "args": {"server": server}});
-                let listed = self.call("tilo_do", removed).await?;
-                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::servers)))
-            }
-            "moveServer" => {
-                let server = self.params.get("server").to_owned();
-                let to: answers::NewServer = self.json_body()?;
-                let moved = json!({
-                    "path": "workspace/servers#move",
-                    "args": {"server": server, "origin": to.origin},
-                });
-                let listed = self.call("tilo_do", moved).await?;
-                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
-                    .map(|typed| Answer::ok(lines::with_text(typed, lines::servers)))
-            }
             "invitePerson" => {
                 let new: answers::NewInvitation = self.json_body()?;
                 let invite = json!({"path": "workspace/members#invite", "args": new});

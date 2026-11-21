@@ -34,11 +34,8 @@
 //! does, while the session lives: the host is the session's one voice, so the
 //! server says nothing of it itself.
 
-pub mod apps;
-pub mod hosts;
 pub mod invocations;
 pub mod keys;
-pub mod mail_accounts;
 pub mod members;
 pub mod models;
 pub mod unattended;
@@ -466,20 +463,6 @@ impl Session {
                 .unwrap_or(false);
             if members::addresses(tool, arguments) {
                 let answered = self.members(workspace, tool, arguments, structured).await;
-                return Reply::one(result(&id, &answered));
-            }
-            if apps::addresses(tool, arguments) {
-                let answered = self.apps(workspace, tool, arguments, structured).await;
-                return Reply::one(result(&id, &answered));
-            }
-            if hosts::addresses(tool, arguments) {
-                let answered = self.hosts(workspace, tool, arguments, structured).await;
-                return Reply::one(result(&id, &answered));
-            }
-            if mail_accounts::addresses(tool, arguments) {
-                let answered = self
-                    .mail_accounts(workspace, tool, arguments, structured)
-                    .await;
                 return Reply::one(result(&id, &answered));
             }
             if unattended::addresses(tool, arguments) {
@@ -982,18 +965,9 @@ args: {role, email?}, workspace}` answers a `link` that signs them in and lands 
 `role` (viewer, commenter, editor or administrator); `workspace/members#list` names who is in it, and \
 `workspace/members#name {name}` sets how it names the key's own person, which is what their \
 invitations say. \
-A workspace can be kept by more than one server: `tilo_do {path: \"workspace/servers#add\", \
-args: {origin: \"https://tilo.sh\"}, workspace}` has that server keep it as well (both keep it, a \
-change on either reaches the other, and its people reach it at either; that server takes it only \
-for an owner it let in), `workspace/servers#list` names the servers keeping it and \
-`workspace/servers#remove {server}` lets one go; only its owners choose. \
-The version of an app a workspace uses, and the bots it asks its server for, are its governance too: \
-`workspace/apps#install-app {app, version, surface, package, publisher}` chooses the version every \
-member is to use, `workspace/apps#upload-app-file {file, offset, total, data}` hands the server the \
-package first, `workspace/apps#request-bot {entry, version}` asks it to start a bot (a developer may \
-name their own `program`), `workspace/apps#uninstall-app {app}` and \
-`workspace/apps#withdraw-bot-request {entry}` take one back, and only members the workspace lets \
-install apps or bots may. \
+`tilo_ls workspace` (with `workspace`) lists the workspace's governance beside its apps, as any \
+path lists: the servers keeping it (`workspace/servers`), the versions of apps and the bots it \
+uses (`workspace/apps`) and its mail accounts (`workspace/mail-accounts`). \
 A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
 time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \
 to let keys minted for that workspace alone run commands there without asking (and in branches \

@@ -1,5 +1,5 @@
 //! A key a person approved is their agent in the workspace: it lists the workspace's accounts
-//! through `tilo.accounts`, as what an agent of theirs may. A key the workspace holds no grant
+//! at `workspace/mail-accounts`, as what an agent of theirs may. A key the workspace holds no grant
 //! of is refused, and told nothing of its mail.
 
 use super::api::{ISSUER, Mcp};
@@ -28,11 +28,27 @@ async fn read(on_server: &OnServer, token: &str, workspace: &str, path: &str) ->
     (status, reply)
 }
 
+/// What `tilo_ls` of `path` in `workspace` lists for a key of `token`'s, as text.
+async fn listed(on_server: &OnServer, token: &str, workspace: &str, path: &str) -> String {
+    let mut session = Mcp {
+        api: &on_server.api,
+        path: "/mcp".into(),
+        token: token.to_owned(),
+        session: None,
+    };
+    let (status, init) = session.initialize().await;
+    assert_eq!(status, 200, "{init}");
+    session
+        .tilo_ls(json!({"path": path, "workspace": workspace}))
+        .await
+        .to_string()
+}
+
 /// Whether `reply` is the API's `tilo_read` answer, as opposed to its refusal.
 fn read_ok(reply: &Value) -> bool {
     reply.get("error").is_none()
-        && reply["result"]["isError"].as_bool() != Some(true)
-        && reply["result"]["structuredContent"]["status"] == "ok"
+        && reply["result"]["isError"].as_bool() == Some(false)
+        && reply["result"]["structuredContent"]["fields"].is_object()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -52,14 +68,21 @@ async fn a_keys_mail_grant_lets_it_list_the_workspaces_accounts() {
     // may there.
     let mail = approved_key(&on_server, &ada, &page, "Mail reader").await;
 
-    // It lists the workspace's accounts through `tilo.accounts`.
-    let (status, listed) = read(
-        &on_server,
-        &mail,
-        &workspace,
-        tilo_api::session::mail_accounts::ROOT,
-    )
-    .await;
+    // The workspace's published tree holds them beside its apps: `workspace` at the root, and
+    // in it the accounts.
+    let root = listed(&on_server, &mail, &workspace, "").await;
+    assert!(
+        root.contains("\\nworkspace "),
+        "the workspace beside its apps: {root}"
+    );
+    let governance = listed(&on_server, &mail, &workspace, "workspace").await;
+    assert!(
+        governance.contains("Mail accounts"),
+        "its mail accounts in the workspace's tree: {governance}"
+    );
+
+    // It lists the workspace's accounts at `workspace/mail-accounts`.
+    let (status, listed) = read(&on_server, &mail, &workspace, "workspace/mail-accounts").await;
     assert_eq!(status, 200, "{listed}");
     assert!(
         read_ok(&listed),
@@ -75,13 +98,7 @@ async fn a_keys_mail_grant_lets_it_list_the_workspaces_accounts() {
     let (bo, _) = tilo_user_identity::UserIdentity::generate("Bo", 2);
     let bo_page = enrol(&bo, "Bo's browser", DeviceCapabilities::member());
     let theirs = approved_key(&on_server, &bo, &bo_page, "Bo's backend").await;
-    let (status, refused) = read(
-        &on_server,
-        &theirs,
-        &workspace,
-        tilo_api::session::mail_accounts::ROOT,
-    )
-    .await;
+    let (status, refused) = read(&on_server, &theirs, &workspace, "workspace/mail-accounts").await;
     assert_eq!(status, 200, "{refused}");
     assert!(
         !read_ok(&refused),

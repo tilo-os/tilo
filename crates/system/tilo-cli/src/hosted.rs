@@ -1611,41 +1611,56 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
 }
 
 /// `tilo workspace servers … -w <workspace>`: the servers keeping the
-/// workspace, and choosing them.
+/// workspace, and choosing them, as the workspace's own `workspace/servers`
+/// actions.
 fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
-        let path = format!("/v1/workspaces/{workspace}/servers");
-        let listed = match cmd {
-            ServersCmd::Ls => client.get(&path).await?,
-            ServersCmd::Add { origin } => {
-                client
-                    .post(&path, &serde_json::json!({ "origin": origin }))
-                    .await?
-            }
-            ServersCmd::Remove { server } => {
-                let server = percent_encoding::utf8_percent_encode(
-                    &server,
-                    percent_encoding::NON_ALPHANUMERIC,
-                );
-                client.delete(&format!("{path}/{server}")).await?
-            }
-            ServersCmd::Move { from, to } => {
-                let from = percent_encoding::utf8_percent_encode(
-                    &from,
-                    percent_encoding::NON_ALPHANUMERIC,
-                );
-                client
-                    .post(
-                        &format!("{path}/{from}/move"),
-                        &serde_json::json!({ "origin": to }),
-                    )
-                    .await?
-            }
+        let (action, args) = match cmd {
+            ServersCmd::Ls => ("list", json!({})),
+            ServersCmd::Add { origin } => ("add", json!({ "origin": origin })),
+            ServersCmd::Remove { server } => ("remove", json!({ "server": server })),
+            ServersCmd::Move { from, to } => ("move", json!({ "server": from, "origin": to })),
         };
-        Ok(show(reach.json, &listed, text(&listed, "text")))
+        let answer = client
+            .act(
+                &workspace,
+                "workspace/servers",
+                action,
+                &args,
+                &format!("workspace/servers#{action}"),
+            )
+            .await?;
+        let listed = answer.get("result").cloned().unwrap_or_default();
+        Ok(show(reach.json, &answer, &servers_text(&listed)))
     })
+}
+
+/// The servers keeping a workspace as a person reads them: each by its
+/// device key, the one asked marked.
+fn servers_text(listed: &Value) -> String {
+    let mut said = String::from("kept by:");
+    for server in listed
+        .get("servers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let here = if server.get("here").and_then(Value::as_bool) == Some(true) {
+            "  (asked here)"
+        } else {
+            ""
+        };
+        let _ = write!(said, "\n  {}{here}", text(server, "device"));
+    }
+    if listed.get("confirmed").and_then(Value::as_bool) == Some(false) {
+        said.push_str(
+            "\nthe server that was let go was not reached: it is no longer named, and lets the \
+             workspace go once it hears so",
+        );
+    }
+    said
 }
 
 /// The id of the workspace a new key is to reach, named as every command names one: by its name

@@ -506,8 +506,24 @@ pub(super) fn argument<T: serde::de::DeserializeOwned>(
     let InvokeArgument::Json(argument) = &request.argument else {
         return Err(invalid(&format!("a request names {what}")));
     };
-    serde_json::from_value(Value::Object(argument.clone()))
-        .map_err(|error| invalid(&format!("{what} is not readable: {error}")))
+    serde_json::from_value(Value::Object(argument.clone())).map_err(|error| {
+        invalid(&format!(
+            "{what} is not readable: {}",
+            without_values(&error)
+        ))
+    })
+}
+
+/// `error` said without the value it was about, which may be a password:
+/// serde names a field it missed between backticks, and quotes a value it
+/// could not read (`invalid type: string "…", expected u16`), so its words
+/// are kept up to the first quoted value.
+fn without_values(error: &serde_json::Error) -> String {
+    let said = error.to_string();
+    match said.split_once('"') {
+        Some((before, _)) => before.trim_end().to_owned(),
+        None => said,
+    }
 }
 
 /// The place in the arrival log a [`person_accounts::ARRIVED`] reads on
@@ -1557,6 +1573,42 @@ mod tests {
     )]
 
     use super::*;
+
+    #[test]
+    fn an_account_it_cannot_read_is_refused_without_its_values() {
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: person_accounts::target(person_accounts::ADD_MAIL),
+            argument: InvokeArgument::Json(
+                serde_json::json!({
+                    "address": "ada@example.test",
+                    "incomingHost": "imap.example.test",
+                    "outgoingHost": "smtp.example.test",
+                    "password": "a-secret-value",
+                    // A field it does not know is read past, so what it cannot
+                    // read is a value of the wrong type, which serde quotes.
+                    "incomingPort": "a-secret-value",
+                })
+                .as_object()
+                .cloned()
+                .unwrap(),
+            ),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let Err(ActionCallError::InvalidRequest { reason }) =
+            argument::<person_accounts::AddMailAccount>(&request, "an account to add")
+        else {
+            panic!("an account of the wrong shape is refused");
+        };
+        assert!(!reason.contains("a-secret-value"), "{reason}");
+        assert!(reason.contains("invalid type"), "{reason}");
+    }
 
     fn temp_root() -> tempfile::TempDir {
         tempfile::tempdir().expect("a temporary root")

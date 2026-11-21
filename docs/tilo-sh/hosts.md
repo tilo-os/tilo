@@ -79,8 +79,8 @@ tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo
 ```
 
 The same is `workspace/servers#add {origin}`, `#list`, `#remove {server}` and `#move {server, origin}`
-for an agent over MCP, and `POST`, `GET` and `DELETE /v1/workspaces/{workspace}/servers` and
-`POST /v1/workspaces/{workspace}/servers/{server}/move` over HTTP. Only the workspace's owners choose its
+for an agent over MCP, and `POST /v1/workspaces/{workspace}/resources/workspace/servers/actions/{action}`
+over HTTP, as every action of the workspace's published tree. Only the workspace's owners choose its
 servers, from a device of theirs or a key they created reaching all their workspaces. A move that the new
 server refuses leaves the workspace where it was.
 
