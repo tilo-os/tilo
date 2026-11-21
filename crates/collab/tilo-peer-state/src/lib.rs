@@ -74,7 +74,6 @@ pub use state::DelegatedWork;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
 pub use state::mail_send_lease;
-pub use state::person_workspace_seed;
 /// The person's own documents between their devices, with no host in between.
 pub use state::{
     AdmittedFrame, MachineRecovery, PERSONAL_ALPN, PersonalSync, device_resource, machines,

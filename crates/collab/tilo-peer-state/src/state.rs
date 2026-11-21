@@ -112,7 +112,7 @@ pub use personal::{
     DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, SETTINGS_KIND, WIFI_KIND,
     WORKSPACES_KIND, store_path,
 };
-pub use seed::{person_workspace_seed, seed_workspace, seed_workspace_at, workspace_seed};
+pub use seed::{seed_workspace, seed_workspace_at, workspace_seed};
 mod compaction_set;
 mod sealed_compaction;
 mod sealed_history;

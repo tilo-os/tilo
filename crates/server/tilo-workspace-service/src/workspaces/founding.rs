@@ -1,17 +1,17 @@
 //! A workspace's first history: the seed it starts from, and the record that
 //! keeps it here.
 //!
-//! A workspace that is one person's own — the Servers workspace, whose id
-//! follows from their root — is founded in their name, so every one of their
-//! devices that makes it writes the same history and two of them that make it
-//! before they see one another make one workspace. The founding names no
-//! device: the device that makes it enters itself as the owner's own, on its
-//! certificate, so it writes the workspace from then on.
+//! Every workspace is founded once, by the device that makes it, and names that
+//! device as its founder. Every other device takes part through enrolment.
+//! The person's own Servers workspace is no exception: its id follows from
+//! their root so their devices find it, but only one device founds it. A
+//! device that founds it again founds another history under the same id, and
+//! a host that holds the first one refuses it.
 
 use std::path::Path;
 
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::{SeedState, StatePeer};
+use tilo_peer_state::StatePeer;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
@@ -21,53 +21,6 @@ use super::{
     DOCUMENT_VERSION, DeviceKeys, GovernedWorkspace, PUBLICATIONS, RECEIPTS,
     WorkspaceDocumentEntry, appended, collaboration, peer_parts,
 };
-
-/// The person in whose name `workspace` is founded, when it is one person's
-/// own: their Servers workspace, under the id derived from their root.
-pub(super) fn founded_by(workspace: Option<&str>, person: &[u8; 32]) -> Option<[u8; 32]> {
-    let workspace = WorkspaceId::parse(workspace?)?;
-    (workspace.to_string() == tilo_server_protocol::servers::admin_workspace_id(person))
-        .then_some(*person)
-}
-
-/// The seed `workspace` starts from: the one history every one of `person`'s
-/// devices makes when it is theirs, else the history the founding `authority`
-/// makes with its `roster`.
-///
-/// # Errors
-/// The workspace is not a UUID, or the document cannot be built.
-pub(super) fn seed(
-    workspace: &str,
-    name: &str,
-    authority: &DeviceCert,
-    roster: &[DeviceCert],
-    founded_by: Option<[u8; 32]>,
-    now: SystemTime,
-) -> Result<SeedState, String> {
-    match founded_by {
-        Some(person) => tilo_peer_state::person_workspace_seed(workspace, &person, name),
-        None => tilo_peer_state::workspace_seed(workspace, authority, roster, name, now),
-    }
-}
-
-/// Have `peer`, a workspace founded in its person's name, take in `authority`
-/// as the owner's own device: an ordinary change every founding device makes
-/// on its certificate, which the other foundings' changes merge with.
-///
-/// # Errors
-/// The certificate is not the owner's device, is revoked, or does not hold up.
-pub(super) fn enter(
-    peer: &mut StatePeer,
-    authority: &DeviceCert,
-    key: &SigningKey,
-    now: SystemTime,
-    founded_by: Option<[u8; 32]>,
-) -> Result<(), String> {
-    if founded_by.is_some() {
-        peer.admit_certificate(authority.clone(), key, now)?;
-    }
-    Ok(())
-}
 
 impl GovernedWorkspace {
     pub(super) fn create(
@@ -108,7 +61,6 @@ impl GovernedWorkspace {
         if dir.join(format!("{workspace}.workspace")).exists() {
             return Err("this host has that workspace already".into());
         }
-        let founded_by = founded_by(Some(&workspace), &authority.user_public_key);
         let roster = vec![authority.clone()];
         let mut peer = StatePeer::new(
             &workspace,
@@ -118,7 +70,7 @@ impl GovernedWorkspace {
             now,
         )?;
         select_exact_admission(&mut peer)?;
-        let mut seed = seed(&workspace, name, authority, &roster, founded_by, now)?;
+        let mut seed = tilo_peer_state::workspace_seed(&workspace, authority, &roster, name, now)?;
         if device.is_some() {
             // The workspace's records are sealed channels this node opens on
             // first use: a seed record would go out in the clear before its
@@ -130,7 +82,6 @@ impl GovernedWorkspace {
         }
         peer.install_seed(seed, key, now)?;
         prepare_governance(&mut peer, key, now)?;
-        enter(&mut peer, authority, key, now, founded_by)?;
         let outgoing = peer
             .publication_mut()
             .durable_bootstrap_messages(key, now, 1)?

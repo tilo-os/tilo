@@ -25,17 +25,25 @@
 //!
 //! The workspace's id follows from the person's root
 //! ([`admin_workspace_id`]), so each of their devices finds the same one
-//! without being told. It is made in the person's name when it is first needed
-//! ([`founded`]): the first machine planned, or the first server taken in. The
-//! founding history is the same on every device that makes it, so two of them
-//! that make it before they see one another make one workspace, and each names
-//! itself among its holders. A server never makes it; a later server asks an
-//! earlier one to take it in ([`admit`]), which enters it in the document, and
-//! the holders then hand it the workspace as they hand a server any workspace
-//! its entry names. A device that does not hold it asks a holder to take it in
-//! ([`take_in`]) and holds it like any other workspace of the person's from
-//! then on. Once it holds the workspace, a server keeps its own entry's
-//! address current ([`enroll`]).
+//! without being told. One device founds it, as any workspace is founded, when
+//! it is first needed ([`founded`]): the first machine planned, or the first
+//! server taken in. That device is its founder, and every other device joins
+//! it: a later server asks an earlier one to take it in ([`admit`]), which
+//! enters it in the document, and the holders then hand it the workspace as
+//! they hand a server any workspace its entry names. A device that does not
+//! hold it asks a holder to take it in ([`take_in`]) and holds it like any
+//! other workspace of the person's from then on. A device that founds it again
+//! anyway (one restored from the recovery words, say, before it heard of the
+//! first) founds another history under the same id, which every host of the
+//! first refuses: it replaces none of the person's servers. Once it holds the
+//! workspace, a server keeps its own entry's address current ([`enroll`]).
+//!
+//! Why the person's servers are a workspace, and not part of the person's own
+//! store beside their devices and workspace list: the servers restart into an
+//! update one at a time under a lease of this workspace (`tilo_server::rollout`),
+//! exactly-once work that only a governed workspace orders, and a server takes
+//! no part in the person's store, whose link knows a device by its endpoint id
+//! while a server's endpoint runs on a key of its own.
 //!
 //! A device of the person that holds a workspace attaches the servers its
 //! document names as holders, and only those: one action on the document
@@ -1153,9 +1161,8 @@ fn validate_label(label: &str) -> Result<String, Refusal> {
 }
 
 /// Whether this device holds its person's Servers workspace: the workspace
-/// names it among its holders, so it writes the document as its own. The
-/// founding history names no device — every one of the person's devices may
-/// make it — and names each one as it founds or is handed it.
+/// names it among its holders, so it writes the document as its own, whether
+/// it founded the workspace or was handed it.
 pub async fn holds_admin(workspaces: &Workspaces) -> bool {
     let own = workspaces.serving_certificate();
     let Some(state) = workspaces
@@ -1171,21 +1178,35 @@ pub async fn holds_admin(workspaces: &Workspaces) -> bool {
         .any(|hint| hint.host.device_public_key == own.device_public_key)
 }
 
-/// Make this device's person's Servers workspace here, unless this device
+/// Found this device's person's Servers workspace here, unless this device
 /// holds it already, and answer its id: what the first thing that needs it
-/// does — the first machine planned, or the first server taken in. Only one of
-/// the person's root-holding devices needs to make it: every other device
-/// either holds it already or asks a holder to take it in.
+/// does — the first machine planned, or the first server taken in. Only one
+/// device founds it: one whose person's list says another device of theirs
+/// keeps it is handed it by a holder instead, as their other workspaces are.
 ///
 /// # Errors
-/// The workspace could not be made.
+/// Another device of the person keeps the workspace, or it could not be made.
 pub async fn founded(workspaces: &Workspaces) -> Result<String, String> {
-    let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
-    if !holds_admin(workspaces).await {
-        workspaces
-            .create_workspace(ADMIN_WORKSPACE_NAME, Some(&admin))
-            .await?;
+    let person = workspaces.serving_certificate().user_public_key;
+    let admin = admin_workspace_id(&person);
+    if holds_admin(workspaces).await {
+        return Ok(admin);
     }
+    if workspaces
+        .kept_elsewhere(&person)
+        .await
+        .iter()
+        .any(|(workspace, _)| *workspace == admin)
+    {
+        return Err(
+            "your Servers workspace is kept on another of your devices; it reaches this one as \
+             your other workspaces do"
+                .into(),
+        );
+    }
+    workspaces
+        .create_workspace(ADMIN_WORKSPACE_NAME, Some(&admin))
+        .await?;
     Ok(admin)
 }
 

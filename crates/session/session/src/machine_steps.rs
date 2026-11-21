@@ -53,8 +53,9 @@ impl MachineSteps {
 
     /// Ask this device's own workspace service the host step `action` with
     /// `arguments`: the service answers every step from the Servers workspace
-    /// it holds. Planning the first machine makes that workspace, in the
-    /// person's name, and this device holds it as it holds any of theirs.
+    /// it holds. Planning the person's first machine founds that workspace
+    /// there; a plan made where another device of theirs keeps it is refused,
+    /// and the workspace reaches this device from where it is kept.
     fn ask(
         &self,
         action: &str,
@@ -65,24 +66,8 @@ impl MachineSteps {
             .as_ref()
             .ok_or("this session keeps no state, so it holds no Servers workspace")?
             .clone();
-        let planning = action == machines::PLAN;
         let action = action.to_owned();
         Ok(crate::landing::off_loop(async move {
-            let admin = tilo_server_protocol::servers::admin_workspace_id(
-                &engine.identity().device_cert.user_public_key,
-            );
-            // A machine is planned before there is a workspace to plan it
-            // into, and only a device that holds the workspace writes it: the
-            // first plan makes it here. Every other step reads what this
-            // device holds, and holds none when it made none.
-            if planning && !engine.is_holder(&admin) {
-                #[cfg(target_os = "linux")]
-                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin)
-                    && let Err(error) = engine.found(workspace, "Servers").await
-                {
-                    tracing::warn!(%error, "the servers workspace was not founded");
-                }
-            }
             let asked = engine
                 .ask_own_host(&action, arguments)
                 .ok_or("this session's own workspace service is not open")?;

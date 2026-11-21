@@ -370,21 +370,7 @@ impl crate::Shared {
         let mut arguments = serde_json::Map::new();
         arguments.insert("device".to_owned(), machine.device.clone().into());
         arguments.insert("nonce".to_owned(), machine.nonce.clone().into());
-        let admin = tilo_server_protocol::servers::admin_workspace_id(
-            &engine.identity().device_cert.user_public_key,
-        );
         drop(crate::landing::off_loop(async move {
-            // The device that planned the machine may be another of theirs:
-            // this one holds the Servers workspace from the moment it knows
-            // it, as every one of the person's devices does.
-            if !engine.is_holder(&admin) {
-                #[cfg(target_os = "linux")]
-                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin)
-                    && let Err(error) = engine.found(workspace, "Servers").await
-                {
-                    tracing::warn!(%error, "the servers workspace was not founded");
-                }
-            }
             let Some(asked) = engine.ask_own_host("machine.admit", arguments) else {
                 tracing::info!(
                     "this device's workspace service is not open, so the machine waits to be taken in where it is held"

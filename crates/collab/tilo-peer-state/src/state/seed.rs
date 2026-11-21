@@ -92,56 +92,6 @@ pub fn seed_workspace_at(
     Ok(changes_of(&mut doc))
 }
 
-/// The seed of a workspace that is a person's own, founded in their name: the
-/// one history every one of their devices makes, before any of them is known to
-/// any other.
-///
-/// The workspace's id follows from the person's root, so two of their devices
-/// that found it before they see one another found the same workspace. The
-/// history here is the same on both — one change under an actor derived from
-/// the workspace and the person, with the person as its owner and its founder,
-/// and no device in it — so the two foundings are one change, and the writes
-/// each device makes afterwards merge into it rather than competing for its
-/// root. Each device names itself among the workspace's holders with an
-/// ordinary signed change ([`crate::PeerGovernanceMut::author_keeping_device`]).
-///
-/// # Errors
-///
-/// Returns an error if `workspace` is not a UUID or the document cannot be
-/// built.
-pub fn person_workspace_seed(
-    workspace: &str,
-    person: &[u8; 32],
-    name: &str,
-) -> Result<SeedState, String> {
-    uuid::Uuid::parse_str(workspace).map_err(err)?;
-    let mut doc = AutoCommit::new().with_actor(founding_actor(workspace, person));
-    founding_rows(&mut doc, workspace, person, &hex::encode(person), &[])?;
-    doc.put(ROOT, "name", name).map_err(err)?;
-    doc.put(ROOT, "desktop_counter_v1", 1_u64).map_err(err)?;
-    doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
-    Ok(SeedState {
-        workspace_changes: changes_of(&mut doc),
-        // The workspace's shared desktop is no part of its founding history: a
-        // layout every founding device wrote would be one document two devices
-        // published at once. It starts with the first layout written to it.
-        documents: Vec::new(),
-    })
-}
-
-/// The Automerge actor a person-founded workspace's founding change is made
-/// under: derived from the person and the workspace alone, so every device that
-/// founds that workspace writes the same change and none writes a later one as
-/// it.
-#[must_use]
-pub fn founding_actor(workspace: &str, person: &[u8; 32]) -> automerge::ActorId {
-    let mut material = workspace.as_bytes().to_vec();
-    material.extend_from_slice(person);
-    automerge::ActorId::from(
-        blake3::derive_key("tilo workspace founding actor v1", &material).to_vec(),
-    )
-}
-
 /// The changes `doc` holds, encoded.
 fn changes_of(doc: &mut AutoCommit) -> Vec<Vec<u8>> {
     doc.get_changes(&[])
@@ -219,29 +169,4 @@ fn founding_rows(
         .map_err(err)?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::person_workspace_seed;
-
-    /// Two of a person's devices that found their workspace before they see
-    /// one another write the same history, so the two are one change and merge
-    /// into one workspace.
-    #[test]
-    fn a_workspace_founded_in_its_persons_name_is_the_same_history_on_every_device() {
-        let workspace = "6f2f3d5a-8c1d-4e2b-9a7c-0d1e2f3a4b5c";
-        let person = [7; 32];
-        let first = person_workspace_seed(workspace, &person, "Servers").unwrap();
-        let second = person_workspace_seed(workspace, &person, "Servers").unwrap();
-        assert_eq!(
-            first.workspace_changes, second.workspace_changes,
-            "the founding is one history on both devices"
-        );
-        let other = person_workspace_seed(workspace, &[8; 32], "Servers").unwrap();
-        assert_ne!(
-            other.workspace_changes, first.workspace_changes,
-            "another person's workspace is another history"
-        );
-    }
 }

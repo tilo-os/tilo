@@ -551,74 +551,122 @@ async fn a_device_that_writes_before_the_document_arrives_keeps_every_entry() {
     .await;
 }
 
-/// Two of a person's own devices found their Servers workspace before they see
-/// one another. They found one workspace — the same history, in the person's
-/// name — and each names itself among its holders; the hand-over then merges
-/// the two copies into the one workspace, which names both.
+/// The servers `hosted` reads in its person's Servers workspace, by name.
+async fn named_servers(hosted: &crate::common::Hosted) -> Vec<String> {
+    let mut names: Vec<String> = servers::read(hosted.host.workspaces())
+        .await
+        .map(|servers| {
+            servers
+                .servers
+                .iter()
+                .map(|(_, server)| server.label.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// The device that founded `hosted`'s copy of the Servers workspace `admin`.
+async fn founder(hosted: &crate::common::Hosted, admin: &str) -> Option<[u8; 32]> {
+    hosted
+        .host
+        .workspaces()
+        .state(admin)
+        .await
+        .and_then(|state| state.governance().founder())
+}
+
+/// The person's Servers workspace has one founder, the device that made it,
+/// like any other workspace. A fresh device of theirs (one restored from the
+/// recovery words, before it heard of the first) that founds it again founds
+/// another history under the same id. When it hands that history to the
+/// holder, the holder refuses it and keeps every server its document names,
+/// and another device of the person that is handed the workspace reads them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_devices_that_found_the_servers_workspace_before_they_meet_hold_one() {
+async fn a_fresh_device_that_founds_the_servers_workspace_again_replaces_no_server() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
-    let first = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
-    let second = serve_on(&alice, &desktop, WorkSetting::own_person()).await;
+    let restored = alice.enrol("restored", DeviceCapabilities::primary());
+    let tablet = alice.enrol("tablet", DeviceCapabilities::member());
+    let holder = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
+    let fresh = serve_on(&alice, &restored, WorkSetting::own_person()).await;
+    let second = serve_on(&alice, &tablet, WorkSetting::own_person()).await;
     let admin = admin_workspace_id(&alice.user_pk);
 
-    // Each founds it on its own, before it hears of the other.
-    servers::founded(first.host.workspaces()).await.unwrap();
-    servers::founded(second.host.workspaces()).await.unwrap();
-    for (hosted, device) in [(&first, &laptop), (&second, &desktop)] {
-        let named = hosted.host.workspaces().hosts(&admin).await.unwrap();
-        assert!(
-            named
-                .iter()
-                .any(|hint| hint.host.device_public_key == device.device_pubkey()),
-            "a founding device names itself among the workspace's holders"
-        );
+    // The laptop founds the workspace and names the person's servers in it.
+    servers::founded(holder.host.workspaces()).await.unwrap();
+    for (device, label) in [(&laptop, "laptop"), (&tablet, "tablet")] {
+        servers::apply(
+            holder.host.workspaces(),
+            Servers::ENROLL_SERVER.with((
+                hex::encode(device.device_pubkey()),
+                label.into(),
+                serde_json::to_string(&holder.host.node_addr()).unwrap(),
+            )),
+        )
+        .await
+        .unwrap();
     }
+    assert_eq!(
+        founder(&holder, &admin).await,
+        Some(laptop.device_pubkey()),
+        "the device that made the workspace is its founder"
+    );
 
-    // One hands it to the other: the two foundings are one workspace.
+    // The fresh device founds it again under the same id, and writes there.
+    servers::founded(fresh.host.workspaces()).await.unwrap();
+    servers::apply(
+        fresh.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(restored.device_pubkey()),
+            "restored".into(),
+            serde_json::to_string(&fresh.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        founder(&fresh, &admin).await,
+        Some(restored.device_pubkey()),
+        "a second founding is founded by its own device, not in the person's name"
+    );
+
+    // It hands its history to the holder, which refuses it: that history
+    // names another founder than the one the holder's document was founded
+    // with.
+    let handed =
+        servers::take_in(fresh.host.workspaces(), &laptop.cert, &holder.host.node_addr()).await;
+    assert_eq!(
+        named_servers(&holder).await,
+        ["laptop", "tablet"],
+        "the holder keeps every server its document names (the hand-over answered {handed:?})"
+    );
+    assert_eq!(
+        founder(&holder, &admin).await,
+        Some(laptop.device_pubkey()),
+        "the holder keeps the workspace its founder made"
+    );
+
+    // Another device of the person that is handed the workspace reads the
+    // servers the holder keeps, and none the second founding named.
     servers::take_in(
-        first.host.workspaces(),
-        &desktop.cert,
+        holder.host.workspaces(),
+        &tablet.cert,
         &second.host.node_addr(),
     )
     .await
     .unwrap();
-    tilo_test_env::within(
-        "both devices to name both holders of the one workspace",
-        async {
-            loop {
-                let mut named = Vec::new();
-                for hosted in [&first, &second] {
-                    named.push(
-                        hosted
-                            .host
-                            .workspaces()
-                            .hosts(&admin)
-                            .await
-                            .map_or(0, |hosts| hosts.len()),
-                    );
-                }
-                if named == [2, 2] {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        },
-    )
+    tilo_test_env::within("the other device to read the person's servers", async {
+        while named_servers(&second).await != ["laptop", "tablet"] {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
     .await;
-    for hosted in [&first, &second] {
-        assert_eq!(
-            hosted
-                .host
-                .workspaces()
-                .summary(&admin)
-                .await
-                .unwrap()
-                .workspace,
-            admin,
-            "both devices hold the one workspace"
-        );
-    }
+    assert_eq!(founder(&second, &admin).await, Some(laptop.device_pubkey()));
+    assert_eq!(
+        named_servers(&holder).await,
+        ["laptop", "tablet"],
+        "the holder still names the same servers"
+    );
 }

@@ -326,12 +326,11 @@ impl PeerGovernance<'_> {
     }
 
     /// The device that founds the workspace's MLS group, and no other device:
-    /// the device the workspace was created on, or, for a workspace founded in
-    /// its person's name, the first of its key-holding devices by device key.
-    /// A person-founded workspace is one every one of their devices makes
-    /// identically when they found it before they see one another, so no
-    /// single device of theirs created it; the first key holder founds its
-    /// group, and a device that is not that one takes the group it hands over.
+    /// the device the workspace was created on, or, for a workspace whose
+    /// founder row names its person rather than a device (a Servers workspace
+    /// an earlier build founded alike on each of the person's devices), the
+    /// first of its key-holding devices by device key. A device that is not
+    /// that one takes the group it hands over.
     #[must_use]
     pub fn founding_device(self) -> Option<[u8; 32]> {
         let founder = self.founder()?;
@@ -348,8 +347,8 @@ impl PeerGovernance<'_> {
             .min()
     }
 
-    /// Who created the workspace: the device it was created on, or, for a
-    /// workspace founded in its person's name, the person's root key. What
+    /// Who created the workspace: the device it was created on, or, where an
+    /// earlier build founded it in its person's name, the person's root key. What
     /// founds the workspace's MLS group is [`Self::founding_device`].
     pub fn founder(self) -> Option<[u8; 32]> {
         let doc = self.peer.core.workspace_doc.as_ref()?;
