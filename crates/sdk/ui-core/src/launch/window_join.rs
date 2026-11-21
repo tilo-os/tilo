@@ -111,7 +111,9 @@ pub(super) fn wait_in_window(
     if arriving.join.is_done() {
         return Some(arriving);
     }
-    let window = dress(arriving_window(spec));
+    let mut window = dress(arriving_window(spec));
+    // What the person types while the record arrives is the app's, which takes it once it stands.
+    window.stand_in_for_arriving_app();
     {
         let _entry = window.enter_wake_scope();
         let wake = crate::wake::WakeHandle::new();

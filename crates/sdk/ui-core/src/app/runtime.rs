@@ -295,6 +295,9 @@ pub(super) struct InputRuntime {
     /// Where the pointer last moved, replayed before a press or release
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
+    /// Keys typed before the window's content arrived, waiting for it.
+    #[cfg(feature = "native")]
+    pub(super) held: super::held_input::HeldInput,
     /// The window has the keyboard: the one a person (or a test control's
     /// activation) addresses among the app's windows.
     pub(super) window_focused: bool,
@@ -326,6 +329,8 @@ impl InputRuntime {
             tab_order_continues_in_host: false,
             pointer: crate::app_core::PointerPlace::default(),
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
+            #[cfg(feature = "native")]
+            held: super::held_input::HeldInput::default(),
         }
     }
 }

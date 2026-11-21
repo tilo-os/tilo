@@ -55,7 +55,8 @@ fn workspace_arrival(
         let part = Rc::clone(&part);
         arrived_part(Box::new(move |alive: &Rc<()>| part(alive)))
     });
-    Box::new(view.shaped(SkeletonShape::Page))
+    // The page is the window's: what the person types while it is on its way waits for it.
+    Box::new(view.shaped(SkeletonShape::Page).holding_input())
 }
 
 fn disabled(mut button: Button) -> Button {

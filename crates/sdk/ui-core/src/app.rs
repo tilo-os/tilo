@@ -100,6 +100,8 @@ mod local_action_persistence;
 mod local_input_capture;
 #[cfg(feature = "native")]
 mod surface;
+#[cfg(feature = "native")]
+mod held_input;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 pub(crate) use native_runner::startup::prepare_native_renderer;
 #[cfg(feature = "native")]
@@ -2749,6 +2751,9 @@ mod sideways_wheel_tests;
 
 #[cfg(test)]
 mod motion_source_tests;
+
+#[cfg(all(test, feature = "native"))]
+mod held_input_tests;
 
 #[cfg(test)]
 mod manual_composition_tests;

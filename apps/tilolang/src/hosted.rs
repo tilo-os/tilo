@@ -667,6 +667,16 @@ impl ui::component_lifecycle::WindowTitle for HostedWindow {
     }
 }
 
+/// Until the app's patch connection arrived the window shows its loading state: what the person
+/// types waits for the app's first view.
+impl ui::widget::AwaitsContent for HostedWindow {
+    fn awaits_content(&self) -> bool {
+        self.connected
+            .as_ref()
+            .is_none_or(|connected| ui::widget::AwaitsContent::awaits_content(&connected.view))
+    }
+}
+
 /// The window stands for what it shows (the app window's window, or the loading state before it)
 /// in the layout and in every walk of the widgets: it adds no node of its own.
 impl ui::widget::Decorator for HostedWindow {
@@ -680,7 +690,8 @@ impl ui::widget::Decorator for HostedWindow {
         dyn ui::component_lifecycle::WindowTitle,
         dyn ui::component_lifecycle::HostIntents,
         dyn ui::undo::LocalUndo,
-        dyn ui::component_lifecycle::HearsElsewhere;
+        dyn ui::component_lifecycle::HearsElsewhere,
+        dyn ui::widget::AwaitsContent;
         decorated
     );
 

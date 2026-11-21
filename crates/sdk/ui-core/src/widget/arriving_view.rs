@@ -29,6 +29,14 @@ pub trait ReservedShape {
     fn reserved_shape(&self) -> SkeletonShape;
 }
 
+/// A widget standing in a window for content that has not arrived yet: the keys a person types
+/// meanwhile wait for it, instead of reaching a placeholder that cannot take them, and go to the
+/// content once it stands.
+pub trait AwaitsContent {
+    /// Whether the content is still on its way.
+    fn awaits_content(&self) -> bool;
+}
+
 /// What an [`ArrivingView`] shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Showing {
@@ -443,6 +451,9 @@ pub struct ArrivingView {
     rect: Rect,
     /// Whether a read can still answer this view: a still capture waits for it.
     answerable: bool,
+    /// Whether the view is what its window shows: what is typed while it waits waits too
+    /// ([`AwaitsContent`]).
+    holds_input: bool,
 }
 
 impl ArrivingView {
@@ -505,6 +516,7 @@ impl ArrivingView {
             theme: None,
             rect: Rect::ZERO,
             answerable: true,
+            holds_input: false,
         }
     }
 }
@@ -568,6 +580,14 @@ impl ArrivingView {
     #[must_use]
     pub fn shaped(self, shape: SkeletonShape) -> Self {
         self.shape.set(shape);
+        self
+    }
+
+    /// The view is what its window shows: the keys a person types while it waits wait for the
+    /// answer, and reach it once it stands ([`AwaitsContent`]).
+    #[must_use]
+    pub fn holding_input(mut self) -> Self {
+        self.holds_input = true;
         self
     }
 
@@ -801,7 +821,14 @@ fn layered(
     }
 }
 
+impl AwaitsContent for ArrivingView {
+    fn awaits_content(&self) -> bool {
+        self.holds_input && self.showing() == Showing::Placeholder
+    }
+}
+
 impl Widget for ArrivingView {
+    crate::provides!(dyn AwaitsContent);
     /// What stands there now: the reserved shape, or the view that answered.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("div");

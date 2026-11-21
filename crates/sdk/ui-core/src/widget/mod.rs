@@ -2640,7 +2640,7 @@ pub use arrival_failure::{WindowFailure, arrival_failure};
 pub mod arriving_rows;
 pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};
-pub use arriving_view::{ArrivalFace, ArrivingView, ReservedShape, Showing};
+pub use arriving_view::{ArrivalFace, ArrivingView, AwaitsContent, ReservedShape, Showing};
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace, StepperProps};
 pub mod property_list;

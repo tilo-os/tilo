@@ -2792,6 +2792,15 @@ impl ui::widget::Queryable for AppWindow {
     }
 }
 
+/// A window is on its way until its app sent the view it opens with: the keys a person types
+/// meanwhile wait for that view (a shortcut the app declares, a field it puts the keyboard in),
+/// and go to it once it stands. A part of a shell waits for nothing of the shell's.
+impl ui::widget::AwaitsContent for AppWindow {
+    fn awaits_content(&self) -> bool {
+        self.shape == Shape::Window && self.root.is_none() && self.failed.is_none()
+    }
+}
+
 impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
 
@@ -2809,6 +2818,10 @@ impl ui::widget::Decorator for AppWindow {
         }
         if request.wants::<dyn ui::host_operation::ResourceOperations>() {
             request.provide::<dyn ui::host_operation::ResourceOperations>(self);
+            return;
+        }
+        if request.wants::<dyn ui::widget::AwaitsContent>() {
+            request.provide::<dyn ui::widget::AwaitsContent>(self);
             return;
         }
         self.body.provide(request);

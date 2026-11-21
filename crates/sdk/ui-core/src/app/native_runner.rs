@@ -829,6 +829,10 @@ thread_local! {
     /// takes them, so the app drawn in its place starts without making them again.
     static HANDED_RENDERER: std::cell::RefCell<Option<PreparedRenderer>> =
         const { std::cell::RefCell::new(None) };
+    /// What was typed in a window that gave its place, until the app drawn in its place takes it.
+    static HANDED_INPUT: std::cell::RefCell<
+        std::collections::VecDeque<(WindowEvent, winit::event::Modifiers)>,
+    > = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
     /// The clipboard on the loop's Wayland connection. It is the connection's, not a window's:
     /// it outlives the window that attached it, through a window that gives its place to the
     /// next and the process's other windows, until the loop is done. The compositor accepts a
@@ -4929,7 +4933,11 @@ impl AppHandler {
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
-            WindowEvent::RedrawRequested => self.handle_redraw_requested(window),
+            WindowEvent::RedrawRequested => {
+                self.handle_redraw_requested(window);
+                // The frame laid out the content keys typed before it arrived waited for.
+                self.app.release_held_input(window.as_ref());
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
             other if self.app.input.platform.platform() == crate::platform::Platform::Android => {
                 if let Some(escape) = crate::interaction::back_key_as_escape(&other) {
@@ -5265,6 +5273,8 @@ impl App {
                 .flatten()
         };
         tilo_startup_metrics::mark("run-host-appearance-started");
+        // What was typed in the window that held this app's place waits for this app's content.
+        self.take_over_held_input(HANDED_INPUT.with(|slot| std::mem::take(&mut *slot.borrow_mut())));
 
         AppHandler {
             app: self,
@@ -5360,6 +5370,8 @@ fn hand_over(handler: &mut AppHandler, event_loop: EventLoop<UserEvent>) {
     if let Some(renderer) = handler.suspended_renderer.take() {
         HANDED_RENDERER.with(|slot| *slot.borrow_mut() = Some(renderer));
     }
+    let typed = handler.app.hand_on_held_input();
+    HANDED_INPUT.with(|slot| *slot.borrow_mut() = typed);
     EARLY_EVENT_LOOP.with(|slot| *slot.borrow_mut() = Some(event_loop));
 }
 

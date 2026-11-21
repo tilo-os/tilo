@@ -2359,3 +2359,25 @@ fn what_the_app_heard_of_people_reaches_the_toolkit_once() {
         "the window still shows the app"
     );
 }
+
+#[test]
+fn a_window_awaits_its_apps_first_view_and_a_part_awaits_nothing() {
+    use ui::widget::AwaitsContent as _;
+    let (mut app, mut window) = window();
+    assert!(
+        window.awaits_content(),
+        "keys typed before the app's first view wait for it"
+    );
+    send(&mut app, &[ToUi::Loading]);
+    window.receive();
+    assert!(window.awaits_content(), "the loading state is no view of the app's");
+    send(&mut app, &titled_page());
+    window.receive();
+    assert!(!window.awaits_content(), "the view stands: keys go to it");
+    let (_app, end) = local::pair();
+    let part = AppWindow::part(Box::new(end));
+    assert!(
+        !part.awaits_content(),
+        "a part of a shell holds back none of the shell's keys"
+    );
+}

@@ -66,6 +66,11 @@ impl App {
         event: WindowEvent,
         synthesized_touch: bool,
     ) -> bool {
+        // A key typed before the window's content arrived waits for it ([`super::held_input`]).
+        let Some(event) = self.queue_behind_held_input(event) else {
+            return true;
+        };
+        let candidate = self.held_input_candidate(&event);
         crate::widget::context_menu::note_input(&event);
         // What this event opens or closes follows it: a press moves, a key
         // lands at once. A host that shows an app on a surface of its own
@@ -85,6 +90,9 @@ impl App {
         let handled = self.dispatch_surface_input(window, event, synthesized_touch);
         if ends_press {
             self.input.pointer_replay.end_press();
+        }
+        if !handled && let Some(event) = candidate {
+            return self.keep_unhandled_input(event);
         }
         handled
     }
@@ -1414,7 +1422,11 @@ impl App {
         complete_native_frame_content(self, |_| {});
         #[cfg(test)]
         drop(complete_probe);
-        search_pending
+        // The frame laid out the content keys typed before it arrived waited for: they go to it,
+        // and the next frame shows what they did.
+        let released = self.release_held_input(surface);
+        released
+            || search_pending
             || self.needs_sync
             || self.layout.layout_dirty
             // The palette arrives outside the app's root too: a host that
