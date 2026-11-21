@@ -53,7 +53,9 @@ impl Worker {
         used: Option<&FileSealing>,
     ) -> Result<(), String> {
         let generation = |sealing: &FileSealing| (sealing.keys.workspace(), sealing.keys.epoch());
-        let current = self.file_sealing(workspace, false)?;
+        // The same ask the put sealed with: a put that founded its record's group asks after
+        // it as it asked before, rather than as a reader that founds nothing.
+        let current = self.file_sealing(workspace, true)?;
         if used.map(generation) != current.as_ref().map(generation) {
             return Err("file access changed while it was saved".into());
         }
