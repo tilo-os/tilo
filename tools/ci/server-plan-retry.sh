@@ -53,7 +53,7 @@ trap table EXIT
 
 base_pointer() {
   [[ -n ${T_POINTER_SERVER_PLAN_BASE:-} ]] \
-    || die 'no base yet: dispatch publish-server-plan-base on main (t dispatch --repo tilo --ref main publish-server-plan-base --publish)'
+    || die 'no base pointer. Pointers reach trusted runs only: push the branch and dispatch the retry (t dispatch --repo tilo --ref BRANCH server-plan-install-retry --publish). If main has no base yet, dispatch publish-server-plan-base on main first.'
   base_commit=$(sed -n 's/^COMMIT=//p' <<<"$T_POINTER_SERVER_PLAN_BASE")
   base_image=$(sed -n 's/^IMAGE=//p' <<<"$T_POINTER_SERVER_PLAN_BASE")
   [[ $base_commit =~ ^[0-9a-f]{40}$ ]] || die "the base pointer names no commit: $T_POINTER_SERVER_PLAN_BASE"

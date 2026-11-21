@@ -4990,9 +4990,12 @@ timeout_secs = 3600
 default = false
 
 # The retry itself: main's base fetched by digest, and the proof run with this tree's layers in
-# the installed server and the owner's device (tools/ci/server-plan-retry.sh proof).
+# the installed server and the owner's device (tools/ci/server-plan-retry.sh proof). Pointers
+# reach trusted runs only, so a retry is a dispatch of a pushed branch:
+#   t dispatch --repo tilo --ref BRANCH server-plan-install-retry --publish
 [[check]]
 name = "server-plan-install-retry"
+on = ["dispatch"]
 # The base comes from the registry by digest; dnf in the guests installs from Fedora's mirrors, and
 # the enrolment and unlock cross the public iroh relay; no fixed host list names them all.
 egress = { to = ["0.0.0.0/0", "::/0"] }
