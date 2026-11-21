@@ -88,9 +88,7 @@ pub fn locate(query: &str, text: &str, weight: FieldWeight) -> Option<Range<usiz
         } else {
             MatchTier::WordPrefix
         };
-        if tier.rank_in(weight).is_none() {
-            return None;
-        }
+        tier.rank_in(weight)?;
         at
     };
     // The match covers every raw scalar that contributed a folded byte.
