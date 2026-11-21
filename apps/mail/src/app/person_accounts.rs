@@ -254,13 +254,17 @@ impl MailApp {
                 mail_engine::account_secrets::Released::Refused { account, error } => {
                     tracing::error!(%account, %error, "the session's account credentials did not release this account's secret");
                     if active.as_deref() == Some(account.as_str()) {
-                        // The account cannot sign in until its secret is
-                        // released, and the person fixes that in Settings.
+                        // The account cannot sign in until its password is handed over: the
+                        // session's words say why it was not, and nothing reached the server.
                         let label = st
                             .accounts
                             .label_for(&account)
                             .unwrap_or_else(|| account.clone());
-                        st.note_sync_failure(label, crate::state::SyncCause::SignedOut);
+                        st.note_sync_failure_saying(
+                            label,
+                            crate::state::SyncCause::PasswordWithheld,
+                            Some(error),
+                        );
                     }
                 }
             }
@@ -280,7 +284,8 @@ impl MailApp {
     }
 }
 
-fn needs_released_secret(config: &AccountConfig) -> bool {
+/// Whether `config` is an account that signs in with a password Mail does not hold yet.
+pub(crate) fn needs_released_secret(config: &AccountConfig) -> bool {
     config.auth == mail_engine::model::AuthMethod::Password
         && !config.import_pending
         && config.password.is_empty()

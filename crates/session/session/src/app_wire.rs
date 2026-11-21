@@ -1131,7 +1131,7 @@ fn broker_services(
         engine,
         endpoint: _,
         answering: _,
-        service: _,
+        service,
         documents,
         resources,
         document_content,
@@ -1192,6 +1192,7 @@ fn broker_services(
             std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
                 std::sync::Arc::clone(engine),
                 std::sync::Arc::clone(&item_lending),
+                service.clone(),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
     BrokerServices {

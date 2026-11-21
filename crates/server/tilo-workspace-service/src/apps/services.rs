@@ -668,6 +668,21 @@ pub trait BrowserServiceSessionServices: Send + Sync {
             .ok_or_else(|| "not an item's use".to_owned());
         Box::pin(std::future::ready(answer))
     }
+    /// Keep or release an account's password
+    /// ([`runtime_collab::BrowserServiceSessionCommand::account_secret`]), later: the
+    /// workspace's vault is read and written on this device, and the connection that asked
+    /// is not kept waiting on its dispatch. A service that keeps no account's password
+    /// refuses.
+    fn account_secret(
+        &self,
+        context: &BrowserServiceSessionRequestContext,
+        command: runtime_collab::BrowserServiceSessionCommand,
+    ) -> ItemAnswering {
+        let _ = (context, command);
+        Box::pin(std::future::ready(Err(
+            "This device keeps no account's password".to_owned(),
+        )))
+    }
     fn disconnect(&self, peer_id: u64);
 }
 

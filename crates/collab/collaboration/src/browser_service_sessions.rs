@@ -89,6 +89,19 @@ impl Pending {
         self.busy.store(false, std::sync::atomic::Ordering::Release);
         Some(result)
     }
+    /// Wait for the reply, no longer than [`Self::poll`] would: only ever off the frame
+    /// thread, on a worker that has nothing else to do until the session answered.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn wait(mut self) -> Result<BrowserServiceSessionReply, String> {
+        let left = self.deadline.saturating_duration_since(crate::time::now());
+        let result = self
+            .received
+            .recv_timeout(left)
+            .unwrap_or_else(|_| Err("This account could not be opened".into()));
+        self.done = true;
+        self.busy.store(false, std::sync::atomic::Ordering::Release);
+        result
+    }
 }
 
 impl Drop for Pending {

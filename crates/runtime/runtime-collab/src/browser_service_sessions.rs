@@ -5,9 +5,10 @@
 //! owner, the session, which holds the person's account vault:
 //!
 //! - Browser lists, resolves and forgets its website sessions;
-//! - Settings, the keeper of the person's accounts, seals an account's
-//!   secret ([`BrowserServiceSessionCommand::StoreAccountSecret`]), which is
-//!   never readable back by Settings;
+//! - Settings, the keeper of the workspace's accounts, keeps an account's
+//!   password in the workspace's vault
+//!   ([`BrowserServiceSessionCommand::StoreAccountSecret`]), which is never
+//!   readable back by Settings, and is told the entry the account names;
 //! - the app that keeps an account's type (Mail for email) is released that
 //!   one account's secret
 //!   ([`BrowserServiceSessionCommand::ReleaseAccountSecret`]);
@@ -52,11 +53,15 @@ pub enum BrowserServiceSessionCommand {
         id: String,
         setup_binding: String,
     },
-    /// Seal `password` as the secret of the person's account `account`.
-    /// Only the accounts' keeper (Settings) may; nothing reads it back to it.
+    /// Keep `password` as the login of the workspace's account `account` in the workspace's
+    /// vault: signing in as `username` at `servers` (`imap://host:port`, `smtp://host:port`)
+    /// and nowhere else. Only the accounts' keeper (Settings) may; nothing reads it back to
+    /// it.
     StoreAccountSecret {
         account: String,
         password: Zeroizing<String>,
+        username: String,
+        servers: Vec<String>,
     },
     /// The secret of the person's account `account`, for the app that keeps
     /// that account's type and nobody else.
@@ -158,9 +163,11 @@ pub enum BrowserServiceSessionReply {
         id: String,
         setup_binding: String,
     },
-    /// The account's secret is sealed in the person's vault.
+    /// The account's password is kept in the workspace's vault, in the entry `item` names
+    /// (`vault.item:<entry id>`): what the account names.
     AccountSecretStored {
         account: String,
+        item: String,
     },
     /// The account's secret, released to the app that keeps its type.
     AccountSecret {
@@ -210,6 +217,22 @@ fn secret(value: &str) -> bool {
 /// A vault item's reference, as an action names it: a text an item keeps is none.
 fn item_reference(value: &str) -> bool {
     tilo_actions::remote::person_vault::ItemRef::parse(value).is_some()
+}
+/// A mail server an account's password belongs to: `imap://` or `smtp://`, a name and a
+/// port, and nothing after them.
+fn item_server(value: &str) -> bool {
+    value.len() <= MAX_ITEM_ORIGIN_BYTES
+        && value
+            .strip_prefix("imap://")
+            .or_else(|| value.strip_prefix("smtp://"))
+            .is_some_and(|name| {
+                !name.is_empty()
+                    && !name.chars().any(|character| {
+                        character.is_control()
+                            || character.is_whitespace()
+                            || matches!(character, '/' | '?' | '#' | '@' | '\\')
+                    })
+            })
 }
 /// The origin a page is at: a scheme of the web, a name and at most a port, and nothing
 /// after them.
@@ -261,7 +284,17 @@ impl BrowserServiceSessionCommand {
             Self::StoreAccountSecret {
                 account: value,
                 password,
-            } => account(value) && secret(password),
+                username,
+                servers,
+            } => {
+                account(value)
+                    && secret(password)
+                    && username.len() <= 320
+                    && !username.chars().any(char::is_control)
+                    && !servers.is_empty()
+                    && servers.len() <= 8
+                    && servers.iter().all(|server| item_server(server))
+            }
             Self::ReleaseAccountSecret { account: value } => account(value),
             Self::UseItem { item, origin, .. } => item_reference(item) && item_origin(origin),
         }
@@ -277,6 +310,15 @@ impl BrowserServiceSessionCommand {
                 | Self::Forget { .. }
                 | Self::UseItem { .. }
                 | Self::LendsItems {}
+        )
+    }
+    /// Whether this keeps or releases an account's password: answered once the workspace's
+    /// vault on the device was read or written, never on the connection's dispatch.
+    #[must_use]
+    pub const fn account_secret(&self) -> bool {
+        matches!(
+            self,
+            Self::StoreAccountSecret { .. } | Self::ReleaseAccountSecret { .. }
         )
     }
     /// The page action an item's use is asked for: `None` for every other command.
@@ -326,7 +368,10 @@ impl BrowserServiceSessionReply {
                 id: value,
                 setup_binding,
             } => id(value) && binding(setup_binding),
-            Self::AccountSecretStored { account: value } => account(value),
+            Self::AccountSecretStored {
+                account: value,
+                item,
+            } => account(value) && item_reference(item),
             Self::AccountSecret {
                 account: value,
                 password,
@@ -371,7 +416,9 @@ impl BrowserServiceSessionReply {
                 BrowserServiceSessionCommand::Forget { id, setup_binding },
             ) => self.valid() && forgotten == id && binding == setup_binding,
             (
-                Self::AccountSecretStored { account: stored },
+                Self::AccountSecretStored {
+                    account: stored, ..
+                },
                 BrowserServiceSessionCommand::StoreAccountSecret { account, .. },
             )
             | (

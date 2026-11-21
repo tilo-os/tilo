@@ -296,6 +296,7 @@ impl CollaborationManager {
                     } => Ok(
                         runtime_collab::BrowserServiceSessionReply::AccountSecretStored {
                             account: account.clone(),
+                            item: "vault.item:0123456789abcdef0123456789abcdef".into(),
                         },
                     ),
                     runtime_collab::BrowserServiceSessionCommand::ReleaseAccountSecret {

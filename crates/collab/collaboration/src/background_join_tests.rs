@@ -267,6 +267,11 @@ fn account_credentials_taken_while_the_route_joins_answers_once_it_is_admitted()
             runtime_collab::BrowserServiceSessionCommand::StoreAccountSecret {
                 account: "hiring@studio.example".into(),
                 password: zeroize::Zeroizing::new("app-password".into()),
+                username: "hiring@studio.example".into(),
+                servers: vec![
+                    "imap://imap.studio.example:993".into(),
+                    "smtp://smtp.studio.example:465".into(),
+                ],
             },
             None,
         )
@@ -292,7 +297,7 @@ fn account_credentials_taken_while_the_route_joins_answers_once_it_is_admitted()
     assert!(
         matches!(
             answer.expect("the session sealed the account's secret"),
-            runtime_collab::BrowserServiceSessionReply::AccountSecretStored { account }
+            runtime_collab::BrowserServiceSessionReply::AccountSecretStored { account, .. }
                 if account == "hiring@studio.example"
         ),
         "the secret is sealed on the app's own route"

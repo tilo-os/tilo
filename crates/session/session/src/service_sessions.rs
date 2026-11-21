@@ -6,10 +6,12 @@
 //!
 //! - Browser: its private website sessions, listed and resolved, and
 //!   forgotten by someone who administers the workspace;
-//! - Settings, the keeper of the person's accounts: sealing an account's
-//!   secret, which it is never released back;
+//! - Settings, the keeper of the workspace's accounts: keeping an account's password in the
+//!   workspace's vault, which it is never released back, and naming the entry it is kept in;
 //! - the app that keeps an account's type ([`accounts::person::secret_keeper`],
-//!   Mail for email): that one account's secret;
+//!   Mail for email): that one account's password, read from this device's own copy of the
+//!   workspace's vault ([`crate::account_passwords`]), for a person whose role lets them use
+//!   Passwords;
 //! - Browser, where this session holds a workspace's Browser: the text of a vault item for
 //!   one page action that fills a field from it by reference, which the workspace's server
 //!   keeps and decides about ([`crate::item_lending`]). The session keeps no vault for it.
@@ -48,11 +50,22 @@ pub(crate) struct ServiceSessions {
     engine: Arc<Engine>,
     /// What Browser's asks for vault items are answered with.
     items: Arc<crate::item_lending::ItemLending>,
+    /// This device's own workspace service: the copy of each workspace's vault and accounts
+    /// an account's password is kept in and read from.
+    service: tilo_workspace_service::service::ServiceSlot,
 }
 
 impl ServiceSessions {
-    pub(crate) fn new(engine: Arc<Engine>, items: Arc<crate::item_lending::ItemLending>) -> Self {
-        Self { engine, items }
+    pub(crate) fn new(
+        engine: Arc<Engine>,
+        items: Arc<crate::item_lending::ItemLending>,
+        service: tilo_workspace_service::service::ServiceSlot,
+    ) -> Self {
+        Self {
+            engine,
+            items,
+            service,
+        }
     }
 
     /// The certified person's own route of `app` , readable on that app's record in the workspace
@@ -143,14 +156,42 @@ impl BrowserServiceSessionServices for ServiceSessions {
             // Its answer is waited for, and never here ([`Self::item_use`]).
             return Err("An item's use is not answered on the connection's dispatch".into());
         }
+        if !command.browser_only() {
+            // Its answer is waited for, and never here ([`Self::account_secret`]).
+            return Err("An account's password is not answered on the connection's dispatch".into());
+        }
         let root = accounts::config_root().ok_or(UNAVAILABLE)?;
-        let reply = if command.browser_only() {
-            resolve(&root, context.identity_public_key(), command.clone())?
-        } else {
-            account_secret(&root, context.app_id(), command.clone())?
-        };
+        let reply = resolve(&root, context.identity_public_key(), command.clone())?;
         self.authorize_command(context, &command)?;
         Ok(reply)
+    }
+
+    fn account_secret(&self, context: &Context, command: Command) -> ItemAnswering {
+        let ready = |answer: Result<Reply, String>| -> ItemAnswering {
+            Box::pin(std::future::ready(answer))
+        };
+        let Some(service) = self.service.service() else {
+            return ready(Err(crate::account_passwords::NO_VAULT_YET.into()));
+        };
+        let Ok(tasks) = tilo_rt::try_app() else {
+            return ready(Err(crate::account_passwords::NO_VAULT_YET.into()));
+        };
+        let workspaces = service.workspaces().clone();
+        let workspace = context.workspace_id().to_owned();
+        let app = context.app_id().to_owned();
+        let by = tilo_actions::remote::Caller::authenticated(
+            context.identity_public_key(),
+            context.read_context().certificate().device_public_key,
+        )
+        .in_workspace(workspace.clone());
+        let answering = tasks.spawn(async move {
+            crate::account_passwords::answer(&workspaces, &workspace, &app, &by, command).await
+        });
+        Box::pin(async move {
+            answering
+                .await
+                .map_err(|_| crate::account_passwords::NO_VAULT_YET.to_owned())?
+        })
     }
 
     fn item_use(&self, context: &Context, command: Command) -> ItemAnswering {
@@ -252,28 +293,6 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
     Ok(reply)
 }
 
-/// Seal or release one account's secret under `root` for the app `app` ([`accounts::secret_release`]
-/// decides). The secret never enters the person's accounts record or a log.
-fn account_secret(root: &Path, app: &str, command: Command) -> Result<Reply, String> {
-    match command {
-        Command::StoreAccountSecret { account, password } => {
-            let mut credentials = accounts::AccountCredentials::open_in(root)?;
-            accounts::secret_release::seal(&mut credentials, app, &account, &password)?;
-            tracing::info!(%account, app, "account credentials: sealed an account's secret");
-            Ok(Reply::AccountSecretStored { account })
-        }
-        Command::ReleaseAccountSecret { account } => {
-            let store = read_store(root).map_err(|_| accounts::secret_release::REFUSED)?;
-            let mut credentials = accounts::AccountCredentials::open_in(root)?;
-            let password =
-                accounts::secret_release::release_bound(&store, &mut credentials, app, &account)?;
-            tracing::info!(%account, app, "account credentials: released an account's secret to the app that keeps its type");
-            Ok(Reply::AccountSecret { account, password })
-        }
-        _ => Err(accounts::secret_release::REFUSED.into()),
-    }
-}
-
 /// Traverse only held directory descriptors; neither missing ownership nor metadata discovery
 /// creates, chmods, or follows a redirected namespace.
 fn directory(path: &Path) -> io::Result<File> {
@@ -345,78 +364,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn ownership_is_kept_only_for_the_accounts_keeper_and_under_its_own_metadata;
-
-        phase ownership_seals_for_settings_and_releases_only_to_the_accounts_keeper;
-        // Settings seals an email account's password, which Settings is never released; Mail, which
-        // keeps email accounts, is released it while the account is enabled; no other app is, and no
-        // other type of account is released to Mail.
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let root = tempfile::tempdir().unwrap();
-            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-            let store_secret = |app: &str, account: &str| {
-                account_secret(
-                    root.path(),
-                    app,
-                    Command::StoreAccountSecret {
-                        account: account.into(),
-                        password: zeroize::Zeroizing::new("app-password".into()),
-                    },
-                )
-            };
-            let release = |app: &str, account: &str| {
-                account_secret(
-                    root.path(),
-                    app,
-                    Command::ReleaseAccountSecret {
-                        account: account.into(),
-                    },
-                )
-            };
-            assert!(store_secret("so.tilo.mail", "me@example.test").is_err());
-            assert!(matches!(
-                store_secret("so.tilo.settings", "me@example.test").unwrap(),
-                Reply::AccountSecretStored { account } if account == "me@example.test"
-            ));
-            assert!(matches!(
-                store_secret("so.tilo.settings", "dav@example.test").unwrap(),
-                Reply::AccountSecretStored { .. }
-            ));
-            // Sealed, but no account of the person's yet: nothing is released.
-            assert!(release("so.tilo.mail", "me@example.test").is_err());
-
-            let mut store = AccountStore::new();
-            let mut mail = accounts::Account::new(AccountId::from("me@example.test"), "email");
-            store.upsert(mail.clone());
-            store.upsert(accounts::Account::new(
-                AccountId::from("dav@example.test"),
-                "caldav",
-            ));
-            store.save_in(root.path()).unwrap();
-            let Reply::AccountSecret { account, password } =
-                release("so.tilo.mail", "me@example.test").unwrap()
-            else {
-                panic!("Mail is released its email account's secret");
-            };
-            assert_eq!(account, "me@example.test");
-            assert_eq!(password.as_str(), "app-password");
-            for (app, account) in [
-                ("so.tilo.settings", "me@example.test"),
-                ("so.tilo.calendar", "me@example.test"),
-                ("so.tilo.notes", "me@example.test"),
-                ("so.tilo.mail", "dav@example.test"),
-                ("so.tilo.mail", "nobody@example.test"),
-            ] {
-                assert!(
-                    release(app, account).is_err(),
-                    "{app} must not be released {account}"
-                );
-            }
-            mail.enabled = false;
-            store.upsert(mail);
-            store.save_in(root.path()).unwrap();
-            assert!(release("so.tilo.mail", "me@example.test").is_err());
-        }
 
         phase missing_redirected_or_public_metadata_never_creates_or_adopts_ownership;
         {
@@ -569,128 +516,5 @@ mod tests {
             panic!("Expected list after revocation");
         };
         assert!(sessions.is_empty());
-    }
-
-    /// A secret is sealed for the servers its account names. Once the
-    /// account names another one, by whoever's change, the app that keeps
-    /// its kind is released nothing: it would sign in there with it.
-    #[test]
-    fn a_secret_released_for_one_server_is_not_released_once_its_account_names_another() {
-        const ME: &str = "me@example.test";
-        let root = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let names = |incoming: &str| {
-            let mut settings = accounts::email::AccountConfig {
-                email: ME.into(),
-                ..Default::default()
-            };
-            // An address it does not know names imap. and smtp. of its domain.
-            settings.autofill_from_email();
-            let mut settings = settings.to_value().unwrap();
-            let named: Vec<&mut serde_json::Value> = settings
-                .as_object_mut()
-                .unwrap()
-                .values_mut()
-                .filter(|value| value.as_str() == Some("imap.example.test"))
-                .collect();
-            assert_eq!(named.len(), 1, "the settings name one incoming server");
-            for value in named {
-                *value = incoming.into();
-            }
-            let mut mail = accounts::Account::new(AccountId::from(ME), "email");
-            mail.config = settings;
-            let mut store = AccountStore::new();
-            store.upsert(mail);
-            store.save_in(root.path()).unwrap();
-        };
-        let release = || {
-            account_secret(
-                root.path(),
-                "so.tilo.mail",
-                Command::ReleaseAccountSecret { account: ME.into() },
-            )
-        };
-        names("imap.example.test");
-        account_secret(
-            root.path(),
-            "so.tilo.settings",
-            Command::StoreAccountSecret {
-                account: ME.into(),
-                password: zeroize::Zeroizing::new("typed-for-imap-example".into()),
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            release(),
-            Ok(Reply::AccountSecret { password, .. }) if password.as_str() == "typed-for-imap-example"
-        ));
-        names("imap.elsewhere.example");
-        assert!(
-            release().is_err(),
-            "the secret sealed for imap.example.test was released for an account at \
-             imap.elsewhere.example"
-        );
-        names("imap.example.test");
-        assert!(release().is_ok(), "at its own server it is released again");
-    }
-
-    /// A secret with no servers on it is bound when the app that keeps its
-    /// account's kind asks for it, to the servers the account names then.
-    /// Whoever else asks is released nothing and binds nothing.
-    #[test]
-    fn a_secret_is_bound_only_when_the_keeper_of_its_accounts_kind_asks_for_it() {
-        const ME: &str = "me@example.test";
-        let root = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let names = |incoming: &str| {
-            let mut settings = accounts::email::AccountConfig {
-                email: ME.into(),
-                ..Default::default()
-            };
-            settings.autofill_from_email();
-            let mut settings = settings.to_value().unwrap();
-            for value in settings.as_object_mut().unwrap().values_mut() {
-                if value.as_str() == Some("imap.example.test") {
-                    *value = incoming.into();
-                }
-            }
-            let mut mail = accounts::Account::new(AccountId::from(ME), "email");
-            mail.config = settings;
-            let mut store = AccountStore::new();
-            store.upsert(mail);
-            store.save_in(root.path()).unwrap();
-        };
-        let release = |app: &str| {
-            account_secret(
-                root.path(),
-                app,
-                Command::ReleaseAccountSecret { account: ME.into() },
-            )
-        };
-        names("imap.example.test");
-        account_secret(
-            root.path(),
-            "so.tilo.settings",
-            Command::StoreAccountSecret {
-                account: ME.into(),
-                password: zeroize::Zeroizing::new("typed-with-no-word".into()),
-            },
-        )
-        .unwrap();
-        for other in ["so.tilo.settings", "so.tilo.calendar", "so.tilo.agent"] {
-            assert!(release(other).is_err(), "{other} is released nothing");
-        }
-        // Had one of them bound it, it would be bound to imap.example.test
-        // and Mail's first asking at another server refused.
-        names("imap.elsewhere.example");
-        assert!(
-            release("so.tilo.mail").is_ok(),
-            "nobody but its keeper bound it"
-        );
-        names("imap.example.test");
-        assert!(
-            release("so.tilo.mail").is_err(),
-            "its keeper's first asking bound it to imap.elsewhere.example"
-        );
     }
 }

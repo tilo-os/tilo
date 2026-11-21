@@ -705,6 +705,7 @@ impl AccountsArea {
                 model = model.with_open_form_for_shot(kind);
             }
             self.linked.refresh();
+            model.session_secrets.clone_from(&self.session_secrets);
             Rc::new(std::cell::RefCell::new(
                 model.with_linked(self.linked.clone()),
             ))
@@ -981,6 +982,9 @@ pub struct AccountsPane {
     browser_removal_error: Option<String>,
     browser_removal_pending: bool,
     import_review: import_review::ImportReview,
+    /// The session, where Settings runs in one: an email account's password goes to the
+    /// workspace's vault through it, never into this device's credentials.
+    session_secrets: Option<ui::collaboration::browser_service_sessions::Client>,
     changed: bool,
 }
 
@@ -1073,6 +1077,7 @@ impl AccountsPane {
             calendar_baseline: None,
             browser_removal_error: None,
             browser_removal_pending: false,
+            session_secrets: None,
             changed: false,
             linked: None,
             account_root,
@@ -2923,6 +2928,13 @@ impl AccountsPane {
         password: &str,
     ) -> Result<accounts::Secret, String> {
         let mut secret = vault.get(&account.id).unwrap_or_default();
+        if password.trim().is_empty()
+            && account.type_id.as_str() == accounts::email::TYPE_ID
+            && accounts::email::password_item(&account.config).is_some()
+        {
+            // Its password is the workspace's vault's, which signs it in as it stands.
+            return Ok(secret);
+        }
         if password.trim().is_empty() {
             // An unreadable vault is not one without this account's credential.
             if let Some(error) = vault.recovery_error() {
@@ -3036,9 +3048,48 @@ impl AccountsPane {
     /// how it ended.
     fn commit_then(
         &mut self,
-        accounts: Vec<(accounts::Account, Option<accounts::Secret>)>,
+        mut accounts: Vec<(accounts::Account, Option<accounts::Secret>)>,
         settle: Settle,
     ) -> Step {
+        // An email account's typed password is the workspace's: it goes to the workspace's
+        // vault through the session first, one account at a time, and the account names the
+        // entry it is kept in. A grant its provider's page signed in stays this device's.
+        if let Some(client) = self.session_secrets.clone()
+            && let Some(index) = accounts.iter().position(|(account, secret)| {
+                account.type_id.as_str() == accounts::email::TYPE_ID
+                    && secret
+                        .as_ref()
+                        .is_some_and(|secret| !secret.password.is_empty())
+            })
+        {
+            let (mut account, secret) = accounts.remove(index);
+            let secret = secret.unwrap_or_default();
+            let asked = mail_password_command(&account, &secret.password)
+                .and_then(|command| client.request(command, None));
+            let pending = match asked {
+                Ok(pending) => pending,
+                Err(error) => return settle(self, Err(error)),
+            };
+            let id = account.id.clone();
+            return Step::vault(
+                move |_| pending.wait(),
+                move |pane, reply| match reply {
+                    Ok(ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::AccountSecretStored { account: kept, item })
+                        if kept == id.as_str() =>
+                    {
+                        accounts::email::set_password_item(&mut account.config, Some(&item));
+                        let token = secret.token.map(|token| accounts::Secret {
+                            password: String::new(),
+                            token: Some(token),
+                        });
+                        accounts.insert(index, (account, token));
+                        pane.commit_then(accounts, settle)
+                    }
+                    Ok(_) => settle(pane, Err("The session answered something else".into())),
+                    Err(error) => settle(pane, Err(error)),
+                },
+            );
+        }
         let root = &self.account_root;
         if let Err(error) = root.begin_mutation(&root.store(), &root.statuses()) {
             return settle(self, Err(error));
@@ -3979,3 +4030,26 @@ fn account_trailing(files: Option<Button>, menu: Option<RowMenu>) -> Option<El> 
 
 #[cfg(test)]
 mod tests;
+
+/// The request that keeps `password` as the email `account`'s, bound to the servers its
+/// settings name.
+fn mail_password_command(
+    account: &accounts::Account,
+    password: &str,
+) -> Result<ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand, String> {
+    let config = accounts::email::AccountConfig::from_value(account.config.clone())
+        .map_err(|_| "This email account's settings are incomplete".to_owned())?;
+    let servers = accounts::email::password_places(&config)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .map(|place| place.as_str().to_owned())
+        .collect();
+    Ok(
+        ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::StoreAccountSecret {
+            account: account.id.as_str().to_owned(),
+            password: zeroize::Zeroizing::new(password.to_owned()),
+            username: config.username,
+            servers,
+        },
+    )
+}

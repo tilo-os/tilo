@@ -136,6 +136,11 @@ mod person_vault;
 // The workspace's one vault, Passwords' document, as this device holds it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod vault;
+// The accounts of the workspace, signed in with entries of that vault.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod account_logins;
+#[cfg(all(test, any(feature = "agents", feature = "apps")))]
+mod account_logins_tests;
 #[cfg(not(target_arch = "wasm32"))]
 // What a workspace keeps on the host beside its records, and who reaches it.
 #[cfg(not(target_arch = "wasm32"))]

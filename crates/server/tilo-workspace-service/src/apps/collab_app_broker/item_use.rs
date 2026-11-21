@@ -27,6 +27,9 @@ pub(super) fn delegate_item_use(
     use runtime_collab::BrowserServiceSessionReply as Reply;
     let refused = || BrokerError::failed("private service-session request refused".into());
     let command = runtime_collab::BrowserServiceSessionCommand::decode(bytes).ok()?;
+    if command.account_secret() {
+        return Some(delegate_account_secret(service, context, command));
+    }
     let invocation = command.item_use()?;
     if context.workspace_id().is_empty()
         || context.person().is_empty()
@@ -65,4 +68,41 @@ pub(super) fn delegate_item_use(
         reply.encode().map_err(|_| refused())
     });
     Some(Ok(answer))
+}
+
+/// Answer an account's password kept or released
+/// ([`runtime_collab::BrowserServiceSessionCommand::account_secret`]) from an app's own route,
+/// once the service read or wrote the workspace's vault on this device. The app asking is
+/// decided before and again after, as every account-secret request is; what the service
+/// answers leaves only as the answer to that same request.
+fn delegate_account_secret(
+    service: Option<&Arc<dyn crate::apps::services::BrowserServiceSessionServices>>,
+    context: &crate::apps::services::BrowserServiceSessionRequestContext,
+    command: runtime_collab::BrowserServiceSessionCommand,
+) -> Result<wire::Answer<zeroize::Zeroizing<Vec<u8>>>, BrokerError> {
+    let refused = || BrokerError::failed("private service-session request refused".into());
+    if context.workspace_id().is_empty()
+        || context.person().is_empty()
+        || context.revalidate().is_err()
+    {
+        return Err(refused());
+    }
+    let service = service.cloned().ok_or_else(refused)?;
+    service
+        .authorize_command(context, &command)
+        .map_err(|_| refused())?;
+    let answering = service.account_secret(context, command.clone());
+    let context = context.clone();
+    Ok(Box::pin(async move {
+        // What the service says is said to the app: a refusal designed for its person.
+        let reply = answering.await.map_err(BrokerError::failed)?;
+        context.revalidate().map_err(|_| refused())?;
+        service
+            .authorize_command(&context, &command)
+            .map_err(|_| refused())?;
+        if !reply.matches(&command) {
+            return Err(refused());
+        }
+        reply.encode().map_err(|_| refused())
+    }))
 }

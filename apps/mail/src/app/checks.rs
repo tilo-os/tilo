@@ -219,7 +219,11 @@ impl MailApp {
                 CheckState::Failed(reason) => {
                     self.shared
                         .borrow_mut()
-                        .note_sync_failure(label, crate::notice::sync_cause(&reason));
+                        .note_sync_failure_saying(
+                            label,
+                            crate::notice::sync_cause(&reason),
+                            Some(reason.clone()),
+                        );
                     self.dirty = true;
                 }
             }

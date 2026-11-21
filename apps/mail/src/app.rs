@@ -313,6 +313,9 @@ pub(crate) struct Mailroom {
     /// What this window asks of the devices that reach the mail servers,
     /// when it reaches none itself.
     pub(crate) checks: checks::DeviceChecks,
+    /// The session hands this window its accounts' passwords: a request for an account whose
+    /// password has not arrived yet waits for it rather than reaching the server without one.
+    passwords_from_session: bool,
     composing: bool,
     dirty: bool,
 }
@@ -469,7 +472,7 @@ impl MailApp {
         let (tx, rx) = mail_engine::engine::spawn(content.clone(), wake_through(&waker));
         let mut app = Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist);
         app.waker = waker;
-        app.ownership = ownership;
+        app.release_passwords_through(ownership);
         // The server cache is disposable and belongs to this workspace.
         let store = workspace
             .and_then(|workspace| uuid::Uuid::parse_str(workspace).ok())
@@ -591,6 +594,7 @@ impl MailApp {
             server_searched: String::new(),
             pending_stage: None,
             checks: checks::DeviceChecks::default(),
+            passwords_from_session: false,
             composing: false,
             dirty: true,
         };
@@ -913,6 +917,15 @@ impl Mailroom {
                 .map(|held| held.with(passed))
                 .or(passed);
         }
+        if self.passwords_from_session
+            && request
+                .account_config()
+                .is_some_and(person_accounts::needs_released_secret)
+        {
+            // Its password is on its way from the session, and the release asks again for
+            // everything the account shows once it arrives (`take_released_secrets`).
+            return None;
+        }
         let Some(engine) = &self.engine else {
             // A window that reaches no server asks a device that does.
             if self.checks.want(&request) {
@@ -945,6 +958,16 @@ impl Mailroom {
 }
 
 impl MailApp {
+    /// Take the accounts' passwords from `ownership`, the session's release, when it is one:
+    /// until an account's arrives, nothing this window asks for it reaches its server.
+    pub(crate) fn release_passwords_through(
+        &mut self,
+        ownership: Option<mail_engine::account_secrets::SecretRelease>,
+    ) {
+        self.state().passwords_from_session = ownership.is_some();
+        self.ownership = ownership;
+    }
+
     fn select_all_in_folder(&mut self) {
         let (account, folder, all_inboxes) = self.open_listing();
         if self.shared.borrow().outbox_open {
@@ -2561,7 +2584,11 @@ impl MailApp {
                 .accounts
                 .label_for(&account_id)
                 .unwrap_or_else(|| account_id.clone());
-            st.note_sync_failure(account, crate::notice::sync_cause(message));
+            st.note_sync_failure_saying(
+                account,
+                crate::notice::sync_cause(message),
+                Some(message.to_owned()),
+            );
         } else {
             st.status = Some(engine_error_text(context, message));
         }

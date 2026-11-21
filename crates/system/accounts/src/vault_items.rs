@@ -787,6 +787,41 @@ impl VaultItems {
         Ok(sealed.facts(id))
     }
 
+    /// Keep `item` as the entry `id` names, titled `title` where the vault has no entry at
+    /// `id` yet: a password typed anew for an account replaces the one its entry kept, and
+    /// the entry keeps its id, its title, what Passwords added to it, when it was added and
+    /// its uses. Where `id` names no entry, or none is given, `item` is kept as a new one.
+    pub fn keep(
+        &mut self,
+        id: Option<&ItemId>,
+        item: NewItem,
+        title: &str,
+    ) -> Result<ItemFacts, ItemError> {
+        let mut sealed = Sealed::checked(item)?;
+        let kept = id.and_then(|id| Some((id, self.entries.get(id)?)));
+        let id = match kept {
+            Some((id, (entry, uses))) => {
+                sealed.added_unix = entry.created_unix;
+                sealed.uses.clone_from(uses);
+                sealed.last_used_unix = uses.iter().map(|used| used.at_unix).max();
+                id.clone()
+            }
+            None => ItemId::new(),
+        };
+        let fresh = !self.entries.contains_key(&id);
+        self.write(&id, &sealed);
+        if fresh
+            && !title.trim().is_empty()
+            && let Some((entry, _)) = self.entries.get_mut(&id)
+        {
+            title.trim().clone_into(&mut entry.title);
+            if let Some(VaultChange::Keep(kept)) = self.changes.last_mut() {
+                kept.title.clone_from(&entry.title);
+            }
+        }
+        Ok(sealed.facts(id))
+    }
+
     /// [`Self::add`] for a key that says where it rides in a request to its
     /// service ([`KeyIn`]). Only a key says so.
     pub fn add_key(&mut self, item: NewItem, sent_in: &KeyIn) -> Result<ItemFacts, ItemError> {

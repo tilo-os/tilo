@@ -366,6 +366,8 @@ mod server_account;
 #[cfg(target_os = "linux")]
 mod service_sessions;
 #[cfg(target_os = "linux")]
+mod account_passwords;
+#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 mod services;
 #[cfg(target_os = "linux")]

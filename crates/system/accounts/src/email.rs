@@ -280,6 +280,20 @@ pub fn sender_identities_of(settings: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+/// The places of the workspace's vault an email account's password belongs to: the server
+/// its mail is read from and the one it is handed to, as `imap://host:port` and
+/// `smtp://host:port`. The one entry is used at both and nowhere else.
+///
+/// # Errors
+/// A server's name or port is no place.
+pub fn password_places(
+    config: &AccountConfig,
+) -> Result<Vec<crate::vault_items::Place>, crate::vault_items::ItemError> {
+    let imap = crate::vault_items::Place::server("imap", &config.imap_host, config.imap_port)?;
+    let smtp = crate::vault_items::Place::server("smtp", &config.smtp_host, config.smtp_port)?;
+    Ok(vec![imap, smtp])
+}
+
 impl AccountConfig {
     /// Decode non-secret connection metadata using the shared account schema.
     ///

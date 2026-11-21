@@ -1,8 +1,8 @@
 //! The person's account credentials, as the session serves it to the apps that ask: Browser lists,
-//! resolves and forgets the website sessions the person selected, Settings seals an account's
-//! secret, and Mail is released the one it keeps. Every call goes through the action API the
-//! shipped app already speaks, on a connection admitted as that app in its workspace, and nothing
-//! of it enters a workspace's records: the vault stays on the device.
+//! resolves and forgets the website sessions the person selected, and asks for vault items for
+//! its pages. Every call goes through the action API the shipped app already speaks, on a
+//! connection admitted as that app in its workspace. An account's password is the workspace's
+//! vault's (`tilo_workspace_service::workspaces::account_logins`).
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -36,18 +36,12 @@ use crate::common::held::{WORKSPACE, actor, presentation};
 
 /// The app whose website sessions these are.
 const BROWSER: &str = "so.tilo.browser";
-/// The keeper of the person's accounts.
-const SETTINGS: &str = "so.tilo.settings";
 /// The app that keeps email accounts.
 const MAIL: &str = "so.tilo.mail";
 /// Browser's record in the workspace: the route its app connection joins.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000bf";
-/// The secret the person's email account is sealed with.
-const PASSWORD: &str = "an app password only ownership is released";
 /// What the selected website session's cookie holds.
 const MARKER: &str = "private-session-marker";
-/// The person's email account, as their accounts record keys it.
-const ACCOUNT: &str = "me@example.test";
 
 /// Whether this host has a keyring to keep the person's vault key.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -80,13 +74,6 @@ struct Fixture {
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
     _home: tempfile::TempDir,
-}
-
-/// The person's account vault under this host's one ownership: the keyring where it answers,
-/// otherwise an owner-only key file beside the ciphertext.
-fn person_vault(root: &Path) -> accounts::AccountCredentials {
-    accounts::AccountCredentials::open_in(root)
-        .expect("this host can keep the person's account vault")
 }
 
 /// A login on a host whose keyring answers, or on one that has none and
@@ -564,95 +551,7 @@ fn the_persons_other_device_reads_and_forgets_the_selection() {
     );
 }
 
-/// Settings' own call on a connection admitted as Settings: seal the person's account secret.
-fn settings_app(
-    socket: &Path,
-    device: &ed25519_dalek::SigningKey,
-    cert: &DeviceCert,
-    seen: &std::sync::mpsc::Sender<Result<Reply, String>>,
-) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime for the app");
-    runtime.block_on(async {
-        let client = connect(socket, SETTINGS);
-        let handle = client
-            .join_channel(&channel(SETTINGS), &presentation(device, cert))
-            .await
-            .expect("the app the session launched joins its workspace's channel");
-        let sealed = handle
-            .browser_service_session_command(&Command::StoreAccountSecret {
-                account: ACCOUNT.to_owned(),
-                password: zeroize::Zeroizing::new(PASSWORD.to_owned()),
-            })
-            .await
-            .map_err(|error| error.to_string());
-        let _ = seen.send(sealed);
-    });
-}
-
-#[test]
-fn settings_seals_an_account_secret_in_the_persons_vault() {
-    let fixture = fixture(Keyring::Missing);
-    let root = config_root();
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::create_dir_all(&root).expect("the person's accounts directory");
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
-            .expect("the person's accounts directory is theirs");
-        let mut store = AccountStore::load_in(&root);
-        store.upsert(accounts::Account::new(
-            AccountId::from(ACCOUNT.to_owned()),
-            accounts::email::TYPE_ID,
-        ));
-        store.save_in(&root).expect("the person's accounts");
-        // The person's vault is theirs before the session seals anything in it: what a device that
-        // signed in once holds.
-        let _ = person_vault(&root);
-    }
-    assert_eq!(
-        SecretVault::open_person(Some(&root)).backend(),
-        backend_on(Keyring::Missing),
-        "with no keyring, an owner-only key beside the vault keeps it"
-    );
-    let (_root, socket) = private_socket();
-    let mut session = session(&socket, &fixture, SETTINGS);
-
-    let (seen, received) = std::sync::mpsc::channel();
-    let Keys { device, cert, .. } = fixture.keys;
-    let app = std::thread::spawn(move || settings_app(&socket, &device, &cert, &seen));
-    let sealed = until_the_app_is_done(&mut session, &received);
-    app.join().expect("the app's thread");
-    assert!(
-        matches!(&sealed, Ok(Reply::AccountSecretStored { account }) if account == ACCOUNT),
-        "Settings seals the account's secret: {sealed:?}"
-    );
-
-    // The secret is the person's: the app that keeps email accounts is released it, and no other
-    // app is.
-    let store = AccountStore::load_in(&root);
-    let credentials = person_vault(&root);
-    assert_eq!(
-        accounts::secret_release::release(&store, &credentials, MAIL, ACCOUNT)
-            .expect("Mail keeps email accounts")
-            .as_str(),
-        PASSWORD,
-        "the sealed secret is the password Settings gave"
-    );
-    for app in [BROWSER, "so.tilo.notes", "so.tilo.calendar"] {
-        assert!(
-            accounts::secret_release::release(&store, &credentials, app, ACCOUNT).is_err(),
-            "{app} is not released the account's secret"
-        );
-    }
-    assert!(
-        accounts::secret_release::release(&store, &credentials, SETTINGS, ACCOUNT).is_err(),
-        "Settings is the keeper of accounts, and never reads a secret back"
-    );
-}
-
-/// Mail's own call on a connection admitted as Mail: the account secret it keeps.
+/// `app`'s own calls on a connection admitted as `app`.
 fn app_asks(
     socket: &Path,
     app: &str,
@@ -699,45 +598,6 @@ fn asked_of_the_session(
     let replies = until_the_app_is_done(&mut session, &received);
     asking.join().expect("the app's thread");
     replies
-}
-
-#[test]
-fn mail_is_released_the_account_secret_it_keeps() {
-    let fixture = fixture(Keyring::Answers);
-    let root = config_root();
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::create_dir_all(&root).expect("the person's accounts directory");
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
-            .expect("the person's accounts directory is theirs");
-        let mut store = AccountStore::load_in(&root);
-        store.upsert(accounts::Account::new(
-            AccountId::from(ACCOUNT.to_owned()),
-            accounts::email::TYPE_ID,
-        ));
-        store.save_in(&root).expect("the person's accounts");
-        let mut credentials = person_vault(&root);
-        accounts::secret_release::seal(&mut credentials, SETTINGS, ACCOUNT, PASSWORD)
-            .expect("Settings seals the account's secret");
-    }
-    assert_eq!(
-        SecretVault::open_person(Some(&root)).backend(),
-        backend_on(Keyring::Answers),
-        "the keyring keeps the person's vault key, not a file beside it"
-    );
-    let released = asked_of_the_session(
-        &fixture,
-        MAIL,
-        vec![Command::ReleaseAccountSecret {
-            account: ACCOUNT.to_owned(),
-        }],
-    )
-    .remove(0);
-    let Ok(Reply::AccountSecret { account, password }) = &released else {
-        panic!("Mail is released the account's secret: {released:?}");
-    };
-    assert_eq!(account, ACCOUNT);
-    assert_eq!(password.as_str(), PASSWORD);
 }
 
 /// A vault item's reference, made up.

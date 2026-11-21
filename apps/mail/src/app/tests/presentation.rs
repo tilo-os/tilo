@@ -213,6 +213,7 @@ tilo_test_env::scenario! {
         let unreachable = crate::notice::sync_failure(&crate::state::SyncFailure {
             account: "anna@example.test".into(),
             cause: crate::state::SyncCause::Unreachable,
+            detail: None,
         });
         assert_eq!(unreachable.title, "anna@example.test ist nicht erreichbar");
         assert_eq!(
@@ -226,6 +227,7 @@ tilo_test_env::scenario! {
         let refused = crate::notice::sync_failure(&crate::state::SyncFailure {
             account: "anna@example.test".into(),
             cause: crate::state::SyncCause::SignedOut,
+            detail: None,
         });
         assert_eq!(
             refused.title,

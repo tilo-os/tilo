@@ -274,16 +274,25 @@ impl AccountRoot {
         &self,
         config: &accounts::email::AccountConfig,
         identities: &[String],
+        password_item: Option<&str>,
     ) -> Result<(), String> {
-        let mut account = accounts::Account::new(
-            accounts::AccountId::from(config.email.clone()),
-            accounts::email::TYPE_ID,
-        );
+        let id = accounts::AccountId::from(config.email.clone());
+        let mut account = accounts::Account::new(id.clone(), accounts::email::TYPE_ID);
         config.label().clone_into(&mut account.display_name);
         let mut config = config.clone();
         identities.clone_into(&mut config.identities);
         account.config = config.to_value().map_err(|error| error.to_string())?;
         let mut store = self.store();
+        // The vault entry its password is in: the one just kept, or the one it named before.
+        let named = password_item.map(str::to_owned).or_else(|| {
+            store
+                .get(&id)
+                .and_then(|kept| accounts::email::password_item(&kept.config))
+                .map(str::to_owned)
+        });
+        if let Some(item) = named {
+            accounts::email::set_password_item(&mut account.config, Some(&item));
+        }
         store.upsert(account);
         self.save_store(&store).map_err(|error| error.to_string())
     }

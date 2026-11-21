@@ -152,9 +152,9 @@ fn peers() -> Peers {
     let mut device = Window::on_device("laptop").unwrap();
     {
         let app = mail(&mut device);
-        app.ownership = Some(mail_engine::account_secrets::SecretRelease::kept_under(
+        app.release_passwords_through(Some(mail_engine::account_secrets::SecretRelease::kept_under(
             vault.path().to_path_buf(),
-        ));
+        )));
         let engine = mail_engine::engine::live::LiveEngine::trusting(
             tilo_content::ContentStore::memory(),
             Arc::new(|| {}),
@@ -178,7 +178,7 @@ fn peers() -> Peers {
     {
         let app = mail(&mut page);
         app.reach_no_server();
-        app.ownership = None;
+        app.release_passwords_through(None);
         app.state().checks.asks = true;
         app.follow_person_accounts(accounts);
         app.share_copies(copies, carried);

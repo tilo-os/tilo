@@ -182,6 +182,22 @@ impl EngineRequest {
             | Self::OAuthAuthorize { request_id, .. } => *request_id,
         }
     }
+    /// The settings of the account the request is for: none for an OAuth sign-in, which names
+    /// the account only by its id.
+    pub const fn account_config(&self) -> Option<&AccountConfig> {
+        match self {
+            Self::Connect { account, .. }
+            | Self::Fetch { account, .. }
+            | Self::StoreFlag { account, .. }
+            | Self::Move { account, .. }
+            | Self::Purge { account, .. }
+            | Self::SaveDraft { account, .. }
+            | Self::Send { account, .. }
+            | Self::Watch { account, .. }
+            | Self::Search { account, .. } => Some(account),
+            Self::OAuthAuthorize { .. } => None,
+        }
+    }
     pub fn account(&self) -> &str {
         match self {
             Self::Connect { account, .. }
@@ -228,6 +244,10 @@ pub enum EngineRequestKind {
 
 /// The context of an [`EngineEvent::Error`] of a send whose SMTP server could not be reached.
 pub const SMTP_UNREACHED: &str = "smtp.unreached";
+
+/// What a request for a password account says when Mail holds no password for it: nothing was
+/// sent to the server, so no server refused anything.
+pub const NO_PASSWORD: &str = "Mail holds no password for this account, so it did not sign in";
 
 #[derive(Clone, Debug)]
 pub enum EngineEvent {
@@ -1070,7 +1090,7 @@ pub mod live {
         match account.auth {
             AuthMethod::Password => {
                 if account.password.is_empty() {
-                    return Err("no password set for this account".into());
+                    return Err(NO_PASSWORD.into());
                 }
                 Ok(AuthCreds::Password {
                     user,

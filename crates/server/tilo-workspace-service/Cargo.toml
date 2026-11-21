@@ -148,7 +148,7 @@ tilo-content = { path = "../../system/content", features = ["dir"] }
 # workspace: the shared account store and vault, the settings document the
 # model configuration lives in, and the sign-in probes that reach a server a
 # page cannot.
-accounts = { path = "../../system/accounts" }
+accounts = { path = "../../system/accounts", features = ["person"] }
 # Which vault items a workspace's machine hands its programs: a Terminal document.
 tilo-environment = { path = "../../runtime/environment", optional = true }
 agent-provider-config = { path = "../../agent/provider-config" }

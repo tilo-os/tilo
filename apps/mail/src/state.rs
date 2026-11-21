@@ -79,13 +79,20 @@ pub struct SyncFailure {
     /// What stopped the check, which decides what the list offers beside the
     /// words.
     pub cause: SyncCause,
+    /// What the engine or the session said, where its words are what the person needs: why a
+    /// server could not be reached, or why the account's password was not handed over.
+    pub detail: Option<String>,
 }
 
 /// What stopped a check, read from the words the engine failed with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncCause {
-    /// The server wants the person to sign in again.
+    /// The server refused the account's login: its password or sign-in is wrong.
     SignedOut,
+    /// Mail holds no password for the account, so nothing was sent to its server.
+    NoPassword,
+    /// The session did not hand Mail the account's password, for the reason it gave.
+    PasswordWithheld,
     /// This device has no network.
     Offline,
     /// The server did not answer.
@@ -355,7 +362,21 @@ impl MailState {
     /// so until a check works again. A check that fails the same way changes
     /// nothing, so a window refreshing into the same failure stays quiet.
     pub fn note_sync_failure(&mut self, account: String, cause: SyncCause) {
-        let failure = SyncFailure { account, cause };
+        self.note_sync_failure_saying(account, cause, None);
+    }
+
+    /// [`Self::note_sync_failure`], with the words that say why.
+    pub fn note_sync_failure_saying(
+        &mut self,
+        account: String,
+        cause: SyncCause,
+        detail: Option<String>,
+    ) {
+        let failure = SyncFailure {
+            account,
+            cause,
+            detail,
+        };
         if self.sync_error.as_ref() != Some(&failure) {
             self.sync_error = Some(failure);
             self.dirty = true;

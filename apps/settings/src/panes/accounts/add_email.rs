@@ -1,8 +1,9 @@
 //! Adding an email account with its secret, the published `add-email-account`
-//! effect: the secret goes to the session's account credentials first (outside a
-//! session, to an explicit root's own vault), then the account joins the
-//! person's accounts, with the other names and addresses it sends as. An
-//! account given no secret joins waiting for the person to sign it in.
+//! effect: the password goes to the workspace's vault first, through the
+//! session (outside a session, to an explicit root's own vault), then the
+//! account joins the workspace's accounts naming the vault entry it is kept in,
+//! with the other names and addresses it sends as. An account given no secret
+//! joins waiting for the person to sign it in.
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 
@@ -12,7 +13,7 @@ use crate::resource::Settings;
 
 pub(super) enum Sealing {
     Session(ui::collaboration::browser_service_sessions::Pending),
-    /// Sealed already, in an explicit root's own vault.
+    /// Sealed already, in an explicit root's own vault, or nothing to seal.
     Done,
 }
 
@@ -25,15 +26,16 @@ pub(super) struct AddingEmail {
 }
 
 impl AddingEmail {
-    /// The outcome once ownership answered: the secret sealed, or why not.
-    pub(super) fn poll(&mut self) -> Option<Result<(), String>> {
+    /// The outcome once the session answered: the vault entry the password is
+    /// kept in (`None` where it was sealed apart, or there was none), or why not.
+    pub(super) fn poll(&mut self) -> Option<Result<Option<String>, String>> {
         match &mut self.sealing {
-            Sealing::Done => Some(Ok(())),
+            Sealing::Done => Some(Ok(None)),
             Sealing::Session(pending) => pending.poll().map(|reply| match reply {
-                Ok(ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::AccountSecretStored { account })
+                Ok(ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::AccountSecretStored { account, item })
                     if account == self.config.email =>
                 {
-                    Ok(())
+                    Ok(Some(item))
                 }
                 Ok(_) => Err("Account credentials answered something else".into()),
                 Err(error) => Err(error),
@@ -41,9 +43,11 @@ impl AddingEmail {
         }
     }
 
-    pub(super) fn finish(mut self, sealed: Result<(), String>) {
-        let result =
-            sealed.and_then(|()| self.root.save_email_account(&self.config, &self.identities));
+    pub(super) fn finish(mut self, sealed: Result<Option<String>, String>) {
+        let result = sealed.and_then(|item| {
+            self.root
+                .save_email_account(&self.config, &self.identities, item.as_deref())
+        });
         if let Some(reply) = self.reply.take() {
             reply.finish(result.map(|()| ui::tilo_actions::ActionOutput {
                 value: Some(serde_json::json!({ "account": self.config.email })),
@@ -146,6 +150,12 @@ impl AccountsArea {
                 ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::StoreAccountSecret {
                     account: config.email.clone(),
                     password,
+                    username: config.username.clone(),
+                    servers: accounts::email::password_places(config)
+                        .map_err(|error| error.to_string())?
+                        .iter()
+                        .map(|place| place.as_str().to_owned())
+                        .collect(),
                 },
                 None,
             )?)

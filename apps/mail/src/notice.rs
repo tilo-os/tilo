@@ -31,6 +31,26 @@ pub(crate) struct SyncOffer {
 pub(crate) fn sync_failure(failure: &SyncFailure) -> SyncFailureText {
     let account = ArgValue::Text(failure.account.clone());
     match failure.cause {
+        // Nothing reached the server: the account has no password here yet.
+        SyncCause::NoPassword => SyncFailureText {
+            kind: BannerKind::Warning,
+            title: CATALOG.t_args("mail-sync-no-password", &[("account", account)]),
+            message: Some(CATALOG.t("mail-sync-no-password-why")),
+            action: Some(SyncOffer {
+                label: CATALOG.t("mail-account-settings"),
+                intent: Intent::AccountSettings,
+            }),
+        },
+        // The session said why it kept the password back, in words made for the person.
+        SyncCause::PasswordWithheld => SyncFailureText {
+            kind: BannerKind::Warning,
+            title: CATALOG.t_args("mail-sync-password-withheld", &[("account", account)]),
+            message: failure.detail.clone(),
+            action: Some(SyncOffer {
+                label: CATALOG.t("mail-account-settings"),
+                intent: Intent::AccountSettings,
+            }),
+        },
         // Somebody has to change the account, so the words lead there.
         SyncCause::SignedOut => SyncFailureText {
             kind: BannerKind::Warning,
@@ -61,10 +81,12 @@ pub(crate) fn sync_failure(failure: &SyncFailure) -> SyncFailureText {
                 intent: Intent::CheckMail,
             }),
         },
+        // Why it could not be reached (no such host, an untrusted certificate, no answer) is
+        // what the person acts on.
         SyncCause::Unreachable => SyncFailureText {
             kind: BannerKind::Error,
             title: CATALOG.t_args("mail-sync-unreachable", &[("account", account)]),
-            message: None,
+            message: failure.detail.clone(),
             action: Some(SyncOffer {
                 label: CATALOG.t("mail-sync-check-again"),
                 intent: Intent::CheckMail,
@@ -73,19 +95,15 @@ pub(crate) fn sync_failure(failure: &SyncFailure) -> SyncFailureText {
     }
 }
 
-/// What stopped an account's check, from the words the engine failed with.
+/// What stopped an account's check, from the words the engine failed with. Only a login the
+/// server refused, or an OAuth grant it no longer takes, is the account's sign-in: a failure
+/// before the login (no password here, a server that could not be reached or trusted) is said
+/// as what it is.
 pub(crate) fn sync_cause(message: &str) -> SyncCause {
     let lower = message.to_ascii_lowercase();
-    if [
-        "authentication",
-        "password",
-        "credential",
-        "oauth",
-        "sign in",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-    {
+    if message.contains(mail_engine::engine::NO_PASSWORD) {
+        SyncCause::NoPassword
+    } else if mail_engine::validate::is_auth_failure(&lower) || lower.contains("oauth") {
         SyncCause::SignedOut
     } else if lower.contains("network unreachable") {
         SyncCause::Offline
@@ -158,5 +176,42 @@ impl AttachmentUnavailable {
             ),
             Self::Changed => CATALOG.t("mail-attachment-changed"),
         }
+    }
+}
+
+#[cfg(test)]
+mod cause_tests {
+    use super::sync_cause;
+    use crate::state::SyncCause;
+
+    /// Only a login the server refused sends the person to the account's password: a failure
+    /// before any login is said as what it is.
+    #[test]
+    fn a_failure_before_the_login_is_not_called_a_wrong_password() {
+        assert_eq!(
+            sync_cause(mail_engine::engine::NO_PASSWORD),
+            SyncCause::NoPassword
+        );
+        for before_the_login in [
+            "TLS/certificate error — the server's certificate wasn't trusted",
+            "host not found — check the server address",
+            "connection timed out — the server didn't respond",
+            "connection failed: the system's trusted certificates are unreadable",
+            "this imported account needs its sign-in before it can connect",
+        ] {
+            assert_eq!(
+                sync_cause(before_the_login),
+                SyncCause::Unreachable,
+                "{before_the_login}"
+            );
+        }
+        assert_eq!(
+            sync_cause("authentication failed — check the username and password"),
+            SyncCause::SignedOut
+        );
+        assert_eq!(
+            sync_cause("the OAuth sign-in is no longer valid; sign in again"),
+            SyncCause::SignedOut
+        );
     }
 }

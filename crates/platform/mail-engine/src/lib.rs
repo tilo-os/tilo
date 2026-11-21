@@ -55,5 +55,6 @@ pub mod oauth;
 pub mod store;
 pub mod sync;
 pub mod transport;
-#[cfg(feature = "live")]
-pub(crate) mod validate;
+/// What a failed connection's words mean: kept out of `live`, so a window that reaches no server
+/// reads a device's failure the same way.
+pub mod validate;

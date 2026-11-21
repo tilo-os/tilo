@@ -63,9 +63,9 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
     let mut mail = TestApp::<MailShell>::open_data_dir(mail_root.path()).unwrap();
     {
         let app = mail.surface_mut::<crate::app::MailApp>();
-        app.ownership = Some(mail_engine::account_secrets::SecretRelease::kept_under(
+        app.release_passwords_through(Some(mail_engine::account_secrets::SecretRelease::kept_under(
             kept.path().to_path_buf(),
-        ));
+        )));
         let engine = mail_engine::engine::live::LiveEngine::trusting(
             tilo_content::ContentStore::memory(),
             Arc::new(|| {}),
