@@ -318,16 +318,18 @@ fn restart(live: &dyn LiveHost, restarts: &Restarts, deferred: &mut Vec<String>)
             deferred.push(unit.clone());
             continue;
         }
+        let failed_before = live.unit_failed(None, unit);
         live.try_restart(None, unit)?;
-        restarted.push((None, unit.clone()));
+        restarted.push((None, unit.clone(), failed_before));
     }
     // One service manager per account, however many desktops it has open.
     let accounts: BTreeMap<u32, &Login> = logins.iter().map(|login| (login.uid, login)).collect();
     for login in accounts.into_values() {
         live.reload_user(login)?;
         for unit in &restarts.user_units {
+            let failed_before = live.unit_failed(Some(login), unit);
             live.try_restart(Some(login), unit)?;
-            restarted.push((Some(login), unit.clone()));
+            restarted.push((Some(login), unit.clone(), failed_before));
         }
     }
     if restarted.is_empty() {
@@ -336,8 +338,11 @@ fn restart(live: &dyn LiveHost, restarts: &Restarts, deferred: &mut Vec<String>)
     live.sleep(SETTLE);
     let failed: Vec<String> = restarted
         .iter()
-        .filter(|(login, unit)| live.unit_failed(*login, unit))
-        .map(|(login, unit)| match login {
+        // A unit that had failed before the update is not the update's doing: a restart leaves a
+        // stopped unit alone, so its old failure is still there afterwards. Blamed for it, an
+        // update rolled back over an unrelated job that had ended badly an hour earlier.
+        .filter(|(login, unit, failed_before)| !failed_before && live.unit_failed(*login, unit))
+        .map(|(login, unit, _)| match login {
             Some(login) => format!("{unit} ({})", login.user),
             None => unit.clone(),
         })

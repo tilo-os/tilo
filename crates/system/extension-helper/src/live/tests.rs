@@ -303,7 +303,10 @@ struct Fake {
     roots: RefCell<BTreeMap<String, PathBuf>>,
     status: RefCell<String>,
     restarted: RefCell<Vec<String>>,
+    /// Units that fail once they are restarted.
     failing: RefCell<Vec<String>>,
+    /// Units that had failed already, whatever the update does.
+    failed_already: RefCell<Vec<String>>,
     logins: RefCell<Vec<Login>>,
     desktops: RefCell<Vec<String>>,
     merges: RefCell<u32>,
@@ -398,8 +401,14 @@ impl LiveHost for Fake {
         Ok(())
     }
 
-    fn unit_failed(&self, _login: Option<&Login>, unit: &str) -> bool {
-        self.failing.borrow().iter().any(|failing| failing == unit)
+    fn unit_failed(&self, login: Option<&Login>, unit: &str) -> bool {
+        let named = format!(
+            "{}{unit}",
+            login.map(|l| format!("{}:", l.user)).unwrap_or_default()
+        );
+        self.failed_already.borrow().iter().any(|failed| failed == unit)
+            || (self.failing.borrow().iter().any(|failing| failing == unit)
+                && self.restarted.borrow().contains(&named))
     }
 
     fn start_no_block(&self, _unit: &str) {}
@@ -704,6 +713,18 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_unit_that_had_failed_before_the_update_does_not_roll_it_back;
+    {
+        let (_dir, layout, fake) = machine();
+        fake.failed_already.borrow_mut().push("fs.service".into());
+        assert_eq!(
+            apply(&fake, &fake, &layout, Phase::System).unwrap(),
+            0,
+            "an old failure is not the update's"
+        );
+        assert!(link(&layout).is_some(), "the update stays applied");
+    }
+
     phase a_unit_that_fails_after_the_update_rolls_it_back;
     {
         let (_dir, layout, fake) = machine();
@@ -919,6 +940,8 @@ tilo_test_env::scenario! {
     phase a_failed_apply_puts_the_previous_layer_back;
     {
         let (dir, layout, fake, first) = applied_system();
+        // The first update's restarts are over; the unit fails at its next one.
+        fake.restarted.borrow_mut().clear();
         fake.failing.borrow_mut().push("fs.service".into());
         stage(dir.path(), &fake, &next_image());
         assert_eq!(apply(&fake, &fake, &layout, Phase::System).unwrap(), 1);
