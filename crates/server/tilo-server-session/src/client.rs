@@ -305,9 +305,7 @@ pub enum ClientError {
         theirs: u32,
     },
     /// The host closed the server stream without answering this device's
-    /// hello at all. A host that refuses a device closes it this way, and so
-    /// does one from before versioned handshakes, which cannot read the
-    /// hello; [`ServerClient::probe_handshake_version`] tells the two apart.
+    /// hello at all. A host that refuses a device closes it this way.
     #[error("the host closed the stream without answering: {0}")]
     NoHandshakeAnswer(String),
     /// The server refused this device's hello and said why, under its own
@@ -316,58 +314,6 @@ pub enum ClientError {
     /// way is a [`Self::NoHandshakeAnswer`].
     #[error("the server refused this device: {0}")]
     Refused(crate::auth::HelloRefusal),
-}
-
-/// What a host answered a hello without a leading version
-/// ([`ServerClient::probe_handshake_version`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HandshakeProbe {
-    /// It answered with a handshake of its own, as a host from before
-    /// versioned handshakes reads that hello: it is behind every versioned
-    /// device ([`crate::auth::UNVERSIONED_PEER_PROTOCOL`]).
-    Unversioned,
-    /// It answered with its version alone, as every versioned host answers
-    /// a hello it cannot read.
-    Versioned(u32),
-    /// It answered nothing, or something else.
-    Unknown,
-}
-
-impl HandshakeProbe {
-    /// What `frame`, a host's first answer to an unversioned hello, says.
-    #[must_use]
-    pub fn read(frame: Option<&[u8]>) -> Self {
-        let Some(frame) = frame else {
-            return Self::Unknown;
-        };
-        match postcard::take_from_bytes::<u32>(frame) {
-            // A versioned host's answer is its version and nothing else.
-            Ok((theirs, [])) => Self::Versioned(theirs),
-            // An unversioned host's ack starts with its certificate.
-            _ if postcard::from_bytes::<UnversionedHelloAck>(frame).is_ok() => Self::Unversioned,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-/// A hello as hosts read it before versioned handshakes: no leading
-/// version.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(serde::Serialize)]
-struct UnversionedHello<'a> {
-    cert: &'a DeviceCert,
-    client_nonce: [u8; 32],
-}
-
-/// The ack a host from before versioned handshakes answers with.
-#[derive(serde::Deserialize)]
-struct UnversionedHelloAck {
-    #[allow(dead_code, reason = "read only to recognise the ack's shape")]
-    cert: DeviceCert,
-    #[allow(dead_code, reason = "read only to recognise the ack's shape")]
-    server_nonce: [u8; 32],
-    #[allow(dead_code, reason = "read only to recognise the ack's shape")]
-    sig_over_client_nonce: Vec<u8>,
 }
 
 impl ClientError {
@@ -672,37 +618,6 @@ impl ServerClient {
             revocations,
         )
         .await
-    }
-
-    /// Ask the host at `server_addr` whether it predates versioned
-    /// handshakes: send it a hello as such a host reads it (no leading
-    /// version) and read its first answer. A host that closed the stream on
-    /// this device's versioned hello without a word may have refused it, or
-    /// may be one that cannot read it; this tells the two apart. Nothing is
-    /// authenticated or kept: the connection closes after the answer.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn probe_handshake_version(
-        endpoint: &Endpoint,
-        server_addr: EndpointAddr,
-        own_cert: &DeviceCert,
-    ) -> Result<HandshakeProbe, ClientError> {
-        let conn = dial(endpoint, server_addr).await?;
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| ClientError::Transport(e.to_string()))?;
-        let hello = postcard::to_allocvec(&UnversionedHello {
-            cert: own_cert,
-            client_nonce: rand::random(),
-        })
-        .map_err(|e| ClientError::Codec(e.to_string()))?;
-        write_frame(&mut send, &hello).await?;
-        let answer = tilo_server_client::frame::read_frame_or_eof(&mut recv, MAX_FRAME_BYTES)
-            .await
-            .ok()
-            .flatten();
-        conn.close(0u32.into(), b"probe answered");
-        Ok(HandshakeProbe::read(answer.as_deref()))
     }
 
     /// Connect to a host whose Iroh endpoint address was obtained from a
