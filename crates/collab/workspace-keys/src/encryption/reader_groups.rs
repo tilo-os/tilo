@@ -263,17 +263,14 @@ impl KeyDirectory for Directory {
         self.workspaces.announce_at(at);
     }
 
-    /// A reader set's group is founded by whichever of its devices first needs its keys: two
-    /// founded at once settle on the genesis with the lower digest, as any group's do.
+    /// A reader set's group, and a document's group its roles decide, is founded by whichever of
+    /// its devices first needs its keys: two founded at once settle on the genesis with the lower
+    /// digest, as any group's do. Left to the workspace's founder, a document whose roles that
+    /// founder does not read (a workspace a server made, where only members read the document)
+    /// had no device that would found its group, and no member ever held its keys.
     fn founds(&self, workspace: WorkspaceId) -> bool {
         self.groups.contains_key(&workspace)
-            || matches!(
-                self.document_scope(workspace),
-                Some(KeyScope::Document {
-                    readers: Some(_),
-                    ..
-                })
-            )
+            || matches!(self.document_scope(workspace), Some(KeyScope::Document { .. }))
             || self.workspaces.founds(self.carrier(workspace))
     }
 }

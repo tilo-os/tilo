@@ -2564,3 +2564,105 @@ fn the_keys_held_are_read_at_once_on_a_runtime_of_one_thread() {
         read.map(|r| r.map(|_| ()))
     );
 }
+
+/// A document whose roles the workspace's founder does not read (a workspace a server made, where
+/// only its members read the document) is founded by the first reader that needs its keys, and the
+/// other reader is answered them: left to the founder, no device founded its group.
+#[test]
+fn a_document_its_workspaces_founder_does_not_read_is_founded_by_a_reader() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let scope = neighbour_wire::KeyScope::Document {
+        workspace: workspace_id,
+        app: "so.tilo.passwords".into(),
+        document: "vault".into(),
+        readers: None,
+    };
+    let policy = Policy::readers([1, 2, 3]);
+    policy
+        .document_readers
+        .lock()
+        .unwrap()
+        .extend([public(2), public(3)]);
+    let dir = tempfile::tempdir().unwrap();
+    let [mut founder, mut first, mut second] =
+        document_key_devices(&workspace, workspace_id, &policy, dir.path());
+    let mut now = Instant::now();
+    founder.service.access(workspace_id, now);
+    assert!(matches!(
+        founder.service.access_scope(scope.clone(), now),
+        KeyAccess::Unavailable
+    ));
+    first.service.access_scope(scope.clone(), now);
+    second.service.access_scope(scope.clone(), now);
+    drive(&mut [&mut founder, &mut first, &mut second], &mut now, 8);
+    let KeyAccess::Ready(first_keys) = first.service.access_scope(scope.clone(), now) else {
+        panic!("a reader of the document holds its key though the founder reads none of it");
+    };
+    let KeyAccess::Ready(second_keys) = second.service.access_scope(scope, now) else {
+        panic!("the other reader is answered the same document key");
+    };
+    let artifact =
+        collab_types::document_artifact_id("so.tilo.passwords", &workspace_id.to_string(), "vault");
+    let (metadata, ciphertext) = first_keys
+        .seal_content(artifact, ContentRetention::Delta, b"a login")
+        .unwrap();
+    assert!(second_keys.open_content(artifact, &metadata, &ciphertext).is_ok());
+}
+
+/// A device whose own view says it reads a document it does not (its role taken back, and the news
+/// not here yet) founds the document's group first; the readers, whose view the workspace's
+/// governance backs, refuse its genesis, found their own, and hold a key it cannot open with.
+#[test]
+fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let scope = neighbour_wire::KeyScope::Document {
+        workspace: workspace_id,
+        app: "so.tilo.passwords".into(),
+        document: "vault".into(),
+        readers: None,
+    };
+    let current = Policy::readers([1, 2, 3]);
+    current
+        .document_readers
+        .lock()
+        .unwrap()
+        .extend([public(2), public(3)]);
+    let stale = Policy::readers([1, 2, 3]);
+    stale
+        .document_readers
+        .lock()
+        .unwrap()
+        .extend([public(1), public(2), public(3)]);
+    let dir = tempfile::tempdir().unwrap();
+    let mut revoked = device(&workspace, workspace_id, 0, 1, &stale, &dir.path().join("revoked"));
+    let mut first = device(&workspace, workspace_id, 1, 2, &current, &dir.path().join("first"));
+    let mut second = device(&workspace, workspace_id, 2, 3, &current, &dir.path().join("second"));
+    let mut now = Instant::now();
+    revoked.service.access(workspace_id, now);
+    revoked.service.access_scope(scope.clone(), now);
+    drive(&mut [&mut revoked], &mut now, 1);
+    let KeyAccess::Ready(revoked_keys) = revoked.service.access_scope(scope.clone(), now) else {
+        panic!("the device that takes itself for a reader founds the group in its own view");
+    };
+    first.service.access_scope(scope.clone(), now);
+    second.service.access_scope(scope.clone(), now);
+    drive(&mut [&mut revoked, &mut first, &mut second], &mut now, 8);
+    let KeyAccess::Ready(first_keys) = first.service.access_scope(scope.clone(), now) else {
+        panic!("the readers found the document's group though its first genesis was refused");
+    };
+    let KeyAccess::Ready(second_keys) = second.service.access_scope(scope, now) else {
+        panic!("the other reader is answered the readers' key");
+    };
+    let artifact =
+        collab_types::document_artifact_id("so.tilo.passwords", &workspace_id.to_string(), "vault");
+    let (metadata, ciphertext) = first_keys
+        .seal_content(artifact, ContentRetention::Delta, b"a login")
+        .unwrap();
+    assert!(second_keys.open_content(artifact, &metadata, &ciphertext).is_ok());
+    assert!(
+        revoked_keys.open_content(artifact, &metadata, &ciphertext).is_err(),
+        "the refused genesis's key opens nothing the readers seal"
+    );
+}
