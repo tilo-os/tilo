@@ -433,6 +433,29 @@ impl Workspaces {
                 changed = true;
             }
         }
+        // A compaction this copy refused while it held no keys of the record is taken now that
+        // it may hold them ([`GovernedWorkspace::take_behind`]): the writes it folds are nowhere
+        // but inside it, and whoever reads the record is told.
+        let kept: Vec<(String, String)> = workspace.behind.keys().cloned().collect();
+        for (app, document) in kept {
+            let Some(taken) = workspace.take_behind(&(app.clone(), document.clone())).await else {
+                continue;
+            };
+            let author = *taken.author.as_bytes();
+            let message = NeighbourMsg::AppDocument {
+                peer: tilo_peer_state::peer_handle(&author),
+                app_id: app.clone(),
+                cluster_id: workspace.workspace().to_owned(),
+                document_id: document.clone(),
+                envelope: Box::new(taken),
+                own: None,
+                readers: None,
+            };
+            self.tell_followers(workspace, author, (app.clone(), document.clone()), &message, true)
+                .await;
+            changed = true;
+            written.insert((app, document));
+        }
         if changed {
             workspace.keep_followed();
         }

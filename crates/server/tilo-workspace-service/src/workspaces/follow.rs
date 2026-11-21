@@ -40,6 +40,16 @@ pub(super) struct Followed {
     pub(super) refused: Option<String>,
 }
 
+/// What taking a refused compaction came to, when it could not be taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BehindRefusal {
+    /// This host holds no keys of the record yet: the compaction waits for them.
+    Keys,
+    /// Taking the compaction would drop a change this copy holds: it is not the base of what
+    /// this copy holds, and stays refused.
+    Lacks,
+}
+
 impl Workspaces {
     /// Tell whoever follows the workspace's documents that `message`, `author`'s
     /// write of `document` of `app`, is in `workspace`'s copy: the write that
@@ -292,14 +302,20 @@ impl GovernedWorkspace {
         }
     }
 
-    /// [`Self::follow`] for `message`, a write the server kept that the load replays
-    /// ([`Workspaces::recall_retained`]). A compaction of a sealed document the copy refused for
-    /// the writes it covers is taken as well, where this server holds the document's keys and the
-    /// compaction holds every change of the writes it replaces here
-    /// ([`tilo_peer_state::PeerPublicationMut::take_compaction_behind`]): a copy ended before it
-    /// kept writes a member's compaction covers afterwards holds them nowhere but inside it.
+    /// [`Self::follow`] for `message`, with a sealed compaction the copy is behind in taken as the
+    /// record's base under the record's keys
+    /// ([`tilo_peer_state::PeerPublicationMut::take_compaction_behind`]): a replica that holds
+    /// only part of what a compaction folds cannot tell it from one that leaves writes out, but
+    /// a key holder can, judging every write it holds that the compaction covers. The writes the
+    /// copy lacks are nowhere but inside the compaction then, so refusing it for good would lose
+    /// them.
+    ///
+    /// This covers a write that arrives live as well as one a load replays. A compaction this
+    /// host holds no keys of yet is kept by route and taken once it does
+    /// ([`Self::take_behind`]); one that does not hold every change this copy holds is refused
+    /// as it stands: taking it would drop a write here.
     pub(super) async fn follow_kept(
-        &self,
+        &mut self,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Followed {
@@ -316,26 +332,99 @@ impl GovernedWorkspace {
         if followed.refused.is_none() || envelope.kind != collab_types::OpKind::Compaction {
             return followed;
         }
-        let Ok(Some(keys)) = self.document_keys(app_id, document_id).await else {
-            return followed;
-        };
-        let taken = self.peer().publication_mut().take_compaction_behind(
-            (app_id, document_id),
-            envelope.as_ref().clone(),
-            &mut keys.open(),
-            tilo_clock::wall(),
-        );
-        match taken {
-            Ok(taken) => Followed {
-                changed: taken.is_some(),
+        let route = (app_id.clone(), document_id.clone());
+        match self
+            .take_compaction_behind(&route, envelope.as_ref())
+            .await
+        {
+            Ok(true) => Followed {
+                changed: true,
                 ..Followed::default()
             },
-            Err(error) => {
-                tracing::debug!(workspace = %self.workspace(), %error,
-                    "a member's compaction does not hold every change the copy holds");
+            // The keys are not here yet: the compaction waits for them, and the writes it
+            // covers with it.
+            Err(BehindRefusal::Keys) => {
+                tracing::debug!(
+                    workspace = %self.workspace(),
+                    app = route.0,
+                    document = route.1,
+                    "a compaction this copy is behind in is kept until the record's keys are here"
+                );
+                self.behind.insert(route, envelope.as_ref().clone());
                 followed
             }
+            Ok(false) | Err(BehindRefusal::Lacks) => followed,
         }
+    }
+
+    /// Take the compaction kept for `route`, if any, under the record's keys
+    /// ([`Self::follow_kept`]): the record's keys were not here when this copy refused it, and
+    /// the writes it folds are nowhere but inside it. Answers the compaction taken.
+    pub(super) async fn take_behind(
+        &mut self,
+        (app, document): &(String, String),
+    ) -> Option<collab_types::SignedOp> {
+        let route = (app.clone(), document.clone());
+        let compaction = self.behind.get(&route)?.clone();
+        match self.take_compaction_behind(&route, &compaction).await {
+            Ok(true) => {
+                self.behind.remove(&route);
+                Some(compaction)
+            }
+            // A compaction that does not hold every change this copy holds can never be taken:
+            // the keys are here now, and taking it would drop a write.
+            Err(BehindRefusal::Lacks) => {
+                self.behind.remove(&route);
+                None
+            }
+            Ok(false) | Err(BehindRefusal::Keys) => None,
+        }
+    }
+
+    /// Whether this copy can take `compaction`, the sealed compaction of `route` it refused, as
+    /// the record's base under the record's keys.
+    ///
+    /// # Errors
+    /// [`BehindRefusal::Keys`] while this host holds no keys of the record, and
+    /// [`BehindRefusal::Lacks`] when taking the compaction would drop a write this copy holds.
+    async fn take_compaction_behind(
+        &self,
+        (app, document): &(String, String),
+        compaction: &collab_types::SignedOp,
+    ) -> Result<bool, BehindRefusal> {
+        // The copy holds it already: a compaction its author sends again, or one a
+        // replay brings back, is not behind it.
+        if self
+            .peer()
+            .publication()
+            .sealed_history(app, document)
+            .iter()
+            .any(|write| write.signature == compaction.signature)
+        {
+            return Ok(true);
+        }
+        let keys = match self.document_keys(app, document).await {
+            Ok(Some(keys)) => keys,
+            Ok(None) => return Err(BehindRefusal::Keys),
+            Err(error) => {
+                tracing::debug!(workspace = %self.workspace(), %error, "a kept compaction waits for the record's keys");
+                return Err(BehindRefusal::Keys);
+            }
+        };
+        self.peer()
+            .publication_mut()
+            .take_compaction_behind(
+                (app, document),
+                compaction.clone(),
+                &mut keys.open(),
+                tilo_clock::wall(),
+            )
+            .map(|taken| taken.is_some())
+            .map_err(|error| {
+                tracing::debug!(workspace = %self.workspace(), app, document, %error,
+                    "a kept compaction does not hold every change the copy holds");
+                BehindRefusal::Lacks
+            })
     }
 
     /// The verdict [`Self::follow`] would give `message`, `author`'s write,
@@ -433,6 +522,11 @@ impl Workspaces {
     /// would give the write ([`GovernedWorkspace::refuses`]), so the change is
     /// never stored for a later reader to meet, and a writer numbering its
     /// next change the refused one's sequence again writes on cleanly.
+    ///
+    /// A sealed compaction the copy is behind in is not refused: it is taken as
+    /// the record's base under the record's keys, or kept until they are here
+    /// ([`GovernedWorkspace::follow_kept`]). The writes it covers are nowhere
+    /// but inside it, and a change refused here is never kept.
     pub(crate) async fn refuses_write(
         &self,
         workspace: &str,
@@ -451,7 +545,40 @@ impl Workspaces {
             return None;
         }
         let state = self.workspace(workspace).await.ok()?;
-        state.lock().await.refuses(author, &message)
+        let mut governed = state.lock().await;
+        let refusal = governed.refuses(author, &message)?;
+        let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            ..
+        } = &message
+        else {
+            return Some(refusal);
+        };
+        if envelope.kind != collab_types::OpKind::Compaction {
+            return Some(refusal);
+        }
+        let followed = governed.follow_kept(author, message.clone()).await;
+        if let Some(refused) = followed.refused {
+            // Kept until the record's keys are here: ask to be let into its channel, so they
+            // arrive rather than waiting for a write the record lets in another way.
+            #[cfg(any(feature = "agents", feature = "web"))]
+            if governed
+                .behind
+                .contains_key(&(app_id.clone(), document_id.clone()))
+            {
+                self.join_soon(&mut governed, app_id.clone(), document_id.clone());
+            }
+            return Some(refused);
+        }
+        // The change is this copy's now: what it took is kept, and a verdict
+        // filed against it before is cleared.
+        if followed.changed {
+            self.landed(&governed, &message);
+            self.keep_soon(&mut governed);
+        }
+        None
     }
 }
 

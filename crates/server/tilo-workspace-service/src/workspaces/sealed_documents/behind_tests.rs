@@ -8,9 +8,9 @@
 
 use super::tests::{
     APP, Lounge, follows, lounge_with_client, readable, retained_until, retained_writes,
-    seal_and_send_title, title,
+    seal_and_send_title, send_sealed, title,
 };
-use automerge::{ROOT, transaction::Transactable as _};
+use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::{CommitNamed as _, SignedOp};
 use neighbour_wire::NeighbourMsg;
 
@@ -84,6 +84,7 @@ async fn a_copy_without_the_second_write(
     titles(lounge, client, &["one"]).await;
     let ((), second) = lounge.member.seal(&lounge.workspace, |doc| {
         doc.put(ROOT, "title", "two").unwrap();
+        doc.put(ROOT, "second", "kept").unwrap();
         doc.commit_edit("fixture", "title");
     });
     kept_untold(lounge, &second, false).await;
@@ -316,6 +317,202 @@ async fn a_members_compaction_of_the_nodes_fold_is_taken() {
             .await
             .as_deref(),
         Some("four")
+    );
+    drop((state, lounge.workspaces));
+    lounge.server.shutdown().await;
+}
+
+/// What a reader of [`DOCUMENT`] reads at `field`.
+async fn field(lounge: &Lounge, name: &str) -> Option<String> {
+    let bytes = lounge
+        .workspaces
+        .resource_document(&lounge.workspace, APP, DOCUMENT)
+        .await
+        .unwrap()?;
+    automerge::AutoCommit::load(&bytes)
+        .ok()?
+        .get(ROOT, name)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.into_string().ok())
+}
+
+/// A copy that holds only part of what a compaction folds takes it when it arrives live, as one
+/// that was away while the history was compacted: the writes it lacks are nowhere but inside the
+/// compaction from then on, so a copy that refused it could never read them again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_takes_a_compaction_that_arrives_live_over_a_write_it_lacks() {
+    let (lounge, client) = lounge_with_client().await;
+    let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &client).await;
+    let author = lounge.member_key.verifying_key().to_bytes();
+    assert!(
+        !state
+            .lock()
+            .await
+            .peer()
+            .publication()
+            .holds_sealed(APP, DOCUMENT, &second),
+        "the copy lacks the second write"
+    );
+    assert!(
+        state.lock().await.refuses(author, &compaction).is_some(),
+        "a copy without the second write refuses the member's compaction"
+    );
+
+    // The member's compaction reaches the copy as a live write, not through a load.
+    lounge
+        .workspaces
+        .absorb_kept(
+            &lounge.workspace,
+            author,
+            &postcard::to_stdvec(&compaction).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
+        panic!("a compaction is a document write");
+    };
+    let held = state
+        .lock()
+        .await
+        .peer()
+        .publication()
+        .sealed_history(APP, DOCUMENT);
+    assert_eq!(
+        held.first().map(|op| op.signature),
+        Some(envelope.signature),
+        "the member's compaction leads the copy's history"
+    );
+    assert_eq!(field(&lounge, "title").await.as_deref(), Some("three"));
+    assert_eq!(
+        field(&lounge, "second").await.as_deref(),
+        Some("kept"),
+        "the write the copy lacked reads from the compaction"
+    );
+    drop((state, lounge.workspaces));
+    lounge.server.shutdown().await;
+}
+
+/// A copy takes a compaction that arrives before any of the writes it folds, and reads every
+/// change it folds: the compaction is the record's base, and the writes that follow it are the
+/// ones it already holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_takes_a_compaction_that_arrives_before_any_of_its_writes() {
+    let (lounge, client) = lounge_with_client().await;
+    let sealed = |message: NeighbourMsg| {
+        let NeighbourMsg::AppDocument { envelope, .. } = message else {
+            panic!("a sealed write is a document write");
+        };
+        *envelope
+    };
+    // The member's writes build on this copy's record, as a page's do on the host it reads.
+    let state = lounge.workspaces.workspace(&lounge.workspace).await.unwrap();
+    let base = state
+        .lock()
+        .await
+        .peer()
+        .document(APP, DOCUMENT)
+        .expect("the copy holds the record");
+    lounge.member.reset_to(&base);
+    let ((), first) = lounge.member.seal(&lounge.workspace, |doc| {
+        doc.put(ROOT, "title", "one").unwrap();
+        doc.put(ROOT, "first", "kept").unwrap();
+        doc.commit_edit("fixture", "title");
+    });
+    let ((), second) = lounge.member.seal(&lounge.workspace, |doc| {
+        doc.put(ROOT, "title", "two").unwrap();
+        doc.commit_edit("fixture", "title");
+    });
+    let ((), third) = lounge.member.seal(&lounge.workspace, |doc| {
+        doc.put(ROOT, "title", "three").unwrap();
+        doc.commit_edit("fixture", "title");
+    });
+    let writes = [first.clone(), second.clone(), third.clone()]
+        .into_iter()
+        .map(sealed)
+        .collect();
+    let compaction = lounge
+        .member
+        .compacts(&lounge.workspaces, &lounge.workspace, writes)
+        .await;
+
+    // The member's compaction reaches the copy first, then the writes it folds.
+    send_sealed(&client, lounge.workspace_id, &lounge.member_key, &compaction);
+    for write in [first, second, third] {
+        send_sealed(&client, lounge.workspace_id, &lounge.member_key, &write);
+    }
+    let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
+        panic!("a compaction is a document write");
+    };
+    tilo_test_env::within("the copy takes the compaction", async {
+        loop {
+            let leads = state
+                .lock()
+                .await
+                .peer()
+                .publication()
+                .sealed_history(APP, DOCUMENT)
+                .first()
+                .map(|op| op.signature)
+                == Some(envelope.signature);
+            if leads {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert_eq!(field(&lounge, "title").await.as_deref(), Some("three"));
+    assert_eq!(field(&lounge, "first").await.as_deref(), Some("kept"));
+    drop((state, lounge.workspaces));
+    lounge.server.shutdown().await;
+}
+
+/// A copy that holds only part of what a compaction folds takes it when its author sends it over
+/// the session, as the copy that follows the history sees it: a change refused there is never
+/// kept, and the writes the compaction folds are nowhere else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_takes_a_compaction_a_device_sends_over_a_write_it_lacks() {
+    let (lounge, client) = lounge_with_client().await;
+    let (state, second, compaction) = a_copy_without_the_second_write(&lounge, &client).await;
+    assert!(
+        !state
+            .lock()
+            .await
+            .peer()
+            .publication()
+            .holds_sealed(APP, DOCUMENT, &second),
+        "the copy lacks the second write"
+    );
+
+    send_sealed(&client, lounge.workspace_id, &lounge.member_key, &compaction);
+    let NeighbourMsg::AppDocument { envelope, .. } = &compaction else {
+        panic!("a compaction is a document write");
+    };
+    tilo_test_env::within("the copy takes the compaction", async {
+        loop {
+            let leads = state
+                .lock()
+                .await
+                .peer()
+                .publication()
+                .sealed_history(APP, DOCUMENT)
+                .first()
+                .map(|op| op.signature)
+                == Some(envelope.signature);
+            if leads {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert_eq!(field(&lounge, "title").await.as_deref(), Some("three"));
+    assert_eq!(
+        field(&lounge, "second").await.as_deref(),
+        Some("kept"),
+        "the write the copy lacked reads from the compaction"
     );
     drop((state, lounge.workspaces));
     lounge.server.shutdown().await;

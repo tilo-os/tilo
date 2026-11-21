@@ -177,6 +177,13 @@ impl SealingMember {
             .unwrap();
     }
 
+    /// The member's replica replaced by `bytes`, the document as this workspace's copy holds it:
+    /// a member's next writes then build on exactly that copy's base, as a page that reopens the
+    /// record does.
+    pub fn reset_to(&self, bytes: &[u8]) {
+        *self.document.lock().unwrap() = automerge::AutoCommit::load(bytes).unwrap();
+    }
+
     /// The member's replica of the record.
     pub fn document(&self) -> automerge::AutoCommit {
         self.document.lock().unwrap().clone()
