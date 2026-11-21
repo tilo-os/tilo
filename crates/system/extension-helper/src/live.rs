@@ -1281,6 +1281,9 @@ pub trait LiveHost {
     fn compositor(&self, login: &Login) -> Option<u32>;
     /// Whether the compositor `pid` published that its desktop is usable.
     fn desktop_ready(&self, login: &Login, pid: u32) -> bool;
+    /// Whether `login`'s wrapper says the desktop it was asked to restart never became usable,
+    /// and keeps the login until the restart is asked again.
+    fn restart_failed(&self, login: &Login) -> bool;
     /// The clock the wait below keeps, which a test host advances instead of sleeping.
     fn now(&self) -> Instant;
     fn sleep(&self, duration: Duration);
@@ -1293,7 +1296,9 @@ pub trait LiveHost {
         let started = self.now();
         let mut ready: Option<(u32, Instant)> = None;
         while self.now().saturating_duration_since(started) < DESKTOP_BACK {
-            if !self.login_alive(login) {
+            // The wrapper keeps the login and waits for the next request: asking again, with
+            // the previous files back, is the only thing that helps, and sooner is better.
+            if !self.login_alive(login) || self.restart_failed(login) {
                 return false;
             }
             match (self.compositor(login), ready) {
@@ -1707,6 +1712,13 @@ impl LiveHost for crate::System {
             true,
         )?;
         let Some(old) = old else {
+            // No compositor runs: the wrapper waited for this request after a restart that
+            // failed. It takes its report down as it starts the next one; reading the old
+            // report as this start's would call the desktop gone before it was tried.
+            let asked = Instant::now();
+            while self.restart_failed(login) && asked.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
             return Ok(());
         };
         let started = Instant::now();
@@ -1733,6 +1745,14 @@ impl LiveHost for crate::System {
 
     fn desktop_ready(&self, login: &Login, pid: u32) -> bool {
         desktop_ready(login, pid)
+    }
+
+    fn restart_failed(&self, login: &Login) -> bool {
+        let path = PathBuf::from(format!("/run/user/{}", login.uid))
+            .join(tilo_paths::login::SESSION_DIR)
+            .join(tilo_paths::login::DESKTOP_RESTART_FAILED_FILE);
+        fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.uid() == login.uid)
     }
 
     fn now(&self) -> Instant {

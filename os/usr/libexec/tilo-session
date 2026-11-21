@@ -12,6 +12,15 @@
 # that was restarted becomes previous.log. Only a requested restart starts
 # the compositor again. A compositor that exits on its own, a crash included,
 # ends the session as before, so a compositor that cannot start never loops.
+# One case is not the compositor's own end: the run that follows an asked
+# restart and ends before its desktop was ever usable. The desktop before it
+# worked; what failed is its replacement (an update's new desktop program that
+# does not start). Ending the login there would close every app the person has
+# open over a failure they did not cause, before whoever asked for the restart
+# can put the working desktop back. So the wrapper keeps the login, says so in
+# desktop-restart-failed beside the desktop's other records, and waits
+# RESTART_HOLD_S for the next SIGUSR1, which starts the compositor again. No
+# request in that time ends the login as any other failed start does.
 # That includes one whose main loop hung: its watchdog records every thread's
 # stack and exits with status 70, which releases DRM master and the VT, and
 # the person is back at the greeter instead of in front of a frozen screen.
@@ -28,6 +37,10 @@ readonly RM=/usr/bin/rm
 readonly RMDIR=/usr/bin/rmdir
 readonly MKDIR=/usr/bin/mkdir
 readonly MKFIFO=/usr/bin/mkfifo
+# How long a login waits, after an asked restart whose desktop never became usable, for whoever
+# asked to ask again. A live update notices the failed desktop, puts the previous files back and
+# asks within a few seconds.
+readonly RESTART_HOLD_S=90
 readonly CHMOD=/usr/bin/chmod
 readonly MV=/usr/bin/mv
 readonly CP=/usr/bin/cp
@@ -89,6 +102,10 @@ logout_request_path=""
 restart_request_path=""
 restart_handover_path=""
 restart_requested=0
+# 1 while the login waits for a restart request after a failed restart.
+restart_awaited=0
+# The compositor run that ended last.
+last_pid=""
 
 # The compositor cannot safely ask the display-manager wrapper to log out by
 # shelling out to logind: the wrapper owns the user target and must stop it
@@ -172,6 +189,9 @@ stop_target() {
 }
 
 cleanup_logout_channel() {
+  if [ "$restart_awaited" = 1 ]; then
+    "$RM" -f -- "$runtime_dir/tilo-session/desktop-restart-failed" 2>/dev/null || true
+  fi
   if [ -n "$logout_request_dir" ]; then
     "$RM" -f -- "$logout_request_dir/lock-state" 2>/dev/null || true
   fi
@@ -237,6 +257,11 @@ trap request_restart USR1
 # SIGUSR1: restart the compositor. Asked while no compositor runs (before the
 # first start, or after it already exited), it does nothing.
 request_restart() {
+  if [ "$restart_awaited" = 1 ]; then
+    # The login waits for exactly this: the next run starts once the wait sees it.
+    restart_requested=1
+    return 0
+  fi
   if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
     restart_requested=1
     # Announce the restart in the login's private channel before the compositor is asked to
@@ -252,6 +277,7 @@ request_restart() {
 run_managed() {
   "$@" &
   shell_pid=$!
+  last_pid=$shell_pid
   local status
   # A trapped signal (a restart request) ends `wait` before the compositor
   # has exited; wait again until it has, so its own status is the one kept.
@@ -444,6 +470,35 @@ end_flight_record() {
 ' "$end_record" >>"$flight_events" 2>/dev/null || true
 }
 
+# Whether the compositor run that just ended ever published a usable desktop: the record the
+# session writes once a person can use it names that run's process.
+last_run_was_usable() {
+  local ready="$runtime_dir/tilo-session/desktop-ready" named=""
+  if [ -f "$ready" ]; then
+    read -r named _ <"$ready" 2>/dev/null || true
+  fi
+  [ -n "$last_pid" ] && [ "$named" = "$last_pid" ]
+}
+
+# Keep the login after an asked restart whose desktop never became usable, until the restart is
+# asked again (0) or RESTART_HOLD_S passed without that (1).
+await_restart() {
+  local failed="$runtime_dir/tilo-session/desktop-restart-failed" tenths=0
+  printf 'tilo-session: the restarted desktop did not start; the login stays %s s for the restart to be asked again\n' "$RESTART_HOLD_S"
+  restart_awaited=1
+  # The directory is the desktop's own, there since the run that worked.
+  (umask 077; : >"$failed") 2>/dev/null || true
+  while [ "$restart_requested" != 1 ] && [ "$tenths" -lt $((RESTART_HOLD_S * 10)) ] \
+        && [ ! -e "$logout_request_path" ]; do
+    "$SLEEP" 0.1 || true
+    tenths=$((tenths + 1))
+  done
+  restart_awaited=0
+  "$RM" -f -- "$failed" 2>/dev/null || true
+  [ "$restart_requested" = 1 ] && [ ! -e "$logout_request_path" ]
+}
+
+followed_restart=0
 while :; do
   restart_requested=0
   start_flight_record
@@ -453,9 +508,18 @@ while :; do
   end_flight_record "$status"
   set -e
   # A logout asked for while the restart was under way still wins.
-  if [ "$restart_requested" != 1 ] || [ -e "$logout_request_path" ]; then
-    break
+  if [ "$restart_requested" = 1 ] && [ ! -e "$logout_request_path" ]; then
+    followed_restart=1
+    printf 'tilo-session: restarting the desktop as asked; the login stays\n'
+    continue
   fi
-  printf 'tilo-session: restarting the desktop as asked; the login stays\n'
+  # The compositor ended by itself. That ends the login, unless this run was the replacement an
+  # asked restart started and its desktop was never usable.
+  if [ "$followed_restart" = 1 ] && [ ! -e "$logout_request_path" ] && ! last_run_was_usable \
+     && await_restart; then
+    printf 'tilo-session: starting the desktop again as asked; the login stays\n'
+    continue
+  fi
+  break
 done
 exit "$status"

@@ -31,6 +31,10 @@ pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 /// restoring the windows of this device. A reader that waits for a restarted desktop reads
 /// this, never the mere existence of a compositor process.
 pub const DESKTOP_READY_FILE: &str = "desktop-ready";
+/// File in [`SESSION_DIR`] the login keeps while it waits, after an asked restart whose desktop
+/// never became usable, for the restart to be asked again: whoever asked reads that the desktop
+/// did not come back without waiting for it.
+pub const DESKTOP_RESTART_FAILED_FILE: &str = "desktop-restart-failed";
 /// Prefix of the socket in [`SESSION_DIR`] on which this session says whether
 /// its first use is over: the installed folder importer asks before it
 /// continues a saved import, so nothing it carries lands under an identity

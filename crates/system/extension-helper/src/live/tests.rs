@@ -315,6 +315,8 @@ struct Fake {
     clock: Cell<Duration>,
     /// Whether the login's wrapper runs.
     login_alive: Cell<bool>,
+    /// The wrapper says its asked restart never gave a usable desktop.
+    restart_failed: Cell<bool>,
     /// The compositor the login's wrapper runs, while it does.
     compositor: Cell<Option<u32>>,
     /// When that compositor goes away, on the fake clock.
@@ -439,6 +441,10 @@ impl LiveHost for Fake {
         }
     }
 
+    fn restart_failed(&self, _login: &Login) -> bool {
+        self.restart_failed.get()
+    }
+
     fn desktop_ready(&self, _login: &Login, pid: u32) -> bool {
         let now = self.clock.get();
         self.ready
@@ -548,6 +554,21 @@ fn a_restarted_desktop_is_back_only_once_it_is_usable() {
         DESKTOP_BACK,
         "it is given up at the bound"
     );
+
+    // A wrapper that says the restarted desktop never started is believed at once: the login
+    // waits for the restart to be asked again, and every second of waiting is a frozen screen.
+    fake.restart_failed.set(true);
+    let started = fake.clock.get();
+    assert!(
+        !fake.desktop_back(&login, DESKTOP_STABLE),
+        "a restart the wrapper calls failed is not back"
+    );
+    assert_eq!(
+        fake.clock.get().saturating_sub(started),
+        Duration::ZERO,
+        "and nobody waits for it"
+    );
+    fake.restart_failed.set(false);
 
     fake.compositor.set(Some(8));
     *fake.ready.borrow_mut() = Some((8, fake.clock.get()));

@@ -223,6 +223,10 @@ if [ "${TILO_SESSION_WRITE_LOGOUT:-0}" = 1 ]; then
   printf '%s\n' "$TILO_SESSION_LOGOUT_REQUEST" >"$TILO_SESSION_TEST_LOG.request-path"
   printf 'logout\n' >"$TILO_SESSION_LOGOUT_REQUEST"
 fi
+# A desktop a person can use says so in its ready record, which names its process.
+if [ "${TILO_SESSION_PUBLISH_READY:-0}" = 1 ] && [ -d "$XDG_RUNTIME_DIR/tilo-session" ]; then
+  printf '%s 0\n' "$$" >"$XDG_RUNTIME_DIR/tilo-session/desktop-ready"
+fi
 if [ "${TILO_SESSION_HOLD:-0}" = 1 ] \
    || { [ "${TILO_SESSION_HOLD_FIRST:-0}" = 1 ] && [ "$runs" = 1 ]; }; then
   # A test that stops the login while the compositor is being stopped needs the compositor to
@@ -252,7 +256,8 @@ tilo_stage_script "$wrapper" "$test_wrapper" \
   DBUS_UPDATE="$fake_dbus_update" \
   COMPOSITOR_BIN="$fake_native" \
   IMAGE_FLAVOUR="$tmp/image-flavour" \
-  FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER"
+  FLIGHT_RECORDER="$TILO_FLIGHT_RECORDER" \
+  RESTART_HOLD_S=2
 printf 'dev\n' >"$tmp/image-flavour"
 grep -Fqx "readonly SYSTEMCTL=$fake_systemctl" "$test_wrapper"
 grep -Fqx "readonly COMPOSITOR_BIN=$fake_native" "$test_wrapper"
@@ -623,7 +628,8 @@ grep -Fq 'the desktop did not stop in 1 s; ending it' "$tmp/short-stop-stdout" |
 # A desktop restart (SIGUSR1) stops the compositor and starts it again in the
 # same login: the target is started once and stopped once, at the end. The
 # restarted run's record becomes previous.log. The second compositor exiting
-# by itself ends the session: only a requested restart starts another.
+# by itself ends the session once nobody asked again within the wrapper's
+# wait: only a requested restart starts another.
 : >"$log"
 rm -f "$log.runs" "$log.holding" "$log.cpu-paths" "$log.markers"
 restart_state="$tmp/restart-state"
@@ -733,6 +739,72 @@ set -e
 [ "$status" = 143 ] || { echo "a cancelled restart ended with $status" >&2; exit 1; }
 [ "$(cat "$log.runs")" = 1 ] || { echo 'a compositor started after the restart was cancelled' >&2; exit 1; }
 [ ! -d "$channel" ] || { ls -la "$channel" >&2; exit 1; }
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+
+# The desktop an asked restart started never becomes usable (an update's new desktop program
+# that does not start): the login stays, says so beside the desktop's records, and the restart
+# asked again starts the compositor once more. Nobody loses their apps to a failed replacement.
+: >"$log"
+rm -f "$log.runs" "$log.markers" "$log.holding" "$log.request-path"
+install -d -m 700 "$runtime_dir/tilo-session"
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD_FIRST=1 \
+  TILO_SESSION_DESKTOP_STATUS=7 "$test_wrapper" --backend drm >/dev/null &
+session_pid=$!
+for _ in $(seq 1 500); do
+  [ -s "$log.holding" ] && break
+  sleep 0.02
+done
+[ -s "$log.holding" ]
+kill -USR1 "$session_pid"
+failed="$runtime_dir/tilo-session/desktop-restart-failed"
+for _ in $(seq 1 500); do
+  [ -e "$failed" ] && break
+  sleep 0.02
+done
+[ -e "$failed" ] || { echo 'a restart whose desktop never started was not said' >&2; exit 1; }
+kill -0 "$session_pid" || { echo 'the login ended over a restart that failed' >&2; exit 1; }
+[ "$(cat "$log.runs")" = 2 ]
+kill -USR1 "$session_pid"
+for _ in $(seq 1 500); do
+  [ "$(cat "$log.runs")" = 3 ] && break
+  sleep 0.02
+done
+[ "$(cat "$log.runs")" = 3 ] || { echo 'the restart asked again started no compositor' >&2; exit 1; }
+# The third run fails as well and nobody asks again: the login ends with its status.
+set +e
+wait "$session_pid"
+status=$?
+set -e
+[ "$status" = 7 ] || { echo "a login nobody asked to restart again ended with $status" >&2; exit 1; }
+[ "$(cat "$log.runs")" = 3 ]
+[ ! -e "$failed" ] || { echo 'the failed restart is still said after the login ended' >&2; exit 1; }
+
+# A restarted desktop that was usable and then ends is the compositor's own end: the login ends
+# at once, as it does for the first run.
+: >"$log"
+rm -f "$log.runs" "$log.markers" "$log.holding" "$log.request-path" "$runtime_dir/tilo-session/desktop-ready"
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD_FIRST=1 \
+  TILO_SESSION_PUBLISH_READY=1 TILO_SESSION_DESKTOP_STATUS=7 "$test_wrapper" --backend drm >/dev/null &
+session_pid=$!
+for _ in $(seq 1 500); do
+  [ -s "$log.holding" ] && break
+  sleep 0.02
+done
+[ -s "$log.holding" ]
+kill -USR1 "$session_pid"
+ended=0
+for _ in $(seq 1 75); do
+  kill -0 "$session_pid" 2>/dev/null || { ended=1; break; }
+  sleep 0.02
+done
+[ "$ended" = 1 ] || { echo 'a usable desktop that ended kept the login waiting' >&2; exit 1; }
+set +e
+wait "$session_pid"
+status=$?
+set -e
+[ "$status" = 7 ] || { echo "a usable restarted desktop ended the login with $status" >&2; exit 1; }
+[ "$(cat "$log.runs")" = 2 ]
+rm -rf "$runtime_dir/tilo-session"
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 
 printf 'Tilo session lifecycle contract: PASS\n'
