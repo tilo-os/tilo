@@ -4783,12 +4783,15 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "dev-installer-medium-{arch}"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: it runs in the OS assembler image, which carries the install's tools (as
+# server-installer-medium does), so nothing comes from Fedora's mirrors, and the only image it
+# pulls is the scratch registry's, by digest (os/scratch-registry.env).
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/installer-medium.sh {arch} /target/os/{arch}/image /target/publish/dev-installer-medium/{arch}"
 needs = ["os-image-{arch}", "bootc-alongside-{arch}"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/{arch}/bootc" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/dev-installer-medium/{arch}/disk.qcow2", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.sha256", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.hardware.json", "/target/publish/dev-installer-medium/{arch}/source.json"]
 timeout_secs = 7200
