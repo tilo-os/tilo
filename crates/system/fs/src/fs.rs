@@ -4052,6 +4052,3 @@ mod durability_tests;
 
 #[cfg(test)]
 mod prediction_tests;
-
-#[cfg(test)]
-mod checkout_bench;
