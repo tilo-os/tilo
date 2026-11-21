@@ -5,7 +5,7 @@
 //! those an image offers it declares once (`tilo_identity::enrollment`).
 //!
 //! The requester exchange, the protocol and the approval service live in
-//! [`tilo_enrollment`]. This binary handles the command line, discovery, and
+//! [`tilo_enrollment`]. This binary handles the command line and
 //! the console for a machine enrolling over iroh.
 
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use socket2::{Domain, Protocol, Socket, Type};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::certification_ceremony::pairing_code;
 use tilo_identity::device_fleet::DeviceFleet;
@@ -29,10 +28,10 @@ use tilo_enrollment::approval::{
     received_packet,
 };
 use tilo_enrollment::client::PairingStatus;
+use tilo_enrollment::discovery::{self, bind_pair_listener};
 use tilo_enrollment::install::PersonalInstall;
 use tilo_enrollment::protocol::{
-    EnrollmentKind, MAX_PACKET, NEARBY_PORT, PairCandidate, PairSolicitation, ResponsePayload,
-    encrypt_pair_offer,
+    EnrollmentKind, MAX_PACKET, NEARBY_PORT, PairSolicitation, ResponsePayload, encrypt_pair_offer,
 };
 use tilo_enrollment::request::{JoinOptions, PairingProgress, join_with_token, pair_device};
 use tilo_enrollment::root::{RootSigner, load_root};
@@ -313,60 +312,19 @@ struct RevokeArgs {
     reason: String,
 }
 
-/// Bind a LAN-discovery listener on `port` without making an already-running
-/// discovery view or approval sheet prevent another Tilo surface from joining
-/// the same nearby-device flow.  UDP broadcast is deliberately delivered to
-/// every reuse-port listener; each recipient still has to authenticate the
-/// encrypted offer or enrollment request before it can act on it.
-fn bind_pair_listener(port: u16) -> anyhow::Result<UdpSocket> {
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    #[cfg(unix)]
-    socket.set_reuse_port(true)?;
-    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into())?;
-    Ok(socket.into())
-}
-
-fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
-    let socket = bind_pair_listener(NEARBY_PORT)?;
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let deadline = deadline_after(socket_timeout(timeout))?;
-    let mut packet = vec![0_u8; MAX_PACKET];
-    while std::time::Instant::now() < deadline {
-        match socket.recv_from(&mut packet) {
-            Ok((len, _)) => {
-                let Ok(solicitation) =
-                    postcard::from_bytes::<PairSolicitation>(received_packet(&packet, len)?)
-                else {
-                    continue;
-                };
-                if !valid_solicitation(&solicitation) || solicitation.kind != kind {
-                    continue;
-                }
-                println!(
-                    "{}",
-                    serde_json::to_string(&PairCandidate {
-                        device_node_id: hex::encode(solicitation.device_public_key),
-                        server_node_id: hex::encode(solicitation.server_node_id),
-                        label: solicitation.label,
-                        verification_code: pairing_code(
-                            solicitation.device_public_key,
-                            solicitation.server_node_id,
-                        ),
-                        kind: solicitation.kind,
-                    })?
-                );
-                return Ok(());
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    bail!("no matching unprovisioned Tilo device was found nearby")
+fn print_discovery(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
+    let candidate = discovery::discover(kind, timeout, declared_methods())?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "device_node_id": hex::encode(candidate.device_public_key),
+            "server_node_id": hex::encode(candidate.server_node_id),
+            "label": candidate.label,
+            "verification_code": candidate.verification_code,
+            "kind": candidate.kind,
+        })
+    );
+    Ok(())
 }
 
 // The three sealed envelopes (pair offer, request, response) are
@@ -928,13 +886,9 @@ fn run() -> anyhow::Result<()> {
     let methods = tilo_identity::enrollment::Methods::of_image(&cli.methods_file)?;
     let _ = METHODS.set(methods);
     match cli.command {
-        Command::Discover { timeout } => {
-            ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
-            discover(timeout, EnrollmentKind::HomePeer)
-        }
+        Command::Discover { timeout } => print_discovery(timeout, EnrollmentKind::HomePeer),
         Command::DiscoverDevice { timeout } => {
-            ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
-            discover(timeout, EnrollmentKind::PersonalDevice)
+            print_discovery(timeout, EnrollmentKind::PersonalDevice)
         }
         Command::Enroll {
             token_file,

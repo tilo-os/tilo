@@ -4,8 +4,8 @@
 //! take a step; what the step runs, and with which arguments, is decided
 //! here once.
 //!
-//! Pairing runs `tilo-enroll`: `discover[-device]` listens on the LAN for an
-//! unprovisioned device announcing itself, and the privileged helper
+//! The identity CLI runs `tilo-enroll discover[-device]` to find an unprovisioned
+//! device on the LAN. The privileged helper
 //! (`tilo-home-peer-control approve-…`) admits the device discovery found.
 //! The helper is started through polkit at a desktop, or sudo over SSH.
 
@@ -80,19 +80,6 @@ pub struct Candidate {
     pub label: String,
     /// The code both screens show.
     pub verification_code: String,
-}
-
-impl Candidate {
-    #[must_use]
-    pub fn answer(&self, role: DeviceKind) -> serde_json::Value {
-        serde_json::json!({
-            "role": role.name(),
-            "device": self.device_node_id,
-            "service": self.server_node_id,
-            "label": self.label,
-            "verification_code": self.verification_code,
-        })
-    }
 }
 
 /// The device a finished `tilo-enroll discover[-device]` reports.
@@ -217,20 +204,35 @@ pub fn proposed_certificate(
             .ok_or_else(|| "the discovered device has a malformed key".to_string())
     };
     Ok((
-        tilo_user_identity::DeviceCert {
-            user_public_key: person,
-            device_public_key: key(&candidate.device_node_id)?,
-            device_label: candidate.label.clone(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            // As a certificate issued here: a minute back, for a new device
-            // whose clock trails.
-            issued_at_ns: now_ns.saturating_sub(60 * 1_000_000_000),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        },
+        propose_device_certificate(
+            person,
+            key(&candidate.device_node_id)?,
+            candidate.label.clone(),
+            now_ns,
+        ),
         key(&candidate.server_node_id)?,
     ))
+}
+
+/// The unsigned certificate the person's key holders are asked to sign.
+#[must_use]
+pub fn propose_device_certificate(
+    person: [u8; 32],
+    device_public_key: [u8; 32],
+    device_label: String,
+    now_ns: u64,
+) -> tilo_user_identity::DeviceCert {
+    tilo_user_identity::DeviceCert {
+        user_public_key: person,
+        device_public_key,
+        device_label,
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        // Backdate the start for a new device whose clock trails.
+        issued_at_ns: now_ns.saturating_sub(60 * 1_000_000_000),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    }
 }
 
 /// `tilo-enroll`'s arguments that pair `approval`'s personal device with the

@@ -1,6 +1,6 @@
 //! Pairing a nearby device with the person's identity, run by the session.
-//! Discovery listens on the LAN for an unprovisioned device announcing itself (`tilo-enroll
-//! discover[-device]`) and answers what it found, with the verification code both screens show.
+//! Discovery listens on the LAN for an unprovisioned device announcing itself and answers what
+//! it found, with the verification code both screens show.
 //! Approval runs the polkit-guarded helper (`tilo-home-peer-control approve-…`), which asks an
 //! administrator to authenticate before it admits the device. The helper and its policy are
 //! unchanged; only their caller is the session now, so no sandboxed application starts a privileged
@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
@@ -25,17 +25,19 @@ use std::time::Duration;
 use crate::platform::fabric::SharedLink;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
+use tilo_enrollment::discovery::{self, PairCandidate};
+use tilo_enrollment::protocol::EnrollmentKind;
 use tilo_identity::device_admin::DeviceKind;
 use tilo_identity::device_admin::{
-    Approval, Candidate, ENROLL, KeyHolding, PersonPaths, approval_args, command_error,
-    discover_command, node_id,
+    Approval, ENROLL, KeyHolding, PersonPaths, approval_args, command_error, node_id,
+    propose_device_certificate,
 };
+use tilo_identity::enrollment::{DECLARATION, Methods};
 use tilo_lock::MutexRecover as _;
 
 const PKEXEC: &str = "/usr/bin/pkexec";
-/// How long `tilo-enroll` listens for an announcing device.
-const LISTEN_SECONDS: &str = "15";
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long discovery listens for an announcing device.
+const LISTEN_SECONDS: u64 = 15;
 /// The helper opens its own LAN window and waits for the administrator's authentication; this only
 /// bounds a child that never ends.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
@@ -245,7 +247,7 @@ pub(crate) type Runner =
 struct Flights {
     discovering: bool,
     /// What discovery found, by device key, until approved or rejected.
-    candidates: HashMap<String, (DeviceKind, Candidate)>,
+    candidates: HashMap<String, PairCandidate>,
     /// The device whose approval runs, and what stops waiting on it.
     approving: Option<(String, Arc<AtomicBool>)>,
 }
@@ -253,9 +255,24 @@ struct Flights {
 /// What of the identity's key the device holds, read from its identity.
 pub(crate) type Holding = Arc<dyn Fn(&PersonPaths) -> Result<KeyHolding, String> + Send + Sync>;
 
+type Discoverer = Arc<dyn Fn(EnrollmentKind) -> Result<PairCandidate, String> + Send + Sync>;
+
+fn discover_nearby(kind: EnrollmentKind) -> Result<PairCandidate, String> {
+    let methods = Methods::of_image(Path::new(DECLARATION)).map_err(|error| error.to_string())?;
+    discovery::discover(kind, LISTEN_SECONDS, methods).map_err(|error| error.to_string())
+}
+
+fn enrollment_kind(role: DeviceKind) -> EnrollmentKind {
+    match role {
+        DeviceKind::Personal => EnrollmentKind::PersonalDevice,
+        DeviceKind::HomePeer => EnrollmentKind::HomePeer,
+    }
+}
+
 /// The host's pairing steps and what they have found.
 pub(crate) struct Pairing {
     runner: Runner,
+    discoverer: Discoverer,
     holding: Holding,
     flights: Arc<Mutex<Flights>>,
 }
@@ -276,6 +293,7 @@ impl Pairing {
     pub(crate) fn with_runner(runner: Runner) -> Self {
         Self {
             runner,
+            discoverer: Arc::new(discover_nearby),
             holding: Arc::new(|_| Ok(KeyHolding::Whole)),
             flights: Arc::default(),
         }
@@ -298,27 +316,23 @@ impl Pairing {
             refuse_busy(&flights)?;
             flights.discovering = true;
         }
-        let command = HostCommand {
-            program: PathBuf::from(ENROLL),
-            args: [discover_command(role), "--timeout", LISTEN_SECONDS]
-                .into_iter()
-                .map(OsString::from)
-                .collect(),
-            timeout: DISCOVERY_TIMEOUT,
-        };
         let (completer, answer) = pending();
-        let runner = Arc::clone(&self.runner);
+        let discoverer = Arc::clone(&self.discoverer);
         let flights = Arc::clone(&self.flights);
         let started = spawn_step(move || {
-            let found = runner(&command, &AtomicBool::new(false))
-                .and_then(|finished| discovered(&finished));
+            let found = discoverer(enrollment_kind(role));
             let mut flights = flights.lock_recover();
             flights.discovering = false;
             let answer = found.map(|candidate| {
-                let value = candidate.answer(role);
-                flights
-                    .candidates
-                    .insert(candidate.device_node_id.clone(), (role, candidate));
+                let device = hex::encode(candidate.device_public_key);
+                let value = serde_json::json!({
+                    "role": role.name(),
+                    "device": device,
+                    "service": hex::encode(candidate.server_node_id),
+                    "label": candidate.label,
+                    "verification_code": candidate.verification_code,
+                });
+                flights.candidates.insert(device, candidate);
                 value
             });
             drop(flights);
@@ -356,10 +370,12 @@ impl Pairing {
         let (label, candidate, stop) = {
             let mut flights = self.flights();
             refuse_busy(&flights)?;
-            let (role, candidate) = flights.candidates.get(&approval.device).ok_or_else(|| {
+            let candidate = flights.candidates.get(&approval.device).ok_or_else(|| {
                 "no device with that key was discovered here; discover it first".to_string()
             })?;
-            if *role != approval.role || candidate.server_node_id != approval.service {
+            if candidate.kind != enrollment_kind(approval.role)
+                || hex::encode(candidate.server_node_id) != approval.service
+            {
                 return Err("that is not the device discovered with this key".into());
             }
             let label = candidate.label.clone();
@@ -494,7 +510,7 @@ struct Admission {
     approval: Approval,
     paths: PersonPaths,
     workspace_ids: Vec<u64>,
-    candidate: Candidate,
+    candidate: PairCandidate,
     /// The person's device fabric, where their other devices are asked to certify the device when
     /// this one holds only a share of their key.
     fabric: Option<SharedLink>,
@@ -517,12 +533,19 @@ impl Admission {
             .fabric
             .as_ref()
             .ok_or_else(crate::certification::cannot_certify_here)?;
-        let (proposal, service) = tilo_identity::device_admin::proposed_certificate(
+        let proposal = propose_device_certificate(
             person,
-            &self.candidate,
+            self.candidate.device_public_key,
+            self.candidate.label.clone(),
             tilo_clock::unix_now_ns(),
+        );
+        let cert = crate::certification::certify(
+            fabric,
+            proposal,
+            self.candidate.server_node_id,
+            threshold,
+            total,
         )?;
-        let cert = crate::certification::certify(fabric, proposal, service, threshold, total)?;
         if stop.load(Ordering::Acquire) {
             return Err("stopped".into());
         }
@@ -556,11 +579,6 @@ pub(crate) fn approval_command(
         args: approval_args(approval, paths, workspace_ids),
         timeout: APPROVAL_TIMEOUT,
     }
-}
-
-/// The device a finished discovery reports.
-fn discovered(finished: &Finished) -> Result<Candidate, String> {
-    tilo_identity::device_admin::discovered(finished.success, &finished.stdout, &finished.stderr)
 }
 
 /// Run `command` under the bounded-command policy, polling for `stop`;
@@ -773,81 +791,236 @@ mod tests {
         answering(answer).unwrap_or_else(|error| panic!("the step answers: {error}"))
     }
 
-    /// A device announcing itself, as `tilo-enroll discover` prints it.
-    fn announced(device: &str, service: &str) -> Vec<u8> {
-        serde_json::json!({
-            "device_node_id": device,
-            "server_node_id": service,
-            "label": "Phone",
-            "verification_code": "123456",
-        })
-        .to_string()
-        .into_bytes()
+    fn phone(kind: EnrollmentKind) -> PairCandidate {
+        PairCandidate {
+            device_public_key: [0xaa; 32],
+            server_node_id: [0xbb; 32],
+            label: "Phone".into(),
+            verification_code: tilo_identity::certification_ceremony::pairing_code(
+                [0xaa; 32], [0xbb; 32],
+            ),
+            kind,
+        }
     }
 
-    /// The pairing whose commands are recorded and answered as `found` announced itself.
-    fn recording(found: (String, String)) -> (Pairing, Arc<Mutex<Vec<HostCommand>>>) {
-        let commands = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&commands);
-        let (device, service) = found;
-        let pairing = Pairing::with_runner(Arc::new(move |command, _| {
-            recorded.lock().expect("commands").push(command.clone());
-            let stdout = if command.program == std::path::Path::new(ENROLL) {
-                announced(&device, &service)
-            } else {
-                Vec::new()
-            };
-            Ok(Finished {
-                success: true,
-                stdout,
-                stderr: Vec::new(),
+    fn hosted_workspace() -> (Arc<crate::app_wire::LayoutAuthority>, String) {
+        let id = tilo_desktop_model::WorkspaceId::from_u128(1);
+        let mut workspace = tilo_desktop_model::Workspace::new(id, "Session");
+        workspace.set_owner("alice");
+        let layout = Arc::new(crate::app_wire::LayoutAuthority::new(
+            tilo_desktop_model::Layout {
+                workspaces: vec![workspace],
+                active: id,
+                ..tilo_desktop_model::Layout::default()
+            },
+            crate::engine::revocations_of(None),
+            None,
+            crate::app_wire::Names::default(),
+        ));
+        (layout, id.to_string())
+    }
+
+    fn provisioned_identity() -> (tempfile::TempDir, tilo_test_env::ScopedEnv, PersonPaths) {
+        let root = tempfile::tempdir().expect("temp root");
+        let config = root.path().join("config");
+        let paths = PersonPaths {
+            root: root.path().join("system"),
+            dir: config.join("tilo/identity"),
+        };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &config);
+        env.set("TILO_IDENTITY_ROOT", &paths.root);
+        tilo_identity::provisioning::ensure_collaboration_identity(
+            &paths.dir,
+            &tilo_device_identity::IdentityPaths::under(&paths.root),
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision a test identity");
+        (root, env, paths)
+    }
+
+    fn assert_personal_approval_command(
+        command: &HostCommand,
+        paths: &PersonPaths,
+        device: &str,
+        service: &str,
+    ) {
+        assert_eq!(command.program, PathBuf::from(PKEXEC));
+        assert_eq!(command.timeout, APPROVAL_TIMEOUT);
+        assert_eq!(
+            command.args,
+            vec![
+                OsString::from(tilo_identity::device_admin::CONTROL_HELPER),
+                "approve-device".into(),
+                "--identity-root".into(),
+                paths.root.as_os_str().into(),
+                "--identity-dir".into(),
+                paths.dir.as_os_str().into(),
+                "--expected-device".into(),
+                device.into(),
+                "--expected-service".into(),
+                service.into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn nearby_pairing_actions_authorize_bind_approve_and_cancel() {
+        use std::sync::mpsc;
+        use tilo_broker_core::actor::BrokerActor;
+        use tilo_broker_core::steps::{HostStepRequest, HostStepServices};
+
+        let (_root, _env, paths) = provisioned_identity();
+        let (layout, hosted) = hosted_workspace();
+        let (commands, recorded) = mpsc::channel();
+        let (discovery, discovered) = mpsc::channel();
+        let (stopped, observed_stop) = mpsc::channel();
+        let pairing = Pairing {
+            discoverer: Arc::new(move |kind| {
+                discovery.send(kind).expect("discovery recorded");
+                Ok(phone(kind))
+            }),
+            ..Pairing::with_runner(Arc::new(move |command, stop| {
+                commands.send(command.clone()).expect("command recorded");
+                let start = std::time::Instant::now();
+                let bound = tilo_test_env::hang_bound();
+                while !stop.load(Ordering::Acquire) && start.elapsed() < bound {
+                    std::thread::sleep(STOP_POLL);
+                }
+                stopped
+                    .send(stop.load(Ordering::Acquire))
+                    .expect("stop recorded");
+                Err("stopped".into())
+            }))
+        };
+        let api = BrokerApi {
+            layout,
+            fabric: None,
+            pairing: Box::leak(Box::new(pairing)),
+        };
+        let owner = BrokerActor::person("alice");
+        let invoke = |actor: &BrokerActor, action: &str, args: serde_json::Value| {
+            let argument = format!("{}{args}", tilo_actions::ARGUMENTS_JSON_PREFIX);
+            api.start(&HostStepRequest {
+                workspace: &hosted,
+                actor,
+                address: &tilo_actions::ActionAddress::new(RESOURCE, action),
+                argument: Some(&argument),
+                provider: None,
+                group: None,
             })
-        }));
-        (pairing, commands)
+        };
+        let discover = || serde_json::json!({ "role": "personal-device" });
+        for (actor, reason) in [
+            (BrokerActor::agent("agent"), "only a person"),
+            (BrokerActor::person("bob"), "may not administer"),
+        ] {
+            let refused = invoke(&actor, DISCOVER, discover()).err().expect("denied");
+            assert!(refused.contains(reason), "{refused}");
+        }
+        assert!(
+            discovered.try_recv().is_err(),
+            "denied callers reached discovery"
+        );
+        let wait = |answer: Pending<tilo_broker_core::steps::HostStepOutcome>| {
+            answer
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("the action answers")
+        };
+
+        let device = "aa".repeat(32);
+        let service = "bb".repeat(32);
+        let found = wait(invoke(&owner, DISCOVER, discover()).expect("discovery"))
+            .expect("candidate")
+            .value;
+        assert_eq!(
+            found,
+            Some(serde_json::json!({
+                "role": "personal-device",
+                "device": device,
+                "service": service,
+                "label": "Phone",
+                "verification_code": phone(EnrollmentKind::PersonalDevice).verification_code,
+            }))
+        );
+        assert_eq!(
+            discovered.try_recv().unwrap(),
+            EnrollmentKind::PersonalDevice
+        );
+
+        let approval = |role: &str, device: &str, service: &str, confirm: bool| {
+            serde_json::json!({
+                "role": role, "device": device, "service": service, "confirm": confirm,
+            })
+        };
+        for (args, reason) in [
+            (
+                approval("personal-device", &device, &service, false),
+                "explicit confirmation",
+            ),
+            (
+                approval("personal-device", &"cc".repeat(32), &service, true),
+                "discover it first",
+            ),
+            (
+                approval("personal-device", &device, &"cc".repeat(32), true),
+                "not the device",
+            ),
+            (
+                approval("home-peer", &device, &service, true),
+                "not the device",
+            ),
+        ] {
+            let refused = invoke(&owner, APPROVE, args).err().expect("denied");
+            assert!(refused.contains(reason), "{refused}");
+        }
+        assert!(
+            recorded.try_recv().is_err(),
+            "discovery and refusals ran no process"
+        );
+
+        let approval = approval("personal-device", &device, &service, true);
+        let approving = invoke(&owner, APPROVE, approval.clone()).expect("approval starts");
+        let command = tilo_test_env::recv("the approval command", &recorded);
+        assert_personal_approval_command(&command, &paths, &device, &service);
+        let rejected = wait(
+            invoke(&owner, REJECT, serde_json::json!({ "device": device })).expect("reject runs"),
+        )
+        .expect("rejection")
+        .value;
+        assert_eq!(
+            rejected,
+            Some(serde_json::json!({ "device": device, "forgotten": true, "stopped": true }))
+        );
+        let cancelled = wait(approving).expect_err("the approval was cancelled");
+        assert_eq!(cancelled.message, "the approval was rejected");
+        assert!(tilo_test_env::recv(
+            "runner observed cancellation",
+            &observed_stop
+        ));
+        let retry = invoke(&owner, APPROVE, approval)
+            .err()
+            .expect("candidate forgotten");
+        assert!(retry.contains("discover it first"), "{retry}");
     }
 
     tilo_test_env::scenario! {
-        fn pairing_approves_adds_and_signs_only_with_what_the_person_holds;
+        fn nearby_pairing_approves_adds_and_signs_only_with_what_the_person_holds;
 
-        phase a_discovered_device_is_approved_through_the_privileged_helper_and_forgotten_after;
+        phase an_approved_device_is_forgotten_after_joining;
         {
-            let device = "AA".repeat(32);
-            let service = "bb".repeat(32);
-            let (pairing, commands) = recording((device, service.clone()));
+            let (pairing, commands) = recording();
             let paths = PersonPaths {
                 root: PathBuf::from("/var/lib/tilo"),
                 dir: PathBuf::from("/home/person/.config/tilo/identity"),
             };
-
-            let found = answered(pairing.discover(DeviceKind::Personal).expect("discovery"));
-            assert_eq!(
-                found,
-                serde_json::json!({
-                    "role": "personal-device",
-                    "device": "aa".repeat(32),
-                    "service": service,
-                    "label": "Phone",
-                    "verification_code": "123456",
-                })
-            );
-
-            // Only a device discovery found here can be approved.
-            let unknown = Approval {
-                role: DeviceKind::Personal,
-                device: "cc".repeat(32),
-                service: service.clone(),
-                workspace_ids: None,
-            };
-            let refused = pairing
-                .approve(&unknown, &paths, None)
-                .err()
-                .expect("an undiscovered device is not approved");
-            assert!(refused.contains("discover it first"), "{refused}");
-
+            let _ = answered(pairing.discover(DeviceKind::Personal).expect("discovery"));
             let approval = Approval {
                 role: DeviceKind::Personal,
                 device: "aa".repeat(32),
-                service,
+                service: "bb".repeat(32),
                 workspace_ids: None,
             };
             let approved = answered(pairing.approve(&approval, &paths, None).expect("approval"));
@@ -859,30 +1032,13 @@ mod tests {
                     "label": "Phone",
                 })
             );
-
-            let recorded = commands.lock().expect("commands").clone();
-            assert_eq!(
-                recorded[0],
-                HostCommand {
-                    program: PathBuf::from(ENROLL),
-                    args: ["discover-device", "--timeout", LISTEN_SECONDS]
-                        .map(OsString::from)
-                        .to_vec(),
-                    timeout: DISCOVERY_TIMEOUT,
-                }
-            );
-            assert_eq!(recorded[1].program, PathBuf::from(PKEXEC), "{recorded:?}");
-            let ask = tilo_identity::device_admin::approval_args(&approval, &paths, &[]);
-            assert_eq!(recorded[1].args, ask);
-            assert_eq!(recorded[1].timeout, APPROVAL_TIMEOUT);
-
-            // The device joined: nothing is left to reject.
+            assert_eq!(commands.lock().expect("commands").len(), 1);
             assert!(pairing.reject(&approval.device).is_err());
         }
 
         phase a_home_server_is_only_added_from_the_device_the_person_set_up_first;
         {
-            let (pairing, commands) = sharing(("aa".repeat(32), "bb".repeat(32)));
+            let (pairing, commands) = sharing();
             let paths = PersonPaths {
                 root: PathBuf::from("/var/lib/tilo"),
                 dir: PathBuf::from("/home/person/.config/tilo/identity"),
@@ -901,14 +1057,14 @@ mod tests {
             assert!(refused.contains("the device you set up first"), "{refused}");
             assert_eq!(
                 commands.lock().expect("commands").len(),
-                1,
+                0,
                 "nothing ran for the home server"
             );
         }
 
         phase a_device_holding_a_share_signs_nothing_without_the_other_devices;
         {
-            let (pairing, commands) = sharing(("aa".repeat(32), "bb".repeat(32)));
+            let (pairing, commands) = sharing();
             let paths = PersonPaths {
                 root: PathBuf::from("/var/lib/tilo"),
                 dir: PathBuf::from("/home/person/.config/tilo/identity"),
@@ -929,15 +1085,31 @@ mod tests {
             assert!(refused.contains("runs no device fabric"), "{refused}");
             assert_eq!(
                 commands.lock().expect("commands").len(),
-                1,
+                0,
                 "no helper signed for a device this session cannot certify"
             );
         }
     }
 
+    fn recording() -> (Pairing, Arc<Mutex<Vec<HostCommand>>>) {
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&commands);
+        let pairing = Pairing {
+            discoverer: Arc::new(|kind| Ok(phone(kind))),
+            ..Pairing::with_runner(Arc::new(move |command, _| {
+                recorded.lock().expect("commands").push(command.clone());
+                Ok(Finished {
+                    success: true,
+                    ..Finished::default()
+                })
+            }))
+        };
+        (pairing, commands)
+    }
+
     /// Pairing on a device holding only a share of the person's key.
-    fn sharing(found: (String, String)) -> (Pairing, Arc<Mutex<Vec<HostCommand>>>) {
-        let (pairing, commands) = recording(found);
+    fn sharing() -> (Pairing, Arc<Mutex<Vec<HostCommand>>>) {
+        let (pairing, commands) = recording();
         let pairing = pairing.holding(Arc::new(|_| {
             Ok(KeyHolding::Part {
                 person: [0x11; 32],

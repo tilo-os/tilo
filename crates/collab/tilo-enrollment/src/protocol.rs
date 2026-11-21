@@ -163,17 +163,6 @@ pub struct PairSolicitation {
     pub kind: EnrollmentKind,
 }
 
-/// A candidate a discovery found: a machine broadcasting on the local
-/// network, as a person's device lists it.
-#[derive(Serialize, Deserialize)]
-pub struct PairCandidate {
-    pub device_node_id: String,
-    pub server_node_id: String,
-    pub label: String,
-    pub verification_code: String,
-    pub kind: EnrollmentKind,
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct AckPayload {
     pub nonce: [u8; 16],
