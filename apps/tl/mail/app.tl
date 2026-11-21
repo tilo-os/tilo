@@ -2,7 +2,7 @@ app so.tilo.mail "Mail" (
     icon: .mail,
     category: .office,
     tagline: "Email over IMAP and SMTP",
-    keywords: ["email", "e-mail", "mail", "inbox", "mailbox", "gmail", "imap", "smtp", "apple mail", "evolution", "geary", "kmail", "kontact"],
+    keywords: ["email", "e-mail", "mail", "inbox", "mailbox", "gmail", "imap", "smtp", "apple mail", "evolution", "geary", "kmail", "kontact", "emails", "post", "posteingang", "briefe", "postfach", "mailprogramm", "elektronische post", "e-mails"],
 )
 
 /// What the server of one of the workspace's mail accounts holds. The account itself, its

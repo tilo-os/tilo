@@ -2,7 +2,7 @@ app so.tilo.notes "Notes" (
     icon: .file_text,
     category: .office,
     tagline: "Notes you write alone or together",
-    keywords: ["note", "memo", "memos", "notebook", "journal", "markdown", "notepad", "textedit", "apple notes", "google keep", "onenote", "obsidian"],
+    keywords: ["note", "memo", "memos", "notebook", "journal", "markdown", "notepad", "textedit", "apple notes", "google keep", "onenote", "obsidian", "notiz", "notizbuch", "aufzeichnungen", "zettel", "merkzettel", "tagebuch", "notizen machen"],
     previously: so.tilo.lang.notes,
 )
 
