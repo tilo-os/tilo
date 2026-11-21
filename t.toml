@@ -4777,13 +4777,34 @@ on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 pointers = { windows-guest-candidate = "/target/windows-compat/windows-guest/guest/reference" }
 
+# The dev image's packages (os/Containerfile.dev's `dev-packages`: the builder's toolchain, sshd,
+# the dev apps), built over the image's layers below its binaries (os-layer-trust-ARCH's full
+# layout) and kept as the layers they add. The dev images lay them over their OS image, so a
+# changed program, which changes no layer below its binaries, installs none of them again.
+[[check]]
+name = "os-dev-packages-{arch}"
+# Pinned: it installs from the RPM snapshot rpm-snapshot-ARCH names (image-rpms-ARCH's copy of
+# it) and builds on the Rust toolchain image by digest.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash tools/ci/publish/os-image.sh dev-packages {arch} /target/os/{arch}/layers/trust/full /target/publish/os-dev-packages/{arch}"
+needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-layer-trust-{arch}", "signing-tools"]
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/os-dev-packages/{arch}/**"]
+timeout_secs = 3600
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "os-dev-image-{arch}"
 # Pinned: it installs from the RPM snapshot rpm-snapshot-ARCH names (image-rpms-ARCH's copy of
 # it) and builds on the Rust toolchain image by digest.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
-needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "model-catalog-dev-{arch}", "signing-tools"]
+needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-image-{arch}", "os-dev-packages-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "model-catalog-dev-{arch}", "signing-tools"]
+env = { TILO_DEV_PACKAGES = "/target/publish/os-dev-packages/{arch}" }
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["disk-100g"]
 isolation = "vm"
@@ -5075,9 +5096,9 @@ name = "os-dev-image-lean-{arch}"
 # it) and builds on the Rust toolchain image by digest.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
-needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
+needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-image-{arch}", "os-dev-packages-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-env = { TILO_DEV_LOOP = "1" }
+env = { TILO_DEV_LOOP = "1", TILO_DEV_PACKAGES = "/target/publish/os-dev-packages/{arch}" }
 requires = ["disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev/{arch}/**"]

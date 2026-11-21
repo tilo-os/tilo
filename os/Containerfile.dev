@@ -54,6 +54,11 @@
 # a CI image (registry.tilo.so/tilo/tilo:<tag> or @sha256:...), or the unsealed
 # `rootfs` target of os/Containerfile.
 ARG BASE_IMAGE=localhost/tilo:latest
+# What the dev packages install over (the `dev-packages` stage): the production image, as
+# BASE_IMAGE names it. In t they are built once over the image's layers below its binaries and
+# laid over each os-image as layers of their own (os-dev-packages-ARCH, given to the dev image
+# build as the `dev-packages` stage), since none of them reads what those layers hold.
+ARG DEV_PACKAGES_BASE=localhost/tilo:latest
 # The frozen RPM snapshot the production image was built from. Like
 # os/Containerfile, this has no default: os/dev/build-dev-image.sh passes a
 # fingerprint-resolved RPMS_REF, so a build of any commit installs what that
@@ -96,31 +101,14 @@ COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/build
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
      os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh \
      os/scripts/install-env-runtime.sh os/scripts/ensure-dev-env-runtime.sh \
-     os/scripts/signed-records.py /tilo/os/scripts/
+     os/scripts/signed-records.py os/scripts/pin-directory-times.py /tilo/os/scripts/
 COPY Cargo.lock rust-toolchain.toml /tilo/
 
-# ---- The base, unsealed, with the builder's toolchain -------------------------
-FROM ${BASE_IMAGE} AS dev-toolchain
-
-# A production Tilo image, and not already a dev image.
-RUN test -s /usr/lib/tilo/generation \
-      || { echo "BASE_IMAGE is not a Tilo production image: it has no /usr/lib/tilo/generation" >&2; exit 1; } \
-    && if [ -e /usr/lib/tilo/image-flavour ]; then \
-         echo "BASE_IMAGE is already a $(cat /usr/lib/tilo/image-flavour) image; build from the production image" >&2; exit 1; \
-       fi
-
-# Unseal first: everything below changes the rootfs the UKI's digest describes.
-RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
-    python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /
-
-# tilo-vm hands a dev VM its root SSH key as an SMBIOS credential
-# (ssh.authorized_keys.root), which the sealed image refuses to import.
-RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
-
-# Fail now, not at the first slot, when this kernel cannot give a slot a seat.
-RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
-    bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
-
+# ---- The packages: the builder's toolchain and the dev apps ------------------
+# Nothing here reads what the production image adds over its packages and system files (the
+# binaries, the payload, the initramfs, the UKI), so t builds these layers once per package set
+# and lays them over every os-image (DEV_PACKAGES_BASE).
+FROM ${DEV_PACKAGES_BASE} AS dev-builder-packages
 # Buildah leaves the rust-toolchain mount out of the layer cache key; this ARG keys it on RUST_TOOLCHAIN_IMAGE.
 ARG RUST_TOOLCHAIN_IMAGE
 # The pinned Rust release and the production builder's packages but for its
@@ -150,8 +138,67 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
     sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh packages openssh-server rsync
-# ldconfig's aux-cache records inode numbers and ctimes, which differ in every build.
-RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
+
+FROM dev-builder-packages AS dev-packages
+# Third-party apps the VM acceptance suite (scripts/vm-acceptance, A07-A13)
+# opens, one per toolkit and protocol path people use every day: Chromium, the
+# engine Electron apps (VS Code, Cursor, chat clients) ship, on Wayland and
+# forced onto X11 through Xwayland; GNOME Text Editor (GTK4 and libadwaita);
+# FeatherPad on Qt's Wayland platform (Qt6); alacritty (winit and OpenGL); and
+# glxgears, an OpenGL X11 client the way games are; and xterm, a plain X11 client (A07),
+# which otherwise has to come from a network install in the VM: without it A07 fell back
+# to Wine File, whose first start sets up a Wine prefix. os/dev-image/ carries the
+# desktop entries and the page that start the variants. Without weak
+# dependencies they add about 600 MiB, two thirds of it Chromium. Like the
+# toolchain layer this one is the same for every commit on one rootfs.
+ARG SOURCE_DATE_EPOCH=0
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
+    LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
+      --setopt=install_weak_deps=False \
+      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils xterm \
+    && dnf clean all \
+    && if [ -x /usr/libexec/tilo/finalize-rpmdb ]; then /usr/libexec/tilo/finalize-rpmdb; fi \
+    && sh /run/tilo-dev/os/scripts/clean-dnf-layer-state.sh \
+    && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache
+
+# ---- The base, unsealed ---------------------------------------------------------
+FROM dev-packages AS dev-toolchain
+
+# A production Tilo image, and not already a dev image.
+RUN test -s /usr/lib/tilo/generation \
+      || { echo "BASE_IMAGE is not a Tilo production image: it has no /usr/lib/tilo/generation" >&2; exit 1; } \
+    && if [ -e /usr/lib/tilo/image-flavour ]; then \
+         echo "BASE_IMAGE is already a $(cat /usr/lib/tilo/image-flavour) image; build from the production image" >&2; exit 1; \
+       fi
+
+# Unseal before anything of the image's own changes: what follows changes the rootfs the UKI's
+# digest describes.
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /
+
+# tilo-vm hands a dev VM its root SSH key as an SMBIOS credential
+# (ssh.authorized_keys.root), which the sealed image refuses to import.
+RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
+
+# Fail now, not at the first slot, when this kernel cannot give a slot a seat.
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
+
+# The linker and font caches over the packages and the image both: the packages' layers may
+# carry the font directories as their install left them, so those are pinned to the clock again,
+# as the image's rootfs pins them, before the cache is written. ldconfig's aux-cache records
+# inode numbers and ctimes, which differ in every build.
+ARG SOURCE_DATE_EPOCH=0
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    for fonts in /usr/share/fonts /usr/share/X11/fonts /usr/local/share/fonts; do \
+      if [ -d "$fonts" ]; then python3 -B /run/tilo-dev/os/scripts/pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
+    done \
+    && HOME=/root fc-cache -s -f \
+    && ldconfig && rm -f /var/cache/ldconfig/aux-cache
 
 # ---- The tilo-dev-tools sysext tree -------------------------------------------
 # The Rust toolchain (about 680 MB) and the test GUI clients (about 600 MB,
@@ -162,11 +209,11 @@ RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 #
 # The tar is a layer tilo-vm imports (crates/dev/tilo-vmd/src/layers.rs accepts
 # only usr/ and opt/, and writes the extension-release itself). It is computed
-# on dev-toolchain, so it holds exactly the packages the clients add to what
-# the base already has. The `dev` stage below still installs both into the
+# on dev-builder-packages, so it holds exactly the packages the clients add to
+# what the base already has. The `dev` stage below still installs both into the
 # base image until tilo-vm installs this layer on the VMs that need it and
 # os/scripts/finalize-dev-image.py stops requiring rustc in the base.
-FROM dev-toolchain AS dev-tools-tree
+FROM dev-builder-packages AS dev-tools-tree
 ARG RUST_TOOLCHAIN_IMAGE
 ARG SOURCE_DATE_EPOCH=0
 ARG RPMS_REF
@@ -214,33 +261,6 @@ RUN --network=none \
 
 # ---- The dev image ------------------------------------------------------------
 FROM dev-toolchain AS dev
-
-# Third-party apps the VM acceptance suite (scripts/vm-acceptance, A07-A13)
-# opens, one per toolkit and protocol path people use every day: Chromium, the
-# engine Electron apps (VS Code, Cursor, chat clients) ship, on Wayland and
-# forced onto X11 through Xwayland; GNOME Text Editor (GTK4 and libadwaita);
-# FeatherPad on Qt's Wayland platform (Qt6); alacritty (winit and OpenGL); and
-# glxgears, an OpenGL X11 client the way games are; and xterm, a plain X11 client (A07),
-# which otherwise has to come from a network install in the VM: without it A07 fell back
-# to Wine File, whose first start sets up a Wine prefix. os/dev-image/ carries the
-# desktop entries and the page that start the variants. Without weak
-# dependencies they add about 600 MiB, two thirds of it Chromium. Like the
-# toolchain layer this one is the same for every commit on one rootfs.
-ARG SOURCE_DATE_EPOCH=0
-# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
-ARG RPMS_REF
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
-    --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
-    LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
-      --setopt=install_weak_deps=False \
-      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils xterm \
-    && dnf clean all \
-    && if [ -x /usr/libexec/tilo/finalize-rpmdb ]; then /usr/libexec/tilo/finalize-rpmdb; fi \
-    && sh /run/tilo-dev/os/scripts/clean-dnf-layer-state.sh \
-    && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache
-# ldconfig's aux-cache records inode numbers and ctimes, which differ in every build.
-RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 
 COPY --from=dev-component-files /image/ /
 COPY os/components.toml /usr/share/tilo/components.toml

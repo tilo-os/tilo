@@ -14,6 +14,14 @@
 #                                  keeps the OS image's local model catalog (the release's) in
 #                                  place of model-catalog-dev-ARCH's and names no commit, so it
 #                                  reads no Git (OUT/revision says development-loop)
+#   os-image.sh dev-packages ARCH BELOW OUT
+#                                  the dev image's packages (os/Containerfile.dev's `dev-packages`:
+#                                  the builder's toolchain, sshd, the dev apps) over the image's
+#                                  layers below its binaries, the layout BELOW/oci (os-layer-trust's
+#                                  full/), as the fragment OUT of the layers they add. Given to
+#                                  `dev` as TILO_DEV_PACKAGES, they are laid over the OS image as
+#                                  that stage, so a dev image of a changed program builds none of
+#                                  them again
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
 #                                  left in IN, as an OCI layout in OUT/oci, with OUT/digest, OUT/revision
@@ -231,6 +239,15 @@ case ${1:-} in
       base_created=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ)
       label="--label org.opencontainers.image.revision=$revision"
     fi
+    # The dev packages (os-dev-packages-ARCH), laid over the OS image as the dev image's
+    # `dev-packages` stage: their layers are the same for every OS image of one package set.
+    below=$in/oci
+    if [[ -n ${TILO_DEV_PACKAGES:-} ]]; then
+      phase dev-packages
+      python3 -I tools/ci/os/oci_layers.py view "$scratch/dev-base" "$in/oci" "$TILO_DEV_PACKAGES" >/dev/null
+      label+=" --build-context dev-packages=container-image://$(podman pull -q "oci:$scratch/dev-base/oci")"
+      below=$scratch/dev-base/oci
+    fi
     phase build
     SOURCE_DATE_EPOCH=$epoch TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
       TILO_DEV_BASE_CREATED=$base_created \
@@ -245,12 +262,40 @@ case ${1:-} in
     phase push
     dev=$scratch/dev-built
     rm -rf "$out"
-    python3 -I tools/ci/os/oci_layers.py export localhost/tilo-vm:ci "$in/oci" "$dev"
+    python3 -I tools/ci/os/oci_layers.py export localhost/tilo-vm:ci "$below" "$dev"
     printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-inputs.json"
-    python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$scratch/dev-fragment" dev-image "$scratch/dev-inputs.json"
+    python3 -I tools/ci/os/oci_layers.py take "$below" "$dev" "$scratch/dev-fragment" dev-image "$scratch/dev-inputs.json"
     rm -rf "$dev"
-    python3 -I tools/ci/os/oci_layers.py compose --copy "$out" "$in/oci" "$scratch/dev-fragment"
+    python3 -I tools/ci/os/oci_layers.py compose --copy "$out" "$in/oci" ${TILO_DEV_PACKAGES:+"$TILO_DEV_PACKAGES"} \
+      "$scratch/dev-fragment"
     printf '%s\n' "$revision" > "$out/revision"
+    ;;
+  dev-packages)
+    arch=${2:?usage: os-image.sh dev-packages ARCH BELOW OUT}
+    below=${3:?}
+    out=${4:?}
+    [[ $(uname -m) == "$arch" ]] || die "the $arch dev packages build natively, not on $(uname -m)"
+    guest_tools
+    phase load
+    podman tag "$(podman pull -q "oci:$below/oci")" localhost/tilo-below:ci
+    # Dated as the image's layers are, by the clock of the bottom one: the dev image they are laid
+    # under is built with the same.
+    epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' localhost/tilo-below:ci)
+    [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the layers below carry no clock but '$epoch'"
+    rpms_snapshot "$arch"
+    phase build
+    # The flags os/dev/build-dev-image.sh builds the rest of the dev image with (os/dev/_common.sh).
+    podman build --jobs 4 --security-opt label=disable -f os/Containerfile.dev --target dev-packages \
+      --build-arg DEV_PACKAGES_BASE=localhost/tilo-below:ci --build-arg "RPMS_REF=$RPMS_REF" \
+      --build-arg "SOURCE_DATE_EPOCH=$epoch" --source-date-epoch "$epoch" --rewrite-timestamp \
+      --tag localhost/tilo-dev-packages:ci "$repo_root" 2>&1 | stamped
+    phase push
+    built=$scratch/dev-packages-built
+    python3 -I tools/ci/os/oci_layers.py export localhost/tilo-dev-packages:ci "$below/oci" "$built"
+    printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-packages-inputs.json"
+    rm -rf "$out"
+    python3 -I tools/ci/os/oci_layers.py take "$below/oci" "$built" "$out" dev-packages "$scratch/dev-packages-inputs.json"
+    rm -rf "$built"
     ;;
   board)
     board=${2:?usage: os-image.sh board BOARD IN OUT}
@@ -285,5 +330,5 @@ case ${1:-} in
     phase disk
     install_board_disk "$board" localhost/tilo-board:ci "$out/disk"
     ;;
-  *) die 'usage: os-image.sh dev ARCH IN OUT COMPILED | board BOARD IN OUT' ;;
+  *) die 'usage: os-image.sh dev ARCH IN OUT COMPILED | dev-packages ARCH BELOW OUT | board BOARD IN OUT' ;;
 esac

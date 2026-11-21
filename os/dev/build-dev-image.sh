@@ -278,6 +278,7 @@ msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
 podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
   --build-arg "BASE_IMAGE=$base" \
+  --build-arg "DEV_PACKAGES_BASE=$base" \
   --build-arg "RPMS_REF=$rpms_ref" \
   --build-arg "BASE_REF=$dev_compile_base" \
   --build-arg "TILO_BASE_DIGEST=$base_digest" \
