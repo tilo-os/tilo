@@ -786,7 +786,7 @@ tilo_test_env::scenario! {
 
     phase test_module_spans_follow_attributes_signatures_and_same_line_modules;
     {
-        let source = "#[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n    const F: f64 = 1.0;\n}\nconst A: f64 = 8.0;\n#[cfg(test)]\npub(crate) fn helper(\n    px: f32,\n) -> f32 {\n    px\n}\nconst B: f64 = 9.0;\n#[cfg(test)] mod inline { const G: f64 = 2.0; }\nconst C: f64 = 10.0;\n";
+        let source = "#[cfg(test)]\n#[expect(unused)]\nmod tests {\n    const F: f64 = 1.0;\n}\nconst A: f64 = 8.0;\n#[cfg(test)]\npub(crate) fn helper(\n    px: f32,\n) -> f32 {\n    px\n}\nconst B: f64 = 9.0;\n#[cfg(test)] mod inline { const G: f64 = 2.0; }\nconst C: f64 = 10.0;\n";
         let spans = test_module_spans(source);
         assert_eq!(spans, vec![(0, 5), (6, 12), (13, 14)]);
         let in_span = |line: usize| spans.iter().any(|(a, b)| line >= *a && line < *b);

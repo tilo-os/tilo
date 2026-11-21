@@ -177,7 +177,7 @@ impl PlanCache {
     }
 
     /// How many plans this cache read back.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn taken(&self) -> usize {
         self.taken.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -310,7 +310,7 @@ impl PlanCache {
     }
 
     /// How many plans this cache moved to another module's indices.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn moved(&self) -> usize {
         self.moved.load(std::sync::atomic::Ordering::Relaxed)
     }
