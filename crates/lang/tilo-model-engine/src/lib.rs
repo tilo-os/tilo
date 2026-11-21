@@ -714,3 +714,81 @@ mod tests {
     }
 }
 
+/// A module writes into the request's document through the device's
+/// document calls; history there is the device's alone, so a module's
+/// attempt to record a change of its own is refused at the device.
+#[cfg(test)]
+mod records {
+    use automerge::model_device::wire::{Reader, Writer};
+    use automerge::model_device::{ANSWERED, Documents, REFUSED, op};
+    use automerge::transaction::Transactable as _;
+    use automerge::{AutoCommit, Prop, ROOT, ReadDoc as _, ScalarValue};
+
+    /// `call` on `handle`, followed by `rest`, as a module writes it.
+    fn call(documents: &mut Documents, call: u8, handle: u32, rest: impl Fn(&mut Writer)) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.byte(call);
+        w.put(&handle);
+        rest(&mut w);
+        documents.answer(&w.0)
+    }
+
+    fn commit(w: &mut Writer) {
+        w.put(&Some("tilo.ctx/1 a history entry of the module's own".to_owned()))
+            .put(&Some(7_i64));
+    }
+
+    #[test]
+    fn a_model_module_writes_content_but_records_nothing_on_the_requests_document() {
+        let mut device = AutoCommit::new();
+        device.put(ROOT, "seed", 1).unwrap();
+        device.commit();
+        let heads = device.get_heads();
+        let mut documents = Documents::new(device);
+
+        // Content is the module's to write.
+        let wrote = call(&mut documents, op::PUT, 0, |w| {
+            w.put(&ROOT).put(&Prop::Map("title".into())).put(&ScalarValue::from("verb"));
+        });
+        assert_eq!(wrote.first(), Some(&ANSWERED), "a write is answered");
+
+        // History is not: a commit, an empty change, an actor of its choosing,
+        // changes from elsewhere, or a document merged in are all refused.
+        let mut other = AutoCommit::new();
+        other.put(ROOT, "forged", true).unwrap();
+        let forged = other.save();
+        let refused = [
+            call(&mut documents, op::COMMIT_WITH, 0, commit),
+            call(&mut documents, op::EMPTY_CHANGE, 0, commit),
+            call(&mut documents, op::SET_ACTOR, 0, |w| {
+                w.put(&automerge::ActorId::from(&b"someone else"[..]));
+            }),
+            call(&mut documents, op::LOAD_INCREMENTAL, 0, |w| w.bytes(&forged)),
+            call(&mut documents, op::MERGE, 0, |w| {
+                w.put(&0_u32);
+            }),
+        ];
+        for answer in &refused {
+            assert_eq!(answer.first(), Some(&REFUSED), "{answer:?}");
+        }
+
+        // A document the module opens is its scratch, where it may commit.
+        let mut new = Writer::new();
+        new.byte(op::NEW);
+        new.put(&AutoCommit::new().text_encoding());
+        let opened = documents.answer(&new.0);
+        assert_eq!(opened.first(), Some(&ANSWERED));
+        let mut r = Reader::new(&opened[1..]);
+        let scratch: u32 = r.take().unwrap();
+        assert_ne!(scratch, 0);
+        let committed = call(&mut documents, op::COMMIT_WITH, scratch, commit);
+        assert_eq!(committed.first(), Some(&ANSWERED));
+
+        // What the device keeps is the module's write, still uncommitted, on
+        // the history it had: the device commits it under its own envelope.
+        let kept = documents.into_document();
+        assert!(kept.pending_ops() > 0, "the write waits for the device's commit");
+        assert_eq!(kept.committed_heads(), heads);
+        assert!(kept.get(ROOT, "forged").unwrap().is_none());
+    }
+}
