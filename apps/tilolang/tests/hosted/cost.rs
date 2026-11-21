@@ -1491,23 +1491,6 @@ fn open_pages(session: &mut Session, costs: &mut Costs) {
     }
 }
 
-/// The host's turns that changed something, until the window and the app have nothing left to
-/// do: what a step spent in round trips between the two.
-fn turns_until_rest(session: &mut Session) -> u32 {
-    let mut changed = 0;
-    let mut quiet = 0;
-    while quiet < 3 {
-        if session.host.turn() {
-            changed += 1;
-            quiet = 0;
-        } else {
-            quiet = 1_u32.saturating_add(quiet);
-        }
-        session.window.frame();
-    }
-    changed
-}
-
 /// What opening a window did, counted rather than timed: the changes the open wrote into the
 /// workspace's document, the times the store took a chunk of it against the chunks the document
 /// holds, and — taken at the frame that finished the open — the documents the instance's
@@ -1637,10 +1620,34 @@ fn opening_a_window_writes_nothing(thousand: &Chunks, ten_thousand: &Chunks) {
     );
 }
 
+/// The host's turns in which the instance took a request for rows, until the window and the app
+/// have nothing left to do: the round trips a step made between the two.
+fn asks_until_rest(session: &mut Session) -> u32 {
+    let mut asks = 0;
+    let mut quiet = 0;
+    while quiet < 3 {
+        let asked = session.instance().instance().rows_asked();
+        let changed = session.host.turn();
+        if session.instance().instance().rows_asked() > asked {
+            asks += 1;
+        }
+        if changed {
+            quiet = 0;
+        } else {
+            quiet = 1_u32.saturating_add(quiet);
+        }
+        session.window.frame();
+    }
+    asks
+}
+
 /// Scrolling a list of ten thousand tasks: the app is asked for the rows a scroll is about to
 /// reach before it reaches them, so a step costs the window's frames and one ask, or none. What
 /// a scroll step asks of the app is what makes the person wait for it, so it is counted, not
-/// timed: a step that asked once per row would pass any budget on a fast enough machine.
+/// timed: a step that asked once per row would pass any budget on a fast enough machine. An ask
+/// is a turn of the host's in which the instance took a request for rows: requests a frame sends
+/// together are one round trip, and a turn that took in only the work the instance does off its
+/// frames, which lands in whichever turn the machine's speed lets it, is no ask of the scroll's.
 fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row(seeded: &Chunks) {
     let _motion = ui::motion::testing::settled();
     let chunks = own(seeded);
@@ -1654,17 +1661,17 @@ fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row(seeded: &Chunks) {
 
     let notches = 8;
     let before = top_title(&mut session);
-    let mut turns = 0;
+    let mut asks = 0;
     for _ in 0..notches {
         session.window.scroll(0.0, -3.0);
-        turns += turns_until_rest(&mut session);
+        asks += asks_until_rest(&mut session);
         session.settle();
     }
     assert_ne!(top_title(&mut session), before, "the list scrolled");
-    eprintln!("scroll: {notches} notches asked the app {turns} times");
+    eprintln!("scroll: {notches} notches asked the app {asks} times");
     assert!(
-        turns <= notches,
-        "{notches} scroll steps asked the app {turns} times: a step costs one ask or none"
+        asks <= notches,
+        "{notches} scroll steps asked the app {asks} times: a step costs one ask or none"
     );
 }
 

@@ -465,6 +465,9 @@ pub struct Instance {
     /// whose change reached it (a tree's patches, or the rows of its lists): the first tree
     /// after opening, and one per change.
     patches_sent: u64,
+    /// How many times the window asked for the rows of one of its lists (`ToApp::Rows`): what a
+    /// scroll costs the window in round trips to the instance.
+    rows_asked: u64,
     /// The form open in the window: an action waiting for its arguments.
     form: Option<form::Pending>,
     /// How many forms the window was sent: the next one's id.
@@ -549,6 +552,7 @@ impl Instance {
             ran_ahead: BTreeSet::new(),
             fired_told: 0,
             patches_sent: 0,
+            rows_asked: 0,
             form: None,
             forms: 0,
         }
@@ -696,6 +700,12 @@ impl Instance {
     #[must_use]
     pub fn patches_sent(&self) -> u64 {
         self.patches_sent
+    }
+
+    /// How many times the window asked for the rows of one of its lists so far.
+    #[must_use]
+    pub fn rows_asked(&self) -> u64 {
+        self.rows_asked
     }
 
     /// How long from the platform's clock now until the time a view of the window read
@@ -1589,6 +1599,7 @@ impl Instance {
                 end,
                 open,
             } => {
+                self.rows_asked = self.rows_asked.saturating_add(1);
                 self.request_rows(level, &list, start as usize..end as usize, open.as_deref());
                 Ok(())
             }
