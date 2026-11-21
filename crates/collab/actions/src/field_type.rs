@@ -29,7 +29,10 @@ pub enum FieldType {
     Time,
     /// An account of some service, held as its URI (`mailto:jane@x.com`).
     Identifier,
-    /// Who did something: a person or an agent.
+    /// Who did something: a person or an agent. Surfaces kept before it was
+    /// named actor say `principal`, and changes written under them are still
+    /// decided with them.
+    #[serde(alias = "principal")]
     Actor,
     /// A reference to a resource of this kind; of any kind when empty.
     Resource(String),
@@ -350,6 +353,10 @@ mod tests {
                 FieldType::Reactions
             );
             assert!(read(r#"{"ty": "Outbox<Upload>"}"#).is_outbox());
+            assert_eq!(
+                read(r#"{"ty": {"option": "principal"}}"#),
+                FieldType::Option(Box::new(FieldType::Actor))
+            );
         }
 
         phase a_type_used_twice_is_declared_once_and_names_stay_unique;
