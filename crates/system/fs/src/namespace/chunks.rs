@@ -62,6 +62,10 @@ pub(crate) struct Chunks {
     workspace: Option<String>,
     /// The chunk each node lives in, as the chunks hold them.
     located: HashMap<String, TreeChunk>,
+    /// The last chunk whose node count was asked for, and the count: making a node asks the
+    /// newest chunk how full it is, and counting it in the document walks every node it holds,
+    /// so a create that asked again would cost the chunk per file.
+    counted: std::cell::Cell<Option<(TreeChunk, usize)>>,
 }
 
 /// Make `doc` a chunk of the tree: its map of nodes, the one change every replica makes alike,
@@ -77,6 +81,7 @@ impl Chunks {
             held: BTreeMap::new(),
             workspace,
             located: HashMap::new(),
+            counted: std::cell::Cell::new(None),
         }
     }
 
@@ -166,6 +171,7 @@ impl Chunks {
         mut doc: AutoCommit,
     ) -> Result<(), AutomergeError> {
         doc.set_actor(self.index.get_actor().clone());
+        self.forget_node_count();
         if chunk == 0 {
             self.index.replace_document(doc);
             return Ok(());
@@ -192,6 +198,7 @@ impl Chunks {
     /// Where the node `id` lives now, as the chunk `chunk` reads: what a change to that chunk
     /// moves.
     pub(super) fn locate(&mut self, chunk: TreeChunk, id: &str) {
+        self.forget_node_count();
         let held = self
             .held
             .get(&chunk)
@@ -205,6 +212,7 @@ impl Chunks {
 
     /// Locate every node every chunk holds: what opening a namespace does.
     pub(super) fn locate_all(&mut self) {
+        self.forget_node_count();
         self.located.clear();
         for (&chunk, held) in &self.held {
             for id in held.doc.keys(&held.nodes) {
@@ -227,6 +235,7 @@ impl Chunks {
         let held = self.chunk_or_new(chunk, true)?;
         let nodes = held.nodes.clone();
         let made = held.doc.put_object(&nodes, id, ObjType::Map)?;
+        self.forget_node_count();
         self.located.insert(id.to_owned(), chunk);
         Ok(Obj { chunk, id: made })
     }
@@ -270,6 +279,14 @@ impl Chunks {
             .ok_or_else(|| tilo_actions::ActionError::Refused(format!("no chunk {chunk}")))?;
         doc.write_action(&document, action, ambient)?;
         self.located.insert(node.to_owned(), chunk);
+        // A create is the one action that adds a node to the chunk's map, and the count the
+        // next create asks for is this one's plus it.
+        if matches!(action, fs_protocol::FileAction::Create { .. })
+            && let Some((counted, count)) = self.counted.get()
+            && counted == chunk
+        {
+            self.counted.set(Some((chunk, count.saturating_add(1))));
+        }
         Ok(())
     }
 
@@ -285,11 +302,30 @@ impl Chunks {
         self.located.keys()
     }
 
-    /// How many nodes chunk `chunk` holds.
+    /// How many nodes chunk `chunk` holds. Counting it in the document walks every node, so the
+    /// answer is kept: placing a node asks the newest chunk's count before every create.
     pub(super) fn nodes_in(&self, chunk: TreeChunk) -> usize {
-        self.held
+        if let Some((counted, count)) = self.counted.get()
+            && counted == chunk
+        {
+            return count;
+        }
+        let count = self
+            .held
             .get(&chunk)
-            .map_or(0, |held| held.doc.length(&held.nodes))
+            .map_or(0, |held| held.doc.length(&held.nodes));
+        self.counted.set(Some((chunk, count)));
+        count
+    }
+
+    /// The chunk a new node goes in: the newest one this tree holds.
+    pub(super) fn newest_chunk(&self) -> Option<TreeChunk> {
+        self.held.keys().next_back().copied()
+    }
+
+    /// Forget the kept node count: nodes arrived from somewhere other than a create here.
+    fn forget_node_count(&self) {
+        self.counted.set(None);
     }
 
     /// Up to `limit` node ids in key order after `after`, over every chunk.

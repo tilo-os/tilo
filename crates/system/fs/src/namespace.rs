@@ -1570,7 +1570,7 @@ impl Namespace {
     /// A record id for a node made now: in the newest chunk while it has room, else in the
     /// next ([`fs_protocol::tree::chunk_for_new`]).
     fn document_id_for_new(&self) -> FileDocumentId {
-        let newest = self.doc.chunk_numbers().last().copied();
+        let newest = self.doc.newest_chunk();
         let nodes = newest.map_or(0, |chunk| self.doc.nodes_in(chunk));
         FileDocumentId::in_chunk(fs_protocol::tree::chunk_for_new(newest, nodes))
     }
