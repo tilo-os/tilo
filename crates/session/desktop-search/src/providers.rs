@@ -2366,7 +2366,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "measurement; run with --ignored --nocapture"]
     fn a_query_against_every_registry_app_stays_under_two_milliseconds() {
         let apps = registry_apps();
         let _ = apps.query("warm");
