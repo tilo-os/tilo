@@ -27,7 +27,6 @@ from story import PROFILE, Failed, Person, Story, until, walk  # noqa: E402
 WORKSPACE = "Garden club"
 SHELL = "so.tilo.session"
 CHROME = "desktop:chrome"
-INVITATIONS = "session:invite"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
 NOTES = "so.tilo.notes"
 # How the top bar's workspace control is named, before the workspace in front.
@@ -152,17 +151,34 @@ def steps(story: Story) -> None:
     link = {}
 
     def invitation():
-        story.note("actions-invite", actions_matching(ada, "invit"))
-        answer = ada.session.invoke(SHELL, f"{INVITATIONS}\u001fissue-invitation",
-                                    {"role": "editor", "expires_in_seconds": 3600})
-        issued = (answer.get("receipt") or {}).get("update", {}).get("output", {}).get("value") or {}
-        if not issued.get("link"):
-            raise Failed(f"the shell made no invitation: {json.dumps(answer)[:1500]}")
-        link["text"] = issued["link"]
+        # As a person does: the top bar's Invite opens the sheet that makes a link into the
+        # workspace in front; Create link makes it, and Copy link puts it where she pastes from.
+        ada.press("Invite", "Invite in Ada's top bar")
+        try:
+            ada.press("Create link", "Create link on Ada's invite sheet", deadline=15)
+        except Failed:
+            refused = [n for n in ada.names() if "can't invite" in n or "No link" in n]
+            raise Failed("Ada's invite sheet offers no Create link"
+                         + (f": it says {refused}" if refused else "")) from None
+        try:
+            ada.press("Copy link", "Copy link under the link Ada's sheet made", deadline=30)
+        except Failed:
+            said = [n for n in ada.names() if n.startswith("No link")]
+            raise Failed("Ada's invite sheet made no link to copy"
+                         + (f": it says {said}" if said else "")) from None
+
+        def copied():
+            text = ((ada.session.state_dump() or {}).get("clipboard") or "").strip()
+            return text if "://" in text else None
+
+        link["text"] = until("the link on Ada's clipboard", copied, 10, 0.1)
 
     story.step("Ada makes an invitation link", invitation, people=[ada])
 
     def grace_opens():
+        # Ada sends Grace the link she copied (how is no part of Tilo), and closes her sheet.
+        ada.session.key("Escape")
+        until("Ada's invite sheet to close", lambda: not ada.target("Copy link"), 10, 0.2)
         path = story.out / "invitation.txt"
         path.write_text(link["text"])
         took = grace.start(apps=APPS, env={JOIN_INVITATION: str(path)})

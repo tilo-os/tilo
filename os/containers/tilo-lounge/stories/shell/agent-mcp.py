@@ -260,16 +260,37 @@ def steps(story: Story) -> None:
             entries = feed()
             story.note("history-feed", [{k: e.get(k) for k in ("summary", "resource", "app", "author")}
                                         for e in entries])
-        # Each change is under the agent's own name.
-        unnamed = {}
+        # What History must say, all of it checked so the step names every fault it shows.
+        wrong = []
+        # Ada's own changes are under her name: she is the only person in the workspace, so a
+        # person's change under no name is hers.
+        nameless = [e for e in entries if (e.get("author") or {}).get("relation") != "software"
+                    and (e.get("author") or {}).get("name") in ("Unknown member", "", None)]
+        if nameless:
+            said = sorted({e.get("summary") or "" for e in nameless})
+            wrong.append(f"{len(nameless)} of Ada's own changes show as “Unknown member”, not "
+                         f"under her name ({'; '.join(said)})")
+        # Each of the agent's changes is under the agent's own name.
+        names = {}
         for what, rows in found.items():
-            if not any(AGENT in ((row.get("author") or {}).get("name") or "") for row in rows):
-                unnamed[what] = sorted({(row.get("author") or {}).get("name") or "nobody"
-                                        for row in rows})
-        if unnamed:
-            raise Failed("History does not name " + AGENT + " beside " + "; ".join(
-                f"{what} (it names {', '.join(names)}, on “{found[what][0].get('summary')}”)"
-                for what, names in unnamed.items()))
+            if not any(AGENT == ((row.get("author") or {}).get("name") or "") for row in rows):
+                names[what] = sorted({(row.get("author") or {}).get("name") or "nobody"
+                                      for row in rows})
+        if names:
+            wrong.append(f"the agent's changes are under {', '.join(sorted({n for v in names.values() for n in v}))}, "
+                         f"a name it never gave, not under “{AGENT}”, the name Ada's top bar shows "
+                         f"(on {', '.join(names)})")
+        # Each row names the item it changed, as a person needs to tell the rows apart.
+        items = {f"the file {FILE}": FILE, f"the issue “{TASK}”": TASK, f"the note “{NOTE}”": NOTE,
+                 "the message": CHAT}
+        unsaid = {what: found[what][0].get("summary") for what, item in items.items()
+                  if not any(item.lower() in (row.get("summary") or "").lower()
+                             for row in found[what])}
+        if unsaid:
+            wrong.append("no row names the item it changed: " + "; ".join(
+                f"{what} reads “{summary}”" for what, summary in unsaid.items()))
+        if wrong:
+            raise Failed("History: " + ". ".join(wrong))
 
     story.step("Ada sees each change under the agent’s name", under_its_name)
 
