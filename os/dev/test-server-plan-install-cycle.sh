@@ -191,14 +191,15 @@ copy_owner_profile() {
 cleanup() {
   local rc=$?
   trap - EXIT
-  # The installer's serial may hold the one-time recovery key of a
-  # person-driven install; a planned install writes none, but the rule is the
-  # same as os/dev/test-internal-install-cycle.sh.
-  if [ "$phase" = installer ]; then
-    printf 'withheld: the live installer serial may hold a one-time secret\n' \
-      > "$out/installer-serial-withheld.txt"
-  else
-    copy_logs server "$server_dir" || true
+  # A person-driven install shows its one-time recovery key on the serial
+  # (os/dev/test-internal-install-cycle.sh withholds that serial); a planned
+  # install hands the key to the owner's devices and prints none. Its serial
+  # is what says why an install never asked the owner anything, so it is
+  # kept, without a line that names a recovery key all the same.
+  copy_logs server "$server_dir" || true
+  if [ -f "$out/server-serial.log" ]; then
+    grep -viE 'recovery[ _-]?key' "$out/server-serial.log" > "$out/server-serial.kept" || true
+    mv -f "$out/server-serial.kept" "$out/server-serial.log"
   fi
   copy_logs owner "$owner_dir" || true
   TILO_SSH_BOUND=30 copy_owner_profile || true
@@ -529,8 +530,10 @@ server 'sudo systemctl reboot' >/dev/null 2>&1 || true
 # network. The install, its enrolment and the sibling keyslot are one pass;
 # each ask is answered where the person's devices answer questions.
 await_owner_question() {
-  local kind=$1 label=$2 listed="$out/owner-question-$2.json" resource="" i
-  for i in $(seq 1 "${TILO_SERVER_CYCLE_ASK_SECONDS:-3600}"); do
+  local kind=$1 label=$2 listed="$out/owner-question-$2.json" resource=""
+  # Seconds of the clock, not polls: each poll asks the owner over SSH.
+  local deadline=$((SECONDS + ${TILO_SERVER_CYCLE_ASK_SECONDS:-1200}))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     owner_control questions --json > "$listed" 2>&1 || true
     resource="$(jq -r --arg kind "$kind" \
       'map(select(.kind == $kind))[0].resource // empty' "$listed" 2>/dev/null || true)"
@@ -539,6 +542,8 @@ await_owner_question() {
       || note "the machine is between boots while waiting for $kind"
     sleep 1
   done
+  [ ! -f "$server_dir/serial.log" ] \
+    || tr -d '\000' < "$server_dir/serial.log" | grep -viE 'recovery[ _-]?key' | tail -n 60 >&2 || true
   die "the owner's sheet never asked a $kind question ($label)"
 }
 answer_owner() {
