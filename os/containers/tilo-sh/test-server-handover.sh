@@ -11,7 +11,9 @@
 #   1. the earlier server holds a workspace with members and records in notes, chat, files and
 #      mail, counted as its API answers them;
 #   2. this commit's server founds nothing under the Lounge's id: it waits until the earlier
-#      server hands it the Lounge (`workspace/servers#add`), then comes up;
+#      server hands it the Lounge (`workspace/servers#add`), then comes up. Its person signs in
+#      on a computer of their own with their recovery words (`tilo login --recovery-key`), as
+#      every device an earlier tilo kept a person on does;
 #   3. the workspace's owner has the earlier server hand it over (`workspace/servers#add`, the
 #      governance action `server.add`, with this commit's server's site);
 #   4. this commit's server holds every record and member, and a write on the earlier server
@@ -166,15 +168,15 @@ fi
 # It takes the earlier stack's workspace root and the Lounge's id, as a server a workspace moves
 # to is given its operator's secret, and comes up only once it holds the Lounge: the earlier
 # server's owner hands it over as any workspace is handed to another server. Its person is the
-# earlier stack's, on the same device of theirs, who approves a key of their own for this
+# earlier stack's, signed in on a computer of their own with their recovery words, as every
+# device an earlier tilo kept a person on signs in again: it approves a key of its own for this
 # commit's API and later lets the earlier server go from this commit's side.
 say "2. this commit's stack on $to_base ($to_programs), handed the Lounge"
 mkdir -p "$work/to/secrets" "$work/to/server/lounge" "$work/to/owner"
 cp "$work/from/secrets/workspace-root-lounge" "$work/to/secrets/workspace-root-lounge"
 cp "$work/from/server/lounge/workspace-id" "$work/to/server/lounge/workspace-id"
-# The device that holds the person's identity: logging in there again (stack.sh does, with
-# --new-identity) signs it in to this commit's API under the same person.
-ln -s "$work/from/owner/home" "$work/to/owner/home"
+# The stack's person is the earlier stack's (stack.sh reads them from owner/key).
+cp "$work/from/owner/key" "$work/to/owner/key"
 lounge=$(cat "$work/from/server/lounge/workspace-id")
 stack to up >"$steps/to-up.log" 2>&1 &
 to_up=$!
@@ -191,6 +193,13 @@ done
 if ! wait "$to_up"; then
   fail '2. this commit'\''s stack comes up, handed the Lounge' \
     "$(tail -5 "$steps/to-up.log"; ((handed)) || cat "$steps/lounge-add.err")"
+  report; exit 1
+fi
+# The words of the root the earlier tilo kept as a file, typed into this commit's tilo.
+if ! data words "$work/from/owner/home/.local/state/tilo/identity/user-identity/privkey.bin" \
+  | stack to person login --recovery-key >"$steps/to-login.log" 2>&1; then
+  fail '2. the person signs in to this commit'\''s stack with their recovery words' \
+    "$(tail -3 "$steps/to-login.log")"
   report; exit 1
 fi
 if ! stack to owner --here >"$steps/to-owner.log" 2>&1; then

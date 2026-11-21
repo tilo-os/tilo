@@ -17,11 +17,15 @@ Every command talks to the stack TILO_API_URL names, with the key TILO_API_KEY h
                          the answer to the action TARGET (`workspace/servers#add`) with the
                          arguments JSON
   workspaces             the workspaces the key reaches
+  words SEED             the 24 recovery words of the root whose 32-byte seed the file SEED
+                         holds, as an earlier tilo kept it: what its person types into
+                         `tilo login --recovery-key`. Needs no API.
 """
 
 from __future__ import annotations
 
 import collections
+import hashlib
 import json
 import os
 import sys
@@ -198,7 +202,26 @@ def expect(workspace: str, expected: dict, seconds: float) -> int:
     return 1 if missing else 0
 
 
+def words(seed_path: str) -> str:
+    """The BIP39 words of a 32-byte seed, from the list Tilo's own encoder uses."""
+    source = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "../../../crates/collab/threshold-identity/src/bip39.rs")
+    with open(source) as file:
+        text = file.read()
+    listed = text.split('const WORDS: &str = "', 1)[1].split('";', 1)[0]
+    listed = listed.replace("\\\n", " ").split()
+    assert len(listed) == 2048, f"{source} lists {len(listed)} words"
+    with open(seed_path, "rb") as file:
+        seed = file.read()
+    assert len(seed) == 32, f"{seed_path} holds {len(seed)} bytes, not a 32-byte seed"
+    bits = int.from_bytes(seed + hashlib.sha256(seed).digest()[:1], "big")
+    return " ".join(listed[(bits >> (11 * (23 - at))) & 0x7FF] for at in range(24))
+
+
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["words"] and len(argv) == 2:
+        print(words(argv[1]))
+        return 0
     if not URL or not KEY:
         print('TILO_API_URL and TILO_API_KEY name the stack\'s API: eval "$(stack.sh env)"',
               file=sys.stderr)
