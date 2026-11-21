@@ -44,7 +44,7 @@ edition = 2
 
 # The image every check runs in unless it says otherwise: pinned by digest, so a moving tag can't
 # change what a check runs in without a commit saying so. Move it by changing this line.
-image = "registry.tilo.so/tilo/tilo-builder@sha256:a6f389d770ee5acb65b7a03d67c0d619c7acb147b64ce6511337ac5548e9dce5"
+image = "registry.tilo.so/tilo/tilo-builder@sha256:67dd1e7626599170108d1ad823fbe1c974a82d4879aaee50d33be419fa51e05c"
 
 # The environment every job gets. A value here, or in a family's `env`, is in the environment
 # cargo builds in, and cargo keys every build script's and proc macro's cache entry by it; so it
