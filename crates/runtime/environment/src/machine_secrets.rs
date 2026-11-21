@@ -78,7 +78,11 @@ impl MachineSecrets {
             variable: variable.to_owned(),
             item: item.to_owned(),
         };
-        match self.secrets.iter_mut().find(|held| held.variable == variable) {
+        match self
+            .secrets
+            .iter_mut()
+            .find(|held| held.variable == variable)
+        {
             Some(held) => *held = secret,
             None => self.secrets.push(secret),
         }

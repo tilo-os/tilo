@@ -75,7 +75,8 @@ async fn linked(
     server.workspaces().call_private_model_addresses(true);
     server
         .workspaces()
-        .link_model_for(&ADA.to_string(),
+        .link_model_for(
+            &ADA.to_string(),
             &Linking {
                 name,
                 protocol,
@@ -301,7 +302,9 @@ async fn an_openai_compatible_provider_streams_its_answer_and_its_cost() {
         model,
     )
     .await;
-    let asked = server.workspaces().workspace_model(ADA, Interaction::Request);
+    let asked = server
+        .workspaces()
+        .workspace_model(ADA, Interaction::Request);
 
     let mut stream = StreamState::default();
     let mut pieces = Vec::new();
@@ -532,7 +535,9 @@ async fn gemini_is_asked_through_its_openai_endpoint_and_gets_its_signature_back
     ]);
     let endpoint = format!("{}/v1beta/openai", responder.url());
     let (_dir, server) = linked(("Google", OPENAI), &endpoint, model).await;
-    let asked = server.workspaces().workspace_model(ADA, Interaction::Request);
+    let asked = server
+        .workspaces()
+        .workspace_model(ADA, Interaction::Request);
 
     let mut request = asking("How many?", vec![lookup()]);
     let first = asked.answer(&request, soon(), &mut |_| {}).await.unwrap();
@@ -658,7 +663,9 @@ async fn a_call_let_go_of_ends_the_providers_request() {
         "gpt-4o-mini",
     )
     .await;
-    let asked = server.workspaces().workspace_model(ADA, Interaction::Request);
+    let asked = server
+        .workspaces()
+        .workspace_model(ADA, Interaction::Request);
 
     let (seen, first) = tokio::sync::oneshot::channel();
     let mut seen = Some(seen);

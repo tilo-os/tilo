@@ -90,7 +90,8 @@ impl Request {
     #[must_use]
     pub fn of(line: &[u8]) -> Option<Self> {
         let request: Self = serde_json::from_slice(line).ok()?;
-        let plain = |text: &str, most: usize| text.len() <= most && !text.chars().any(char::is_control);
+        let plain =
+            |text: &str, most: usize| text.len() <= most && !text.chars().any(char::is_control);
         (request.op == OP
             && !request.workspace.is_empty()
             && plain(&request.workspace, 128)
@@ -172,7 +173,10 @@ pub fn open(socket: &Path, request: &Request, hosted: impl FnOnce()) -> io::Resu
     // The host may wait for the person to allow it; the session bounds that wait.
     stream.set_read_timeout(None)?;
     match read_reply(&mut stream)? {
-        Reply::Opened { stream: id, session } => {
+        Reply::Opened {
+            stream: id,
+            session,
+        } => {
             stream.set_write_timeout(None)?;
             Ok(Answer::Opened {
                 stream: id,

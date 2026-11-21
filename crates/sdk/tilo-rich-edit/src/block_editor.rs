@@ -4142,7 +4142,6 @@ impl BlockEditor {
         self.structure_dirty = true;
     }
 
-
     /// A picture's sizing handle: a pill on the picture, ringed so it reads
     /// on light and dark pictures alike.
     fn draw_image_resize_handle(
@@ -5008,7 +5007,6 @@ pub enum ImagePasteTarget {
         end_byte: usize,
     },
 }
-
 
 /// Direction-preserving document selection. [`Self::ordered`] provides its
 /// normalized start/end pair for editing and serialization.

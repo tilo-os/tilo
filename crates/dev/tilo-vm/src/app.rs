@@ -932,15 +932,14 @@ impl App {
             && !matches!(
                 command.as_ref(),
                 Some(
-                    Command::ImportLayer(_)
-                        | Command::ApplyIncoming { .. }
-                        | Command::Swap { .. }
+                    Command::ImportLayer(_) | Command::ApplyIncoming { .. } | Command::Swap { .. }
                 )
             )
         {
             return Err(CliError::Unsupported {
                 what: "--local here".into(),
-                alternative: "use it with import-layer, apply-incoming, or swap --from layer:<hash>".into(),
+                alternative:
+                    "use it with import-layer, apply-incoming, or swap --from layer:<hash>".into(),
             });
         }
         match command {
@@ -955,9 +954,7 @@ impl App {
             Some(Command::Account(command)) => self.account(command),
             Some(Command::SwapArtifact(request)) => self.swap_artifact(&request),
             Some(Command::ImportLayer(request)) => self.import_local_layer(&request),
-            Some(Command::ApplyIncoming { dir, manifest }) => {
-                self.apply_incoming(&dir, &manifest)
-            }
+            Some(Command::ApplyIncoming { dir, manifest }) => self.apply_incoming(&dir, &manifest),
             Some(Command::Swap {
                 component,
                 account,

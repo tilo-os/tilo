@@ -2580,7 +2580,10 @@ fn a_window_awaits_its_apps_first_view_and_a_part_awaits_nothing() {
     );
     send(&mut app, &[ToUi::Loading]);
     window.receive();
-    assert!(window.awaits_content(), "the loading state is no view of the app's");
+    assert!(
+        window.awaits_content(),
+        "the loading state is no view of the app's"
+    );
     send(&mut app, &titled_page());
     window.receive();
     assert!(!window.awaits_content(), "the view stands: keys go to it");

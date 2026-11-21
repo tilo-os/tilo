@@ -124,7 +124,9 @@ impl Window {
             let (payload, mut fds) =
                 runtime_portal::fd_transport::recv_with_fds(&self.control).unwrap();
             // The line saying the host is asked may arrive in one read with the answer.
-            let mut lines = payload.split(|byte| *byte == b'\n').filter(|line| !line.is_empty());
+            let mut lines = payload
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty());
             let mut line = lines.next().unwrap();
             let said: serde_json::Value = serde_json::from_slice(line).unwrap();
             if said.get("result").and_then(serde_json::Value::as_str) == Some("waiting") {
@@ -172,7 +174,10 @@ impl Host {
             .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let hello = wire::read_hello(&mut stream).unwrap().unwrap();
-        assert_eq!(hello.stream, STREAM, "the window's device presents the stream handed out");
+        assert_eq!(
+            hello.stream, STREAM,
+            "the window's device presents the stream handed out"
+        );
         wire::write_welcome(
             &mut stream,
             &wire::Welcome::Opened {
@@ -248,7 +253,11 @@ fn a_hosted_workspaces_window_types_into_the_hosts_shell_and_hears_it_end() {
             window.open(None);
             let (asked, stream) = asks.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             assert_eq!(
-                (asked.workspace.as_str(), asked.record.as_str(), asked.attach),
+                (
+                    asked.workspace.as_str(),
+                    asked.record.as_str(),
+                    asked.attach
+                ),
                 (WORKSPACE, RECORD, None),
                 "the session is asked for the window's own record"
             );
@@ -257,7 +266,11 @@ fn a_hosted_workspaces_window_types_into_the_hosts_shell_and_hears_it_end() {
             let answered = window.answer();
             assert!(answered.waiting, "the window hears that the host is asked");
             assert_eq!(answered.reply["result"], "session", "{}", answered.reply);
-            assert_eq!(answered.reply["host_session"], SESSION, "{}", answered.reply);
+            assert_eq!(
+                answered.reply["host_session"], SESSION,
+                "{}",
+                answered.reply
+            );
             assert!(
                 answered.reply.get("commands").is_none(),
                 "the host records the runs; the window records none: {}",
@@ -271,7 +284,13 @@ fn a_hosted_workspaces_window_types_into_the_hosts_shell_and_hears_it_end() {
             assert!(drawn_until(&master, "drawn by the host").contains("drawn by the host"));
 
             resize(&master, 120, 40);
-            host.until(|frame, _| *frame == ToTerminal::Resize { cols: 120, rows: 40 });
+            host.until(|frame, _| {
+                *frame
+                    == ToTerminal::Resize {
+                        cols: 120,
+                        rows: 40,
+                    }
+            });
 
             host.says(&FromTerminal::Exited(0));
             assert_eq!(report(&lease), serde_json::json!({"ended": "exited"}));
@@ -308,7 +327,11 @@ fn a_lost_stream_is_said_and_the_window_comes_back_to_the_hosts_session() {
             assert_eq!(asked.attach.as_deref(), Some(SESSION));
             let mut host = Host::opens(stream);
             let answered = window.answer();
-            assert_eq!(answered.reply["host_session"], SESSION, "{}", answered.reply);
+            assert_eq!(
+                answered.reply["host_session"], SESSION,
+                "{}",
+                answered.reply
+            );
             let (_master, lease) = answered.terminal.unwrap();
             host.says(&FromTerminal::Superseded);
             assert_eq!(report(&lease), serde_json::json!({"ended": "superseded"}));

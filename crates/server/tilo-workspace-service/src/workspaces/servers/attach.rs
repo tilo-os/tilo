@@ -101,9 +101,7 @@ pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
         if server.retired {
             for workspace in &governed {
                 if names(workspaces, workspace, device.as_str()).await == Some(true) {
-                    workspaces
-                        .remove_server(workspace, device.as_str())
-                        .await?;
+                    workspaces.remove_server(workspace, device.as_str()).await?;
                     attached.released.push(workspace.clone());
                 }
             }

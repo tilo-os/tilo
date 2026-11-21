@@ -980,7 +980,11 @@ async fn typed_on_a_terminal_is_recorded() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop_device = enrol(&root, "laptop", DeviceCapabilities::primary());
-    let computer = enrol(&root, "Claude Code on build-box", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
     let state = crate::support::scratch_dir();
     let shell_state = tempfile::tempdir().unwrap();
     let hosted = crate::harness::hosted::start(
@@ -1034,7 +1038,10 @@ async fn typed_on_a_terminal_is_recorded() {
             let (connection, mut to, mut from) = quic::dial(&endpoint, address, &runtime).unwrap();
             wire::write_hello(&mut to, &wire::Hello { stream }).unwrap();
             let welcome = wire::read_welcome(&mut from).unwrap();
-            assert!(matches!(welcome, Some(wire::Welcome::Opened { .. })), "{welcome:?}");
+            assert!(
+                matches!(welcome, Some(wire::Welcome::Opened { .. })),
+                "{welcome:?}"
+            );
             let mut drawn = Vec::new();
             let mut typed = false;
             loop {
@@ -1073,10 +1080,16 @@ async fn typed_on_a_terminal_is_recorded() {
         if recorded > 0 {
             assert_eq!(recorded, 1, "recorded once: {session}");
             assert!(session.contains(r#""exit":0"#), "as it ended: {session}");
-            assert!(session.contains(r#""actor":{"agent""#), "by the agent: {session}");
+            assert!(
+                session.contains(r#""actor":{"agent""#),
+                "by the agent: {session}"
+            );
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "never recorded: {session}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never recorded: {session}"
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }

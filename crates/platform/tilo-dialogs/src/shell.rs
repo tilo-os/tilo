@@ -162,7 +162,11 @@ pub fn answer(stream: UnixStream, session: &dyn Session) {
             }
         };
         frame.push(b'\n');
-        if writer.write_all(&frame).and_then(|()| writer.flush()).is_err() {
+        if writer
+            .write_all(&frame)
+            .and_then(|()| writer.flush())
+            .is_err()
+        {
             return;
         }
     }
@@ -233,7 +237,10 @@ impl Grants {
                 reason: "the file you chose is no longer held; choose it again".to_owned(),
             };
         };
-        let chunk = slice.get(..wanted.min(slice.len())).unwrap_or(slice).to_vec();
+        let chunk = slice
+            .get(..wanted.min(slice.len()))
+            .unwrap_or(slice)
+            .to_vec();
         let eof = start.saturating_add(chunk.len()) >= bytes.len();
         Reply::ContentsChunk {
             id,

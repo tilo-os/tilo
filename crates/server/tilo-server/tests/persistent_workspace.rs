@@ -8,9 +8,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
-use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
 

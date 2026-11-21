@@ -22,8 +22,8 @@ use std::io;
 use std::sync::{Arc, OnceLock};
 
 use iroh::EndpointAddr;
-use tilo_actions::remote::environment_terminals::{self, OpenTerminal, TerminalOpened};
 use tilo_actions::remote::environment_commands::VmSecret;
+use tilo_actions::remote::environment_terminals::{self, OpenTerminal, TerminalOpened};
 use tilo_agent_session::workspace_actions::{Opened, Opening, Recorder, ShellRan};
 use ush::environment_terminals::quic::{Receiving, Route, Sending, dial};
 use ush::environment_terminals::{HANDED_FOR, Handed, NOT_HANDED, Ran, wire};
@@ -76,7 +76,12 @@ pub fn member_streams() -> MemberStreams {
 
 /// Carry the stream the device `device` presents on `from`: one `shells` handed it, which
 /// they carry here or splice to the member that runs the shell.
-fn serve(shells: &HostShells, device: [u8; 32], from: Receiving, to: &mut Sending) -> io::Result<()> {
+fn serve(
+    shells: &HostShells,
+    device: [u8; 32],
+    from: Receiving,
+    to: &mut Sending,
+) -> io::Result<()> {
     match shells.shells() {
         ShellsAt::Here(terminals, _) => terminals.serve_handed(device, from, to).map(drop),
         ShellsAt::Placed(placed) => splice(placed, device, from, to),

@@ -8,10 +8,10 @@
 use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::person_vault;
+use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
 use tilo_mcp::McpServer;
 use tilo_server::coding_agents::runner::Machines as _;
 use tilo_session_actions::SessionActions;
-use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
 use tilo_session_client::Outbox as _;
 /// A stand-in for the service selling the workspace's Linux machines.
 type Selling = ush::hosted_vm::test_host::TestHost;
@@ -89,7 +89,10 @@ async fn change_secrets(
         if held.as_ref() == Some(&wanted) {
             return;
         }
-        assert!(Instant::now() < deadline, "the server never takes the change");
+        assert!(
+            Instant::now() < deadline,
+            "the server never takes the change"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -122,9 +125,7 @@ async fn open_terminal(
 
 /// The variables the newest program the machine started was given.
 fn last_started(vm: &Selling) -> (Vec<String>, Vec<(String, String)>) {
-    vm.launched()
-        .pop()
-        .expect("the machine started a program")
+    vm.launched().pop().expect("the machine started a program")
 }
 
 fn has_secret(env: &[(String, String)]) -> bool {
@@ -179,7 +180,11 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
-        SessionActions::new(&agent.peer, agent.workspace, server_device.cert.device_public_key),
+        SessionActions::new(
+            &agent.peer,
+            agent.workspace,
+            server_device.cert.device_public_key,
+        ),
         WORKSPACE.into(),
         person.clone(),
     )
@@ -240,7 +245,10 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         .flatten()
         .is_none()
     {
-        assert!(Instant::now() < deadline, "the server never holds the record");
+        assert!(
+            Instant::now() < deadline,
+            "the server never holds the record"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     change_secrets(
@@ -253,7 +261,10 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
     let (ran, failed) = command("claude --version").await;
     assert!(!failed && ran.contains("ran claude --version"), "{ran}");
     let (argv, env) = last_started(&vm);
-    assert!(has_secret(&env), "the program starts with the token: {argv:?}");
+    assert!(
+        has_secret(&env),
+        "the program starts with the token: {argv:?}"
+    );
     assert!(!ran.contains(TOKEN), "the answer never holds it");
     assert!(
         !argv.iter().any(|argument| argument.contains(TOKEN)),
@@ -313,11 +324,15 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         b"claude --from-the-terminal\r".to_vec()
     )));
     let typed = tilo_test_env::wait_for("the program typed at the terminal to start", || {
-        vm.launched()
-            .into_iter()
-            .find(|(argv, _)| argv.iter().any(|argument| argument == "--from-the-terminal"))
+        vm.launched().into_iter().find(|(argv, _)| {
+            argv.iter()
+                .any(|argument| argument == "--from-the-terminal")
+        })
     });
-    assert!(has_secret(&typed.1), "the terminal's program starts with the token");
+    assert!(
+        has_secret(&typed.1),
+        "the terminal's program starts with the token"
+    );
     drop(typing);
 
     // Whoever may not read the workspace's vault is refused its item, and opens no terminal
@@ -369,12 +384,18 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         &page,
         &workspaces,
         &mut mine,
-        MachineSecrets::ADD_SECRET.with((VARIABLE.to_owned(), format!("vault.item:{}", "0".repeat(32)))),
+        MachineSecrets::ADD_SECRET.with((
+            VARIABLE.to_owned(),
+            format!("vault.item:{}", "0".repeat(32)),
+        )),
     )
     .await;
     let launched = vm.launched().len();
     let (ran, failed) = command("claude --version").await;
-    assert!(failed && ran.contains("That item is not kept here"), "{ran}");
+    assert!(
+        failed && ran.contains("That item is not kept here"),
+        "{ran}"
+    );
     let refused = open_terminal(&shells, &browser_device, &coding.starter()).await;
     assert!(
         refused
@@ -402,7 +423,9 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         .unwrap()
         .expect("the machine secrets document");
     assert!(
-        !saved.windows(TOKEN.len()).any(|window| window == TOKEN.as_bytes()),
+        !saved
+            .windows(TOKEN.len())
+            .any(|window| window == TOKEN.as_bytes()),
         "the document names the item, never its secret"
     );
 }

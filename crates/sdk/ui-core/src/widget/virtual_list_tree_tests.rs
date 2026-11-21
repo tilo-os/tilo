@@ -1559,7 +1559,10 @@ fn a_tree_a_frame_keeps_rows_of_composes_each_row_once() {
         let _ = harness.poll_frame();
         let _ = harness.compose_frame();
     }
-    let shown = harness.presented_composition().cloned().expect("a frame was handed over");
+    let shown = harness
+        .presented_composition()
+        .cloned()
+        .expect("a frame was handed over");
     let rows: Vec<[f64; 4]> = composed_at(&shown.root, "ListRow")
         .into_iter()
         .map(|row| row.rect)

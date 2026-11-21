@@ -201,11 +201,7 @@ impl Task {
     /// already, as its outgoing ownership: ownership carries it as it is and its host answers
     /// for it, as for any write of this device's. A publication that has to wait (its record is
     /// not here yet, or this device has not signed it) is kept and tried again.
-    pub(super) fn publish_signed(
-        &mut self,
-        route: &DocumentRoute,
-        op: collab_types::SignedOp,
-    ) {
+    pub(super) fn publish_signed(&mut self, route: &DocumentRoute, op: collab_types::SignedOp) {
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
             self.fail(
                 "protocol-rejected",
@@ -655,9 +651,9 @@ impl Task {
             .iter()
             .filter(|(route, _)| within(scope, route))
             .map(|(route, writes)| {
-                let changes = writes
-                    .first()
-                    .is_some_and(|write| matches!(write, collab_types::DocumentMutation::Incremental(_)));
+                let changes = writes.first().is_some_and(|write| {
+                    matches!(write, collab_types::DocumentMutation::Incremental(_))
+                });
                 (route.clone(), changes)
             })
             .collect()

@@ -398,7 +398,8 @@ fn offer_state(node: &mut UiNode, label: &str, press: &Event, message: Option<&s
         if let Some(message) = message
             && !node.props.contains_key("message")
         {
-            node.props.insert("message".to_owned(), Value::text(message));
+            node.props
+                .insert("message".to_owned(), Value::text(message));
         }
         node.events.insert("act".to_owned(), press.clone());
         return;

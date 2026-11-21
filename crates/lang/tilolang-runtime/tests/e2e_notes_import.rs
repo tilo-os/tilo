@@ -115,10 +115,7 @@ mod cases {
         fn import(&self, file: &FileValue) {
             self.call(
                 "import_archive",
-                vec![
-                    Value::resource(&self.nb),
-                    Value::file(file.clone()),
-                ],
+                vec![Value::resource(&self.nb), Value::file(file.clone())],
             );
         }
 
@@ -126,7 +123,11 @@ mod cases {
         fn window(&self) -> ViewInstance {
             let mut view = self
                 .rt
-                .open_view(&me(), &self.app.view("notebook"), vec![Value::resource(&self.nb)])
+                .open_view(
+                    &me(),
+                    &self.app.view("notebook"),
+                    vec![Value::resource(&self.nb)],
+                )
                 .unwrap();
             view.set_lazy_rows(false).unwrap();
             view
@@ -288,15 +289,18 @@ mod cases {
             &[
                 (
                     "Plan.md",
-                    "# Plan\n\nShip the offline editor. See [the standups](Plan/Standups.md).\n".as_bytes(),
+                    "# Plan\n\nShip the offline editor. See [the standups](Plan/Standups.md).\n"
+                        .as_bytes(),
                 ),
                 (
                     "Plan/Standups.md",
-                    "# Standups\n\nTen minutes, every morning.\n\n[Monday](Standups/Monday.md)\n".as_bytes(),
+                    "# Standups\n\nTen minutes, every morning.\n\n[Monday](Standups/Monday.md)\n"
+                        .as_bytes(),
                 ),
                 (
                     "Plan/Standups/Monday.md",
-                    "# Monday\n\nAda is on the sync bug. Back to [the plan](../../Plan.md).\n".as_bytes(),
+                    "# Monday\n\nAda is on the sync bug. Back to [the plan](../../Plan.md).\n"
+                        .as_bytes(),
                 ),
             ],
         );
@@ -331,7 +335,10 @@ mod cases {
         );
         // The heading that named the page is its title, not its body's first line again.
         let body = n.body_of(&plan).written_text();
-        assert!(!body.contains("# Plan"), "the title's heading is not said twice: {body}");
+        assert!(
+            !body.contains("# Plan"),
+            "the title's heading is not said twice: {body}"
+        );
     }
 
     /// A Notion export: the pages it wrote, the database it wrote beside one as a CSV, and a
@@ -342,10 +349,7 @@ mod cases {
         let archive = device.archive(
             "Export.zip",
             &[
-                (
-                    "Plan.md",
-                    "# Plan\n\nShip the offline editor.\n".as_bytes(),
-                ),
+                ("Plan.md", "# Plan\n\nShip the offline editor.\n".as_bytes()),
                 (
                     "Plan Tasks.csv",
                     "Task,Owner\nShip the editor,Ada\nGrow the garden,\n".as_bytes(),

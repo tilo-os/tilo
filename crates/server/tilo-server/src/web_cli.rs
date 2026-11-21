@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use ed25519_dalek::SigningKey;
+use std::sync::Arc;
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server_protocol::operator::{self, OperatorCommand, OperatorEvent, RefusalReason};
-use std::sync::Arc;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,

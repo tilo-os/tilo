@@ -495,8 +495,9 @@ impl Worker {
         let invocation = request.invocation;
         let device = caller.device_public_key().copied();
         let hosted = self.hosted_session(workspace_id, caller, request, OPEN, |arguments| {
-            let device = device
-                .ok_or_else(|| "a terminal opens for a device, and this caller has none".to_owned())?;
+            let device = device.ok_or_else(|| {
+                "a terminal opens for a device, and this caller has none".to_owned()
+            })?;
             opening_of(arguments, device)
         })?;
         let Hosted {
@@ -1051,7 +1052,10 @@ mod tests {
             opening_of(&arguments, [7; 32])
         };
         let opening = read(json!({})).unwrap();
-        assert_eq!((opening.cols, opening.rows, opening.device), (80, 24, [7; 32]));
+        assert_eq!(
+            (opening.cols, opening.rows, opening.device),
+            (80, 24, [7; 32])
+        );
         assert_eq!(opening.attach, None);
         let session = "0123456789abcdef0123456789abcdef";
         let opening = read(json!({"cols": 120, "rows": 40, "attach": session}));

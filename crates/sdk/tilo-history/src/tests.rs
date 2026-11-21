@@ -581,7 +581,10 @@ fn a_change_names_the_item_it_made_as_it_is_called_now() {
             )
     };
     let reader = Reader::new("en-US").with_app(&notes).with_labels(&Now);
-    assert_eq!(reader.sentence(&made("new-note", NOTE)), "Created “Roadmap”");
+    assert_eq!(
+        reader.sentence(&made("new-note", NOTE)),
+        "Created “Roadmap”"
+    );
     assert_eq!(reader.sentence(&made("new-child", NOTE)), "Made “Plan”");
     // An item gone since is said as the change recorded it.
     assert_eq!(reader.sentence(&made("new-note", GONE)), "Created “Plan”");

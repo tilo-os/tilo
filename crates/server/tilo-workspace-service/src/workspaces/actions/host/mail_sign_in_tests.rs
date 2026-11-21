@@ -78,8 +78,7 @@ impl Setup {
     }
 
     fn root(&self) -> std::path::PathBuf {
-        self.workspaces
-            .workspace_root(&self.workspace.to_string())
+        self.workspaces.workspace_root(&self.workspace.to_string())
     }
 
     fn page(&self) -> impl tilo_actions::remote::ActionProvider + Clone + Send + 'static {

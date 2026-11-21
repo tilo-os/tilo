@@ -176,10 +176,7 @@ impl Pending {
     /// # Errors
     /// The entry does not read back as a plan, because a value it keeps is
     /// not one a plan takes.
-    pub fn document(
-        &self,
-        label: &str,
-    ) -> Result<install_profile_model::plan::Plan, String> {
+    pub fn document(&self, label: &str) -> Result<install_profile_model::plan::Plan, String> {
         use install_profile_model::plan;
         let open: Vec<String> = self
             .still_open()

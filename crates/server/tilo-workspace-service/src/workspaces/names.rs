@@ -126,7 +126,10 @@ impl Workspaces {
             if !self.governs(&governed) {
                 return;
             }
-            governed.peer().governance().governed_members(system_time(now))
+            governed
+                .peer()
+                .governance()
+                .governed_members(system_time(now))
         };
         let members = match read {
             Ok(list) => list.members,

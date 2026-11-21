@@ -12,8 +12,8 @@ use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DeviceWrites as
 use tilo_server::WorkspaceId;
 use tilo_server::workspaces::Workspaces;
 use tilo_user_identity::DeviceCapabilities;
-use tilo_workspace_service::own_device;
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
+use tilo_workspace_service::own_device;
 
 use crate::common::{TestDevice, TestUser, device_endpoint, spawn_server};
 

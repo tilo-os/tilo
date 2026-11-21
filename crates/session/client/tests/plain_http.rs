@@ -6,9 +6,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::sync::Arc;
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
-use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::support::{enrol, start_host_plain};

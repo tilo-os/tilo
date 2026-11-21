@@ -110,9 +110,7 @@ pub fn unattended_picker(
 /// at the computer for — a session with no desktop portal behind it has nobody to choose a path
 /// for an app, and the unattended picker or the desktop's chooser still answers a Save.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn inherited_shell_picker(
-    elsewhere: Arc<dyn FilePicker>,
-) -> Option<Arc<dyn FilePicker>> {
+pub fn inherited_shell_picker(elsewhere: Arc<dyn FilePicker>) -> Option<Arc<dyn FilePicker>> {
     shell::inherited_picker(elsewhere)
 }
 

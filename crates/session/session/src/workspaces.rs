@@ -438,7 +438,11 @@ impl Personal {
         if has {
             let mut tree = handle.read(Clone::clone);
             // The shell always shows a workspace: this one stands until another does.
-            if tree.workspaces.iter().all(|workspace| workspace.id() == seed) {
+            if tree
+                .workspaces
+                .iter()
+                .all(|workspace| workspace.id() == seed)
+            {
                 return false;
             }
             if tree.take_off(seed).is_some() {
@@ -1159,16 +1163,12 @@ impl crate::Shared {
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             if let Some(engine) = &self.engine
-                && self
-                    .personal
-                    .as_ref()
-                    .is_some_and(|personal| {
-                        let personal = personal.borrow();
-                        // The workspace the shell started with is founded only once it is known
-                        // to be the person's first.
-                        personal.made_here(workspace.id())
-                            && personal.seed() != Some(workspace.id())
-                    })
+                && self.personal.as_ref().is_some_and(|personal| {
+                    let personal = personal.borrow();
+                    // The workspace the shell started with is founded only once it is known
+                    // to be the person's first.
+                    personal.made_here(workspace.id()) && personal.seed() != Some(workspace.id())
+                })
                 && !workspace.id().is_nil()
                 && !borrowed.contains(&workspace.id())
                 && !engine.holds(workspace.id())

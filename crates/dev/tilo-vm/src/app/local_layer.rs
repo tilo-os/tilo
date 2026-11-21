@@ -6,7 +6,10 @@ use crate::error::CliError;
 use crate::local_layer::Prepared;
 use crate::remote::Remote;
 
-pub(super) fn import(remote: &mut Remote, prepared: &mut Prepared) -> Result<(String, bool), CliError> {
+pub(super) fn import(
+    remote: &mut Remote,
+    prepared: &mut Prepared,
+) -> Result<(String, bool), CliError> {
     let upload = remote.upload(prepared.archive.as_file_mut())?;
     let imported = remote.call(LayerImport {
         source: LayerSource::Upload(upload),

@@ -352,8 +352,7 @@ impl Workspaces {
                 }
             };
             let working_in = workspace.as_deref().and_then(WorkspaceId::parse);
-            self.judged(&rule, &matter, spender, working_in)
-                .await
+            self.judged(&rule, &matter, spender, working_in).await
         };
         let reach = Reach::of(kind, mark.important);
         let outside = !words_stay

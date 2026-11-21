@@ -204,11 +204,7 @@ async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
     let mut takes = WorkSetting::own_person();
     takes.from =
         tilo_server_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
-    let holder = within(
-        "the holder starts",
-        serve_on(&other, &other_server, takes),
-    )
-    .await;
+    let holder = within("the holder starts", serve_on(&other, &other_server, takes)).await;
     within(
         "the server it was made on attaches the holder",
         workspaces.attach_server(

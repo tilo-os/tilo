@@ -183,7 +183,11 @@ pub enum BundleError {
     )]
     IncludeInvalidBinary { path: PathBuf },
     #[error("included binary is {bytes} bytes, over the {limit} a bundle takes: {path}")]
-    IncludeBinaryTooLarge { path: PathBuf, bytes: u64, limit: u64 },
+    IncludeBinaryTooLarge {
+        path: PathBuf,
+        bytes: u64,
+        limit: u64,
+    },
     #[error("different included binaries claim the same basename: {name}")]
     IncludeDuplicateBinary { name: String },
     #[error(

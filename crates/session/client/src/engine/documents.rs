@@ -106,12 +106,10 @@ impl DeviceDocuments for EngineDocuments {
             heads,
         };
         Ok(
-            match self.0.read_resource(
-                workspace,
-                (app, resource),
-                holding,
-                MAX_DOCUMENT_BYTES,
-            )? {
+            match self
+                .0
+                .read_resource(workspace, (app, resource), holding, MAX_DOCUMENT_BYTES)?
+            {
                 ResourceReading::Captured {
                     revision,
                     heads,
@@ -171,6 +169,10 @@ impl DeviceDocuments for EngineDocuments {
     }
 
     fn workspaces(&self) -> Vec<String> {
-        self.0.workspaces().iter().map(ToString::to_string).collect()
+        self.0
+            .workspaces()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 }

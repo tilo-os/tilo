@@ -60,7 +60,11 @@ pub(super) fn apply(
             return Err(CliError::InvalidInput(format!(
                 "incoming layer {} is for {}, but this machine is {expected_target}",
                 entry.component,
-                prepared.provenance.target.as_deref().unwrap_or("an unknown target"),
+                prepared
+                    .provenance
+                    .target
+                    .as_deref()
+                    .unwrap_or("an unknown target"),
             )));
         }
         let (hash, _existed) = local_layer::import(remote, &mut prepared)?;
@@ -222,8 +226,7 @@ for line in iter(sys.stdin.buffer.readline,b''):
         use clap::Parser as _;
 
         use crate::cli::{Cli, Command};
-        let parsed =
-            Cli::try_parse_from(["tilo-vm", "--local", "apply-incoming"]).unwrap();
+        let parsed = Cli::try_parse_from(["tilo-vm", "--local", "apply-incoming"]).unwrap();
         assert!(parsed.local);
         let Some(Command::ApplyIncoming { dir, manifest }) = parsed.command else {
             panic!("apply-incoming did not reach its command");
@@ -234,10 +237,7 @@ for line in iter(sys.stdin.buffer.readline,b''):
             std::path::Path::new(crate::incoming::INSTALLED_MANIFEST)
         );
         // The daemon's own path is the vmd component's install path.
-        assert_eq!(
-            crate::remote::LOCAL_DAEMON,
-            "/usr/libexec/tilo/tilo-vmd"
-        );
+        assert_eq!(crate::remote::LOCAL_DAEMON, "/usr/libexec/tilo/tilo-vmd");
         let parsed = Cli::try_parse_from([
             "tilo-vm",
             "--local",

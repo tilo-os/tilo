@@ -14,9 +14,9 @@
 
 use std::path::PathBuf;
 
-use tilo_dialogs::shell::{Choice, Session};
 use tilo_dialogs::portal::{ContentsOutcome, PickedContents};
-use tilo_portal::file_chooser::{FileChooserQuestion, FILE_CHOOSER_QUESTION, PickerFilter};
+use tilo_dialogs::shell::{Choice, Session};
+use tilo_portal::file_chooser::{FILE_CHOOSER_QUESTION, FileChooserQuestion, PickerFilter};
 use tilo_service::{Question, Questions};
 
 /// The session's chooser, kept for as long as the session runs: the socket answers until it
@@ -51,7 +51,8 @@ fn serve_at(path: PathBuf, questions: Questions) -> Result<Chooser, String> {
     if path.exists() {
         // A socket an ended session left behind holds nothing: the launcher would hand it to an
         // app and the app would wait on a peer that is gone.
-        std::fs::remove_file(&path).map_err(|error| format!("remove {}: {error}", path.display()))?;
+        std::fs::remove_file(&path)
+            .map_err(|error| format!("remove {}: {error}", path.display()))?;
     }
     // The socket's path may be longer than the kernel's, which a session's runtime directory
     // makes likely: the platform's bind reaches a path of any length.
@@ -98,11 +99,8 @@ impl Session for Asks {
             .filters
             .iter()
             .map(|filter| {
-                let mut pairs: Vec<(u32, String)> = filter
-                    .globs
-                    .iter()
-                    .map(|glob| (0, glob.clone()))
-                    .collect();
+                let mut pairs: Vec<(u32, String)> =
+                    filter.globs.iter().map(|glob| (0, glob.clone())).collect();
                 pairs.extend(
                     filter
                         .mimetypes

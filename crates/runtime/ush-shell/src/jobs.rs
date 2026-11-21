@@ -666,7 +666,10 @@ impl crate::shell::Shell {
         }
         let marks = self.marks.clone();
         let run_number = marks.as_ref().map(|m| m.next());
-        let brackets = marks.as_ref().zip(run_number).and_then(|(m, n)| m.brackets(n));
+        let brackets = marks
+            .as_ref()
+            .zip(run_number)
+            .and_then(|(m, n)| m.brackets(n));
         sub.wrap_outputs(&job, brackets.as_ref());
         // Its own run: what its file actions are stamped with, and the run
         // Terminal records for it.

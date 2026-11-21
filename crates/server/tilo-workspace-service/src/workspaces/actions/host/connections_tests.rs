@@ -156,10 +156,7 @@ fn refused_with(refused: &Result<Value, Refused>, why: &str) -> bool {
 /// What an agent a member's session was handed to is asked about before it
 /// changes a connection `id` or the service at `address`: none of it is
 /// its own to do unasked.
-fn the_changes_an_agent_is_asked_about(
-    id: &Value,
-    address: &str,
-) -> [(&'static str, Value); 4] {
+fn the_changes_an_agent_is_asked_about(id: &Value, address: &str) -> [(&'static str, Value); 4] {
     [
         (ADD, json!({"address": address})),
         (REMOVE, json!({"connection": id})),
@@ -273,7 +270,10 @@ async fn a_member_connects_a_service_the_workspace_keeps_and_nobody_outside_reac
     for (who, other) in [
         ("a member of another workspace", ada_asks.by(&cy, &as_cy)),
         ("a device of nobody", ada_asks.by(&stranger, &as_stranger)),
-        ("her key on another person's device", ada_asks.by(&bo, &as_ada)),
+        (
+            "her key on another person's device",
+            ada_asks.by(&bo, &as_ada),
+        ),
     ] {
         other.is_answered_nothing(who, &reading).await;
         assert!(other.offered().await.is_empty(), "{who}");
@@ -288,7 +288,11 @@ async fn a_member_connects_a_service_the_workspace_keeps_and_nobody_outside_reac
         .workspace_root(&workspace_id.to_string())
         .join("connections")
         .join(format!("{id}.json"));
-    assert!(kept.is_file(), "the connection is kept at {}", kept.display());
+    assert!(
+        kept.is_file(),
+        "the connection is kept at {}",
+        kept.display()
+    );
     let still = ada_asks.ask(LIST, json!({})).await.unwrap();
     assert_eq!(still["connections"][0]["id"], added["id"]);
     let remaining = ada_asks
@@ -349,7 +353,10 @@ async fn an_agent_reads_and_calls_what_only_reads(
     let changing = agent.ask(CALL, planting).await;
     assert!(refused_with(&changing, ASKS_FIRST), "{who}: {changing:?}");
     agent
-        .asks_its_member(who, &the_changes_an_agent_is_asked_about(id, &another.address()))
+        .asks_its_member(
+            who,
+            &the_changes_an_agent_is_asked_about(id, &another.address()),
+        )
         .await;
     assert_eq!(agent.offered().await, [LIST, LOOK, REFRESH, CALL], "{who}");
 }
@@ -382,8 +389,13 @@ async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
     let id = &added["id"];
 
     let agent = caller(&ada).delegated_to("assistant");
-    an_agent_reads_and_calls_what_only_reads(ada_asks.by(&ada, &agent), "her assistant", (&service, &another), &added)
-        .await;
+    an_agent_reads_and_calls_what_only_reads(
+        ada_asks.by(&ada, &agent),
+        "her assistant",
+        (&service, &another),
+        &added,
+    )
+    .await;
 
     // Nothing was added or removed, and the service nobody added was never
     // asked. The service that is connected was called for what only reads,
@@ -398,10 +410,7 @@ async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
         .map(|asked| asked["command"].clone())
         .collect();
     assert_eq!(called, [json!("find_trees")]);
-    let used = ada_asks
-        .ask(USES, json!({"connection": id}))
-        .await
-        .unwrap();
+    let used = ada_asks.ask(USES, json!({"connection": id})).await.unwrap();
     let used = used["uses"].as_array().expect("the uses");
     assert_eq!(used.len(), 2, "{used:?}");
     assert_eq!(used[0]["by"], "assistant", "{used:?}");
@@ -418,10 +427,7 @@ async fn a_handed_agent_reads_and_calls_and_its_changes_ask_its_member() {
     let searching = ada_asks;
     workspaces.ask_people(Asked::answering(Some(ConfirmationAnswer::Deny)));
     for (action, argument) in [
-        (
-            ADD,
-            json!({"address": another.address()}),
-        ),
+        (ADD, json!({"address": another.address()})),
         (REMOVE, json!({"connection": id})),
     ] {
         let refused = searching.by(&ada, &agent).ask(action, argument).await;
@@ -508,12 +514,17 @@ async fn whoever_is_neither_a_member_nor_their_agent_is_answered_nothing() {
         let asking = ada_asks.by(device, asking);
         asking.is_answered_nothing(who, &reading).await;
         asking
-            .is_answered_nothing(who, &the_changes_an_agent_is_asked_about(id, &another.address()))
+            .is_answered_nothing(
+                who,
+                &the_changes_an_agent_is_asked_about(id, &another.address()),
+            )
             .await;
         assert!(asking.offered().await.is_empty(), "{who}");
     }
     let asking = ada_asks.by(&stranger, &as_stranger);
-    asking.is_answered_nothing("a device of nobody", &reading).await;
+    asking
+        .is_answered_nothing("a device of nobody", &reading)
+        .await;
     assert!(asking.offered().await.is_empty(), "a device of nobody");
 
     let hers = ada_asks.ask(LIST, json!({})).await.unwrap();

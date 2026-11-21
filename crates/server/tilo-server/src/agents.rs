@@ -451,7 +451,9 @@ impl WorkspaceShell for HostShells {
         let terminals = match &self.at {
             ShellsAt::Here(terminals, _) => terminals,
             ShellsAt::Placed(placed) => {
-                return placed.run(workspace, session, command, agent, person, secrets, watching);
+                return placed.run(
+                    workspace, session, command, agent, person, secrets, watching,
+                );
             }
         };
         let ran = terminals

@@ -327,7 +327,10 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     assert!(mail.servers.asked().is_empty(), "no mail server was asked");
 
     // Another member's turn in the same workspace reads the one store.
-    let (bos, bos_keeper) = (on_turn(&bo, &mail.workspace, SCOUT), hex::encode(bo.user_public_key));
+    let (bos, bos_keeper) = (
+        on_turn(&bo, &mail.workspace, SCOUT),
+        hex::encode(bo.user_public_key),
+    );
     let his = mail.turn(&bos, &bos_keeper, None);
     let message: FetchedMessage = done(mail.asks(&his, person_accounts::READ, reading()).await);
     assert_eq!(message.uid, 4, "a member's turn reads the workspace's mail");

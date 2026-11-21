@@ -1127,7 +1127,11 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         {
             router = router.accept(alpn, handler);
         }
-        for (alpn, handler) in take_work.map(take_work::TakesWork::protocols).into_iter().flatten() {
+        for (alpn, handler) in take_work
+            .map(take_work::TakesWork::protocols)
+            .into_iter()
+            .flatten()
+        {
             router = router.accept(alpn, handler);
         }
         router.spawn()

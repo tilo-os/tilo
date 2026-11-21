@@ -37,7 +37,12 @@ impl State {
 
     /// Queue the key `keycode` going down or up at `at` when it is typed for a window on its way, or
     /// behind keys that are. Whether it was queued; one that was not is routed now.
-    pub(crate) fn await_window_with_key(&mut self, keycode: u32, pressed: bool, at: Instant) -> bool {
+    pub(crate) fn await_window_with_key(
+        &mut self,
+        keycode: u32,
+        pressed: bool,
+        at: Instant,
+    ) -> bool {
         self.route_awaited_keys();
         let waits = if self.awaited_keys.queue.is_empty() {
             pressed && self.keyboard_waits()
@@ -56,7 +61,10 @@ impl State {
             return;
         }
         let keys = std::mem::take(&mut self.awaited_keys.queue);
-        tracing::debug!(keys = keys.len(), "keys typed for a window on its way reach it");
+        tracing::debug!(
+            keys = keys.len(),
+            "keys typed for a window on its way reach it"
+        );
         for (keycode, pressed, at) in keys {
             let time = self.now_ms();
             self.key(keycode, pressed, SERIAL_COUNTER.next_serial(), time, at);

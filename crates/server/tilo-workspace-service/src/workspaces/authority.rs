@@ -341,11 +341,7 @@ fn decide_by_governance(
         }
         _ => Ok(()),
     };
-    relayed.map_err(|refusal| {
-        CollaborationError::new(format!(
-            "{OWNER_SIGNS}: {refusal}"
-        ))
-    })?;
+    relayed.map_err(|refusal| CollaborationError::new(format!("{OWNER_SIGNS}: {refusal}")))?;
     Ok(person.to_owned())
 }
 

@@ -781,7 +781,9 @@ impl Namespace {
             // A branch a file version was carried into names its re-addressed version in the
             // index's aliases; a reader opens what that names.
             hash: str_at(&self.doc, obj, "hash").and_then(|h| {
-                hash_from_hex(&fs_protocol::tree::file_version_alias(&**self.doc.index(), &h).unwrap_or(h))
+                hash_from_hex(
+                    &fs_protocol::tree::file_version_alias(&**self.doc.index(), &h).unwrap_or(h),
+                )
             }),
             size: read_u64(&self.doc, obj, "size"),
             mtime: read_u64(&self.doc, obj, "mtime"),

@@ -29,7 +29,10 @@ use super::support::{
 
 /// The changes the host's saved copy of `bytes` holds.
 fn changes(bytes: &[u8]) -> usize {
-    AutoCommit::load(bytes).expect("the host's copy loads").get_changes(&[]).len()
+    AutoCommit::load(bytes)
+        .expect("the host's copy loads")
+        .get_changes(&[])
+        .len()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -83,13 +86,7 @@ async fn a_page_writes_once_and_a_restart_publishes_nothing_again() {
     // A new session over the same store: what the first admitted and published is not drafted
     // again, and nothing more reaches the host.
     first.close();
-    let again = start_peer_with_store(
-        host.iroh(),
-        page.cert,
-        host_device.cert,
-        page.key,
-        store,
-    );
+    let again = start_peer_with_store(host.iroh(), page.cert, host_device.cert, page.key, store);
     ready(&[&again]).await;
     durable(&again).await;
 

@@ -28,7 +28,10 @@ pub fn local_daemon_command() -> CommandLine {
             .map(str::to_owned)
             .collect();
         if let Some((program, args)) = words.split_first() {
-            return CommandLine::new(program, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            return CommandLine::new(
+                program,
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
         }
     }
     CommandLine::new(LOCAL_DAEMON, &["rpc"])

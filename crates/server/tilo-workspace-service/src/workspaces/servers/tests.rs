@@ -83,7 +83,6 @@ fn a_servers_configuration_is_typed_actions_with_history() {
         5,
         "each change is one entry of history"
     );
-
 }
 
 /// Every device founds the document with the same change, so two of the

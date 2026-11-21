@@ -91,9 +91,9 @@ use invocation_states::{answered_within, failed, still_running, succeeded};
 #[cfg(not(target_arch = "wasm32"))]
 mod telling;
 
+use super::authority::WorkspaceOp;
 #[cfg(not(target_arch = "wasm32"))]
 use super::workspace_stores::Store;
-use super::authority::WorkspaceOp;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
     RemoveMemberRequest, Workspaces,
@@ -1405,7 +1405,8 @@ impl Workspaces {
             }
             (HOST_ACTIONS_PROVIDER, _) => {
                 let certificate = Self::host_actions_certificate(caller, certificate)?;
-                Box::pin(self.account_invoke(workspace_id, caller, certificate, request, None)).await
+                Box::pin(self.account_invoke(workspace_id, caller, certificate, request, None))
+                    .await
             }
             (mcp_server::PROVIDER, _) => self.mcp_stop(caller, certificate, request),
             // A request that names its secret by reference carries none, so

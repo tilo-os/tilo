@@ -77,10 +77,16 @@ pub struct Calendar {
 #[serde(tag = "answer", rename_all = "snake_case")]
 pub enum Reply {
     /// The sign-in was accepted, as the probe says it.
-    Tested { said: String },
-    Calendars { calendars: Vec<Calendar> },
+    Tested {
+        said: String,
+    },
+    Calendars {
+        calendars: Vec<Calendar>,
+    },
     /// The page the person approves the Nextcloud sign-in on.
-    NextcloudPage { url: String },
+    NextcloudPage {
+        url: String,
+    },
     /// The person has not approved it yet.
     NextcloudWaiting,
     /// The person approved it: the server minted this device its own app password.
@@ -90,7 +96,9 @@ pub enum Reply {
         app_password: String,
     },
     /// What went wrong, in words a person can act on.
-    Failed { message: String },
+    Failed {
+        message: String,
+    },
 }
 
 /// Serve one connection until it closes: each request answered with what the account's servers
@@ -367,7 +375,9 @@ fn write_line(stream: &mut UnixStream, message: &impl Serialize) -> std::io::Res
 /// The next line, without its newline; `None` once the other side closed.
 fn read_line(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<u8>>> {
     let mut line = Vec::new();
-    let limit = u64::try_from(MAX_LINE_BYTES).unwrap_or(u64::MAX).saturating_add(1);
+    let limit = u64::try_from(MAX_LINE_BYTES)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
     let read = reader.by_ref().take(limit).read_until(b'\n', &mut line)?;
     if read == 0 {
         return Ok(None);
@@ -470,6 +480,9 @@ mod tests {
         serving.join().expect("the session's end");
         let mut rest = Vec::new();
         let _ = settings.read_to_end(&mut rest);
-        assert!(rest.is_empty(), "nothing is answered to a line past the bound");
+        assert!(
+            rest.is_empty(),
+            "nothing is answered to a line past the bound"
+        );
     }
 }

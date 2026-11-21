@@ -449,7 +449,11 @@ fn an_action_that_outlasts_one_wait_answers_how_it_ended() {
     let answered = ran(|io| {
         run_address(
             &sockets,
-            ("tilo.machines", "machines\u{1f}machine.plan", "Plan a machine"),
+            (
+                "tilo.machines",
+                "machines\u{1f}machine.plan",
+                "Plan a machine",
+            ),
             &serde_json::json!({}),
             &spelling,
             io,

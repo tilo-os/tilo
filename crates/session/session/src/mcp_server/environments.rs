@@ -265,7 +265,10 @@ pub(super) fn answer_socket_requests(
         // Only the device's shell runtime, outside every environment, carries a hosted
         // workspace's shell to a Terminal window.
         if *entrance != Origin::Host {
-            tracing::info!(pid, "MCP server: a program inside an environment asked for a workspace's terminal");
+            tracing::info!(
+                pid,
+                "MCP server: a program inside an environment asked for a workspace's terminal"
+            );
             super::refuse(stream, &PeerRefusal::OutsideEnvironment);
             return None;
         }

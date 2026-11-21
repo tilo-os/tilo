@@ -29,9 +29,7 @@ use tilo_server_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use super::actions::ServiceWorkspaceActions;
-use super::fixtures::{
-    governor, signed_pre_admission, test_server_keeping_keys_apart,
-};
+use super::fixtures::{governor, signed_pre_admission, test_server_keeping_keys_apart};
 use super::mail_watch::testing::keep;
 use super::person_settings::{provider_config, save_provider_config};
 use super::tests::guest_device;
@@ -51,7 +49,10 @@ fn own_request(name: &str) -> InvokeRequest {
         invocation: InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, CREATE_OWN_WORKSPACE),
+            address: tilo_actions::ActionAddress::new(
+                HOST_WORKSPACES_RESOURCE,
+                CREATE_OWN_WORKSPACE,
+            ),
         },
         argument: InvokeArgument::Json(argument),
         context: None,
@@ -207,9 +208,7 @@ async fn a_host_moves_what_it_kept_per_person_into_the_workspaces_they_own() {
         admit(&workspaces, &shared, &owner, &ada, 3).await;
         assert!(workspaces.owns(&ada.user_public_key, &own.workspace.workspace));
         assert_eq!(
-            workspaces
-                .member_role(&shared, ada.user_public_key)
-                .await,
+            workspaces.member_role(&shared, ada.user_public_key).await,
             Some(Role::Editor),
             "she is a member of the other, and no owner"
         );
@@ -231,7 +230,10 @@ async fn a_host_moves_what_it_kept_per_person_into_the_workspaces_they_own() {
         .join("accounts")
         .join("vault")
         .join("vault.key");
-    assert!(her_key.exists(), "the key the host keeps apart: {her_key:?}");
+    assert!(
+        her_key.exists(),
+        "the key the host keeps apart: {her_key:?}"
+    );
 
     // Someone who owns no workspace here kept a store of their own as well.
     let bos_store = people.join(hex::encode(bo.user_public_key));
@@ -249,7 +251,10 @@ async fn a_host_moves_what_it_kept_per_person_into_the_workspaces_they_own() {
     );
     let profiles = provider_config(&owned_root).profiles;
     assert_eq!(
-        profiles.iter().map(|profile| profile.id.as_str()).collect::<Vec<_>>(),
+        profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<Vec<_>>(),
         [provider_id.as_str()],
         "the workspace keeps her provider"
     );
@@ -266,7 +271,10 @@ async fn a_host_moves_what_it_kept_per_person_into_the_workspaces_they_own() {
         .join("accounts")
         .join("vault")
         .join("vault.key");
-    assert!(workspace_key.exists(), "the workspace's own key: {workspace_key:?}");
+    assert!(
+        workspace_key.exists(),
+        "the workspace's own key: {workspace_key:?}"
+    );
     assert_ne!(
         std::fs::read(&workspace_key).unwrap(),
         std::fs::read(&her_key).unwrap(),

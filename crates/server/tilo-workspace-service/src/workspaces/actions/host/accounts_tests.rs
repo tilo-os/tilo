@@ -216,9 +216,13 @@ async fn a_member_asks_what_arrived_and_the_host_watches_from_then_on() {
 
     // An app, and an agent with no device behind it, are nobody here.
     let asking_arrivals = asking(person_accounts::ARRIVED, json!({}));
-    let app = settled(page.invoke(&Caller::local_app("so.tilo.chat"), asking_arrivals.clone())).await;
+    let app =
+        settled(page.invoke(&Caller::local_app("so.tilo.chat"), asking_arrivals.clone())).await;
     assert!(
-        matches!(app, Err(tilo_actions::remote::ActionCallError::UnknownAction)),
+        matches!(
+            app,
+            Err(tilo_actions::remote::ActionCallError::UnknownAction)
+        ),
         "{app:?}"
     );
     let unowned = settled(page.invoke(&Caller::local_agent("writer"), asking_arrivals)).await;

@@ -367,8 +367,7 @@ impl Task {
         // A record opened before the governance admitted it waits with its
         // key group unopened: opening it here asks the members for the keys
         // the writes it holds wait on.
-        let unopened: Vec<DocumentRoute> =
-            self.held.lock().keys().cloned().collect();
+        let unopened: Vec<DocumentRoute> = self.held.lock().keys().cloned().collect();
         for route in unopened {
             self.open_channel(&route);
         }

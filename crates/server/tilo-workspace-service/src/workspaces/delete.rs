@@ -147,7 +147,11 @@ impl Workspaces {
     /// # Errors
     ///
     /// Who may reach it could not be recorded.
-    pub(super) async fn discard(&self, workspace: &str, workspace_id: WorkspaceId) -> Result<(), String> {
+    pub(super) async fn discard(
+        &self,
+        workspace: &str,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), String> {
         let governed = self.inner.workspaces.lock().await.get(workspace).cloned();
         if let Some(governed) = governed {
             let governed = governed.lock().await;

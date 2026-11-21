@@ -525,7 +525,10 @@ impl<'a> Reader<'a> {
     fn edit(&self, edit: &FieldEdit, what: &Did, scope: &Scope<'_>) -> String {
         let mut args = self.base_args(scope);
         for (name, value) in &edit.args {
-            if !matches!(name.as_str(), "item" | "now" | "actor" | "for" | "old" | "new") {
+            if !matches!(
+                name.as_str(),
+                "item" | "now" | "actor" | "for" | "old" | "new"
+            ) {
                 args.set(name.clone(), fluent_value(value));
             }
         }

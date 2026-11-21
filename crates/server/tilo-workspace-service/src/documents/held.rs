@@ -492,7 +492,10 @@ mod tests {
             .expect("the holder keeps the record");
         let mut checkpointed = AutoCommit::load(&current).expect("the record opens");
         checkpointed.set_actor(automerge::ActorId::from(
-            SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes().to_vec(),
+            SigningKey::from_bytes(&[2; 32])
+                .verifying_key()
+                .to_bytes()
+                .to_vec(),
         ));
         checkpointed
             .put(ROOT, "front", "Checkpoint")
@@ -511,7 +514,10 @@ mod tests {
         assert!(
             written.is_ok(),
             "a checkpoint of a record the workspace holds is taken: {}",
-            written.err().map(|refused| refused.to_string()).unwrap_or_default()
+            written
+                .err()
+                .map(|refused| refused.to_string())
+                .unwrap_or_default()
         );
         let DocumentRead::Whole { bytes, .. } = holder
             .read(WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT, None)

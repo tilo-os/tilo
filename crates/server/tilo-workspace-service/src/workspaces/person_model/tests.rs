@@ -128,10 +128,19 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
     ]);
     workspaces.answer_models_with(scripted.clone());
 
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
-    let parts = workspaces.link_model_for(&ADA.to_string(), &ANTHROPIC, false).unwrap();
     workspaces
-        .choose_model_for(&ADA.to_string(), Interaction::Subtask, &parts, "claude-parts")
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
+    let parts = workspaces
+        .link_model_for(&ADA.to_string(), &ANTHROPIC, false)
+        .unwrap();
+    workspaces
+        .choose_model_for(
+            &ADA.to_string(),
+            Interaction::Subtask,
+            &parts,
+            "claude-parts",
+        )
         .unwrap();
     let bo = Linking {
         name: "Bo's own",
@@ -140,7 +149,9 @@ async fn a_kind_runs_on_its_own_model_and_the_rest_on_the_default() {
         models: &["open-model"],
         ..GOOGLE
     };
-    workspaces.link_model_for(&BO.to_string(), &bo, true).unwrap();
+    workspaces
+        .link_model_for(&BO.to_string(), &bo, true)
+        .unwrap();
 
     let main = workspaces
         .workspace_model(ADA, Interaction::Request)
@@ -201,8 +212,12 @@ async fn a_choice_that_cannot_be_used_is_refused_not_replaced() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("the default")]);
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
-    let parts = workspaces.link_model_for(&ADA.to_string(), &ANTHROPIC, false).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
+    let parts = workspaces
+        .link_model_for(&ADA.to_string(), &ANTHROPIC, false)
+        .unwrap();
     workspaces
         .choose_model_for(&ADA.to_string(), Interaction::Task, &parts, "claude-parts")
         .unwrap();
@@ -260,7 +275,9 @@ async fn a_provider_without_its_key_is_refused() {
         key: None,
         ..GOOGLE
     };
-    workspaces.link_model_for(&ADA.to_string(), &keyless, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &keyless, true)
+        .unwrap();
 
     let refused = workspaces
         .workspace_model(ADA, Interaction::Request)
@@ -345,7 +362,9 @@ async fn the_answer_streams_and_says_what_it_cost() {
         Reply::tool_call("call-1", "invoke", serde_json::json!({"action": "post"})).costing(90),
     ]);
     workspaces.answer_models_with(scripted);
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Request);
 
     let mut stream = protocol::StreamState::default();
@@ -416,7 +435,9 @@ async fn a_providers_failure_is_the_refusal_and_a_refused_key_names_its_provider
             .chain([ErrorKind::RateLimited])
             .map(|kind| Reply::failing(ModelError::new(kind))),
     ));
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Request);
 
     for (kind, english, german) in of_the_key {
@@ -454,7 +475,9 @@ async fn a_host_that_speaks_to_no_provider_answers_nothing() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     workspaces.answer_models_with(Arc::new(NoProvider));
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let refused = workspaces
         .workspace_model(ADA, Interaction::Request)
         .answer(&asking("Hello"), soon(), &mut |_| {})
@@ -476,7 +499,9 @@ async fn a_call_ends_at_its_deadline_or_when_it_is_stopped() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::never(), Reply::never(), Reply::never()]);
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Task);
 
     let due = tilo_clock::now()
@@ -540,7 +565,9 @@ async fn a_plain_question_is_answered_in_words() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("yes").costing(12)]);
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Classifier);
 
     let said = tokio::task::spawn_blocking(move || {
@@ -579,7 +606,9 @@ async fn a_picture_goes_only_to_a_model_that_reads_pictures() {
     let workspaces = server.workspaces();
     let scripted = ScriptedProvider::answering([Reply::text("A receipt.")]);
     workspaces.answer_models_with(scripted.clone());
-    let provider = workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    let provider = workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Request);
     let mut pictured = asking("What is this?");
     pictured.messages[0].content.push(Content::Image {
@@ -644,7 +673,9 @@ async fn nothing_printed_carries_the_key() {
     let workspaces = server.workspaces();
     let printing = Arc::new(Printing::default());
     workspaces.answer_models_with(printing.clone());
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let model = workspaces.workspace_model(ADA, Interaction::Request);
     let refused = model
         .answer(&asking("Hello"), soon(), &mut |_| {})
@@ -698,7 +729,9 @@ async fn the_days_limit_stops_a_run() {
         4,
     ));
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let today = scout("2026-11-17", Some(2_000_000));
     let model = workspaces
         .workspace_model(ADA, Interaction::Task)
@@ -783,7 +816,9 @@ async fn a_piece_of_work_with_a_day_of_its_own_stops_at_its_own_limit() {
         3,
     ));
     workspaces.answer_models_with(scripted.clone());
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let agent = scout("2026-11-17", Some(1_200_000));
     let watching = Spender {
         agent: "event:watching".into(),
@@ -860,7 +895,9 @@ async fn calls_at_once_are_each_counted_on_the_day() {
     workspaces.answer_models_with(ScriptedProvider::answering(
         (0..=CALLS).map(|_| Reply::text("a part").costing(1_000)),
     ));
-    workspaces.link_model_for(&ADA.to_string(), &GOOGLE, true).unwrap();
+    workspaces
+        .link_model_for(&ADA.to_string(), &GOOGLE, true)
+        .unwrap();
     let model = workspaces
         .workspace_model(ADA, Interaction::Subtask)
         .spending_as(scout("2026-11-17", None));

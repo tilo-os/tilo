@@ -39,7 +39,10 @@ enum Route {
     Local,
     Refused(String),
     /// The host's terminal stream, taken: the host's session id, and the stream.
-    Opened { session: String, stream: UnixStream },
+    Opened {
+        session: String,
+        stream: UnixStream,
+    },
 }
 
 /// Serve `req` from the shell of the workspace's host when a server hosts `store`'s workspace;
@@ -162,9 +165,7 @@ fn ask(socket: &std::path::Path, request: &Request, hosted: impl FnOnce()) -> Ro
         Ok(Answer::Local) => Route::Local,
         Ok(Answer::Refused(reason)) => Route::Refused(reason),
         Ok(Answer::Opened {
-            stream,
-            connection,
-            ..
+            stream, connection, ..
         }) => take(stream, connection),
         // No session answers there: nothing of this login reaches a host.
         Err(error)
@@ -236,7 +237,9 @@ fn carry(slave: &OwnedFd, stream: &UnixStream, lease: &UnixStream) -> Ended {
             Ok(Some(FromTerminal::Exited(status))) => break Ended::Exited(status),
             Ok(Some(FromTerminal::Superseded)) => break Ended::Superseded,
             Ok(None) => break Ended::Lost("the workspace's host closed the connection".into()),
-            Err(error) => break Ended::Lost(format!("the connection to the workspace's host: {error}")),
+            Err(error) => {
+                break Ended::Lost(format!("the connection to the workspace's host: {error}"));
+            }
         }
     };
     let ended = if closed.load(Ordering::SeqCst) {

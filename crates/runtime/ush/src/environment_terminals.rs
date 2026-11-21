@@ -298,20 +298,19 @@ impl EnvironmentTerminals {
             })),
             None => None,
         };
-        let heard = runs
-            .clone()
-            .map(|runs| runs as Arc<dyn ush_shell::Runs>);
-        let shell = self
-            .shells
-            .interactive(
-                asked.workspace,
-                asked.session,
-                asked.payer,
-                asked.person,
-                slave,
-                ush_shell::Session { runs_key, runs: heard },
-                asked.secrets.to_vec(),
-            )?;
+        let heard = runs.clone().map(|runs| runs as Arc<dyn ush_shell::Runs>);
+        let shell = self.shells.interactive(
+            asked.workspace,
+            asked.session,
+            asked.payer,
+            asked.person,
+            slave,
+            ush_shell::Session {
+                runs_key,
+                runs: heard,
+            },
+            asked.secrets.to_vec(),
+        )?;
         let reading = master.try_clone()?;
         let mut id = [0_u8; 16];
         getrandom::fill(&mut id).map_err(io::Error::other)?;
@@ -779,7 +778,9 @@ impl ush_shell::Runs for SessionRuns {
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 /// The runs of one session, kept for the one stream that follows them
@@ -1140,7 +1141,11 @@ pub mod wire {
     ///
     /// The write failed.
     pub fn write_hello(to: &mut impl Write, hello: &Hello) -> io::Result<()> {
-        write(to, HELLO, &serde_json::to_vec(hello).map_err(io::Error::other)?)
+        write(
+            to,
+            HELLO,
+            &serde_json::to_vec(hello).map_err(io::Error::other)?,
+        )
     }
 
     /// The hello a stream starts with; `None` when it ended before one.
@@ -1156,7 +1161,11 @@ pub mod wire {
     ///
     /// The write failed.
     pub fn write_welcome(to: &mut impl Write, welcome: &Welcome) -> io::Result<()> {
-        write(to, WELCOME, &serde_json::to_vec(welcome).map_err(io::Error::other)?)
+        write(
+            to,
+            WELCOME,
+            &serde_json::to_vec(welcome).map_err(io::Error::other)?,
+        )
     }
 
     /// The answer to a hello; `None` when the stream ended before one.
@@ -1360,7 +1369,9 @@ pub mod quic {
     pub struct Route(Arc<Serve>);
 
     impl Route {
-        pub fn new(serve: impl Fn([u8; 32], Receiving, &mut Sending) + Send + Sync + 'static) -> Self {
+        pub fn new(
+            serve: impl Fn([u8; 32], Receiving, &mut Sending) + Send + Sync + 'static,
+        ) -> Self {
             Self(Arc::new(serve))
         }
     }
@@ -1374,7 +1385,10 @@ pub mod quic {
     impl ProtocolHandler for Route {
         async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
             let peer = *connection.remote_id().as_bytes();
-            let (send, recv) = connection.accept_bi().await.map_err(AcceptError::from_err)?;
+            let (send, recv) = connection
+                .accept_bi()
+                .await
+                .map_err(AcceptError::from_err)?;
             let runtime = Handle::current();
             let serve = Arc::clone(&self.0);
             let served = tokio::task::spawn_blocking(move || {

@@ -171,7 +171,9 @@ pub enum CliError {
     },
     #[error("this host is {host} but the VM would be {requested}")]
     ArchMismatch { host: String, requested: String },
-    #[error("--local runs this machine's own tilo-vmd, which manages its /usr, units and accounts, and this is not root (uid {uid})")]
+    #[error(
+        "--local runs this machine's own tilo-vmd, which manages its /usr, units and accounts, and this is not root (uid {uid})"
+    )]
     LocalNotRoot { uid: u32 },
     #[error("this machine's tilo-vmd did not answer: {detail}")]
     LocalDaemon { detail: String },

@@ -779,9 +779,7 @@ impl Workspaces {
                 // A workspace this host records as the person's own is kept here, whatever a
                 // device's list said of where it is: a key's session asks it here, not at a
                 // device that may be gone.
-                let own = self
-                    .own()
-                    .and_then(|own| own.owner_of(&kept.workspace))
+                let own = self.own().and_then(|own| own.owner_of(&kept.workspace))
                     == Some(device.user_public_key);
                 let kept = if own {
                     PersonalWorkspace {

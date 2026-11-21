@@ -248,8 +248,7 @@ fn write_incoming(
             component.name
         )));
     }
-    std::fs::create_dir_all(dir)
-        .map_err(CliError::io(format!("create {}", dir.display())))?;
+    std::fs::create_dir_all(dir).map_err(CliError::io(format!("create {}", dir.display())))?;
     let archive_path = dir.join(format!("{}.tar", component.name));
     let mut archive = std::fs::File::create(&archive_path)
         .map_err(CliError::io(format!("create {}", archive_path.display())))?;

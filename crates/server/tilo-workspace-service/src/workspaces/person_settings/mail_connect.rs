@@ -55,9 +55,9 @@ use tilo_lock::MutexRecover as _;
 
 use super::{answers_in_public, argument};
 use crate::workspaces::Workspaces;
+use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
 use crate::workspaces::person_asking::workspace_store_root;
 use crate::workspaces::workspace_stores::Store;
-use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
 
 /// Sign a mail account in by a turn's telling, from its address alone.
 pub const CONNECT: &str = "connect";
@@ -773,10 +773,15 @@ impl Workspaces {
     ) -> Result<MailCarried, String> {
         let root = self.workspace_root(&claimed.workspace);
         let item = typed.and_then(ItemRef::parse);
-        let own = item.as_ref().and_then(|item| typed_for(&root, item, claimed));
+        let own = item
+            .as_ref()
+            .and_then(|item| typed_for(&root, item, claimed));
         let carried = match typed {
             None => Ok(None),
-            Some(_) => self.sign_in_mail(turn, claimed, &root, item).await.map(Some),
+            Some(_) => self
+                .sign_in_mail(turn, claimed, &root, item)
+                .await
+                .map(Some),
         };
         if !matches!(carried, Ok(Some(_)))
             && let Some(id) = &own

@@ -55,8 +55,8 @@ pub(crate) fn with_native_backends(services: ProcessServices) -> ProcessServices
     // the unattended directory — goes to the unattended picker or the
     // desktop's own.
     let elsewhere = unattended.clone().unwrap_or_else(|| services.files.clone());
-    let files = tilo_dialogs::inherited_shell_picker(elsewhere)
-        .unwrap_or_else(|| services.files.clone());
+    let files =
+        tilo_dialogs::inherited_shell_picker(elsewhere).unwrap_or_else(|| services.files.clone());
     // A link with a scheme a Tilo app claims (`settings://updates`) opens in
     // that app through the shell, as its search opens it; the desktop's
     // opener has no handler registered for such schemes.

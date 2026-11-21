@@ -115,11 +115,7 @@ pub fn keep(
 /// # Errors
 ///
 /// Why it was not written: the chooser refused, or the write failed.
-pub fn save(
-    chooser: &dyn FilePicker,
-    request: &SaveRequest,
-    content: &[u8],
-) -> Result<(), String> {
+pub fn save(chooser: &dyn FilePicker, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
     let title = format!("Save {}", request.name);
     let pick =
         PickRequest::save(&title, &request.media, &request.name).thread_name("tilolang-save-file");
@@ -249,7 +245,10 @@ mod tests {
             refused,
             Err("`photo.png` is not a file this asks for".to_owned())
         );
-        assert!(!store.has(&tilo_content::hash_bytes(b"\x89PNG")), "nothing was kept");
+        assert!(
+            !store.has(&tilo_content::hash_bytes(b"\x89PNG")),
+            "nothing was kept"
+        );
     }
 
     #[test]

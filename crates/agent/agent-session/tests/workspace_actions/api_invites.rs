@@ -254,7 +254,9 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_key_brings_people_in()
     assert!(
         handed["error"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("only the workspace's owner makes this change, and from a device of their own")),
+            .is_some_and(|message| message.contains(
+                "only the workspace's owner makes this change, and from a device of their own"
+            )),
         "{handed}"
     );
     let added = members(

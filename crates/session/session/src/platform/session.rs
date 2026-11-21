@@ -342,7 +342,11 @@ impl Session {
         // person's first is known only once their hosts listed what they have.
         let seed = activity
             .keeps_no_workspace()
-            .then(|| tree.workspaces.first().map(tilo_desktop_model::Workspace::id))
+            .then(|| {
+                tree.workspaces
+                    .first()
+                    .map(tilo_desktop_model::Workspace::id)
+            })
             .flatten();
         if activity.show(&mut tree) {
             handle.replace_tree(tree);
@@ -1354,7 +1358,11 @@ impl Session {
                     .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
             );
             server.hear_device_agents(std::sync::Arc::clone(&device_agents));
-            server.open_terminals_on(app_wire.as_ref().and_then(|app_wire| app_wire.hosting.clone()));
+            server.open_terminals_on(
+                app_wire
+                    .as_ref()
+                    .and_then(|app_wire| app_wire.hosting.clone()),
+            );
             server
         });
         let automation = crate::automation::Automation::new(

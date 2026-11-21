@@ -44,8 +44,11 @@ fn main() {
         });
     runtime.block_on(async move {
         let (tls, certificate) = mail_engine::fake_servers::server_identity();
-        let imap =
-            mail_engine::fake_imap::FakeImap::start(mail_engine::fake_imap::Layout::Plain, tls.clone()).await;
+        let imap = mail_engine::fake_imap::FakeImap::start(
+            mail_engine::fake_imap::Layout::Plain,
+            tls.clone(),
+        )
+        .await;
         let smtp = mail_engine::fake_servers::FakeSmtp::start(tls).await;
         for (number, (subject, body)) in INBOX.iter().enumerate() {
             imap.append(

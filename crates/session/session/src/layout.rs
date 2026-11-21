@@ -480,8 +480,8 @@ fn laid_on(
     base: &mut automerge::AutoCommit,
     laid_at: Option<&[ChangeHash]>,
 ) -> Result<automerge::AutoCommit, String> {
-    let Some(at) = laid_at
-        .filter(|at| !at.is_empty() && at.iter().all(|head| base.has_change(head)))
+    let Some(at) =
+        laid_at.filter(|at| !at.is_empty() && at.iter().all(|head| base.has_change(head)))
     else {
         return Ok(base.clone());
     };

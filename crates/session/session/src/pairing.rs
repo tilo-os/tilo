@@ -961,7 +961,10 @@ mod tests {
                 approval("personal-device", device, &"cc".repeat(32), true),
                 "not the device",
             ),
-            (approval("home-peer", device, service, true), "not the device"),
+            (
+                approval("home-peer", device, service, true),
+                "not the device",
+            ),
         ] {
             let refused = invoke(owner, APPROVE, args).err().expect("denied");
             assert!(refused.contains(reason), "{refused}");

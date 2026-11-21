@@ -55,9 +55,9 @@ impl Community {
     /// Whether this computer is still joining the community it was set up for: one is configured
     /// and the person decided nothing of it yet. Its site lists their workspaces once they are in.
     pub(crate) fn joining(&self, personal: &Personal) -> bool {
-        self.site.as_ref().is_some_and(|site| {
-            personal.community(site.as_str()) != Some(CommunityState::Decided)
-        })
+        self.site
+            .as_ref()
+            .is_some_and(|site| personal.community(site.as_str()) != Some(CommunityState::Decided))
     }
 
     fn follow(

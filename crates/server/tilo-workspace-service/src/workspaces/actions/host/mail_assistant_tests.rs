@@ -19,8 +19,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use tilo_action_policy::turn::Turn;
 use tilo_actions::remote::person_accounts::{
-    self, FetchedMail, FetchedMessage, FoundMail, MailAccounts, MailArrivals,
-    StartedSend,
+    self, FetchedMail, FetchedMessage, FoundMail, MailAccounts, MailArrivals, StartedSend,
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, ReceiptStatus,
@@ -218,13 +217,8 @@ impl AsksPeople for Asked {
 }
 
 /// `caller` lists and fetches the workspace's one account over `page`.
-async fn reads_the_account_kept(
-    page: &(impl ActionProvider + Sync),
-    caller: &Caller,
-    who: &str,
-) {
-    let listed: MailAccounts =
-        read(asked_of(page, caller, person_accounts::LIST, json!({})).await);
+async fn reads_the_account_kept(page: &(impl ActionProvider + Sync), caller: &Caller, who: &str) {
+    let listed: MailAccounts = read(asked_of(page, caller, person_accounts::LIST, json!({})).await);
     let ids: Vec<&str> = listed.accounts.iter().map(|one| one.id.as_str()).collect();
     assert_eq!(ids, [ACCOUNT], "{who} reads the workspace's account");
     let inbox = json!({"account": ACCOUNT, "folder": "inbox"});
@@ -382,7 +376,10 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
         "with no answer: {unanswered:?}"
     );
     let (person, question) = silent.questions.lock().unwrap()[0].clone();
-    assert_eq!(person, setup.device.user_public_key, "her agent, her answer");
+    assert_eq!(
+        person, setup.device.user_public_key,
+        "her agent, her answer"
+    );
     assert_eq!(question.agent_id, ASSISTANT);
     assert_eq!(question.action_label, "send this message");
     assert_eq!(question.resource_label, ACCOUNT);

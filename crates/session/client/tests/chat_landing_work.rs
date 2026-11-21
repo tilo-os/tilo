@@ -215,9 +215,7 @@ async fn guest_takes_in(
                     doc.load_incoming(&bytes).unwrap();
                     *kept = heads;
                 }
-                DocumentRead::Unchanged(_)
-                | DocumentRead::Pending
-                | DocumentRead::Absent => {}
+                DocumentRead::Unchanged(_) | DocumentRead::Pending | DocumentRead::Absent => {}
             }
         }
         let read_whole = |record: &str, keys: usize| {

@@ -536,13 +536,7 @@ mod made_and_invited {
                 .transfer_ownership(owner, &host_key, now)
                 .unwrap()
         );
-        (
-            peer,
-            host_key,
-            SigningKey::from_bytes(&[6; 32]),
-            owner,
-            now,
-        )
+        (peer, host_key, SigningKey::from_bytes(&[6; 32]), owner, now)
     }
 
     tilo_test_env::scenario! {

@@ -9,9 +9,9 @@
 
 use accounts::vault_items::{ItemId, UsedFor, VaultItems};
 use tilo_action_policy::{ActionKind, Answer, Authority, roles};
+use tilo_actions::remote::Caller;
 use tilo_actions::remote::environment_commands::VmSecret;
 use tilo_actions::remote::person_vault::ItemRef;
-use tilo_actions::remote::Caller;
 use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
 use tilo_resource::Resource as _;
 use zeroize::Zeroizing;
@@ -122,7 +122,11 @@ impl Workspaces {
 
 /// Whether the workspace's policy lets `by` read the workspace's vault document: the decision
 /// every reader of that document is held to, for `by`'s whole acting.
-fn may_read_vault(policy: &tilo_action_policy::WorkspacePolicy, workspace: &str, by: &Caller) -> bool {
+fn may_read_vault(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    workspace: &str,
+    by: &Caller,
+) -> bool {
     let acting = by.acting();
     let mut granted = acting.handed_preset(workspace);
     granted.extend(by.granted(&[]));

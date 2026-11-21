@@ -484,7 +484,10 @@ impl BotRunner {
                 .await;
             if seen.place.is_some() && arrived.newest < after {
                 // The log started over: all it holds came after that.
-                arrived = self.workspaces.mail_arrivals_for(workspace, &person, 0).await;
+                arrived = self
+                    .workspaces
+                    .mail_arrivals_for(workspace, &person, 0)
+                    .await;
             }
             if !hands_over {
                 arrived.arrivals.clear();

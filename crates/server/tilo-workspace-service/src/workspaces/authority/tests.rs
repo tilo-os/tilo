@@ -1704,7 +1704,10 @@ async fn a_workspace_handed_to_a_person_is_administered_by_them() {
         .declare_owner(&workspace, bo.user_public_key, None)
         .await
         .unwrap_err();
-    assert!(again.to_string().contains("only the workspace's owner"), "{again}");
+    assert!(
+        again.to_string().contains("only the workspace's owner"),
+        "{again}"
+    );
 
     // The owner makes Bo an administrator, and Bo makes Cy one.
     workspaces
@@ -1740,7 +1743,9 @@ async fn a_workspace_handed_to_a_person_is_administered_by_them() {
         .unwrap_err()
         .to_string();
     assert!(
-        relayed.contains("only the workspace's owner makes this change, and from a device of their own"),
+        relayed.contains(
+            "only the workspace's owner makes this change, and from a device of their own"
+        ),
         "{relayed}"
     );
     let policy = workspaces.policy_of(&workspace).await.unwrap();

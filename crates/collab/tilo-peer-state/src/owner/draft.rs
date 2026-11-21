@@ -16,8 +16,8 @@ use web_time::SystemTime;
 
 use crate::owner::{AppWrite, WriteRefusal};
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
-use crate::workspace_documents::DocumentWrite;
 use crate::replica::Replica;
+use crate::workspace_documents::DocumentWrite;
 use crate::{NotAdmitted, SealCheckpoint, StatePeer};
 
 /// A device's write to one document, as it is drafted: `changes` to `app`'s `document`, the
@@ -241,12 +241,8 @@ async fn signed_local_write(
     write: &OwnedWrite,
 ) -> Result<AppWrite, WriteRefusal> {
     let drafted = replica.read(StatePeer::clone);
-    let (mut request, author) = draft_local_write(
-        &drafted,
-        &write.workspace,
-        &device,
-        write.borrowed(),
-    )?;
+    let (mut request, author) =
+        draft_local_write(&drafted, &write.workspace, &device, write.borrowed())?;
     let CommitOperation::Document { envelope, own, .. } = &mut request.operation else {
         return Err(WriteRefusal::Refused(
             "a local write is a document write".to_owned(),
@@ -275,9 +271,7 @@ async fn signed_local_write(
         })
         .map_err(|refused| match refused {
             NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
-            NotAdmitted::Refused(reason)
-                if reason.contains("sealed record history is full") =>
-            {
+            NotAdmitted::Refused(reason) if reason.contains("sealed record history is full") => {
                 WriteRefusal::HistoryFull {
                     app: write.app.clone(),
                     record: write.document.clone(),

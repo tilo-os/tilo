@@ -91,11 +91,11 @@ fn schedule_from_label(label: &str) -> String {
     }
 }
 
+use tilo_system_service::effects::{PowerAction, UpdateAction};
 /// The session's `system-update` resource: what is booted, what is staged and what finishing it
 /// needs, as the session's system service reads the machine. The pane shows this reading and
 /// acts through the resource's own actions; it reads nothing of the update itself.
 pub use tilo_system_service::update::{Deployment, Update};
-use tilo_system_service::effects::{PowerAction, UpdateAction};
 
 /// The resource the pane follows, and its actions.
 const SYSTEM_UPDATE: &str = tilo_system_service::SYSTEM_UPDATE;

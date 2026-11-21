@@ -22,17 +22,19 @@ use std::time::{Duration, Instant};
 
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr};
+use tilo_actions::remote::environment_commands::Person;
 use tilo_agent_session::workspace_actions::{
     Opened, Opening, Recorder, ShellRan, WorkspaceShell as _,
 };
-use tilo_actions::remote::environment_commands::Person;
 use tilo_server::agents::{HostShells, ShellsAt};
 use tilo_server::machine_agents::MachineAgentsServer;
-use ush::hosted_vm::test_host::TestHost;
 use tilo_server::placed_terminals::TerminalShells;
 use tilo_user_identity::DeviceCapabilities;
 use ush::environment_terminals::quic::{Receiving, Sending, dial};
-use ush::environment_terminals::{ALPN, EnvironmentTerminals, FromTerminal, NOT_HANDED, ToTerminal, wire};
+use ush::environment_terminals::{
+    ALPN, EnvironmentTerminals, FromTerminal, NOT_HANDED, ToTerminal, wire,
+};
+use ush::hosted_vm::test_host::TestHost;
 
 use super::placed_shell::{address_of, member_at, placed, stop};
 use crate::common::{TestUser, device_endpoint};
@@ -91,7 +93,10 @@ impl Recorded {
             if runs.len() >= count {
                 return runs;
             }
-            assert!(Instant::now() < deadline, "{count} runs never recorded: {runs:?}");
+            assert!(
+                Instant::now() < deadline,
+                "{count} runs never recorded: {runs:?}"
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -103,8 +108,14 @@ fn is_run(ran: &ShellRan, command: &str, exit: i32, printed: &str) {
     assert_eq!(ran.exit, exit, "{ran:?}");
     let output = String::from_utf8_lossy(&ran.output);
     assert!(output.contains(printed), "{printed:?} printed: {ran:?}");
-    assert!(!output.contains(command), "the line as typed is no output: {ran:?}");
-    assert!(!ran.cwd.is_empty() && ran.started_ms <= ran.ended_ms, "{ran:?}");
+    assert!(
+        !output.contains(command),
+        "the line as typed is no output: {ran:?}"
+    );
+    assert!(
+        !ran.cwd.is_empty() && ran.started_ms <= ran.ended_ms,
+        "{ran:?}"
+    );
 }
 
 /// Open `workspace`'s session `session` for `device`, coming back to `attach` if named, its
@@ -295,7 +306,10 @@ async fn a_terminal_on_the_vm_host_is_spliced_to_the_device_that_opened_it() {
     let opened = open(&shells, (&workspace, "s1"), devices.opener, None, &recorded)
         .await
         .unwrap();
-    assert!(is_id(&opened.stream) && is_id(&opened.session), "{opened:?}");
+    assert!(
+        is_id(&opened.stream) && is_id(&opened.session),
+        "{opened:?}"
+    );
     let mut screen = the_opener_alone_types_into_it(&streams, &devices, &opened).await;
     is_run(&recorded.once(1).await[0], TYPED, 0, "hello");
 
@@ -307,22 +321,45 @@ async fn a_terminal_on_the_vm_host_is_spliced_to_the_device_that_opened_it() {
         drop(screen);
     })
     .await;
-    is_run(&recorded.once(2).await[1], "sleep 1; echo lat\"\"er", 0, "later");
+    is_run(
+        &recorded.once(2).await[1],
+        "sleep 1; echo lat\"\"er",
+        0,
+        "later",
+    );
     assert!(
-        open(&shells, (&workspace, "s2"), devices.opener, Some(&opened.session), &again)
-            .await
-            .is_err(),
+        open(
+            &shells,
+            (&workspace, "s2"),
+            devices.opener,
+            Some(&opened.session),
+            &again
+        )
+        .await
+        .is_err(),
         "a session's id takes no other session back"
     );
-    let back = open(&shells, (&workspace, "s1"), devices.opener, Some(&opened.session), &again)
-        .await
-        .unwrap();
+    let back = open(
+        &shells,
+        (&workspace, "s1"),
+        devices.opener,
+        Some(&opened.session),
+        &again,
+    )
+    .await
+    .unwrap();
     assert_eq!(back.session, opened.session);
-    assert_ne!(back.stream, opened.stream, "each open hands a stream of its own");
+    assert_ne!(
+        back.stream, opened.stream,
+        "each open hands a stream of its own"
+    );
     let (opening, address) = (devices.opening.clone(), streams.address.clone());
     let ended = within(move || {
         let (mut screen, welcome) = Screen::take(&opening, &address, &back.stream);
-        assert!(matches!(welcome, wire::Welcome::Opened { .. }), "{welcome:?}");
+        assert!(
+            matches!(welcome, wire::Welcome::Opened { .. }),
+            "{welcome:?}"
+        );
         screen.type_now("echo \"at:$PWD\"\r");
         screen.until("at:");
         screen.until("/sub");
@@ -330,7 +367,11 @@ async fn a_terminal_on_the_vm_host_is_spliced_to_the_device_that_opened_it() {
         screen.ending()
     })
     .await;
-    assert_eq!(ended, Some(FromTerminal::Exited(5)), "the shell's exit ends the stream");
+    assert_eq!(
+        ended,
+        Some(FromTerminal::Exited(5)),
+        "the shell's exit ends the stream"
+    );
     let runs = recorded.once(3).await;
     is_run(&runs[2], "echo \"at:$PWD\"", 0, "/sub");
     assert!(runs[2].cwd.ends_with("/sub"), "{runs:?}");
@@ -341,9 +382,15 @@ async fn a_terminal_on_the_vm_host_is_spliced_to_the_device_that_opened_it() {
 
     // Its shell exited: there is no session to come back to.
     let deadline = Instant::now().checked_add(PATIENCE).unwrap();
-    while open(&shells, (&workspace, "s1"), devices.opener, Some(&opened.session), &again)
-        .await
-        .is_ok()
+    while open(
+        &shells,
+        (&workspace, "s1"),
+        devices.opener,
+        Some(&opened.session),
+        &again,
+    )
+    .await
+    .is_ok()
     {
         assert!(Instant::now() < deadline, "the ended session is still kept");
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -404,8 +451,16 @@ async fn a_terminal_on_the_host_itself_is_the_device_that_opened_it() {
 
     let runs = recorded.once(3).await;
     is_run(&runs[0], TYPED, 0, "hello");
-    assert_eq!((runs[1].command.as_str(), runs[1].exit), ("git status", 0), "{runs:?}");
-    assert_eq!((runs[2].command.as_str(), runs[2].exit), ("false", 1), "{runs:?}");
+    assert_eq!(
+        (runs[1].command.as_str(), runs[1].exit),
+        ("git status", 0),
+        "{runs:?}"
+    );
+    assert_eq!(
+        (runs[2].command.as_str(), runs[2].exit),
+        ("false", 1),
+        "{runs:?}"
+    );
     assert!(runs[2].cwd.ends_with("/sub"), "{runs:?}");
     assert_eq!(runs.len(), 3, "each run once; `exit` is no run: {runs:?}");
 }

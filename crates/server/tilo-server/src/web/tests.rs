@@ -7,9 +7,9 @@ use super::*;
 use crate::ServerConfig;
 use crate::peer::FetchGrants as _;
 use ed25519_dalek::SigningKey;
+use std::sync::Arc;
 use tilo_peer_state::join::Role;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
-use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 fn device(

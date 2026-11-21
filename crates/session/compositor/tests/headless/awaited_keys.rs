@@ -72,7 +72,10 @@ fn a_chord_typed_before_the_window_shows_reaches_it_once_it_does() {
     // The window has drawn nothing yet: the person's Ctrl+N waits for it.
     ctrl_n(&mut compositor);
     pump(&mut compositor, &mut [&mut client], |_, _| true);
-    assert!(client.seen.keys.is_empty(), "no key reaches a window not shown");
+    assert!(
+        client.seen.keys.is_empty(),
+        "no key reaches a window not shown"
+    );
 
     client.show(200, 100, [0, 255, 0, 255]);
     pump(&mut compositor, &mut [&mut client], |_, clients| {
@@ -122,7 +125,10 @@ fn keys_that_waited_for_a_launch_that_gave_up_go_where_keys_go() {
     key(&mut compositor, KEY_N, true);
     key(&mut compositor, KEY_N, false);
     pump(&mut compositor, &mut [&mut client], |_, _| true);
-    assert!(client.seen.keys.is_empty(), "the key waits for the window on its way");
+    assert!(
+        client.seen.keys.is_empty(),
+        "the key waits for the window on its way"
+    );
 
     // The launch gave up: the key goes on to what has the keyboard.
     waits.set(false);

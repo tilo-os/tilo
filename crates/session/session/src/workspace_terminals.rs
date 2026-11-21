@@ -168,9 +168,10 @@ async fn settled(
         .checked_add(OPEN_WITHIN)
         .unwrap_or_else(tilo_clock::now);
     loop {
-        let state = tilo_actions::remote::settle_with(&host.actions, caller, invocation, None, until)
-            .await
-            .flatten();
+        let state =
+            tilo_actions::remote::settle_with(&host.actions, caller, invocation, None, until)
+                .await
+                .flatten();
         match state.map(|state| state.update) {
             Some(InvocationUpdate::Succeeded { output, .. }) => return Ok(output),
             Some(InvocationUpdate::Failed { error, .. }) => return Err(error.message),

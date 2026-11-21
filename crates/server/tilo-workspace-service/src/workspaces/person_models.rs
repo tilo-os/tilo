@@ -39,11 +39,11 @@ use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 use super::person_model::Models;
-use super::workspace_stores::Store;
 use super::person_settings::{
     ProviderKeys, add_provider, answer, argument, provider_argument, provider_config, providers,
     remove_key, remove_provider, save_provider_config, set_assignment, set_key, view_of,
 };
+use super::workspace_stores::Store;
 
 /// The most of a provider's list of models read.
 const MAX_MODEL_LIST_BYTES: usize = 2 * 1024 * 1024;
@@ -107,13 +107,11 @@ impl Workspaces {
                             Err(error) => return Some(Err(error)),
                         }
                     };
-                Some(
-                    answer(
-                        &self
-                            .begin_openai_sign_in((person, here), beginning, reach.clone())
-                            .await,
-                    ),
-                )
+                Some(answer(
+                    &self
+                        .begin_openai_sign_in((person, here), beginning, reach.clone())
+                        .await,
+                ))
             }
             person_models::WAIT_SIGN_IN => {
                 let waiting: WaitSignIn = match argument(request, "a sign-in to wait for") {

@@ -759,10 +759,7 @@ impl Server {
         let terminal_shells = crate::placed_terminals::TerminalShells::default();
         #[cfg(feature = "agents")]
         {
-            router = router.accept(
-                ush::environment_terminals::ALPN,
-                terminal_shells.route(),
-            );
+            router = router.accept(ush::environment_terminals::ALPN, terminal_shells.route());
         }
         #[cfg(feature = "web")]
         if let Some(origin) = live_origin.as_ref() {

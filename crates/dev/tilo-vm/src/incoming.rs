@@ -47,7 +47,8 @@ fn invalid(message: impl Into<String>) -> CliError {
 /// The SHA-256 of a layer archive's exact bytes, which `import-layer` checks
 /// before it contacts the daemon.
 pub fn archive_sha256(path: &Path) -> Result<String, CliError> {
-    let mut file = std::fs::File::open(path).map_err(CliError::io(format!("open {}", path.display())))?;
+    let mut file =
+        std::fs::File::open(path).map_err(CliError::io(format!("open {}", path.display())))?;
     let mut hash = Sha256::new();
     let mut buffer = vec![0_u8; 64 << 10];
     loop {
@@ -116,13 +117,18 @@ pub fn entries(dir: &Path, manifest_path: &Path) -> Result<Vec<Entry>, CliError>
             )));
         }
         if let Some(component) = name.strip_suffix(".tar") {
-            if component.is_empty() || archives.insert(component.to_owned(), entry.path()).is_some()
+            if component.is_empty()
+                || archives
+                    .insert(component.to_owned(), entry.path())
+                    .is_some()
             {
                 return Err(invalid(format!("duplicate or empty layer name {name}")));
             }
         } else if let Some(component) = name.strip_suffix(".json") {
             if component.is_empty() || !provenances.insert(component.to_owned()) {
-                return Err(invalid(format!("duplicate or empty provenance name {name}")));
+                return Err(invalid(format!(
+                    "duplicate or empty provenance name {name}"
+                )));
             }
         } else {
             return Err(invalid(format!(
@@ -196,10 +202,8 @@ pub fn entries(dir: &Path, manifest_path: &Path) -> Result<Vec<Entry>, CliError>
 /// import it twice. A failure here is loud: the boot unit reports it.
 pub fn remove_applied(entry: &Entry) -> Result<(), CliError> {
     for path in [&entry.archive, &entry.provenance] {
-        std::fs::remove_file(path).map_err(CliError::io(format!(
-            "remove applied {}",
-            path.display()
-        )))?;
+        std::fs::remove_file(path)
+            .map_err(CliError::io(format!("remove applied {}", path.display())))?;
     }
     Ok(())
 }
@@ -234,7 +238,11 @@ mod tests {
         let manifest_path = dir.path().join("components.toml");
         // Alpha sorts first but is declared second: order comes from the
         // manifest, not from the directory listing.
-        std::fs::write(&manifest_path, manifest(&[("zulu", "session"), ("alpha", "vm")])).unwrap();
+        std::fs::write(
+            &manifest_path,
+            manifest(&[("zulu", "session"), ("alpha", "vm")]),
+        )
+        .unwrap();
         plant(&incoming, "alpha");
         plant(&incoming, "zulu");
         let planned = entries(&incoming, &manifest_path).unwrap();
@@ -248,7 +256,10 @@ mod tests {
 
         std::fs::remove_file(incoming.join("zulu.json")).unwrap();
         let error = entries(&incoming, &manifest_path).unwrap_err();
-        assert!(error.to_string().contains("zulu.tar has no zulu.json"), "{error}");
+        assert!(
+            error.to_string().contains("zulu.tar has no zulu.json"),
+            "{error}"
+        );
 
         std::fs::write(incoming.join("zulu.json"), b"{}").unwrap();
         std::fs::write(incoming.join("stray.txt"), b"x").unwrap();
@@ -259,7 +270,10 @@ mod tests {
         std::fs::write(incoming.join("ghost.tar"), b"tar").unwrap();
         std::fs::write(incoming.join("ghost.json"), b"{}").unwrap();
         let error = entries(&incoming, &manifest_path).unwrap_err();
-        assert!(error.to_string().contains("ghost.tar names a component"), "{error}");
+        assert!(
+            error.to_string().contains("ghost.tar names a component"),
+            "{error}"
+        );
     }
 
     #[test]

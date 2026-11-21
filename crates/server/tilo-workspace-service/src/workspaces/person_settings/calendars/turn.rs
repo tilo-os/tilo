@@ -33,8 +33,8 @@ use super::{
     entries, free, off_thread, view,
 };
 use crate::workspaces::Workspaces;
-use crate::workspaces::workspace_stores::Store;
 use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
+use crate::workspaces::workspace_stores::Store;
 
 /// What a turn asks of its person's calendars: the reads, and nothing that
 /// writes to a calendar server.

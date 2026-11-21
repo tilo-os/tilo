@@ -70,7 +70,6 @@ impl AsksPeople for Asked {
     }
 }
 
-
 /// `target` asked by `caller`, on the device `device` certifies, in the
 /// workspace `workspace_id` carries.
 pub(super) async fn ask_at(
@@ -214,7 +213,10 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
         .unwrap();
         assert_eq!(theirs["items"], json!([kept]), "{who}");
         let said = theirs.to_string();
-        assert!(!said.contains(PASSWORD) && !said.contains(NAME), "{who}: {said}");
+        assert!(
+            !said.contains(PASSWORD) && !said.contains(NAME),
+            "{who}: {said}"
+        );
     }
 
     // A member of another workspace, and a person in none of them, are
@@ -361,14 +363,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
             json!({"id": "an-entry-of-hers"}),
         ),
     ] {
-        let refused = ask(
-            &service,
-            workspace_id,
-            (&ada, &agent),
-            action,
-            argument,
-        )
-        .await;
+        let refused = ask(&service, workspace_id, (&ada, &agent), action, argument).await;
         assert!(
             matches!(refused, Err(ActionCallError::ConfirmationRequired { .. })),
             "{action}: {refused:?}"
@@ -970,11 +965,7 @@ async fn a_members_agent_uses_the_workspaces_vault_only_by_reference() {
     let person = hex::encode(ada.user_public_key);
 
     for (other, target, key) in [
-        (
-            Caller::local_bot("a-bot"),
-            from_item.clone(),
-            right.clone(),
-        ),
+        (Caller::local_bot("a-bot"), from_item.clone(), right.clone()),
         (
             Caller::local_app("so.tilo.chat").acting_for(person.clone()),
             from_item.clone(),
@@ -1286,7 +1277,9 @@ async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_i
             let more = a_login(&format!("https://{kept}.example.test"));
             ask(&actions, workspace_id, hers, person_vault::ADD, more)
                 .await
-                .unwrap_or_else(|error| panic!("{start} kept nothing more in the vault: {error:?}"));
+                .unwrap_or_else(|error| {
+                    panic!("{start} kept nothing more in the vault: {error:?}")
+                });
             server.shutdown().await;
         }
     }

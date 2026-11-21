@@ -135,11 +135,7 @@ impl Workspaces {
     /// reach.
     pub(super) async fn reaching(
         &self,
-        (workspace_id, caller, certificate): (
-            Option<WorkspaceId>,
-            &Caller,
-            Option<&DeviceCert>,
-        ),
+        (workspace_id, caller, certificate): (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
         store: Store,
         action: &str,
         effect: ActionKind,
@@ -191,7 +187,9 @@ impl Workspaces {
             verdict.parts.last().map_or(verdict.answer, |agent| {
                 verdict
                     .answer
-                    .min(tilo_action_policy::agent_answers::held_to_contract(agent, true))
+                    .min(tilo_action_policy::agent_answers::held_to_contract(
+                        agent, true,
+                    ))
             })
         } else {
             verdict.answer
@@ -366,12 +364,16 @@ fn person_of(folder: &Path) -> Option<[u8; 32]> {
 
 /// Whether the person's folder `from` keeps anything a workspace keeps now.
 fn holds_a_store(from: &Path) -> bool {
-    std::fs::read_dir(from).into_iter().flatten().flatten().any(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| !PERSON_OWN.contains(&name))
-    })
+    std::fs::read_dir(from)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| !PERSON_OWN.contains(&name))
+        })
 }
 
 /// The own workspaces this host's index names for each person (hex root),
@@ -404,8 +406,7 @@ fn move_store(from: &Path, to: &Path, workspace: &str) -> Result<(), String> {
     let learned = Path::new(LEARNED).join(format!("{workspace}.automerge"));
     if from.join(&learned).exists() && !to.join(&learned).exists() {
         std::fs::create_dir_all(to.join(LEARNED)).map_err(|error| error.to_string())?;
-        std::fs::copy(from.join(&learned), to.join(&learned))
-            .map_err(|error| error.to_string())?;
+        std::fs::copy(from.join(&learned), to.join(&learned)).map_err(|error| error.to_string())?;
     }
     if vault.join("vault.enc").exists() {
         accounts::SecretVault::reseal_into(from, to)?;

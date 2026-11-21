@@ -27,13 +27,12 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use tilo_account_probe::AccountTester;
 use tilo_actions::remote::person_accounts::{
-    ArrivedAfter, FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail,
-    SearchMail,
-};
-use tilo_actions::remote::person_accounts::{
     AddMailAccount, BeginSend, MAX_SEND_FILE_BYTES, MAX_SEND_FILES, MAX_SEND_PIECE_BYTES,
     MAX_SEND_TOTAL_BYTES, MailAccount, MailAccounts, PieceKept, SendFile, SendId, SendPiece,
     SentMail, StartedSend,
+};
+use tilo_actions::remote::person_accounts::{
+    ArrivedAfter, FetchMail, FetchedMail, FetchedMessage, FoundMail, MarkMail, ReadMail, SearchMail,
 };
 // A message as text is read for sending in one place, `Leaving::read`; only
 // this file's tests still name one.
@@ -411,7 +410,9 @@ impl Workspaces {
             }
             person_accounts::ARRIVED => {
                 let asking = arrived_argument(request)?;
-                answer(&Ok::<_, String>(self.arrived_after(workspace, asking.after)))
+                answer(&Ok::<_, String>(
+                    self.arrived_after(workspace, asking.after),
+                ))
             }
             person_accounts::BEGIN_SEND => {
                 let beginning: BeginSend = argument(request, "a message to begin")?;
@@ -420,12 +421,20 @@ impl Workspaces {
             }
             person_accounts::SEND_PIECE => {
                 let piece: SendPiece = argument(request, "a piece of a message's file")?;
-                may_use(root, agent, &begun_for(root, &piece.send)?.1.message.account)?;
+                may_use(
+                    root,
+                    agent,
+                    &begun_for(root, &piece.send)?.1.message.account,
+                )?;
                 answer(&send_piece(root, &piece))
             }
             person_accounts::SAVE_DRAFT => {
                 let keeping: SendId = argument(request, "a draft to keep")?;
-                may_use(root, agent, &begun_for(root, &keeping.send)?.1.message.account)?;
+                may_use(
+                    root,
+                    agent,
+                    &begun_for(root, &keeping.send)?.1.message.account,
+                )?;
                 answer(&save_staged_draft_with(self.mail_session(), root, keeping).await)
             }
             _ => Err(ActionCallError::UnknownAction),

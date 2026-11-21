@@ -504,7 +504,11 @@ async fn read_list(hosted: &Inner, host: &ServerAddress, on: &(String, Workspace
         })
         .collect();
     if !gone.is_empty() {
-        tracing::info!(host = host.device.label(), ?gone, "a host no longer lists workspaces of the person's held here");
+        tracing::info!(
+            host = host.device.label(),
+            ?gone,
+            "a host no longer lists workspaces of the person's held here"
+        );
         hosted.dropped.lock_recover().extend(gone);
         kept = true;
     }

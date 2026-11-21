@@ -131,10 +131,9 @@ pub(super) async fn refound(workspaces: &Workspaces) -> Result<bool, String> {
     if !found_again(workspaces, &kept, &own, &admin).await? {
         return Ok(false);
     }
-    let mut carried: Carried = postcard::from_bytes(
-        &std::fs::read(&kept).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
+    let mut carried: Carried =
+        postcard::from_bytes(&std::fs::read(&kept).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
     if !holds_admin(workspaces).await {
         workspaces
             .create_workspace(ADMIN_WORKSPACE_NAME, Some(&admin))

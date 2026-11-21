@@ -64,9 +64,9 @@ use super::{
 };
 use crate::connections::wire::{Destinations, Lookup, check_destination, is_public, system_lookup};
 use crate::workspaces::Workspaces;
+use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
 use crate::workspaces::person_asking::workspace_store_root;
 use crate::workspaces::workspace_stores::Store;
-use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
 
 /// Where a workspace's connections that wait for a person's password are
 /// kept, under its store.
@@ -682,7 +682,9 @@ impl Workspaces {
     ) -> Result<Option<Connected>, String> {
         let root = self.workspace_root(&claimed.workspace);
         let item = typed.and_then(ItemRef::parse);
-        let own = item.as_ref().and_then(|item| typed_for(&root, item, claimed));
+        let own = item
+            .as_ref()
+            .and_then(|item| typed_for(&root, item, claimed));
         let carried = match typed {
             None => Ok(None),
             Some(_) => self.connect(turn, claimed, &root, item).await.map(Some),

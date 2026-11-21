@@ -359,12 +359,7 @@ impl Restore {
     /// The window a launch of `saved`'s app started takes the tab its window was left in, rather
     /// than a second window being asked for: the person opened the app before this session read
     /// the layout. Whether the saved tab waits for that window now.
-    fn take_over_launch(
-        &mut self,
-        desktop: &ShellDesktop,
-        apps: &Apps,
-        saved: &Saved,
-    ) -> bool {
+    fn take_over_launch(&mut self, desktop: &ShellDesktop, apps: &Apps, saved: &Saved) -> bool {
         let launched = desktop.with_policy(|policy| policy.launch_tab_of(&saved.app));
         let theirs = launched.filter(|tab| {
             *tab != saved.tab

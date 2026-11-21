@@ -552,7 +552,11 @@ pub struct Link {
 /// has not.
 #[derive(Clone, Default)]
 pub struct Held(
-    Arc<std::sync::Mutex<std::collections::BTreeMap<DocumentRoute, Vec<collab_types::DocumentMutation>>>>,
+    Arc<
+        std::sync::Mutex<
+            std::collections::BTreeMap<DocumentRoute, Vec<collab_types::DocumentMutation>>,
+        >,
+    >,
 );
 
 impl Held {

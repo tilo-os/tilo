@@ -1046,7 +1046,11 @@ mod cases {
             &me(),
             (
                 id.as_str(),
-                vec![Value::resource(&n.nb), Value::text("Errands"), Value::text("Bread")],
+                vec![
+                    Value::resource(&n.nb),
+                    Value::text("Errands"),
+                    Value::text("Bread"),
+                ],
             ),
         );
         let why = format!("{refused:?}");
@@ -1077,7 +1081,10 @@ mod cases {
         assert_eq!(n.said_of(&plan, "title"), "Q3 plan");
         assert_eq!(n.said_of(&plan, "by"), "Ada");
         assert_eq!(n.said_of(&plan, "service"), "Outline");
-        assert_eq!(n.said_of(&plan, "page"), "https://outline.example/doc/q3-plan");
+        assert_eq!(
+            n.said_of(&plan, "page"),
+            "https://outline.example/doc/q3-plan"
+        );
         assert_eq!(n.said_of(&plan, "created"), "2025-08-01T10:00:00Z");
         assert_eq!(n.said_of(&plan, "updated"), "2025-09-01T10:00:00Z");
         assert_eq!(n.said_of(&plan, "origin"), "Q3 plan.md");

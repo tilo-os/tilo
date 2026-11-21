@@ -60,7 +60,13 @@ impl super::InWorkspace {
                     tilo_action_policy::ActionKind::Read,
                 )
                 .await?;
-            host.ask_model(&workspaces, &caller, certificate.as_ref(), workspace_id, &request)
+            host.ask_model(
+                &workspaces,
+                &caller,
+                certificate.as_ref(),
+                workspace_id,
+                &request,
+            )
         })
     }
 }

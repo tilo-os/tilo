@@ -120,7 +120,11 @@ fn a_host_that_keeps_pictures_gets_the_picture_at_the_caret() {
         editor.set_image_inserter(Some(Box::new(kept)));
         let mut doc = AutoCommit::new();
         assert!(ctrl_v(&mut editor, &mut doc));
-        let texts: Vec<String> = editor.blocks().iter().map(|b| b.text().to_owned()).collect();
+        let texts: Vec<String> = editor
+            .blocks()
+            .iter()
+            .map(|b| b.text().to_owned())
+            .collect();
         assert_eq!(
             texts,
             vec![
@@ -153,7 +157,11 @@ fn a_host_that_keeps_pictures_gets_the_picture_at_the_caret() {
         );
         editor.sync(&doc, &ROOT);
         assert!(handled, "the editor took the drop the keyboard was in");
-        let texts: Vec<String> = editor.blocks().iter().map(|b| b.text().to_owned()).collect();
+        let texts: Vec<String> = editor
+            .blocks()
+            .iter()
+            .map(|b| b.text().to_owned())
+            .collect();
         assert_eq!(
             texts,
             vec!["caption".to_owned(), "![](tilo-blob://dropped)".to_owned()],

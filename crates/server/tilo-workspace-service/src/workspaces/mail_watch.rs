@@ -956,7 +956,8 @@ mod tests {
         assert_eq!(workspaces.mail_arrivals(ADA, 0).arrivals.len(), 2);
         assert_eq!(
             workspaces
-                .mail_arrivals(ADA, 1).arrivals
+                .mail_arrivals(ADA, 1)
+                .arrivals
                 .iter()
                 .map(|arrival| arrival.seq)
                 .collect::<Vec<_>>(),

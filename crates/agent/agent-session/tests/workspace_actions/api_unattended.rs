@@ -589,8 +589,7 @@ async fn terminal_open_is_asked_once() {
     // The server serves the stream to the key's device alone.
     let (grace, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
     let phone = enrol(&grace, "phone", DeviceCapabilities::member());
-    let endpoint =
-        test_server::endpoint(iroh::SecretKey::from_bytes(&phone.key.to_bytes())).await;
+    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&phone.key.to_bytes())).await;
     let server = on_server.hosted.server.node_addr();
     let stream = opened["result"]["stream"].as_str().unwrap().to_owned();
     let welcome = beside(

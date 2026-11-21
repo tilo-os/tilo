@@ -482,7 +482,10 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
     assert_eq!(personal.seed(), Some(seed), "it waits for the host's list");
     personal.publish_local(&session);
     let listed: Vec<String> = personal
-        .readable(&std::collections::BTreeMap::new(), &std::collections::BTreeMap::new())
+        .readable(
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        )
         .workspaces
         .into_iter()
         .map(|entry| entry.workspace)
@@ -505,7 +508,10 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
     );
     personal.publish_local(&session);
     let listed: Vec<String> = personal
-        .readable(&std::collections::BTreeMap::new(), &std::collections::BTreeMap::new())
+        .readable(
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        )
         .workspaces
         .into_iter()
         .map(|entry| entry.workspace)
@@ -539,7 +545,10 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
     assert!(new.made_here(first), "and is founded here, as theirs");
     new.publish_local(&alone);
     let listed: Vec<String> = new
-        .readable(&std::collections::BTreeMap::new(), &std::collections::BTreeMap::new())
+        .readable(
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        )
         .workspaces
         .into_iter()
         .map(|entry| entry.workspace)

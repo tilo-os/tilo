@@ -497,7 +497,15 @@ async fn only_the_server_makes_the_member_enter_a_workspace() {
     // The server's own run is what enters it.
     let (shells, asked) = (Arc::clone(&placed.shells), later.clone());
     let ran = tokio::task::spawn_blocking(move || {
-        shells.run(&asked, "run:1", "pwd", true, None, Vec::new(), Watching::default())
+        shells.run(
+            &asked,
+            "run:1",
+            "pwd",
+            true,
+            None,
+            Vec::new(),
+            Watching::default(),
+        )
     })
     .await
     .unwrap()

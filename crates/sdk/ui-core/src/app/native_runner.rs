@@ -5301,7 +5301,9 @@ impl App {
         };
         tilo_startup_metrics::mark("run-host-appearance-started");
         // What was typed in the window that held this app's place waits for this app's content.
-        self.take_over_held_input(HANDED_INPUT.with(|slot| std::mem::take(&mut *slot.borrow_mut())));
+        self.take_over_held_input(
+            HANDED_INPUT.with(|slot| std::mem::take(&mut *slot.borrow_mut())),
+        );
 
         AppHandler {
             app: self,

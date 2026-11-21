@@ -31,9 +31,6 @@ pub mod app_serving;
 /// The apps this device serves, on the devices that have any.
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub mod apps;
-/// How a device opens its own workspace service and the key service beside it.
-#[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
-pub mod own_device;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod attach;
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,6 +38,9 @@ pub mod attach;
 pub mod authority_epoch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compaction;
+/// How a device opens its own workspace service and the key service beside it.
+#[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
+pub mod own_device;
 // The services a person connected by their address: a server calls out
 // for them, which a page cannot.
 #[cfg(not(target_arch = "wasm32"))]

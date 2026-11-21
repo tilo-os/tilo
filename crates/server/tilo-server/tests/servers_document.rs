@@ -70,8 +70,8 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     let nonce = hex::encode([0x5a_u8; 16]);
     let plan = plan_holding(&workspace.workspace, &nonce);
     servers::apply(workspaces, Servers::PLAN_MACHINE.with((plan, "nas".into())))
-    .await
-    .unwrap();
+        .await
+        .unwrap();
     let retained = || async {
         server
             .host
@@ -676,22 +676,25 @@ async fn a_servers_workspace_founded_in_its_persons_name_is_founded_again_under_
         assert_eq!(founder(hosted, &admin).await, Some(alice.user_pk));
     }
 
-    tilo_test_env::within("both copies to be one founding of the first holder", async {
-        loop {
-            let mut founders = Vec::new();
-            let mut named = Vec::new();
-            for hosted in [&one, &other] {
-                founders.push(founder(hosted, &admin).await);
-                named.push(named_servers(hosted).await);
+    tilo_test_env::within(
+        "both copies to be one founding of the first holder",
+        async {
+            loop {
+                let mut founders = Vec::new();
+                let mut named = Vec::new();
+                for hosted in [&one, &other] {
+                    founders.push(founder(hosted, &admin).await);
+                    named.push(named_servers(hosted).await);
+                }
+                if founders == [Some(first), Some(first)]
+                    && named.iter().all(|named| named == &["desktop", "laptop"])
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
-            if founders == [Some(first), Some(first)]
-                && named.iter().all(|named| named == &["desktop", "laptop"])
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
+        },
+    )
     .await;
     for hosted in [&one, &other] {
         assert!(

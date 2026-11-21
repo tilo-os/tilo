@@ -354,9 +354,7 @@ impl Terminal {
         requests: &mut Outbox<CommandRequest, CommandAnswer>,
         #[param("The window's width, in columns")] cols: Option<u16>,
         #[param("The window's height, in rows")] rows: Option<u16>,
-        #[param("The session to come back to, by the id an open answered")] attach: Option<
-            String,
-        >,
+        #[param("The session to come back to, by the id an open answered")] attach: Option<String>,
     ) -> Result<(), Refusal> {
         let _ = (requests, cols, rows, attach);
         Err(Refusal::new(
