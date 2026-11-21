@@ -332,6 +332,22 @@ files = [
   { link = "../libexec/tilo/tilo-app-package", to = "/usr/bin/tilo-app-package" },
 ]
 
+# The app language's compiler: `tilolang build` turns a package into the signed
+# tapp a device installs, exactly as the image's own packing does, so a person or
+# an agent writes an app on the device it runs on. Only an image whose app set
+# names a tilolang package builds it (os/image/compile.sh), and the entry is
+# optional for the same reason.
+[[component]]
+name = "tilolang"
+kind = "userspace"
+scope = "session"
+packages = ["tilolang-cli"]
+bins = ["tilolang"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilolang", to = "/usr/bin/tilolang", mode = "0755", optional = true },
+]
+
 [[component]]
 name = "app-cli"
 kind = "userspace"
