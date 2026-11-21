@@ -118,6 +118,60 @@ fn the_workspace_mailbox_starts_private_and_an_explicit_grant_opens_it() {
 }
 
 #[test]
+fn the_workspace_mailbox_and_vault_are_their_keepers_as_an_owners() {
+    // A host is the structural owner of a workspace it keeps for someone; the person it keeps
+    // it for is an Editor in its governance, and its private records are theirs all the same.
+    let mut grants = roles::workspace_role_grants("r", &Grantee::person(CAROL));
+    grants.push(roles::keeper_grant("r", ALICE, Grantee::person(CAROL)));
+    let keeper = [alice(), Grantee::role(Role::Editor)];
+    let editor = [Grantee::person(BOB), Grantee::role(Role::Editor)];
+    let app = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
+    for node in [
+        app.clone().resource(""),
+        app.clone().kind("mail.mailbox").resource(""),
+        app.clone()
+            .kind("mail.copies")
+            .resource(roles::WORKSPACE_MAIL_COPIES_DOCUMENT),
+        TreePath::workspace("r")
+            .app(tilo_app_id::apps::PASSWORDS)
+            .resource(roles::WORKSPACE_VAULT_DOCUMENT),
+    ] {
+        for kind in [ActionKind::Read, ActionKind::Undoable] {
+            assert_eq!(
+                decide(&grants, &keeper, &node, kind, &cx()).answer,
+                Answer::Allow,
+                "{node} {kind:?}"
+            );
+            assert_eq!(
+                decide(&grants, &editor, &node, kind, &cx()).answer,
+                Answer::Deny,
+                "another Editor: {node} {kind:?}"
+            );
+        }
+        // An outside effect asks them, as their role asks it everywhere.
+        assert_eq!(
+            decide(&grants, &keeper, &node, ActionKind::Outside, &cx()).answer,
+            Answer::Ask
+        );
+    }
+    // A keeper grant taken back, or given to someone else, opens nothing.
+    let mut taken = grants.clone();
+    taken.retain(|grant| grant.id != roles::keeper_grant_id(ALICE));
+    let mailbox = app.resource("");
+    assert_eq!(
+        decide(&taken, &keeper, &mailbox, ActionKind::Read, &cx()).answer,
+        Answer::Deny
+    );
+    let mut misnamed = roles::keeper_grant("r", ALICE, Grantee::person(CAROL));
+    misnamed.grantee = Grantee::person(BOB);
+    taken.push(misnamed);
+    assert_eq!(
+        decide(&taken, &editor, &mailbox, ActionKind::Read, &cx()).answer,
+        Answer::Deny
+    );
+}
+
+#[test]
 fn changing_workspace_mail_requires_a_write_grant() {
     let app = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
     let editors = [Grantee::role(Role::Editor)];

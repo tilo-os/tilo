@@ -54,36 +54,51 @@ pub fn decide<'g>(
     kind: ActionKind,
     cx: &Context<'_>,
 ) -> Decision<'g> {
-    let mut best: Option<&'g Grant> = None;
     let governs = node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND);
-    // A private destination can only inherit a grant explicitly scoped to its app.
-    let requires_app_grant = node
+    // A private destination (the workspace's mailbox, its vault) inherits only a grant scoped to
+    // its app, except for whom it is the workspace's own: its owner, and the person a host keeps
+    // the workspace for, who owns it while the host is its structural owner
+    // ([`crate::roles::keeper_grant`]). Which of the two answers holds is known once every
+    // grant is read, so both are kept as the grants are.
+    let private = node
         .id_at(Level::App)
         .zip(node.id_at(Level::Resource))
         .is_some_and(|(app, document)| crate::roles::requires_document_keys(app, document))
         && !grantees.contains(&Grantee::role(crate::Role::Owner));
+    let mut kept_for = false;
+    let mut best: Option<&'g Grant> = None;
+    let mut best_scoped: Option<&'g Grant> = None;
     for grant in grants {
-        if (requires_app_grant && grant.node.id_at(Level::App).is_none())
-            || !grant.kinds.contains(kind)
-            || !names(grant, grantees, cx)
-            || !cx.covers(&grant.node, node)
-            || !grant.is_live(cx)
-        {
+        if !names(grant, grantees, cx) || !grant.is_live(cx) {
             continue;
         }
-        let better = best.is_none_or(|held| {
-            grant.node.cmp_specificity(&held.node).then_with(|| {
-                if governs {
-                    held.answer.cmp(&grant.answer)
-                } else {
-                    compare_content_rules(grant, held)
-                }
-            }) == Ordering::Greater
-        });
-        if better {
+        kept_for |= private && is_keeper_grant(grant);
+        if !grant.kinds.contains(kind) || !cx.covers(&grant.node, node) {
+            continue;
+        }
+        let better = |held: Option<&'g Grant>| {
+            held.is_none_or(|held| {
+                grant.node.cmp_specificity(&held.node).then_with(|| {
+                    if governs {
+                        held.answer.cmp(&grant.answer)
+                    } else {
+                        compare_content_rules(grant, held)
+                    }
+                }) == Ordering::Greater
+            })
+        };
+        if better(best) {
             best = Some(grant);
         }
+        if private && grant.node.id_at(Level::App).is_some() && better(best_scoped) {
+            best_scoped = Some(grant);
+        }
     }
+    let best = if private && !kept_for {
+        best_scoped
+    } else {
+        best
+    };
     best.map_or(
         Decision {
             answer: Answer::Deny,
@@ -94,6 +109,14 @@ pub fn decide<'g>(
             basis: Basis::Grant(grant),
         },
     )
+}
+
+/// Whether `grant` names its person as whom the workspace is kept for
+/// ([`crate::roles::keeper_grant`]).
+fn is_keeper_grant(grant: &Grant) -> bool {
+    crate::roles::keeper_named(&grant.id)
+        .is_some_and(|person| grant.grantee.person_id() == Some(person))
+        && grant.answer == Answer::Allow
 }
 
 fn compare_content_rules(candidate: &Grant, current: &Grant) -> Ordering {
