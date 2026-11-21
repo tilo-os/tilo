@@ -127,9 +127,9 @@ pub(crate) fn development_layers(dir: &Path) -> Result<Vec<DevelopmentLayer>, St
         });
         if total > MAX_DEVELOPMENT_LAYER_BYTES {
             return Err(format!(
-                "{} holds more than {} GiB of development layers",
+                "{} holds more than {} of development layers",
                 dir.display(),
-                MAX_DEVELOPMENT_LAYER_BYTES >> 30
+                ui::format::size(MAX_DEVELOPMENT_LAYER_BYTES)
             ));
         }
     }

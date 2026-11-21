@@ -44,7 +44,11 @@ pub(crate) fn open(stream: UnixStream, request: Request, hosting: Option<HostedW
 
 fn serve(mut stream: UnixStream, request: &Request, hosting: Option<&HostedWorkspaces>) {
     let Some(host) = hosting.and_then(|hosting| hosting.terminal_host(&request.workspace)) else {
-        let _ = stream.write_all(&Reply::Local.line());
+        // The asker may have gone; its terminal answer then has nowhere to land.
+        tilo_failure::ignored!(
+            "the asker of a workspace's terminal has gone before its answer",
+            stream.write_all(&Reply::Local.line())
+        );
         return;
     };
     if stream.write_all(&Reply::Hosted.line()).is_err() {
@@ -70,7 +74,10 @@ fn serve(mut stream: UnixStream, request: &Request, hosting: Option<&HostedWorks
         Ok(opened) => opened,
         Err(reason) => {
             tracing::info!(workspace = %request.workspace, %reason, "a workspace's terminal did not open");
-            let _ = stream.write_all(&Reply::Refused { reason }.line());
+            tilo_failure::ignored!(
+                "the asker of a workspace's terminal has gone before its refusal",
+                stream.write_all(&Reply::Refused { reason }.line())
+            );
             return;
         }
     };
