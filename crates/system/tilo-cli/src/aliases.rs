@@ -104,7 +104,9 @@ mod tests {
 
     /// The image's files: (component, scope, destination, link target or
     /// build output).
-    fn manifest() -> Vec<(String, String, String, String)> {
+    /// Each file of os/components.toml: its component, scope, the images that carry it
+    /// (`os` unless it says), where it goes and what it is made from or links to.
+    fn manifest() -> Vec<(String, String, Vec<String>, String, String)> {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
@@ -116,6 +118,16 @@ mod tests {
         for component in parsed["component"].as_array().unwrap() {
             let name = component["name"].as_str().unwrap_or_default().to_owned();
             let scope = component["scope"].as_str().unwrap_or_default().to_owned();
+            let images: Vec<String> = component
+                .get("images")
+                .and_then(toml::Value::as_array)
+                .map(|images| {
+                    images
+                        .iter()
+                        .map(|image| image.as_str().unwrap().to_owned())
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["os".to_owned()]);
             for file in component
                 .get("files")
                 .and_then(toml::Value::as_array)
@@ -129,7 +141,7 @@ mod tests {
                     .and_then(toml::Value::as_str)
                     .unwrap_or_default()
                     .to_owned();
-                files.push((name.clone(), scope.clone(), to, from));
+                files.push((name.clone(), scope.clone(), images.clone(), to, from));
             }
         }
         files
@@ -161,9 +173,15 @@ mod tests {
         // A device gets its session from a swap, and its daemon through `swap
         // vmd --slot vm`; both land on whatever image the device already runs.
         let swapped: BTreeSet<&str> = ["vmd"].into_iter().collect();
+        // The images that carry `tilo` itself: an old name resolves through it only there.
+        let with_tilo: BTreeSet<&str> = files
+            .iter()
+            .filter(|(_, _, _, to, _)| to == "/usr/bin/tilo")
+            .flat_map(|(_, _, images, _, _)| images.iter().map(String::as_str))
+            .collect();
         let mut through_tilo: BTreeSet<&str> = BTreeSet::new();
         let mut direct: BTreeSet<&str> = BTreeSet::new();
-        for (component, scope, to, from) in &files {
+        for (component, scope, images, to, from) in &files {
             let Some(name) = to.strip_prefix("/usr/bin/") else {
                 continue;
             };
@@ -174,7 +192,18 @@ mod tests {
                 assert_eq!(from, "tilo", "{to} is a noun of tilo itself");
                 continue;
             }
-            if scope == "session" || swapped.contains(component.as_str()) {
+            let without_tilo = images
+                .iter()
+                .any(|image| !with_tilo.contains(image.as_str()));
+            if without_tilo {
+                assert_eq!(
+                    *from,
+                    format!("../libexec/tilo/{name}"),
+                    "{to} ships in an image without tilo ({images:?}), so it must link to its \
+                     program"
+                );
+                direct.insert(name);
+            } else if scope == "session" || swapped.contains(component.as_str()) {
                 assert_eq!(
                     *from,
                     format!("../libexec/tilo/{name}"),
@@ -207,7 +236,7 @@ mod tests {
             assert!(
                 files
                     .iter()
-                    .any(|(_, _, to, from)| *to == place && from.as_str() == *name),
+                    .any(|(_, _, _, to, from)| *to == place && from.as_str() == *name),
                 "{name} must be installed at {place}"
             );
         }
@@ -217,7 +246,9 @@ mod tests {
                 Some(*name)
             );
         }
-        for name in &direct {
+        // A name the OS image's tilo answers for may still link straight to its program in an
+        // image without tilo: tilo runs it by name wherever it is linked to tilo.
+        for name in direct.difference(&through_tilo) {
             assert_eq!(
                 moved(&[OsString::from(format!("/usr/bin/{name}"))]),
                 None,
