@@ -5458,7 +5458,10 @@ impl FrameHarness {
         }
 
         match action {
-            SemanticAction::Focus => {
+            // A target this widget does not publish is a stale or forged
+            // synthetic child: it is refused rather than focusing whatever
+            // now stands at its path.
+            SemanticAction::Focus if semantic_target.is_none() || own_target => {
                 self.set_focused(Some(node));
                 self.frame_for_input();
                 Ok(())

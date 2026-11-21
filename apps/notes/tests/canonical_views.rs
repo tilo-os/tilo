@@ -748,10 +748,22 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             canonical::WORKSPACE,
         )
         .unwrap();
-        views.save(&saved).unwrap();
         let path = f.state_root.join(
             "instance-views/666978747572652d646576696365/666978747572652d776f726b7370616365/11.postcard",
         );
+        let before_save = std::fs::read(&path).ok();
+        views.save(&saved).unwrap();
+        // A window's save is committed on the store's thread and never waits,
+        // so wait for it to land before reading the file a refused restore
+        // must leave alone.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::fs::read(&path).ok() == before_save {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the saved view never reached the disk"
+            );
+            std::thread::yield_now();
+        }
         let original = std::fs::read(&path).unwrap();
         let before = fingerprint(&f, &checkout);
         let good: serde_json::Value =

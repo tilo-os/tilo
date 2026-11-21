@@ -356,10 +356,24 @@ fn an_agents_writes_answer_the_characters_they_wrote() {
             ranges,
         })
     };
+    // An answer names the ranges a write changed as a set: the patch order
+    // is the storage engine's, so compare them in the document's order.
+    let in_document_order = |answer: Option<ui::tilo_actions::InteractionAnchor>,
+                             blocks: &[(String, String)]| {
+        match answer {
+            Some(ui::tilo_actions::InteractionAnchor::Text { region, mut ranges }) => {
+                ranges.sort_by_key(|range| {
+                    blocks.iter().position(|(id, _)| id == &range.block)
+                });
+                Some(ui::tilo_actions::InteractionAnchor::Text { region, ranges })
+            }
+            other => other,
+        }
+    };
     let made = serde_json::json!({ "title": "Plan for Friday", "markdown": "Hall B, 10 to 12.\n\nBring the deck." });
     let (answer, blocks, page) = wrote(&mut app, "create-page", made);
     assert_eq!(
-        answer,
+        in_document_order(answer, &blocks),
         body(vec![text(&blocks, 0), text(&blocks, 1)]),
         "{blocks:?}"
     );
