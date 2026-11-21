@@ -223,18 +223,45 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
     );
 }
 
+/// Whether `device` shows `workspace` on its shell, and whether it keeps it.
+fn still_there(device: &crate::common::people::Device, workspace: &str) -> (bool, bool) {
+    let state = device.state();
+    let shown = state["state"]["workspace_tree"]["workspaces"]
+        .as_array()
+        .is_some_and(|shown| {
+            shown
+                .iter()
+                .any(|held| held["id"].as_str() == Some(workspace))
+        });
+    (shown, device.held().iter().any(|held| held == workspace))
+}
+
+/// A device forgetting a deleted workspace, as a wait that gave up names it: what the device still
+/// has of it then, and what it logged.
+struct Forgetting<'a> {
+    device: &'a crate::common::people::Device,
+    workspace: &'a str,
+}
+
+impl std::fmt::Display for Forgetting<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (shown, kept) = still_there(self.device, self.workspace);
+        write!(
+            f,
+            "{} forgets {} (it still shows it: {shown}, keeps it: {kept}; its shell shows {:?}); its \
+             session logged:\n{}",
+            self.device.label,
+            self.workspace,
+            self.device.on_shell(),
+            self.device.log()
+        )
+    }
+}
+
 /// Wait until `device` neither shows nor keeps `workspace`, which its owner deleted, and said so.
 fn forgotten(device: &crate::common::people::Device, workspace: &str) {
-    tilo_test_env::wait_until(format!("{} forgets {workspace}", device.label), || {
-        let state = device.state();
-        let shown = state["state"]["workspace_tree"]["workspaces"]
-            .as_array()
-            .is_some_and(|shown| {
-                shown
-                    .iter()
-                    .any(|held| held["id"].as_str() == Some(workspace))
-            });
-        !shown && !device.held().iter().any(|held| held == workspace)
+    tilo_test_env::wait_until(Forgetting { device, workspace }, || {
+        still_there(device, workspace) == (false, false)
     });
     assert!(
         device

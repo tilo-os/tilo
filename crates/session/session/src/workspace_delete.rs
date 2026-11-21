@@ -137,9 +137,19 @@ impl Shared {
     }
 
     /// Take `workspace`, which is gone already, off the shell; whether it was taken. Nobody is asked
-    /// and nobody refuses: the person goes to the workspace beside it when they were in it, and
-    /// only a shell's one workspace stays, as the shell is never left with none.
+    /// and nobody refuses: the person goes to the workspace beside it when they were in it. The
+    /// shell is never left with none: where it was the only one, a new empty workspace takes its
+    /// place first, as it does when the person deletes their last workspace here.
     fn take_off_shell(&self, workspace: WorkspaceId) -> bool {
+        let only = |tree: &tilo_desktop_model::Layout| {
+            tree.workspaces.len() == 1 && tree.workspaces[0].id() == workspace
+        };
+        if self.handle.read(only)
+            && let Err(error) = self.ask_of_shell("new-workspace", &Map::new())
+        {
+            tracing::warn!(%error, %workspace, "a deleted workspace stays on the shell, which has no other");
+            return false;
+        }
         let mut tree = self.handle.read(Clone::clone);
         let Some(at) = tree
             .workspaces
