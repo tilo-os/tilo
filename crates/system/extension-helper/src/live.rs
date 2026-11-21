@@ -1312,7 +1312,7 @@ pub trait LiveHost {
 ///
 /// An account's manager is asked as that account, on its own bus. `systemctl --machine=NAME@
 /// --user` asks the system's manager to start a bridge instead and hands it this process's
-/// output pipe over the system bus; the bus may not write to a system service's pipe (SELinux),
+/// output pipe over the system bus; the bus may not write to a system service's pipe (`SELinux`),
 /// drops the connection, and the update that asked rolled back.
 fn systemctl(login: Option<&Login>, args: &[&str]) -> Vec<String> {
     let mut command = Vec::new();

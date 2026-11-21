@@ -48,8 +48,7 @@ fn workspace_mail_and_vault() -> Vec<TreePath> {
         mail.clone()
             .kind("mail.copies")
             .resource(roles::WORKSPACE_MAIL_COPIES_DOCUMENT),
-        mail.clone()
-            .kind("mail.trusted-senders")
+        mail.kind("mail.trusted-senders")
             .resource(roles::WORKSPACE_MAIL_TRUST_DOCUMENT),
         TreePath::workspace("r")
             .app(tilo_app_id::apps::PASSWORDS)
@@ -131,7 +130,7 @@ fn an_agent_reaches_workspace_mail_through_a_grant_scoped_to_mail() {
     let mut grants = roles::workspace_role_grants("r", &alice());
     let mailbox = mail.clone().resource("");
     assert_eq!(
-        decide(&grants, &[key.clone()], &mailbox, ActionKind::Read, &cx()).answer,
+        decide(&grants, std::slice::from_ref(&key), &mailbox, ActionKind::Read, &cx()).answer,
         Answer::Deny,
         "nothing granted, nothing read"
     );
@@ -145,7 +144,7 @@ fn an_agent_reaches_workspace_mail_through_a_grant_scoped_to_mail() {
     ));
     for node in workspace_mail_and_vault().into_iter().take(4) {
         assert_eq!(
-            decide(&grants, &[key.clone()], &node, ActionKind::Read, &cx()).answer,
+            decide(&grants, std::slice::from_ref(&key), &node, ActionKind::Read, &cx()).answer,
             Answer::Allow,
             "{node}"
         );
