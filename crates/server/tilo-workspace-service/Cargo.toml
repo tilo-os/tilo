@@ -42,8 +42,6 @@ install-profile-model = { path = "../../session/install-profile-model" }
 tilo-server-client = { path = "../tilo-server-client" }
 tilo-server-session = { path = "../tilo-server-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
-iroh.workspace = true
-iroh-base.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 automerge.workspace = true
 tilo-automerge.workspace = true
@@ -54,26 +52,21 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 getrandom.workspace = true
 tilo-content = { path = "../../system/content", default-features = false }
-# The address this host answers at once its endpoint reached a relay, which is
-# what its workspaces' governance names of it.
-tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
 form_urlencoded.workspace = true
-tokio = { workspace = true, features = ["full"] }
-n0-future = "0.3.2"
+# A page drives no sockets or files: the link, the filesystem and the process
+# are a native device's, and their drivers are target dependencies of their own.
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 thiserror.workspace = true
 tracing.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The toolkit-free Fluent catalogue the name it gives a workspace is read from.
 tilo-history = { path = "../../sdk/tilo-history" }
-libc.workspace = true
-tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 collab-types = { path = "../../collab/collab-types" }
 key-group = { path = "../../collab/key-group" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
-tilo-server-store = { path = "../tilo-server-store" }
 sha2.workspace = true
 tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
@@ -113,6 +106,20 @@ tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-ide
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+# The device's link, its files and its processes: what a page reaches through
+# its own host instead, and holds over its own durable store.
+iroh.workspace = true
+iroh-base.workspace = true
+n0-future = "0.3.2"
+libc.workspace = true
+# The address this host answers at once its endpoint reached a relay, which is
+# what its workspaces' governance names of it.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+# A host's workspaces keep their files and their retained history on a disk.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-server-store = { path = "../tilo-server-store" }
+# A host's device runs the runtime its own tasks drive.
+tokio = { workspace = true, features = ["full"] }
 # An installed app's model, run from the package's WebAssembly module.
 tilo-model-engine = { path = "../../lang/tilo-model-engine" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
