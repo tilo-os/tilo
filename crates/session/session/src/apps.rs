@@ -1124,7 +1124,7 @@ impl Apps {
             .map(|_| ())
         });
         match started {
-            Ok(_) => true,
+            Ok(()) => true,
             Err(error) => {
                 tracing::warn!(%error, app, "a launch asked for before the restore did not start");
                 self.could_not_open(Some(tab), app, None, &error.to_string());

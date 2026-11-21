@@ -210,6 +210,7 @@ impl HostedWorkspaces {
             let host = hosts.get(&on.host.device_certificate.device_public_key)?;
             named.extend(host.named.lock_recover().clone()?);
         }
+        drop(hosts);
         Some(named)
     }
 

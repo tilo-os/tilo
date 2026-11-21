@@ -1597,6 +1597,18 @@ impl crate::Shared {
         self.table.follow(&mut self.services.borrow_mut());
     }
 
+    /// The name the shell holds for `workspace`, or none when it holds none.
+    fn held_name(&self, workspace: WorkspaceId) -> String {
+        self.handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.id() == workspace)
+                    .map(|held| held.name.clone())
+            })
+            .unwrap_or_default()
+    }
+
     /// Keep the person's own workspaces as all their devices hold them: list what this session has,
     /// take what the others listed, open here what they made there, take off the shell what they
     /// took off theirs, and say again what this device has when theirs was missing something.
@@ -1671,15 +1683,7 @@ impl crate::Shared {
                     if hint.host.is_of_device(&device) {
                         continue;
                     }
-                    let name = self
-                        .handle
-                        .read(|tree| {
-                            tree.workspaces
-                                .iter()
-                                .find(|held| held.id() == workspace)
-                                .map(|held| held.name.clone())
-                        })
-                        .unwrap_or_default();
+                    let name = self.held_name(workspace);
                     enter.push(ToEnter {
                         workspace,
                         name,
