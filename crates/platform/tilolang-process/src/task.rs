@@ -1393,14 +1393,15 @@ mod tests {
                     .collect()
             };
             // The app the program invokes the document of, and how it writes it; then each
-            // resource the app keeps a collection in beside it (chat's messages, the tracker's
-            // issues), whose verbs make and change what it holds. What Chat learned is the
-            // person's own, kept in their session, and the workspace publishes none of it.
+            // resource the app keeps a collection in beside it (chat's messages and skills, the
+            // tracker's issues), whose verbs make and change what it holds. What Chat learned is
+            // the person's own, kept in their session, and the workspace publishes none of it.
             assert_eq!(
                 roots("chat"),
                 named(&[
                     ("workspace", "chat.workspace"),
                     ("messages", "chat.messages"),
+                    ("skills", "chat.skills"),
                 ]),
                 "{catalogue:#}"
             );
