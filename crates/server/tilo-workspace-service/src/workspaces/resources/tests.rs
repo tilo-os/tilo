@@ -1218,7 +1218,8 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
         cert: cert.clone(),
         signer: Arc::new(key.clone()),
     }));
-    let workspace = workspaces.create("Tasks").await.unwrap().workspace;
+    let created = workspaces.create("Tasks").await.unwrap();
+    let workspace = created.workspace;
     let context = context(&workspace, &cert);
     let put = |title: &str, invocation: &str| Command::Put {
         kind: KIND.to_owned(),
@@ -1237,15 +1238,47 @@ async fn a_write_this_device_cannot_send_is_not_read_back() {
         },
     };
 
-    workspaces
+    let mut watches = workspaces.document_writes();
+    let error = workspaces
         .resource_command(&context, put("Unsent", "i1"))
         .await
         .expect_err("no keys of the readers are here yet");
+    assert_eq!(error, "this channel has no keys yet");
+    assert!(watches.try_recv().is_err());
     assert!(
         title_through_service(&workspaces, &context, "i-1")
             .await
             .is_none(),
         "the refused write is not read back"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+
+    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert,
+        signer: Arc::new(key),
+    }));
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        None,
+        "a refused first write must not leave a readable row on disk"
+    );
+    let retained = workspaces
+        .inner
+        .host
+        .records
+        .retained(created.workspace_id)
+        .await
+        .unwrap();
+    assert!(
+        !retained.iter().any(|frame| matches!(
+            NeighbourMsg::decode(&frame.body),
+            Ok(NeighbourMsg::AppDocument { app_id, document_id, .. })
+                if app_id == APP && collab_types::is_store_document(&document_id)
+        )),
+        "the refusal must not leave a retained frame"
     );
 
     let route = tilo_peer_state::document_frame::DocumentRoute {
