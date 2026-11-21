@@ -1542,9 +1542,19 @@ impl DirectSync {
                             && people.contains(&certificate.user_public_key)
                     })
                 });
+                // A holder of the workspace is sent what it holds: the
+                // workspace's policy answers a member's access, and a holder
+                // is no member, so what a member wrote never reached the
+                // holder it links to.
+                let holder = replica
+                    .governance()
+                    .keeping_devices()
+                    .iter()
+                    .any(|hint| hint.host.device_public_key == device);
                 person_matches
                     && named_matches
-                    && (!replica.has_governance()
+                    && (holder
+                        || !replica.has_governance()
                         || replica
                             .check_document_read(device, app_id, document_id, tilo_clock::wall())
                             .is_ok())
