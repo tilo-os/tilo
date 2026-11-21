@@ -192,6 +192,11 @@ class ChromeProcessCleanup(unittest.TestCase):
                 continue
             try:
                 fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+                if fields[0] == 'Z':
+                    # Exited and waiting for its parent to reap it: an ended
+                    # process reads an empty cmdline, and there is nothing to
+                    # stop.
+                    continue
                 arguments = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
                 if fields[19] != identity['birth'] or os.fsencode(root / 'fake-chrome') not in arguments:
                     raise AssertionError('fixture process identity changed; refuse signalling')
