@@ -56,10 +56,6 @@ Choose Spotify from Music sources to make it the workspace catalogue. Each
 device uses its own Spotify grant. Connecting Spotify, authorizing playback and
 disconnecting Spotify change that grant without changing the workspace catalogue.
 
-An existing device can explicitly import its previous catalogue from Music
-sources while the workspace has no choice. The import transfers the catalogue
-name alone.
-
 Connect Spotify requests only `user-read-private` and `user-library-read` for
 the catalogue and read-only saved library. Authorize playback separately requests
 `streaming` and `user-read-private` and verifies account identity. Both flows

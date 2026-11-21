@@ -282,7 +282,6 @@ pub(crate) struct Music {
     pending_catalogue_query: Option<String>,
     catalogue_invocation: Option<tilo_actions::InvocationId>,
     catalogue: Catalogue,
-    legacy_catalogue: crate::storage::LegacyCatalogue,
     source_invocation: Option<tilo_actions::InvocationId>,
     source_disconnect_pending: bool,
     spotify_jobs: HashMap<u64, spotify::PendingJob>,
@@ -641,7 +640,6 @@ impl Music {
                 ..Page::default()
             },
             catalogue: Catalogue::Unset,
-            legacy_catalogue: device_profile.legacy_catalogue,
             source_invocation: None,
             source_disconnect_pending: false,
             spotify_jobs: HashMap::new(),
@@ -922,7 +920,6 @@ impl Music {
             return Ok(());
         }
         crate::storage::save_device_profile(&crate::storage::DeviceProfile {
-            legacy_catalogue: self.legacy_catalogue,
             local_file: self.kept_local_file(),
             playback: self.pb.clone(),
             queue_catalogue: self.queue_catalogue(),
@@ -982,14 +979,6 @@ impl Music {
         if let Err(error) = dispatcher.submit_now(state, submit) {
             self.notify(ToastKind::Error, error.to_string());
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_legacy_catalogue_for_test(
-        &mut self,
-        legacy: crate::storage::LegacyCatalogue,
-    ) {
-        self.legacy_catalogue = legacy;
     }
 
     fn adopt_catalogue(&mut self, choice: Catalogue) {
@@ -1221,12 +1210,6 @@ impl Music {
             .offer(MusicEffect::BROWSE_SPOTIFY)
             .offer(MusicEffect::BROWSE_YOU_TUBE)
             .offer(MusicEffect::DISABLE_CATALOGUE);
-        let bindings =
-            if self.catalogue == Catalogue::Unset && self.legacy_catalogue.choice().is_some() {
-                bindings.offer(MusicEffect::USE_PREVIOUS_CATALOGUE)
-            } else {
-                bindings
-            };
         ui::framework::LiveRow::typed_with::<crate::row_types::Source>(
             "music.source:catalogue",
             self.source_status(),

@@ -1211,7 +1211,6 @@ mod tests {
             assert_eq!(doc.get_heads(), before);
             assert!(app.lib.tracks.is_empty());
             let profile = crate::storage::DeviceProfile {
-                legacy_catalogue: crate::storage::LegacyCatalogue::default(),
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
                 queue_catalogue: Vec::new(),
@@ -1238,7 +1237,6 @@ mod tests {
                 },
                 local_file: Some(file),
                 queue_catalogue: Vec::new(),
-                legacy_catalogue: crate::storage::LegacyCatalogue::default(),
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();

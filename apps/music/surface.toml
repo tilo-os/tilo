@@ -37,13 +37,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "import-catalogue"
-kind = "undoable"
-params = [
-  { name = "catalogue", type = { named = "Catalogue" }, required = true, schema = { type = "string", enum = ["unset", "disabled", "you_tube", "spotify"] } },
-]
-
-[[resources.verbs]]
 id = "create-playlist"
 kind = "undoable"
 params = [

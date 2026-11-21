@@ -8,13 +8,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tilo_clock::unix_now_ms;
 
-use crate::model::{Catalogue, Playback};
+use crate::model::Playback;
 
 /// Device-private state. Playback is saved paused, so a launch never starts audio.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceProfile {
-    #[serde(flatten)]
-    pub(crate) legacy_catalogue: LegacyCatalogue,
     #[serde(default)]
     pub local_file: Option<crate::local_file::LocalFile>,
     #[serde(default)]
@@ -22,27 +20,6 @@ pub struct DeviceProfile {
     /// Catalogue metadata stays private until it is saved to the library.
     #[serde(default)]
     pub queue_catalogue: Vec<crate::model::CatalogueTrack>,
-}
-
-/// Preserve old keys for an explicit import. No current selection is saved here.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LegacyCatalogue {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    spotify_catalogue: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    catalogue_connected: Option<bool>,
-}
-
-impl LegacyCatalogue {
-    pub(crate) fn choice(self) -> Option<Catalogue> {
-        if self.spotify_catalogue == Some(true) {
-            Some(Catalogue::Spotify)
-        } else if self.catalogue_connected == Some(true) {
-            Some(Catalogue::YouTube)
-        } else {
-            None
-        }
-    }
 }
 
 /// The device's index of cached media: ids are app data, hashes and paths are not.
@@ -362,32 +339,6 @@ fn dirs_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn old_catalogue_flags_survive_playback_saves_until_the_person_chooses_to_import() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("device-profile.json");
-        for (json, expected) in [
-            (r#"{"spotify_catalogue":true}"#, Some(Catalogue::Spotify)),
-            (
-                r#"{"spotify_catalogue":false,"catalogue_connected":true}"#,
-                Some(Catalogue::YouTube),
-            ),
-            (
-                r#"{"spotify_catalogue":false,"catalogue_connected":false}"#,
-                None,
-            ),
-        ] {
-            crate::files::write(&path, json.as_bytes()).unwrap();
-            let mut profile = load_device_profile_from(&path);
-            assert_eq!(profile.legacy_catalogue.choice(), expected);
-            profile.playback.volume = 37;
-            save_device_profile_to(&path, &profile).unwrap();
-            let saved = load_device_profile_from(&path);
-            assert_eq!(saved.legacy_catalogue, profile.legacy_catalogue);
-            assert_eq!(saved.playback.volume, 37);
-        }
-    }
 
     tilo_test_env::scenario! {
         /// What this device keeps on disk: the profile and the media cache.

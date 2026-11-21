@@ -46,20 +46,6 @@ impl Library {
         Ok(())
     }
 
-    /// Use the device's previous catalogue in a workspace that has never chosen one.
-    #[action]
-    pub fn import_catalogue(&mut self, catalogue: Catalogue) -> Result<(), Refusal> {
-        if self.catalogue != Catalogue::Unset {
-            return Err(Refusal::new("this workspace already chose a catalogue"));
-        }
-        if !matches!(catalogue, Catalogue::Spotify | Catalogue::YouTube) {
-            return Err(Refusal::new(
-                "there is no previous online catalogue to import",
-            ));
-        }
-        self.set_catalogue(catalogue)
-    }
-
     /// Create a new playlist.
     #[action]
     pub fn create_playlist(
@@ -429,39 +415,37 @@ mod tests {
     }
 
     #[test]
-    fn importing_a_device_catalogue_requires_a_workspace_edit() {
+    fn choosing_a_catalogue_requires_a_workspace_edit_and_survives_reopen() {
         use ui::permissions::Role;
 
         let mut app = TestApp::<MusicShell>::new().unwrap();
-        let profile: crate::storage::DeviceProfile =
-            serde_json::from_str(r#"{"spotify_catalogue":true}"#).unwrap();
         app.with_surface::<MusicApp, _>(|surface| {
-            let mut music = surface.state();
-            music.disconnect();
-            music.set_legacy_catalogue_for_test(profile.legacy_catalogue);
+            surface.state().disconnect();
         })
         .unwrap();
         let source = "music.source:catalogue";
         app.effect_on(source, &MusicEffect::Sources).unwrap();
         assert_eq!(app.state().catalogue, Catalogue::Unset);
+        for resource in app.harness().resources() {
+            assert!(resource.actions.iter().all(|action| {
+                action.id != "import-catalogue" && action.id != "use-previous-catalogue"
+            }));
+        }
 
         app.set_role(Role::Viewer);
         assert!(
-            app.effect_on(source, &MusicEffect::UsePreviousCatalogue)
+            app.effect_on(source, &MusicEffect::BrowseSpotify)
                 .is_err()
         );
         assert_eq!(app.state().catalogue, Catalogue::Unset);
         app.set_role(Role::Owner);
-        app.effect_on(source, &MusicEffect::UsePreviousCatalogue)
+        app.effect_on(source, &MusicEffect::BrowseSpotify)
             .unwrap();
         assert_eq!(app.state().catalogue, Catalogue::Spotify);
 
         app.effect_on(source, &MusicEffect::BrowseYouTube).unwrap();
         assert_eq!(app.state().catalogue, Catalogue::YouTube);
-        assert!(
-            app.invoke(Library::IMPORT_CATALOGUE.with(Catalogue::Spotify))
-                .is_err()
-        );
+        app = app.reopen().unwrap();
         assert_eq!(app.state().catalogue, Catalogue::YouTube);
         app.effect_on(source, &MusicEffect::DisableCatalogue)
             .unwrap();

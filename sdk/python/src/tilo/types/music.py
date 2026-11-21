@@ -29,7 +29,6 @@ __all__ = [
     "Track",
     "Library",
     "SetCatalogueArgs",
-    "ImportCatalogueArgs",
     "CreatePlaylistArgs",
     "DeletePlaylistArgs",
     "ImportTrackArgs",
@@ -83,11 +82,6 @@ SetCatalogueArgs = TypedDict("SetCatalogueArgs", {
 })
 """The arguments of `set-catalogue`."""
 
-ImportCatalogueArgs = TypedDict("ImportCatalogueArgs", {
-    "catalogue": "Catalogue",
-})
-"""The arguments of `import-catalogue`."""
-
 CreatePlaylistArgs = TypedDict("CreatePlaylistArgs", {
     "name": "str",
     "track": NotRequired["str | None"],
@@ -106,7 +100,7 @@ ImportTrackArgs = TypedDict("ImportTrackArgs", {
 
 class Library(Resource):
     """Music — `music.library`."""
-    __surface__ = "so.tilo.music@26a9509bd0593501"
+    __surface__ = "so.tilo.music@de33d2d5b8501dab"
     @property
     def catalogue(self) -> Catalogue:
         """Read only."""
@@ -136,14 +130,6 @@ class Library(Resource):
     def set_catalogue_many(self, items: list[SetCatalogueArgs]) -> list[dict[str, Any]]:
         """Runs `set-catalogue` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-catalogue", items)
-
-    def import_catalogue(self, *, catalogue: Catalogue) -> None:
-        """Runs the app's action."""
-        return self.action("import-catalogue", catalogue=catalogue)
-
-    def import_catalogue_many(self, items: list[ImportCatalogueArgs]) -> list[dict[str, Any]]:
-        """Runs `import-catalogue` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import-catalogue", items)
 
     def create_playlist(self,
         *,
@@ -187,6 +173,6 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"set_catalogue", "set_catalogue_many", "import_catalogue", "import_catalogue_many", "create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "import_track", "import_track_many", "spotify_account_status", "search"})
+    __actions__ = frozenset({"set_catalogue", "set_catalogue_many", "create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "import_track", "import_track_many", "spotify_account_status", "search"})
 
 

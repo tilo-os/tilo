@@ -46,9 +46,6 @@ impl Music {
             ("music-browse-youtube", MusicEffect::BrowseYouTube),
             ("music-disable-catalogue", MusicEffect::DisableCatalogue),
         ]);
-        if self.catalogue == Catalogue::Unset && self.legacy_catalogue.choice().is_some() {
-            choices.push(("music-import-catalogue", MusicEffect::UsePreviousCatalogue));
-        }
         for (key, effect) in choices {
             self.push_menu(
                 crate::i18n::t_args(key, &[]),

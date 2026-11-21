@@ -331,10 +331,6 @@ pub enum MusicEffect {
     #[effect(on = Source)]
     #[effect(kind = "undoable", job, on = Library, label = "music-disable-catalogue")]
     DisableCatalogue,
-    /// Use this device's previous catalogue in this workspace.
-    #[effect(on = Source)]
-    #[effect(attended, kind = "undoable", job, on = Library, label = "music-import-catalogue")]
-    UsePreviousCatalogue,
 
     /// Search the remote catalogue
     /// Results join the canonical search index after the worker answers.

@@ -97,13 +97,6 @@ impl Music {
             MusicEffect::BrowseSpotify => Some(Library::SET_CATALOGUE.with(Catalogue::Spotify)),
             MusicEffect::BrowseYouTube => Some(Library::SET_CATALOGUE.with(Catalogue::YouTube)),
             MusicEffect::DisableCatalogue => Some(Library::SET_CATALOGUE.with(Catalogue::Disabled)),
-            MusicEffect::UsePreviousCatalogue => {
-                let catalogue = self
-                    .legacy_catalogue
-                    .choice()
-                    .ok_or_else(|| crate::i18n::t("music-no-legacy-catalogue"))?;
-                Some(Library::IMPORT_CATALOGUE.with(catalogue))
-            }
             _ => None,
         };
         if let Some(choice) = choice {

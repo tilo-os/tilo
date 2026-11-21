@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.music@26a9509bd0593501";
+export const SURFACE = "so.tilo.music@de33d2d5b8501dab";
 
 export interface Album {
   id: string;
@@ -79,11 +79,6 @@ export interface SetCatalogueArgs {
   catalogue: Catalogue;
 }
 
-/** The arguments of `import-catalogue`. */
-export interface ImportCatalogueArgs {
-  catalogue: Catalogue;
-}
-
 /** The arguments of `create-playlist`. */
 export interface CreatePlaylistArgs {
   name: string;
@@ -116,11 +111,6 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-catalogue` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setCatalogueMany(items: SetCatalogueArgs[]): Promise<tilo.ActionAnswer[]>;
-  importCatalogue(args: {
-    catalogue: Catalogue;
-  }): Promise<void>;
-  /** Runs `import-catalogue` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  importCatalogueMany(items: ImportCatalogueArgs[]): Promise<tilo.ActionAnswer[]>;
   createPlaylist(args: {
     name: string;
     track?: string;
@@ -145,7 +135,7 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["setCatalogue", "setCatalogueMany", "importCatalogue", "importCatalogueMany", "createPlaylist", "createPlaylistMany", "deletePlaylist", "deletePlaylistMany", "importTrack", "importTrackMany", "spotifyAccountStatus", "search"] as const;
+export const LIBRARY_ACTIONS = ["setCatalogue", "setCatalogueMany", "createPlaylist", "createPlaylistMany", "deletePlaylist", "deletePlaylistMany", "importTrack", "importTrackMany", "spotifyAccountStatus", "search"] as const;
 
 /** The `music.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

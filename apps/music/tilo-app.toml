@@ -97,12 +97,6 @@ operation = "document"
 asks = "catalogue"
 [[offers]]
 resource = "music.library"
-action = "import-catalogue"
-label = "Import the previous catalogue into this workspace"
-operation = "document"
-asks = "catalogue"
-[[offers]]
-resource = "music.library"
 action = "create-playlist"
 label = "Create playlist"
 operation = "document"
