@@ -1122,7 +1122,7 @@ impl OnboardingView {
                     revision,
                 });
             }
-            Err(error) => self.journal_failed(change, then, &error.to_string()),
+            Err(error) => self.journal_failed(change, &then, &error.to_string()),
         }
     }
 
@@ -1135,8 +1135,8 @@ impl OnboardingView {
         self.journal_store.as_mut()
     }
 
-    fn journal_failed(&mut self, change: JournalChange, then: AfterJournal, error: &str) {
-        if then == AfterJournal::StartPairingLink {
+    fn journal_failed(&mut self, change: JournalChange, then: &AfterJournal, error: &str) {
+        if *then == AfterJournal::StartPairingLink {
             clear_secret(&self.pairing_link);
         }
         let key = match change {
@@ -1168,7 +1168,7 @@ impl OnboardingView {
                     self.progress_error = None;
                     self.after_journal(write.then);
                 }
-                Err(error) => self.journal_failed(write.change, write.then, &error),
+                Err(error) => self.journal_failed(write.change, &write.then, &error),
             }
             self.invalidation.structure();
         }

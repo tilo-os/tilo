@@ -406,7 +406,7 @@ impl NearbyPairing {
         status_path: &Path,
         link: &str,
     ) -> Result<Self, NearbyFailure> {
-        fn not_started(error: std::io::Error) -> NearbyFailure {
+        fn not_started(error: &std::io::Error) -> NearbyFailure {
             NearbyFailure {
                 cause: NearbyCause::NotStarted,
                 detail: Some(error.to_string()),
@@ -414,14 +414,14 @@ impl NearbyPairing {
         }
 
         let lease =
-            tilo_server_protocol::ProcessLease::capture(std::process::id()).map_err(not_started)?;
-        let (reader, mut writer) = UnixStream::pair().map_err(not_started)?;
+            tilo_server_protocol::ProcessLease::capture(std::process::id()).map_err(|error| not_started(&error))?;
+        let (reader, mut writer) = UnixStream::pair().map_err(|error| not_started(&error))?;
         // The input is bounded and written before the child starts. Keep the
         // compositor loop nonblocking even if the socket cannot hold it.
-        writer.set_nonblocking(true).map_err(not_started)?;
-        writer.write_all(link.as_bytes()).map_err(not_started)?;
+        writer.set_nonblocking(true).map_err(|error| not_started(&error))?;
+        writer.write_all(link.as_bytes()).map_err(|error| not_started(&error))?;
         drop(writer);
-        let mut command = Command::new(std::env::current_exe().map_err(not_started)?);
+        let mut command = Command::new(std::env::current_exe().map_err(|error| not_started(&error))?);
         command
             .arg("--pair-device-link-stdin")
             .arg(lease.pid().to_string())
