@@ -229,7 +229,7 @@ macro_rules! team {
 /// The agents on the workspace's server, answering with the model of these tests, and what a
 /// test reaches them through: the server's action service and what the server keeps.
 struct Served<'a> {
-    agents: HostAgents,
+    agents: ServerAgents,
     actions: &'a tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: &'a Workspaces,
     workspace: &'a str,
@@ -244,7 +244,7 @@ impl<'a> Served<'a> {
         asked: &Arc<Mutex<Vec<ModelRequest>>>,
     ) -> Self {
         Self {
-            agents: HostAgents::for_test(
+            agents: ServerAgents::for_test(
                 workspaces.clone(),
                 actions.clone(),
                 Some(minded(Arc::clone(asked))),

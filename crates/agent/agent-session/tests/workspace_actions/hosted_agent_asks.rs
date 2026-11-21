@@ -293,7 +293,7 @@ fn end_of(reply: &chat::chat::Message) -> Option<chat::agent_stream::AgentFinish
 /// Run `turn` on `agents` until its model was asked `calls` times, then let the server go: the
 /// turn is dropped where it stands, as when the server's process ends.
 async fn dies_at(
-    agents: &HostAgents,
+    agents: &ServerAgents,
     workspace: &str,
     turn: &tilo_server::workspace_agents::Turn,
     asked: &Arc<Mutex<Vec<ModelRequest>>>,
@@ -381,7 +381,7 @@ async fn a_cause_asks_the_agent_on_the_host_once_for_the_person_it_names() {
 
     // With no device on, the server reads it as the agent's one turn, for that person.
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::clone(&asked))),
@@ -455,7 +455,7 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
     .await;
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(waits(
@@ -570,7 +570,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
     .await;
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(waits(
@@ -634,7 +634,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
         "and the budget?",
     )
     .await;
-    let agents = HostAgents::for_test(workspaces.clone(), actions.clone(), None);
+    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
     agents.look(&workspace).await.unwrap();
     until("the keeper's model is asked", || theirs.asked().len() == 1).await;
     stop_agent(&actions, &workspace, &me, &second)
@@ -669,7 +669,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     // was asked what to do next.
     let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens = Opens(Arc::clone(&hold));
-    let dying = HostAgents::for_test(
+    let dying = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(waits(vec![looks(), says("never said")], 1, &asked, &hold)),
@@ -696,7 +696,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     // The server that starts again reads the turn from the workspace. It does not take its steps a
     // second time: the reply says it was interrupted, and asking again is the person's to do.
     let again = Arc::new(Mutex::new(Vec::new()));
-    let restarted = HostAgents::for_test(
+    let restarted = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::clone(&again))),
@@ -739,7 +739,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
     .await;
     let (waiting, second_hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
     let _opens_second = Opens(Arc::clone(&second_hold));
-    let dying = HostAgents::for_test(
+    let dying = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(waits(vec![says("never said")], 0, &waiting, &second_hold)),
@@ -759,7 +759,7 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
         !chat::summons::left_begun(&part, second.as_str(), SCOUT, 0),
         "it had taken no step"
     );
-    let restarted = HostAgents::for_test(
+    let restarted = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::clone(&again))),

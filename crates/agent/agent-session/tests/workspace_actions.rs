@@ -596,7 +596,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         let link = Arc::new(DeliveryReadFixture {
             workspaces: hosted.server.workspaces().unwrap().clone(),
             member: tilo_agent_session::workspace_actions::HostDevice {
-                endpoint: tilo_agent_session::HostEndpoint::iroh(
+                endpoint: tilo_agent_session::ServerEndpoint::iroh(
                     hosted.server.node_addr(),
                     host.cert.clone(),
                 ),

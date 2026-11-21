@@ -40,7 +40,7 @@ struct Kept {
 /// What a caller asks a kept prepared read for.
 pub(super) struct KeptAsk<'a> {
     pub(super) route: &'a DocumentRoute,
-    /// The heads the host holds of its record.
+    /// The heads the service holds of its document.
     pub(super) heads: Option<&'a [[u8; 32]]>,
     pub(super) address: &'a ActionAddress,
     pub(super) arguments: &'a serde_json::Map<String, serde_json::Value>,
@@ -183,13 +183,13 @@ impl CanonicalReads {
         self.kept.retain(|route, _| !of(route));
     }
 
-    /// The kept read of the document at `route` for `caller` that offers `ask`, run for them now:
+    /// The kept read of the document at `route` for `caller` that offers `ask`, done for them now:
     /// its answer, or that none is kept or offers it ([`KeptRead`]). Kept between calls while the
     /// document stands where it was: the read a caller invoking it reuses rather than preparing
     /// its own.
     ///
     /// # Errors
-    /// why the call was refused, for a read its component would not run.
+    /// why the call was refused, for a read its component would not do.
     pub(super) fn invoke_kept(
         &mut self,
         link: &Arc<dyn WorkspaceDocumentsLink>,
@@ -213,7 +213,7 @@ impl CanonicalReads {
             return Ok(KeptRead::NotOffered);
         };
         kept.used = self.clock;
-        // The prepared read checks the caller's policy, offers the read and runs it, all in its
+        // The prepared read checks the caller's policy, offers the read and does it, all in its
         // own worker: off this thread once the call outlasts one.
         let read = Arc::clone(&kept.read);
         let (link, caller, asked) = (Arc::clone(link), caller.clone(), ask.route.clone());

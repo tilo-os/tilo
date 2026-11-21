@@ -30,7 +30,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::Agent;
 
-use super::{CHAT, HostAgents, WorkspaceActionProvider, invoke_named};
+use super::{CHAT, ServerAgents, WorkspaceActionProvider, invoke_named};
 
 /// The kind of the cause a wake carries: its person answered a question the
 /// agent asked them.
@@ -186,7 +186,7 @@ pub(super) fn carried_out(
     }
 }
 
-impl HostAgents {
+impl ServerAgents {
     /// Start the turns `owed` owes in `workspace`, each on a task of its
     /// own: a look does not wait for them.
     pub(super) fn wake_answered(&self, workspace: &str, owed: Vec<Wake>) {

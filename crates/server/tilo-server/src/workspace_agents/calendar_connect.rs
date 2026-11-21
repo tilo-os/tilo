@@ -115,7 +115,7 @@ pub(super) fn asked_in(caller: &Caller) -> Value {
 
 /// Whoever carries out a workspace's agents: what reads the answers to the questions this
 /// server put itself, and carries them out.
-pub(super) type Carrier = super::HostAgents;
+pub(super) type Carrier = super::ServerAgents;
 
 /// What this server keeps of a question it put itself for a person's password: enough to put
 /// it, to find it again, and to tell whether it still says what was asked.

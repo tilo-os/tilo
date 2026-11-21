@@ -15,7 +15,7 @@ use tilo_server::workspace_agents::{WorkspaceActionProvider, invoke_named};
 const TASKS: &str = "so.tilo.tasks";
 const NOTES: &str = "so.tilo.notes";
 /// How many rounds each measure takes the middle of: in each, a listing with nothing running,
-/// then a slowed write, then the first listing asked while it runs.
+/// then a slowed write, then the first listing asked while it goes on.
 const ROUNDS: usize = 5;
 /// How many times a listing's normal cost one served while the write goes on may take.
 const RATIO: u32 = 3;

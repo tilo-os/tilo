@@ -55,7 +55,7 @@ use zeroize::Zeroizing;
 
 use super::turn_provider::{Ending, Rows};
 use super::{
-    Ask, CHAT, HostAgents, Reply, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
+    Ask, CHAT, ServerAgents, Reply, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
     invoke_named,
 };
 use crate::hosted_browser::{Release, Releasing, TurnFill};
@@ -121,7 +121,7 @@ struct AskedIn {
 /// its person writes again while it works, so each use is taken as the caller
 /// of the tool call that asked for it.
 pub(super) struct TurnUses {
-    agents: HostAgents,
+    agents: ServerAgents,
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
@@ -138,7 +138,7 @@ pub(super) struct TurnUses {
 impl TurnUses {
     /// What `turn` uses of its person's vault, where `reply` holds what its
     /// tools begin as and act through.
-    pub(super) async fn for_turn(agents: &HostAgents, turn: &Turn, reply: &Reply) -> Arc<Self> {
+    pub(super) async fn for_turn(agents: &ServerAgents, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
         let narrowed = narrowing(&turn.agent, &reply.workspace);
         let hosted = HostedTurn {
@@ -562,7 +562,7 @@ struct AnsweredAsk {
     changed: bool,
 }
 
-impl HostAgents {
+impl ServerAgents {
     /// Carry out what the people of `workspace` answered about the uses its
     /// agents asked for: each answer once, said to have started before it is
     /// carried out. Costs one look at what this server keeps when nothing waits.

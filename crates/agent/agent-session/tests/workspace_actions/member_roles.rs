@@ -53,7 +53,7 @@ impl Membership {
     ) -> Arc<Self> {
         Arc::new(Self {
             member: HostDevice {
-                endpoint: tilo_agent_session::HostEndpoint::iroh(
+                endpoint: tilo_agent_session::ServerEndpoint::iroh(
                     hosted.server.node_addr(),
                     server.cert.clone(),
                 ),

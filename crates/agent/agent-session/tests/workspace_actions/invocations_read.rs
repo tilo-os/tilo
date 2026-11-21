@@ -324,7 +324,7 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
 
     let reading = Arc::new(Reading {
         member: HostDevice {
-            endpoint: tilo_agent_session::HostEndpoint::iroh(
+            endpoint: tilo_agent_session::ServerEndpoint::iroh(
                 hosted.server.node_addr(),
                 host.cert.clone(),
             ),
@@ -573,7 +573,7 @@ async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
     let notes_provider = resource_provider(&notes);
     let reading = Arc::new(Reading {
         member: HostDevice {
-            endpoint: tilo_agent_session::HostEndpoint::iroh(
+            endpoint: tilo_agent_session::ServerEndpoint::iroh(
                 hosted.server.node_addr(),
                 host.cert.clone(),
             ),

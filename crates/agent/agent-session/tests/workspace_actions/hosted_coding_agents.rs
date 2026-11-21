@@ -15,7 +15,7 @@ use tilo_server::{
         runner::Machines,
         testing::{Local, seen_of},
     },
-    workspace_agents::HostAgents as Agents,
+    workspace_agents::ServerAgents as Agents,
     workspaces::{
         person_asking::Allowing,
         person_model::{

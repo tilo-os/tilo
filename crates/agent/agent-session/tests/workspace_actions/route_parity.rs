@@ -533,7 +533,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     .await;
     let member = Arc::new(Member {
         host: HostDevice {
-            endpoint: tilo_agent_session::HostEndpoint::iroh(
+            endpoint: tilo_agent_session::ServerEndpoint::iroh(
                 hosted.server.node_addr(),
                 server.cert.clone(),
             ),

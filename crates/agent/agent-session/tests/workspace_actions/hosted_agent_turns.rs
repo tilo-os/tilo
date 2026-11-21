@@ -7,7 +7,7 @@ use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
 use tilo_server::{
-    workspace_agents::{HostAgents, Model},
+    workspace_agents::{ServerAgents, Model},
     workspace_bots::events::PersonEvents,
 };
 use ui::tilo_resource::{Id, Resource as _};
@@ -305,7 +305,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
         .unwrap();
 
     let unasked = Arc::new(Mutex::new(Vec::new()));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(never_asked(Arc::clone(&unasked))),
@@ -409,7 +409,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
     // Nothing linked, and a server that runs no model: the person is told what to link.
-    let agents = HostAgents::for_test(workspaces.clone(), actions.clone(), None);
+    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
@@ -437,7 +437,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         )
         .unwrap();
     let unasked = Arc::new(Mutex::new(Vec::new()));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(never_asked(Arc::clone(&unasked))),
@@ -533,7 +533,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let issue: Id = issue.clone();
 
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::clone(&asked))),
@@ -662,7 +662,7 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
     let tracker_id = file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions,
         Some(looks_then_answers(10_000, Arc::clone(&asked))),
@@ -793,7 +793,7 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::clone(&asked))),
@@ -910,7 +910,7 @@ async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
         .await
         .unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::clone(&asked))),
@@ -1099,7 +1099,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     // question is asked as the turn was.
     let unasked = Arc::new(Mutex::new(Vec::new()));
     let asked = Arc::clone(&unasked);
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(Arc::new(move || {
@@ -1399,7 +1399,7 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(does_then_answers(

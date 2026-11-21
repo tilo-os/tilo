@@ -25,7 +25,7 @@ use tilo_actions::remote::person_accounts::{
     ReadMail, SearchMail, SendMail, SentMail,
 };
 use tilo_server::{
-    workspace_agents::HostAgents as ServerAgents,
+    workspace_agents::ServerAgents,
     workspaces::{
         fixtures::mail::{
             Attachment, InboxHeard, InboxSeen, Leaving, MailSession, Recipient, Watching,

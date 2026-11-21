@@ -3,7 +3,7 @@
 //! it made, grouped as that session's work.
 use super::hosted_agent_turns::{TASKS, file_issue, looks_then_answers, make_agent};
 use super::*;
-use tilo_server::workspace_agents::HostAgents;
+use tilo_server::workspace_agents::ServerAgents;
 
 /// What the page's History reads of the agent's changes in `route`: each one's work group and
 /// purpose.
@@ -61,7 +61,7 @@ async fn a_turn_on_the_server_is_an_agent_session_the_page_reads() {
     .await;
     page.follow_chain(TASKS, tasks::issue_list::chain().chain_head().as_str());
 
-    let agents = HostAgents::for_test(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::default())),

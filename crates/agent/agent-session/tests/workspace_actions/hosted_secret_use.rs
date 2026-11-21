@@ -12,7 +12,7 @@ use super::*;
 use std::sync::Mutex;
 use tilo_actions::remote::{person_accounts, person_vault};
 use tilo_server::{
-    workspace_agents::HostAgents as Agents,
+    workspace_agents::ServerAgents as Agents,
     workspaces::{
         Workspaces,
         person_model::{

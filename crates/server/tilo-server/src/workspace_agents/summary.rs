@@ -26,7 +26,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
 
-use super::{CHAT, HostAgents, Reply, Turn, invoke_named, later};
+use super::{CHAT, ServerAgents, Reply, Turn, invoke_named, later};
 use crate::workspaces::person_model::{Interaction, ModelRefusal, Spender};
 
 /// The chat action that keeps a conversation's summary.
@@ -63,7 +63,7 @@ impl Owed {
     }
 }
 
-impl HostAgents {
+impl ServerAgents {
     /// Take what a turn that answered asks into its conversation's summary: one question goes
     /// to a model and one `keep-summary` keeps what is kept of its answer. Nothing waits for
     /// it: the turn's answer is finished and its place given back before this is called.

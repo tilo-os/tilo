@@ -22,7 +22,7 @@ fn draft() -> serde_json::Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspace_skills_are_shared_and_use_the_members_role() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let device = enrol(&root, "host", DeviceCapabilities::member());
+    let device = enrol(&root, "server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let (served, actions) = crate::harness::hosted::serving_documents_with_actions(

@@ -2,7 +2,7 @@
 //! and agent kept under a state directory, picked up again when the host
 //! restarts.
 //!
-//! [`AgentHost`] owns an [`AgentSupervisor`] whose spawner starts one thread
+//! [`AgentService`] owns an [`AgentSupervisor`] whose spawner starts one thread
 //! per agent. The thread pumps the member, which works on each task with
 //! the host's model ([`MakeTurns`]), until the agent stops or the
 //! host shuts down, sleeping between pumps until its session or steering
@@ -22,8 +22,8 @@
 //! Each workspace's content (the bytes its records name by hash) is kept under
 //! `content/<workspace>` in the state directory, in this process: the host's
 //! one store, which its workspace actions read and write. A harness puts
-//! content in and reads it back by address ([`AgentHost::put_content`],
-//! [`AgentHost::content`]).
+//! content in and reads it back by address ([`AgentService::put_content`],
+//! [`AgentService::content`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -62,13 +62,13 @@ pub type CatalogueFactory = Arc<dyn Fn() -> AppCatalogue + Send + Sync>;
 
 /// How agents reach the host they run on.
 #[derive(Clone)]
-pub struct HostEndpoint {
+pub struct ServerEndpoint {
     pub host: ServerAddress,
     /// Its certificate.
     pub server_cert: DeviceCert,
 }
 
-impl HostEndpoint {
+impl ServerEndpoint {
     /// The host at its iroh endpoint `addr`, the way a host's own agents
     /// reach it.
     #[must_use]
@@ -93,7 +93,7 @@ type MemberThread = (JoinHandle<()>, Arc<dyn Fn() + Send + Sync>);
 struct Shared {
     state_dir: PathBuf,
     model: MakeTurns,
-    endpoint: OnceLock<HostEndpoint>,
+    endpoint: OnceLock<ServerEndpoint>,
     /// The link the supervisor asks the host it runs on through, once it
     /// started.
     link: OnceLock<Arc<dyn AgentHostLink>>,
@@ -129,7 +129,7 @@ impl Shared {
     }
 }
 
-pub struct AgentHost {
+pub struct AgentService {
     supervisor: Arc<AgentSupervisor>,
     shared: Arc<Shared>,
     ticker: Option<JoinHandle<()>>,
@@ -138,7 +138,7 @@ pub struct AgentHost {
     owned_runtime: Option<tokio::runtime::Runtime>,
 }
 
-impl AgentHost {
+impl AgentService {
     /// Agents of `user_public_key`, kept under `state_dir`, working with
     /// `model`, the host's workspaces' content in `content`. Serve
     /// [`Self::supervisor`] to browsers (it answers the agent vocabulary),
@@ -222,7 +222,7 @@ impl AgentHost {
     /// Tokio runtime, or on one of the host's own outside a runtime.
     pub fn start(
         &mut self,
-        endpoint: HostEndpoint,
+        endpoint: ServerEndpoint,
         link: Arc<dyn AgentHostLink>,
     ) -> Result<(), String> {
         self.start_serving(endpoint, link, false)
@@ -234,7 +234,7 @@ impl AgentHost {
     /// The state file could not be read or the host could not start.
     pub fn start_roster(
         &mut self,
-        endpoint: HostEndpoint,
+        endpoint: ServerEndpoint,
         link: Arc<dyn AgentHostLink>,
     ) -> Result<(), String> {
         self.start_serving(endpoint, link, true)
@@ -242,7 +242,7 @@ impl AgentHost {
 
     fn start_serving(
         &mut self,
-        endpoint: HostEndpoint,
+        endpoint: ServerEndpoint,
         link: Arc<dyn AgentHostLink>,
         roster_only: bool,
     ) -> Result<(), String> {
@@ -485,7 +485,7 @@ fn spawn_roster_session(
 
 fn join_roster_session(
     shared: &Shared,
-    endpoint: HostEndpoint,
+    endpoint: ServerEndpoint,
     identity: &AgentIdentity,
     created_at: RosterCreatedAt,
 ) -> Result<(), String> {
@@ -548,7 +548,7 @@ fn join_roster_session(
 
 fn run_agent(
     shared: &Shared,
-    endpoint: HostEndpoint,
+    endpoint: ServerEndpoint,
     workspace: String,
     identity: AgentIdentity,
     control: &Arc<AgentControl>,
@@ -690,7 +690,7 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let root = SigningKey::from_bytes(&[1; 32]);
         let clock = Arc::clone(&pinned);
-        let mut host = AgentHost::with_clock(
+        let mut host = AgentService::with_clock(
             root.verifying_key().to_bytes(),
             (state.path().to_owned(), test_content(state.path())),
             crate::ModelChoice::Scripted.make_turns(),
@@ -753,8 +753,8 @@ mod tests {
         ))
     }
 
-    fn agent_host(state: &Path) -> AgentHost {
-        AgentHost::new(
+    fn agent_service(state: &Path) -> AgentService {
+        AgentService::new(
             [7; 32],
             (state.to_path_buf(), test_content(state)),
             crate::ModelChoice::Scripted.make_turns(),
@@ -764,7 +764,7 @@ mod tests {
     #[test]
     fn content_put_in_a_workspace_reads_back_by_its_address() {
         let state = tempfile::tempdir().unwrap();
-        let host = agent_host(state.path());
+        let host = agent_service(state.path());
         let address = host.put_content(WORKSPACE, b"a picture's bytes").unwrap();
         let reference = tilo_actions::content_hash(&address).unwrap();
         assert!(tilo_content::is_sealed(reference), "{reference}");
@@ -785,14 +785,14 @@ mod tests {
             "the store holds ciphertext alone"
         );
         // Kept under the state directory: a host started again reads it.
-        let again = agent_host(state.path());
+        let again = agent_service(state.path());
         assert!(again.content(WORKSPACE, &address).is_some());
     }
 
     #[test]
     fn one_workspaces_content_is_not_anothers() {
         let state = tempfile::tempdir().unwrap();
-        let host = agent_host(state.path());
+        let host = agent_service(state.path());
         let address = host
             .put_content(WORKSPACE, b"kept in one workspace")
             .unwrap();
@@ -872,7 +872,7 @@ mod tests {
     #[test]
     fn the_host_keeps_credentials_and_content_and_nothing_learned() {
         let state = tempfile::tempdir().unwrap();
-        let host = agent_host(state.path());
+        let host = agent_service(state.path());
         let reference = host.put_content(WORKSPACE, b"a picture's bytes").unwrap();
         // A grant survives a restart, which is the state file's whole job.
         let root = SigningKey::from_bytes(&[7; 32]);

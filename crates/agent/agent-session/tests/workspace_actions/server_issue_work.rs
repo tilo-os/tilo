@@ -13,7 +13,7 @@ use tilo_actions::remote::{
 };
 use tilo_server::{
     workspace_agents::{
-        HostAgents as ServerAgents, Turn, WorkspaceActionProvider as ActionService, invoke_named,
+        ServerAgents, Turn, WorkspaceActionProvider as ActionService, invoke_named,
     },
     workspace_bots::events::PersonEvents,
     workspaces::Workspaces,

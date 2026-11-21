@@ -1,5 +1,5 @@
 //! Agents on this host (feature `agents`): the link between the server and
-//! `tilo-agent-session`'s [`AgentHost`].
+//! `tilo-agent-session`'s [`AgentService`].
 //!
 //! [`ServerAgentLink`] is what the supervisor asks of the server:
 //!
@@ -36,8 +36,8 @@ use tilo_agent_session::workspace_actions::{
     HostDevice, PackagedCall, ShellRan, Watching, WorkspaceShell,
 };
 use tilo_agent_session::{
-    AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
-    FeedbackReviewer, HostActions, HostEndpoint, MakeTurns, SupervisorHost, WorkspaceActions,
+    AdmissionDone, AgentService, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
+    FeedbackReviewer, HostActions, ServerEndpoint, MakeTurns, SupervisorHost, WorkspaceActions,
     WorkspaceDocumentsLink,
 };
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
@@ -75,7 +75,7 @@ pub struct ServerAgentLink {
 }
 
 impl Server {
-    /// The link an [`AgentHost`] supervises this server's agents through.
+    /// The link an [`AgentService`] supervises this server's agents through.
     /// Call it inside the runtime the server runs on.
     #[must_use]
     pub fn agent_link(&self) -> ServerAgentLink {
@@ -1382,7 +1382,7 @@ fn attach_resources(
             sessions,
             runtime: tokio::runtime::Handle::current(),
             host_device: HostDevice {
-                endpoint: HostEndpoint::iroh(server.node_addr(), server_cert.clone()),
+                endpoint: ServerEndpoint::iroh(server.node_addr(), server_cert.clone()),
                 key: server.workspace_documents().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
             },
@@ -1397,7 +1397,7 @@ pub async fn start(
     cfg: crate::ServerConfig,
     identity: ServerIdentity,
     options: AgentOptions,
-) -> Result<(Server, AgentHost), ServerError> {
+) -> Result<(Server, AgentService), ServerError> {
     let (server, agents, _) =
         start_inner(cfg, identity, options, None, Serving::Supervisor).await?;
     Ok((server, agents))
@@ -1412,7 +1412,7 @@ pub async fn start_with_relay_mode(
     identity: ServerIdentity,
     options: AgentOptions,
     relay_mode: iroh::RelayMode,
-) -> Result<(Server, AgentHost), ServerError> {
+) -> Result<(Server, AgentService), ServerError> {
     let (server, agents, _) = start_inner(
         cfg,
         identity,
@@ -1429,7 +1429,7 @@ pub async fn start_with_roster(
     cfg: crate::ServerConfig,
     identity: ServerIdentity,
     options: AgentOptions,
-) -> Result<(Server, AgentHost, RosterServices), ServerError> {
+) -> Result<(Server, AgentService, RosterServices), ServerError> {
     start_roster(cfg, identity, options, Serving::Both).await
 }
 
@@ -1439,7 +1439,7 @@ pub async fn start_workspace_documents(
     cfg: crate::ServerConfig,
     identity: ServerIdentity,
     options: AgentOptions,
-) -> Result<(Server, AgentHost, RosterServices), ServerError> {
+) -> Result<(Server, AgentService, RosterServices), ServerError> {
     start_roster(cfg, identity, options, Serving::Roster).await
 }
 
@@ -1448,7 +1448,7 @@ async fn start_roster(
     identity: ServerIdentity,
     options: AgentOptions,
     serving: Serving,
-) -> Result<(Server, AgentHost, RosterServices), ServerError> {
+) -> Result<(Server, AgentService, RosterServices), ServerError> {
     let events_state = cfg.state_root.join("person-events");
     let initiative_state = cfg.state_root.join("person-initiative");
     let (server, agents, actions) = start_inner(cfg, identity, options, None, serving).await?;
@@ -1475,9 +1475,9 @@ async fn start_inner(
     options: AgentOptions,
     relay_mode: Option<iroh::RelayMode>,
     serving: Serving,
-) -> Result<(Server, AgentHost, Arc<WorkspaceActionsServer>), ServerError> {
+) -> Result<(Server, AgentService, Arc<WorkspaceActionsServer>), ServerError> {
     let content = crate::content::stores(&cfg.state_root);
-    let mut agents = AgentHost::new(
+    let mut agents = AgentService::new(
         identity.user_public_key,
         (options.state_dir.clone(), Arc::clone(&content)),
         Arc::clone(&options.model),
@@ -1500,7 +1500,7 @@ async fn start_app_server(
     identity: ServerIdentity,
     options: AgentOptions,
     content: Arc<WorkspaceStores>,
-    agents: Option<&mut AgentHost>,
+    agents: Option<&mut AgentService>,
     relay_mode: Option<iroh::RelayMode>,
     serving: Serving,
 ) -> Result<(Server, Arc<WorkspaceActionsServer>), ServerError> {
@@ -1554,7 +1554,7 @@ async fn start_app_server(
         if let Some(roster) = &action_server.roster {
             roster.start(&link);
         }
-        let endpoint = HostEndpoint::iroh(server.node_addr(), server_cert);
+        let endpoint = ServerEndpoint::iroh(server.node_addr(), server_cert);
         let started = if serve_supervisor {
             agents.start(endpoint, link)
         } else {

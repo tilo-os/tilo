@@ -573,7 +573,7 @@ async fn a_hosted_roster_turn() {
         TASKS, answered_to, does_then_answers, file_issue, make_agent,
     };
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
-    use tilo_server::workspace_agents::HostAgents;
+    use tilo_server::workspace_agents::ServerAgents;
     use tilo_session_client::Outbox as _;
     use ui::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents, workspace_agents::RetireAgent};
 
@@ -900,7 +900,7 @@ async fn a_hosted_roster_turn() {
         "I worked on the sheet.",
         Arc::clone(&requests),
     );
-    let runner = HostAgents::with_sessions(
+    let runner = ServerAgents::with_sessions(
         workspaces.clone(),
         roster.actions.clone(),
         Some(model),

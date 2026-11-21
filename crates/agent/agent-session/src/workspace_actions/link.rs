@@ -16,7 +16,7 @@ use tilo_actions::remote::{
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::WorkspaceShell;
-use crate::host::HostEndpoint;
+use crate::host::ServerEndpoint;
 use tilo_server_protocol::WorkspaceId;
 
 /// The host's own device, as the service takes part in its workspaces: a
@@ -25,7 +25,7 @@ use tilo_server_protocol::WorkspaceId;
 #[derive(Clone)]
 pub struct HostDevice {
     /// The host's endpoint and certificate; the member is the host device.
-    pub endpoint: HostEndpoint,
+    pub endpoint: ServerEndpoint,
     /// The host device's key, which signs the member's changes.
     pub key: SigningKey,
     /// The runtime the member's sessions run on.

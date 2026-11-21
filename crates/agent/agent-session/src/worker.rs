@@ -113,7 +113,7 @@ fn serve_if_requested() -> Option<u8> {
 /// Set once this executable's `main` called [`dispatch_early`]: its workers
 /// start with the worker argument alone. Otherwise the executable is a test
 /// harness serving them through [`app_worker!`], whose workers also carry the
-/// arguments that make libtest run that one test and nothing else.
+/// arguments that make libtest execute that one test and nothing else.
 static SERVES_FROM_MAIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 /// The arguments a worker of this executable starts with.

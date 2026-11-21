@@ -352,7 +352,7 @@ async fn post(reply: &Reply, conversation: &str, words: &str) -> bool {
     posted.is_ok()
 }
 
-impl super::HostAgents {
+impl super::ServerAgents {
     /// These agents, working those that are coding agents in their workspaces' machines: each
     /// by the coding harness its item names, of those every server knows, started in
     /// `machines`. Without this a coding agent is worked by nobody here and waits.

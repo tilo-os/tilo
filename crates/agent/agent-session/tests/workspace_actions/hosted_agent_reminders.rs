@@ -16,13 +16,13 @@ use tilo_server::{
 
 type Actions = tilo_agent_session::workspace_actions::WorkspaceActions;
 /// The agents a server keeps working for its workspaces.
-type Agents = HostAgents;
+type Agents = ServerAgents;
 
 /// A server that is up, as tilo.sh keeps one: its workspaces' documents served, and its people's
 /// events kept going from its start.
 struct Up {
     server: Server,
-    host: tilo_agent_session::AgentHost,
+    agents: tilo_agent_session::AgentService,
     actions: Actions,
     events: PersonEvents,
     workspaces: Workspaces,
@@ -43,7 +43,7 @@ impl Up {
             device_cert: device.cert.clone(),
             revocations: RevocationList::new(),
         };
-        let (server, host, roster) = start_workspace_documents(
+        let (server, agents, roster) = start_workspace_documents(
             cfg,
             identity,
             AgentOptions {
@@ -60,7 +60,7 @@ impl Up {
         let workspaces = server.workspaces().unwrap().clone();
         Self {
             server,
-            host,
+            agents,
             actions: roster.actions,
             events: roster
                 .events
@@ -73,12 +73,12 @@ impl Up {
     async fn down(self) {
         let Self {
             server,
-            host,
+            agents,
             actions,
             events,
             workspaces,
         } = self;
-        host.shutdown();
+        agents.shutdown();
         drop((actions, events, workspaces));
         server.shutdown().await;
     }

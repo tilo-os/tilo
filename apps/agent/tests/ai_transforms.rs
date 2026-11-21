@@ -81,7 +81,7 @@ enum Answering {
     Unchecked,
 }
 
-struct AgentHost {
+struct AgentService {
     rows: Vec<CatalogueRow>,
     model: Scripted,
     answering: Answering,
@@ -89,7 +89,7 @@ struct AgentHost {
     log: Mutex<InvocationLog<InvocationUpdate>>,
 }
 
-impl AgentHost {
+impl AgentService {
     fn new(answers: &[&str]) -> Self {
         let rows = transform::descriptors()
             .into_iter()
@@ -160,7 +160,7 @@ impl AgentHost {
     }
 }
 
-impl ActionProvider for AgentHost {
+impl ActionProvider for AgentService {
     fn query(
         &self,
         _caller: &Caller,
@@ -269,7 +269,7 @@ fn ai_shortcut(prompt: &str, output: Option<Value>, input: Option<Binding>) -> S
 }
 
 fn run_shortcut(
-    host: &AgentHost,
+    host: &AgentService,
     shortcut: &Shortcut,
     inputs: Map<String, Value>,
 ) -> InvocationReport {
@@ -301,7 +301,7 @@ fn failure(report: &InvocationReport) -> Option<&StepFailure> {
 
 #[test]
 fn a_summary_step_succeeds_against_the_published_descriptor() {
-    let host = AgentHost::new(&[r#"{"result": "Two notes, both about the launch."}"#]);
+    let host = AgentService::new(&[r#"{"result": "Two notes, both about the launch."}"#]);
     let digest = ai_shortcut(
         "Summarise this briefly",
         None,
@@ -337,7 +337,7 @@ fn task_shortcut(instruction: &str, output: Option<Value>) -> Shortcut {
 
 #[test]
 fn a_task_step_runs_against_the_published_task_descriptor() {
-    let host = AgentHost::new(&[r#"{"result": {"tidied": 3}}"#]);
+    let host = AgentService::new(&[r#"{"result": {"tidied": 3}}"#]);
     let tidy = task_shortcut(
         "Tidy the inbox",
         Some(json!({
@@ -365,7 +365,7 @@ tilo_test_env::scenario! {
             "required": ["due", "owner"],
             "additionalProperties": false
         });
-        let host = AgentHost::new(&[
+        let host = AgentService::new(&[
             r#"{"result": {"due": "Friday"}}"#,
             r#"{"result": {"due": "Friday", "owner": "Ada"}}"#,
         ]);
@@ -389,7 +389,7 @@ tilo_test_env::scenario! {
 
     phase an_answer_that_misses_the_schema_twice_fails_the_step;
     {
-        let host = AgentHost::new(&[r#"{"result": {"due": 5}}"#, "Sure! The owner is Ada."]);
+        let host = AgentService::new(&[r#"{"result": {"due": 5}}"#, "Sure! The owner is Ada."]);
         let extract = ai_shortcut(
             "Pull out the due date",
             Some(json!({
@@ -414,7 +414,7 @@ tilo_test_env::scenario! {
     {
         // A publisher returning the model's value without checking it is caught
         // by the result spec the agent declares.
-        let host = AgentHost::unchecked(&[r#"{"result": 42}"#]);
+        let host = AgentService::unchecked(&[r#"{"result": 42}"#]);
         let digest = ai_shortcut(
             "Summarise this",
             None,
@@ -429,7 +429,7 @@ tilo_test_env::scenario! {
 
     phase a_classification_is_one_of_the_labels;
     {
-        let host = AgentHost::new(&[r#"{"result": "maybe"}"#, r#"{"result": "urgent"}"#]);
+        let host = AgentService::new(&[r#"{"result": "maybe"}"#, r#"{"result": "urgent"}"#]);
         let triage = ai_shortcut(
             "Label this urgent or later",
             Some(json!({"type": "string", "enum": ["urgent", "later"]})),
@@ -443,7 +443,7 @@ tilo_test_env::scenario! {
 
     phase a_secret_never_reaches_the_agent;
     {
-        let host = AgentHost::new(&[r#"{"result": "leaked"}"#]);
+        let host = AgentService::new(&[r#"{"result": "leaked"}"#]);
         let mut leak = ai_shortcut("Summarise this", None, Some(Binding::Input("token".into())));
         leak.inputs = vec![ActionParam::required(
             "token",
@@ -471,7 +471,7 @@ tilo_test_env::scenario! {
 
     phase a_task_says_what_it_may_not_do_when_it_has_no_authority;
     {
-        let host = AgentHost::new(&[r#"{"result": "I cannot reach the mailbox."}"#]);
+        let host = AgentService::new(&[r#"{"result": "I cannot reach the mailbox."}"#]);
         let tidy = task_shortcut("Tidy the inbox", None);
         let report = run_shortcut(&host, &tidy, Map::new());
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");

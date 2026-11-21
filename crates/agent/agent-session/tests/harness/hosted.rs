@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_agent_session::{AgentHost, AppCatalogue, FeedbackReviewer, MakeTurns, ModelChoice};
+use tilo_agent_session::{AgentService, AppCatalogue, FeedbackReviewer, MakeTurns, ModelChoice};
 use tilo_server::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
@@ -35,7 +35,7 @@ use crate::support::Device;
 pub struct Hosted {
     pub server: Server,
     pub web: WebHandle,
-    pub agents: AgentHost,
+    pub agents: AgentService,
     pub roster: Option<tilo_server::agents::RosterServices>,
     /// The host's own device key, whose records the workspace holds too.
     pub device: [u8; 32],
@@ -212,13 +212,13 @@ pub fn on_this_machine(state: &Path) -> tilo_server::ServerConfig {
     }
 }
 
-/// Start a host for `root`'s person on `host`'s device, with its records served to
-/// their devices, each action run in the record's own app worker here,
+/// Start the agents' service for `root`'s person on `server`'s device, with its documents served
+/// to their devices, each action done in the document's own app worker here,
 /// whether or not a page of the person's is open. Its apps are
 /// `catalogue`'s.
 pub async fn serving_documents(
     root: &SigningKey,
-    host: &Device,
+    server: &Device,
     state: &Path,
     catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
 ) -> Server {
@@ -226,8 +226,8 @@ pub async fn serving_documents(
         on_this_machine(state),
         ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
+            device_signing_key: server.key.clone(),
+            device_cert: server.cert.clone(),
             revocations: RevocationList::new(),
         },
         Some(Arc::new(catalogue)),

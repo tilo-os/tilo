@@ -692,7 +692,7 @@ pub struct LookRead {
 
 /// The agents a host runs for the workspaces it governs.
 #[derive(Clone)]
-pub struct HostAgents {
+pub struct ServerAgents {
     workspaces: Workspaces,
     actions: WorkspaceActions,
     roster: Option<(
@@ -722,7 +722,7 @@ pub struct HostAgents {
     placed: Option<crate::environment::EnvironmentRegistry>,
 }
 
-impl HostAgents {
+impl ServerAgents {
     /// Run the workspace roster through the host's approved signing sessions.
     #[must_use]
     pub fn with_sessions(

@@ -88,7 +88,7 @@ async fn viewed(
     took
 }
 
-/// A chat record with the feedback channel a report goes to, written into the workspace.
+/// A chat document with the feedback channel a report goes to, written into the workspace.
 async fn feedback_record(browser: &mut Browser) -> DocumentRoute {
     let route = DocumentRoute {
         app_id: CHAT.into(),
@@ -148,7 +148,7 @@ fn approved(route: &DocumentRoute) -> Submission {
         .unwrap()
 }
 
-/// Ask the host for the feedback admission of `submission`: the read of the record's registered
+/// Ask the service for the feedback admission of `submission`: the read of the document's registered
 /// destination, with no report attached.
 async fn asked(browser: &mut Browser, submission: &Submission) -> Duration {
     use tilo_actions::remote::feedback::{FeedbackDestination, FeedbackQuery};

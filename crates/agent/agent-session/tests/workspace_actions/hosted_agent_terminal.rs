@@ -12,7 +12,7 @@ use super::resource_support::{admit_person_at, open_admitted_at};
 use super::*;
 use std::sync::Arc;
 use tilo_peer_state::join::Role;
-use tilo_server::workspace_agents::HostAgents;
+use tilo_server::workspace_agents::ServerAgents;
 use tilo_server::workspaces::{
     Workspaces,
     person_model::{
@@ -39,7 +39,7 @@ struct OnTheirServer {
     page: Browser,
     ada: SigningKey,
     browser: crate::support::Device,
-    agents: HostAgents,
+    agents: ServerAgents,
     model: Arc<ScriptedProvider>,
     address: tilo_server_client::ServerAddress,
     _state: tempfile::TempDir,
@@ -112,7 +112,7 @@ impl OnTheirServer {
                 )
                 .unwrap();
         }
-        let agents = HostAgents::for_test(workspaces.clone(), actions.clone(), servers_model);
+        let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), servers_model);
         Self {
             _server: server,
             actions,

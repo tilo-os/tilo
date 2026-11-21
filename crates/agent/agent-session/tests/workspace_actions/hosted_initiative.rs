@@ -6,7 +6,7 @@
 //! the turn itself: the model of a turn the server carries out finds `propose` among the tools
 //! that turn has, takes it, and is answered the proposal.
 
-use super::HostAgents as ServerAgents;
+use super::ServerAgents;
 use super::*;
 use crate::harness::hosted::serving_documents_with_actions as serving_with_actions;
 use tilo_actions::remote::person_initiative::{

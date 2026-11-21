@@ -29,8 +29,8 @@
 //!   remote actions the host answers for the delegating user's devices
 //!   ([`control`]); a grant is requested from the page and approved with
 //!   its delegation in one consent step.
-//! - **Hosting.** [`AgentHost`] runs each agent on its own thread, keeps
-//!   grants and agents under a state directory, resumes them when the host
+//! - **Agents.** [`AgentService`] gives each agent its own thread, keeps
+//!   grants and agents under a state directory, resumes them when the service
 //!   restarts and settles expired grants ([`host`]).
 //! - **Memory.** There is none of its own. What an agent learns it reads
 //!   from the workspace's records, and what it keeps it writes there through an
@@ -63,7 +63,7 @@ pub use control::{
     AdmissionDone, AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone,
     GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot,
 };
-pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
+pub use host::{AgentService, CatalogueFactory, ServerEndpoint};
 pub use member::actions::{RESOURCE_PROVIDER, resource_provider};
 pub use member::{AgentMember, MemberConfig, Next, Pumped};
 pub use model::{ApiKey, CLOUD_MODEL, MakeTurns, ModelChoice};

@@ -299,7 +299,7 @@ impl AgentArgs {
 pub struct HostedServer {
     pub server: Server,
     #[cfg(feature = "agents")]
-    agents: Option<tilo_agent_session::AgentHost>,
+    agents: Option<tilo_agent_session::AgentService>,
     /// The agents it runs for the workspaces it governs.
     #[cfg(feature = "agents")]
     host_agents: Option<tokio::task::JoinHandle<()>>,
@@ -476,7 +476,7 @@ fn start_roster(
             model = %model.as_ref().map_or_else(|| "none".to_owned(), tilo_agent_session::ModelChoice::describe),
             "the workspaces' agents run on this host"
         );
-        let agents = tilo_server::workspace_agents::HostAgents::with_sessions(
+        let agents = tilo_server::workspace_agents::ServerAgents::with_sessions(
             workspaces,
             roster.actions,
             model.map(tilo_server::workspace_agents::model_of),

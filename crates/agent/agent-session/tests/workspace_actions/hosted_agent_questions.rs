@@ -13,7 +13,7 @@ use tilo_actions::remote::person_asking::{self, ActionName, Asked, Words};
 use tilo_server::{
     daemon,
     workspace_agents::{
-        Answered, Carried, Carries, HostAgents, ServerAsk, WorkspaceActionProvider, invoke_named,
+        Answered, Carried, Carries, ServerAgents, ServerAsk, WorkspaceActionProvider, invoke_named,
     },
     workspaces::{
         Workspaces,
@@ -62,7 +62,7 @@ struct Hosted {
     page: Browser,
     root: SigningKey,
     browser: crate::support::Device,
-    agents: HostAgents,
+    agents: ServerAgents,
     /// The person's model, scripted, and everything it was sent.
     model: Arc<ScriptedProvider>,
     _state: tempfile::TempDir,
@@ -108,7 +108,7 @@ impl Hosted {
                 true,
             )
             .unwrap();
-        let agents = HostAgents::for_test(workspaces.clone(), actions.clone(), None);
+        let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
         Self {
             _server: server,
             actions,
@@ -134,7 +134,7 @@ impl Hosted {
     /// The server stops and starts again: whatever ran its agents is gone, and what works them now
     /// knows only what the documents and the server's own store hold.
     fn restart(&mut self) {
-        self.agents = HostAgents::for_test(self.workspaces.clone(), self.actions.clone(), None);
+        self.agents = ServerAgents::for_test(self.workspaces.clone(), self.actions.clone(), None);
     }
 
     /// The person writes `words` to their assistant, and the server answers the one turn that
