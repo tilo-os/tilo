@@ -2213,10 +2213,7 @@ impl Button {
 impl Widget for Button {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("button");
-        let face = crate::composition::HTML_CODE
-            .get()
-            .and_then(|code| (code.button)(self, cx.theme()));
-        match face {
+        match self.composed_face(cx.theme()) {
             Some(face) => cx.face(face),
             None => cx.picture(),
         }

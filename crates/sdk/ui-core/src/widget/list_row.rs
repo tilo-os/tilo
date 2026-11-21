@@ -2081,7 +2081,7 @@ impl ListRow {
         self.selected
     }
 
-    /// The row's parts as a page shows them ([`crate::composition::HtmlCode`]).
+    /// The row's parts as a page shows them.
     pub(crate) fn compose_html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         let check = cx.semantics().and_then(|node| {
             node.children
@@ -2666,10 +2666,7 @@ impl Widget for ListRow {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("li");
         cx.selected(self.selected);
-        match crate::composition::HTML_CODE.get() {
-            Some(code) => (code.list_row)(self, cx),
-            None => cx.picture(),
-        }
+        self.compose_html(cx);
     }
 
     crate::provides!(

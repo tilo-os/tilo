@@ -5,8 +5,6 @@
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
 
 use super::{FrameHarness, RelayoutStats};
 use crate::app_core::AppCore as _;
@@ -73,8 +71,6 @@ pub(super) struct Presented {
     layout_revision: u64,
     /// The composition it was last handed.
     kept: Option<Kept>,
-    /// The composition it was handed before that one, while they differ.
-    before: Option<Composition>,
     /// A frame since it was handed one left the widgets' paint marks for the next to clear.
     drawn_owed: bool,
 }
@@ -446,7 +442,6 @@ impl FrameHarness {
         let changed = previous
             .as_ref()
             .is_none_or(|kept| kept.composition != composition);
-        self.presented.before = previous.filter(|_| changed).map(|kept| kept.composition);
         let kept = self.presented.kept.insert(Kept {
             composition,
             read,
@@ -459,14 +454,6 @@ impl FrameHarness {
     #[must_use]
     pub fn presented_composition(&self) -> Option<&Composition> {
         self.presented.kept.as_ref().map(|kept| &kept.composition)
-    }
-
-    /// The composition [`Self::compose_frame`] handed over before the one it handed last, while
-    /// they differ: what a page that showed it is handed the change from
-    /// ([`Composition::since`]).
-    #[must_use]
-    pub fn composed_before(&self) -> Option<&Composition> {
-        self.presented.before.as_ref()
     }
 
     fn composition_read(&self) -> Read {
@@ -582,84 +569,6 @@ impl FrameHarness {
         (composition, walk.stood_on.into_inner())
     }
 
-    /// The paint of each of `parts`, widgets or parts of the composition last read
-    /// ([`Self::composition`]), alone, at `scale` device pixels per logical pixel, its box's top
-    /// left at the origin: the pictures a page shows for widgets that declare nothing of their own
-    /// ([`crate::composition::Own::Painted`]). `None` for a part no laid-out widget has the path of.
-    ///
-    /// The page's presenter hands the nodes from the composition it holds, all of a frame's at
-    /// once: composing the window, and naming its widgets, again for each picture made a frame
-    /// with many pictures (a resize, a page of charts) do that work once a picture.
-    pub fn paint_composed<'c>(
-        &mut self,
-        parts: impl IntoIterator<Item = &'c Composed>,
-        scale: f64,
-    ) -> Vec<Option<(Scene, [f64; 4])>> {
-        let mut targets = None;
-        parts
-            .into_iter()
-            .map(|composed| {
-                let path = composed.path.as_str();
-                if path == super::part_row::WINDOW_PARTS {
-                    return self.paint_part_row(scale);
-                }
-                let widget_path = path.split_once('#').map_or(path, |(widget, _)| widget);
-                let node = *targets
-                    .get_or_insert_with(|| self.named_target_nodes())
-                    .get(widget_path)?;
-                self.paint_node(node, composed, scale)
-            })
-            .collect()
-    }
-
-    /// The paint of `composed`, the widget laid out at `node` or a part of it.
-    fn paint_node(
-        &mut self,
-        node: NodeId,
-        composed: &Composed,
-        scale: f64,
-    ) -> Option<(Scene, [f64; 4])> {
-        let [x, y, width, height] = composed.rect;
-        let part = composed
-            .path
-            .contains('#')
-            .then(|| Rect::new(x, y, x + width, y + height));
-        // Words the page sets over the picture are left out of it.
-        let words_on_top = composed.children.iter().any(shows_words);
-        let text = &mut self.text;
-        let theme = &self.theme;
-        let presence = &self.presence;
-        // SAFETY: the harness owns the laid-out tree and holds it exclusively
-        // here; no reference into it outlives the call.
-        unsafe {
-            crate::bound_dispatch::mutate_bound_node(
-                &self.bindings,
-                &self.node_map,
-                node,
-                |widget| {
-                    let rect = part.unwrap_or_else(|| widget.get_rect());
-                    let mut scene = Scene::new();
-                    let transform = Affine::scale(scale) * Affine::translate((-rect.x0, -rect.y0));
-                    let mut paint = || {
-                        crate::widget::DrawChild::draw_child(
-                            widget, &mut scene, transform, text, theme, presence,
-                        );
-                    };
-                    // A chart's readout is the page's own elements over its picture.
-                    crate::widget::chart_readout::without_readouts(|| {
-                        if words_on_top {
-                            crate::text_render::without_words(paint);
-                        } else {
-                            paint();
-                        }
-                    });
-                    (scene, [rect.x0, rect.y0, rect.width(), rect.height()])
-                },
-            )
-        }
-        .ok()
-    }
-
     /// Scroll the widget at `path` to `offset` logical pixels, as a host whose own scroller the person
     /// moved asks; whether it moved. A scroll changes only where the view stands, as a wheel's pan
     /// does: the frame after it places what came into view and syncs nothing.
@@ -667,7 +576,8 @@ impl FrameHarness {
         let Some(&node) = self.named_target_nodes().get(path) else {
             return false;
         };
-        // SAFETY: as in `paint_composed`.
+        // SAFETY: the harness owns the laid-out tree and holds it exclusively
+        // here; no reference into it outlives the call.
         let scrolled = unsafe {
             crate::bound_dispatch::mutate_bound_node(
                 &self.bindings,
@@ -685,19 +595,4 @@ impl FrameHarness {
             Ok(crate::widget::scrollbar::PrimaryScrollResult::Changed(_))
         )
     }
-}
-
-/// Whether `node` or a part of it shows words of its own on a page.
-fn shows_words(node: &Composed) -> bool {
-    use crate::composition::Own;
-    matches!(
-        node.own,
-        Some(
-            Own::Text(_)
-                | Own::Field { .. }
-                | Own::Blocks { .. }
-                | Own::Face(_)
-                | Own::Control { .. }
-        )
-    ) || node.children.iter().any(shows_words)
 }

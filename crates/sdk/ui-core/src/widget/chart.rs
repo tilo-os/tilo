@@ -1137,9 +1137,7 @@ impl Widget for Sparkline {
             self.painted_colour(theme),
             &self.style,
         );
-        if !crate::widget::chart_readout::readouts_left_out()
-            && let Some(readout) = self.readout(theme)
-        {
+        if let Some(readout) = self.readout(theme) {
             readout.paint(scene, transform, tr, theme);
         }
     }

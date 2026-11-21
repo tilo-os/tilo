@@ -415,11 +415,6 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
         why: "composes what the last frame laid out and clears the paint marks that frame left for it, as a drawing frame's paint clears them; nothing a frame reads.",
     },
     QuietEntry {
-        file: "headless/composition.rs",
-        entry: "paint_composed",
-        why: "draws the widget's paint; nothing a frame reads changes.",
-    },
-    QuietEntry {
         file: "headless/controls.rs",
         entry: "follow_view",
         why: "moves the view through `relayout`, and opens one through `invoke_action`, each of which invalidates; a frame where it finds nothing new changes nothing.",

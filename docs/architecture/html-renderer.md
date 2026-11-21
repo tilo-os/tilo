@@ -60,9 +60,7 @@ A widget that shows several parts of one control (a colour's swatches beside
 its hex field) calls `cx.control` once per part. A choice with no `target` and
 no `value` is only its looks, and the page does not act on it.
 
-Icons reach a page through `composition::glyph`, which is part of `HTML_CODE`
-with the faces, so an SVG outline's path data is not in a program that never
-composes a page.
+Icons reach a page through `composition::glyph`, as SVG outlines in the icon's colour.
 
 Widgets with their own HTML so far: `Text`, `EditableLabel`, `BlockEditor`,
 `Button` (a `<button>` whose face is its icon, words and state), `ListRow`,
