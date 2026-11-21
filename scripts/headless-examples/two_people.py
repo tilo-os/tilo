@@ -124,7 +124,7 @@ def joined(
     `out` is the run directory: each session's state, its log and the invitation go under it.
     `tapps` builds what both sessions install besides `apps`, from the host's prepared state, so an
     app that is not the tree's own signed package is installed by both. What is yielded is the two
-    sessions, the workspace's row from the host's shell, and the link the peer came in by; both
+    sessions, the workspace's id, and the link the peer came in by; both
     sessions are stopped on the way out. `names` are the host's and the peer's profile names, as
     each person's own card keeps the name they gave; without them each goes by their account's.
     """

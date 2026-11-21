@@ -115,7 +115,7 @@ def main() -> int:
     summary: dict = {"proof": "mail-two-members", "passed": False}
     try:
         with joined(out, apps="mail", names=("Ada", "Bo")) as (ada, bo, workspace, _link):
-            summary["workspace"] = workspace.get("id")
+            summary["workspace"] = workspace
             ada.launch(MAIL)
             bo.launch(MAIL)
             for session in (ada, bo):
