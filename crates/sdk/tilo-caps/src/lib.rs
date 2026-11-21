@@ -209,7 +209,10 @@ impl Capability {
             Self::Processes => platform_row(tilo_process::Feature::ProcessId),
             // Gpu, on Linux: the device node in the sandbox; without it the
             // room's render service draws the app. macOS gives every app its
-            // Metal device.
+            // Metal device. System information: on Linux the session's system
+            // information service, which a sandboxed app reaches through its
+            // launcher (`tilo-system-stats`); on macOS the platform's own
+            // interfaces.
             Self::Clipboard
             | Self::Gpu
             | Self::FilesOpen
@@ -218,22 +221,19 @@ impl Capability {
             | Self::NetworkHttp
             | Self::NetworkFetchProxy
             | Self::NetworkStatus
+            | Self::NetworkSockets
             | Self::Background
             | Self::Spellcheck
-            | Self::Secrets => [Available, Available],
-            Self::FilesSave => [Available, Planned],
+            | Self::Secrets
+            | Self::MediaDecode
+            | Self::MediaSession
+            | Self::SystemInfo
+            | Self::WebView => [Available, Available],
+            Self::FilesSave | Self::Speech => [Available, Planned],
             Self::Notifications => [Available, Prompt],
-            Self::Print => [Planned, Planned],
-            Self::NetworkSockets => [Available, Available],
-            Self::ScheduledWake => [Planned, Planned],
-            // System information: on Linux the session's system information
-            // service, which a sandboxed app reaches through its launcher
-            // (`tilo-system-stats`); on macOS the platform's own interfaces.
-            Self::MediaDecode | Self::MediaSession | Self::SystemInfo => [Available, Available],
-            Self::Speech => [Available, Planned],
+            Self::Print | Self::ScheduledWake => [Planned, Planned],
             Self::Location => [Prompt, Prompt],
             Self::Camera | Self::Microphone | Self::ScreenCapture => [Prompt, Planned],
-            Self::WebView => [Available, Available],
             // The session's settings service grants it, on Tilo OS, to the
             // settings app the image ships and to no other.
             Self::SettingsSystem => [
