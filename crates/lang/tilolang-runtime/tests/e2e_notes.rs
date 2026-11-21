@@ -695,6 +695,36 @@ mod cases {
         assert_eq!(labels(&n.window()), ["Plan", "Meetings", "Agenda", "Loose"]);
     }
 
+    /// The note a person writes is the one the window starts a note under: the bar's control
+    /// names the open note, and carries the chord that reaches it.
+    #[test]
+    fn the_open_notes_sub_note_is_a_keystroke_away() {
+        let n = Notes::new();
+        let plan = n.titled("Q3 plan");
+        let mut view = n.window();
+        let shell = of_kind(view.tree(), "ui.NavShell")[0];
+        let head = part(shell, "sidebar_actions");
+        let button = of_kind(head, "ui.Button")
+            .into_iter()
+            .find(|button| {
+                matches!(button.props.get("label"), Some(Value::Text(label)) if label == "New sub-note")
+            })
+            .unwrap_or_else(|| panic!("no sub-note control in\n{}", dump(head)));
+        assert_eq!(
+            button.props.get("key"),
+            Some(&Value::text("Ctrl+Shift+N")),
+            "the control carries the chord the note page's sub-note takes"
+        );
+        view.fire(&button.key.clone(), "press").unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(
+            labels(&n.window()),
+            ["Q3 plan", "Untitled"],
+            "a note is started under the one open, with no title of its own yet"
+        );
+        let _ = plan;
+    }
+
     /// The open note's headings stand under the tree in the window's sidebar, nested by the level
     /// they are written at, and choosing one asks the editor beside it to show that block.
     #[test]
