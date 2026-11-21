@@ -135,7 +135,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let loaded = loaded?;
     println!("ok: {loaded}");
     println!(
-        "ok: the web desktop is served at {origin}/ (bundle {} in {}, ready {} after start)",
+        "ok: the web entry is served at {origin}/ (bundle {} in {}, ready {} after start)",
         bundle.display(),
         seconds(built),
         seconds(began.elapsed())

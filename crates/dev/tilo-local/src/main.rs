@@ -3,7 +3,7 @@
 //!
 //! Each command drives the path that already exists for it and adds nothing beside it: the
 //! development session (`dist/dev/nested-session.sh`) for the desktop and the headless runtime, and
-//! the web bundle's build and local hosting stack for the web desktop. What this adds is the choice
+//! the web bundle's build and local hosting stack for the web entry. What this adds is the choice
 //! of options, a line saying where the running thing is and how to reach it, and `--check`: a smoke
 //! test that starts it, asks it something, and stops it.
 
@@ -21,7 +21,7 @@ Run Tilo from this checkout, one command each.
 
   cargo desktop [OPTIONS]    the Tilo desktop in a window on the desktop you are using
   cargo headless [OPTIONS]   the session and its apps with no window, for agents and tests
-  cargo web [OPTIONS]        the web desktop, built and served by the local tilo.sh stack
+  cargo web [OPTIONS]        the web entry, built and served by the local tilo.sh stack
 
 Each command takes --help for its options, and --check to start it, ask it
 something, stop it and say whether it worked (a smoke test, run by CI too).
