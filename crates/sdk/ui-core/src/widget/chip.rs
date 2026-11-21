@@ -1395,11 +1395,13 @@ impl Widget for Chip {
             )
         } else {
             // A chip that names a value rather than running anything reads as that value, as a
-            // `Text` does: its words are what a reader, a screen reader and a test find it by.
+            // `Text` does: its words are what a reader, a screen reader and a test find it by,
+            // and a reader lands on it in the order it meets the values a resource carries.
             Some(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.label.clone())
-                    .with_value(self.label.clone()),
+                    .with_value(self.label.clone())
+                    .with_state(AccessState::new().focusable(true)),
             )
         }
     }
@@ -1871,6 +1873,10 @@ mod tests {
                     node.name.as_deref(),
                     Some("tag"),
                     "a chip that names a value is found by its words, as a text is"
+                );
+                assert!(
+                    node.state.focusable,
+                    "a reader lands on a value chip and hears it"
                 );
             }
 
