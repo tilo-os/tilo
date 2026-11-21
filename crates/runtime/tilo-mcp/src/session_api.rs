@@ -608,7 +608,7 @@ pub struct Beside {
 #[cfg(unix)]
 pub fn serve_with<H>(
     mut stream: std::os::unix::net::UnixStream,
-    mut first: Option<Vec<u8>>,
+    first: Option<Vec<u8>>,
     provider: impl FnOnce() -> Result<H, String>,
     beside: Beside,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
@@ -617,41 +617,9 @@ where
     H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
 {
     let Beside { tasks, devices } = beside;
-    stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
-    let mut budget = MAX_HELLO.saturating_sub(first.as_ref().map_or(0, Vec::len));
-    let hello = loop {
-        let line = match first.take() {
-            Some(line) => Ok(line),
-            None => read_hello_line(&mut stream, &mut budget),
-        };
-        match line
-            .map_err(HelloError::Io)
-            .and_then(|line| parse_hello(&line))
-        {
-            Ok(hello) => break hello,
-            Err(HelloError::Discover(id)) => {
-                // A client that does not read its answers is not waited on.
-                use std::io::Write as _;
-                stream.write_all(format!("{}\n", not_found_reply(&id)).as_bytes())?;
-            }
-            Err(HelloError::NotInitialize(id)) => {
-                write_line(
-                    &mut stream,
-                    &error_reply(
-                        &id,
-                        "the MCP server opens with initialize; nothing else is answered before the \
-                     person admits this client",
-                    ),
-                );
-                finish_refusal(&mut stream);
-                return Ok(());
-            }
-            Err(HelloError::Io(error)) => return Err(error),
-        }
+    let Some(hello) = opening_hello(&mut stream, first)? else {
+        return Ok(());
     };
-    stream.set_read_timeout(None)?;
     let id = hello.request.get("id").cloned().unwrap_or_default();
     let probe = {
         let stream = stream.try_clone()?;
@@ -690,10 +658,106 @@ where
     let server = crate::McpServer::for_agent(provider, workspace, &agent, &person)
         .agent_named(&shown)
         .with_agent_session(group);
-    let server = std::sync::Arc::new(server.with_task_hosts(tasks).with_devices(devices));
+    let server = server.with_task_hosts(tasks).with_devices(devices);
+    serve_server(stream, hello.request, server)
+}
+
+/// Serve one accepted connection as the server `admit` builds once the client said who it is
+/// (its `initialize`, `hello`): the host decides who the connection is, asking whom it asks
+/// while `connected` says the client is still there, and builds the server it acts through, or
+/// refuses it with the reason the client is told. Where [`serve_with`] admits a client as the
+/// agent of a person on this device, a host that builds its callers itself (a workspace's
+/// server, for a program in the workspace's machine) admits it through this.
+///
+/// # Errors
+/// Returns transport errors; a refusal is `Ok`.
+#[cfg(unix)]
+pub fn serve_as<H>(
+    mut stream: std::os::unix::net::UnixStream,
+    first: Option<Vec<u8>>,
+    admit: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Result<crate::McpServer<H>, String>,
+) -> io::Result<()>
+where
+    H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
+{
+    let Some(hello) = opening_hello(&mut stream, first)? else {
+        return Ok(());
+    };
+    let probe = {
+        let stream = stream.try_clone()?;
+        move || client_connected(&stream)
+    };
+    match admit(&hello, &probe) {
+        Ok(server) => serve_server(stream, hello.request, server),
+        Err(message) => {
+            let id = hello.request.get("id").cloned().unwrap_or_default();
+            write_line(&mut stream, &error_reply(&id, &message));
+            finish_refusal(&mut stream);
+            Ok(())
+        }
+    }
+}
+
+/// The client's `initialize` on `stream`, after `first` when that was read already; `None`
+/// when the client sent something else first, which was answered and the connection ended.
+#[cfg(unix)]
+fn opening_hello(
+    stream: &mut std::os::unix::net::UnixStream,
+    mut first: Option<Vec<u8>>,
+) -> io::Result<Option<Hello>> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut budget = MAX_HELLO.saturating_sub(first.as_ref().map_or(0, Vec::len));
+    let hello = loop {
+        let line = match first.take() {
+            Some(line) => Ok(line),
+            None => read_hello_line(stream, &mut budget),
+        };
+        match line
+            .map_err(HelloError::Io)
+            .and_then(|line| parse_hello(&line))
+        {
+            Ok(hello) => break hello,
+            Err(HelloError::Discover(id)) => {
+                // A client that does not read its answers is not waited on.
+                use std::io::Write as _;
+                stream.write_all(format!("{}\n", not_found_reply(&id)).as_bytes())?;
+            }
+            Err(HelloError::NotInitialize(id)) => {
+                write_line(
+                    stream,
+                    &error_reply(
+                        &id,
+                        "the MCP server opens with initialize; nothing else is answered before the \
+                     person admits this client",
+                    ),
+                );
+                finish_refusal(stream);
+                return Ok(None);
+            }
+            Err(HelloError::Io(error)) => return Err(error),
+        }
+    };
+    stream.set_read_timeout(None)?;
+    Ok(Some(hello))
+}
+
+/// Answer `initialize`, the client's first request, as `server`, then every request after it,
+/// until the client leaves.
+#[cfg(unix)]
+fn serve_server<H>(
+    mut stream: std::os::unix::net::UnixStream,
+    initialize: serde_json::Value,
+    server: crate::McpServer<H>,
+) -> io::Result<()>
+where
+    H: tilo_actions::remote::ActionProvider + Send + Sync + 'static,
+{
+    let server = std::sync::Arc::new(server);
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     if let Some(reply) = runtime
-        .block_on(server.handle(hello.request))
+        .block_on(server.handle(initialize))
         .map_err(io::Error::other)?
     {
         crate::lines::write_reply(&mut stream, &reply)?;
@@ -708,6 +772,29 @@ where
     );
     let _ = stream.shutdown(std::net::Shutdown::Both);
     ended
+}
+
+/// The agent id a client is proposed as, by its name ([`Hello::client_name`]), folded into the
+/// canonical form agent ids are written in (`Claude Code` → `claude-code`).
+#[must_use]
+pub fn proposed_agent_id(client: &str) -> String {
+    let mut id = String::new();
+    for character in client.chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() {
+            id.push(character);
+        } else if !id.is_empty() && !id.ends_with('-') {
+            id.push('-');
+        }
+        if id.len() >= 64 {
+            break;
+        }
+    }
+    let id = id.trim_matches('-');
+    if id.is_empty() {
+        "agent".to_owned()
+    } else {
+        id.to_owned()
+    }
 }
 
 /// What the relay writes into a client's `initialize`, under
@@ -842,6 +929,14 @@ pub fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_is_proposed_as_a_canonical_agent_id() {
+        assert_eq!(proposed_agent_id("Claude Code"), "claude-code");
+        assert_eq!(proposed_agent_id("  Claude   Code 2.1 "), "claude-code-2-1");
+        assert_eq!(proposed_agent_id("!!!"), "agent");
+        assert_eq!(proposed_agent_id("MCP client"), "mcp-client");
+    }
 
     /// The session's name is what its harness calls it: `T_SESSION_NAME` when one is set (the way
     /// a session is named), else the title Claude Code keeps for it in the file it writes for the

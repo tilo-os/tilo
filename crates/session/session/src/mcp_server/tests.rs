@@ -40,14 +40,6 @@ fn an_answer_remembered_for_a_program_covers_each_instance_of_it() {
     );
 }
 
-#[test]
-fn a_client_is_proposed_as_a_canonical_agent_id() {
-    assert_eq!(proposed_agent_id("Claude Code"), "claude-code");
-    assert_eq!(proposed_agent_id("  Claude   Code 2.1 "), "claude-code-2-1");
-    assert_eq!(proposed_agent_id("!!!"), "agent");
-    assert_eq!(proposed_agent_id("MCP client"), "mcp-client");
-}
-
 /// The login's shell runtime is the image's executable in its own unit of the session's
 /// service manager; the same executable run anywhere else, or another program in that unit,
 /// is not it.

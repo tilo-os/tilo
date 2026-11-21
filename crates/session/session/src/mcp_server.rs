@@ -162,7 +162,7 @@ impl Facts {
     /// The agent id the client is proposed as: its own name, and the device it came from when it is
     /// another's.
     fn proposed(&self) -> String {
-        let own = proposed_agent_id(&self.client);
+        let own = tilo_mcp::session_api::proposed_agent_id(&self.client);
         match &self.origin {
             Some(origin) => tilo_mcp::devices::agent_id(&own, &origin.device),
             None => own,
@@ -956,27 +956,6 @@ fn same_program(remembered: &str, running: &str) -> bool {
     }
 }
 
-/// The agent id a client is proposed as: its own name, folded into the canonical form agent ids are
-/// written in (`Claude Code` → `claude-code` ).
-fn proposed_agent_id(client: &str) -> String {
-    let mut id = String::new();
-    for character in client.chars().flat_map(char::to_lowercase) {
-        if character.is_alphanumeric() {
-            id.push(character);
-        } else if !id.is_empty() && !id.ends_with('-') {
-            id.push('-');
-        }
-        if id.len() >= 64 {
-            break;
-        }
-    }
-    let id = id.trim_matches('-');
-    if id.is_empty() {
-        "agent".to_owned()
-    } else {
-        id.to_owned()
-    }
-}
 
 /// Bind `path` for this account alone: 0600 in a 0700 directory, staged and renamed into place so
 /// nothing sees a socket it cannot connect to. A path that is something else, or that a live
