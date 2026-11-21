@@ -127,9 +127,15 @@ def architecture_matrix(
     }
 
 
-def tilolang_runtime(root: Path = ROOT) -> str:
-    """The tilolang runtime every tilolang app executes, as its bundle provides it."""
+def tilolang_runtime(root: Path = ROOT) -> str | None:
+    """The tilolang runtime every tilolang app executes, as its bundle provides it.
+
+    `None` for a tree that has no tilolang runtime (a fixture root, a collection that only
+    reads a few apps).
+    """
     manifest = root / "apps/tilolang/tilo-runtime.toml"
+    if not manifest.is_file():
+        return None
     provides = tomllib.loads(manifest.read_text())["package"]["provides"]
     if not provides.startswith("tilolang/"):
         raise ValueError(f"{manifest}: provides {provides!r}, not a tilolang runtime")
@@ -137,7 +143,7 @@ def tilolang_runtime(root: Path = ROOT) -> str:
 
 
 def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
-    """The tilolang packages of `apps/tl`, under the name `tl/<directory>`.
+    """The tilolang packages of `apps/tl`, under the name `tl-<directory>`.
 
     A package has no Cargo package and no binary of its own: `tilolang build` compiles it into
     its tapp, which runs on the tilolang runtime bundle. Its id and title are what its `app`
@@ -145,6 +151,8 @@ def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
     """
     result: dict[str, dict[str, str]] = {}
     runtime = tilolang_runtime(root)
+    if runtime is None:
+        return result
     for source in sorted((root / "apps/tl").glob("*/app.tl")):
         if not (source.parent / "app.ids").is_file():
             continue
@@ -153,7 +161,8 @@ def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
         if declared is None:
             raise ValueError(f"{source}: no `app` declaration")
         app_id, title = declared.group(1), declared.group(2)
-        name = f"tl/{source.parent.name}"
+        uses = sorted(set(re.findall(r"^\s*use\s+(\S+)\s+as\s+\S+", text, re.MULTILINE)))
+        name = f"tl-{source.parent.name}"
         result[name] = {
             "name": name,
             "kind": "tilolang",
@@ -166,6 +175,7 @@ def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
             "tilolang_runtime": runtime,
             "manifest": str(source.relative_to(root)),
             "dir": str(source.parent.relative_to(root)),
+            "uses": uses,
         }
     return result
 
@@ -377,7 +387,7 @@ def apps_from_changes(
     for path in paths:
         parts = Path(path).parts
         if len(parts) >= 3 and parts[0] == "apps" and parts[1] == "tl":
-            name = f"tl/{parts[2]}"
+            name = f"tl-{parts[2]}"
             if name in catalog:
                 selected.add(name)
             else:
@@ -483,6 +493,24 @@ def plan(args: argparse.Namespace) -> dict:
     unknown = set(selected).difference(catalog)
     if unknown:
         raise ValueError(f"unknown apps: {', '.join(sorted(unknown))}")
+    # A tilolang package is built with every package it uses, and each one is a signed app of
+    # its own: a selection brings its packages along, transitively.
+    selected = set(selected)
+    tilolang_by_id = {
+        app["id"]: name for name, app in catalog.items() if app["kind"] == "tilolang"
+    }
+    frontier = [
+        name
+        for name in selected
+        if catalog[name]["kind"] == "tilolang" and catalog[name].get("uses")
+    ]
+    while frontier:
+        for used in catalog[frontier.pop()]["uses"]:
+            dependency = tilolang_by_id.get(used)
+            if dependency is not None and dependency not in selected:
+                selected.add(dependency)
+                frontier.append(dependency)
+    selected = sorted(selected)
     features = cfg.get("features", {})
     for name in selected:
         if catalog[name]["kind"] != "native":

@@ -42,6 +42,9 @@ def make_plan(root, selection, arch, mode):
         raise ValueError('unknown app: ' + ', '.join(sorted(requested - catalog.keys())))
     apps, excluded, names, ids = [], [], set(), set()
     for name, entry in catalog.items():
+        # A macOS bundle is built from a Cargo app's manifest; a tilolang package is not one.
+        if entry.get('kind') != 'native':
+            continue
         manifest = root / entry['manifest']
         data = tomllib.loads(manifest.read_text())
         package = data['package']
