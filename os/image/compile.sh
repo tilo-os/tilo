@@ -6,7 +6,7 @@
 # build compiles: this runs as an ordinary build action, with the compiler
 # cache, warm build directories and keys every other build of the workspace has.
 #
-# usage: compile.sh OUT | --dev OUT | --chromium OUT | --boot OUT | --apps FROM OUT
+# usage: compile.sh OUT | --dev OUT | --chromium OUT | --boot OUT | --apps FROM OUT | --image FROM OUT
 #   CARGO_TARGET_DIR   the build directory (default target/)
 #   TILO_RUST_LTO      thin (published images) or off (integration and development)
 #   TILO_WITH_BROWSER  1 to build the browser's engine host, 0 not to
@@ -134,6 +134,38 @@ fi
 # manifests, the language packs, the product fonts), copied into OUT. A step of its own that t never
 # caches, so the payload is keyed by these files' bytes rather than by the compile's key: a
 # change that relinks only system programs leaves them as they were, and the payload is served.
+# --image: of a compiled tree FROM, what the image layer installs (the image action of
+# os/image/layers.toml), as os/image/install-components.sh selects it: every component's files
+# but the desktop's programs (os/components.toml's desktop-binaries layer), which os-image-ARCH
+# lays over the composed image. Like --apps, a step t never caches, so the image layer is keyed
+# by these files' bytes: a change that relinks only desktop programs, or only apps, leaves them
+# as they were, and the image layer is served.
+if [[ ${1:-} == --image ]]; then
+  from=${2:?usage: compile.sh --image FROM OUT} out=${3:?usage: compile.sh --image FROM OUT}
+  rm -rf "$out"
+  mkdir -p "$out"
+  mapfile -t names < <(python3 -I - os/scripts/install-components.py os/components.toml <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("install_components", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = installer
+spec.loader.exec_module(installer)
+manifest = installer.load_manifest(Path(sys.argv[2]))
+entries = installer.select(manifest, [], True, [], True, skip_layers=["desktop-binaries"])
+print("\n".join(sorted({e.source.split("/", 1)[0] for e in entries
+                         if e.source and not e.source.startswith(("@", "/"))})))
+PY
+  )
+  [[ ${#names[@]} -gt 0 ]] || { echo "compile.sh --image: os/components.toml installs nothing from a compiled tree" >&2; exit 1; }
+  # A name the tree lacks is one install-components.py looks for beside it (the initramfs's
+  # greeter, the browser's engine) or an optional file.
+  for name in "${names[@]}"; do
+    [[ ! -e $from/$name && ! -L $from/$name ]] || cp -a --reflink=auto "$from/$name" "$out/"
+  done
+  exit 0
+fi
+
 if [[ ${1:-} == --apps ]]; then
   from=${2:?usage: compile.sh --apps FROM OUT} out=${3:?usage: compile.sh --apps FROM OUT}
   rm -rf "$out"

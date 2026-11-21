@@ -69,8 +69,9 @@ extension = true
 # are stages given as images of other actions: `<image>:<target>` of an image
 # above, `<layer>:<stage>` for the image of every layer up to that one (or a stage
 # it saves beside its layers, `also`), `compiled`, the compiled tree,
-# `compiled-apps`, what of it the apps are packed from, and `component-files`, the
-# compiled tree installed as its component-files stage would (after `compiled`). An
+# `compiled-apps`, what of it the apps are packed from, `compiled-image`, what of it the
+# image layer installs (all but the desktop's programs), and `component-files`, the
+# compiled tree installed as its component-files stage would (after a compiled tree). An
 # image action takes `given` too.
 # `release` layers differ in a release image (the registry owner's key, thin LTO), which
 # builds them, and every layer above one, again (os/image/build-layer.sh); `board` layers
@@ -113,6 +114,6 @@ board = true
 name = "image"
 pieces = ["binaries", "rootfs", "boot"]
 target = "final"
-given = ["tools:image-tool-stages", "tools:uki-tools", "compiled", "component-files", "payload:native-builder-payload", "payload:runtime-image-payload"]
+given = ["tools:image-tool-stages", "tools:uki-tools", "compiled-image", "component-files", "payload:native-builder-payload", "payload:runtime-image-payload"]
 release = true
 board = true

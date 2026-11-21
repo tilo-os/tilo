@@ -28,7 +28,9 @@
 #   payload/<target>/oci         the apps' packing, a release's in release-payload/
 #   compiled/                    the compiled tree (os/image/compile.sh); a release's in
 #                                compiled-release/; what of it the apps are packed from in
-#                                compiled-apps/ (compiled-release-apps/)
+#                                compiled-apps/ (compiled-release-apps/), and what of it the
+#                                image layer installs, all but the desktop's programs, in
+#                                compiled-image/ (compiled-release-image/)
 #   chromium/                    the browser's engine, for a compiled tree without it
 #   boot/                        the initramfs's greeter, for a compiled tree without it
 #   layers/<layer>/              the fragment of the layers that layer action added; a
@@ -391,12 +393,11 @@ load_given() {
   given+=external-assets,
   for entry in $(layer_field "$1" given); do
     case $entry in
-      compiled | compiled-apps)
-        if [[ $entry == compiled ]]; then
-          export TILO_COMPILED=$os/$compiled
-        else
-          export TILO_COMPILED=$os/$compiled-apps
-        fi
+      compiled | compiled-apps | compiled-image)
+        case $entry in
+          compiled) export TILO_COMPILED=$os/$compiled ;;
+          *) export TILO_COMPILED=$os/$compiled-${entry#compiled-} ;;
+        esac
         # A compile that keeps its build directory leaves the browser's engine to its own
         # check (os-chromium-ARCH), which this action needs then.
         if [[ ! -d $TILO_COMPILED/chromium-engine && -d $os/chromium/chromium-engine ]]; then

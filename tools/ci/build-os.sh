@@ -284,7 +284,8 @@ build_os_image() {
   compile chromium/target "bash os/image/compile.sh --chromium /target/os/$arch/chromium"
   say "the images given the compiled tree: $packed"
   script="set -e -o pipefail
-    bash os/image/compile.sh --apps /target/os/$arch/compiled /target/os/$arch/compiled-apps"
+    bash os/image/compile.sh --apps /target/os/$arch/compiled /target/os/$arch/compiled-apps
+    bash os/image/compile.sh --image /target/os/$arch/compiled /target/os/$arch/compiled-image"
   for name in $packed; do
     script+="
     bash os/image/build-layer.sh image $name $arch /target/os/$arch/$name"

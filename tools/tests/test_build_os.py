@@ -55,6 +55,7 @@ class BuildOsTests(unittest.TestCase):
             f"bash os/image/compile.sh /target/os/{ARCH}/compiled",
             f"bash os/image/compile.sh --chromium /target/os/{ARCH}/chromium",
             f"bash os/image/compile.sh --apps /target/os/{ARCH}/compiled /target/os/{ARCH}/compiled-apps",
+            f"bash os/image/compile.sh --image /target/os/{ARCH}/compiled /target/os/{ARCH}/compiled-image",
         ]
         # The images given the compiled tree (the apps' packing) after the compile.
         commands += [image.format(name=i["name"]) for i in images if i.get("given")]
