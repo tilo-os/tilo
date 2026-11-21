@@ -357,6 +357,16 @@ impl WorkspaceActions {
         });
     }
 
+    /// Another's write landed in `route` of the store this service reads, as its host just read
+    /// it there: the replica holding the record merges it before the next request of the
+    /// workspace, which is then made on what the host read. Its own session tells the service of
+    /// the landing too, a moment later, and a request taken before that acted on what the
+    /// record held before it: a person's answer the host had read was not in the conversation the
+    /// host's next write went to.
+    pub fn landed(&self, workspace_id: WorkspaceId, route: DocumentRoute) {
+        let _ = self.submit(Job::Landed(workspace_id, route));
+    }
+
     /// Stop the service thread; later requests are refused as unavailable.
     pub fn shutdown(&self) {
         self.shared.jobs.lock_recover().take();
@@ -1977,6 +1987,11 @@ impl Worker {
                 Job::Called(workspace_id) => self.call_answered(workspace_id),
                 Job::Loaded(workspace_id) => self.parts_loaded(workspace_id),
                 Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
+                Job::Landed(workspace_id, route) => {
+                    if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+                        workspace.landed_elsewhere(route);
+                    }
+                }
                 Job::Page(job) => self.page_job(*job),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {

@@ -28,7 +28,8 @@ impl Job {
             | Self::Called(workspace_id)
             | Self::Loaded(workspace_id)
             | Self::Forget(workspace_id)
-            | Self::Rename(workspace_id, _) => *workspace_id,
+            | Self::Rename(workspace_id, _)
+            | Self::Landed(workspace_id, _) => *workspace_id,
             Self::Page(job) => job.workspace(),
             Self::Ran(ended) | Self::Typed(ended) => ended.workspace_id,
             Self::Opened(ended) => ended.workspace_id,

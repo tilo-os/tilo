@@ -126,6 +126,10 @@ pub(super) enum Job {
     /// A document written since its name was last read: its name in its app's index is
     /// read again ([`publish`]).
     Rename(WorkspaceId, DocumentRoute),
+    /// Another's write landed in a record of the store the service reads, as its host read it
+    /// there: what holds the record merges it before the next request
+    /// ([`super::WorkspaceActions::landed`]).
+    Landed(WorkspaceId, DocumentRoute),
     /// A web page of a workspace's app: opened, acted on or closed ([`pages`]).
     Page(Box<pages::PageJob>),
 }
@@ -153,6 +157,7 @@ impl Job {
             Self::Loaded(_) => "loaded",
             Self::Forget(_) => "forget",
             Self::Rename(..) => "rename",
+            Self::Landed(..) => "landed",
             Self::Page(_) => "page",
         }
     }
@@ -205,6 +210,7 @@ impl Job {
             | Self::Joined(_)
             | Self::Called(_)
             | Self::Loaded(_)
+            | Self::Landed(..)
             | Self::Page(_) => Urgency::Read,
             Self::Invoke { .. }
             | Self::Ran(_)
@@ -240,7 +246,8 @@ impl Job {
             | Self::Called(_)
             | Self::Loaded(_)
             | Self::Forget(_)
-            | Self::Rename(..) => None,
+            | Self::Rename(..)
+            | Self::Landed(..) => None,
         }
     }
 
@@ -259,7 +266,8 @@ impl Job {
             | Self::Changed { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::Loaded(workspace_id)
-            | Self::Rename(workspace_id, _) => Some(*workspace_id),
+            | Self::Rename(workspace_id, _)
+            | Self::Landed(workspace_id, _) => Some(*workspace_id),
             Self::Page(job) => Some(job.workspace()),
             Self::Feedback { .. }
             | Self::Ran(_)
@@ -298,7 +306,8 @@ impl Job {
             | Self::Loaded(_)
             | Self::Forget(_)
             | Self::Page(_)
-            | Self::Rename(..) => Keys::Joined,
+            | Self::Rename(..)
+            | Self::Landed(..) => Keys::Joined,
         }
     }
 }

@@ -210,6 +210,23 @@ impl Workspace {
 }
 
 impl Workspace {
+    /// Another's write landed in `route`, as the host read it in the store this service reads
+    /// ([`super::WorkspaceActions::landed`]): taken up as a landing the session tells of, before
+    /// the session tells of it. Told of it again then, the record merges nothing new.
+    pub(super) fn landed_elsewhere(&mut self, route: DocumentRoute) {
+        if WorkspaceId::parse(&route.cluster_id).is_none() {
+            return;
+        }
+        super::count_read();
+        if self.reads.readable(&route) {
+            self.undecided.remove(&route);
+        } else {
+            self.undecided.insert(route.clone());
+        }
+        self.write_landed(&route);
+        self.landed_from_others.insert(route);
+    }
+
     /// A write landed in `route`: what a find keeps of the workspace is read again from what the
     /// write made, and what a caller was answered as readable before it is let go. What a find
     /// answers from reads this service's own store, so a write the service hands it is told of

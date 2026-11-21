@@ -233,6 +233,13 @@ impl WorkspaceActionProvider {
         }
     }
 
+    /// Another's write landed in `route` of this workspace, as this server just read it in the
+    /// workspace's store: the next request made through this service acts on it
+    /// ([`WorkspaceActions::landed`]).
+    pub fn landed(&self, route: DocumentRoute) {
+        self.actions.landed(self.workspace, route);
+    }
+
     /// This service, for a turn its person asked `asked` of: every invocation it carries out
     /// that says no purpose of its own has that one ([`tilo_actions::ActionContext::purpose`]).
     #[must_use]

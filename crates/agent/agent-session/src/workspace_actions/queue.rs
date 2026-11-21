@@ -330,7 +330,8 @@ fn asker(job: &Job, log: &std::sync::Mutex<InvocationLog>) -> Asker {
         | Job::Joined(_)
         | Job::Called(_)
         | Job::Loaded(_)
-        | Job::Forget(_) => Asker::Service,
+        | Job::Forget(_)
+        | Job::Landed(..) => Asker::Service,
     }
 }
 
