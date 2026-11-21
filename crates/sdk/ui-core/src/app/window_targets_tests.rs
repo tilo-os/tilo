@@ -194,6 +194,48 @@ fn a_control_that_runs_an_app_action_is_listed_and_pressed_by_what_it_does() {
     assert_eq!(pressed.get(), 1, "and the press reached it");
 }
 
+/// A composer row: a field that sends what it holds on Enter and an icon-only Send button beside
+/// it, both running the one send action the app published.
+fn composer_window() -> App {
+    let send = format!("chat.Channel{}send", '\u{1f}');
+    let field = crate::testing::OwnedText::new(
+        "draft",
+        crate::widget::TextInput::new(vec![crate::presence::PathSegment::Field("draft".into())])
+            .with_id("draft")
+            .with_accessible_name("Message #general"),
+    );
+    let button =
+        crate::widget::Button::icon_only("send", crate::icons::Icon::Send, "Send");
+    let row = crate::widget::Row::new()
+        .push(Box::new(crate::widget::Identified::new(Box::new(field), send.clone())))
+        .push(Box::new(crate::widget::Identified::new(Box::new(button), send)));
+    let mut app = app_with_root(crate::State::new(), Box::new(row));
+    layout(&mut app);
+    app
+}
+
+/// The field and the Send button beside it run the same action and are still two controls: the
+/// icon-only button is listed by its label, where a person reaches it, beside the field.
+#[test]
+fn an_icon_only_button_in_a_composer_row_is_listed_by_its_label() {
+    let mut app = composer_window();
+    let controls = app.window_controls();
+    let names: Vec<&str> = controls.iter().map(|control| control.name.as_str()).collect();
+    let send = controls
+        .iter()
+        .find(|control| control.name == "Send")
+        .unwrap_or_else(|| panic!("the Send button is one of the window's controls: {names:?}"));
+    assert!(
+        send.rect.2 > 0.0 && send.rect.3 > 0.0,
+        "drawn where a person reaches it: {:?}",
+        send.rect
+    );
+    assert!(
+        names.contains(&"Message #general"),
+        "and so is the field that sends on Enter: {names:?}"
+    );
+}
+
 /// What a window shows that has no menu of its own, counting the keys that reach it.
 struct Keys(Rc<Cell<u32>>);
 

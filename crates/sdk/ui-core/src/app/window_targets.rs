@@ -100,19 +100,24 @@ impl App {
             if !operable && identity.is_none() {
                 continue;
             }
-            // One operation is one control to name: where a window offers it in more than one
-            // place — the bar's primary and the empty state that presents it — a caller that asks
-            // for the control that does it gets one answer, the first the window reads. Every such
-            // place runs the same action, so it is the same control wherever it stands.
+            // One operation offered twice as the same control is one control to name: where a
+            // window shows the same button in more than one place — the bar's primary and the
+            // empty state that presents it — a caller that asks for it gets one answer, the first
+            // the window reads. Two different controls that run one action stay two: a composer's
+            // field sends on Enter and its Send button sends on a press, and a person, a screen
+            // reader and an agent each reach the one they mean.
+            let role = format!("{:?}", described.role());
             if let Some(identity) = identity
-                && targets
-                    .iter()
-                    .any(|known: &WindowTarget| known.identity.as_deref() == Some(identity))
+                && targets.iter().any(|known: &WindowTarget| {
+                    known.identity.as_deref() == Some(identity)
+                        && known.role == role
+                        && known.name == name.unwrap_or_default()
+                })
             {
                 continue;
             }
             targets.push(WindowTarget {
-                role: format!("{:?}", described.role()),
+                role,
                 name: name.unwrap_or_default().to_owned(),
                 identity: identity.map(str::to_owned),
                 rect: [bounds.x0, bounds.y0, bounds.x1, bounds.y1],
