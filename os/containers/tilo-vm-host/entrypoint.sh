@@ -20,7 +20,6 @@
 #      cgroup, and the service's directories;
 #   3. the member identity: this host's own Tilo device, certified by the
 #      operator that runs the server, from TILO_VM_MEMBER_IDENTITIES (a
-#      operator that runs the server, from TILO_VM_MEMBER_IDENTITIES (a
 #      directory holding <pod name>.tar, made with tilo-enroll device-key and
 #      install-cert), unpacked onto the state disk when the disk holds no
 #      identity or another one, so the device key stays with the host's disk as
