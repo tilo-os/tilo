@@ -182,7 +182,7 @@ podman tag "$id" "$TILO_IMAGE"
 
 phase installer-and-disk
 # Its messages stamped with the seconds since this phase began: the disk step's parts (the
-# installer layer, the scratch registry, each install pass, the qcow2) are most of a medium.
+# installer layer, the composefs seal, the install, the qcow2) are most of a medium.
 stamp() { local line; while IFS= read -r line; do printf '[+%ss] %s\n' "$((SECONDS - phase_started))" "$line"; done; }
 if ! bash os/dev/build-custom-installer.sh --reuse-image-installer 2>&1 | stamp; then
   # The disk step keeps bootc's own words in a log beside the disk, which t does not keep.

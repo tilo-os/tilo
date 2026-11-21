@@ -4848,10 +4848,10 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "server-installer-medium-x86_64"
-# Pinned: it runs in the OS assembler image, which carries the install's tools, and the only image
-# it pulls is the scratch registry's, by digest (os/scratch-registry.env). It reads no
-# Git: the server image itself comes from seal-host's archive, the image with its UKI sealed, and
-# its update origin is named by that image's digest. Beside the medium, its live ESP
+# Pinned: it runs in the OS assembler image, which carries the install's tools, and the disk step
+# installs from container storage, so it pulls no image. It reads no Git: the server image
+# itself comes from seal-host's archive, the image with its UKI sealed, and its update origin
+# is named by that image's digest. Beside the medium, its live ESP
 # and root as the internal bundle the Imager stages onto a machine's own disk
 # (os/dev/export-internal-bundle.sh, which loop-mounts private copies of both). The bundle
 # shrinks the live root to what it holds, which only Btrfs does, so this medium's root is Btrfs.
@@ -4974,8 +4974,8 @@ on = ["dispatch"]
 
 [[check]]
 name = "os-dev-disk-{arch}"
-# Pinned: the OS assembler image it runs in carries the install's tools, and the only image it
-# pulls is the scratch registry's, by digest (os/scratch-registry.env).
+# Pinned: the OS assembler image it runs in carries the install's tools, and the disk step
+# installs from container storage, so it pulls no image.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 needs = ["os-dev-image-{arch}", "signing-tools"]
@@ -5020,8 +5020,8 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "os-dev-disk-lean-{arch}"
-# Pinned: the OS assembler image it runs in carries the install's tools, and the only image it
-# pulls is the scratch registry's, by digest (os/scratch-registry.env).
+# Pinned: the OS assembler image it runs in carries the install's tools, and the disk step
+# installs from container storage, so it pulls no image.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 needs = ["os-dev-image-lean-{arch}", "signing-tools"]
