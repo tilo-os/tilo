@@ -828,8 +828,7 @@ fn handover(
         .with_id("invite-link")
         .with_read_only(true)
         .with_accessible_name(&created.link_label);
-    vec![
-        crate::centred(code(&created.link, "invite-code", &created.alt)),
+    let mut parts = vec![
         caption(&match joined {
             Some(joined) => format!("{joined} {}", created.lasts),
             None => created.lasts.clone(),
@@ -857,7 +856,12 @@ fn handover(
                 ))
                 .push(Box::new(create_button(invite, choosing, ask, true))),
         ),
-    ]
+    ];
+    let qr = code(&created.link, "invite-code", &created.alt);
+    if qr.error().is_none() {
+        parts.insert(0, crate::centred(qr));
+    }
+    parts
 }
 
 /// The links that still work, each with the button that takes it back, when

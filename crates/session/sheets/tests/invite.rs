@@ -137,6 +137,18 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_link_too_long_to_scan_can_still_be_copied;
+    {
+        let mut invite = sample(Some("made"));
+        let link = format!("tilo://invite#{}", "a".repeat(3800));
+        invite.created.as_mut().expect("an invitation was made").link.clone_from(&link);
+        let (mut app, state) = mounted(invite);
+        assert!(!drawn(&mut app, "invite-code"));
+        assert!(drawn(&mut app, "invite-link"));
+        press(&mut app, "invite-copy-link");
+        assert_eq!(state.take_asked(), vec![InviteEffect::Copy { link }]);
+    }
+
     phase the_part_on_offer_says_in_a_line_what_it_brings;
     // What the part picked brings whoever joins with it, in a line under the
     // choice, and it follows the pick.
