@@ -65,10 +65,23 @@ fn the_session_writes_its_file_access_list_for_the_files_daemon() {
 /// Someone the person admits to the workspace in front, as their person id (the hex of the key
 /// their devices act under).
 const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-const NOTE: &str = "/var/workspace/brief/plan.md";
 
 fn member_key() -> [u8; 32] {
     hex::decode(MEMBER).unwrap().try_into().unwrap()
+}
+
+/// A file of the workspace in front, under the tree the device's files keep that workspace's own
+/// in: the paths its roles' access ranges over.
+fn note(session: &Session) -> String {
+    let workspace = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(tilo_desktop_model::Workspace::id))
+        .expect("a workspace in front");
+    format!(
+        "{}/{}/{workspace}/brief/plan.md",
+        tilo_paths::WORKSPACE_MOUNT,
+        tilo_paths::WORKSPACE_TREES_DIR
+    )
 }
 
 /// Can `MEMBER` reach `path` with `access` in the list the daemon reads? This is
@@ -128,10 +141,11 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
     let acl = acl_path(root.path());
     let mut session = crate::common::seeded_session(root.path());
     crate::common::until(&mut session, "the file access list", |_| acl.is_file());
+    let note = note(&session);
     assert!(
         !member_may(
             &access_list(&acl).unwrap(),
-            NOTE,
+            &note,
             collab_types::caps::Access::Read
         ),
         "someone outside the workspace is granted nothing"
@@ -142,15 +156,15 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
         &mut session,
         &acl,
         tilo_action_policy::Role::Viewer,
-        |list| member_may(list, NOTE, collab_types::caps::Access::Read),
+        |list| member_may(list, &note, collab_types::caps::Access::Read),
     );
     assert!(member_may(
         &read_only,
-        NOTE,
+        &note,
         collab_types::caps::Access::Read
     ));
     assert!(
-        !member_may(&read_only, NOTE, collab_types::caps::Access::Write),
+        !member_may(&read_only, &note, collab_types::caps::Access::Write),
         "a member with a read-only role cannot write a workspace file"
     );
 
@@ -159,10 +173,10 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
         &mut session,
         &acl,
         tilo_action_policy::Role::Editor,
-        |list| member_may(list, NOTE, collab_types::caps::Access::Write),
+        |list| member_may(list, &note, collab_types::caps::Access::Write),
     );
     assert!(
-        member_may(&editing, NOTE, collab_types::caps::Access::Write),
+        member_may(&editing, &note, collab_types::caps::Access::Write),
         "the daemon reads the editor's access"
     );
 
@@ -174,19 +188,19 @@ fn a_role_change_reaches_the_daemon_and_a_removal_takes_the_files_away() {
     });
     crate::common::until(&mut session, "the list after the removal", |_| {
         access_list(&acl).is_some_and(|list| {
-            !member_may(&list, NOTE, collab_types::caps::Access::Read)
-                && !member_may(&list, NOTE, collab_types::caps::Access::Write)
+            !member_may(&list, &note, collab_types::caps::Access::Read)
+                && !member_may(&list, &note, collab_types::caps::Access::Write)
         })
     });
     let removed = access_list(&acl).unwrap();
     assert!(!member_may(
         &removed,
-        NOTE,
+        &note,
         collab_types::caps::Access::Read
     ));
     assert!(!member_may(
         &removed,
-        NOTE,
+        &note,
         collab_types::caps::Access::Write
     ));
 }
