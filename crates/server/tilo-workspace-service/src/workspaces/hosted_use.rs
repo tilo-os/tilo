@@ -276,9 +276,6 @@ pub(super) struct Uses {
     /// password, read from the server's disk once.
     #[cfg(feature = "agents")]
     pub(super) mail_connects: Mutex<Option<Vec<MailAsk>>>,
-    /// The workspaces whose vault this host carried what it kept of it before over from,
-    /// since it started ([`super::vault`]).
-    pub(super) carried_over: Mutex<std::collections::BTreeSet<String>>,
 }
 
 /// A person's "allow" for one fill: `agent` may fill what `item` keeps into
@@ -379,7 +376,6 @@ impl Default for Uses {
             connects: Mutex::default(),
             #[cfg(feature = "agents")]
             mail_connects: Mutex::default(),
-            carried_over: Mutex::default(),
         }
     }
 }

@@ -1176,7 +1176,7 @@ fn mail_account(address: &str, server: &str) -> accounts::Account {
 
 /// What a host kept of a workspace's vault in its own sealed store before the vault was the
 /// document, a member's login with the uses it recorded and a Passwords entry, is in the vault
-/// document the first time the vault is opened: listed under the reference it had, its uses
+/// document once the host carries it over as it starts: listed under the reference it had, its uses
 /// kept, and taken out of the host's store. An account's sign-in beside it becomes the
 /// account's own entry, and the host's store is gone.
 #[tokio::test]
@@ -1219,6 +1219,8 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
     let mut store = accounts::SecretStore::open_person(Some(&root));
     let mut entry = accounts::SecretItem::login("Example", "bo", "a passwords entry");
     store.put(&mut entry).unwrap();
+    // What the host does once as it starts.
+    workspaces.carry_vaults_over().await;
 
     let listed = ask(&service, workspace_id, hers, person_vault::LIST, json!({}))
         .await

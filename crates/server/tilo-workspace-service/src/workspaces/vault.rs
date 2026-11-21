@@ -25,9 +25,9 @@ use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
 use tilo_resource::{Id, Replica};
 use zeroize::Zeroizing;
 
-use tilo_lock::MutexRecover as _;
 
 use super::Workspaces;
+#[cfg(any(feature = "agents", feature = "web"))]
 use super::person_settings::kept_sign_ins::HostSignIns;
 
 /// The app that keeps the vault: whose grants decide each reader of it.
@@ -38,6 +38,7 @@ const MAX_VAULT_BYTES: usize = 64 * 1024 * 1024;
 
 /// How many changes one write carries when a host carries its earlier vault over: each write of
 /// a document is bounded in size.
+#[cfg(any(feature = "agents", feature = "web"))]
 const CARRIED_PER_WRITE: usize = 16;
 
 /// The words for a vault this device cannot open.
@@ -121,7 +122,9 @@ impl Workspaces {
         }
         // The keys are made where nobody made them yet, as this device's own write of any of
         // the workspace's documents makes them.
-        let keys = match self.own_route_keys(&route(workspace), true).await {
+        // The vault's steps are boxed here, once: every sign-in, use and connection awaits this,
+        // and inlined their state would make each of those futures as large as all of it.
+        let keys = match Box::pin(self.own_route_keys(&route(workspace), true)).await {
             Some(Ok(keys)) => keys,
             Some(Err(reason)) => {
                 tracing::debug!(%workspace, %reason, "the vault's keys are not held here");
@@ -129,20 +132,27 @@ impl Workspaces {
             }
             None => return Err(UNAVAILABLE.to_owned()),
         };
-        let opened = self.read_vault(workspace, keys).await?;
-        self.carry_over(opened).await
+        Box::pin(self.read_vault(workspace, keys)).await
     }
 
     /// Carry what this host kept of each of its workspaces' vaults before into their vault
-    /// documents, as it starts ([`Self::carry_over`]). A workspace whose keys are not here yet
-    /// is carried the first time its vault opens.
+    /// documents, once, as it starts ([`Self::carry_over`]): no read of a vault converts
+    /// anything. A workspace whose keys are not here yet keeps its old store until a start
+    /// that holds them.
     #[cfg(any(feature = "agents", feature = "web"))]
     pub(crate) async fn carry_vaults_over(&self) {
         let governed: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
         for workspace in governed {
             let kept = accounts::vault_dir_in(&self.workspace_root(&workspace)).exists();
-            if kept && let Err(error) = self.open_vault(&workspace).await {
-                tracing::info!(%workspace, %error, "what the host kept of the workspace's vault is carried over once its vault opens here");
+            if !kept {
+                continue;
+            }
+            let carried = match self.open_vault(&workspace).await {
+                Ok(opened) => self.carry_over(opened).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = carried {
+                tracing::info!(%workspace, %error, "what the host kept of the workspace's vault stays until a start that can carry it over");
             }
         }
     }
@@ -172,44 +182,20 @@ impl Workspaces {
     /// provider's sign-in, as that account's or provider's own entry, which its settings then
     /// name ([`HostSignIns`]). Only once they are written are they taken out of the host's
     /// store, and the store goes, so a failed write loses nothing and is carried at the next
-    /// open.
-    async fn carry_over(&self, opened: OpenVault) -> Result<OpenVault, String> {
+    /// start.
+    ///
+    /// # Errors
+    /// The host's store does not open, or what it kept was not written: it stays.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    async fn carry_over(&self, opened: OpenVault) -> Result<(), String> {
         let workspace = opened.workspace.clone();
-        if self
-            .inner
-            .vault_uses
-            .carried_over
-            .lock_recover()
-            .contains(&workspace)
-        {
-            return Ok(opened);
-        }
         let root = self.workspace_root(&workspace);
-        let done = || {
-            self.inner
-                .vault_uses
-                .carried_over
-                .lock_recover()
-                .insert(workspace.clone());
+        let Some(sign_ins) = HostSignIns::under(&root)? else {
+            return Ok(());
         };
-        let sign_ins = match HostSignIns::under(&root) {
-            Ok(Some(sign_ins)) => sign_ins,
-            Ok(None) => {
-                done();
-                return Ok(opened);
-            }
-            Err(error) => {
-                tracing::warn!(%workspace, %error, "what the host kept of the workspace's sign-ins before does not open; it stays");
-                return Ok(opened);
-            }
-        };
-        let kept = match accounts::vault_items::KeptBefore::under(&root) {
-            Ok(kept) => kept,
-            Err(error) => {
-                tracing::warn!(%workspace, %error, "what the host kept of the workspace's vault before does not open; it stays");
-                return Ok(opened);
-            }
-        };
+        let kept = accounts::vault_items::KeptBefore::under(&root).map_err(|error| {
+            format!("what the host kept of the workspace's vault before does not open: {error}")
+        })?;
         let mut items = opened.items();
         let named = sign_ins.keep_in(&mut items)?;
         let mut changes = items.take_changes();
@@ -237,9 +223,7 @@ impl Workspaces {
         if !nothing {
             tracing::info!(%workspace, carried, "carried what the host kept of the workspace's vault into the vault document");
         }
-        done();
-        let keys = opened.keys;
-        self.read_vault(&workspace, keys).await
+        Ok(())
     }
 
     /// The vault document of `workspace` as this device reads it, `None` where nobody has made
@@ -322,7 +306,7 @@ impl Workspaces {
         let founding = opened.document.is_none();
         let keys = &opened.keys;
         let changes = vault_changes(opened, &self.signing_device().device(), changes)?;
-        self.own_write(
+        Box::pin(self.own_write(
             &opened.workspace,
             (APP, WORKSPACE_VAULT_DOCUMENT),
             None,
@@ -330,7 +314,7 @@ impl Workspaces {
             founding,
             founding,
             Some(keys),
-        )
+        ))
         .await
         .map(drop)
         .map_err(|refusal| refusal.to_string())
@@ -564,11 +548,19 @@ fn open_entries(
         let uses = state
             .used
             .get(id)
-            .and_then(|sealed| {
+            .map(|sealed| {
                 let payload = keys
                     .open_private_field(&uses_field(id.as_str()), &sealed.0)
-                    .ok()?;
-                serde_json::from_slice::<Vec<UseRecord>>(&payload).ok()
+                    .map_err(|error| error.to_string())?;
+                serde_json::from_slice::<Vec<UseRecord>>(&payload).map_err(|error| error.to_string())
+            })
+            .transpose()
+            .unwrap_or_else(|reason| {
+                // Uses sealed under an epoch this device never held, or written in a shape it
+                // does not read, are passed over as the entry they belong to would be: the
+                // entry itself still reads.
+                tracing::debug!(entry = %id.as_str(), %reason, "a vault entry's uses did not open");
+                None
             })
             .unwrap_or_default();
         entries.push((entry, uses));
