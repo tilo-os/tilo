@@ -115,13 +115,13 @@ async function viaInvitation({origin, invitation, offered = null, id = null, dee
         if (deviceRemoved(error)) throw error;
         console.warn('admission: your own workspace did not let this device in', error?.code ?? error?.name ?? 'error');
       }
-      if (entered) return {...await ready(entered, onProgress), own: true};
+      if (entered) return {...await ready(entered), own: true};
       const back = await deps.reconnect?.({origin, workspace: joined.workspace, onProgress});
       if (!back) throw new AdmissionError('no-access', NO_ACCESS);
-      return ready(back, onProgress);
+      return ready(back);
     }
   }
-  return ready(joined, onProgress);
+  return ready(joined);
 }
 
 /** A link a site hands over (`https://<site>/i/<handle>#<key>`): the site
@@ -140,12 +140,9 @@ async function viaSealedLink({scope, secrets, home, deep, runtime, deps, onProgr
   return viaInvitation({origin, invitation: opened.invitation, offered: invited?.offer ?? null, deep, secrets, runtime, deps, onProgress});
 }
 
-/** `{peer}` once `peer` is ready to use; `onProgress` hears the workspace
- * arriving (`receiving`, with how many of its records are here). */
-async function ready(peer, onProgress = () => {}) {
-  // The desktop shows once the workspace's shared desktop record is here,
-  // not after the whole workspace: the rest arrives while it is shown.
-  await peer?.whenReady?.({shown: true, onProgress: records => onProgress({phase: 'receiving', records})});
+/** `{peer}` once the host admitted `peer` to its workspace. */
+async function ready(peer) {
+  await peer?.whenReady?.();
   return {peer};
 }
 
@@ -203,7 +200,7 @@ async function viaHost({workspace, id = null, runtime, deps, onProgress}) {
     await peer?.dispose?.();
     throw new AdmissionError('no-access', NO_ACCESS);
   }
-  return ready(peer, onProgress);
+  return ready(peer);
 }
 
 /** The person's own desktop: this browser's, with no peer. What syncs
@@ -301,10 +298,10 @@ export async function admit({scope, deep = false, secrets = {}, tickets, home = 
       }
       case 'ticket':
         onProgress({phase: 'joining'});
-        return ready(await deps.redeemTicket({origin, workspace: id, ticket: secrets.ticket, tickets}), onProgress);
+        return ready(await deps.redeemTicket({origin, workspace: id, ticket: secrets.ticket, tickets}));
       case 'pair':
         onProgress({phase: 'pairing'});
-        return ready(await deps.pairDevice({origin, workspace: id, ...pairing, listed}), onProgress);
+        return ready(await deps.pairDevice({origin, workspace: id, ...pairing, listed}));
       case 'entry':
         // An entry admits into its own workspace. A link naming another
         // workspace of that host asks at that workspace's entry: the listed
@@ -321,7 +318,7 @@ export async function admit({scope, deep = false, secrets = {}, tickets, home = 
         try {
           // A host that revoked this device answers the connection and refuses it
           // once the peer is certified: that, too, is no access.
-          return await ready(await deps.connectMember({origin, workspace: id, account}), onProgress);
+          return await ready(await deps.connectMember({origin, workspace: id, account}));
         } catch (error) {
           // This browser was removed from its person's devices. Its server said so at the
           // handshake, before any workspace was named, so it tells nothing of this one:
@@ -359,7 +356,7 @@ export async function admit({scope, deep = false, secrets = {}, tickets, home = 
           // As below: the host's reason could tell a missing workspace from a private one.
           if (!held) console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
         }
-        if (peer) return ready(peer, onProgress);
+        if (peer) return ready(peer);
         // Every key this browser could get in with is held by other tabs:
         // that is what to say, not the host's answer.
         if (held) throw busy;

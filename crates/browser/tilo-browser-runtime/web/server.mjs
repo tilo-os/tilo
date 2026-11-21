@@ -2,15 +2,8 @@
  * The page as a certified device of one tilo-server workspace, in one call:
  * `connectServerPeer` opens this profile's device key (`device-key.mjs`),
  * loads the runtime and connects `peer.mjs`'s certified peer to `workspace`.
- * Pages written for the server peer of the runtime this one replaced keep
- * working unchanged:
- *
- * - `whenReady()`, `records()`, `hasRecord()`, `whenRecord()`: the workspace's
- *   admission and the records this page holds;
- * - `mountDesktop(target, options)`: `host.mjs`'s mount in the workspace; its
- *   records replicate through the peer, and it publishes this device's
- *   pointer and caret while it is the mount acted in last;
- * - `live`: the workspace's live layer.
+ * The peer's `whenReady()` resolves once the host admitted this page to the
+ * workspace, and `live` is the workspace's live layer.
  *
  * A workspace on a loopback `http:` origin (local review, `tilo-server workspace
  * --web-plain`) is accepted: the page then needs no certificate exception.

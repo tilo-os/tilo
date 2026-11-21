@@ -1,18 +1,17 @@
-//! The Tilo UI runtime in the browser.
+//! The Tilo web entry's runtime in the browser.
 //!
-//! The page mounts a real application component (`ui::application`) through
-//! the same frame pipeline the native runner uses and presents it with Vello
-//! on a WebGPU canvas. `web/host.mjs` owns the DOM: input and IME, clipboard
-//! events, the accessibility projection, font fetching and `IndexedDB`; this
-//! crate owns the component, its records and the GPU. Everything runs on the
-//! page's thread.
+//! The entry pages (`web/index.html`, `web/app/index.html`, `web/sign-in.html`)
+//! sign a person in, admit this browser to a workspace as one of its devices
+//! and pair it, then hand the browser to the page the server renders of the
+//! workspace. This crate is what they call for that: the certified peer and
+//! its session with the workspace's host (`peer`), the person's root
+//! identity (`root_identity`), the link grammar (`link`), the way in
+//! (`way_in`) and the workspaces this browser entered (`entered`), and the
+//! profile storage the peer keeps its certificates and outbox in (`storage`).
 //!
-//! Everything is browser-only;
-//! native workspace builds compile an empty library. The page's host services
-//! are the platform crates' web backends (`tilo-dialogs`,
-//! `tilo-clipboard`, `tilo-notify`).
-// The crate's tests are host tests, with the native fixtures and apps a page
-// cannot link, so its test target builds empty for wasm32.
+//! Everything is browser-only; native workspace builds compile an empty
+//! library.
+// The crate's tests are host tests, so its test target builds empty for wasm32.
 #![cfg(not(all(target_arch = "wasm32", test)))]
 #![cfg_attr(
     target_arch = "wasm32",
@@ -22,287 +21,20 @@
     )
 )]
 
-// Native builds compile it for its tests; the page is its only user.
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser page fetches deferred code")
-)]
-mod app_load;
-// The record a page showing one app opens: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser page opens an app alone")
-)]
-mod app_page;
-// The layout and its actions in the page: the tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser page arranges its shell; the host runs its tests"
-    )
-)]
-mod layout;
-// Native builds compile it for its tests; the page is its only user.
+mod disk_key;
+// The workspaces this browser entered, by the rules every device keeps them by.
 #[cfg(target_arch = "wasm32")]
-mod background_work;
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser page opens windows")
-)]
-mod capture_declarations;
-// Holding Console in front in the console layout: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser page holds a window in front")
-)]
-mod console_hold;
-// Content handed to an app, opened as its file: its tests run on the host too.
-#[cfg(target_arch = "wasm32")]
-mod browser;
-#[cfg(any(target_arch = "wasm32", test))]
-mod content_open;
-// Where files dropped on the page go: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod dropped_files;
-#[cfg(target_arch = "wasm32")]
-mod drops_code;
-#[cfg(target_arch = "wasm32")]
-pub(crate) mod page_content;
-#[cfg(target_arch = "wasm32")]
-mod page_files;
-#[cfg(target_arch = "wasm32")]
-pub use browser::carry_out::{CARRY_OUT, CarryOutCode, builtin_carry_out};
-#[cfg(target_arch = "wasm32")]
-pub use drops_code::{DROPS, MakeDrops, builtin_drops};
-#[cfg(target_arch = "wasm32")]
-mod told_code;
-#[cfg(target_arch = "wasm32")]
-pub use layout::{MakePageLayout, PAGE_LAYOUT, builtin_page_layout};
-#[cfg(target_arch = "wasm32")]
-pub use page_files::{PDF_WORDS, PdfWords, builtin_pdf_words};
-#[cfg(target_arch = "wasm32")]
-pub use page_search::{MakePageSearch, PAGE_SEARCH, builtin_page_search};
-#[cfg(target_arch = "wasm32")]
-pub use told_code::{TOLD_NOTICES, ToldNotices, builtin_told_notices};
-/// Install an already-admitted feedback transport before mounting its desktop.
-/// This Rust host hook is intentionally absent from URL/JSON launch options.
-/// # Errors
-/// Refuses a missing or mismatched certified peer and duplicate registration.
-#[cfg(target_arch = "wasm32")]
-pub fn register_feedback_startup(
-    peer: u32,
-    startup: tilo_feedback_transport::Startup,
-) -> Result<(), String> {
-    feedback_code::register_feedback_startup(peer, startup)
-}
-/// Prepare the runtime before anything runs in it; the module's start
-/// function calls it first.
-///
-/// The page has one thread, and rayon makes it the only worker of the first
-/// pool built on it. When an app's `par_iter` built the global pool first,
-/// the CPU pool (`ui::rt::cpu_pool`) could no longer take the thread and
-/// panicked the whole desktop; built first, both share it.
-///
-/// It also has the frame loop render the pixels apps ask for, which the
-/// page cannot wait for the GPU to read back
-/// ([`ui::offscreen::pixels`]).
-///
-/// And it has the page's `tracing` warnings and errors reach the console.
-#[cfg(target_arch = "wasm32")]
-pub fn start() {
-    console_log::install();
-    let _ = ui::rt::cpu_pool();
-    browser::start_pixels();
-}
-/// Code the bundle fetches on first use arrived: lay out and draw every
-/// mount again, so what it changes (search results, spelling marks,
-/// hyphenation) shows.
-#[cfg(target_arch = "wasm32")]
-pub fn refresh_mounts() {
-    browser::refresh_mounts();
-}
-/// The code that reads the workspace's resources is in: the windows that waited for it are
-/// built.
-#[cfg(target_arch = "wasm32")]
-pub fn workspace_resources_arrived() {
-    browser::workspace_resources_arrived();
-}
-/// Whether a mount has presented its first frame yet.
-#[cfg(target_arch = "wasm32")]
-#[must_use]
-pub fn first_frame_presented() -> bool {
-    browser::first_frame_presented()
-}
-#[cfg(target_arch = "wasm32")]
-mod clipboard;
-#[cfg(target_arch = "wasm32")]
-mod console_log;
-#[cfg(target_arch = "wasm32")]
-mod crash;
-#[cfg(target_arch = "wasm32")]
-mod record_verify;
-// The document each window shows on the workspace's shared shell: native tests
-// cover it too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser page opens windows; native tests cover it"
-    )
-)]
-#[cfg(target_arch = "wasm32")]
-mod desktop;
-#[cfg(target_arch = "wasm32")]
-mod directory;
-#[cfg(target_arch = "wasm32")]
-mod display_mode;
-#[cfg(target_arch = "wasm32")]
-mod dom_code;
-// Keeping the page's desktop in the profile: native tests cover it too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "native tests cover what the page keeps")
-)]
-mod kept;
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser page opens windows; the host runs its tests"
-    )
-)]
-mod window_states;
-#[cfg(target_arch = "wasm32")]
-pub use dom_code::{DOM_CODE, DomCode, builtin_dom};
-#[cfg(target_arch = "wasm32")]
-pub use over_page::{SHEETS, SheetsCode, builtin_sheets};
-#[cfg(target_arch = "wasm32")]
-mod feedback_code;
-#[cfg(target_arch = "wasm32")]
-mod feedback_composer;
-#[cfg(target_arch = "wasm32")]
-mod feedback_crops;
-// What the person's agents on a workspace host ask them, on the page: the
-// export JavaScript calls, and the sheet, which is code the page fetches.
-#[cfg(target_arch = "wasm32")]
-mod agent_questions;
-#[cfg(target_arch = "wasm32")]
-pub use questions::{
-    QUESTIONS, QuestionsCode, builtin_questions, code_arrived as questions_arrived,
-};
-#[cfg(target_arch = "wasm32")]
-mod guide;
-#[cfg(target_arch = "wasm32")]
-mod host_asks;
-#[cfg(target_arch = "wasm32")]
-mod invite;
+mod entered;
 #[cfg(target_arch = "wasm32")]
 mod invited_server;
 #[cfg(target_arch = "wasm32")]
-pub use invited_server::{INVITED_SERVER, InvitedServer, builtin_invited_server};
-#[cfg(any(target_arch = "wasm32", test))]
-mod jobs_card;
-#[cfg(target_arch = "wasm32")]
-mod layers;
-// Native builds compile it for its tests: how a sheet stands over the page and what it takes
-// while it stands there is the page's own answer, tested where the host runs it.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser page draws a sheet over its desktop"
-    )
-)]
-mod over_page;
-#[cfg(target_arch = "wasm32")]
-mod page_apps;
-#[cfg(target_arch = "wasm32")]
-mod page_machine;
-#[cfg(target_arch = "wasm32")]
-mod page_search;
-#[cfg(target_arch = "wasm32")]
-mod questions;
-#[cfg(target_arch = "wasm32")]
-pub use feedback_code::{
-    FEEDBACK, FeedbackCode, builtin_feedback, code_arrived as feedback_arrived,
-};
-#[cfg(target_arch = "wasm32")]
-mod feedback_delivery;
-#[cfg(target_arch = "wasm32")]
-mod feedback_pick;
-#[cfg(target_arch = "wasm32")]
-mod feedback_review;
-// Which peer carries a desktop's reports: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod feedback_route;
-#[cfg(all(target_arch = "wasm32", feature = "deferred-feedback-composer"))]
-pub use feedback_composer::install_feedback_composer;
-#[cfg(target_arch = "wasm32")]
-pub use feedback_composer::{FEEDBACK_COMPOSER, FeedbackComposerCode, builtin_feedback_composer};
-#[cfg(target_arch = "wasm32")]
-mod files;
-// What the page says about a fixed chord it cannot serve: its tests run on
-// the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser page answers its chords; the host runs its tests"
-    )
-)]
-mod fixed_chords;
-// Whom the page's person follows reaches the windows' apps; a device proves it too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser page follows anyone")
-)]
-mod follow;
-#[cfg(target_arch = "wasm32")]
-mod frame_metrics;
-#[cfg(target_arch = "wasm32")]
-mod page_activity;
-#[cfg(target_arch = "wasm32")]
-mod pages;
-#[cfg(target_arch = "wasm32")]
-pub use page_activity::{LoadActivity, defer_activity_pane};
-#[cfg(target_arch = "wasm32")]
-mod host_services;
-#[cfg(target_arch = "wasm32")]
-pub use host_services::{MODEL_CLIENTS, ModelClients, builtin_model_clients};
-#[cfg(target_arch = "wasm32")]
 mod link;
-// A pairing link drawn as the code a phone reads.
-#[cfg(target_arch = "wasm32")]
-mod mount_service_lease;
-#[cfg(target_arch = "wasm32")]
-mod qr_code;
-// The page's user root: the envelope it is kept in, and what it signs.
-#[cfg(target_arch = "wasm32")]
-mod root_identity;
-// The page's theme from settings and the browser: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod page_theme;
 // Which peer speaks for the page's person: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod page_person;
 #[cfg(target_arch = "wasm32")]
 mod peer;
-// The person's MCP server, as the page carries it to their host.
-#[cfg(target_arch = "wasm32")]
-mod mcp_server;
-// The person's devices, as the page administers them on their host: its tests
-// run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod identity_api;
 // The page's peer network: the session's sync over this page's endpoint.
 #[cfg(target_arch = "wasm32")]
 mod peer_sync;
@@ -317,135 +49,18 @@ mod peer_sync;
     )
 )]
 mod presence_value;
+// A pairing link drawn as the code a phone reads.
+#[cfg(target_arch = "wasm32")]
+mod qr_code;
+// The page's user root: the envelope it is kept in, and what it signs.
+#[cfg(target_arch = "wasm32")]
+mod root_identity;
 // The sign-in route's answer to a service (`web/sign-in.mjs`).
 #[cfg(target_arch = "wasm32")]
 mod sign_in_page;
-// The person's own records each window holds: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod person_resources;
-// Who may read what a page holds of another app's documents: its tests are built natively too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser page answers a window's reads; natively only its tests do"
-    )
-)]
-mod read_bounds;
-// What a page holds of its workspace's documents as its person may read them, and what it asks
-// its workspace for when a read names one it holds none of: its tests are built natively too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser page answers a window's reads; natively only its tests do"
-    )
-)]
-mod held_reads;
-// What a page times of the members' presence itself: its tests run on the
-// host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg(target_arch = "wasm32")]
-mod replication;
-// The workspace a page replicates, as the start module asks it: the peer's
-// code installs the answers when it starts.
-#[cfg(target_arch = "wasm32")]
-mod replicated;
-// The workspaces a host governs, as the page administers them.
-#[cfg(target_arch = "wasm32")]
-mod workspace_settings;
-#[cfg(target_arch = "wasm32")]
-mod workspaces;
-// The workspaces this browser entered, by the rules every device keeps them by.
-#[cfg(target_arch = "wasm32")]
-mod entered;
-// When a status carries the semantics tree: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod disk_key;
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser publishes statuses; the host runs its tests"
-    )
-)]
-mod semantics_status;
-#[cfg(target_arch = "wasm32")]
-mod settings;
-// What a window runs when the page asks it to show something: its tests run
-// on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod reveal;
-// Where a `settings:` link goes on a page: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod link_requests;
-// The person's settings sections the page keeps: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-mod kept_settings;
-// What a page keeps of a record its host sent: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser page replicates records")
-)]
-mod landing;
-#[cfg(target_arch = "wasm32")]
-pub use browser::{RENDERER_CODE, RendererCode, builtin_renderer_code};
-#[cfg(any(target_arch = "wasm32", test))]
-pub use kept_settings::{SETTINGS_KEEPER, SettingsKeeper, builtin_settings_keeper};
-#[cfg(target_arch = "wasm32")]
-pub(crate) mod shell;
 #[cfg(target_arch = "wasm32")]
 mod storage;
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(
-        dead_code,
-        reason = "only the browser throttles statuses; the host runs its tests"
-    )
-)]
-mod throttle;
-#[cfg(target_arch = "wasm32")]
-mod video_pictures;
 #[cfg(target_arch = "wasm32")]
 mod way_in;
-#[cfg(any(target_arch = "wasm32", test))]
-mod window_pictures;
 #[cfg(target_arch = "wasm32")]
-mod workspace_resources;
-#[cfg(target_arch = "wasm32")]
-pub use workspace_resources::{
-    WORKSPACE_RESOURCES, WorkspaceResourcesCode, builtin_workspace_resources,
-};
-// When graphics start-up is said to stall: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser draws; the host runs its tests")
-)]
-mod first_frame;
-// Plain arithmetic on canvas sizes: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser draws; the host runs its tests")
-)]
-mod viewport;
-// How many frames the GPU may still be drawing: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser draws; the host runs its tests")
-)]
-mod frame_pacing;
-// How often a lost GPU is made again: its tests run on the host too.
-#[cfg(any(target_arch = "wasm32", test))]
-#[cfg_attr(
-    not(target_arch = "wasm32"),
-    allow(dead_code, reason = "only the browser draws; the host runs its tests")
-)]
-mod gpu_recovery;
+mod workspaces;

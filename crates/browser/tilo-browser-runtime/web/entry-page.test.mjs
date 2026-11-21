@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, keptMembership} from './workspaces.mjs';
+import {chosenWorkspace, joinViaHost} from './workspaces.mjs';
 import {AdmissionError, admit} from './admission.mjs';
-import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON, parsePairSecret} from './pairing.mjs';
+import {assistantAddress, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_SAME_PERSON} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -155,7 +155,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
-    .replace("import {loadRuntime, reportPageErrors} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime, reportPageErrors = () => {};')
+    .replace("import {loadRuntime} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime;')
     .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, keptIdentity, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst signInWithPasskey = (...args) => globalThis.__entryPageFixture.signIn(...args);\nconst fetchEnvelope = async () => null;')
     .replace('hostToReconnect, joinViaHost,', 'hostToReconnect,')
@@ -663,36 +663,6 @@ test('an uncaught page error reaches the entry the site names', async () => {
   globalThis.fetch = before;
 });
 
-// A session's own status, as the peer publishes it (PeerSnapshot).
-function sessionOf({phase = 'ready', transport = 'connected', admission = 'ready'} = {}) {
-  return {phase, outgoingPending: 0, health: {version: 1, transport: {phase: transport}, admission: {phase: admission}, records: [], failures: []}};
-}
-
-/** A page opened at a site's short invitation link into the Lounge, through
- * the real admission with the page's own deps: the invitation sent off the
- * wait list (`waitList`) or not. `steps` hears what the page asked. */
-const shortInvitation = ({waitList, steps}) => async ({deps, onStep}, booted) => {
-  const scope = {kind: 'sealed', site: 'https://web.example', handle: 'abcdefghijklmnop'};
-  const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
-  deps.onScope({scope, entry: {base: 'https://web.example/', home}});
-  onStep('join');
-  const lounge = {...booted.peer, workspace: 'current', workspaceName: 'Lounge',
-    enterOwnWorkspace: async () => { steps.push('make own'); return {workspace: OWN, workspace_id: 'own-id', name: 'Ada’s workspace'}; },
-    dispose: async () => steps.push('dispose lounge')};
-  const {peer} = await admit({scope, secrets: {invite: 'K'.repeat(43)}, runtime: {wayIn: () => 'sealed-invitation', wayInAfter: () => 'no-access', admittedAsAsked: () => true},
-    deps: {...deps,
-      openInvitation: async () => ({invitation: 'the invitation', host: ORIGIN}),
-      inspectInvitation: async () => ({workspaceName: 'Lounge', role: 'editor', workspace: 'current', members: 3, waitList}),
-      confirmInvitation: async () => true,
-      joinWorkspace: async () => { steps.push('join lounge'); return lounge; },
-      reconnect: async ({workspace}) => { steps.push(['enter', workspace]); return {...booted.peer, workspace}; }}});
-  deps.onAdmitted(peer);
-  booted.peer = peer;
-  booted.router.route.target.scope = {kind: 'workspace', host: ORIGIN, workspace: peer.workspace};
-  return booted;
-};
-const OWN = '0b1d8f52-5d0e-4a8e-9c1b-6f3e2a7d4c19';
-
 test('a person already set up keeps the workspace a link into the site’s own home opened', async () => {
   const home = {name: 'Lounge', host: {origin: ORIGIN}, admission: `${ORIGIN}/peer/v1/directory/current/`};
   const {failure, at} = await fixture({entry: {base: 'https://web.example/', home},
@@ -1063,94 +1033,6 @@ test('the pairing sheet hands its link to Tilo Assistant by an address of the ap
 });
 
 // ---- Adding a device from a person's own desktop ---------------------------
-
-/** A person whose root this browser holds, as the page reads them
- * (`currentIdentity`): not kept yet, so nothing of theirs is published. */
-const rootHolder = (userPublicKey = USER) => ({userPublicKey, kept: false, keepWithPasskey: async () => {},
-  createRecoveryKey: async () => 'recovery', revokeDevice: async () => {}});
-
-/** A link as the site's grammar writes it: a workspace at its server, or the person's own desktop. */
-const siteLink = {format: ({target: {scope}}) => (scope.kind === 'own' ? 'https://web.example/#/me'
-  : `https://web.example/#/@${new URL(scope.host).hostname}/w/${scope.workspace}`)};
-
-/**
- * The site's own server as a page with no session there reaches its pairing
- * (the runtime's pairing reach, at the address the server publishes): the
- * devices `waiting()` says wait there, and every reach, question and answer,
- * with the root each came with. `session()` is that reach as a workspace's
- * peer hands it out.
- */
-function homeServer(waiting = () => []) {
-  const asked = [];
-  class Pairing {
-    constructor(address) { asked.push(['reach', address]); }
-    async pending(root) { asked.push(['pending', root?.userPublicKey]); return JSON.stringify(waiting()); }
-    async answer(root, digest, approved) {
-      asked.push(['answer', root?.userPublicKey, digest, approved]);
-      return approved ? '{"cert":{}}' : null;
-    }
-    async close() { asked.push(['close']); }
-  }
-  return {asked, count: what => asked.filter(([said]) => said === what).length, session: () => new Pairing('session'),
-    runtime: {PairingHost: Pairing, hostInfo: async () => JSON.stringify({address: {id: 'home-server'}}), qrSvg: () => '<svg/>'}};
-}
-
-/**
- * The page's repeating and late timers, held instead of started, so a test
- * drives the pairing's poll itself (`poll(ms)`: every held timer of that
- * period, once) and nothing outlives it. `release()` gives the clock back.
- */
-function heldTimers() {
-  const real = {setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, now: Date.now};
-  const every = new Map();
-  let next = 1;
-  let ahead = 0;
-  globalThis.setInterval = (fire, ms) => { const id = `held-${next++}`; every.set(id, {fire, ms}); return id; };
-  globalThis.clearInterval = id => { if (!every.delete(id)) real.clearInterval(id); };
-  globalThis.setTimeout = (fire, ms, ...rest) => (ms >= 1000 ? `late-${next++}` : real.setTimeout(fire, ms, ...rest));
-  Date.now = () => real.now() + ahead;
-  return {
-    poll: async ms => { for (const held of [...every.values()]) if (held.ms === ms) held.fire(); await settled(); },
-    later: ms => { ahead += ms; },
-    release() {
-      Object.assign(globalThis, {setInterval: real.setInterval, clearInterval: real.clearInterval, setTimeout: real.setTimeout});
-      Date.now = real.now;
-    },
-  };
-}
-
-/** The person chooses the desktop's action `id`, which its page carries out. */
-const choose = (diagnostics, id, value) => diagnostics.onHostAction(id, value);
-/** A page that opened the pairing link naming `named`: its own way in pairs it. */
-const following = named => async ({deps}, page) => {
-  deps.onScope({scope: {kind: 'workspace', host: named.origin, workspace: named.workspace}, entry: HOME_ENTRY});
-  await deps.pairDevice({...named, listed: null});
-  return page;
-};
-const settled = async () => { for (let turn = 0; turn < 4; turn++) await tick(); };
-/** How often a page with an open pairing link asks its server who waits (`PAIR_POLL_MS`). */
-const PAIR_POLL = 3000;
-const card = kind => document.body.children.find(shown => shown.dataset.card === kind) ?? null;
-const pairingLinkOf = sheet => sheet.children.find(part => part.name === 'pairing-link').value;
-/** What a pairing link names: the server and workspace it opens, the person and the invite. */
-const namedBy = link => {
-  const [, server, workspace, secret] = /#\/@([^/]+)\/w\/([^?]+)\?pair=([0-9a-f]+)$/.exec(link);
-  return {origin: `https://${server}`, workspace, ...parsePairSecret(secret)};
-};
-const waitingDevice = (digest, invite) => ({digest, pairingCode: '123456', label: 'Safari on iPhone', device: 'ee'.repeat(32),
-  invite, requestedAtMs: Date.now()});
-/** A site whose home workspace, `lounge`, the server at `ORIGIN` keeps. */
-const HOME_ENTRY = {base: 'https://web.example/', home: {...HOME_AT_ORIGIN, workspace: 'lounge'}};
-/** A person's own desktop on that site, in a browser that holds `identity`;
- * `chosen` is the workspace a bare entry opens for them, when they chose one:
- * one this browser entered, as a choice is kept only while it remembers that. */
-const ownDesktop = ({identity = rootHolder(), server, chosen = null, entry = HOME_ENTRY, ...rest}) => fixture({own: true, identity, entry,
-  ...(chosen ? {remembered: [{origin: ORIGIN, workspace: chosen, hostDevice: 'cd'.repeat(32), name: 'Mine'}]} : {}),
-  runtime: server.runtime, ...rest, boot: async (_options, page) => {
-    if (chosen) chooseWorkspace({id: `open-workspace:${chosen}`, name: 'Mine', origin: ORIGIN, workspace: chosen});
-    page.link = siteLink;
-    return page;
-  }});
 
 /** The link a signed-in tab formats for the workspace it opens. */
 const signedInLink = {format: ({target}) => `https://web.example/#/@node.example/w/${target.scope.workspace}`};

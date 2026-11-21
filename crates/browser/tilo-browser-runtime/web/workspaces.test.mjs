@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, freeName, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStatus, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, freeName, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, knownWorkspaces, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStatus, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {DeviceKeyError} from './device-key.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 import {PAIRING_SAME_PERSON} from './pairing.mjs';

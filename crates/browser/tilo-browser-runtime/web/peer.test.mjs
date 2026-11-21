@@ -11,8 +11,6 @@ import {deviceRemoved} from './session-refusal.mjs';
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 const SELF = 'dd'.repeat(32);
-const OTHER = 'cc'.repeat(32);
-const AGENT = 'ee'.repeat(32);
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 /** The iroh endpoint a host publishes as its address. */
 const HOST_ADDRESS = {endpointAddr: {}};
@@ -111,7 +109,6 @@ function fakeRuntime({phase = 'ready'} = {}) {
         peer = {
           config: JSON.parse(config), configText: config, signer, namespace, record, save, channelVault, disposed: false, reconnects: 0, retries: 0,
           phase,
-          records: [],
           admission: 'ready',
           failures: [],
           refreshes: 0,
@@ -122,8 +119,6 @@ function fakeRuntime({phase = 'ready'} = {}) {
           subscribe: listener => listeners.push(listener),
           sessionToken: () => 'ce'.repeat(32),
           joinWorkspace: workspace => { peer.workspace = workspace; },
-          workspaceRecords: () => JSON.stringify(peer.records),
-          hasRecord: (app, record) => peer.records.some(row => row.app === app && row.record === record),
           takeDurableEvents: () => JSON.stringify(durable.splice(0)),
           /** This page's device key: the publisher the workspace knows it by. */
           deviceKey: () => SELF,
@@ -178,9 +173,6 @@ const options = (runtime, store, extra = {}) => ({
   origin: 'https://host.example:8443', userPublicKey: 'bb'.repeat(32), label: 'Browser on Cloud', workspace: WORKSPACE,
   deviceKey, store, runtime, fetch: async () => { throw new Error('no network in tests'); }, ...extra,
 });
-
-/** What the workspace's members said, as the session hands it to the page. */
-const say = (runtime, said, durable = []) => runtime.peer.emit(runtime.peer.phase, durable, said);
 
 test('an action asked once is answered by the host, and nothing of it is kept in the page', async () => {
   // A host that says which device it is: only such a host has actions to ask.
@@ -1124,21 +1116,16 @@ test('whenReady keeps the code the host stopped the session with, for the page t
   await peer.dispose();
 });
 
-test('a host still replaying the workspace is waited for; one that says nothing is not', async () => {
-  const runtime = fakeRuntime({phase: 'admitting'});
+test('a host moving the page on is waited for; one that says nothing is not', async () => {
+  const runtime = fakeRuntime({phase: 'authenticating'});
   const peer = await connect(options(runtime, memoryStore()));
-  // Each record arrives inside the wait, though the replay as a whole takes
-  // several times as long: the page waits for it, and is in once it is ready.
-  const heard = [];
-  const replaying = peer.whenReady({timeoutMs: 80, capMs: 5000, onProgress: records => heard.push(records)});
-  for (let record = 0; record < 6; record += 1) {
-    await new Promise(resolve => setTimeout(resolve, 40));
-    runtime.peer.records.push({app: 'so.tilo.notes', record: `note-${record}`});
-    runtime.peer.emit('admitting');
-  }
+  // Each step the session takes gives the host the wait again, within the cap.
+  const admitting = peer.whenReady({timeoutMs: 80, capMs: 5000});
+  await new Promise(resolve => setTimeout(resolve, 60));
+  runtime.peer.emit('admitting');
+  await new Promise(resolve => setTimeout(resolve, 60));
   runtime.peer.emit('ready');
-  assert.equal((await replaying).phase, 'ready');
-  assert.deepEqual(heard, [1, 2, 3, 4, 5, 6], 'the page hears the workspace arrive');
+  assert.equal((await admitting).phase, 'ready');
   await peer.dispose();
 
   const quiet = fakeRuntime({phase: 'admitting'});
@@ -1150,64 +1137,7 @@ test('a host still replaying the workspace is waited for; one that says nothing 
   quiet.peer.transport = 'connected';
   quiet.peer.emit('admitting');
   await assert.rejects(silent.whenReady({timeoutMs: 80, capMs: 5000}), {name: 'TimeoutError', code: 'timed-out', connected: true});
-  // A host that keeps sending but never lets the page in is given up on at the cap.
-  const endless = silent.whenReady({timeoutMs: 80, capMs: 300});
-  const feeding = setInterval(() => {
-    quiet.peer.records.push({app: 'so.tilo.notes', record: `more-${quiet.peer.records.length}`});
-    quiet.peer.emit('admitting');
-  }, 30);
-  await assert.rejects(endless, {name: 'TimeoutError'});
-  clearInterval(feeding);
   await silent.dispose();
-});
-
-test('a page waiting to show its desktop goes on once it holds the shared desktop, before the rest arrives', async () => {
-  const runtime = fakeRuntime({phase: 'admitting'});
-  const peer = await connect(options(runtime, memoryStore()));
-  let shown = false;
-  let ready = false;
-  const showing = peer.whenReady({shown: true}).then(() => { shown = true; });
-  const whole = peer.whenReady().then(() => { ready = true; });
-  // Another record first: the desktop is not shown from it.
-  runtime.peer.records.push({app: 'so.tilo.notes', record: 'note-1'});
-  runtime.peer.emit('admitting');
-  await settle();
-  assert.equal(shown, false);
-  runtime.peer.records.push({app: 'so.tilo.browser-desktop', record: 'desktop'});
-  runtime.peer.emit('admitting');
-  await showing;
-  assert.equal(ready, false, 'the rest of the workspace is still on its way');
-  runtime.peer.emit('ready');
-  await whole;
-  await peer.dispose();
-});
-
-test('a page whose workspace sent no desktop yet shows once the host has replayed it all', async () => {
-  const runtime = fakeRuntime({phase: 'admitting'});
-  const peer = await connect(options(runtime, memoryStore()));
-  let shown = false;
-  const showing = peer.whenReady({shown: true}).then(() => { shown = true; });
-  runtime.peer.records.push({app: 'so.tilo.notes', record: 'note-1'});
-  runtime.peer.emit('admitting');
-  await settle();
-  assert.equal(shown, false, 'a desktop mounted now would start a record of its own');
-  runtime.peer.emit('ready');
-  await showing;
-  await peer.dispose();
-});
-
-test('the workspace\'s records this page holds, and waiting for one', async () => {
-  const runtime = fakeRuntime();
-  const peer = await connect(options(runtime, memoryStore()));
-  assert.deepEqual(peer.records(), []);
-  const arrived = peer.whenRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000', {timeoutMs: HANG_BOUND_MS});
-  runtime.peer.records.push({app: 'so.tilo.word-processor', record: 'derived:default@tab:0000000000000000'});
-  runtime.peer.emit();
-  await arrived;
-  assert.equal(peer.hasRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000'), true);
-  assert.deepEqual(peer.records(), [{app: 'so.tilo.word-processor', record: 'derived:default@tab:0000000000000000'}]);
-  await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing', {timeoutMs: 20}), /no so.tilo.notes record missing/);
-  await peer.dispose();
 });
 
 test('recertification retires voice before disposing the certified peer', async () => {
@@ -1347,20 +1277,6 @@ test('a name shown here stays the page\'s; only a name the person gives reaches 
   assert.deepEqual(named.at(-1), ['given', 'Quinten']);
   assert.equal(named.filter(([kind]) => kind === 'given').length, 1, 'a blank name is no name');
   await peer.dispose();
-});
-
-test('resource hydration can be cancelled and leaving the peer refuses pending opens', async () => {
-  const runtime = fakeRuntime();
-  const peer = await connect(options(runtime, memoryStore()));
-  const cancelled = new AbortController();
-  const pending = peer.whenRecord('so.tilo.chat', '', {signal: cancelled.signal});
-  cancelled.abort();
-  await assert.rejects(pending, error => error.name === 'AbortError');
-  const leaving = peer.whenRecord('so.tilo.notes', 'missing');
-  const refused = assert.rejects(leaving, /connection closed/);
-  await peer.dispose();
-  await refused;
-  await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing'), /connection closed/);
 });
 
 test('a member opening a link never certifies or renews a device implicitly', async () => {

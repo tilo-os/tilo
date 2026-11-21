@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {callIdOf, createVoiceControls, createMediaPump, endedIssue, rostersOf, revisionOf, speakingOf} from './voice-controls.mjs';
-import {runtimeFake} from './runtime-surface.mjs';
+import {createVoiceControls, endedIssue, rostersOf, revisionOf, speakingOf} from './voice-controls.mjs';
 const CALL = 'c'.repeat(64);
 function fixture() {
   const operations = [];
@@ -76,47 +75,6 @@ test('an ended call says whether it was refused or just ended', () => {
   assert.equal(endedIssue({admitted: false, audioFailed: true, reason: 'no audio output'}), 'unavailable');
 });
 
-test('an active call polls the retained controls even when the canvas stops redrawing, and close removes the timer', async () => {
-  const f = fixture();
-  f.state.phase = 'live';
-  let listener;
-  f.voice.call.subscribe = next => {listener = next; return () => {listener = undefined;};};
-  let scheduled;
-  let cleared = false;
-  let polls = 0;
-  const clock = {setTimeout: next => {scheduled = next; return 1;}, clearTimeout: () => {cleared = true;}};
-  const pump = createMediaPump({voice: f.voice, workspace: 'workspace-1', id: 1n, active: () => true, clock,
-    runtime: runtimeFake({take_media_requests: () => {polls++; return '[]';}})});
-  pump.pump();
-  assert.equal(polls, 1);
-  assert.equal(typeof scheduled, 'function', 'live calls keep receiving shared UI status');
-  scheduled();
-  assert.equal(polls, 2);
-  pump.close();
-  assert.equal(cleared, true);
-  assert.equal(listener, undefined);
-});
-
-
-test('a page with no call still has its media queue served: Chat watches the rosters there', async () => {
-  const f = fixture();
-  let scheduled;
-  let schedules = 0;
-  let cleared = false;
-  const clock = {setTimeout: next => {scheduled = next; schedules++; return 1;}, clearTimeout: () => {cleared = true;}};
-  let looks = 0;
-  f.voice.call.subscribe = () => () => {};
-  const pump = createMediaPump({voice: f.voice, workspace: 'workspace-1', id: 1n, active: () => true, clock,
-    runtime: runtimeFake({take_media_requests: () => {looks++; return '[]';}})});
-  pump.pump();
-  assert.equal(looks, 1);
-  assert.equal(typeof scheduled, 'function', 'a call starting elsewhere is heard with no call here');
-  scheduled();
-  assert.equal(looks, 2);
-  pump.close();
-  assert.equal(cleared, true);
-});
-
 test('two shared Chat surfaces cannot mute or leave one another’s call', async () => {
   const f = fixture();
   await f.controls.execute({...f.request({op: 'join', channel_id: 'standup'}), instance: '1'});
@@ -157,24 +115,6 @@ test('a reused instance cannot inherit or retire another component lifetime', as
   assert.equal(f.state.phase, 'joining');
   f.controls.release({...command, instance: '1', owner: 'replacement-lifetime'});
   assert.equal(f.state.phase, 'idle');
-});
-
-test('the mounted pump releases a retired component inside a still-open desktop', async () => {
-  const f = fixture();
-  f.voice.call.subscribe = () => () => {};
-  const request = {...f.request({op: 'join', channel_id: 'standup'}), ticket: 1, owner: 'retained-chat'};
-  let batch = [request];
-  const clock = {setTimeout: () => 1, clearTimeout() {}};
-  const runtime = runtimeFake({take_media_requests() {const result = batch; batch = []; return JSON.stringify(result);}, complete_media_request() {return true;}});
-  const pump = createMediaPump({voice: f.voice, workspace: 'workspace-1', id: 1n, active: () => true, clock, runtime});
-  pump.pump();
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  assert.equal(f.state.phase, 'joining');
-  batch = [{...request, ticket: 0, retired: true}];
-  pump.pump();
-  assert.equal(f.state.phase, 'idle');
-  assert.deepEqual(f.operations.at(-1), ['leave']);
-  pump.close();
 });
 
 test('activation alone cannot unmute before a publishing grant is live', async () => {

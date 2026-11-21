@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {boot, chosenRoute, initialRoute, readEntry, receivingNote} from './entry.mjs';
+import {boot, chosenRoute, initialRoute, readEntry} from './entry.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 /** The runtime's way in (tilo-session-client's `way_in`, tested there),
@@ -13,31 +13,6 @@ const entering = (...ways) => {
 };
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
-const views = [
-  {kind: 'read', address: {resource: message.id, action: 'reveal'}, view: {id: 'message', open_action: 'reveal', primary: true,
-    range: {action: 'reveal-range', start_param: 'from', end_param: 'to', unit_param: 'unit'}}},
-  {kind: 'read', address: {resource: message.id, action: 'thread'}, view: {id: 'thread', open_action: 'thread', primary: false}},
-  {kind: 'undoable', address: {resource: message.id, action: 'delete'}},
-];
-
-function desktopNavigation(windows) {
-  let snapshot = {generation: 'g1', active: null, entries: []};
-  const listeners = new Set();
-  const commands = [];
-  const show = next => { snapshot = next; for (const listener of [...listeners]) listener(next); };
-  return {commands, navigation: {
-    getSnapshot: () => snapshot,
-    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    async dispatch(command) {
-      commands.push(command);
-      const route = {workspace: '1', strip: '1', group: '7', tab: '8'};
-      // A launch on a record (`record:<app>:<record>`) opens the app's window on it.
-      const [, app, record] = /^record:([^:]+):(.+)$/.exec(command.args?.app ?? '') ?? [null, command.args?.app];
-      queueMicrotask(() => show({generation: 'g1', active: route,
-        entries: [...windows, {route, app, ...(record ? {record} : {})}]}));
-    },
-  }};
-}
 
 test('an unbound desktop entry without a route is the person’s own desktop', () => {
   const link = {parse: () => { throw Object.assign(new Error('no route'), {code: 'no-route'}); }};
@@ -143,8 +118,6 @@ test('the home workspace opens through its host entry, and the address becomes i
   assert.deepEqual(entered, [home]);
   // Progress while joining, then the loading note again, which the page takes over from.
   assert.ok(shown.includes('Joining…'), shown.join(' | '));
-  // A host still replaying the workspace says how far it got.
-  assert.ok(shown.includes(receivingNote(3)), shown.join(' | '));
   assert.equal(status.text, 'Loading…');
   // The page hears it is joining through the entry, then opening once admitted.
   assert.deepEqual([...new Set(steps)], ['join', 'open']);

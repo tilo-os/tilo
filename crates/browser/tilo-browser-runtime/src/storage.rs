@@ -113,7 +113,6 @@ pub(crate) fn load(
             .map_err(error)?;
     }
     CACHES.with_borrow_mut(|caches| caches.insert(key, Rc::clone(&store)));
-    crate::settings::install(&store);
     Ok(store)
 }
 
@@ -232,13 +231,6 @@ pub fn set_profile_value(
         )
         .map(drop)
         .map_err(error)
-}
-
-/// Seed the namespace's settings with the host's JSON object unless it has
-/// stored settings. `true` when the host's document was taken.
-#[wasm_bindgen]
-pub fn provide_settings(profile: &str, device: &str, settings: &str) -> Result<bool, JsValue> {
-    crate::settings::provide(&cached(profile, device)?, settings).map_err(error)
 }
 
 /// The certificate and server pin (JSON) the saved peer entry in

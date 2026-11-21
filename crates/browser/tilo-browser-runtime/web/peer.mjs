@@ -43,9 +43,6 @@ export {
 export {joinViaHost, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
-/** The workspace's shared desktop record (`tilo_desktop_model::ownership`). */
-const DESKTOP_APP = 'so.tilo.browser-desktop';
-const DESKTOP_RECORD = 'desktop';
 /**
  * The stored `{cert, hostCert}` JSON with the peer's start fields (the
  * person's name, whether it only watches) added, edited as text: certificate
@@ -766,7 +763,6 @@ async function connect({
   function stopLive() {
     live?.stop();
   }
-  const hasRecord = (app, record) => Boolean(peer?.hasRecord?.(app, record));
 
   // The page's actions: the workspace's host lists and runs them, asked through the
   // session this page holds with it (`actionMessage` in wasm) — the same entry the page's
@@ -1107,13 +1103,8 @@ async function connect({
     noteWorkspaceName(name) {
       admittedName = typeof name === 'string' && name.trim() ? name.trim() : null;
     },
-    /** The workspace's name as its people last set it (the workspace in front on
-     * its shared desktop), once the workspace delivered it; else the name its
-     * host answered admission with; else `undefined`. */
-    get workspaceName() {
-      // Asked after a failure too, when the session may be gone.
-      try { return peer?.workspaceName?.() ?? admittedName ?? undefined; } catch { return admittedName ?? undefined; }
-    },
+    /** The name the workspace's host answered admission with, else `undefined`. */
+    get workspaceName() { return admittedName ?? undefined; },
     /** The name the page shows this person by from now on: the one they gave
      * themselves, or one drawn from their key while they give none. It stays
      * the page's: only `nameSelf` tells the workspace a name. */
@@ -1155,9 +1146,6 @@ async function connect({
      * made so two of one name are told apart. */
     personalWorkspaces: async () => (await ask('personal')).workspaces ?? [],
     getSnapshot: () => snapshot,
-    /** How many changes this page made to the workspace's records and sent:
-     * above zero once the person posted or created something. */
-    authoredChanges: () => peer?.authoredChanges?.() ?? 0,
     /** Diagnostic text of the page's channel membership (not a contract). */
     channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -1195,23 +1183,14 @@ async function connect({
     /** This peer in the wasm runtime, for mounts that replicate through it. */
     get runtimeId() { return peer?.id ?? pageId; },
     /** Resolves once the host admitted the workspace (`phase === 'ready'`);
-     * rejects when it refused this device. With `shown`, resolves as soon
-     * as this page holds the workspace's shared desktop record: the host
-     * replays it ahead of the workspace's other records, and the desktop
-     * shows from it while the rest arrives. A workspace whose desktop record
-     * has not reached the page yet still waits for the whole replay, so a
-     * desktop never starts a record of its own beside the workspace's.
+     * rejects when it refused this device.
      *
      * A host that says nothing for `timeoutMs` has not answered. One that
-     * is still getting the page there (the session moving on to admitting,
-     * another of the workspace's records arriving) is waited for, up to
-     * `capMs` in all: a busy host replaying a workspace to a slow device
-     * takes longer than a silent one is given, and is no unreachable host;
-     * `onProgress(records)` hears each step, with how many of the
-     * workspace's records are here, for the page to show it is moving.
-     * One that refuses the page, or a session that never reached the host
-     * (`hostUnreached`), is said as soon as the session says so. */
-    whenReady({signal, timeoutMs = 30_000, capMs = 120_000, shown = false, onProgress = null} = {}) {
+     * is still getting the page there (the session moving on to admitting)
+     * is waited for, up to `capMs` in all: a busy host is no unreachable
+     * host. One that refuses the page, or a session that never reached the
+     * host (`hostUnreached`), is said as soon as the session says so. */
+    whenReady({signal, timeoutMs = 30_000, capMs = 120_000} = {}) {
       return new Promise((resolve, reject) => {
         let timer;
         let done = false;
@@ -1238,7 +1217,6 @@ async function connect({
         const check = current => {
           if (disposed) finish(new Error('Shared resource connection closed'));
           else if (current.phase === 'ready') finish(undefined, current);
-          else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
           // The session stopped: its code says why (a host never reached,
           // `hostUnreached`; the host's refusal, `not-admitted`,
           // `device-revoked`, `workspace-deleted` and the rest), for the page
@@ -1256,11 +1234,8 @@ async function connect({
           }
           if (done) return;
           // Each step the host takes gives it `timeoutMs` more, within `capMs`.
-          const records = JSON.parse(peer?.workspaceRecords?.() ?? '[]').length;
-          const now = `${current.phase}:${records}`;
-          if (now === progress) return;
-          if (progress !== null && records > 0) onProgress?.(records);
-          progress = now;
+          if (current.phase === progress) return;
+          progress = current.phase;
           clearTimeout(timer);
           timer = setTimeout(timedOut, Math.max(0, Math.min(timeoutMs, began + capMs - Date.now())));
         };
@@ -1268,36 +1243,6 @@ async function connect({
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
-      });
-    },
-    /** The workspace's records this page holds, open in a mount or received:
-     * `[{app, record}]` (a package's workspace document has record `''`). */
-    records: () => JSON.parse(peer?.workspaceRecords?.() ?? '[]'),
-    /** Whether this page holds the workspace's record `record` of `app`. */
-    hasRecord,
-    /** Resolves once the workspace's record `record` of `app` reached this page. */
-    whenRecord(app, record, {timeoutMs = 30_000, signal} = {}) {
-      return new Promise((resolve, reject) => {
-        if (signal?.aborted) { reject(signal.reason); return; }
-        if (disposed) { reject(new Error('Shared resource connection closed')); return; }
-        if (hasRecord(app, record)) { resolve(); return; }
-        const source = peer;
-        const finish = (error, failed = error !== undefined) => {
-          clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
-          signal?.removeEventListener('abort', abort);
-          if (failed) reject(error); else resolve();
-        };
-        const abort = () => finish(signal.reason, true);
-        const check = () => {
-          if (peer !== source || snapshot.phase === 'failed') { finish(new Error('Shared resource connection changed')); return; }
-          if (hasRecord(app, record)) finish();
-        };
-        // `no-record`: nothing arrived in time, which for a record nobody
-        // wrote yet (an app's workspace document before its first write) is
-        // the answer, not a failure of the connection.
-        const timer = setTimeout(() => finish(Object.assign(new Error(`the workspace sent no ${app} record ${record}`), {code: 'no-record'})), timeoutMs);
-        listeners.add(check); pendingRecordWaits.add(finish);
-        signal?.addEventListener('abort', abort, {once: true});
       });
     },
     /** Resolves once every published change is durable on the host and the

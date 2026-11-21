@@ -658,7 +658,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/sign-in.test.mjs",
   "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
   "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/record-verify.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
   "crates/browser/tilo-browser-runtime/web/video-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
@@ -698,10 +697,8 @@ inputs = [
   "crates/sdk/tilo-app/src/framework/app.rs",
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/browser/paint-stream/tests/fixtures/",
-  "crates/browser/tilo-browser-runtime/src/background_work.rs",
   # The theme bundle's test loads a theme written only against the theme SDK.
   "crates/sdk/themes/bauhaus/theme.json",
-  "crates/browser/tilo-browser-runtime/src/mount_service_lease.rs",
   "tools/test-assets.py",
   # The catalogue test reads the gallery app's sources: every component the
   # toolkit describes is shown there, or says at its declaration why it cannot.

@@ -33,7 +33,6 @@ function fakeRuntime(){
     },
     retry_storage(profile,device){const s=store(profile,device);let queued=0;for(const key of s.failed)if(!s.queued.has(key)){s.revision++;s.queued.set(key,s.revision);queued++;}return queued;},
     storage_write_hook(profile,device,hook){store(profile,device).hook=hook??null;},
-    provide_settings(profile,device,json){const s=store(profile,device);if(s.current.has('settings'))return false;s.current.set('settings',json);return true;},
   }, {log,
     store,
     write(profile,device,key,text){const s=store(profile,device);s.revision++;s.current.set(key,text);s.queued.set(key,s.revision);s.hook?.();},
@@ -118,28 +117,3 @@ test('a release whose flush fails keeps device key until retried',async()=>{
   assert.deepEqual(h.locks.held(),[]);
 });
 
-test('host settings seed only a profile without stored settings',async()=>{
-  const h=harness();
-  const storage=await h.host.open('p','d',{settings:{appearance:{theme:'light'}}});
-  assert.equal(h.runtime.store('p','d').current.get('settings'),'{"appearance":{"theme":"light"}}');
-  const again=await h.host.open('p','d',{settings:{appearance:{theme:'dark'}}});
-  assert.equal(h.runtime.store('p','d').current.get('settings'),'{"appearance":{"theme":"light"}}');
-  await again.release();await storage.release();
-  assert.deepEqual(h.stored(),{},'a provided document is not written back until it changes');
-});
-
-
-test('automatic document writes cannot outrun failed credential device key',async()=>{
-  const h=harness();const storage=await h.host.open('p','d');
-  h.runtime.flush_files=async()=>{throw Error('credential quota exceeded');};
-  h.runtime.write('p','d','doc','opaque credential reference');
-  await settle();
-  assert.equal(storage.status.persistence,'failed');
-  assert.match(h.runtime.log.acks.at(-1)[1],/credential quota exceeded/);
-  assert.deepEqual(h.stored(),{},'the write hook cannot commit dependent documents');
-  await assert.rejects(storage.flush(),/credential quota exceeded/);
-  h.runtime.flush_files=async()=>{};
-  await storage.flush();
-  assert.deepEqual(h.stored(),{doc:'opaque credential reference'});
-  await storage.release();
-});

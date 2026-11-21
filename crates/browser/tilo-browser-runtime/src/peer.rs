@@ -12,15 +12,12 @@
 //! The peer record (certificates and the commit outbox) and the workspaces it
 //! holds are kept in the profile's durable store when the page names a profile
 //! ([`DurablePeerStore`]), committed to `IndexedDB` with everything else.
-//! Once started, the certified user becomes the toolkit's local identity
-//! (`ui::local_identity`), so mounts attribute edits to that person.
 //!
 //! HTTP goes through the page's `post(path, session, body)` (its `fetch`).
 //! Presence — who is here, their pointer, what their shell shows — rides the
 //! workspace's live session like every other device's, kept on the session's own
 //! board ([`crate::peer_sync`]) and read back as the members answer
-//! ([`WasmPeer::take_live_events`]). Documents reach the desktop's
-//! `CollaborationManager` through [`WasmPeer::collab_transport`].
+//! ([`WasmPeer::take_live_events`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -84,6 +81,16 @@ pub(crate) fn refusal_error(refusal: &DeviceRefusal) -> JsValue {
 /// # Errors
 ///
 /// Throws for text that is no refusal of a host's.
+/// The colour presence draws the identity `id` in when nothing settled
+/// another one for it, as `#rrggbb`: [`ui::presence::user_color`], the one
+/// the native desktop uses, so a page never computes a colour of its own.
+#[wasm_bindgen(js_name = presenceColor)]
+#[must_use]
+pub fn presence_color(id: &str) -> String {
+    let (r, g, b) = ui::presence::user_color(id);
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 #[wasm_bindgen(js_name = hostRefusal)]
 pub fn host_refusal(wire: &str) -> Result<String, JsError> {
     let error: tilo_actions::remote::ActionCallError =
@@ -462,9 +469,6 @@ impl HttpClient for PageHttp {
     }
 }
 
-/// The store a peer replicates its workspace into, and where it lives.
-type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConnectConfig {
@@ -486,18 +490,6 @@ struct ConnectConfig {
     /// opens ([`entry_request`]), when the host has not admitted it yet.
     #[serde(default)]
     entering: Option<tilo_server_protocol::entering::Entering>,
-}
-
-/// The certified user as the toolkit's local identity.
-fn install_identity(cert: &DeviceCert, display_name: String) {
-    let key = cert.user_public_key;
-    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
-        ui::local_identity::LocalIdentity {
-            group_public_key: key,
-            display_name,
-            avatar_color: [key[0], key[1], key[2]],
-        },
-    ))));
 }
 
 #[derive(Serialize)]
@@ -733,7 +725,7 @@ pub async fn sealed_invitation_link(
         &invitation,
         None,
         &RevocationList::new(),
-        ui::time::unix_now_ns(),
+        tilo_clock::unix_now_ns(),
     )
     .map_err(js_error)?;
     // The shelf this leaves it on lives as long as the invitation: the link
@@ -824,7 +816,7 @@ pub fn reconnect_certificate(
         admitted.as_ref(),
         &host,
         with_root,
-        ui::time::unix_now_ns(),
+        tilo_clock::unix_now_ns(),
     );
     serde_json::to_value(answer)
         .ok()
@@ -1075,9 +1067,6 @@ pub async fn revoke_device(
     for handle in crate::peer_sync::handles_of(&hex::encode(entry.user_public_key)) {
         handle.send(Cmd::Revoke(entry.clone())).map_err(js_error)?;
     }
-    // Announced: whatever lists the person's devices on this page has them
-    // read from the host once more.
-    crate::identity_api::devices_moved();
     serde_json::to_string(&entry).map_err(js_error)
 }
 
@@ -1177,11 +1166,6 @@ impl PairingHost {
             tilo_enrollment::certification::answer_pairing(&self.0, &root, digest, approved)
                 .await
                 .map_err(js_error)?;
-        if issued.is_some() {
-            // One device more: whatever lists the person's devices on this
-            // page has them read from the host once more.
-            crate::identity_api::devices_moved();
-        }
         issued
             .map(|cert| serde_json::to_string(&cert).map_err(js_error))
             .transpose()
@@ -1333,8 +1317,6 @@ use js_state::{
 pub struct WasmPeer {
     id: u32,
     device_key: [u8; 32],
-    reporter_cert: DeviceCert,
-    owner_cert: DeviceCert,
     pub(crate) handle: Link,
     /// This page's device in its person's workspaces, over the same session: how it enters them.
     device: Device,
@@ -1347,44 +1329,13 @@ pub struct WasmPeer {
     /// Joined workspaces by workspace, to name them in call events.
     voice_workspaces: RefCell<std::collections::HashMap<WorkspaceId, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
-    /// Where the workspace's documents are kept (the profile's store, or memory
-    /// for a peer in no profile) and a queue opened at start, until a workspace
-    /// is joined and replicated ([`crate::replication`]).
-    replication: RefCell<Option<(Events, ReplicaStore)>>,
     /// The workspace the person takes part in through this page, once joined
     /// as a person: the one that names them.
     speaking_workspace: RefCell<Option<String>>,
 }
 
-impl WasmPeer {
-    /// What signs a question command of this session's: `device key`, the
-    /// person's root where the page holds it, else this session's own
-    /// device key with its certificate.
-    fn question_signer(
-        &self,
-        device_key: &JsValue,
-    ) -> Result<(PageSigner, Option<DeviceCert>), JsError> {
-        use tilo_server_client::DeviceSigner as _;
-        let signer = PageSigner::from_js(device_key)?;
-        let key = signer.device_public_key();
-        if key == self.reporter_cert.user_public_key {
-            Ok((signer, None))
-        } else if key == self.reporter_cert.device_public_key {
-            Ok((signer, Some(self.reporter_cert.clone())))
-        } else {
-            Err(js_error(
-                "the page asks with the person's root or its own device key",
-            ))
-        }
-    }
-}
-
-/// A page peer's record store, and the profile store it lives in when it has one.
-type KeptPeer = (Arc<dyn PeerStore>, Option<Rc<durable_store::MemoryStore>>);
-
 /// Where a page's peer keeps its record: the profile `namespace`'s durable store, sealed under
-/// its `channelVault`, with that store returned too for the workspace's documents; else the
-/// stored `record` bytes, saved through `save`.
+/// its `channelVault`; else the stored `record` bytes, saved through `save`.
 #[allow(
     clippy::arc_with_non_send_sync,
     reason = "the session takes shared handles; in the page they stay on its one thread"
@@ -1395,27 +1346,22 @@ fn peer_store(
     save: Option<Function>,
     channel_vault: Option<&[u8]>,
     user: &[u8; 32],
-) -> Result<KeptPeer, JsError> {
+) -> Result<Arc<dyn PeerStore>, JsError> {
     if let Some(namespace) = namespace {
         let channel_vault: [u8; 32] = channel_vault
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| js_error("a profile peer needs its 32-byte channel vault"))?;
-        let durable = DurablePeerStore::open(&namespace, user, channel_vault)?;
-        let kept = Rc::clone(&durable.store);
-        return Ok((Arc::new(durable), Some(kept)));
+        return Ok(Arc::new(DurablePeerStore::open(&namespace, user, channel_vault)?));
     }
     let record = record
         .map(|bytes| postcard::from_bytes::<PeerEntry>(&bytes))
         .transpose()
         .map_err(js_error)?;
     let save = save.ok_or_else(|| js_error("a peer needs a namespace or a save callback"))?;
-    Ok((
-        Arc::new(PageStore {
-            current: RefCell::new(record),
-            save,
-        }),
-        None,
-    ))
+    Ok(Arc::new(PageStore {
+        current: RefCell::new(record),
+        save,
+    }))
 }
 
 /// Tell the server of `workspace` its member, the page's person, goes by `name` from now on, the
@@ -1501,7 +1447,7 @@ impl WasmPeer {
             ));
         }
         let signer: Arc<dyn DeviceSigner> = Arc::new(signer);
-        let (store, profile_store) = peer_store(
+        let store = peer_store(
             namespace,
             record,
             save,
@@ -1535,26 +1481,9 @@ impl WasmPeer {
         // go with its registration before this one starts.
         let id = page_id(keep);
         crate::peer_sync::register(id, &handle, &reporter_cert, &owner_cert, &display_name);
-        // A lobby started beside the workspace's peer does not rename the
+        // A lobby started beside the workspace's peer does not speak for the
         // page's person.
-        if crate::page_person::claim(id) {
-            install_identity(&reporter_cert, display_name);
-        }
-        // Every peer replicates the workspace it joins, so a desktop mounted
-        // through it always has a replica to attach to. A peer kept in no
-        // profile (a page's, whose device lives only in memory) keeps the
-        // workspace's documents in memory for as long as the page.
-        let replication_store = match profile_store {
-            Some(store) => (store, crate::replication::Kept::InProfile),
-            None => (
-                Rc::new(durable_store::MemoryStore::new()),
-                crate::replication::Kept::InPage,
-            ),
-        };
-        let replication = RefCell::new(Some((
-            handle.events_where(crate::replication::takes),
-            replication_store,
-        )));
+        crate::page_person::claim(id);
         // The person's lists as the host sends them: read beside what this
         // page remembered, never asked for again.
         let personal = tilo_session_client::PersonalWorkspaces::follow(&handle);
@@ -1572,8 +1501,6 @@ impl WasmPeer {
                     let Some(listeners) = listeners.upgrade() else {
                         return;
                     };
-                    crate::replication::pump(id);
-                    crate::feedback_code::pump(id);
                     let current = listeners.borrow().clone();
                     for listener in current {
                         let _ = listener.call0(&JsValue::NULL);
@@ -1584,8 +1511,6 @@ impl WasmPeer {
         Ok(Self {
             id,
             device_key,
-            reporter_cert,
-            owner_cert,
             durable_events: handle.events_where(is_durable),
             live_events: handle.events_where(is_live),
             voice_events: handle.events_where(is_voice),
@@ -1594,36 +1519,8 @@ impl WasmPeer {
             handle,
             device,
             listeners,
-            replication,
             speaking_workspace: RefCell::default(),
         })
-    }
-
-    /// Select an existing destination. Admission comes only from the connected
-    /// owner, asynchronously; mount after feedbackStatus reports ready.
-    /// # Errors
-    /// Refuses missing existing membership or a repeated configuration.
-    #[wasm_bindgen(js_name = configureFeedback)]
-    pub fn configure_feedback(&self, destination: &str) -> Result<(), JsError> {
-        crate::feedback_code::configure(
-            self.id,
-            self.handle.clone(),
-            self.reporter_cert.clone(),
-            self.owner_cert.clone(),
-            serde_json::from_str(destination).map_err(js_error)?,
-        )
-        .map_err(js_error)
-    }
-    /// Send the reports of desktops mounted with this peer through the
-    /// page's peer `carrier` (its `id`), which is in the destination's workspace:
-    /// reports reach that workspace's channel from whichever workspace the page is in.
-    #[wasm_bindgen(js_name = sendFeedbackThrough)]
-    pub fn send_feedback_through(&self, carrier: u32) {
-        crate::feedback_code::send_through(self.id, carrier);
-    }
-    #[wasm_bindgen(js_name = feedbackStatus)]
-    pub fn feedback_status(&self) -> String {
-        crate::feedback_code::status(self.id)
     }
 
     /// `PeerSnapshot` JSON.
@@ -1656,23 +1553,11 @@ impl WasmPeer {
         self.voice_workspaces
             .borrow_mut()
             .insert(workspace_id, workspace.to_owned());
-        if let Some((events, store)) = self.replication.borrow_mut().take() {
-            let device = hex::encode(self.device_key);
-            crate::replication::open(
-                self.id,
-                device,
-                self.handle.clone(),
-                events,
-                workspace,
-                store,
-            )
-            .map_err(js_error)?;
-            // The name the page shows its person by is never written into the workspace here: the
-            // workspace names them by the name they gave themselves, which their server keeps
-            // ([`Self::name_self`]); one the page drew from their key names nobody.
-            if crate::page_person::speaks(self.id) {
-                *self.speaking_workspace.borrow_mut() = Some(workspace.to_owned());
-            }
+        // The name the page shows its person by is never written into the workspace here: the
+        // workspace names them by the name they gave themselves, which their server keeps
+        // ([`Self::name_self`]); one the page drew from their key names nobody.
+        if crate::page_person::speaks(self.id) {
+            *self.speaking_workspace.borrow_mut() = Some(workspace.to_owned());
         }
         Ok(())
     }
@@ -1682,15 +1567,6 @@ impl WasmPeer {
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> u32 {
         self.id
-    }
-
-    /// The session token the host's fetch proxy (`/peer/v1/fetch`) takes,
-    /// while this page is connected to a host that serves one; `undefined`
-    /// otherwise. It changes when the page reconnects, so the page's fetch
-    /// proxy global reads it for every request.
-    #[wasm_bindgen(js_name = fetchProxySession)]
-    pub fn fetch_proxy_session(&self) -> Option<String> {
-        self.handle.fetch_proxy_session()
     }
 
     /// Pre-admit whoever redeems the invitation this issues and presents
@@ -1713,73 +1589,6 @@ impl WasmPeer {
         )))
     }
 
-    /// Answer what this person's agents on this session's host ask them,
-    /// over this session, on the question sheet over the desktop: with
-    /// `device key`, the person's root device key where the page holds it, else
-    /// this session's own device key. Once per session.
-    ///
-    /// # Errors
-    /// `device key` is no device key, or neither the person's root nor this
-    /// session's device key.
-    #[wasm_bindgen(js_name = answerAgentQuestions)]
-    pub fn answer_agent_questions(&self, device_key: &JsValue) -> Result<(), JsError> {
-        crate::questions::answer_agent_questions(self.id, device_key, &self.reporter_cert)
-    }
-
-    /// The key this session's host signs its pushes with, which the page's
-    /// browser subscribes with: empty where the host pushes nothing. Asked
-    /// as `device key` (the person's root, or this session's device key).
-    ///
-    /// # Errors
-    /// Rejects when `device key` is neither, or the host refuses.
-    #[wasm_bindgen(js_name = pushKey)]
-    pub async fn push_key(&self, device_key: JsValue) -> Result<Vec<u8>, JsError> {
-        let (signer, device) = self.question_signer(&device_key)?;
-        let host = tilo_session_client::member_server(&self.handle);
-        tilo_server_client::questions::MemberQuestions {
-            server: &host,
-            root: &signer,
-            device: device.as_ref(),
-        }
-        .push_key()
-        .await
-        .map_err(js_error)
-    }
-
-    /// Have this session's host push this browser a word when an agent waits
-    /// for the person and no Tilo of theirs is open: the browser's push
-    /// subscription (its `endpoint`, and its `p256dh` and `auth` keys as
-    /// `getKey` reads them), asked as `device key`.
-    ///
-    /// # Errors
-    /// Rejects for a malformed subscription, when `device key` is neither the
-    /// person's root nor this session's device key, or the host refuses.
-    #[wasm_bindgen(js_name = notifyAt)]
-    pub async fn notify_at(
-        &self,
-        device_key: JsValue,
-        endpoint: String,
-        p256dh: Vec<u8>,
-        auth: Vec<u8>,
-    ) -> Result<(), JsError> {
-        let subscription = tilo_server_protocol::certify::PushSubscription {
-            endpoint,
-            p256dh,
-            auth,
-        };
-        subscription.check().map_err(js_error)?;
-        let (signer, device) = self.question_signer(&device_key)?;
-        let host = tilo_session_client::member_server(&self.handle);
-        tilo_server_client::questions::MemberQuestions {
-            server: &host,
-            root: &signer,
-            device: device.as_ref(),
-        }
-        .notify_at(subscription)
-        .await
-        .map_err(js_error)
-    }
-
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
         use tilo_server_client::DeviceSigner as _;
@@ -1800,7 +1609,7 @@ impl WasmPeer {
         }
         let seconds = crate::workspaces::seconds(Some(options.expires_in_seconds))?;
         let root = PageSigner::from_js(&root)?;
-        let now_ns = ui::time::unix_now_ns();
+        let now_ns = tilo_clock::unix_now_ns();
         let mut grant = tilo_server_protocol::workspaces::PreAdmission {
             workspace: options.workspace,
             role: crate::workspaces::wire_role(&options.role)?,
@@ -2270,18 +2079,6 @@ impl WasmPeer {
         self.handle.live_note()
     }
 
-    /// How many changes this page made to its workspace: records it sent, and
-    /// windows the person opened, closed or moved on its desktop.
-    #[wasm_bindgen(js_name = authoredChanges)]
-    pub fn authored_changes(&self) -> f64 {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "a count far below 2^53, read by JavaScript as a number"
-        )]
-        let count = crate::replication::authored(self.id) as f64;
-        count
-    }
-
     /// The members' ephemeral previews of their records since the last call,
     /// as a JSON array (`{kind: 'preview'|'previewEnd', publisher, record,
     /// seq?, ops?}`, `publisher` the publishing device's key in hex). Their
@@ -2304,32 +2101,8 @@ impl WasmPeer {
                     hear(self.id, workspace_id, from, &body);
                     None
                 }
-                // A window's page: the display list the device hosting it publishes, drawn in the
-                // tab of that window.
-                Event::LiveSession {
-                    ws: workspace_id,
-                    from,
-                    track: Track::Page(tab),
-                    body,
-                    ..
-                } if from != self.device_key => {
-                    crate::pages::heard(self.id, workspace_id, tab, &body);
-                    None
-                }
-                // A window's pictures: the video the device hosting it publishes, drawn in the tab
-                // of that window.
-                Event::LiveSession {
-                    ws: workspace_id,
-                    from,
-                    track: Track::Window(tab, _),
-                    body,
-                    ..
-                } if from != self.device_key => {
-                    crate::window_pictures::heard(self.id, workspace_id, from, tab, &body);
-                    None
-                }
                 Event::Live {
-                    ws: workspace_id,
+                    ws: _,
                     from,
                     frame,
                 } if from != self.device_key => {
@@ -2347,12 +2120,7 @@ impl WasmPeer {
                             publisher,
                             record: record_to_js(record),
                         },
-                        // An agent's narrated work is drawn on this page's
-                        // windows once its board admits the publisher.
-                        LiveFrame::Ops(OpsFrame::Semantic { event, .. }) => {
-                            crate::peer_sync::narrated(self.id, workspace_id, from, &event);
-                            return None;
-                        }
+                        LiveFrame::Ops(OpsFrame::Semantic { .. }) => return None,
                     };
                     serde_json::to_value(event).ok()
                 }
@@ -2487,31 +2255,6 @@ impl WasmPeer {
         serde_json::to_string(&listing).map_err(|error| js_error(error).into())
     }
 
-    /// Whether the page holds the workspace's document `record` of `app`: open in
-    /// a mount, or received from the workspace and stored for whoever opens it.
-    #[wasm_bindgen(js_name = hasRecord)]
-    pub fn has_record(&self, app: &str, record: &str) -> bool {
-        crate::replication::has_record(self.id, app, record)
-    }
-
-    /// The name of the workspace in front on the workspace's shared desktop, as
-    /// its people last set it; `undefined` until the workspace delivered it.
-    #[wasm_bindgen(js_name = workspaceName)]
-    pub fn workspace_name(&self) -> Option<String> {
-        crate::replication::workspace_name(self.id)
-    }
-
-    /// The workspace's records this page holds, as JSON `[{app, record}]`, so a
-    /// page can hand a guest the record its desktop created.
-    #[wasm_bindgen(js_name = workspaceRecords)]
-    pub fn workspace_resources(&self) -> String {
-        let records: Vec<JsRecord> = crate::replication::records(self.id)
-            .into_iter()
-            .map(|(app, record)| JsRecord { app, record })
-            .collect();
-        serde_json::to_string(&records).unwrap_or_else(|_| "[]".into())
-    }
-
     /// Report the page store's durability of a record (`unknown`,
     /// `pending`, `committing`, `durable`, `failed`).
     #[wasm_bindgen(js_name = setLocalState)]
@@ -2594,11 +2337,8 @@ impl WasmPeer {
     /// The name the page shows its person by from now on, for history and presence (empty for
     /// none): the one they gave themselves, or one drawn from their key until they give one.
     #[wasm_bindgen(js_name = setDisplayName)]
-    pub fn set_display_name(&self, name: String) {
-        set_label(self.id, &name);
-        if crate::page_person::speaks(self.id) {
-            install_identity(&self.reporter_cert, name);
-        }
+    pub fn set_display_name(&self, name: &str) {
+        set_label(self.id, name);
     }
 
     /// The person named themselves `name`: their server keeps it as theirs, with their profile,
@@ -2617,9 +2357,6 @@ impl WasmPeer {
         self.listeners.borrow_mut().clear();
         self.handle.close();
         release(self.id);
-        crate::replication::close(self.id);
-        if crate::page_person::release(self.id) {
-            ui::local_identity::install_source(None);
-        }
+        crate::page_person::release(self.id);
     }
 }

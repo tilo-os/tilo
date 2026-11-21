@@ -15,7 +15,6 @@
  * app says which pictures it shows (`show`) and collects them (`pictures`),
  * coded, to decode itself.
  */
-const services = new WeakMap();
 const ROSTER_REFRESH_MS = 1000;
 /** How long a watch is held before it is answered unchanged (the toolkit's
  * `WATCH_HOLD`), and how often a held watch looks again. */
@@ -253,53 +252,5 @@ export function createVoiceControls({voice, workspace, gesture = () => globalThi
     snapshot,
     release(request) {if (owner === key(request)) {generation++; voice.call.leave(); owner = undefined;}},
     dispose() {generation++; if (owner) voice.call.leave(); owner = undefined;},
-  };
-}
-
-/** Pump the bound media queue on a mounted surface; stopping does not wait
- * for another command or a pending workspace lookup. */
-export function createMediaPump({runtime, id, voice, workspace, active, report = () => {}, clock = globalThis}) {
-  let controls = services.get(voice);
-  if (!controls) {controls = createVoiceControls({voice, workspace}); services.set(voice, controls);}
-  const routes = new Map();
-  let closed = false;
-  let timer;
-  // A page's media queue is served whatever its own call is doing: Chat watches who
-  // is in each voice channel with no call here, so it hears a call start and
-  // hears it end, and only this look finds the request a drawing frame made.
-  function schedule() {
-    if (closed || timer !== undefined) return;
-    timer = clock.setTimeout(() => {timer = undefined; pump();}, 500);
-  }
-  function pump() {
-    if (closed || !active() || !runtime.take_media_requests) return;
-    for (const request of JSON.parse(runtime.take_media_requests(id))) {
-      const route = `${request.app}:${request.record}:${request.owner ?? request.instance}`;
-      if (request.retired) {controls.release(request); routes.delete(route); continue;}
-      routes.set(route, request);
-      const op = request.command?.command?.op;
-      void controls.execute(request).then(snapshot => ({Ok: snapshot}), error => {
-        // A control the page refused is said where the page's own log keeps
-        // it: the app shows the refusal, and this says which control it was.
-        const why = String(error.message ?? error);
-        if (!['status', 'watch', 'pictures'].includes(op)) console.warn(`call control ${op ?? '?'} refused: ${why}`);
-        return {Err: why};
-      }).then(result => {
-        if (!closed && active()) runtime.complete_media_request(id, BigInt(request.ticket), JSON.stringify(result));
-      }).catch(error => report({mediaError: String(error)}));
-    }
-    schedule();
-  }
-  const unsubscribe = voice.call.subscribe(() => {queueMicrotask(() => {if (!closed) pump();});});
-  return {
-    pump,
-    close() {
-      if (closed) return;
-      closed = true;
-      if (timer !== undefined) clock.clearTimeout(timer);
-      unsubscribe?.();
-      for (const request of routes.values()) controls.release(request);
-      routes.clear();
-    },
   };
 }

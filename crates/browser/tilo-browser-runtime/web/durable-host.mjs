@@ -1,5 +1,5 @@
 // A profile's durable storage, shared by everything on the page that keeps
-// state in it: mounted applications, the server peer, settings. One namespace
+// state in it: the certified peer's certificates and outbox. One namespace
 // (profile/device) holds one writer lease (Web Lock + IndexedDB, see
 // storage.mjs) and one Rust store for as long as anyone has it open.
 //
@@ -12,8 +12,8 @@
 const namespaceKey=(profile,device)=>JSON.stringify([profile,device]);
 
 /** `runtime` is the wasm module (load_storage, drain_storage, retry_storage,
- * storage_write_hook, acknowledge_storage, refresh_storage_lease,
- * provide_settings); `acquireStorage` is storage.mjs's lease factory. */
+ * storage_write_hook, acknowledge_storage, refresh_storage_lease);
+ * `acquireStorage` is storage.mjs's lease factory. */
 export function createDurableHost({runtime,acquireStorage,schedule=queueMicrotask,events=globalThis}){
   const namespaces=new Map();
   let listening=false;
@@ -40,8 +40,6 @@ export function createDurableHost({runtime,acquireStorage,schedule=queueMicrotas
       publish({persistence:'pending',pendingWrites:writes.length,error:null});
       try{
         // Write hooks and pagehide also reach this path without host.persist().
-        // A document must never become durable before its credential device key.
-        if(runtime.flush_files)await runtime.flush_files();
         await lease.commit(writes);
       }
       catch(error){
@@ -94,9 +92,8 @@ export function createDurableHost({runtime,acquireStorage,schedule=queueMicrotas
     listen();
     return handle;
   }
-  /** Open (or share) a namespace. `settings` seeds a profile with no stored
-   * settings document. Every open needs one `release()`. */
-  async function open(profile,device,{settings}={}){
+  /** Open (or share) a namespace. Every open needs one `release()`. */
+  async function open(profile,device){
     const key=namespaceKey(profile,device);
     if(!namespaces.has(key)){
       const pending=start(profile,device);
@@ -104,10 +101,8 @@ export function createDurableHost({runtime,acquireStorage,schedule=queueMicrotas
       pending.catch(()=>{if(namespaces.get(key)===pending)namespaces.delete(key);});
     }
     const shared=await namespaces.get(key);
-    if(shared.closing){await shared.closing.catch(()=>{});return open(profile,device,{settings});}
+    if(shared.closing){await shared.closing.catch(()=>{});return open(profile,device);}
     shared.retain();
-    try{if(settings!==undefined)runtime.provide_settings(profile,device,JSON.stringify(settings));}
-    catch(error){await shared.release();throw error;}
     return shared;
   }
   return {open,flush:flushAll};

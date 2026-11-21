@@ -12984,10 +12984,10 @@ mod replaced_composition_tests;
 mod undrawn_measure_tests;
 
 #[cfg(test)]
-#[path = "../../../browser/tilo-browser-runtime/src/background_work.rs"]
+#[path = "headless/owner_background_work.rs"]
 mod owner_background_work;
 #[cfg(test)]
-#[path = "../../../browser/tilo-browser-runtime/src/mount_service_lease.rs"]
+#[path = "headless/owner_mount_service_lease.rs"]
 mod owner_mount_service_lease;
 
 #[cfg(test)]

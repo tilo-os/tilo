@@ -15,7 +15,7 @@ use tilo_server_protocol::workspaces::{
 use tilo_workspace_join::encode_invitation_text;
 use wasm_bindgen::prelude::*;
 
-use crate::invite::Role;
+use tilo_action_policy::Role;
 use crate::peer::{WasmPeer, device_key, js_error};
 
 /// How long an invitation stays redeemable unless the page says.

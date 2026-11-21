@@ -138,12 +138,6 @@ export function initialRoute({link, location, mode, home = null}) {
   return link.parse(bare ? bareHref(location) : location.href);
 }
 
-/** What the page says while the host replays the workspace to it: how many
- * of its records are here (`records`). */
-export function receivingNote(records) {
-  return `Receiving the workspace… ${records} ${records === 1 ? 'record' : 'records'} so far`;
-}
-
 /**
  * Boot an entry page. `deps` supplies the runtime (`loadRuntime`) and the
  * admission entries; the page wires the real ones. `onStep` hears the steps
@@ -196,10 +190,7 @@ export async function boot({mode, window = globalThis, status, deps, onStep = ()
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {
       onStep('join');
-      // A host replaying a big workspace to this device is working: the
-      // page says how far it got, in place of a note that it takes long.
-      say(event.phase === 'receiving' ? receivingNote(event.records)
-        : event.phase === 'pairing' ? 'Asking to pair this device…'
+      say(event.phase === 'pairing' ? 'Asking to pair this device…'
           : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });

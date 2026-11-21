@@ -22,7 +22,7 @@ import {servedVersion} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
 import {readEntry} from './entry.mjs';
-import {loadRuntime, reportPageErrors} from './host.mjs';
+import {loadRuntime} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation, profileDevice, withDeviceKey} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
@@ -323,9 +323,7 @@ function leavePairing() {
 
 /** The page's uncaught errors, for the entry its entry names (`<entry>errors`):
  * the site's host logs them, and sizes and rate-limits them there. Five a
- * page load at most, and none of them waits for an answer. `report` is handed
- * to the host as well, which sends a runtime panic this way
- * (`reportPageErrors`). */
+ * page load at most, and none of them waits for an answer. */
 /** The most a report's body holds: the entry reads no more
  * (`MAX_PAGE_ERROR_BYTES` in tilo-server-protocol). */
 export const MAX_REPORT_BYTES = 4096;
@@ -454,9 +452,6 @@ export async function startEntryPage({mode}) {
     if (!failureReported) pageErrors.report('failed', `${cause}: ${describeError(error)}`, error?.stack, {source: host ?? ''});
     failureReported = true;
   };
-  // A panic that named no window is the page's own crash, which the host
-  // hears: it reaches the entry's log the same way, before the page starts over.
-  reportPageErrors((kind, message) => pageErrors.report(kind, message));
   /** Where an embed's state goes: the site the web host names as its embedder, once the entry is read. */
   let embedder = null;
   const tell = state => { if (embed && embedder && parent !== window) parent.postMessage({type: 'tilo-embed', state}, embedder); };

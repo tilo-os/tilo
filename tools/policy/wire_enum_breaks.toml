@@ -159,11 +159,6 @@ enum = "Event"
 reason = "postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection; the conversation event went with the private connection that delivered it, and the runtime interface version was raised past its removal, so an app from another build never reads these frames"
 
 [[break]]
-file = "crates/browser/tilo-browser-runtime/src/shell.rs"
-enum = "HostRequest"
-reason = "write-only: the desktop hands its embedded page a JSON list of requests, tagged by name (`rename_all = kebab-case`), and nothing deserializes it back, so the requests that opened and sent a Chat message take their names with them and their places carry no bytes"
-
-[[break]]
 file = "crates/session/messaging-service/src/service"
 enum = "Call"
 reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that connection, and no byte of the wire is kept"
