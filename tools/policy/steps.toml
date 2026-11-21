@@ -126,6 +126,11 @@ label = "Local sockets bind and connect at any path length"
 run = "python3 tools/policy/check_socket_paths.py"
 
 [[step]]
+name = "words-that-go"
+label = "The words docs/architecture/core.md says go are only ever used less"
+run = "python3 tools/policy/check_words_that_go.py"
+
+[[step]]
 name = "swallowed-failures"
 label = "Session, collaboration and app-hosting code hears its failures"
 run = "python3 tools/policy/check_swallowed_failures.py"

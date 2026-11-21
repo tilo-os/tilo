@@ -1,0 +1,202 @@
+# The words of docs/architecture/core.md's "Words that go", one row each, as they are counted in
+# the code by tools/policy/check_words_that_go.py.
+#
+#   row     the row's first cell in core.md, which names it in the baseline
+#   idents  identifiers counted: each is a run of words matched against the words of an
+#           identifier (`app_keeper`, `AppKeeper` and `APP_KEEPER` all hold "keeper"), the last
+#           word also in its plural
+#   text    exact text counted wherever it is in the code, strings included
+#   paths   files (or a directory, ending in `/`) whose every line of code counts, for a row
+#           whose concept is a piece of code rather than a name
+#
+# A row lists the identifiers that name its concept. Words too common to tell apart from
+# ordinary English (the settings scopes `Personal` and `Shared`, `store` as a kind of device,
+# the `-w` flag) are left out rather than counted wrongly.
+
+[[word]]
+row = "governor, governance document, GovernedWorkspace, NativeWorkspaceOwner, succession"
+idents = ["governor", "governance", "governed", "native workspace owner", "succession"]
+
+[[word]]
+row = "tilo.host, tilo.member namespaces, host as owner"
+text = ["tilo.host", "tilo.member"]
+
+[[word]]
+row = "keeper"
+idents = ["keeper"]
+
+[[word]]
+row = "roster, tilo.workspace.agent"
+idents = ["roster"]
+text = ["tilo.workspace.agent"]
+
+[[word]]
+row = "stand-in (host, approver)"
+idents = ["stand in", "standin"]
+text = ["stand-in"]
+
+[[word]]
+row = "PersonalStore, (app, personal), tilo-personal-store/1"
+idents = ["personal store"]
+text = ["tilo-personal-store/"]
+
+[[word]]
+row = "person_settings, person_vault, person_model(s), person_telling, person_asking, person_accounts, workspaces/people/<person>/"
+idents = ["person settings", "person vault", "person model", "person telling", "person asking", "person accounts"]
+text = ["workspaces/people/"]
+
+[[word]]
+row = "AccountStore, settings Personal/DeviceLocal/Shared scopes, LiveSettings, settings.sock"
+idents = ["account store", "device local", "live settings"]
+text = ["settings.sock"]
+
+[[word]]
+row = "per-person cluster"
+idents = ["person cluster"]
+
+[[word]]
+row = "own workspace, own_workspaces, Servers workspace (as a name)"
+idents = ["own workspace", "servers workspace"]
+
+[[word]]
+row = "ProfileWorkspace, ProfileGrants, Standalone"
+idents = ["profile workspace", "profile grants", "standalone"]
+
+[[word]]
+row = "own_service, OwnService, own_device wrappers"
+idents = ["own service", "own device"]
+
+[[word]]
+row = "held, holder, HeldWorkspace, member copy, replica"
+idents = ["held", "holder", "member copy", "replica"]
+
+[[word]]
+row = "listing workspace, governed/member/held/own workspace kinds"
+idents = ["listing workspace", "governed workspace", "member workspace", "held workspace"]
+
+[[word]]
+row = "home peer, home-peer registry, home server"
+idents = ["home peer", "home server"]
+
+[[word]]
+row = "tilo-server-sibling/1, sibling"
+idents = ["sibling"]
+
+[[word]]
+row = "WorkspaceRuntime, Membership { devices }"
+idents = ["workspace runtime"]
+
+[[word]]
+row = "retained store, lineage, CURRENT generations, tilo-server-store"
+idents = ["retained store", "lineage", "server store"]
+
+[[word]]
+row = "Envelope::Delta, EnvelopeV2, co-edit, anti-entropy"
+idents = ["envelope v2", "co edit", "coedit", "anti entropy", "antientropy"]
+text = ["Envelope::Delta", "co-edit", "anti-entropy"]
+
+[[word]]
+row = "carrier (Direct, Relay, WebTransport)"
+idents = ["carrier"]
+
+[[word]]
+row = "hosted workspace, -w, page-host"
+idents = ["hosted workspace", "page host"]
+text = ["page-host"]
+
+[[word]]
+row = "relay runtime"
+idents = ["relay runtime"]
+
+[[word]]
+row = "fleet, DeviceFleetStore, CertifiedFleet"
+idents = ["fleet"]
+
+[[word]]
+row = "ceremony, tilo-identity-ceremony"
+idents = ["ceremony"]
+
+[[word]]
+row = "threshold identity"
+idents = ["threshold identity"]
+
+[[word]]
+row = "enrolment, pairing, certification ceremony, handoff"
+idents = ["enrol", "enroll", "enrolment", "enrollment", "pairing", "handoff"]
+
+[[word]]
+row = "document (as the unit), workspace_documents, document host"
+idents = ["document"]
+
+[[word]]
+row = "record, item, ItemId, item node"
+idents = ["record", "item"]
+
+[[word]]
+row = "kind, KindSet"
+idents = ["kind"]
+
+[[word]]
+row = "channel ops, broker (two), publication, CommittedView, committed_surface"
+idents = ["channel op", "broker", "publication", "committed view", "committed surface"]
+
+[[word]]
+row = "surface, surface.toml"
+idents = ["surface"]
+
+[[word]]
+row = "instance, windowless, showing action, packaged model, native model, model.wasm"
+idents = ["instance", "windowless", "showing action", "packaged model", "native model"]
+text = ["model.wasm"]
+
+[[word]]
+row = "DynResource, DynAction"
+idents = ["dyn resource", "dyn action"]
+
+[[word]]
+row = "ResourceApp, ViewCx, #[view]"
+idents = ["resource app", "view cx"]
+text = ["#[view]"]
+
+[[word]]
+row = "outbox, effect receipt"
+idents = ["outbox", "effect receipt"]
+
+[[word]]
+row = "Answering, answers (MCP)"
+idents = ["answering", "answers"]
+
+[[word]]
+row = "legacy, compat readers"
+idents = ["legacy", "compat"]
+
+[[word]]
+row = "tilo-workspaces, (app, workspace, document)"
+idents = ["tilo workspaces"]
+text = ["tilo-workspaces"]
+
+[[word]]
+row = "invite shelf, invitation receipts"
+idents = ["invite shelf", "invitation receipt"]
+
+[[word]]
+row = "unattended (commands.unattended)"
+idents = ["unattended"]
+
+[[word]]
+row = "wait-list as a governance verb"
+idents = ["wait list", "waitlist"]
+text = ["wait-list"]
+
+[[word]]
+row = "appetite, key holder, store (as a kind of device)"
+idents = ["appetite", "key holder"]
+
+[[word]]
+row = "tilo-control row dialect, legacy_rows, param_row"
+idents = ["legacy row", "param row"]
+
+[[word]]
+row = "REST clients in our code (tilo-api client.rs, SDK HTTP runtimes)"
+idents = ["http transport"]
+paths = ["crates/server/tilo-api/src/client.rs", "crates/server/tilo-api/src/client/"]

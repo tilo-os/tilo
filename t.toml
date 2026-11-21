@@ -463,6 +463,10 @@ git = true
 when = { step = "workspace-membership" }
 git = true
 
+[[check.matrix.set]]
+when = { step = "words-that-go" }
+git = true
+
 # The policy suite's own tests, one check per test file: `policy/unit/<file>`. A failed test is
 # attributed to the file it is in, so a change reruns the tests whose inputs it moved and nothing
 # else.
