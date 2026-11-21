@@ -34,6 +34,8 @@ block-devices = { path = "../block-devices" }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 
 [target.'cfg(unix)'.dependencies]
+# The service's socket is bound and reached by path.
+tilo-files = { path = "../../platform/tilo-files" }
 libc.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "process"] }
 

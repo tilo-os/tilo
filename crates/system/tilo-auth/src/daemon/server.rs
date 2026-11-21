@@ -27,8 +27,8 @@ pub fn bind(daemon: &Daemon) -> Result<UnixListener> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
     }
-    let listener =
-        UnixListener::bind(path).with_context(|| format!("listening on {}", path.display()))?;
+    let listener = tilo_files::native::socket::bind(path)
+        .with_context(|| format!("listening on {}", path.display()))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))
         .with_context(|| format!("opening {} to every local process", path.display()))?;
     Ok(listener)

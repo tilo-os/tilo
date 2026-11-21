@@ -153,7 +153,7 @@ impl Client {
     }
 
     pub fn connect_unconfined(socket: &std::path::Path, app_id: &str) -> std::io::Result<Self> {
-        let mut stream = UnixStream::connect(socket)?;
+        let mut stream = tilo_files::native::socket::connect(socket)?;
         write_handoff(
             &mut stream,
             &Handoff {

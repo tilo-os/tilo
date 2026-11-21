@@ -203,9 +203,8 @@ pub fn call(
     timeout: Duration,
 ) -> io::Result<(Response, Option<std::os::fd::OwnedFd>)> {
     use std::io::Write as _;
-    use std::os::unix::net::UnixStream;
 
-    let mut stream = UnixStream::connect(socket)?;
+    let mut stream = tilo_files::native::socket::connect(socket)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let mut line = serde_json::to_vec(&Envelope {

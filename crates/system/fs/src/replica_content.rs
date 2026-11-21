@@ -163,8 +163,7 @@ async fn read_version(store: &ContentStore, request: &Request) -> Response {
 /// `Ok(None)` too when no replica is serving there. The bytes are what the
 /// replica answered: check them against a hash you trust.
 pub fn read(cache_dir: &Path, content: [u8; 32], max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(socket_path(cache_dir)) {
+    let mut stream = match tilo_files::native::socket::connect(&socket_path(cache_dir)) {
         Ok(stream) => stream,
         Err(error)
             if matches!(

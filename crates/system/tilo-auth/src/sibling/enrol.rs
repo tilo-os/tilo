@@ -181,7 +181,7 @@ impl Registrar for SessionRegistrar {
         if !self.0.exists() {
             return Err(NotEnrolled::NotKeyHolder);
         }
-        let mut stream = std::os::unix::net::UnixStream::connect(&self.0)
+        let mut stream = tilo_files::native::socket::connect(&self.0)
             .with_context(|| format!("could not reach your session at {}", self.0.display()))
             .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
         stream

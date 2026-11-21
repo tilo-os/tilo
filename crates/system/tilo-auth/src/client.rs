@@ -15,7 +15,7 @@ pub struct Client {
 
 impl Client {
     pub fn connect(socket: &Path) -> io::Result<Self> {
-        let stream = UnixStream::connect(socket)?;
+        let stream = tilo_files::native::socket::connect(socket)?;
         stream.set_read_timeout(Some(TIMEOUT))?;
         stream.set_write_timeout(Some(TIMEOUT))?;
         Ok(Self {

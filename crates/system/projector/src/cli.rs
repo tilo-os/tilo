@@ -92,7 +92,7 @@ fn client(args: &[String]) -> Result<UnixStream, ProjectorError> {
         .map(PathBuf::from)
         .or_else(control::control_socket)
         .ok_or_else(|| ProjectorError::Unavailable("XDG_RUNTIME_DIR is unavailable".to_owned()))?;
-    UnixStream::connect(&socket).map_err(ProjectorError::io(format!(
+    tilo_files::native::socket::connect(&socket).map_err(ProjectorError::io(format!(
         "cannot reach the projector at {}",
         socket.display()
     )))

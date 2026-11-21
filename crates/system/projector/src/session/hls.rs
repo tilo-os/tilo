@@ -3,7 +3,6 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -101,7 +100,7 @@ pub(crate) fn video_ingest_loop(
     stop: &Arc<AtomicBool>,
     audio: bool,
 ) -> Result<(), ProjectorError> {
-    let listener = UnixListener::bind(&paths.video_socket)
+    let listener = tilo_files::native::socket::bind(&paths.video_socket)
         .map_err(ProjectorError::io("cannot bind compositor video socket"))?;
     fs::set_permissions(&paths.video_socket, fs::Permissions::from_mode(0o600))
         .map_err(ProjectorError::io("cannot secure compositor video socket"))?;

@@ -60,7 +60,7 @@ mod linux {
             fs::create_dir_all(parent)?;
         }
         let _ = fs::remove_file(socket);
-        let listener = UnixListener::bind(socket)?;
+        let listener = tilo_files::native::socket::bind(socket)?;
         // Who may ask is decided per connection, from the kernel's account
         // of the caller; the socket itself is open to every local process.
         fs::set_permissions(socket, fs::Permissions::from_mode(0o666))?;

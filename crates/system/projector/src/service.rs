@@ -313,7 +313,7 @@ pub(crate) fn listen(
     {
         return Ok(listener);
     }
-    if UnixStream::connect(&socket).is_ok() {
+    if tilo_files::native::socket::connect(&socket).is_ok() {
         return Err(ProjectorError::Unavailable(format!(
             "a projector already serves {}",
             socket.display()

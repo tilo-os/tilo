@@ -315,7 +315,7 @@ impl MediaServer {
 impl Drop for MediaServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        let _ = std::os::unix::net::UnixStream::connect(&self.video_socket);
+        let _ = tilo_files::native::socket::connect(&self.video_socket);
         if let Some(http_thread) = self.http_thread.take() {
             wake_http_listener(self.receiver, self.port);
             let _ = http_thread.join();

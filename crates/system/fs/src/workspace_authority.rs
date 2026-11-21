@@ -32,6 +32,20 @@ pub const LOCAL_AUTHORITY_SOCKET: &str = "workspace-authority.sock";
 const LOCAL_AUTHORITY_SOCKET_PREFIX: &str = "workspace-authority-";
 const LOCAL_SOCKET_SUFFIX: &str = ".sock";
 
+/// The socket at `path` bound for tokio: reached through the helper, then nonblocking.
+fn tokio_listener(path: &Path) -> std::io::Result<tokio::net::UnixListener> {
+    let listener = tilo_files::native::socket::bind(path)?;
+    listener.set_nonblocking(true)?;
+    tokio::net::UnixListener::from_std(listener)
+}
+
+/// The socket at `path` connected for tokio: reached through the helper, then nonblocking.
+fn tokio_stream(path: &Path) -> std::io::Result<tokio::net::UnixStream> {
+    let stream = tilo_files::native::socket::connect(path)?;
+    stream.set_nonblocking(true)?;
+    tokio::net::UnixStream::from_std(stream)
+}
+
 /// `/run/tilo`, created root:tilo-identity by tmpfiles, unless `TILO_AUTHORITY_SOCKET_DIR` names
 /// another.
 fn local_socket_dir() -> PathBuf {
@@ -51,12 +65,12 @@ pub fn local_authority_socket_path(workspace: uuid::Uuid) -> PathBuf {
 /// workspace comes from the socket's name, so the desktop publisher learns it without reading the
 /// daemon's root-only cache.
 #[cfg(unix)]
-pub async fn find_local_authority() -> anyhow::Result<(uuid::Uuid, PathBuf)> {
-    find_local_authority_in(&local_socket_dir()).await
+pub fn find_local_authority() -> anyhow::Result<(uuid::Uuid, PathBuf)> {
+    find_local_authority_in(&local_socket_dir())
 }
 
 #[cfg(unix)]
-async fn find_local_authority_in(dir: &Path) -> anyhow::Result<(uuid::Uuid, PathBuf)> {
+fn find_local_authority_in(dir: &Path) -> anyhow::Result<(uuid::Uuid, PathBuf)> {
     use anyhow::Context as _;
 
     let mut live = Vec::new();
@@ -74,7 +88,7 @@ async fn find_local_authority_in(dir: &Path) -> anyhow::Result<(uuid::Uuid, Path
         // A daemon that served another workspace before a rebind leaves its socket behind; only one
         // that still answers is the authority.
         let path = entry.path();
-        if tokio::net::UnixStream::connect(&path).await.is_ok() {
+        if tokio_stream(&path).is_ok() {
             live.push((workspace, path));
         }
     }
@@ -450,7 +464,7 @@ pub fn serve_local_content_peer(
     if socket.exists() {
         std::fs::remove_file(socket)?;
     }
-    let listener = tokio::net::UnixListener::bind(socket)?;
+    let listener = tokio_listener(socket)?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
     Ok(tokio::spawn(async move {
         loop {
@@ -525,7 +539,7 @@ pub async fn register_local_content_peer(
     ticket: Option<String>,
     server_service_id: Option<[u8; 32]>,
 ) -> anyhow::Result<ContentPeerResponse> {
-    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+    let mut stream = tokio_stream(socket)?;
     write_frame(
         &mut stream,
         &ContentPeerControlRequest::Register(ContentPeerRequest {
@@ -557,7 +571,7 @@ pub fn serve_local_authority(
     if socket.exists() {
         std::fs::remove_file(socket)?;
     }
-    let listener = tokio::net::UnixListener::bind(socket)?;
+    let listener = tokio_listener(socket)?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
     Ok(tokio::spawn(async move {
         loop {
@@ -593,7 +607,7 @@ pub async fn local_authority_request(
     socket: &std::path::Path,
     request: AuthorityRequest,
 ) -> anyhow::Result<AuthorityResponse> {
-    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+    let mut stream = tokio_stream(socket)?;
     write_frame(&mut stream, &request).await?;
     read_frame(&mut stream).await
 }
@@ -865,7 +879,7 @@ mod tests {
         let sockets = temp.path().join("run");
         std::fs::create_dir(&sockets).unwrap();
         assert!(
-            find_local_authority_in(&sockets).await.is_err(),
+            find_local_authority_in(&sockets).is_err(),
             "no daemon is serving yet"
         );
         let stale = sockets.join(format!(
@@ -879,7 +893,7 @@ mod tests {
         ));
         let task = serve_local_authority(&live, authority).unwrap();
         assert_eq!(
-            find_local_authority_in(&sockets).await.unwrap(),
+            find_local_authority_in(&sockets).unwrap(),
             (workspace, live)
         );
         let other_workspace = uuid::Uuid::new_v4();
@@ -898,7 +912,7 @@ mod tests {
         ));
         let other_task = serve_local_authority(&other_socket, other_authority).unwrap();
         assert!(
-            find_local_authority_in(&sockets).await.is_err(),
+            find_local_authority_in(&sockets).is_err(),
             "multiple live workspace authorities must not be guessed"
         );
         other_task.abort();

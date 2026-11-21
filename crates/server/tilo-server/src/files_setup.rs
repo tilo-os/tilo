@@ -205,7 +205,7 @@ pub(super) fn publish(acl: &Path) -> Result<()> {
     let identity = protected_identity(&dir, person)?;
     let policy = capabilities(acl)?;
     tilo_rt::block_on(async move {
-        let (workspace, socket) = fs::workspace_authority::find_local_authority().await?;
+        let (workspace, socket) = fs::workspace_authority::find_local_authority()?;
         let current = fs::workspace_authority::local_authority_request(
             &socket,
             AuthorityRequest {

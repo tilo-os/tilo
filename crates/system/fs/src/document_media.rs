@@ -360,7 +360,7 @@ pub fn serve_socket(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let listener = std::os::unix::net::UnixListener::bind(socket)?;
+    let listener = tilo_files::native::socket::bind(socket)?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
     let handle = runtime_fs::blobs::spawn_blob_server(
         listener,

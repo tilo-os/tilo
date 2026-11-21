@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io::BufReader;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
@@ -61,7 +61,7 @@ impl Server {
         if path.exists() {
             std::fs::remove_file(path)?;
         }
-        let listener = UnixListener::bind(path)?;
+        let listener = tilo_files::native::socket::bind(path)?;
         let socket = socket_of(path)?;
         // The acceptor waits on its own socket and this pair, never on the
         // path: a server that took the path over must not keep this one's

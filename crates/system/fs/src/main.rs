@@ -583,7 +583,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             // waits for the clock or restarts nobody listens on its socket: no daemon
             // serving now means no public copies to refresh, which is no failure of the
             // timer. Its next run asks again.
-            let stream = match std::os::unix::net::UnixStream::connect(&blob_sock) {
+            let stream = match tilo_files::native::socket::connect(&blob_sock) {
                 Err(error)
                     if matches!(
                         error.kind(),

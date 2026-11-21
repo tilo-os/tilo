@@ -73,7 +73,7 @@ mod linux {
         }
         let socket = Path::new(SOCKET_PATH);
         let _ = fs::remove_file(socket);
-        let listener = UnixListener::bind(socket)?;
+        let listener = tilo_files::native::socket::bind(socket)?;
         // Who may ask what is decided per connection, from the kernel's
         // account of the caller; the socket itself is open to every local
         // process.

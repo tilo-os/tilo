@@ -1,7 +1,6 @@
 //! What the shell and Settings say to the NTFS mount service, and its answers.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
@@ -161,7 +160,7 @@ pub enum Response {
 /// `timeout` bounds each read and write; opening a drive checks the volume
 /// first, so callers that open give it tens of seconds.
 pub fn call(socket: &Path, request: Request, timeout: Duration) -> io::Result<Response> {
-    let mut stream = UnixStream::connect(socket)?;
+    let mut stream = tilo_files::native::socket::connect(socket)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let mut line = serde_json::to_vec(&Envelope {
