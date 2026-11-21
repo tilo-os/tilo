@@ -32,15 +32,18 @@ use crate::value::Value;
 /// The scheme of the address a file's content reads at: `tilo-blob://<hash>`.
 pub const SCHEME: &str = "tilo-blob://";
 
-/// The most a file a person chooses may be, as the size a `File` value reads it. A picture a note takes in is well under it, and a
-/// record's content is not what the store is for: what is larger is refused as a value, with
-/// the size it had. It is also the most a file an action holds may be made into
-/// (`File.of_text`, `File.of_bytes`, `File.at`): a file made here is one a person could choose.
-pub const MAX_CHOSEN: usize = 1024 * 1024;
+/// The most a file a person chooses may be, as the size a `File` value reads it
+/// (`tilo_content_types::MAX_FILE_BYTES`): what is larger is refused as a value, with the size
+/// it had. It is also the most a file an action holds may be made into (`File.of_text`,
+/// `File.of_bytes`, `File.at`): a file made here is one a person could choose.
+pub const MAX_CHOSEN: usize = tilo_content_types::MAX_FILE_BYTES;
 
-/// [`MAX_CHOSEN`] as a file's size reads it: what a chosen file's `size` is compared with
-/// (`i64::try_from` of a constant this shape never fails).
-pub const MAX_CHOSEN_BYTES: i64 = 1024 * 1024;
+/// [`MAX_CHOSEN`] as a file's size reads it: what a chosen file's `size` is compared with.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "a file's limit is a megabyte, far inside i64"
+)]
+pub const MAX_CHOSEN_BYTES: i64 = MAX_CHOSEN as i64;
 
 /// The most of a file an action reads as text (`.text()`): an importer reads a document, never
 /// a disk image. A file larger than it answers an error, as one that is not text does.
@@ -234,31 +237,9 @@ pub trait BlobHost {
     }
 }
 
-/// The media type of a file called `name`, as far as its extension tells: what a chooser starts
-/// from, and what a saved file is written as. `application/octet-stream` when it says nothing.
-#[must_use]
-pub fn media_of(name: &str) -> String {
-    let extension = name
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase())
-        .unwrap_or_default();
-    let media = match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "md" | "markdown" => "text/markdown",
-        "txt" => "text/plain",
-        "html" => "text/html",
-        "csv" => "text/csv",
-        "json" => "application/json",
-        "zip" => "application/zip",
-        _ => "application/octet-stream",
-    };
-    media.to_owned()
-}
+/// The media type of a file called `name`, as far as its extension tells: one reading of a name,
+/// for the runtime and for the window that handed a dropped file over.
+pub use tilo_content_types::media_of;
 
 /// Whether `media` is one of the types `accept` names, an entry of which may be `image/*`; any
 /// media type when `accept` is empty.

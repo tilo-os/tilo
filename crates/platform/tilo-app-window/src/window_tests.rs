@@ -707,6 +707,7 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
             key: "archive".to_owned(),
             event: "press".to_owned(),
             value: None,
+            gesture: None,
         }],
         "the press ran the declared action, through its button"
     );
@@ -916,6 +917,7 @@ fn the_primary_actions_key_in_the_entry_commits_what_was_typed() {
             key: "field".to_owned(),
             event: "submit".to_owned(),
             value: Some(Value::text("Buy milk")),
+            gesture: None,
         }],
         "the key committed the item typed in the entry, as its own Enter does: {told:?}"
     );
@@ -982,6 +984,7 @@ fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
             key: "b#complete".to_owned(),
             event: "press".to_owned(),
             value: None,
+            gesture: None,
         }],
         "the press completed the item the keyboard is on, not the first one"
     );
@@ -1017,6 +1020,7 @@ fn a_fields_own_keys_edit_its_text_before_any_action_declares_them() {
             key: "erase".to_owned(),
             event: "press".to_owned(),
             value: None,
+            gesture: None,
         }],
         "the declared action runs where nothing takes typing"
     );

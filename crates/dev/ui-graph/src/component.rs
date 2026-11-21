@@ -413,6 +413,9 @@ pub enum Type {
     Icon,
     /// A picture: where its bytes are read from, and what it shows the person.
     Picture,
+    /// A file a person handed the window — dropped on it, or chosen — as the runtime's `File`:
+    /// what it is called, its media type, its size and where its bytes are.
+    File,
     /// Rich text, with how its references read for the person reading it.
     RichText,
     /// One of a closed set of cases: the design system's roles and tokens.
@@ -459,6 +462,7 @@ impl Type {
             Self::Time => "Time".into(),
             Self::Icon => "Icon".into(),
             Self::Picture => "Picture".into(),
+            Self::File => "File".into(),
             Self::RichText => "RichText".into(),
             Self::Choice { name, .. } | Self::Cases { name } => name.clone(),
             Self::Option(inner) => format!("Option<{}>", inner.show()),
@@ -495,6 +499,9 @@ pub enum Value {
     /// A picture: its address (where a host reads its bytes) and what it says to assistive
     /// technology.
     Picture(Picture),
+    /// A file a person handed the window: its name, its media type, how many bytes it is and
+    /// where they are (`tilo-blob://<hash>`), as the runtime's `File` value holds it.
+    File(File),
     /// A case of a choice, by name.
     Choice(String),
     /// Rich text, with how its references read for the person reading it.
@@ -528,6 +535,22 @@ pub enum Value {
 pub struct Picture {
     /// Where its bytes are read from: a content address (`tilo-blob://<hash>`) or a URL.
     pub src: String,
+}
+
+/// A file a person handed the window: dropped on it, or chosen in a chooser. Its bytes are in the
+/// device's content store, and the value is what the runtime's `File` reads: its name, its media
+/// type, its size and the content address its bytes are at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct File {
+    /// What the person's file is called, extension included (`Q3 plan.md`).
+    pub name: String,
+    /// Its media type (`text/markdown`).
+    pub media: String,
+    /// How many bytes its content is.
+    pub size: i64,
+    /// Where its bytes are: a content address (`tilo-blob://<hash>`).
+    pub url: String,
 }
 
 /// An action offered to the person, as a control shows it, and the event of the instance that
@@ -565,6 +588,7 @@ impl Value {
             Self::Resource(_) => "a resource",
             Self::Icon(_) => "Icon",
             Self::Picture(_) => "a picture",
+            Self::File(_) => "a file",
             Self::Choice(_) | Self::Case { .. } => "a case",
             Self::Rich(_) => "RichText",
             Self::None => "nothing",

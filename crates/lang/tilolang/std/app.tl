@@ -491,6 +491,10 @@ template view tree_rows<T>(
 /// (`tree_rows`' `found`), with the items they stand under shown for them, and closing the
 /// search shows the tree as the person had it. The page beside them is found in too, where the
 /// window shows one.
+///
+/// `drop_files` is what a file the person drops anywhere on the window becomes: the window keeps
+/// each file and hands it over as a `File` — its name, its media type and the address its bytes
+/// are at — so the app decides, without ever reading a path.
 template view tree<R, T>(
     of: R,
     items: Collection<T>,
@@ -508,6 +512,7 @@ template view tree<R, T>(
     head: (Option<T>) -> View,
     row: (T) -> View,
     doc: (T) -> View,
+    drop_files: (List<File>) -> Action,
 ) {
     // The item the window opens: the first of the tree until a person chooses another, kept for
     // them alone, as every window keeps what it shows.
@@ -522,6 +527,9 @@ template view tree<R, T>(
         title: if let x = opened { path(x) },
     ) {
         on search(t: Text): set(found, t)
+        // A file dropped anywhere on the window is the app's to take: the tree stands for the
+        // whole window, so the app decides what a dropped file becomes.
+        on drop(files: List<File>): drop_files(files)
         sidebar_actions: {
             head(opened)
         }

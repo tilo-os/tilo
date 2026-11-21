@@ -385,6 +385,7 @@ fn choose_place(host: &mut TilolangProcess, window: &mut Window, label: &str) {
         key: place.key,
         event: pick,
         value: None,
+        gesture: None,
     }]);
     settle(host, window);
 }
@@ -410,6 +411,7 @@ fn add_to_inbox(host: &mut TilolangProcess, window: &mut Window, title: &str) {
         key: entry.key,
         event: submit,
         value: Some(patch::Value::text(title)),
+        gesture: None,
     }]);
     settle(host, window);
 }
@@ -469,6 +471,7 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
                 key: entry.key,
                 event,
                 value: Some(patch::Value::text("File the report")),
+                gesture: None,
             }]);
             settle(&mut host, &mut window);
             let held = host.instances().next().expect("the instance runs");
@@ -821,6 +824,7 @@ fn today_reads_tasks_from_its_document_and_clears_it_at_its_api() {
         key: button.key,
         event,
         value: None,
+        gesture: None,
     }]);
     shell.settle();
     assert!(

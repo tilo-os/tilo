@@ -107,6 +107,7 @@ fn a_click_on_free_space_reports_its_canvas_point() {
             key: CANVAS.into(),
             event: "press".into(),
             value: Some(Value::List(vec![Value::Int(x), Value::Int(y)])),
+            gesture: None,
         }],
         "the click reports where it landed on the canvas"
     );
@@ -128,11 +129,13 @@ fn two_clicks_at_two_points_report_two_canvas_points() {
                 key: CANVAS.into(),
                 event: "press".into(),
                 value: Some(Value::List(vec![Value::Int(120), Value::Int(90)])),
+                gesture: None,
             },
             Fired {
                 key: CANVAS.into(),
                 event: "press".into(),
                 value: Some(Value::List(vec![Value::Int(610), Value::Int(470)])),
+                gesture: None,
             },
         ],
         "each click reports its own point"
@@ -160,6 +163,7 @@ fn a_drag_on_free_space_reports_the_rectangle_it_covered() {
                 Value::Int(width),
                 Value::Int(height),
             ])),
+            gesture: None,
         }],
         "a drag reports the frame it covered, never a click"
     );
@@ -184,6 +188,7 @@ fn a_drag_reports_its_frame_whichever_way_it_was_drawn() {
                 Value::Int(300),
                 Value::Int(300),
             ])),
+            gesture: None,
         }],
         "the frame is the rectangle between the corners, drawn either way"
     );
@@ -223,6 +228,7 @@ fn a_right_press_reports_the_place_under_it_and_the_canvas_point() {
                 Value::Text(String::new()),
                 Value::List(vec![Value::Int(x), Value::Int(y)]),
             ])),
+            gesture: None,
         }],
         "a right press on free space names no place"
     );
@@ -239,6 +245,7 @@ fn a_right_press_reports_the_place_under_it_and_the_canvas_point() {
                 Value::Text("one".into()),
                 Value::List(vec![Value::Int(x), Value::Int(y)]),
             ])),
+            gesture: None,
         }],
         "a right press on a place names it"
     );
@@ -351,6 +358,7 @@ fn a_press_on_a_place_is_not_pointing_at_the_canvas() {
             key: CANVAS.into(),
             event: "press".into(),
             value: Some(Value::List(vec![Value::Int(700), Value::Int(540)])),
+            gesture: None,
         }],
         "the empty canvas around the place still reports its pointing"
     );
@@ -395,6 +403,7 @@ fn a_finger_points_as_the_pointer_does() {
             key: CANVAS.into(),
             event: "press".into(),
             value: Some(Value::List(vec![Value::Int(x), Value::Int(y)])),
+            gesture: None,
         }],
         "a tap is a click on the canvas"
     );
@@ -515,6 +524,7 @@ fn dragging_a_places_corner_reports_its_new_size() {
                 Value::Text("one".into()),
                 Value::List(vec![Value::Int(240), Value::Int(180)]),
             ])),
+            gesture: None,
         }],
         "the corner's drag sizes the place by what it travelled, in canvas pixels"
     );
@@ -656,6 +666,7 @@ fn drawn_height(reports: &[Fired]) -> i64 {
         key,
         event,
         value: Some(Value::List(parts)),
+        gesture: None,
     } = &reports[0]
     else {
         panic!("the report is a list: {reports:?}");

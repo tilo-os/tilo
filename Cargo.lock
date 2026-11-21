@@ -24370,6 +24370,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-content-types",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",

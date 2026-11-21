@@ -42,6 +42,10 @@ pub(super) struct BodyBinding {
     field: Stored,
     shown: Held,
     seen: u64,
+    /// The gesture the next edit belongs to, when the document changed as one part of an act
+    /// that made more than one change: a picture's insert and the app naming it, one step of
+    /// the person's ([`BlockEditor::place_picture`]).
+    gesture: Option<tilo_actions::ActionId>,
 }
 
 impl BodyBinding {
@@ -62,7 +66,21 @@ impl BodyBinding {
         };
         let shown = field.of();
         let seen = field.revision();
-        (Self { field, shown, seen }, placeholder.unwrap_or_default())
+        (
+            Self {
+                field,
+                shown,
+                seen,
+                gesture: None,
+            },
+            placeholder.unwrap_or_default(),
+        )
+    }
+
+    /// The edit the document reports next is one part of `gesture`, as a picture's insert is:
+    /// the app's action on it names the same gesture, so one undo takes both back.
+    pub(super) fn set_gesture(&mut self, gesture: tilo_actions::ActionId) {
+        self.gesture = Some(gesture);
     }
 
     pub(super) fn rebind(&mut self, rich: Bound<RichText>, markdown: Bound<String>) {
@@ -104,16 +122,17 @@ impl BodyBinding {
         match (&self.field, &now) {
             (Stored::Markdown(value), Held::Markdown(markdown)) => {
                 value.state.set(markdown.clone());
-                value.edited(Value::Text(markdown.clone()));
+                value.edited_in(Value::Text(markdown.clone()), self.gesture.take());
             }
             (Stored::Rich(value), Held::Rich(rich)) => {
                 value.state.set(rich.clone());
-                value.edited(Value::Rich(rich.clone()));
+                value.edited_in(Value::Rich(rich.clone()), self.gesture.take());
             }
             _ => return false,
         }
         self.shown = now;
         self.seen = self.field.revision();
+        self.gesture = None;
         true
     }
 

@@ -15,14 +15,14 @@ impl BlockEditor {
     pub(crate) fn keep_pasted_picture(
         &mut self,
         image: &ui::clipboard::ClipboardImage,
-    ) -> Option<ui::pictures::KeptPicture> {
+    ) -> Option<Result<ui::pictures::KeptPicture, ui::pictures::PictureRefusal>> {
         let name = pasted_picture_name(image.mime);
         let inserter = self.image_inserter.as_mut()?;
-        inserter(PictureIn::Bytes {
+        Some(inserter(PictureIn::Bytes {
             name: &name,
             media: image.mime,
             bytes: &image.bytes,
-        })
+        }))
     }
 
     /// Where a picture pasted or dropped into the document goes: the host keeps its bytes and
@@ -33,8 +33,17 @@ impl BlockEditor {
         self.image_inserter = inserter;
     }
 
+    /// The view's `image` event, which the editor fires when a picture it wrote into the
+    /// document is also to be named there (an app keeping the name a picture came in as, beside
+    /// the address its bytes are at).
+    pub fn set_image_event(&mut self, event: ui::component::Event) {
+        self.image_event = Some(event);
+    }
+
     /// The picture file dropped on the editor, when it is one and the host keeps pictures: the
-    /// file's bytes are the host's to read, and the picture goes in at the caret.
+    /// file's bytes are the host's to read, and the picture goes in at the caret. A file that is
+    /// no picture is left for whatever else takes the drop (the app's window may import it), and
+    /// one that is a picture the host could not keep says why where the person can see it.
     pub(crate) fn drop_picture(&mut self, path: &std::path::Path) -> bool {
         // A drop names no place, so the editor the pointer rests on takes it — or the one the
         // keyboard is in, where a window that laid it out has not been pointed at yet.
@@ -60,11 +69,17 @@ impl BlockEditor {
         let kept = self
             .image_inserter
             .as_mut()
-            .and_then(|inserter| inserter(PictureIn::Path(path)));
-        let Some(kept) = kept else {
-            return false;
-        };
-        self.place_picture(&kept, target)
+            .map(|inserter| inserter(PictureIn::Path(path)));
+        match kept {
+            // No host keeps pictures, or the file is no picture: another taker may have a use for
+            // it.
+            None | Some(Err(ui::pictures::PictureRefusal::NotAPicture)) => false,
+            Some(Ok(kept)) => self.place_picture(&kept, target),
+            Some(Err(refusal)) => {
+                ui::control_notice::say_in_window(&refusal.words());
+                true
+            }
+        }
     }
 
     /// Write `picture` into the document where `target` says: after the block the caret is in, or
@@ -144,6 +159,22 @@ impl BlockEditor {
         let placed = self.replace_document_selection_with_blocks(blocks);
         if placed {
             self.dirty = true;
+            // The picture's name and the document's edit are one act of the person's: the
+            // app's naming action and the body's change share a gesture, so one undo takes
+            // both back.
+            let gesture = tilo_actions::ActionId::new();
+            if let Some(body) = &mut self.body {
+                body.set_gesture(gesture);
+            }
+            if let Some(event) = &self.image_event {
+                event.fire_in_gesture(
+                    Some(ui::component::Value::List(vec![
+                        ui::component::Value::Text(picture.name.clone()),
+                        ui::component::Value::Text(picture.address.clone()),
+                    ])),
+                    Some(gesture),
+                );
+            }
         }
         placed
     }
@@ -191,9 +222,9 @@ pub enum PictureIn<'a> {
 }
 
 /// Where a picture the person pasted or dropped goes: the host keeps it and answers where its
-/// bytes are, or answers nothing to refuse it, which leaves the editor's document as it was.
+/// bytes are, or refuses it with the reason, which leaves the editor's document as it was.
 pub type ImageInserter =
-    Box<dyn for<'a> FnMut(PictureIn<'a>) -> Option<ui::pictures::KeptPicture>>;
+    Box<dyn for<'a> FnMut(PictureIn<'a>) -> Result<ui::pictures::KeptPicture, ui::pictures::PictureRefusal>>;
 
 /// What a picture copied to the clipboard is called: the name a document writes beside its
 /// bytes, from the type it was copied as (`Pasted image.png`).

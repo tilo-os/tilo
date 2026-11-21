@@ -622,6 +622,23 @@ fn unescaped(field: Text) -> Text {
     out
 }
 
+/// Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it
+/// holds — the notebook's own written out, or another app's export — and each file of a drop in
+/// turn. One action, so undo takes the whole drop back at once.
+action import_dropped(nb: Notebook, files: List<File>) (
+    icon: .file_plus,
+    label: "Import files",
+    did: "imported a file",
+) {
+    for file in files {
+        if file.media == "application/zip" {
+            import_archive(nb, file)
+        } else {
+            import_markdown(nb, file)
+        }
+    }
+}
+
 /// The title a page of an export is named by before what it says is read: its own file's name —
 /// and nothing for a page the export never titled (`Untitled 1a2b3c4d`), which is called what a
 /// titleless note is called until its heading names it.
@@ -656,6 +673,9 @@ view notebook(nb: Notebook) {
         path: n -> meta(n).title,
         doc: note_page,
         head: notebook_head,
+        // A file dropped anywhere on the notebook comes in as a note or as the pages of an
+        // archive it holds.
+        drop_files: files -> import_dropped(nb, files),
     ) { n ->
         // A note with no title yet is called what its type calls it, as in every list of it.
         note_node(n)

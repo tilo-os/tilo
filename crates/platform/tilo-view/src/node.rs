@@ -115,6 +115,7 @@ fn shape(value: &Value) -> &'static str {
         Value::Map(_) => "a map",
         Value::Action(_) => "an action",
         Value::Picture(_) => "a picture",
+        Value::File(_) => "a file",
         Value::Link { .. } => "a link",
     }
 }

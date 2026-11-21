@@ -579,4 +579,64 @@ mod cases {
             "the note says why the file was no words: {body}"
         );
     }
+
+    /// A file the person drops anywhere on the notebook reaches it as the window hands it over:
+    /// its name, its media type and where its bytes are kept, never a path the app's process
+    /// cannot read. A Markdown file comes in as a note, and an archive as its pages.
+    #[test]
+    fn a_file_dropped_on_the_notebook_comes_in_as_a_note_or_its_pages() {
+        let device = Device::default();
+        let markdown = device.keeping(
+            "Q3 plan.md",
+            "text/markdown",
+            b"# Q3 plan\n\nShip the offline editor.\n",
+        );
+        let archive = device.archive(
+            "Notes.zip",
+            &[
+                ("Plan.md", b"# Plan\n\nGo.\n".as_slice()),
+                ("Plan/Standups.md", b"# Standups\n\nTen minutes.\n".as_slice()),
+            ],
+        );
+        let n = Notes::new(device);
+        let view = n.window();
+        let shell = of_kind(view.tree(), "ui.NavShell")
+            .into_iter()
+            .next()
+            .expect("the notebook is a shell");
+        assert!(
+            shell.events.contains_key("drop"),
+            "the notebook takes a file dropped anywhere on it"
+        );
+        let shell = shell.key.clone();
+        view.fire_with(
+            &shell,
+            "drop",
+            Some(&Value::List(vec![Value::file(markdown)])),
+        )
+        .expect("the notebook takes the dropped file");
+        assert_eq!(
+            n.title_of(&n.note_titled("Q3 plan")),
+            "Q3 plan",
+            "the Markdown file came in as a note"
+        );
+
+        view.fire_with(
+            &shell,
+            "drop",
+            Some(&Value::List(vec![Value::file(archive)])),
+        )
+        .expect("the notebook takes the dropped archive");
+        assert_eq!(
+            n.notes().len(),
+            3,
+            "the archive's pages came in beside the note the file made"
+        );
+        let standups = n.note_titled("Standups");
+        assert_eq!(
+            n.parent_of(&standups).map(|parent| n.title_of(&parent)),
+            Some("Plan".to_owned()),
+            "a page of the archive stands under the page it was written in"
+        );
+    }
 }

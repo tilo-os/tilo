@@ -97,6 +97,7 @@ fn lang_type(ty: &Type) -> crate::types::Ty {
     use crate::types::Ty;
     match ty {
         Type::Text | Type::Picture | Type::Icon | Type::Resource => Ty::Text,
+        Type::File => Ty::File,
         Type::Int => Ty::Int,
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,

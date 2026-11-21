@@ -449,6 +449,7 @@ tilo_test_env::scenario! {
             key,
             event,
             value: None,
+            gesture: None,
         }]);
         settle(&mut host, &mut window);
         assert_eq!(value_of(host.instances().next().unwrap()), 1);
@@ -507,6 +508,7 @@ tilo_test_env::scenario! {
             key,
             event,
             value: None,
+            gesture: None,
         }]);
         settle(&mut host, &mut window);
         assert_eq!(value_of(host.instances().next().unwrap()), 1);
@@ -1289,6 +1291,7 @@ tilo_test_env::scenario! {
             key,
             event,
             value: None,
+            gesture: None,
         }]);
         let started = std::time::Instant::now();
         while shown(&window) == before {
@@ -1739,6 +1742,7 @@ fn key_edit(
             target: target.clone(),
             key: input.to_owned(),
             rich: typed_rich(shown),
+            gesture: None,
         }
     } else {
         ToApp::Splice {
@@ -1773,6 +1777,7 @@ fn press_new_note(window: &mut Window) {
         key: button.key,
         event,
         value: None,
+        gesture: None,
     }]);
 }
 

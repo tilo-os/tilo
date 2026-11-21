@@ -70,6 +70,18 @@ fn rich(r: &Replica, item: &ResourceRef, field: &str) -> tilolang_runtime::rich:
 /// `r`'s person edits `field` of `item` (of the type `ty` in `app`) with `op`, as typing in its
 /// field does: one step of theirs.
 fn edit(r: &mut Replica, app: &str, (item, ty, field): (&ResourceRef, &str, &str), op: EditOp) {
+    edit_in_gesture(r, app, (item, ty, field), op, None);
+}
+
+/// [`edit`], as one part of the person's act `gesture` when one is given: the changes naming one
+/// gesture are one step of theirs, which one undo takes back.
+fn edit_in_gesture(
+    r: &mut Replica,
+    app: &str,
+    (item, ty, field): (&ResourceRef, &str, &str),
+    op: EditOp,
+    gesture: Option<tilo_actions::ActionId>,
+) {
     let meta = r.host.package(app).unwrap().meta;
     let path = vec![
         Segment::Item(Id::from_raw(item.item.as_deref().unwrap())),
@@ -80,7 +92,10 @@ fn edit(r: &mut Replica, app: &str, (item, ty, field): (&ResourceRef, &str, &str
         kind: format!("tl.{app}.{ty}"),
         action_id: "$edit".to_owned(),
         args: Json::Null,
-        authorship: Authorship::default(),
+        authorship: Authorship {
+            gesture,
+            ..Authorship::default()
+        },
         edits: vec![DynEdit::Edit {
             id: item.doc.clone(),
             edit: Edit::new(path, op),
@@ -91,6 +106,17 @@ fn edit(r: &mut Replica, app: &str, (item, ty, field): (&ResourceRef, &str, &str
 /// `r`'s person types `typed` right after the first `after` in the note's rich body, as the
 /// shared rich input does: a rich splice in that paragraph.
 fn type_at(r: &mut Replica, note: &ResourceRef, after: &str, typed: &str) {
+    type_at_in_gesture(r, note, after, typed, None);
+}
+
+/// [`type_at`], as one part of the person's act `gesture` when one is given.
+fn type_at_in_gesture(
+    r: &mut Replica,
+    note: &ResourceRef,
+    after: &str,
+    typed: &str,
+    gesture: Option<tilo_actions::ActionId>,
+) {
     let body = rich(r, note, "body");
     let (block, at) = body
         .blocks
@@ -110,7 +136,13 @@ fn type_at(r: &mut Replica, note: &ResourceRef, after: &str, typed: &str) {
         ins: typed.to_owned(),
     };
     let rich = serde_json::to_value(&action).unwrap();
-    edit(r, NOTES_APP, (note, "Note", "body"), EditOp::Rich { rich });
+    edit_in_gesture(
+        r,
+        NOTES_APP,
+        (note, "Note", "body"),
+        EditOp::Rich { rich },
+        gesture,
+    );
 }
 
 /// `r`'s person runs the history verb `edit` on the document, as their window's Undo does.
@@ -186,9 +218,84 @@ fn two_people_typing_in_one_note_each_undo_only_their_own_text() {
     assert_eq!(text(&ada, &note, "body"), "Shopping.\nChores.");
 }
 
+/// A picture pasted into a note is two changes — the body says it, and the note keeps its name —
+/// and the window names them one act of the person's: one undo takes both back, where two
+/// changes that each stand alone take two.
 #[test]
-fn a_sync_reads_each_arrived_change_off_its_operations_once() {
-    let (mut ada, mut ben) = workspace();
+fn one_undo_takes_back_every_change_of_one_gesture() {
+    let (mut ada, _) = workspace();
+    let root = root(&ada, NOTES_APP);
+    let note = target(&call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "new_note",
+        vec![root, Value::text("Draft"), Value::text("Shopping.")],
+    ));
+    ada.commit();
+    let gesture = tilo_actions::ActionId::new();
+    edit_in_gesture(
+        &mut ada,
+        NOTES_APP,
+        (&note, "Note", "title"),
+        EditOp::Replace {
+            text: "Q3 plan".to_owned(),
+        },
+        Some(gesture),
+    );
+    type_at_in_gesture(&mut ada, &note, "Shopping.", " Milk.", Some(gesture));
+    assert_eq!(text(&ada, &note, "title"), "Q3 plan");
+    assert_eq!(text(&ada, &note, "body"), "Shopping. Milk.");
+
+    undo(&mut ada);
+    assert_eq!(
+        text(&ada, &note, "title"),
+        "Draft",
+        "the title's change is part of the same act"
+    );
+    assert_eq!(
+        text(&ada, &note, "body"),
+        "Shopping.",
+        "and so is the body's"
+    );
+}
+
+/// Two changes that are acts of their own are two undos: the gesture is what makes the two
+/// changes of a paste one.
+#[test]
+fn two_changes_of_their_own_are_two_undos() {
+    let (mut ada, _) = workspace();
+    let root = root(&ada, NOTES_APP);
+    let note = target(&call(
+        &ada,
+        "ada",
+        NOTES_APP,
+        "new_note",
+        vec![root, Value::text("Draft"), Value::text("Shopping.")],
+    ));
+    ada.commit();
+    edit(
+        &mut ada,
+        NOTES_APP,
+        (&note, "Note", "title"),
+        EditOp::Replace {
+            text: "Q3 plan".to_owned(),
+        },
+    );
+    type_at(&mut ada, &note, "Shopping.", " Milk.");
+    undo(&mut ada);
+    assert_eq!(text(&ada, &note, "body"), "Shopping.");
+    assert_eq!(
+        text(&ada, &note, "title"),
+        "Q3 plan",
+        "the title's own step is still there"
+    );
+    undo(&mut ada);
+    assert_eq!(text(&ada, &note, "title"), "Draft");
+}
+
+#[test]
+fn a_sync_reads_each_arrived_change_off_its_operations_once() {    let (mut ada, mut ben) = workspace();
     let note = shared_note(&mut ada, &mut ben, "Shopping.\nChores.");
     type_at(
         &mut ada,

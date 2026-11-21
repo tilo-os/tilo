@@ -983,6 +983,40 @@ impl AppWindow {
         ui::window_toolbar::show_edited(self.save.shows_unsaved());
     }
 
+    /// A file dropped on the window where nothing of the app's own took it: kept in the device's
+    /// content store, and handed to the app's view as the `File` it reads — its name, its media
+    /// type, its size and where its bytes are — so an app whose process reads content addresses,
+    /// never paths, can take it. Whether the view takes files dropped on the window at all.
+    fn drop_on_window(&mut self, paths: &[std::path::PathBuf]) -> bool {
+        let Some(shell) = self.built.as_ref() else {
+            return false;
+        };
+        // Only a view that declared the window's `drop` event takes files dropped anywhere on it.
+        if !shell.events.contains_key("drop") {
+            return false;
+        }
+        let key = shell.key.clone();
+        let mut files = Vec::new();
+        for path in paths {
+            match ui::files::dropped_file(path) {
+                Ok(file) => files.push(ui::component::Value::File(file)),
+                Err(refusal) => {
+                    let words = Words::Plain(refusal.words());
+                    self.notice(&words, wire::NoticeKind::Error, false);
+                }
+            }
+        }
+        if files.is_empty() {
+            return false;
+        }
+        self.reconciler.borrow().adapter().fire(
+            &key,
+            "drop",
+            Some(ui::component::Value::List(files)),
+        );
+        true
+    }
+
     fn notice(&mut self, words: &Words, kind: wire::NoticeKind, undo: bool) {
         let text = say(words);
         if self.shape == Shape::Part {
@@ -1471,7 +1505,7 @@ impl AppWindow {
             }
             return;
         }
-        if let UiEvent::Fire(key, name, _) = &event
+        if let UiEvent::Fire(key, name, _, _) = &event
             && *name == crate::shell::BACK
             && self.built.as_ref().is_some_and(|built| built.key == *key)
         {
@@ -1481,7 +1515,7 @@ impl AppWindow {
         // A control pressed where a field declares its same key leads the person to the field, as
         // the key does: the window's Primary brings them to a list's entry to type the item,
         // instead of making one nobody typed.
-        if let UiEvent::Press(key) | UiEvent::Fire(key, _, None) = &event
+        if let UiEvent::Press(key) | UiEvent::Fire(key, _, None, _) = &event
             && let Some(field) = self.press_leads_a_field(key)
         {
             self.focus_request = Some(field);
@@ -1498,25 +1532,29 @@ impl AppWindow {
                     key,
                     event: "press".to_owned(),
                     value: None,
+                    gesture: None,
                 }
             }
-            UiEvent::Fire(key, event, value) => {
+            UiEvent::Fire(key, event, value, gesture) => {
                 let (level, key) = level_of(&key);
                 ToApp::Fire {
                     level,
                     key,
                     event,
                     value,
+                    gesture,
                 }
             }
             UiEvent::Edit(composed, text) => match self.edit(&composed, text) {
                 Some(message) => message,
                 None => return,
             },
-            UiEvent::EditRich(composed, rich) => match self.edited_rich(&composed, rich) {
-                Some(message) => message,
-                None => return,
-            },
+            UiEvent::EditRich(composed, rich, gesture) => {
+                match self.edited_rich(&composed, rich, gesture) {
+                    Some(message) => message,
+                    None => return,
+                }
+            }
             UiEvent::Toggle(key, checked) => {
                 let (level, key) = level_of(&key);
                 let Some(target) = self.target(level) else {
@@ -1550,21 +1588,31 @@ impl AppWindow {
             base: self.texts.get(composed).cloned().unwrap_or_default(),
             now: text,
         };
-        self.bound_text(composed, held)
+        self.bound_text(composed, held, None)
     }
 
-    fn edited_rich(&mut self, composed: &str, rich: wire::rich::RichText) -> Option<ToApp> {
+    fn edited_rich(
+        &mut self,
+        composed: &str,
+        rich: wire::rich::RichText,
+        gesture: Option<String>,
+    ) -> Option<ToApp> {
         let base = match self.bound.borrow().get(composed) {
             Some(Value::Rich(before)) => before.clone(),
             _ => wire::rich::RichText::default(),
         };
-        self.bound_text(composed, Held::Rich { base, now: rich })
+        self.bound_text(composed, Held::Rich { base, now: rich }, gesture)
     }
 
     /// The bound control `composed` now holds `held`: shown as the person left it, and sent, unless
     /// a press it was typed after has not run yet; then it waits, like every control that takes
     /// typing ([`Self::hold`]).
-    fn bound_text(&mut self, composed: &str, held: Held) -> Option<ToApp> {
+    fn bound_text(
+        &mut self,
+        composed: &str,
+        held: Held,
+        gesture: Option<String>,
+    ) -> Option<ToApp> {
         let (level, key) = level_of(composed);
         // A control that edits no text (a number, a date) sends the value it now holds: how its
         // edits merge, as its component's description says. A control no component built holds text
@@ -1597,8 +1645,10 @@ impl AppWindow {
             Held::Rich { now, .. } => Value::Rich(now.clone()),
         };
         // Typing after a press the app has not run yet waits for it: the press may open something
-        // else into the field the person types into.
-        if self.fired > self.took {
+        // else into the field the person types into. An edit that is one part of a gesture with a
+        // press of its own (a picture pasted in, whose name the app records) does not wait: the
+        // two changes are one step of the person's whether they land one before the other.
+        if self.fired > self.took && gesture.is_none() {
             self.hold(composed, level, held, shown);
             return None;
         }
@@ -1614,6 +1664,7 @@ impl AppWindow {
                     target,
                     key,
                     rich: now,
+                    gesture,
                 })
             }
         }
@@ -2039,7 +2090,7 @@ impl AppWindow {
             // out through its own press: only the event path does that.
             Press::Commit => true,
             Press::Run(node_key, event) => {
-                self.act(UiEvent::Fire(node_key, event, None));
+                self.act(UiEvent::Fire(node_key, event, None, None));
                 self.take_events();
                 self.flush();
                 true
@@ -2156,6 +2207,7 @@ impl AppWindow {
                     target,
                     key: field,
                     rich,
+                    gesture: None,
                 });
             }
             (Value::Text(before), _) => {
@@ -2177,6 +2229,7 @@ impl AppWindow {
                     target,
                     key: field,
                     rich: now.clone(),
+                    gesture: None,
                 });
             }
             (_, Held::Text { now, .. }) => self.out.push(ToApp::Edit {
@@ -2222,12 +2275,14 @@ impl AppWindow {
                 target,
                 key: field,
                 rich: rich_spliced_at(base, show_at, delete, &insert),
+                gesture: None,
             },
             (Held::Text { .. }, Value::Rich(before)) => ToApp::EditRich {
                 level,
                 target,
                 key: field,
                 rich: rich_spliced_at(before, show_at, delete, &insert),
+                gesture: None,
             },
             (Held::Text { .. }, _) => {
                 let before = match shown {
@@ -2846,6 +2901,7 @@ impl AppWindow {
             key,
             event: SEARCH.to_owned(),
             value: Some(Value::text(text)),
+            gesture: None,
         });
     }
 }
@@ -3047,6 +3103,15 @@ impl ui::widget::Decorator for AppWindow {
             if !typing {
                 self.body.handle_event(event, ctx);
             }
+            // A file dropped where nothing of the app's own took it is the window's: it is kept,
+            // and the app's view hears of it as the `File` its process reads, so a document
+            // dropped anywhere on an app that takes one is not lost.
+            if !*ctx.handled
+                && let WindowEvent::DroppedFile(path) = event
+                && self.drop_on_window(std::slice::from_ref(path))
+            {
+                *ctx.handled = true;
+            }
             return;
         };
         match press {
@@ -3062,7 +3127,7 @@ impl ui::widget::Decorator for AppWindow {
             }
             // The control that declares the action runs it.
             Press::Run(node_key, event) => {
-                self.act(UiEvent::Fire(node_key, event, None));
+                self.act(UiEvent::Fire(node_key, event, None, None));
                 self.take_events();
             }
         }

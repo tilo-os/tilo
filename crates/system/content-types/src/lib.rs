@@ -79,6 +79,38 @@ fn is_text(bytes: &[u8]) -> bool {
         })
 }
 
+/// The most a file a person hands an app may be: chosen in a chooser or dropped on a window, it
+/// is what a `File` value reads. A picture a document keeps is smaller than this, and a record's
+/// content is not what a file is for.
+pub const MAX_FILE_BYTES: usize = 1024 * 1024;
+
+/// The media type of a file called `name`, as far as its extension tells: what a chooser starts
+/// from, what a dropped file is taken as, and what a saved file is written as.
+/// `application/octet-stream` when it says nothing.
+#[must_use]
+pub fn media_of(name: &str) -> String {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    let media = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "md" | "markdown" => "text/markdown",
+        "txt" => "text/plain",
+        "html" => "text/html",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    };
+    media.to_owned()
+}
+
 /// What a document records about content instead of its bytes, so placeholders
 /// reserve the eventual dimensions before those bytes arrive.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

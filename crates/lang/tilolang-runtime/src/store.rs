@@ -386,6 +386,11 @@ pub struct ChangeNote {
     /// workspace, and takes them all back when the run fails anywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
+    /// The gesture the change is one of, when the person's act made more than one change (a
+    /// picture pasted into a document, and the app naming it): the changes of one gesture are one
+    /// step of theirs, which one undo takes back ([`Version::gesture`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture: Option<String>,
     /// Whether the action goes on after this change, because it called another one: a step of
     /// its work, not the action itself. What a migration or a trigger did is kept on the
     /// change its action ends with, never on a step.

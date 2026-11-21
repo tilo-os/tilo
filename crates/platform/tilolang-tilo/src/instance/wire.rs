@@ -216,10 +216,14 @@ impl Convert<'_> {
             ),
             Value::Offered(offered) => wire::Value::Action((**offered).clone()),
             Value::Picture(src) => wire::Value::Picture(wire::Picture { src: src.clone() }),
-            // A file is no window value of its own: a view shows what it says (`name`, `url`
-            // as a picture) rather than the value.
+            Value::File(file) => wire::Value::File(wire::File {
+                name: file.name.clone(),
+                media: file.media.clone(),
+                size: file.size,
+                url: file.url(),
+            }),
+            // A view shows what a file says (`name`, `url` as a picture) rather than the value.
             Value::Unit
-            | Value::File(_)
             | Value::Coll(_)
             | Value::Action(_)
             | Value::Node(_)
@@ -373,6 +377,19 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         wire::Value::Bool(flag) => Value::Bool(*flag),
         wire::Value::Ref(target) => Value::resource(&runtime_resource(target)?),
         wire::Value::Actor(who) => Value::Actor(who.id.clone()),
+        // A file a person handed the window: its name, its media type, its size and the hash its
+        // bytes are kept at, as the device's content store answers them.
+        wire::Value::File(file) => Value::File(std::rc::Rc::new(
+            tilolang_runtime::blob::FileValue::new(
+                file.name.clone(),
+                file.media.clone(),
+                file.size,
+                file.url
+                    .strip_prefix(tilolang_runtime::blob::SCHEME)
+                    .unwrap_or(&file.url)
+                    .to_owned(),
+            ),
+        )),
         // What a drop carries: the card and its place.
         wire::Value::List(items) => {
             Value::List(items.iter().map(runtime_value).collect::<Option<_>>()?)

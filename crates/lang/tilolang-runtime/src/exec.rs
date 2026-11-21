@@ -61,6 +61,10 @@ pub struct ExecCtx {
     /// Who proposed the action, when the person invoking it accepted a suggestion: recorded in
     /// its change, so history says who suggested it.
     pub suggested_by: Option<Actor>,
+    /// The gesture every change of the invocation is one of, when the person's act made more than
+    /// one change (a picture pasted into a document, and the app naming it): undo takes them back
+    /// as one step ([`crate::store::ChangeNote::gesture`]).
+    pub gesture: Option<String>,
 }
 
 impl ExecCtx {
@@ -776,6 +780,7 @@ impl Core {
             suggested_by: ctx.suggested_by.clone(),
             from: ctx.from.clone(),
             at: ctx.at.clone(),
+            gesture: ctx.gesture.clone(),
             ..ChangeNote::default()
         }
     }
@@ -863,6 +868,7 @@ impl Core {
             from: from.cloned(),
             suggested_by: None,
             at: None,
+            gesture: None,
         };
         match self.decide(&ctx, first)? {
             Decision::Allow => {
@@ -1004,7 +1010,23 @@ impl Core {
         invoker: &Actor,
         aref: &ActionRef,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as(None, invoker, aref, aref.from.as_ref())
+        self.invoke_direct_in(invoker, aref, None)
+    }
+
+    /// [`Core::invoke_direct`] as one part of the person's act `gesture`: every change the action
+    /// makes names it, so an undo takes it back with the change it was made with (a picture a
+    /// paste wrote, and the app naming it).
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::invoke_direct`].
+    pub fn invoke_direct_in(
+        &self,
+        invoker: &Actor,
+        aref: &ActionRef,
+        gesture: Option<&str>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        self.invoke_direct_as_in(None, invoker, aref, aref.from.as_ref(), gesture)
     }
 
     /// [`Core::invoke_direct`] as the run `identity` when every replica can name it the same
@@ -1021,6 +1043,18 @@ impl Core {
         invoker: &Actor,
         aref: &ActionRef,
         from: Option<&ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        self.invoke_direct_as_in(identity, invoker, aref, from, None)
+    }
+
+    /// [`Core::invoke_direct_as`] as one part of the person's act `gesture`.
+    fn invoke_direct_as_in(
+        &self,
+        identity: Option<&RunId>,
+        invoker: &Actor,
+        aref: &ActionRef,
+        from: Option<&ResourceRef>,
+        gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
         // One action over many items is one change: its references are the change's own.
         if aref.action == MANY_ACTION {
@@ -1049,6 +1083,7 @@ impl Core {
             identity: identity.cloned(),
             from: from.cloned(),
             at: None,
+            gesture: gesture.map(str::to_owned),
         };
         match self.decide(&ctx, aref)? {
             Decision::Allow => match self.run_action(&ctx, aref)? {
@@ -1206,6 +1241,7 @@ impl Core {
             identity: None,
             from: None,
             at: None,
+            gesture: None,
         };
         self.start_ctx(
             &ctx,
@@ -1407,6 +1443,7 @@ impl Core {
             identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
+            gesture: None,
         }
     }
 
@@ -1559,6 +1596,7 @@ impl Core {
             identity: None,
             from: step.from.clone().or_else(|| journal.from.clone()),
             at: step.at.clone(),
+            gesture: None,
         };
         // A verb the resource's app publishes without a package loading here: the same action API,
         // sent as a step of the run that asked for it.
@@ -1701,6 +1739,7 @@ impl Core {
             identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
+            gesture: None,
         };
         let aref = ActionRef::new(suggestion.action.clone(), suggestion.args.clone());
         // A run that is only a suggestion waits no further: what it approves is its whole

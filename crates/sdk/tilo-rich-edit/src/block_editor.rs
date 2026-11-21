@@ -738,6 +738,9 @@ pub struct BlockEditor {
     /// answers the address they are at, and the editor puts the picture in at the caret. Unset:
     /// the picture is left to the host as an [`ImagePasteRequest`], which places it itself.
     pub(crate) image_inserter: Option<ImageInserter>,
+    /// The view's `image` event: a picture written into the document names it, by its name and
+    /// the address its bytes are at, as one part of the same gesture the edit is.
+    pub(crate) image_event: Option<ui::component::Event>,
     link_pages_offered: bool,
     host_commands: Vec<SlashHostCommand>,
     view_commands: Vec<String>,
@@ -944,6 +947,7 @@ impl BlockEditor {
             image_preview_rects: Vec::new(),
             image_store: None,
             image_inserter: None,
+            image_event: None,
             link_pages_offered: false,
             host_commands: Vec::new(),
             view_commands: Vec::new(),
@@ -4692,11 +4696,18 @@ impl BlockEditor {
         };
         // A host that keeps pictures itself is handed the paste, and the picture goes in at the
         // caret here, as the host's own change of the document.
-        if let Some(kept) = self.keep_pasted_picture(&image) {
-            return self.place_picture(&kept, target);
+        match self.keep_pasted_picture(&image) {
+            Some(Ok(kept)) => self.place_picture(&kept, target),
+            // A picture the host could not keep is never lost in silence: the window says why.
+            Some(Err(refusal)) => {
+                ui::control_notice::say_in_window(&refusal.words());
+                true
+            }
+            None => {
+                self.pasted_images.push(ImagePasteRequest { image, target });
+                true
+            }
         }
-        self.pasted_images.push(ImagePasteRequest { image, target });
-        true
     }
 
     fn copy_code_run(&mut self, start: usize, end: usize) -> bool {

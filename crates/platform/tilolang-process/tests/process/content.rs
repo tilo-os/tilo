@@ -161,6 +161,7 @@ fn a_paragraph_past_what_a_text_may_hold_is_refused_aloud() {
             target: note.clone(),
             key: field.clone(),
             rich: typed_rich(text),
+            gesture: None,
         };
         window.send(&[edit("draft")]);
         settle(&mut host, &mut window);
@@ -219,6 +220,7 @@ fn a_paragraph_of_the_whole_limit_is_kept_aloud() {
         target: note.clone(),
         key: field,
         rich: typed_rich(&kept),
+        gesture: None,
     }]);
     settle(&mut host, &mut window);
     assert!(window.notices.is_empty(), "{:?}", window.notices);
@@ -226,6 +228,10 @@ fn a_paragraph_of_the_whole_limit_is_kept_aloud() {
 }
 
 /// Ada pastes `paragraphs` paragraphs past a mebibyte in all over what she typed.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one paste's whole way: typed, pasted, what the workspace holds, and undone"
+)]
 fn pastes_past_a_mebibyte(paragraphs: usize) {
     let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
     let device = ContentStore::memory();
@@ -251,6 +257,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
         target: note.clone(),
         key: field.clone(),
         rich: typed_rich("draft"),
+        gesture: None,
     }]);
     settle(&mut host, &mut window);
     let before = body_of(&host, &note);
@@ -264,6 +271,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
         target: note.clone(),
         key: field,
         rich: body,
+        gesture: None,
     }]);
     settle(&mut host, &mut window);
     let pasted_in = pasting.elapsed();

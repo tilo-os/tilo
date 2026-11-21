@@ -2,6 +2,7 @@
 //! with the document; text still pastes as text.
 
 use super::*;
+use ui::component::Described as _;
 use automerge::ROOT;
 use ui::testing::Dispatch;
 use winit::keyboard::ModifiersState;
@@ -89,17 +90,23 @@ fn ctrl_v_hands_a_copied_image_to_the_host() {
 
 #[test]
 fn a_host_that_keeps_pictures_gets_the_picture_at_the_caret() {
-    fn kept(image: PictureIn<'_>) -> Option<ui::pictures::KeptPicture> {
-        match image {
-            PictureIn::Bytes { name, bytes, .. } => Some(ui::pictures::KeptPicture {
+    fn kept(
+        image: PictureIn<'_>,
+    ) -> Result<ui::pictures::KeptPicture, ui::pictures::PictureRefusal> {
+        Ok(match image {
+            PictureIn::Bytes { name, bytes, .. } => ui::pictures::KeptPicture {
                 name: name.to_owned(),
                 address: format!("tilo-blob://{}", bytes.len()),
-            }),
-            PictureIn::Path(path) => Some(ui::pictures::KeptPicture {
-                name: path.file_name()?.to_str()?.to_owned(),
+            },
+            PictureIn::Path(path) => ui::pictures::KeptPicture {
+                name: path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_owned(),
                 address: "tilo-blob://dropped".to_owned(),
-            }),
-        }
+            },
+        })
     }
 
     fn the_picture_goes_in_at_the_caret_as_one_edit() {
@@ -157,4 +164,59 @@ fn a_host_that_keeps_pictures_gets_the_picture_at_the_caret() {
 
     the_picture_goes_in_at_the_caret_as_one_edit();
     a_picture_dropped_on_the_editor_goes_in_the_same_way();
+}
+
+/// A picture pasted into a document bound to a field is two changes on screen — the body's, and
+/// the view naming the picture — and the editor names them one act of the person's, so the app's
+/// naming action joins the same step and one undo takes both back.
+#[test]
+fn a_pasted_picture_names_itself_as_one_gesture_with_its_edit() {
+    fn kept(_: PictureIn<'_>) -> Result<ui::pictures::KeptPicture, ui::pictures::PictureRefusal> {
+        Ok(ui::pictures::KeptPicture {
+            name: "Pasted image.png".to_owned(),
+            address: "tilo-blob://pixels".to_owned(),
+        })
+    }
+    let (services, recorder) = ui::process::ProcessServices::recording();
+    let _host = ui::process::enter(&services);
+    recorder.copy_image_elsewhere(screenshot());
+    let queue = ui::Intents::<ui::component::Fired>::default();
+    let mut editor = BlockEditor::from_props(
+        "b",
+        crate::BlockEditorProps {
+            rich: ui::component::Bound {
+                edits: Some(ui::component::Intent::new(&queue, "b", "richtext")),
+                ..ui::component::Bound::default()
+            },
+            image: ui::component::Event::View(ui::component::Intent::new(&queue, "b", "image")),
+            ..crate::BlockEditorProps::default()
+        },
+    );
+    editor.set_image_inserter(Some(Box::new(kept)));
+    editor.focus_block(0, CursorPlacement::End);
+    let mut doc = AutoCommit::new();
+    assert!(ctrl_v(&mut editor, &mut doc));
+
+    let fired = queue.take();
+    let image = fired
+        .iter()
+        .find(|fired| fired.event == "image")
+        .expect("the view hears the picture's name and where its bytes are");
+    assert_eq!(
+        image.value,
+        Some(ui::component::Value::List(vec![
+            ui::component::Value::Text("Pasted image.png".to_owned()),
+            ui::component::Value::Text("tilo-blob://pixels".to_owned()),
+        ]))
+    );
+    let gesture = image.gesture.expect("the naming is one act with the edit");
+    let edit = fired
+        .iter()
+        .find(|fired| fired.event == "richtext")
+        .expect("the view hears the body's change");
+    assert_eq!(
+        edit.gesture,
+        Some(gesture),
+        "the body's change is the same act as the naming"
+    );
 }

@@ -345,6 +345,7 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
             value: Some(crate::component::Value::Resource(
                 "notes.pages:page_1".to_owned()
             )),
+            gesture: None,
         }],
         "the drop carries the resource the drag let go with, by its address"
     );

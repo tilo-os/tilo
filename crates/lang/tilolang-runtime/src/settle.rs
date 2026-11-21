@@ -624,6 +624,7 @@ impl Core {
             identity: Some(run),
             from: None,
             at: None,
+            gesture: None,
         };
         let aref = ActionRef {
             action: rec.action.clone(),

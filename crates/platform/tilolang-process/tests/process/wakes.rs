@@ -81,6 +81,7 @@ tilo_test_env::scenario! {
             key: "early".to_owned(),
             event: "pressed before it opened".to_owned(),
             value: None,
+            gesture: None,
         }]);
         host.turn();
         assert_eq!(host.opening(), 1);
@@ -97,6 +98,7 @@ tilo_test_env::scenario! {
             key,
             event,
             value: None,
+            gesture: None,
         }]);
         assert_eq!(
             wakeups(&host, 1),

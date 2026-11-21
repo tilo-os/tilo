@@ -182,27 +182,121 @@ pub struct KeptPicture {
     pub address: String,
 }
 
+/// Why a picture pasted or dropped into a document was not kept: what a window says where the
+/// person did it, so a paste or a drop is never lost silently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PictureRefusal {
+    /// The bytes are no picture this program reads.
+    NotAPicture,
+    /// The picture kept more than [`MAX_PICTURE_BYTES`] even after being made smaller.
+    TooLarge,
+    /// This process holds no content store (the web answers its host for one).
+    NoStore,
+    /// The file could not be read from where it was dropped.
+    Unreadable(String),
+    /// The content store refused the bytes.
+    Store(String),
+}
+
+impl PictureRefusal {
+    /// Why the picture was not kept, in the person's words.
+    #[must_use]
+    pub fn words(&self) -> String {
+        use crate::i18n::{widget_text, widget_text_with};
+        match self {
+            Self::NotAPicture => widget_text("picture-not-a-picture"),
+            Self::TooLarge => widget_text("picture-too-large"),
+            Self::NoStore => widget_text("picture-no-store"),
+            Self::Unreadable(reason) | Self::Store(reason) => widget_text_with(
+                "picture-not-kept",
+                Some(&fluent::FluentArgs::from_iter([(
+                    "reason",
+                    reason.as_str(),
+                )])),
+            ),
+        }
+    }
+}
+
 /// Keep the picture `bytes`, named `name`, in this process's content store and answer where it
 /// is: what an editor does with a picture the person pasted or dropped into a document. Only a
-/// picture is kept (PNG, JPEG, GIF, WebP or SVG, read from its own bytes), and only up to
-/// [`MAX_PICTURE_BYTES`]; `None` otherwise, or when this process holds no content store (the web
-/// answers its host for one) or the store refused it.
-#[must_use]
-pub fn keep_picture(name: &str, bytes: &[u8]) -> Option<KeptPicture> {
-    let format = tilo_content::image_format(bytes)?;
-    if bytes.is_empty() || bytes.len() > MAX_PICTURE_BYTES {
-        return None;
-    }
-    let store = device_store()?;
-    let hash = store.put(bytes).ok()?;
-    Some(KeptPicture {
-        name: if name.trim().is_empty() {
-            format!("Pasted image.{}", format.extension)
-        } else {
-            name.to_owned()
-        },
+/// picture is kept (PNG, JPEG, GIF, WebP or SVG, read from its own bytes); one larger than
+/// [`MAX_PICTURE_BYTES`] is made smaller first ([`shrink_picture`]), so the person never loses a
+/// paste to its size.
+///
+/// # Errors
+///
+/// [`PictureRefusal`]: the bytes are no picture, the picture cannot be made to fit, this process
+/// holds no content store, or the store refused it.
+pub fn keep_picture(name: &str, bytes: &[u8]) -> Result<KeptPicture, PictureRefusal> {
+    let format = if bytes.is_empty() {
+        None
+    } else {
+        tilo_content::image_format(bytes)
+    };
+    let Some(format) = format else {
+        return Err(PictureRefusal::NotAPicture);
+    };
+    let named = if name.trim().is_empty() {
+        format!("Pasted image.{}", format.extension)
+    } else {
+        name.to_owned()
+    };
+    // A picture past what a document keeps is re-encoded and scaled down until it fits: what a
+    // screenshot or a camera's photograph is, and still what the person meant to put in.
+    let (name, bytes) = if bytes.len() <= MAX_PICTURE_BYTES {
+        (named, bytes.to_vec())
+    } else {
+        let smaller = shrink_picture(bytes).ok_or(PictureRefusal::TooLarge)?;
+        let format = tilo_content::image_format(&smaller).ok_or(PictureRefusal::TooLarge)?;
+        (with_extension(&named, format.extension), smaller)
+    };
+    let store = device_store().ok_or(PictureRefusal::NoStore)?;
+    let hash = store
+        .put(&bytes)
+        .map_err(|error| PictureRefusal::Store(error.to_string()))?;
+    Ok(KeptPicture {
+        name,
         address: format!("{BLOB_SCHEME}{hash}"),
     })
+}
+
+/// `name` with its extension replaced by `extension`: a picture made smaller is kept as the
+/// format it was written as now, and its name says so (`photo.png` a JPEG becomes `photo.jpg`).
+fn with_extension(name: &str, extension: &str) -> String {
+    let stem = name
+        .rsplit_once('.')
+        .filter(|(stem, _)| !stem.is_empty())
+        .map_or(name, |(stem, _)| stem);
+    format!("{stem}.{extension}")
+}
+
+/// `bytes` re-encoded and scaled down, keeping its proportions, until it is no more than
+/// [`MAX_PICTURE_BYTES`]: a picture with alpha stays a PNG (a lossless copy that keeps it), and
+/// one without becomes a JPEG. `None` when it cannot be made to fit, or is no picture this
+/// program decodes (an SVG).
+fn shrink_picture(bytes: &[u8]) -> Option<Vec<u8>> {
+    use crate::image_codec::{Encoding, decode_now, encode_now};
+    let mut image = decode_now(bytes, Some(PICTURE_MAX_DIMENSION)).ok()?;
+    let encoding = if image.has_alpha() {
+        Encoding::Png
+    } else {
+        Encoding::Jpeg { quality: 85 }
+    };
+    for _ in 0..8 {
+        let encoded = encode_now(&image, encoding).ok()?;
+        if encoded.len() <= MAX_PICTURE_BYTES {
+            return Some(encoded);
+        }
+        if image.width < 64 || image.height < 64 {
+            break;
+        }
+        image = image.resized(
+            image.width.saturating_mul(3) / 4,
+            image.height.saturating_mul(3) / 4,
+        );
+    }
+    None
 }
 
 /// The store a picture is kept in: the device content store the launcher handed this process, and
@@ -218,21 +312,27 @@ fn device_store() -> Option<crate::content::ContentStore> {
 }
 
 /// The picture the file at `path` holds, kept and answered as [`keep_picture`] does: a picture file
-/// dropped on a window. `None` when the file is no picture, holds more than [`MAX_PICTURE_BYTES`],
-/// or cannot be read.
-#[must_use]
-pub fn dropped_picture(path: &std::path::Path) -> Option<KeptPicture> {
+/// dropped on a window. A picture larger than a document keeps is made smaller first, as a paste
+/// is; one past [`crate::clipboard::MAX_PASTED_IMAGE_BYTES`] is not read at all.
+///
+/// # Errors
+///
+/// [`PictureRefusal`]: the file cannot be read, or [`keep_picture`]'s reason.
+pub fn dropped_picture(path: &std::path::Path) -> Result<KeptPicture, PictureRefusal> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .map(str::to_owned)?;
-    let (dir, file) = tilo_files::file_at(path).ok()?;
+        .ok_or(PictureRefusal::NotAPicture)?
+        .to_owned();
+    let (dir, file) =
+        tilo_files::file_at(path).map_err(|error| PictureRefusal::Unreadable(error.to_string()))?;
     let bytes = tilo_files::blocking::read_bounded(
         &dir,
         &file,
-        MAX_PICTURE_BYTES.saturating_add(1),
+        crate::clipboard::MAX_PASTED_IMAGE_BYTES.saturating_add(1),
     )
-    .ok()??;
+    .map_err(|error| PictureRefusal::Unreadable(error.to_string()))?
+    .ok_or(PictureRefusal::TooLarge)?;
     keep_picture(&name, &bytes)
 }
 
@@ -361,38 +461,83 @@ mod tests {
         lend_content(None);
     }
 
-    /// A picture pasted or dropped into a document is kept only when it is one, and only up to
-    /// the size a document's picture may be: what the editor refuses, it refuses before anything
-    /// is written.
+    /// A picture pasted or dropped into a document is kept only when it is one; one larger than
+    /// a document keeps is made smaller, never dropped for its size.
     #[test]
-    fn only_a_picture_of_a_document_s_size_is_kept() {
+    fn only_a_picture_is_kept_and_a_large_one_is_made_smaller_first() {
         let _env = tilo_test_env::lock();
         let pixels = png();
         // This process holds no device store, so a picture that fits answers nothing here — but
-        // a file that is no picture, or one past the size, is refused before the store is asked.
+        // a file that is no picture is refused before the store is asked.
         assert_eq!(
             keep_picture("words.txt", b"not a picture"),
-            None,
+            Err(PictureRefusal::NotAPicture),
             "a text file is no picture"
         );
         assert_eq!(
-            keep_picture("huge.png", &[png(), vec![0; MAX_PICTURE_BYTES]].concat()),
-            None,
-            "a picture past what a document keeps is refused"
+            keep_picture(
+                "huge.jpg",
+                &[&[0xff, 0xd8, 0xff][..], &vec![0; MAX_PICTURE_BYTES]].concat()
+            ),
+            Err(PictureRefusal::TooLarge),
+            "a picture past what a document keeps, which cannot be decoded to be made smaller"
         );
-        assert_eq!(keep_picture("fox.png", &pixels), None, "no store, no address");
+        assert_eq!(
+            keep_picture("fox.png", &pixels),
+            Err(PictureRefusal::NoStore),
+            "no store, no address"
+        );
 
         let directory = tilo_test_env::runtime_tempdir().expect("a place for the drop");
         let path = directory.path().join("fox.png");
         std::fs::write(&path, &pixels).expect("the picture is written");
         assert_eq!(
             dropped_picture(&path),
-            None,
+            Err(PictureRefusal::NoStore),
             "a picture read from a drop is kept in the store this process holds, which is none"
         );
         let words = directory.path().join("words.txt");
         std::fs::write(&words, b"not a picture").expect("the file is written");
-        assert_eq!(dropped_picture(&words), None, "a dropped text file is no picture");
+        assert_eq!(
+            dropped_picture(&words),
+            Err(PictureRefusal::NotAPicture),
+            "a dropped text file is no picture"
+        );
+    }
+
+    /// A picture past the size a document keeps is re-encoded and scaled down, keeping its
+    /// proportions, so a screenshot or a photograph still goes in.
+    #[test]
+    fn a_picture_past_the_size_is_made_smaller_keeping_its_proportions() {
+        let big = big_png();
+        assert!(
+            big.len() > MAX_PICTURE_BYTES,
+            "the picture starts larger than a document keeps"
+        );
+        let (_, wide, tall) =
+            tilo_content::image_size(&big).expect("the picture says its size");
+        let smaller = shrink_picture(&big).expect("a picture can be made to fit");
+        assert!(
+            smaller.len() <= MAX_PICTURE_BYTES,
+            "what is kept is a document's size"
+        );
+        let (format, width, height) =
+            tilo_content::image_size(&smaller).expect("what is kept is still a picture");
+        assert_eq!(format.mime, "image/jpeg", "no alpha, so a JPEG");
+        let before = f64::from(wide) / f64::from(tall);
+        let after = f64::from(width) / f64::from(height);
+        assert!(
+            (before - after).abs() < 0.02,
+            "the proportions stay: {before} became {after}"
+        );
+    }
+
+    /// The name says what the bytes are now: a picture re-encoded as a JPEG is a `.jpg`.
+    #[test]
+    fn a_smaller_picture_is_named_for_its_new_format() {
+        assert_eq!(with_extension("photo.png", "jpg"), "photo.jpg");
+        assert_eq!(with_extension("Pasted image.png", "webp"), "Pasted image.webp");
+        assert_eq!(with_extension("photo", "png"), "photo.png");
     }
 
     /// A 2x2 PNG, written out rather than drawn: the test needs no image library to say what a
@@ -406,5 +551,28 @@ mod tests {
             0x01, 0x2c, 0x0a, 0x0b, 0x4e, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xae,
             0x42, 0x60, 0x82,
         ]
+    }
+
+    /// A PNG larger than a document keeps, of random-looking pixels that do not compress away.
+    fn big_png() -> Vec<u8> {
+        use image::ImageEncoder as _;
+        let (width, height) = (1200_u32, 900_u32);
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..width * height {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            rgba.extend_from_slice(&seed.to_le_bytes()[..3]);
+            rgba.push(255);
+        }
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(
+                &rgba,
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("the picture encodes");
+        bytes
     }
 }

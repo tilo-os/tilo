@@ -98,6 +98,35 @@ pub(super) struct Burst {
 }
 
 impl Inner {
+    /// The burst of typing is over: what comes next is a step of its own, however soon it is
+    /// typed ([`Inner::burst_gesture`] would otherwise continue it).
+    pub(super) fn end_burst(&mut self) {
+        self.burst = None;
+    }
+
+    /// The gesture the change `state`, committed with `note`, is a step of: the one the window
+    /// named when the change is one part of the person's act (a picture a paste wrote, and the
+    /// app naming it), which ends the burst of typing; else the burst's own, so a word typed is
+    /// one undo. A trial run is no change of theirs, and neither joins nor ends the burst.
+    pub(super) fn gesture_of(
+        &mut self,
+        state: &TxnState,
+        note: &ChangeNote,
+    ) -> Option<ActionId> {
+        if self.trials != 0 {
+            return None;
+        }
+        if let Some(named) = note
+            .gesture
+            .as_deref()
+            .and_then(|gesture| uuid::Uuid::parse_str(gesture).ok())
+        {
+            self.end_burst();
+            return Some(ActionId(named));
+        }
+        self.burst_gesture(state, note)
+    }
+
     /// The gesture the change `state`, committed with `note`, is a change of: the burst's own
     /// when it is the next letter of the field the person is typing into, and a fresh one
     /// otherwise. `None`, and the burst ended, for a change that is no letter of a text field.

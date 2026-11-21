@@ -773,6 +773,7 @@ mod tests {
                 key: "c".into(),
                 event: "drop".into(),
                 value: Some(Value::Resource("res-a".into())),
+                gesture: None,
             }]
         );
     }
@@ -794,6 +795,7 @@ mod tests {
                     Value::Resource("res-b".into()),
                     Value::Int(1)
                 ])),
+                gesture: None,
             }]
         );
     }
@@ -834,11 +836,13 @@ mod tests {
                     key: "todo".into(),
                     event: "drop".into(),
                     value: carried("b", 0),
+                    gesture: None,
                 },
                 Fired {
                     key: "done".into(),
                     event: "drop".into(),
                     value: carried("a", 0),
+                    gesture: None,
                 },
             ]
         );

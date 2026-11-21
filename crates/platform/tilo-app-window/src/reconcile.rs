@@ -32,10 +32,16 @@ use ui::presence::PathSegment;
 pub enum UiEvent {
     Press(String),
     Edit(String, String),
-    EditRich(String, tilo_render_protocol::patch::rich::RichText),
+    EditRich(
+        String,
+        tilo_render_protocol::patch::rich::RichText,
+        Option<String>,
+    ),
     Toggle(String, bool),
     Resolve(String, bool),
-    Fire(String, String, Option<Value>),
+    /// An event of the node `key`, named, with the value it carries and the gesture it is one
+    /// part of (`None` for an event that is an act of its own).
+    Fire(String, String, Option<Value>, Option<String>),
     Open(crate::ResourceRef),
     OpenReference(String),
 }
@@ -1508,7 +1514,7 @@ impl Reconciler {
                     button = button.with_detail(detail);
                 }
                 list = list.push(Box::new(button.on_click(move || {
-                    sink.push(UiEvent::Fire(key.clone(), format!("pick.{name}"), None));
+                    sink.push(UiEvent::Fire(key.clone(), format!("pick.{name}"), None, None));
                 })));
             }
             return Box::new(list);
@@ -1522,7 +1528,7 @@ impl Reconciler {
             Box::new(
                 ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_change(move |index| {
                     if let Some(case) = names.get(index) {
-                        sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None));
+                        sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None, None));
                     }
                 }),
             )
@@ -1543,7 +1549,7 @@ impl Reconciler {
                             .position(|shown| shown == label)
                             .and_then(|index| names.get(index))
                         {
-                            sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None));
+                            sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None, None));
                         }
                     }),
             )

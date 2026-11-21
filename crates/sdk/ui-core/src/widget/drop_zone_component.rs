@@ -20,8 +20,9 @@ pub struct DropZoneProps {
     pub icon: Option<Icon>,
     /// The label of a button offering the same route without dragging ("Choose files").
     pub action: Option<String>,
-    /// Files were dropped: their paths, as `List<Text>`.
-    #[component(event(value = Vec<String>))]
+    /// Files were dropped: each as a `File` — its name, its media type, its size and where its
+    /// bytes are — kept by the window, which is what an app reads of it.
+    #[component(event(value = Vec<crate::component::File>))]
     pub drop: Event,
     /// The action's button was pressed: the view asks for the files its own way.
     #[component(event(press))]
@@ -68,11 +69,19 @@ impl DropZone {
             self.on_files = None;
         } else {
             self.set_on_files_view(move |files: Vec<PathBuf>| {
-                let paths: Vec<Value> = files
-                    .into_iter()
-                    .map(|path| Value::Text(path.display().to_string()))
-                    .collect();
-                drop.fire(Some(Value::List(paths)));
+                // A dropped file goes into the content store, and the view hears of it as the
+                // `File` an app's process can open; one the store will not keep says why where
+                // the person dropped it.
+                let mut kept = Vec::new();
+                for path in files {
+                    match crate::files::dropped_file(&path) {
+                        Ok(file) => kept.push(Value::File(file)),
+                        Err(refusal) => crate::control_notice::say_in_window(&refusal.words()),
+                    }
+                }
+                if !kept.is_empty() {
+                    drop.fire(Some(Value::List(kept)));
+                }
             });
         }
         self.action_node = None;

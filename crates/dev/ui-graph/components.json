@@ -2090,9 +2090,9 @@
       "events": [
         {
           "name": "drop",
-          "doc": "Files were dropped: their paths, as `List<Text>`.",
+          "doc": "Files were dropped: each as a `File` — its name, its media type, its size and where its bytes are — kept by the window, which is what an app reads of it.",
           "value": {
-            "list": "text"
+            "list": "file"
           }
         },
         {
@@ -3499,6 +3499,13 @@
           "name": "search",
           "doc": "The text the window's search holds, narrowing what the frame lists as a chosen place does; empty while the search is closed.",
           "value": "text"
+        },
+        {
+          "name": "drop",
+          "doc": "Files were dropped on the window, anywhere no component of its own took them: each as a `File` — its name, its media type, its size and where its bytes are — kept by the window. What an app takes a dropped document with, wherever on it the person lets go.",
+          "value": {
+            "list": "file"
+          }
         }
       ],
       "state": [

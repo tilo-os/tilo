@@ -144,6 +144,7 @@ pub fn fired(key: &str, event: &str, value: Option<Value>) -> Fired {
         key: key.to_owned(),
         event: event.to_owned(),
         value,
+        gesture: None,
     }
 }
 

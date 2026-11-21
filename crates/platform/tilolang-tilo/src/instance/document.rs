@@ -1103,13 +1103,40 @@ impl InstanceDocument {
         Ok(self.finish_history(instance, taken))
     }
 
-    /// The changes the step the change `step` is part of made across the chunks: its own, and
-    /// those of the other chunks that ran under the same invocation.
+    /// The changes the step the change `step` is part of made across the chunks: its own and
+    /// those that ran under the same invocation, and those of the one gesture it is a change of
+    /// (a picture a paste wrote, and the app naming it), which one undo takes back together.
     fn changes_of_step(&self, step: &[u8; 32]) -> Vec<[u8; 32]> {
-        match self.invocation_of(step) {
+        let mut changes = match self.invocation_of(step) {
             Some(invocation) => self.changes_of(invocation),
             None => vec![*step],
+        };
+        // The change's gesture, read from the document: its step holds every change that names
+        // it, wherever in the document each was written.
+        let scope = self.own_steps();
+        let mut next = 0;
+        while let Some(change) = changes.get(next).copied() {
+            next = next.saturating_add(1);
+            let Some(chunk) = self.chunk_of_change(&change) else {
+                continue;
+            };
+            let mates: Vec<[u8; 32]> = self.read(|chunks| {
+                let Some(doc) = chunks.held(chunk) else {
+                    return Vec::new();
+                };
+                steps::step_in_effect(doc, &|version| scope.owns(version), &ChangeHash(change))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|version| version.hash.0)
+                    .collect()
+            });
+            for mate in mates {
+                if !changes.contains(&mate) {
+                    changes.push(mate);
+                }
+            }
         }
+        changes
     }
 
     /// Carry out what the person asked of their history at the window (`asked`) through the

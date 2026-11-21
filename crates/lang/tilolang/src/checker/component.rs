@@ -1519,6 +1519,7 @@ fn lang_type(ty: &Type) -> Ty {
     match ty {
         // A picture is named by where its bytes are, which is text.
         Type::Text | Type::Picture => Ty::Text,
+        Type::File => Ty::File,
         Type::Int => Ty::Int,
         Type::Float => Ty::Float,
         Type::Bool => Ty::Bool,
@@ -1560,6 +1561,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
                 | (Type::RichText, Ty::RichText)
                 | (Type::Float, Ty::Float | Ty::Int)
                 | (Type::Picture, Ty::Text)
+                | (Type::File, Ty::File)
                 | (Type::Resource | Type::Link, Ty::Record(_))
         ),
     }

@@ -298,6 +298,18 @@ impl Adapter {
         self.published.borrow().holds(resource, action)
     }
 
+    /// Queue `event` of the instance `key` as the person's own, carrying `value`: what the window
+    /// does itself for a press no control of the view reported (a file dropped on it), which the
+    /// app takes as it takes any control's event.
+    pub fn fire(&self, key: &str, event: &str, value: Option<Prop>) {
+        self.fired.push(Fired {
+            key: key.to_owned(),
+            event: event.to_owned(),
+            value,
+            gesture: None,
+        });
+    }
+
     #[must_use]
     pub fn take_events(&self) -> Vec<UiEvent> {
         let built = self.built.borrow();
@@ -319,7 +331,11 @@ impl Adapter {
                         Some(Prop::Float(number)) => {
                             Some(UiEvent::Edit(fired.key, number.to_string()))
                         }
-                        Some(Prop::Rich(rich)) => Some(UiEvent::EditRich(fired.key, rich)),
+                        Some(Prop::Rich(rich)) => Some(UiEvent::EditRich(
+                            fired.key,
+                            rich,
+                            fired.gesture.map(|gesture| gesture.0.to_string()),
+                        )),
                         _ => None,
                     };
                 }
@@ -329,7 +345,12 @@ impl Adapter {
                         Some(event) => self.event_value(value, event),
                         None => self.value_of(value),
                     });
-                    return Some(UiEvent::Fire(fired.key, fired.event, value));
+                    return Some(UiEvent::Fire(
+                        fired.key,
+                        fired.event,
+                        value,
+                        fired.gesture.map(|gesture| gesture.0.to_string()),
+                    ));
                 }
                 // A reference in rich text the view gave nothing of its own to do: open it.
                 if fired.event == tilo_rich_edit::OPEN_REFERENCE {
@@ -415,6 +436,7 @@ impl Adapter {
                     .map(|item| self.value_of(item))
                     .collect::<Option<_>>()?,
             ),
+            Prop::File(file) => Value::File(file.clone()),
             Prop::None
             | Prop::Rich(_)
             | Prop::Map(_)
@@ -707,6 +729,7 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         (Type::Picture, Value::Picture(picture)) => Prop::Picture(ui::component::Picture {
             src: picture.src.clone(),
         }),
+        (Type::File, Value::File(file)) => Prop::File(file.clone()),
         // A moment reaches the component as the instant it is, never as text read the person's way:
         // the component decides how to show it.
         (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),
@@ -1217,6 +1240,7 @@ mod tests {
                     // The adapter does not know the type: it reads where the drop lands.
                     ty: String::new(),
                 })),
+                None,
             )],
             "the drop carries the resource the drag let go with, by its address"
         );
@@ -1232,7 +1256,7 @@ mod tests {
         event.fire(None);
         assert_eq!(
             reconciler.adapter().take_events(),
-            vec![UiEvent::Fire("b".to_owned(), "press".to_owned(), None)],
+            vec![UiEvent::Fire("b".to_owned(), "press".to_owned(), None, None)],
             "the window fires the action reference the view attached"
         );
 
@@ -1333,6 +1357,7 @@ mod tests {
                     Value::Ref(moved),
                     Value::Opt(Some(Box::new(Value::Ref(at)))),
                 ])),
+                None,
             )],
             "the row that moved, and the row it lands inside as an option of it"
         );

@@ -72,7 +72,7 @@ use crate::widget::Element;
 
 pub use tilo_ui_graph::component::{
     Accepts, Binding as BindingDescription, Catalogue, Description, EnumDescription,
-    Event as EventDescription, FORMAT_VERSION, Merge, Offered, Part, Picture, Prop, Semantics,
+    Event as EventDescription, FORMAT_VERSION, File, Merge, Offered, Part, Picture, Prop, Semantics,
     State as StateDescription, Type, Value,
 };
 pub use tilo_ui_macros::{Component, not_a_component};
@@ -185,6 +185,19 @@ impl PropType for tilo_ui_graph::rich::RichText {
         match value {
             Value::Rich(rich) => Ok(rich.clone()),
             other => Err(format!("takes RichText, not {}", other.kind())),
+        }
+    }
+}
+
+impl PropType for tilo_ui_graph::component::File {
+    fn ty() -> Type {
+        Type::File
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::File(file) => Ok(file.clone()),
+            other => Err(wrong(&Self::ty(), other)),
         }
     }
 }
@@ -715,6 +728,11 @@ pub struct Fired {
     pub key: String,
     pub event: String,
     pub value: Option<Value>,
+    /// The gesture this event is one part of, when the person's act made more than one change on
+    /// screen: the picture a paste writes into a document, and the edit that records its name,
+    /// are one step of theirs. Their changes name the same gesture, so one undo takes both back.
+    /// `None` for an event that is an act of its own.
+    pub gesture: Option<tilo_actions::ActionId>,
 }
 
 /// A view intent: [`Fired`] queued on the host's [`crate::Intents`].
@@ -734,14 +752,26 @@ impl Intent {
                 key: key.to_owned(),
                 event: event.to_owned(),
                 value: None,
+                gesture: None,
             },
         }
     }
 
     /// Queue the intent, carrying `value`.
     pub fn fire(&self, value: Option<Value>) {
+        self.fire_in_gesture(value, None);
+    }
+
+    /// Queue the intent, carrying `value`, as one part of the act `gesture`: the changes the
+    /// event's action makes and the edit it was made with are one step of the person's.
+    pub fn fire_in_gesture(
+        &self,
+        value: Option<Value>,
+        gesture: Option<tilo_actions::ActionId>,
+    ) {
         self.queue.push(Fired {
             value,
+            gesture,
             ..self.fired.clone()
         });
     }
@@ -758,6 +788,14 @@ impl Event {
     pub fn fire(&self, value: Option<Value>) {
         if let Self::View(intent) = self {
             intent.fire(value);
+        }
+    }
+
+    /// Queue a view intent carrying `value` as one part of the person's act `gesture`, whose
+    /// changes undo takes back together ([`Fired::gesture`]); an action event runs as it does.
+    pub fn fire_in_gesture(&self, value: Option<Value>, gesture: Option<tilo_actions::ActionId>) {
+        if let Self::View(intent) = self {
+            intent.fire_in_gesture(value, gesture);
         }
     }
 
@@ -812,8 +850,15 @@ impl<T: Default + 'static> Default for Bound<T> {
 impl<T: Clone + 'static> Bound<T> {
     /// Report an edit to the value.
     pub fn edited(&self, value: Value) {
+        self.edited_in(value, None);
+    }
+
+    /// Report an edit to the value as one part of the person's act `gesture`: what a control
+    /// changed as part of a paste whose event names the same gesture ([`Fired::gesture`]), so
+    /// the two changes are one step of theirs.
+    pub fn edited_in(&self, value: Value, gesture: Option<tilo_actions::ActionId>) {
         if let Some(edits) = &self.edits {
-            edits.fire(Some(value));
+            edits.fire_in_gesture(Some(value), gesture);
         }
     }
 }

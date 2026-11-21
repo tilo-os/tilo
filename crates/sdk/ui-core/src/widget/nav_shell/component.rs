@@ -59,6 +59,11 @@ pub struct NavShellProps {
     /// does; empty while the search is closed.
     #[component(event(value = String))]
     pub search: Event,
+    /// Files were dropped on the window, anywhere no component of its own took them: each as a
+    /// `File` — its name, its media type, its size and where its bytes are — kept by the window.
+    /// What an app takes a dropped document with, wherever on it the person lets go.
+    #[component(event(value = Vec<crate::component::File>))]
+    pub drop: Event,
 }
 
 impl PropType for ContentKind {
@@ -137,6 +142,7 @@ impl Described for NavShell {
             pane,
             back,
             search: _,
+            drop: _,
         } = props;
         let mut shell = Self::new().with_id(key).content_kind(content_kind);
         if let Some(sidebar) = sidebar {

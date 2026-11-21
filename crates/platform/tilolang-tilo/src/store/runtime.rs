@@ -327,12 +327,9 @@ impl Store for TiloStore {
         if !marked && let Some((doc, edit)) = mark_of(migration.as_ref(), triggering.as_ref()) {
             marked = inner.mark(&mut state, txn, &doc, edit)?;
         }
-        // A keystroke of a bound field names the gesture of the burst it belongs to, so the
-        // changes of one burst are one step of the person's: one history entry, one undo. A
-        // trial run is no change of theirs and neither joins the burst nor ends it.
-        let gesture = (inner.trials == 0)
-            .then(|| inner.burst_gesture(&state, note))
-            .flatten();
+        // The gesture the change is one step of: the one the window named when the person's act
+        // made more than one change, else the burst of typing it continues.
+        let gesture = inner.gesture_of(&state, note);
         let versioned = app.to_string();
         let (action_id, args) = published_name(note);
         // A change is one app's, and the document stores each edit under the app its resource is

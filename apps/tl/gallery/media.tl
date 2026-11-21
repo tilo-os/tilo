@@ -122,7 +122,7 @@ view media(g: Gallery) {
                 ui.QrCode("tilo://invite/gallery", secret: true)
             }
             ui.DropZone("Drop files to import", message: "Any file up to 50 MB", icon: .upload) {
-                on drop(files: List<Text>): mark_files(last, files)
+                on drop(files: List<File>): mark_files(last, files)
             }
             ui.DropZone("Drop a picture", action: "Choose") {
                 on choose: set(last, "Choose")
@@ -205,7 +205,7 @@ action mark_move(last: Text, index: Int, at: Int) {
 }
 
 /// Note the files dropped, in the window's last answer.
-action mark_files(last: Text, files: List<Text>) {
+action mark_files(last: Text, files: List<File>) {
     last = "Dropped {files.len()}"
 }
 

@@ -172,6 +172,18 @@ fn value_into_runtime(value: ViewValue) -> Value {
         ),
         ViewValue::Action(offered) => Value::Offered(std::rc::Rc::new(offered)),
         ViewValue::Picture(picture) => Value::Picture(picture.src),
+        // A file a person handed the window, as the runtime's `File` reads it: its name, its
+        // media type, its size and the hash its bytes are kept at.
+        ViewValue::File(file) => {
+            let hash = file
+                .url
+                .strip_prefix(crate::runtime::blob::SCHEME)
+                .unwrap_or(&file.url)
+                .to_owned();
+            Value::File(std::rc::Rc::new(crate::runtime::blob::FileValue::new(
+                file.name, file.media, file.size, hash,
+            )))
+        }
     }
 }
 

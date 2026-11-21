@@ -1574,7 +1574,8 @@ impl Instance {
                 key,
                 event,
                 value,
-            } => self.fire(level, &key, &event, value.as_ref(), ran),
+                gesture,
+            } => self.fire(level, &key, &event, value.as_ref(), gesture.as_deref(), ran),
             edit @ (ToApp::Toggle { .. }
             | ToApp::Splice { .. }
             | ToApp::Edit { .. }
@@ -1719,7 +1720,8 @@ impl Instance {
         self.send_bound(level);
     }
 
-    /// Fire the event `name` of the node `key` of the view of `level`, carrying `value`; `ran`
+    /// Fire the event `name` of the node `key` of the view of `level`, carrying `value`, as one
+    /// part of the person's act `gesture` (`None` for an event that is an act of its own); `ran`
     /// takes the action it applied, what that returned and what it was run on, when it ran one.
     fn fire(
         &mut self,
@@ -1727,6 +1729,7 @@ impl Instance {
         key: &str,
         name: &str,
         value: Option<&ui::Value>,
+        gesture: Option<&str>,
         ran: &mut Option<Ran>,
     ) -> Result<(), Words> {
         // Counted whatever comes of it: the window waits for every press it sent.
@@ -1758,7 +1761,7 @@ impl Instance {
             .host()
             .zip(action.as_ref())
             .and_then(|(host, action)| target_title(&host, action));
-        let fired = view.borrow().fire_with(key, name, value.as_ref());
+        let fired = view.borrow().fire_in(key, name, value.as_ref(), gesture);
         match fired {
             Ok(InvokeOutcome::Done(result)) => {
                 *ran = action.map(|aref| Ran {
@@ -1974,7 +1977,7 @@ impl Instance {
                 target,
                 key,
                 checked,
-            } => self.edit(level, &target, &key, Value::Bool(checked)),
+            } => self.edit(level, &target, &key, Value::Bool(checked), None),
             ToApp::Splice {
                 level,
                 target,
@@ -1989,15 +1992,16 @@ impl Instance {
                 target,
                 key,
                 text,
-            } => self.edit(level, &target, &key, Value::Text(text)),
+            } => self.edit(level, &target, &key, Value::Text(text), None),
             ToApp::EditRich {
                 level,
                 target,
                 key,
                 rich,
+                gesture,
             } => {
                 let rich = Value::Rich(wire::runtime_rich(&rich));
-                self.edit(level, &target, &key, rich)
+                self.edit(level, &target, &key, rich, gesture.as_deref())
             }
             _ => Ok(()),
         }
@@ -2057,7 +2061,7 @@ impl Instance {
             _ => String::new(),
         };
         let text = spliced(&current, at as usize, delete as usize, insert);
-        self.edit_at(level, target, place, key, Value::Text(text))
+        self.edit_at(level, target, place, key, Value::Text(text), None)
     }
 
     /// Apply an edit of the bound control `key` of the view of `target` in `level`.
@@ -2067,9 +2071,10 @@ impl Instance {
         target: &ui::ResourceRef,
         key: &str,
         value: Value,
+        gesture: Option<&str>,
     ) -> Result<(), Words> {
         let place = self.edited(level, target)?;
-        self.edit_at(level, target, place, key, value)
+        self.edit_at(level, target, place, key, value, gesture)
     }
 
     /// Apply the edit of the bound control `key` made in the view of `target` in `level`, where
@@ -2082,6 +2087,7 @@ impl Instance {
         place: Place,
         key: &str,
         value: Value,
+        gesture: Option<&str>,
     ) -> Result<(), Words> {
         let shown = place.shown();
         let beside = match &place {
@@ -2102,7 +2108,7 @@ impl Instance {
                 return Err(Words::phrase("tilolang-open-failed"));
             }
             let view = place.into_view();
-            let outcome = Self::edit_view(&view.borrow(), key, value);
+            let outcome = Self::edit_view(&view.borrow(), key, value, gesture);
             if let Some(before) = beside
                 && let Err(error) = view.borrow().show(&before)
             {
@@ -2119,14 +2125,19 @@ impl Instance {
             return Ok(());
         }
         let view = place.into_view();
-        Self::edit_view(&view.borrow(), key, value)?;
+        Self::edit_view(&view.borrow(), key, value, gesture)?;
         if shown {
             self.shown_by_window(level, key);
         }
         Ok(())
     }
 
-    fn edit_view(view: &ViewInstance, key: &str, value: Value) -> Result<(), Words> {
+    fn edit_view(
+        view: &ViewInstance,
+        key: &str,
+        value: Value,
+        gesture: Option<&str>,
+    ) -> Result<(), Words> {
         let value = match (&value, view.bound_value(key)) {
             (Value::Text(text), Some(Value::Int(_))) => Value::Int(
                 text.trim()
@@ -2140,7 +2151,7 @@ impl Instance {
             ),
             _ => value,
         };
-        match view.edit(key, &value) {
+        match view.edit_in(key, &value, gesture) {
             Ok(EditOutcome::Applied) => Ok(()),
             Ok(EditOutcome::NeedsApproval) => Err(Words::phrase("tilolang-ask-needs-approval")),
             Ok(EditOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),

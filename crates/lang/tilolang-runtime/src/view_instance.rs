@@ -377,6 +377,23 @@ impl ViewInstance {
         event: &str,
         value: Option<&Value>,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        self.fire_in(key, event, value, None)
+    }
+
+    /// [`ViewInstance::fire_with`], as one part of the person's act `gesture`: the changes the
+    /// event's action makes name it, as the edit it was made with does, so one undo takes both
+    /// back (a picture a paste wrote into a document, and the app naming it).
+    ///
+    /// # Errors
+    ///
+    /// As [`ViewInstance::fire_with`].
+    pub fn fire_in(
+        &self,
+        key: &str,
+        event: &str,
+        value: Option<&Value>,
+        gesture: Option<&str>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
         let Some(mut aref) = self.event_action(key, event) else {
             return Err(RuntimeError::NotFound(format!(
                 "the action of event `{event}` on `{key}`"
@@ -403,7 +420,7 @@ impl ViewInstance {
                 }
             }
         }
-        self.run(&aref)
+        self.run_in(&aref, gesture)
     }
 
     /// The action the event `event` of the node `key` applies, with its arguments read now,
@@ -605,6 +622,15 @@ impl ViewInstance {
     /// Run an action reference a control applies: a platform action, an action of a package,
     /// or `a.then(b)`, which runs `b` once `a` is done.
     fn run(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        self.run_in(aref, None)
+    }
+
+    /// [`ViewInstance::run`], its changes one part of the person's act `gesture`.
+    fn run_in(
+        &self,
+        aref: &ActionRef,
+        gesture: Option<&str>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
         match aref.action.as_str() {
             SET_ACTION => self.platform_set(aref),
             KEEP_ACTION => self.platform_keep(aref),
@@ -658,14 +684,14 @@ impl ViewInstance {
                 let [Value::Action(first), Value::Action(next)] = aref.args.as_slice() else {
                     return Err(RuntimeError::BadArgs("a malformed `then`".into()));
                 };
-                match self.run(first)? {
-                    InvokeOutcome::Done(_) => self.run(next),
+                match self.run_in(first, gesture)? {
+                    InvokeOutcome::Done(_) => self.run_in(next, gesture),
                     other => Ok(other),
                 }
             }
             CHOOSE_ACTION => self.platform_choose(aref),
             SAVE_ACTION => self.platform_save(aref),
-            _ => self.core.invoke_direct(&self.live.viewer, aref),
+            _ => self.core.invoke_direct_in(&self.live.viewer, aref, gesture),
         }
     }
 
@@ -1008,6 +1034,21 @@ impl ViewInstance {
     ///
     /// `NotFound` for a missing node or binding; `BadArgs` for a value the field cannot take.
     pub fn edit(&self, key: &str, value: &Value) -> Result<EditOutcome, RuntimeError> {
+        self.edit_in(key, value, None)
+    }
+
+    /// [`ViewInstance::edit`] as one part of the person's act `gesture`: the change it makes
+    /// names it, as the event that came with it does, so one undo takes both back.
+    ///
+    /// # Errors
+    ///
+    /// As [`ViewInstance::edit`].
+    pub fn edit_in(
+        &self,
+        key: &str,
+        value: &Value,
+        gesture: Option<&str>,
+    ) -> Result<EditOutcome, RuntimeError> {
         let node = self
             .live
             .find(key)
@@ -1044,6 +1085,7 @@ impl ViewInstance {
             identity: None,
             from: None,
             at: None,
+            gesture: gesture.map(str::to_owned),
         };
         let decision = self.core.decide_with(
             &ctx,
@@ -1105,6 +1147,7 @@ impl ViewInstance {
             suggested_by: None,
             effects: Vec::new(),
             invocation: None,
+            gesture: gesture.map(str::to_owned),
             unfinished: false,
         };
         let mut store = self.core.store.borrow_mut();

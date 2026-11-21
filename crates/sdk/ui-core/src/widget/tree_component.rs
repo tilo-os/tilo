@@ -1871,6 +1871,7 @@ mod tests {
                 Value::Resource(moved.to_owned()),
                 Value::Resource(at.to_owned()),
             ])),
+            gesture: None,
         };
 
         assert!(nodes.report(&ReorderDrop {
@@ -1906,6 +1907,7 @@ mod tests {
                     Value::Resource("b".to_owned()),
                     Value::None,
                 ])),
+                gesture: None,
             }]
         );
     }

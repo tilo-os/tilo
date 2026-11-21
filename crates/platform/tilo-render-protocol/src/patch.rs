@@ -206,6 +206,9 @@ pub enum Value {
     Action(Offered),
     /// A picture: where its bytes are read from, and what it says to assistive technology.
     Picture(Picture),
+    /// A file a person handed the window (dropped on it, or chosen): what it is called, its
+    /// media type, its size and the content address its bytes are at.
+    File(File),
     /// A record a view names: what refers to it, and how it reads for the person now.
     Link {
         reference: String,
@@ -217,6 +220,8 @@ pub enum Value {
 pub use tilo_ui_graph::component::Offered;
 /// A picture a node shows ([`Value::Picture`]): its address, and its accessible name.
 pub use tilo_ui_graph::component::Picture;
+/// A file a node hands over ([`Value::File`]): its name, media type, size and content address.
+pub use tilo_ui_graph::component::File;
 
 /// The description of the component a node of `kind` is of (`ui.BlockEditor`): what its props
 /// are, which is the one list of them a host reads a node's values by.
@@ -684,6 +689,10 @@ pub enum ToApp {
         key: String,
         event: String,
         value: Option<Value>,
+        /// The gesture the event is one part of, when the person's act made more than one change
+        /// (a picture pasted into a document, and the app naming it): its action's change names
+        /// it, as the edit that came with it does, so one undo takes both back. A uuid's text.
+        gesture: Option<String>,
     },
     /// The checkbox or switch `key` of the view of `target` is now `checked`.
     ///
@@ -723,6 +732,9 @@ pub enum ToApp {
         target: ResourceRef,
         key: String,
         rich: rich::RichText,
+        /// The gesture the edit is one part of, when the person's act made more than one change
+        /// ([`ToApp::Fire`]'s `gesture`): both changes are one step of theirs.
+        gesture: Option<String>,
     },
     /// The suggestion in the invocation card `key` was allowed or declined.
     Resolve {
@@ -1011,6 +1023,7 @@ mod tests {
                 },
                 key: "draft".into(),
                 rich,
+                gesture: None,
             }];
             let bytes = encode_batch(&edit).expect("encodes");
             assert_eq!(decode_batch::<ToApp>(&bytes).expect("decodes"), edit);

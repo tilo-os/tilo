@@ -183,6 +183,9 @@ impl Replica {
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
+        // A change one part of the person's act names its gesture, as the document records it: the
+        // changes of one gesture are one step of theirs.
+        context = context.in_gesture(action.authorship.gesture);
         // Applied as the host does: a record's type id resolves by the package versions the
         // host loaded (`Host::with_schemas`).
         let envelope = self

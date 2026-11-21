@@ -293,20 +293,14 @@ impl BlockEditor {
     }
 }
 
-/// The editor's picture inserter: keep the picture in the window's content store, answer where its
-/// bytes are so the editor writes it in at the caret, and tell the view — by its name and its
-/// address — for a document that keeps its pictures' names.
-fn picture_inserter(image: Event) -> ImageInserter {
-    Box::new(move |picture: PictureIn<'_>| {
-        let kept = match picture {
-            PictureIn::Bytes { name, bytes, .. } => ui::pictures::keep_picture(name, bytes),
-            PictureIn::Path(path) => ui::pictures::dropped_picture(path),
-        }?;
-        image.fire(Some(Value::List(vec![
-            Value::Text(kept.name.clone()),
-            Value::Text(kept.address.clone()),
-        ])));
-        Some(kept)
+/// The editor's picture inserter: keep the picture in the window's content store and answer
+/// where its bytes are, so the editor writes it in at the caret. What the view hears of it — by
+/// its name and its address — the editor fires itself, as one part of the same gesture as the
+/// edit (`BlockEditor::set_image_event`).
+fn picture_inserter() -> ImageInserter {
+    Box::new(|picture: PictureIn<'_>| match picture {
+        PictureIn::Bytes { name, bytes, .. } => ui::pictures::keep_picture(name, bytes),
+        PictureIn::Path(path) => ui::pictures::dropped_picture(path),
     })
 }
 
@@ -370,7 +364,8 @@ impl Described for BlockEditor {
         );
         editor.set_image_store(Some(ui::pictures::Pictures::window().store().clone()));
         if editing {
-            editor.set_image_inserter(Some(picture_inserter(image)));
+            editor.set_image_inserter(Some(picture_inserter()));
+            editor.set_image_event(image);
             let (body, placeholder) = BodyBinding::of(rich, markdown, placeholder);
             editor.set_empty_hint(&placeholder);
             editor.show_body(&body);
@@ -414,7 +409,8 @@ impl Described for BlockEditor {
         self.set_find_replace_enabled(!showing);
         if !showing {
             // The view that bound the document hears of each picture that goes into it.
-            self.set_image_inserter(Some(picture_inserter(image)));
+            self.set_image_inserter(Some(picture_inserter()));
+            self.set_image_event(image);
         }
         let rebound = if showing {
             self.show_rich_text(&value.unwrap_or_default());
@@ -762,6 +758,7 @@ mod tests {
                     key: "n".into(),
                     event: OPEN_REFERENCE.into(),
                     value: Some(Value::Text(PLAN.into())),
+                gesture: None,
                 }],
             );
 
@@ -788,6 +785,7 @@ mod tests {
                     key: "n".into(),
                     event: OPEN_REFERENCE.into(),
                     value: Some(Value::Text(GROCERIES.into())),
+                gesture: None,
                 }],
                 "the card opens the record it projects"
             );
@@ -869,6 +867,7 @@ mod tests {
                     key: "b".into(),
                     event: OPEN_REFERENCE.into(),
                     value: Some(Value::Text(GROCERIES.into())),
+                gesture: None,
                 }],
             );
 
@@ -1049,6 +1048,7 @@ mod tests {
                     key: "post".into(),
                     event: OPEN_REFERENCE.into(),
                     value: Some(Value::Text(TASK.into())),
+                gesture: None,
                 }],
                 "a click opens the reference, by the reference"
             );
@@ -1214,6 +1214,7 @@ mod tests {
                     key: "b".into(),
                     event: "links_open".into(),
                     value: Some(Value::Bool(false)),
+                gesture: None,
                 }],
                 "the picker closing reaches the view"
             );
@@ -1260,6 +1261,7 @@ mod tests {
                     key: "b".into(),
                     event: "headings".into(),
                     value: Some(Value::List(vec![Value::Text("Plan".into())])),
+                gesture: None,
                 }],
                 "the view is told them, to draw an outline of the document"
             );

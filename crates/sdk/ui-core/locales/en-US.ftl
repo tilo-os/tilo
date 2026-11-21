@@ -1309,3 +1309,17 @@ format-lifetime-until-at = Until { $when }
 format-lifetime-always = Always
 person-unnamed = Someone without a name yet
 person-unnamed-short = No name yet
+
+# Why a picture pasted or dropped into a document was not put in, said where
+# the person did it. The first three are the reasons themselves, which the last
+# one quotes after its colon when the device refused it.
+picture-not-a-picture = That file isn't a picture
+picture-too-large = That picture is too large to add
+picture-no-store = This device keeps no pictures
+picture-not-kept = The picture was not added: { $reason }
+
+# Why a file dropped on a window was not handed to the app, said where the
+# person dropped it.
+file-too-large = That file is too large to add
+file-no-store = This device keeps no files
+file-not-kept = The file was not added: { $reason }

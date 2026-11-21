@@ -185,6 +185,7 @@ pub mod edge_autoscroll;
 pub mod element_pictures;
 pub mod evdev;
 pub mod fact;
+pub mod files;
 pub mod floating_layer;
 pub mod floating_surface;
 pub mod focus_visible;

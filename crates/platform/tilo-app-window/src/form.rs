@@ -144,7 +144,7 @@ impl Shown {
         let (field, text) = match event {
             UiEvent::Edit(key, text) => (key.clone(), text.clone()),
             UiEvent::Toggle(key, checked) => (key.clone(), checked.to_string()),
-            UiEvent::Fire(key, event, _) => (key.clone(), event.strip_prefix("pick.")?.to_owned()),
+            UiEvent::Fire(key, event, _, _) => (key.clone(), event.strip_prefix("pick.")?.to_owned()),
             _ => return None,
         };
         let answered = self.completes.contains(&field);
@@ -175,7 +175,7 @@ pub fn in_form(event: &UiEvent) -> bool {
     match event {
         UiEvent::Edit(key, _)
         | UiEvent::Toggle(key, _)
-        | UiEvent::Fire(key, _, _)
+        | UiEvent::Fire(key, _, _, _)
         | UiEvent::Press(key) => key.starts_with(KEY),
         _ => false,
     }
@@ -270,6 +270,7 @@ mod tests {
             "form~when~quick".to_owned(),
             "pick.2026-11-08T17:00:00Z".to_owned(),
             None,
+            None,
         );
         assert_eq!(
             shown.edit(&pick),
@@ -306,6 +307,7 @@ mod tests {
         let pick = UiEvent::Fire(
             "form~when~quick".to_owned(),
             "pick.2026-11-08T17:00:00Z".to_owned(),
+            None,
             None,
         );
         assert!(

@@ -2541,6 +2541,7 @@ mod tests {
                 key: "row".to_owned(),
                 event: "choose".to_owned(),
                 value: None,
+                gesture: None,
             }]
         );
     }
