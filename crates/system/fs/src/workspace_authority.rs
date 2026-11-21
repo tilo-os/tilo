@@ -120,17 +120,14 @@ pub fn content_peers_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(CONTENT_PEERS_FILE)
 }
 
-/// A discovered Files endpoint with the namespace and record protocol it serves. `ticket` is absent
-/// only for entries written by older daemons; such an entry still serves blob hydration but is not a
-/// record-backend bootstrap source.
+/// A discovered Files endpoint with the namespace and record protocol it serves. A ticket is absent
+/// when the endpoint serves only blob hydration, not a record-backend bootstrap.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedContentPeer {
     pub endpoint: iroh_base::EndpointAddr,
-    #[serde(default)]
     pub ticket: Option<String>,
-    /// Enrolled server service which authenticated this endpoint; legacy entries have none.
-    #[serde(default)]
+    /// Enrolled server service which authenticated this endpoint.
     pub server_service_id: Option<[u8; 32]>,
 }
 
@@ -182,9 +179,9 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
         .iter()
         .position(|known| known.endpoint.id == peer.endpoint.id)
     {
-        // A later authenticated discovery can upgrade a legacy address with the authoritative
-        // workspace ticket, so every refresh moves to the back: vector order is a bounded,
-        // least-recently-discovered queue.
+        // A later authenticated discovery can name the authoritative workspace ticket for an
+        // address seen first without one, so every refresh moves to the back: vector order is a
+        // bounded, least-recently-discovered queue.
         let previous = peers.remove(index);
         let mut refreshed = peer;
         if refreshed.ticket.is_none() {
