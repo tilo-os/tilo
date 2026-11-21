@@ -141,8 +141,8 @@ mod tooltip_render_test;
 mod tooltip_test;
 #[path = "touch_gestures_test.rs"]
 mod touch_gestures_test;
-#[path = "typography_baseline_geometry.rs"]
-mod typography_baseline_geometry;
+#[path = "typography_golden_geometry.rs"]
+mod typography_golden_geometry;
 #[path = "typography_token_audit.rs"]
 mod typography_token_audit;
 #[path = "typography_visual_regression.rs"]

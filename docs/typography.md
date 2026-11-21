@@ -667,7 +667,7 @@ the renderer's measured one-channel antialiasing wobble; a real mismatch writes
 the actual frame and a high-contrast pixel diff under the test target's
 `CARGO_TARGET_TMPDIR`, in `typography-visual-regression/`. The references are
 Mesa llvmpipe renders, and the comparison refuses other adapters.
-`typography_baseline_geometry` checks the same layouts against the references'
+`typography_golden_geometry` checks the same layouts against the references'
 dimensions without a GPU, so a card that changed size fails every test run.
 
 After visually approving an intentional change, regenerate the references with

@@ -14,7 +14,7 @@
 //! `UPDATE_TYPOGRAPHY_BASELINES=1 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 //! WGPU_ADAPTER_NAME=llvmpipe cargo test -p tilo-ui --test it typography_visual_regression`
 //!
-//! `typography_baseline_geometry` checks the same layouts against the
+//! `typography_golden_geometry` checks the same layouts against the
 //! baselines' dimensions without a GPU, so a layout change that needs new
 //! baselines fails in every run rather than only where llvmpipe renders.
 

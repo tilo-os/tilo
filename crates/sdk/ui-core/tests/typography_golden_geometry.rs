@@ -1,4 +1,4 @@
-//! The typography baselines' dimensions, checked from layout alone.
+//! The typography golden images' dimensions, checked from layout alone.
 //!
 //! Pixel comparison against the baselines needs llvmpipe and runs where that
 //! is pinned. Layout needs neither a GPU nor a particular adapter, so this
