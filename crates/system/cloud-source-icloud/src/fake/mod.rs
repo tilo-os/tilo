@@ -57,7 +57,7 @@ pub enum FakeFault {
     ExpiredSession,
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "independent switches")]
+#[allow(clippy::struct_excessive_bools, reason = "each switch makes the fake server behave differently")]
 #[derive(Clone, Debug)]
 pub struct Options {
     /// The account has trusted Apple devices (codes are pushed); without,

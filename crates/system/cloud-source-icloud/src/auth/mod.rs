@@ -57,7 +57,7 @@ impl Endpoints {
     }
 
     fn parse(auth: &str, setup: &str) -> Self {
-        #[allow(clippy::expect_used, reason = "constant and caller-built URLs")]
+        #[allow(clippy::expect_used, reason = "Apple's constant endpoints, and `at` appends paths to a parsed `Url`")]
         Self {
             auth: Url::parse(auth).expect("auth endpoint"),
             setup: Url::parse(setup).expect("setup endpoint"),
