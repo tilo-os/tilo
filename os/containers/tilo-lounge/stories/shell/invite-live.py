@@ -15,72 +15,22 @@ here and whom they follow, windows) and the controls each shell shows, by their 
 
 from __future__ import annotations
 
-import json
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from story import PROFILE, Failed, Person, Story, until, walk  # noqa: E402
+from story import (  # noqa: E402
+    CHROME, PROFILE, SHELL, Failed, Person, Story, actions_matching, front, in_front_named,
+    invite_link, peers, stand_in, until, walk, workspaces,
+)
 
 WORKSPACE = "Garden club"
-SHELL = "so.tilo.session"
-CHROME = "desktop:chrome"
 JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
 NOTES = "so.tilo.notes"
-# How the top bar's workspace control is named, before the workspace in front.
-SWITCHER = "Switch workspace, now in "
 # What both computers have: Notes, where Ada writes, and what a person's desktop has besides.
 APPS = "notes file-explorer chat settings"
-
-
-def tree(one: Person) -> dict:
-    return (one.session.state_dump() or {}).get("workspace_tree") or {}
-
-
-def workspaces(one: Person) -> list[dict]:
-    return tree(one).get("workspaces") or []
-
-
-def front(one: Person) -> dict | None:
-    """The workspace in front on this person's shell."""
-    held = workspaces(one)
-    active = tree(one).get("active")
-    return next((w for w in held if w.get("id") == active), held[0] if held else None)
-
-
-def in_front_named(one: Person, name: str) -> bool:
-    """Whether this person's shell says the workspace in front is `name`: its top bar's workspace
-    control is named after it (the state dump's tree carries no names)."""
-    return one.shows(f"{SWITCHER}{name}")
-
-
-def peers(one: Person, workspace: str) -> tuple[dict, list[dict]]:
-    """This person's own row, and everyone else here in `workspace`, as their shell's people
-    list draws them."""
-    seen = (one.session.state_dump() or {}).get("peers") or {}
-    own = seen.get("own") or {}
-    for live in seen.get("workspaces") or []:
-        if live.get("workspace") == workspace:
-            members = [m for m in live.get("members") or []
-                       if m.get("publisher") != own.get("publisher")]
-            return own, members
-    return own, []
-
-
-def actions_matching(one: Person, query: str) -> list[dict]:
-    """The actions this shell lists for `query`, each by provider, address and name."""
-    return [{k: row.get(k) for k in ("provider", "id", "name", "title", "args", "contract")
-             if row.get(k) is not None} for row in one.session.actions(query)]
-
-
-def stand_in(one: Person, workspace: str) -> None:
-    current = front(one)
-    if current is None or current.get("id") != workspace:
-        one.session.invoke(SHELL, f"{CHROME}\u001fswitch-workspace", {"workspace": workspace})
-    until(f"{one.name}'s shell to stand in the workspace",
-          lambda: (front(one) or {}).get("id") == workspace, 60, 0.25)
 
 
 def in_note(one: Person, text: str) -> bool:
@@ -153,25 +103,7 @@ def steps(story: Story) -> None:
     def invitation():
         # As a person does: the top bar's Invite opens the sheet that makes a link into the
         # workspace in front; Create link makes it, and Copy link puts it where she pastes from.
-        ada.press("Invite", "Invite in Ada's top bar")
-        try:
-            ada.press("Create link", "Create link on Ada's invite sheet", deadline=15)
-        except Failed:
-            refused = [n for n in ada.names() if "can't invite" in n or "No link" in n]
-            raise Failed("Ada's invite sheet offers no Create link"
-                         + (f": it says {refused}" if refused else "")) from None
-        try:
-            ada.press("Copy link", "Copy link under the link Ada's sheet made", deadline=30)
-        except Failed:
-            said = [n for n in ada.names() if n.startswith("No link")]
-            raise Failed("Ada's invite sheet made no link to copy"
-                         + (f": it says {said}" if said else "")) from None
-
-        def copied():
-            text = ((ada.session.state_dump() or {}).get("clipboard") or "").strip()
-            return text if "://" in text else None
-
-        link["text"] = until("the link on Ada's clipboard", copied, 10, 0.1)
+        link["text"] = invite_link(ada)
 
     story.step("Ada makes an invitation link", invitation, people=[ada])
 

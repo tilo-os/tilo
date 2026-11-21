@@ -140,7 +140,7 @@ fcntl.ioctl(sock, SIOCSIFFLAGS, struct.pack("16sH", b"lo", flags | IFF_UP))
       echo "the namespace: the document answers $(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 --cacert "$TILO_SH_STATE/trust-bundle.pem" "https://autoconfig.$domain/mail/config-v1.1.xml" 2>&1)"
     fi
     status=0
-    STORY_STACK=$tilo_sh/stack.sh node "$stories/$driver" "$site_origin" "$out" "$TILO_SH_STATE"/logs/{server,api,web}.log 2>&1 | tee "$out/driver.log" || status=$?
+    STORY_STACK=$tilo_sh/stack.sh node "$stories/$driver" "$site_origin" "$out" "$TILO_SH_STATE"/logs/{server,api,web}.log 2>&1 | tee "$out/driver.log" || status=${PIPESTATUS[0]}
   else
     echo "FAIL: $story: the stack did not come up"
     tail -40 "$out/stack.log"
@@ -223,14 +223,15 @@ for story in "${asked[@]}"; do
     # Each person a headless Tilo session of their own, on a scratch home of its own; the
     # driver keeps what a person reads the story by and removes the sessions' state. A story
     # that rehearses a mail provider is given the tree's stand-in mail server, which the
-    # nested-session build staged beside the session.
+    # nested-session build staged beside the session. The story's verdict is the driver's: a tee
+    # that cannot keep its copy of the log is the log's loss, not the story's failure.
     if [[ $TILO_SH_MAIL_STAND_IN == 1 ]]; then
       export TILO_MAIL_STAND_IN=${TILO_NESTED_SESSION_BUILD:?}/bin/mail-stand-in
     fi
-    PYTHONDONTWRITEBYTECODE=1 python3 "$stories/$driver" "$out" 2>&1 | tee "$out/driver.log" || status=$?
+    PYTHONDONTWRITEBYTECODE=1 python3 "$stories/$driver" "$out" 2>&1 | tee "$out/driver.log" || status=${PIPESTATUS[0]}
   elif ! on_stack "$story"; then
     # A story with no stack walks what it drives itself (its driver says what).
-    node "$stories/$driver" "" "$out" 2>&1 | tee "$out/driver.log" || status=$?
+    node "$stories/$driver" "" "$out" 2>&1 | tee "$out/driver.log" || status=${PIPESTATUS[0]}
   else
     # A stack of the story's own, fresh, its state beside the recording, and,
     # where the story asks, in a network namespace of its own.

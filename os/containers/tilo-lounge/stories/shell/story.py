@@ -242,6 +242,100 @@ class Person:
         return "\n\n".join(said) or f"=== {self.name}: no session log"
 
 
+# -- what every shell story reads off a shell, and does on it --
+
+SHELL = "so.tilo.session"
+CHROME = "desktop:chrome"
+# How the top bar's workspace control is named, before the workspace in front.
+SWITCHER = "Switch workspace, now in "
+
+
+def tree(one: Person) -> dict:
+    return (one.session.state_dump() or {}).get("workspace_tree") or {}
+
+def workspaces(one: Person) -> list[dict]:
+    return tree(one).get("workspaces") or []
+
+def front(one: Person) -> dict | None:
+    """The workspace in front on this person's shell."""
+    held = workspaces(one)
+    active = tree(one).get("active")
+    return next((w for w in held if w.get("id") == active), held[0] if held else None)
+
+def in_front_named(one: Person, name: str) -> bool:
+    """Whether this person's shell says the workspace in front is `name`: its top bar's workspace
+    control is named after it (the state dump's tree carries no names)."""
+    return one.shows(f"{SWITCHER}{name}")
+
+def peers(one: Person, workspace: str) -> tuple[dict, list[dict]]:
+    """This person's own row, and everyone else here in `workspace`, as their shell's people
+    list draws them."""
+    seen = (one.session.state_dump() or {}).get("peers") or {}
+    own = seen.get("own") or {}
+    for live in seen.get("workspaces") or []:
+        if live.get("workspace") == workspace:
+            members = [m for m in live.get("members") or []
+                       if m.get("publisher") != own.get("publisher")]
+            return own, members
+    return own, []
+
+def actions_matching(one: Person, query: str) -> list[dict]:
+    """The actions this shell lists for `query`, each by provider, address and name."""
+    return [{k: row.get(k) for k in ("provider", "id", "name", "title", "args", "contract")
+             if row.get(k) is not None} for row in one.session.actions(query)]
+
+def stand_in(one: Person, workspace: str) -> None:
+    current = front(one)
+    if current is None or current.get("id") != workspace:
+        one.session.invoke(SHELL, f"{CHROME}\u001fswitch-workspace", {"workspace": workspace})
+    until(f"{one.name}'s shell to stand in the workspace",
+          lambda: (front(one) or {}).get("id") == workspace, 60, 0.25)
+
+
+def invite_link(one: Person) -> str:
+    """A new link into the workspace in front, made as a person makes one: the top bar's Invite
+    opens the invite sheet, Create link (Create another link, once it made one) makes it, and Copy
+    link puts it on the clipboard, where it is read. The sheet stays open, showing the link, until
+    the person is done with it. Failed, with what the sheet says, when it makes no link."""
+    if not one.target("Create another link") and not one.target("Create link"):
+        one.press("Invite", f"Invite in {one.name}'s top bar")
+
+    def said() -> list[str]:
+        return [n for n in one.names() if n.startswith("No link") or "can't invite" in n]
+
+    def clipboard() -> str:
+        return ((one.session.state_dump() or {}).get("clipboard") or "").strip()
+
+    try:
+        create = until(f"Create link on {one.name}'s invite sheet", lambda: next(
+            (name for name in ("Create another link", "Create link") if one.target(name)), None),
+            15, 0.2)
+    except Failed:
+        raise Failed(f"{one.name}'s invite sheet offers no Create link"
+                     + (f": it says {said()}" if said() else "")) from None
+    before = clipboard()
+    one.press(create, f"{create} on {one.name}'s invite sheet")
+
+    def copied():
+        if said():
+            return said()
+        if one.target("Making the link…") or not one.target("Copy link"):
+            return None
+        # Copy link copies the link the sheet shows; until the new one is shown, that is the last.
+        one.press("Copy link", f"Copy link under the link {one.name}'s sheet made")
+        text = clipboard()
+        return text if "://" in text and text != before else None
+
+    try:
+        got = until(f"a new link from {one.name}'s invite sheet on their clipboard", copied, 30, 0.3)
+    except Failed:
+        got = said()
+    if isinstance(got, list) or not got:
+        raise Failed(f"{one.name}'s invite sheet made no link to copy"
+                     + (f": it says {got}" if got else ""))
+    return got
+
+
 class Story:
     def __init__(self, story_id: str, out: Path):
         self.id = story_id

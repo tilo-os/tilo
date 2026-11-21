@@ -26,13 +26,13 @@
       "id": "invited-activity",
       "title": "See what invited people are doing",
       "intent": "A person who invited others sees who is here and what each is working on, follows one of them live, and a mention they write reaches the person it names.",
-      "walk": "page",
-      "driver": "invited-activity.mjs",
+      "walk": "shell",
+      "driver": "shell/invited-activity.py",
       "steps": [
         "Ada invites Grace and Lin into a workspace",
         "Grace and Lin join the workspace",
         "Ada sees who is here and what each is working on",
-        "Ada follows Grace and sees Grace's screen live",
+        "Ada follows Grace and sees Grace’s screen live",
         "Ada mentions Lin in Chat",
         "Lin is told of the mention and opens it"
       ]
@@ -57,8 +57,8 @@
       "id": "desktop-easy",
       "title": "The desktop is easy to use",
       "intent": "Someone new to Tilo adds a strip, switches workspaces and finds their settings without being told how.",
-      "walk": "page",
-      "driver": "desktop-easy.mjs",
+      "walk": "shell",
+      "driver": "shell/desktop-easy.py",
       "steps": [
         "A newcomer opens their workspace",
         "They add a strip",

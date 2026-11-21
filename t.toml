@@ -6795,7 +6795,7 @@ outputs = ["/target/user-stories/{story}/index.html", "/target/user-stories/{sto
 evidence = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
 timeout_secs = 1800
 [check.matrix]
-story = ["wait-list-sign-up", "invited-activity", "desktop-easy"]
+story = ["wait-list-sign-up"]
 
 # The user stories walked in Tilo shells (stories.json's `"walk": "shell"`): each person a headless
 # Tilo session of their own, on the session the nested-session check built with the tree's apps, on
@@ -6836,7 +6836,7 @@ outputs = ["/target/user-stories-shell/{story}/index.html", "/target/user-storie
 evidence = ["/target/user-stories-shell/{story}/index.html", "/target/user-stories-shell/{story}/{story}/**"]
 timeout_secs = 3000
 [check.matrix]
-story = ["invite-live", "agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password"]
+story = ["invite-live", "agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "invited-activity", "desktop-easy"]
 
 # The big-folder user story: a person copies a photo library and a few long videos into their
 # workspace through its mounted folder, browses it, joins from a second computer and restarts the
