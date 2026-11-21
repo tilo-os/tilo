@@ -102,6 +102,44 @@ fn disk_bytes(root: &Path) -> u64 {
     total
 }
 
+/// The input and output this process did so far, as the kernel counts it: system calls that read
+/// or write, and the bytes they moved. A put's work, whatever the machine's speed or load.
+#[derive(Clone, Copy)]
+struct Io {
+    calls: u64,
+    bytes: u64,
+}
+
+impl Io {
+    #[cfg(target_os = "linux")]
+    fn now() -> Option<Self> {
+        let counted = std::fs::read_to_string("/proc/self/io").unwrap();
+        let field = |name: &str| {
+            counted
+                .lines()
+                .find_map(|line| line.strip_prefix(name)?.trim().parse::<u64>().ok())
+                .unwrap()
+        };
+        Some(Self {
+            calls: field("syscr:") + field("syscw:"),
+            bytes: field("rchar:") + field("wchar:"),
+        })
+    }
+
+    /// Only Linux counts a process's input and output where the test can read it.
+    #[cfg(not(target_os = "linux"))]
+    fn now() -> Option<Self> {
+        None
+    }
+
+    fn since(self, before: Self) -> Self {
+        Self {
+            calls: self.calls.saturating_sub(before.calls),
+            bytes: self.bytes.saturating_sub(before.bytes),
+        }
+    }
+}
+
 fn fill(seed: u64, offset: u64, out: &mut [u8]) {
     for (i, word) in out.chunks_mut(8).enumerate() {
         let mut x = (offset / 8 + i as u64)
@@ -135,6 +173,9 @@ struct Rung {
     total_mib: u64,
     nodes: u64,
     put_small_s: f64,
+    /// The input and output putting the small files did, their sync included.
+    put_small_io: Option<Io>,
+    small_files: u64,
     put_huge_s: f64,
     store_bytes: u64,
     content_bytes: u64,
@@ -203,6 +244,7 @@ async fn measure_rung(
     // What a mount does: content commits without its own sync, and one barrier makes the window
     // durable, so a copy of small files shares the syncs.
     store_a.set_sync_writes(false);
+    let io_before = Io::now();
     let started = Instant::now();
     let mut small_written = 0_u64;
     let mut small_count = 0_u64;
@@ -244,12 +286,30 @@ async fn measure_rung(
     let put_small = started.elapsed();
     let sync_started = Instant::now();
     store_a.sync_pending().unwrap();
+    let put_small_io = io_before
+        .zip(Io::now())
+        .map(|(before, after)| after.since(before));
     report(
         &rung,
         "put_small_sync_s",
         sync_started.elapsed().as_secs_f64(),
         "s",
     );
+    if let Some(io) = put_small_io {
+        let files = small_count.max(1) as f64;
+        report(
+            &rung,
+            "put_small_io_calls_per_file",
+            io.calls as f64 / files,
+            "calls",
+        );
+        report(
+            &rung,
+            "put_small_io_bytes_per_file",
+            io.bytes as f64 / files,
+            "B",
+        );
+    }
     report(&rung, "put_small_s", put_small.as_secs_f64(), "s");
     report(&rung, "put_small_store_s", store_time.as_secs_f64(), "s");
     report(&rung, "put_small_tree_s", tree_time.as_secs_f64(), "s");
@@ -483,6 +543,8 @@ async fn measure_rung(
         total_mib,
         nodes,
         put_small_s: put_small.as_secs_f64(),
+        put_small_io,
+        small_files: small_count,
         put_huge_s: put_huge.as_secs_f64(),
         store_bytes,
         content_bytes,
@@ -574,9 +636,28 @@ fn assert_work_is_flat(rungs: &[Rung]) {
     let Some(first) = rungs.first() else { return };
     let chunk_nodes = fs_protocol::tree::CHUNK_NODES as f64;
     for rung in first_one_is_exempt(rungs) {
-        // Putting a byte in costs the same whether the workspace is big.
-        let first_per_byte = first.put_small_s / first.small_bytes.max(1) as f64;
-        let rung_per_byte = rung.put_small_s / rung.small_bytes.max(1) as f64;
+        // Putting a file in costs the same work whether the workspace is big: the system calls
+        // it makes and the bytes they move, never a cost that grows with what the store holds.
+        if let (Some(first_io), Some(rung_io)) = (first.put_small_io, rung.put_small_io) {
+            let per_file = |io: Io, files: u64| {
+                let files = files.max(1) as f64;
+                (io.calls as f64 / files, io.bytes as f64 / files)
+            };
+            let (first_calls, first_bytes) = per_file(first_io, first.small_files);
+            let (rung_calls, rung_bytes) = per_file(rung_io, rung.small_files);
+            assert!(
+                rung_calls <= first_calls * 1.25 + 1.0,
+                "a small file's put at {} MiB makes {rung_calls:.1} system calls, at {} MiB {first_calls:.1}",
+                rung.total_mib,
+                first.total_mib
+            );
+            assert!(
+                rung_bytes <= first_bytes * 1.25 + 4096.0,
+                "a small file's put at {} MiB moves {rung_bytes:.0} B, at {} MiB {first_bytes:.0}",
+                rung.total_mib,
+                first.total_mib
+            );
+        }
         // One settled change never costs more than the whole tree it is part of.
         assert!(
             rung.flush_bytes <= rung.persist_bytes,
@@ -584,12 +665,6 @@ fn assert_work_is_flat(rungs: &[Rung]) {
             rung.total_mib,
             rung.flush_bytes,
             rung.persist_bytes
-        );
-        assert!(
-            rung_per_byte <= first_per_byte * 2.0,
-            "a small file's put at {} MiB costs {rung_per_byte:e} s/B, at {} MiB {first_per_byte:e}",
-            rung.total_mib,
-            first.total_mib
         );
         // The store holds about the content, not a multiple of it.
         let ratio = rung.store_bytes as f64 / rung.content_bytes.max(1) as f64;
