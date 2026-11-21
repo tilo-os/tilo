@@ -78,7 +78,7 @@ async def test_a_workspace_is_made_once_and_its_apps_answer(host):
 
     workspace = made["id"]
     status, _, opened = await whole(
-        host, "POST", f"/v1/workspaces/{workspace}/resources/notes/actions/open", {}
+        host, "POST", f"/v1/workspaces/{workspace}/resources/tasks/actions/open", {}
     )
     assert status == 200, opened
     status, _, apps = await whole(host, "GET", f"/v1/workspaces/{workspace}/resources")
@@ -107,7 +107,7 @@ async def test_a_workspaces_events_stream_as_they_happen(host):
 
     reading = asyncio.ensure_future(first_event())
     status, _, opened = await whole(
-        host, "POST", f"/v1/workspaces/{workspace}/resources/notes/actions/open", {}
+        host, "POST", f"/v1/workspaces/{workspace}/resources/tasks/actions/open", {}
     )
     assert status == 200, opened
     event = await asyncio.wait_for(reading, timeout=60)

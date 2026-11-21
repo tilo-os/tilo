@@ -73,7 +73,7 @@ describe.skipIf(!KEY_FILE)("the native part on a real host", () => {
     expect(JSON.stringify(listed.json)).toContain(made.json.id);
 
     const workspace = made.json.id;
-    const opened = await whole(h, "POST", `/v1/workspaces/${workspace}/resources/notes/actions/open`, {});
+    const opened = await whole(h, "POST", `/v1/workspaces/${workspace}/resources/tasks/actions/open`, {});
     expect(opened.status).toBe(200);
     const apps = await whole(h, "GET", `/v1/workspaces/${workspace}/resources`);
     expect(apps.status).toBe(200);
@@ -100,7 +100,7 @@ describe.skipIf(!KEY_FILE)("the native part on a real host", () => {
       }
       throw new Error(`the stream ended after ${JSON.stringify(seen)}`);
     })();
-    const opened = await whole(h, "POST", `/v1/workspaces/${workspace}/resources/notes/actions/open`, {});
+    const opened = await whole(h, "POST", `/v1/workspaces/${workspace}/resources/tasks/actions/open`, {});
     expect(opened.status).toBe(200);
     expect(await firstEvent).toContain("data:");
   }, 60_000);
