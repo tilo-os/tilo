@@ -1,10 +1,13 @@
-//! The external accounts Files shows, read from Settings: where each one mounts,
-//! and what to say when it cannot.
+//! The external accounts Files shows, as the workspace's accounts record holds them
+//! ([`accounts::person::PersonAccounts`], the record Settings keeps and every app follows): where
+//! each one mounts, and what to say when it cannot. Files reads no account file of its own; the
+//! system's cloud service, which keeps each account's folder in sync and browses one that is only
+//! imported from, is what reaches the server with the account's secret.
 
 use std::path::{Path, PathBuf};
 
 use accounts::cloud_types::{FilesMode, files_mode};
-use accounts::{Account, AccountId, AccountSyncHealth, AccountSyncStatusStore, AccountTypeId};
+use accounts::{Account, AccountId, AccountTypeId};
 use serde_json::Value;
 
 pub const WEBDAV_TYPE: &str = "webdav";
@@ -133,19 +136,46 @@ impl RemoteAccountHealth {
     }
 }
 
-pub fn load_in(config_root: &Path, home: Option<&Path>) -> Vec<RemoteAccount> {
-    let store = accounts::AccountStore::load_in(config_root);
-    let health = AccountSyncStatusStore::load_in(config_root);
+/// The file accounts the workspace's accounts record holds, each with the folder it is kept in
+/// under `home` (none without one).
+pub fn from_record(
+    record: &accounts::person::PersonAccounts,
+    home: Option<&Path>,
+) -> Vec<RemoteAccount> {
+    from_store(&record.store(), home)
+}
+
+fn from_store(store: &accounts::AccountStore, home: Option<&Path>) -> Vec<RemoteAccount> {
     let mut projected: Vec<RemoteAccount> = store
         .all()
         .iter()
-        .filter_map(|account| from_account(account, &health))
+        .filter_map(from_account)
         .take(MAX_REMOTE_ACCOUNTS)
         .collect();
     if let Some(home) = home {
-        assign_mounts(&mut projected, &store, &home.join(MOUNTS_DIR));
+        assign_mounts(&mut projected, store, &home.join(MOUNTS_DIR));
     }
     projected
+}
+
+/// The accounts the window last read from the record, for what runs away from it: an import's
+/// destination checked as it is admitted, and as it runs.
+static FOLLOWED: std::sync::Mutex<Vec<RemoteAccount>> = std::sync::Mutex::new(Vec::new());
+
+/// The accounts the window last read from the workspace's accounts record.
+pub fn followed() -> Vec<RemoteAccount> {
+    FOLLOWED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+pub(crate) fn keep_followed(accounts: &[RemoteAccount]) {
+    accounts.clone_into(
+        &mut FOLLOWED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
 }
 
 pub const MOUNTS_DIR: &str = "Remote";
@@ -195,7 +225,7 @@ fn is_file_account(account: &Account) -> bool {
             .is_some()
 }
 
-fn from_account(account: &Account, statuses: &AccountSyncStatusStore) -> Option<RemoteAccount> {
+fn from_account(account: &Account) -> Option<RemoteAccount> {
     let files_mode = files_mode(account)?;
     let kind = match account.type_id.as_str() {
         WEBDAV_TYPE => RemoteAccountKind::WebDav,
@@ -221,24 +251,17 @@ fn from_account(account: &Account, statuses: &AccountSyncStatusStore) -> Option<
             .config
             .get("server_url")
             .and_then(Value::as_str)
-            .and_then(safe_https_host)?,
+            .and_then(server_host)?,
     };
     let label = bounded_label(if account.display_name.trim().is_empty() {
         kind.label()
     } else {
         account.display_name.as_str()
     });
+    // How its folder's sync stands is the cloud service's to say, and nothing it says reaches
+    // Files yet: an enabled account reads as not checked.
     let health = if account.enabled {
-        match statuses.get(&account.id).map(|status| status.health) {
-            Some(AccountSyncHealth::Syncing) => RemoteAccountHealth::Syncing,
-            Some(AccountSyncHealth::Healthy) => RemoteAccountHealth::Healthy,
-            Some(AccountSyncHealth::Offline) => RemoteAccountHealth::Offline,
-            Some(AccountSyncHealth::NeedsAuthentication) => {
-                RemoteAccountHealth::NeedsAuthentication
-            }
-            Some(AccountSyncHealth::Error) => RemoteAccountHealth::Error,
-            Some(AccountSyncHealth::Never) | None => RemoteAccountHealth::NeverChecked,
-        }
+        RemoteAccountHealth::NeverChecked
     } else {
         RemoteAccountHealth::Disabled
     };
@@ -253,8 +276,14 @@ fn from_account(account: &Account, statuses: &AccountSyncStatusStore) -> Option<
     })
 }
 
-fn safe_https_host(raw: &str) -> Option<String> {
-    let rest = raw.strip_prefix("https://")?;
+/// The host (and port) an account's server is named by, when it is one Files may show: reached
+/// over HTTPS, or over plain HTTP only where the system allows it ([`accounts::local_http_allowed`]),
+/// and naming no credential, query or fragment.
+fn server_host(raw: &str) -> Option<String> {
+    let rest = raw.strip_prefix("https://").or_else(|| {
+        raw.strip_prefix("http://")
+            .filter(|_| accounts::local_http_allowed_at(raw))
+    })?;
     if rest.is_empty() || rest.contains(['@', '?', '#', '\\']) {
         return None;
     }
@@ -304,11 +333,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn remote_accounts_project_safely_from_their_own_root;
+        fn remote_accounts_project_safely_from_the_accounts_record;
 
         phase import_accounts_are_visible_without_mounts_or_reserved_mount_names;
         {
-            let root = tempfile::tempdir().unwrap();
             let home = tempfile::tempdir().unwrap();
             let mut store = accounts::AccountStore::new();
             for (id, mode) in [("a-import", "import"), ("b-sync", "sync")] {
@@ -320,9 +348,7 @@ mod tests {
                 });
                 store.upsert(account);
             }
-            store.save_in(root.path()).unwrap();
-
-            let loaded = load_in(root.path(), Some(home.path()));
+            let loaded = from_store(&store, Some(home.path()));
             assert_eq!(loaded.len(), 2);
             let import = loaded.iter().find(|account| account.is_import()).unwrap();
             assert_eq!(import.id.as_str(), "a-import");
@@ -330,7 +356,7 @@ mod tests {
             let sync = loaded.iter().find(|account| !account.is_import()).unwrap();
             assert_eq!(sync.mount, Some(home.path().join("Remote/Cloud")));
             assert!(
-                load_in(root.path(), None)
+                from_store(&store, None)
                     .iter()
                     .all(|account| account.mount.is_none())
             );
@@ -340,9 +366,9 @@ mod tests {
         {
             let mut account = Account::new("cloud", GOOGLE_DRIVE_TYPE);
             account.config = serde_json::json!({"files_mode": "unknown"});
-            assert!(from_account(&account, &AccountSyncStatusStore::default()).is_none());
+            assert!(from_account(&account).is_none());
             account.config = serde_json::json!({});
-            let legacy = from_account(&account, &AccountSyncStatusStore::default()).unwrap();
+            let legacy = from_account(&account).unwrap();
             assert_eq!(legacy.files_mode, FilesMode::Sync);
             assert!(!legacy.is_import());
         }
@@ -350,7 +376,6 @@ mod tests {
         phase remote_links_use_cloud_daemon_names_when_oauth_provider_labels_collide;
         {
             for provider in ["google-drive", "onedrive", "dropbox", "icloud-drive"] {
-                let root = tempfile::tempdir().unwrap();
                 let home = tempfile::tempdir().unwrap();
                 let mut store = accounts::AccountStore::new();
                 let mut oauth = Account::new("a-cloud", provider);
@@ -360,8 +385,7 @@ mod tests {
                 dav.display_name = "Cloud".into();
                 dav.config = serde_json::json!({"server_url":"https://files.example/dav"});
                 store.upsert(dav);
-                store.save_in(root.path()).unwrap();
-                let loaded = load_in(root.path(), Some(home.path()));
+                let loaded = from_store(&store, Some(home.path()));
                 let dav = loaded
                     .iter()
                     .find(|account| account.id.as_str() == "z-dav")
@@ -374,9 +398,8 @@ mod tests {
             }
         }
 
-        phase accounts_load_from_an_explicit_root_with_their_mount_folders;
+        phase accounts_keep_their_mount_folders_and_say_they_are_not_checked;
         {
-            let root = tempfile::tempdir().unwrap();
             let home = tempfile::tempdir().unwrap();
             let mut store = accounts::AccountStore::new();
             for (id, label) in [("b", "Cloud"), ("a", "Cloud")] {
@@ -385,30 +408,35 @@ mod tests {
                 account.config = serde_json::json!({"server_url": "https://files.example/dav"});
                 store.upsert(account);
             }
-            store.save_in(root.path()).unwrap();
-            accounts::AccountSyncReporter::in_root(AccountId::from("a"), root.path())
-                .offline()
-                .unwrap();
-            let loaded = load_in(root.path(), Some(home.path()));
+            let mut off = Account::new("c", WEBDAV_TYPE);
+            off.config = serde_json::json!({"server_url": "https://files.example/dav"});
+            off.enabled = false;
+            store.upsert(off);
+            let loaded = from_store(&store, Some(home.path()));
             let a = loaded.iter().find(|x| x.id.as_str() == "a").unwrap();
             let b = loaded.iter().find(|x| x.id.as_str() == "b").unwrap();
+            let c = loaded.iter().find(|x| x.id.as_str() == "c").unwrap();
             assert_eq!(a.mount, Some(home.path().join("Remote/Cloud")));
             assert_eq!(b.mount, Some(home.path().join("Remote/Cloud (2)")));
-            assert_eq!(a.health, RemoteAccountHealth::Offline);
-            assert_eq!(a.health.badge(), Some("Offline"));
-            assert_eq!(b.health, RemoteAccountHealth::NeverChecked);
+            assert_eq!(a.health, RemoteAccountHealth::NeverChecked);
+            assert_eq!(c.health, RemoteAccountHealth::Disabled);
         }
 
         phase remote_account_projection_is_safe_and_identity_scoped;
         {
             {
                 assert_eq!(
-                    safe_https_host("https://cloud.example/dav"),
+                    server_host("https://cloud.example/dav"),
                     Some("cloud.example".into())
                 );
-                assert_eq!(safe_https_host("http://cloud.example"), None);
-                assert_eq!(safe_https_host("https://user:pass@cloud.example"), None);
-                assert_eq!(safe_https_host("https://cloud.example/?token=secret"), None);
+                assert_eq!(server_host("http://cloud.example"), None);
+                assert_eq!(
+                    server_host("http://127.0.0.1:8080/"),
+                    cfg!(debug_assertions).then(|| "127.0.0.1:8080".to_owned()),
+                    "plain HTTP only to this machine, and only in a development build"
+                );
+                assert_eq!(server_host("https://user:pass@cloud.example"), None);
+                assert_eq!(server_host("https://cloud.example/?token=secret"), None);
             }
 
             {
@@ -427,7 +455,7 @@ mod tests {
                     "password": "must-not-be-read",
                     "use_files": false,
                 });
-                assert!(from_account(&account, &AccountSyncStatusStore::default()).is_none());
+                assert!(from_account(&account).is_none());
             }
 
             {
@@ -438,7 +466,7 @@ mod tests {
                     "username": "ada",
                     "password": "must-not-be-read",
                 });
-                let projection = from_account(&account, &AccountSyncStatusStore::default())
+                let projection = from_account(&account)
                     .expect("valid account projects");
                 assert_eq!(projection.host, "files.example");
                 assert_eq!(projection.label, "Work files");

@@ -1017,9 +1017,7 @@ fn private_source_invocation_permitted() -> bool {
 }
 
 fn validate_import_destination(destination: &ImportDestination) -> Result<(), Refusal> {
-    let mounts = accounts::config_root()
-        .map(|root| crate::remote_accounts::load_in(&root, crate::model::user_home().as_deref()))
-        .unwrap_or_default();
+    let mounts = crate::remote_accounts::followed();
     let actual = crate::cloud_transfer::pin_destination(
         &destination.path.to_string_lossy(),
         mounts.iter().filter_map(|account| account.mount.as_deref()),
@@ -1187,6 +1185,13 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     }
     if let Some(shows) = cx.window_shows() {
         files.tell_window_shows(shows);
+    }
+    if cx.mode().is_live() {
+        if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
+            files.follow_person_accounts(accounts);
+        } else {
+            tracing::warn!("the workspace's accounts are not open: Files shows none of them");
+        }
     }
     let native = files.native_undo_queue();
     let ops = carry_out_queued(cx, native);

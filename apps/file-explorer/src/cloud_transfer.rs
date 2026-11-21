@@ -66,16 +66,12 @@ pub(crate) fn restore(
     tilo_cloud_files::restore(to, entry, destination, output, crate::fileops::move_into).map(change)
 }
 
-// Reload at execution, not admission: an account may have become a sync mount.
+// Read at execution, not admission: an account may have become a sync mount since.
 fn mounts() -> Vec<PathBuf> {
-    accounts::config_root()
-        .map(|config| {
-            crate::remote_accounts::load_in(&config, crate::model::user_home().as_deref())
-                .into_iter()
-                .filter_map(|account| account.mount)
-                .collect()
-        })
-        .unwrap_or_default()
+    crate::remote_accounts::followed()
+        .into_iter()
+        .filter_map(|account| account.mount)
+        .collect()
 }
 
 pub(crate) fn execute(

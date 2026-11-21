@@ -538,7 +538,11 @@ pub struct FilesState {
     share_invite: crate::share_invite::ShareInvite,
     trusted_humans: crate::identity_directory::TrustedHumanDirectory,
     effect_reply: Option<ui::framework::EffectReply>,
-    accounts_root: Option<PathBuf>,
+    /// The workspace's accounts record, followed, and the revision last read of it.
+    person_accounts: Option<(
+        ui::framework::PersonResource<accounts::person::PersonAccounts>,
+        Option<u64>,
+    )>,
     accounts_cache: Vec<crate::remote_accounts::RemoteAccount>,
     cloud: cloud_browse::CloudView,
     #[cfg(test)]
@@ -618,11 +622,7 @@ impl FileExplorerWidget {
     pub fn new() -> Self {
         let widget =
             Self::with_persistence(config::config_dir().as_deref(), crate::model::user_home());
-        {
-            let mut state = widget.state();
-            state.accounts_root = accounts::config_root();
-            state.refresh_external_search_catalogs();
-        }
+        widget.state().refresh_external_search_catalogs();
         widget
     }
 
@@ -884,7 +884,7 @@ impl FileExplorerWidget {
 
             effect_reply: None,
             local_clipboard: clipboard_client::Client::new(),
-            accounts_root: None,
+            person_accounts: None,
             accounts_cache: Vec::new(),
             cloud: cloud_browse::CloudView::default(),
             #[cfg(test)]
@@ -1640,6 +1640,37 @@ impl FilesState {
         page
     }
 
+    /// Follow the workspace's accounts record: its file accounts are the places Files shows for
+    /// them, and change as the record does.
+    pub(crate) fn follow_person_accounts(
+        &mut self,
+        accounts: ui::framework::PersonResource<accounts::person::PersonAccounts>,
+    ) {
+        self.person_accounts = Some((accounts, None));
+        self.refresh_external_search_catalogs();
+    }
+
+    /// Read the accounts record again when it changed since it was last read; whether it had.
+    fn adopt_person_accounts(&mut self) -> bool {
+        let Some((record, seen)) = &mut self.person_accounts else {
+            return false;
+        };
+        let revision = record.revision();
+        if *seen == Some(revision) {
+            return false;
+        }
+        *seen = Some(revision);
+        let adopted = crate::remote_accounts::from_record(&record.get(), self.home_path.as_deref());
+        if adopted == self.accounts_cache {
+            return false;
+        }
+        crate::remote_accounts::keep_followed(&adopted);
+        self.accounts_cache = adopted;
+        self.places_shown = None;
+        self.structure_dirty = true;
+        true
+    }
+
     fn remote_account_snapshot(&self) -> Vec<crate::remote_accounts::RemoteAccount> {
         self.startup_accounts
             .clone()
@@ -1657,9 +1688,7 @@ impl FilesState {
         if page.truncated {
             tracing::debug!("collaborative search catalogue truncated; continues on refresh");
         }
-        if let Some(root) = self.accounts_root.as_deref() {
-            self.accounts_cache = crate::remote_accounts::load_in(root, self.home_path.as_deref());
-        }
+        self.adopt_person_accounts();
         self.remote_accounts_search_revision = self.remote_accounts_search_revision.wrapping_add(1);
         let accounts = self.remote_account_snapshot();
         self.remote_accounts_search
@@ -7377,6 +7406,7 @@ impl FilesState {
             | sprang
             | counted
             | listed
+            | self.adopt_person_accounts()
             | self.poll_cloud()
             | self.poll_mounted_cloud()
             | self.poll_drives()

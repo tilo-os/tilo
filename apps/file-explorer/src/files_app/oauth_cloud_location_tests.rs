@@ -8,19 +8,41 @@ const PROVIDERS: [(&str, &str); 4] = [
     ("d-icloud", remote_accounts::ICLOUD_DRIVE_TYPE),
 ];
 
-fn fixture_store(root: &Path) -> accounts::AccountStore {
-    let mut store = accounts::AccountStore::new();
+/// The app that keeps the person's accounts record, as Settings does.
+struct AccountsOwner;
+
+impl ui::framework::ResourceApp for AccountsOwner {
+    type Resource = crate::resource::FileExplorer;
+    const ID: &'static str = accounts::person::ACCOUNTS_OWNER;
+    const TITLE: &'static str = "Settings";
+
+    fn view(_cx: &mut ui::framework::ViewCx<crate::resource::FileExplorer>) -> ui::widget::Element {
+        Box::new(ui::widget::Column::new())
+    }
+}
+
+type Accounts = ui::framework::PersonResource<accounts::person::PersonAccounts>;
+
+fn person() -> String {
+    "fe".repeat(32)
+}
+
+/// The person's accounts record, kept as Settings keeps it, with the four
+/// providers saved in it.
+fn fixture_record() -> (ui::framework::testing::TestApp<AccountsOwner>, Accounts) {
+    let mut settings =
+        ui::framework::testing::TestApp::<AccountsOwner>::for_person(&person()).unwrap();
+    let kept = settings
+        .shared_person::<accounts::person::PersonAccounts>()
+        .unwrap();
     for (id, provider) in PROVIDERS {
         let mut account = accounts::Account::new(id, provider);
         account.display_name = "Cloud".into();
         account.config = serde_json::json!({"unsupported_private_field":"secret-sentinel"});
-        store.upsert(account);
+        kept.invoke(&accounts::person::PersonAccounts::saving(&account))
+            .unwrap();
     }
-    store.save_in(root).unwrap();
-    accounts::AccountSyncReporter::in_root(accounts::AccountId::from("a-google"), root)
-        .offline()
-        .unwrap();
-    store
+    (settings, kept)
 }
 
 tilo_test_env::scenario! {
@@ -28,38 +50,34 @@ tilo_test_env::scenario! {
 
     phase canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts;
     {
-        with_owner_callback(canonical_oauth_accounts);
+        let (settings, record) = fixture_record();
+        with_owner_callback(move || canonical_oauth_accounts(settings, record));
     }
 
     phase disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions;
     {
-        with_owner_callback(disabled_and_removed_oauth_accounts);
+        let (settings, record) = fixture_record();
+        with_owner_callback(move || disabled_and_removed_oauth_accounts(settings, &record));
     }
 }
 
-fn canonical_oauth_accounts() {
-    let config = tempfile::tempdir().unwrap();
+fn canonical_oauth_accounts(
+    _settings: ui::framework::testing::TestApp<AccountsOwner>,
+    record: Accounts,
+) {
     let home = tempfile::tempdir().unwrap();
-    let _store = fixture_store(config.path());
     let mut widget = FileExplorerWidget::with_persistence_dirs(
         None,
         Some(home.path().to_owned()),
         favorites::UserDirs::default(),
     );
-    widget.state().accounts_root = Some(config.path().to_owned());
-    widget.state().refresh_external_search_catalogs();
+    widget.state().follow_person_accounts(record);
     let mut document = automerge::AutoCommit::new();
     let accounts = widget.state().remote_account_snapshot();
     assert_eq!(accounts.len(), PROVIDERS.len());
-    let first = accounts
-        .iter()
-        .find(|account| account.id.as_str() == "a-google")
-        .unwrap();
-    assert_eq!(first.health, RemoteAccountHealth::Offline);
     assert!(
         accounts
             .iter()
-            .filter(|account| account.id.as_str() != "a-google")
             .all(|account| account.health == RemoteAccountHealth::NeverChecked)
     );
     for (index, (id, provider)) in PROVIDERS.iter().enumerate() {
@@ -119,30 +137,29 @@ fn canonical_oauth_accounts() {
             id.as_bytes()
         );
     }
-    assert!(
-        !accounts::vault_dir_in(config.path()).exists(),
-        "projection and open must not create credential storage"
-    );
 }
 
-fn disabled_and_removed_oauth_accounts() {
-    let config = tempfile::tempdir().unwrap();
+fn disabled_and_removed_oauth_accounts(
+    _settings: ui::framework::testing::TestApp<AccountsOwner>,
+    record: &Accounts,
+) {
     let home = tempfile::tempdir().unwrap();
-    let mut store = fixture_store(config.path());
-    let mut disabled = store
+    let mut disabled = record
+        .get()
+        .store()
         .get(&accounts::AccountId::from("c-dropbox"))
         .unwrap()
         .clone();
     disabled.enabled = false;
-    store.upsert(disabled);
-    store.save_in(config.path()).unwrap();
+    record
+        .invoke(&accounts::person::PersonAccounts::saving(&disabled))
+        .unwrap();
     let mut widget = FileExplorerWidget::with_persistence_dirs(
         None,
         Some(home.path().to_owned()),
         favorites::UserDirs::default(),
     );
-    widget.state().accounts_root = Some(config.path().to_owned());
-    widget.state().refresh_external_search_catalogs();
+    widget.state().follow_person_accounts(record.clone());
     let mut document = automerge::AutoCommit::new();
     let places = widget.state().current_places().sections();
     assert!(places.iter().flat_map(|section| &section.items).any(|row| {
@@ -159,8 +176,12 @@ fn disabled_and_removed_oauth_accounts() {
         action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION
             && matches!(&action.contract.availability, Availability::Unavailable { code, .. } if code == "account_disabled")
     }));
-    store.remove(&accounts::AccountId::from("c-dropbox"));
-    store.save_in(config.path()).unwrap();
+    record
+        .invoke(
+            &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+                .with(ui::tilo_resource::Id::from_raw("c-dropbox")),
+        )
+        .unwrap();
     widget.state().refresh_external_search_catalogs();
     assert!(
         !widget
@@ -187,5 +208,70 @@ fn disabled_and_removed_oauth_accounts() {
             &serde_json::json!({})
         )
         .is_err()
+    );
+}
+
+fn account_rows(
+    files: &mut ui::framework::testing::TestApp<crate::resource::FileExplorerShell>,
+) -> Vec<(String, String)> {
+    files
+        .with_widget(|widget: &mut FileExplorerWidget| {
+            widget
+                .state()
+                .current_places()
+                .sections()
+                .iter()
+                .flat_map(|section| &section.items)
+                .filter(|row| row.id.starts_with("account:"))
+                .map(|row| (row.id.clone(), row.label.clone()))
+                .collect()
+        })
+        .unwrap()
+}
+
+#[test]
+fn an_account_saved_to_the_persons_accounts_shows_in_files_places_live() {
+    let mut settings =
+        ui::framework::testing::TestApp::<AccountsOwner>::for_person(&person()).unwrap();
+    let mut files =
+        ui::framework::testing::TestApp::<crate::resource::FileExplorerShell>::for_person(&person())
+            .unwrap();
+    let kept = settings
+        .shared_person::<accounts::person::PersonAccounts>()
+        .unwrap();
+    let read = files
+        .shared_person::<accounts::person::PersonAccounts>()
+        .expect("Files reads the person's accounts");
+    assert!(!read.editable(), "Files only reads the accounts record");
+    files.settle();
+    assert!(account_rows(&mut files).is_empty());
+
+    let mut account = accounts::Account::new("work-cloud", remote_accounts::NEXTCLOUD_TYPE);
+    account.display_name = "Work cloud".into();
+    account.config = serde_json::json!({"server_url": "https://cloud.example", "username": "ada"});
+    kept.invoke(&accounts::person::PersonAccounts::saving(&account))
+        .unwrap();
+    read.record()
+        .merge_peer_document(kept.record().document().unwrap())
+        .unwrap();
+    files.settle();
+    assert_eq!(
+        account_rows(&mut files),
+        [("account:work-cloud".to_owned(), "Work cloud".to_owned())],
+        "the window that was already open shows the account"
+    );
+
+    kept.invoke(
+        &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+            .with(ui::tilo_resource::Id::from_raw("work-cloud")),
+    )
+    .unwrap();
+    read.record()
+        .merge_peer_document(kept.record().document().unwrap())
+        .unwrap();
+    files.settle();
+    assert!(
+        account_rows(&mut files).is_empty(),
+        "a removed account leaves Files' places"
     );
 }
