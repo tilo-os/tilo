@@ -168,11 +168,13 @@ const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\
 // workspace answered admission with), so a wait that runs out says which of
 // them it was waiting on.
 const where = tab => tab.evaluate(`(() => {
-  const state = globalThis.tiloMount?.state?.() ?? null;
-  return JSON.stringify({step: document.documentElement.dataset.firstScreen ?? null,
-    screen: document.documentElement.dataset.firstScreen !== undefined, title: document.title,
-    entry: document.documentElement.dataset.entry ?? null, phase: state?.phase ?? null,
-    frames: state?.frames ?? null, workspace: state?.workspaceName ?? null});
+  const root = document.documentElement;
+  const page = document.getElementById('tilo-page');
+  return JSON.stringify({step: root.dataset.firstScreen ?? null,
+    screen: root.dataset.firstScreen !== undefined, title: document.title,
+    entry: root.dataset.entry ?? null, arrival: root.dataset.arrival ?? null,
+    state: page?.dataset.state ?? null, refused: page?.dataset.refused ?? null,
+    workspace: root.dataset.workspace ?? null, path: location.pathname});
 })()`)
   .then(JSON.parse).catch(() => ({}));
 const inLounge = async tab => {
@@ -182,12 +184,15 @@ const inLounge = async tab => {
 // The person's own workspace, drawn, as the page publishes it: the first
 // screen gone, the shell its host admitted it to presented, and the tab
 // titled after that workspace, never the Lounge.
+// The person's own workspace, shown by the page the entry handed them to: the
+// first screen gone, the page arrived and showing, and the workspace's own
+// name on it — never the Lounge's.
 const OWN_WORKSPACE = `(() => {
-  const state = globalThis.tiloMount?.state?.() ?? null;
-  const title = document.title ?? '';
-  const firstScreen = document.documentElement.dataset.firstScreen ?? null;
-  return firstScreen === null && state?.phase === 'presented' && state.workspaceName
-    && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
+  const root = document.documentElement;
+  const name = root.dataset.workspace ?? '';
+  const firstScreen = root.dataset.firstScreen ?? null;
+  return firstScreen === null && root.dataset.arrival === 'done'
+    && document.querySelector('#tilo-page [data-p]') && name && !/lounge/i.test(name) ? name : '';
 })()`;
 const forget = tab => tab.evaluate('delete globalThis.__firstFrame').catch(() => {});
 // The mark gone, the waits that follow read the first frame of the document

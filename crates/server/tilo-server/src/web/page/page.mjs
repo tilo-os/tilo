@@ -299,6 +299,16 @@ function start() {
   const page = document.getElementById('tilo-page');
   const style = document.getElementById('tilo-page-css');
   const base = `/w/${config.address.workspace}` + (config.address.app ? `/${config.address.app}` : '');
+  // The workspace this page is, as the entry that handed the browser over
+  // named it: an address carries no name.
+  let workspaceName = null;
+  try {
+    const kept = JSON.parse(sessionStorage.getItem('tilo-page-workspace') ?? 'null');
+    if (kept && kept.workspace === config.address.workspace && kept.name) {
+      workspaceName = kept.name;
+      document.documentElement.dataset.workspace = workspaceName;
+    }
+  } catch { /* none kept */ }
   let link = null;
   let composing = false;
   let unanswered = 0;
@@ -507,7 +517,9 @@ function start() {
   const show = ({title, css, body}) => {
     const held = typingHeld();
     appTitle = title;
-    document.title = title;
+    // The workspace's own page is named by the workspace; an app's by the app,
+    // and by what is open in it (`follow`).
+    document.title = config.address.app === '' && workspaceName ? workspaceName : title;
     style.textContent = css;
     delete page.dataset.state;
     page.innerHTML = body;

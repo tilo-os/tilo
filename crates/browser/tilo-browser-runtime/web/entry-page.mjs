@@ -1188,9 +1188,19 @@ export async function startEntryPage({mode}) {
       letIn(peer);
     },
     // The web version is the page the server renders, and the entry hands the
-    // browser to it once it is a device of the workspace. A site that frames
-    // this page hears what it hears from a page it mounted.
-    onPageFirst: () => { if (embed && enteredViaEntry) tell('joined'); },
+    // browser to it once it is a device of the workspace. It tells the page
+    // which workspace that is — the name the host answered admission with,
+    // which no address carries — and a site that frames this page hears what
+    // it hears from a page it mounted.
+    onPageFirst: peer => {
+      try {
+        sessionStorage.setItem('tilo-page-workspace', JSON.stringify({
+          workspace: peer?.workspace ?? null,
+          name: workspaceName ?? peer?.workspaceName ?? null,
+        }));
+      } catch { /* No storage: the page names no workspace. */ }
+      if (embed && enteredViaEntry) tell('joined');
+    },
     prefetchApplication,
     prefetchDesktop,
     // An embed always shows the workspace the embedding site names.
