@@ -423,6 +423,10 @@ def connect_account(story, one, server: str, user: str, password: str,
     if kind != "form":
         raise Failed(f"Settings could not read the calendars kept on {server}: {said}")
     press_settled(one, SAVE, "the calendar choice's Save")
-    until("the chosen calendars kept on Ada's computer",
-          lambda: SEEDED_CALENDAR in kept_calendar_names(one), 30, 0.25)
+    try:
+        until("the chosen calendars kept on Ada's computer",
+              lambda: SEEDED_CALENDAR in kept_calendar_names(one), 30, 0.25)
+    except Failed as error:
+        raise Failed(f"{error}; after Save, Settings shows "
+                     f"{json.dumps([n for n in one.names() if '/' not in n][:80])}") from error
     story.note("calendars-kept", kept_calendar_names(one))
