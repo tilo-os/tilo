@@ -1018,6 +1018,7 @@ if ! RUNNER='./os/tests/serial_runner.sh' SUDO_PASS="$TILO_PASS" FAULT=server \
      UNLOCK='./os/dev/unlock-prompt.sh' \
      RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --tpm --disk '$disk' --attach '$work/update.qcow2'; ./os/dev/unlock-prompt.sh || true" \
      SERIAL='./os/dev/vm.sh serial' \
+     ANSWERS="./os/dev/vm.sh this-boot | grep -q 'login: '" \
      BOOT_TIMEOUT=900 HEALTH_TIMEOUT=900 SWITCH_TIMEOUT=1800 \
      ./os/tests/boot_assessment_rollback.sh oci:/mnt/update/image:tilo-host "$out/boot-assessment"; then
   as_root 'echo "--- health"; systemctl show -p ActiveState -p Result -p ConditionResult tilo-boot-health.service

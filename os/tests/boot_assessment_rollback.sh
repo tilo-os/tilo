@@ -15,7 +15,10 @@
 # an installed system's encrypted root waits for its passphrase at every boot
 # (UNLOCK types it once the prompt is on screen, e.g. with `vm.sh type -`).
 # SERIAL, if set, prints the guest's console log; each boot that never answers
-# keeps it as evidence of where it stopped.
+# keeps it as evidence of where it stopped. ANSWERS, if set, runs on the host
+# before a rebooted guest is asked anything and fails while it cannot answer yet:
+# a RUNNER that drives the serial console types at whatever is on it, and at an
+# unlock prompt what it types is taken for a passphrase.
 #
 # SUBJECT_UNIT is the unit that has to be in service on the deployment the
 # machine came back to (greetd.service by default; a server has no sign-in
@@ -86,6 +89,7 @@ SUDO_PASS="${SUDO_PASS:-}"
 RESET="${RESET:-}"
 UNLOCK="${UNLOCK:-}"
 SERIAL="${SERIAL:-}"
+ANSWERS="${ANSWERS:-}"
 # How long a staged boot is left at its unlock prompt before the power-cycle.
 HANG_TIMEOUT="${HANG_TIMEOUT:-150}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-420}"
@@ -175,7 +179,8 @@ entry_for() {
 wait_reachable() {  # OLD-BOOT-ID [TIMEOUT [UNLOCK]]
   local old="$1" deadline=$(( $(date +%s) + ${2:-$BOOT_TIMEOUT} )) unlock="${3-$UNLOCK}" id
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    id="$(boot_id)"
+    id=""
+    if [ -z "$ANSWERS" ] || bash -c "$ANSWERS" >/dev/null 2>&1; then id="$(boot_id)"; fi
     if [ -n "$id" ] && [ "$id" != "$old" ]; then printf '%s\n' "$id"; return 0; fi
     [ -z "$unlock" ] || bash -c "$unlock" >&2 || true
     sleep 3
