@@ -7,6 +7,9 @@
 //! or a full save. A worker that crashes, runs out of memory or overruns its
 //! deadline is killed, the input is rejected, and the next request starts a
 //! fresh one.
+//!
+//! A request waits for a worker in [`Turns`], which decides whose request a
+//! free worker serves next.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -14,13 +17,15 @@ use std::io::{self, BufReader};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, Command, Stdio};
+#[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Mutex, MutexGuard, mpsc};
 use std::time::Duration;
 
 use automerge::{AutoCommit, SaveOptions};
 
 use crate::engine::{self, Key};
+use crate::turns::{Job, Turns};
 use crate::wire::{self, Prepare, Reply, Request};
 use crate::worker;
 use crate::{Applied, Dependencies, Limits, Rejected};
@@ -38,7 +43,7 @@ const STARTUP: Duration = Duration::from_secs(30);
 pub(crate) struct Pool {
     limits: Limits,
     slots: Vec<Mutex<Option<Worker>>>,
-    next: AtomicUsize,
+    turns: Turns,
     routes: Mutex<Routes>,
     #[cfg(test)]
     full_rebuilds: AtomicUsize,
@@ -50,7 +55,7 @@ impl Pool {
         Self {
             limits,
             slots: (0..count).map(|_| Mutex::new(None)).collect(),
-            next: AtomicUsize::new(0),
+            turns: Turns::new(count),
             routes: Mutex::new(Routes::default()),
             #[cfg(test)]
             full_rebuilds: AtomicUsize::new(0),
@@ -92,8 +97,6 @@ impl Pool {
         incoming: &[u8],
         dependencies: Dependencies,
     ) -> Result<(Applied, usize), Rejected> {
-        let worker_at = self.route(key);
-        let mut worker = (self.slots.get(worker_at).ok_or(Rejected::Crashed)?).lock_recover();
         let mut next = if key.complete_heads().is_some() {
             Next::Cached
         } else {
@@ -101,6 +104,17 @@ impl Pool {
             self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
             Next::Full(full_save(base.base()?))
         };
+        let rebuilt = match &next {
+            Next::Full(saved) => saved.len(),
+            Next::Cached | Next::After(..) => 0,
+        };
+        let preferred = self.routes.lock_recover().get(key);
+        let mut worker = self.turn(Job {
+            caller: crate::Caller::current().0,
+            bytes: incoming.len().saturating_add(rebuilt),
+            preferred,
+        })?;
+        let worker_at = worker.at;
         loop {
             let (prepare, trusted) = match &next {
                 Next::Cached => (Prepare::Cached, 0),
@@ -119,7 +133,7 @@ impl Pool {
                 prepare,
                 incoming,
             };
-            match self.call(&mut worker, &request, trusted, incoming.len())? {
+            match self.call(&mut worker.slot, &request, trusted, incoming.len())? {
                 Reply::Uncached(cached) => {
                     next = match next {
                         Next::Cached => {
@@ -155,10 +169,14 @@ impl Pool {
     }
 
     pub(crate) fn load(&self, bytes: &[u8]) -> Result<AutoCommit, Rejected> {
-        let slot = self.any_slot();
-        let mut worker = (self.slots.get(slot).ok_or(Rejected::Crashed)?).lock_recover();
+        let mut worker = self.turn(Job {
+            caller: crate::Caller::current().0,
+            bytes: bytes.len(),
+            preferred: None,
+        })?;
+        let slot = worker.at;
         match self.call(
-            &mut worker,
+            &mut worker.slot,
             &Request::Load { incoming: bytes },
             0,
             bytes.len(),
@@ -177,16 +195,18 @@ impl Pool {
         }
     }
 
-    fn route(&self, key: &Key) -> usize {
-        let known = self.routes.lock_recover().get(key);
-        known.unwrap_or_else(|| self.any_slot())
-    }
-
-    fn any_slot(&self) -> usize {
-        self.next
-            .fetch_add(1, Ordering::Relaxed)
-            .checked_rem(self.slots.len())
-            .unwrap_or(0)
+    /// Wait for `job`'s turn at a worker.
+    fn turn(&self, job: Job) -> Result<Turn<'_>, Rejected> {
+        let at = self.turns.take(job);
+        let Some(slot) = self.slots.get(at) else {
+            self.turns.release(at, false);
+            return Err(Rejected::Crashed);
+        };
+        Ok(Turn {
+            turns: &self.turns,
+            at,
+            slot: slot.lock_recover(),
+        })
     }
 
     pub(crate) fn remember(&self, key: Key, worker_at: usize) {
@@ -226,6 +246,19 @@ impl Pool {
                 }
             }
         }
+    }
+}
+
+/// A worker given to one request ([`Pool::turn`]) until it is dropped.
+struct Turn<'a> {
+    turns: &'a Turns,
+    at: usize,
+    slot: MutexGuard<'a, Option<Worker>>,
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        self.turns.release(self.at, self.slot.is_some());
     }
 }
 

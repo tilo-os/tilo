@@ -15,7 +15,11 @@
 //! Workers are long-lived and keep copies of the documents they have seen, keyed by
 //! state, each state routed to the worker that last saw it; what a worker keeps is
 //! bounded by bytes ([`Limits::cache_bytes`]) and an idle worker exits
-//! ([`Limits::idle`]). [`Isolate::load`] takes the change hashes its worker already
+//! ([`Limits::idle`]). Every caller shares the workers, one per core the
+//! machine's memory can hold at their heap ceiling; a request waits its turn
+//! for one, small requests first and callers in turn ([`Caller`]), so one
+//! caller's backlog of large documents does not decide another's wait.
+//! [`Isolate::load`] takes the change hashes its worker already
 //! computed instead of rebuilding them, and leaves the loaded document warm.
 //!
 //! A worker is the calling executable started again in worker mode, so a program
@@ -37,6 +41,8 @@ mod sandbox;
 #[cfg(target_os = "linux")]
 mod wire;
 #[cfg(target_os = "linux")]
+mod turns;
+#[cfg(target_os = "linux")]
 mod worker;
 
 use std::time::Duration;
@@ -55,6 +61,9 @@ pub struct Limits {
     /// grows with the input, and a long history must not be refused only for
     /// being long.
     pub timeout_per_mib: Duration,
+    /// Worker processes. The default is one per core this process may use,
+    /// as many as fit in the machine's memory at [`Limits::memory_bytes`]
+    /// each, and at least two.
     pub workers: usize,
     pub max_documents: usize,
     pub cache_bytes: u64,
@@ -66,14 +75,84 @@ impl Default for Limits {
         Self {
             max_input_bytes: 48 * 1024 * 1024,
             max_chunks: 65_536,
-            memory_bytes: 2 * 1024 * 1024 * 1024,
+            memory_bytes: MEMORY_BYTES,
             timeout: Duration::from_secs(5),
             timeout_per_mib: Duration::from_secs(2),
-            workers: 2,
+            workers: machine_workers(MEMORY_BYTES),
             max_documents: 256,
             cache_bytes: 96 * 1024 * 1024,
             idle: Duration::from_secs(60),
         }
+    }
+}
+
+const MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// One worker per core this process may use, no more than the machine's
+/// memory holds with every worker at its heap ceiling, and at least two.
+fn machine_workers(memory_bytes: u64) -> usize {
+    let cores = std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get);
+    physical_memory()
+        .and_then(|memory| usize::try_from(memory.checked_div(memory_bytes)?).ok())
+        .map_or(cores, |fit| cores.min(fit))
+        .max(2)
+}
+
+#[cfg(target_os = "linux")]
+fn physical_memory() -> Option<u64> {
+    // SAFETY: sysconf only reads system configuration.
+    let (pages, page) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    u64::try_from(pages)
+        .ok()?
+        .checked_mul(u64::try_from(page).ok()?)
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn physical_memory() -> Option<u64> {
+    None
+}
+
+/// Whom requests to the workers are made for: workers serve the callers
+/// waiting for one in turn, so one caller's backlog never holds another's
+/// turn. Each thread is a caller of its own; a thread that works for another
+/// one, such as a helper decoding part of that thread's documents, makes its
+/// requests as that one's ([`Caller::enter`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Caller(u64);
+
+thread_local! {
+    static CALLER: std::cell::Cell<Option<Caller>> = const { std::cell::Cell::new(None) };
+}
+
+impl Caller {
+    /// Whom this thread's requests are made for.
+    #[must_use]
+    pub fn current() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        CALLER.with(|caller| {
+            caller.get().unwrap_or_else(|| {
+                let own = Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+                caller.set(Some(own));
+                own
+            })
+        })
+    }
+
+    /// Run `work` with this thread's requests made as this caller's.
+    pub fn enter<R>(self, work: impl FnOnce() -> R) -> R {
+        struct Restore(Option<Caller>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                CALLER.with(|caller| caller.set(self.0));
+            }
+        }
+        let _restore = Restore(CALLER.with(|caller| caller.replace(Some(self))));
+        work()
     }
 }
 

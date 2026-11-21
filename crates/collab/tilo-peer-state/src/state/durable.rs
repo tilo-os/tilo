@@ -132,10 +132,13 @@ fn decode_documents(documents: &[DurableDocument]) -> Vec<Result<CachedDocument,
         let next = std::sync::atomic::AtomicUsize::new(0);
         let ready: std::sync::Mutex<Vec<Option<Result<CachedDocument, String>>>> =
             std::sync::Mutex::new(documents.iter().map(|_| None).collect());
+        // The helpers decode for this thread's caller: a workspace restoring many documents
+        // takes its turn at the shared workers as one caller, not as one per helper.
+        let caller = tilo_automerge_isolate::Caller::current();
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
-                    loop {
+                    caller.enter(|| loop {
                         let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(document) = documents.get(at) else {
                             break;
@@ -147,7 +150,7 @@ fn decode_documents(documents: &[DurableDocument]) -> Vec<Result<CachedDocument,
                         if let Some(held) = ready.get_mut(at) {
                             *held = Some(decoded);
                         }
-                    }
+                    });
                 });
             }
         });
