@@ -729,12 +729,7 @@ mod tests {
         let stood: BTreeMap<TreeChunk, Vec<[u8; 32]>> = namespace
             .document_heads()
             .into_iter()
-            .map(|(chunk, heads)| {
-                (
-                    chunk,
-                    heads.into_iter().map(|head| head.0).collect(),
-                )
-            })
+            .map(|(chunk, heads)| (chunk, heads.into_iter().map(|head| head.0).collect()))
             .collect();
         assert!(stood.values().any(|heads| !heads.is_empty()), "{stood:?}");
         kept.keep_records(&stood).unwrap();

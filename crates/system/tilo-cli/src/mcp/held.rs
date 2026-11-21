@@ -486,7 +486,7 @@ fn hold_for<E: Enter>(
     // A holder that stops answering for seconds says what it was doing, with every thread's
     // stack, long before [`WEDGED`] ends it: a person's `ls` that waits has a reason in the log.
     tilo_rt::stall::watch(WEDGED.min(STALL));
-    tilo_rt::stall::heartbeat(&runtime.handle());
+    tilo_rt::stall::heartbeat(runtime.handle());
     runtime.spawn(beating());
     let watching = watch_workers();
     let served = runtime.block_on(serve_held(place, shared, holding));

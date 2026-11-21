@@ -151,8 +151,9 @@ fn run() -> anyhow::Result<()> {
         #[cfg(not(feature = "web"))]
         Cmd::Run {} => cmd_run(&cli.config),
         #[cfg(feature = "web")]
-        Cmd::Dev(args) => tilo_rt::daemon("tilo-server")
-            .run(watched(web_cli::dev(args, wait_for_shutdown())))?,
+        Cmd::Dev(args) => {
+            tilo_rt::daemon("tilo-server").run(watched(web_cli::dev(args, wait_for_shutdown())))?
+        }
         #[cfg(feature = "web")]
         Cmd::Workspace(args) => tilo_rt::daemon("tilo-server")
             .run(watched(web_cli::workspace(*args, wait_for_shutdown())))?,
