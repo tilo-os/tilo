@@ -153,14 +153,39 @@
     {
       "id": "sub-note",
       "said": "Make a sub-note under it",
+      "ops": {
+        "rust": [
+          {
+            "chord": [
+              "Control",
+              "Shift",
+              "n"
+            ]
+          }
+        ],
+        "tl": [
+          {
+            "click_any": [
+              "File"
+            ]
+          },
+          {
+            "wait_for": {
+              "shown": "New sub-note"
+            }
+          },
+          {
+            "click_any": [
+              "New sub-note"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "sub-note-under-its-parent",
+      "said": "The new note stands under the one it was made in, and its page is the one shown",
       "ops": [
-        {
-          "chord": [
-            "Control",
-            "Shift",
-            "n"
-          ]
-        },
         {
           "tree": {
             "under": [

@@ -702,9 +702,9 @@ mod cases {
     }
 
     /// The note a person writes is the one the window starts a note under: the open note's row
-    /// offers it — as `Ctrl+Shift+N` does — and the note it makes stands under the one open.
+    /// offers it, and the note it makes stands under the one open.
     #[test]
-    fn the_open_notes_sub_note_is_a_keystroke_away() {
+    fn the_open_notes_sub_note_is_offered_by_its_row() {
         let n = Notes::new();
         let plan = n.titled("Q3 plan");
         let mut view = n.window();
@@ -726,18 +726,6 @@ mod cases {
             .as_i64()
             .unwrap();
         assert_eq!(made, 2, "the notebook holds the note the control made");
-        let key = n
-            .app
-            .meta()
-            .actions
-            .iter()
-            .find(|action| action.id == n.app.action("new_child"))
-            .and_then(|action| action.key.clone());
-        assert_eq!(
-            key.as_deref(),
-            Some("Ctrl+Shift+n"),
-            "a note under the open one is a keystroke away"
-        );
         let _ = plan;
     }
 

@@ -69,9 +69,8 @@ primary action new_note(nb: Notebook, title: Text = "", body: Text = "") -> Note
 
 /// Starts a note inside `n`'s own, after the notes it already holds: the note the window has
 /// open too, so a person writing one starts the note it stands under without finding its row.
-/// It is `n`'s action, so the window offers it for the note it shows and a person reaches it by
-/// the shortcut or the note's row.
-action new_child(n: Note) -> Note (icon: .plus, label: "New sub-note", key: "Ctrl+Shift+N") {
+/// It is `n`'s action, so the window offers it for the note it shows and its row offers it.
+action new_child(n: Note) -> Note (icon: .plus, label: "New sub-note") {
     let made = notebook.notes.insert(Note(title: "", parent: n))
     if let last = notebook.notes.filter(x -> x.parent == n and x != made).last() {
         notebook.notes.move(made, after: last)
