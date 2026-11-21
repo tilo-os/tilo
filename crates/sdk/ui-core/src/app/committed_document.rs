@@ -27,7 +27,7 @@ impl App {
             // A read delivered again after it was taken in brings nothing new: its whole
             // document was let go once merged, so taking it again would refuse it and tell the
             // window its history cannot be read here.
-            if !read.is_current() || read.was_applied() {
+            if !read.is_current() || read.applied() {
                 continue;
             }
             let _phase = tilo_resource::profiling::Phase::start("committed.take");
