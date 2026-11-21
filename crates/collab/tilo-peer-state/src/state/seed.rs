@@ -24,25 +24,24 @@ pub fn workspace_seed(
     name: &str,
     now: SystemTime,
 ) -> Result<SeedState, String> {
-    use tilo_automerge::ApplyIncoming as _;
+    uuid::Uuid::parse_str(workspace).map_err(err)?;
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
         authority.device_public_key.to_vec(),
     ));
-    let changes = seed_workspace_at(workspace, authority, roster, super::now_secs(now))?
-        .into_iter()
-        .map(automerge::Change::from_bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(err)?;
-    doc.apply_incoming(changes).map_err(err)?;
-    doc.put(ROOT, "name", name).map_err(err)?;
+    // The name it is made with is part of making it: one change, which its history reads as the
+    // workspace being made, never as someone naming it afterwards.
+    founding_rows(
+        &mut doc,
+        workspace,
+        name,
+        &authority.user_public_key,
+        &hex::encode(authority.device_public_key),
+        roster,
+    )?;
     doc.put(ROOT, "desktop_counter_v1", 1_u64).map_err(err)?;
     super::commit_governance(&mut doc, super::now_secs(now));
     Ok(SeedState {
-        workspace_changes: doc
-            .get_changes(&[])
-            .iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect(),
+        workspace_changes: changes_of(&mut doc),
         // The workspace's shared desktop: every member's layout lands in it.
         documents: vec![SeedDocument {
             app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
@@ -84,6 +83,7 @@ pub fn seed_workspace_at(
     founding_rows(
         &mut doc,
         workspace,
+        "Shared browser workspace",
         &authority.user_public_key,
         &hex::encode(authority.device_public_key),
         roster,
@@ -101,18 +101,18 @@ fn changes_of(doc: &mut AutoCommit) -> Vec<Vec<u8>> {
 }
 
 /// The governance rows a founding installs in `doc`: the workspace it is, its
-/// owner `person`, its `founder`, the maps every device and governor adds to,
-/// and the `roster`'s certificates.
+/// `name`, its owner `person`, its `founder`, the maps every device and
+/// governor adds to, and the `roster`'s certificates.
 fn founding_rows(
     doc: &mut AutoCommit,
     workspace: &str,
+    name: &str,
     person: &[u8; 32],
     founder: &str,
     roster: &[DeviceCert],
 ) -> Result<(), String> {
     doc.put(ROOT, "workspace", workspace).map_err(err)?;
-    doc.put(ROOT, "name", "Shared browser workspace")
-        .map_err(err)?;
+    doc.put(ROOT, "name", name).map_err(err)?;
     doc.put(ROOT, "owner", hex::encode(person)).map_err(err)?;
     doc.put(ROOT, FOUNDER, founder).map_err(err)?;
     doc.put_object(ROOT, super::invitation_receipts::RECEIPTS_KEY, ObjType::Map)
