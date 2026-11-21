@@ -1399,10 +1399,15 @@ readers = ["crates/system/os-actions/src/windows_compat.rs"]
 
 [[cargo]]
 package = "linux-vm"
-inputs = ["os/linux-guest-snapshot.env", "os/hosted-guest-snapshot.env"]
+inputs = [
+  "os/linux-guest-snapshot.env",
+  "os/hosted-guest-snapshot.env",
+  "os/hosted-guest/git-credential-tilo",
+]
 readers = [
   "crates/runtime/linux-vm/src/image.rs",
   "crates/runtime/linux-vm/src/hosted/guest.rs",
+  "crates/runtime/linux-vm/tests/guest_git_credentials.rs",
 ]
 
 [[cargo]]

@@ -14,6 +14,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 /// What git writes to a helper's standard input for `host`.
 fn request(host: &str) -> String {
     format!("protocol=https\nhost={host}\n\n")
@@ -36,7 +38,7 @@ fn helper(action: &str, env: &[(&str, &str)], stdin: &str) -> String {
     for (name, value) in env {
         command.env(name, value);
     }
-    let mut child = command.spawn().expect("the guest's helper starts");
+    let mut child = command.spawn_locked().expect("the guest's helper starts");
     std::io::Write::write_all(
         child.stdin.as_mut().expect("its standard input"),
         stdin.as_bytes(),
