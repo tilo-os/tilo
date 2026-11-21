@@ -21,7 +21,7 @@ pub(super) struct Fixture {
     /// The owner's second device.
     pub(super) other: SigningKey,
     /// A member with the editor role.
-    editor: SigningKey,
+    pub(super) editor: SigningKey,
     authority: DeviceCert,
     /// The record channel's group, whose content keys key holders use.
     group: KeyGroup,
@@ -193,7 +193,7 @@ fn floor(peer: &StatePeer, key: &SigningKey) -> u64 {
         .unwrap_or(0)
 }
 
-fn message(op: SignedOp) -> NeighbourMsg {
+pub(super) fn message(op: SignedOp) -> NeighbourMsg {
     NeighbourMsg::AppDocument {
         peer: peer_handle(op.author.as_bytes()),
         app_id: APP.into(),
@@ -229,7 +229,7 @@ fn signed(
 
 /// Edits of the seeded record, each an incremental on the one before, as
 /// the plaintext a key holder's sealed write opens to.
-pub(super) struct Author(AutoCommit);
+pub(super) struct Author(pub(super) AutoCommit);
 
 impl Author {
     pub(super) fn new(peer: &StatePeer) -> Self {

@@ -268,20 +268,6 @@ impl Route {
     fn sealed_before_reader_sets(&self, workspace: &str, op: &SignedOp) -> bool {
         collab_types::sealed_before_reader_sets(&self.app, workspace, &self.record, op)
     }
-
-    /// [`collab_types::validate_payload_sealed_before_reader_sets`] of `op` on this route.
-    fn validate_sealed_before_reader_sets(
-        &self,
-        workspace: &str,
-        op: &SignedOp,
-    ) -> Result<collab_types::WholeDocumentPayload, collab_types::DocumentMutationError> {
-        collab_types::validate_payload_sealed_before_reader_sets(
-            &self.app,
-            workspace,
-            &self.record,
-            op,
-        )
-    }
 }
 // Documents a durable hash took again: those changed since it was last taken.
 #[cfg(test)]

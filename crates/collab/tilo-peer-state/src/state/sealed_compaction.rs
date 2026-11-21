@@ -1634,7 +1634,7 @@ impl PeerPublication<'_> {
 
     /// Whether `document` of `app` holds writes sealed before reader sets that no key holder has
     /// sealed again under the document's own scope yet
-    /// ([`collab_types::artifact_sealed_before_reader_sets`]). A replica holding the document's
+    /// ([`collab_types::artifact_before_reader_sets`]). A replica holding the document's
     /// keys opens them as they are, and its compaction seals their content again
     /// ([`Self::sealed_to_compact`]); one without them reads none of it until a key holder has.
     #[must_use]

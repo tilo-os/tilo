@@ -132,10 +132,9 @@ pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, GOVERNANCE_NEVER_ARRIVED, MAX_DOCUMENT_MUTATION_BYTES,
     MAX_GOVERNANCE_HEADS, RoutedDocumentPayload, SignedOp, WholeDocumentPayload,
-    artifact_sealed_before_reader_sets, document_artifact_id, document_attestation_id,
-    governance_head, next_unordered_document_sequence, sealed_before_reader_sets,
-    validate_document_payload_route, validate_payload_sealed_before_reader_sets,
-    validate_whole_document_payload_route,
+    artifact_before_reader_sets, document_artifact_id, document_attestation_id, governance_head,
+    names_document, next_unordered_document_sequence, sealed_before_reader_sets,
+    validate_document_payload_route, validate_whole_document_payload_route,
 };
 pub use own_resource::{OwnResource, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};

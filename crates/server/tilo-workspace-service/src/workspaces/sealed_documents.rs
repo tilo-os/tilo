@@ -1105,7 +1105,7 @@ impl Workspaces {
     }
 
     /// Seal again what the workspaces governed here hold sealed before reader sets
-    /// ([`collab_types::artifact_sealed_before_reader_sets`]), as the first device holding their
+    /// ([`collab_types::artifact_before_reader_sets`]), as the first device holding their
     /// keys to open them since: each such document's history is compacted by this server, its
     /// content sealed under the document's own scope and signed as this server alone, and the
     /// writes it folds kept beside the document as their authors signed them

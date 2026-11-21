@@ -68,10 +68,7 @@ impl StatePeer {
             return Err("transport author or document workspace mismatch".into());
         }
         collab_types::verify_op(envelope).map_err(err)?;
-        if envelope.artifact != collab_types::document_artifact_id(app_id, cluster_id, document_id)
-            || envelope.attestation_id
-                != collab_types::document_attestation_id(app_id, cluster_id, document_id)
-        {
+        if !collab_types::names_document(app_id, cluster_id, document_id, envelope) {
             return Err("artifact does not match route".into());
         }
         if self.core.workspace_doc.is_none() || !self.core.certificates.contains_key(&source) {

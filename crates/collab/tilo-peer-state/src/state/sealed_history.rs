@@ -26,9 +26,13 @@ pub(super) fn restore(
     };
     for original in &resealed {
         collab_types::verify_op(original).map_err(err)?;
-        route
-            .validate_sealed_before_reader_sets(&core.workspace, original)
-            .map_err(err)?;
+        collab_types::validate_whole_document_payload_route(
+            &route.app,
+            &core.workspace,
+            &route.record,
+            original,
+        )
+        .map_err(err)?;
     }
     // The compaction set leads the history; the writes after it have their own bound.
     let set = ops
@@ -58,16 +62,12 @@ pub(super) fn restore(
         // A write sealed before reader sets is history as its author signed it, under the
         // artifact its document had then: a key holder opens it as it is, and seals its content
         // again under the document's own scope.
-        let payload = if before_reader_sets(op) {
-            route.validate_sealed_before_reader_sets(&core.workspace, op)
-        } else {
-            collab_types::validate_whole_document_payload_route(
-                &route.app,
-                &core.workspace,
-                &route.record,
-                op,
-            )
-        }
+        let payload = collab_types::validate_whole_document_payload_route(
+            &route.app,
+            &core.workspace,
+            &route.record,
+            op,
+        )
         .map_err(err)?;
         if !matches!(
             payload,

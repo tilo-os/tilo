@@ -32,7 +32,7 @@ pub(super) struct PeerDocument {
     /// Restore validates every retained envelope before replay.
     pub(super) sealed: SealedLog,
     /// The writes of the record sealed before reader sets
-    /// ([`collab_types::artifact_sealed_before_reader_sets`]) whose content a key holder has
+    /// ([`collab_types::artifact_before_reader_sets`]) whose content a key holder has
     /// since sealed again under the record's own scope, in a compaction it signed: each kept as
     /// its author signed it, so who wrote what then stays provable. They are never history to
     /// replay or merge again; the compaction that took their place says which they are.
