@@ -331,7 +331,19 @@ impl Filler<'_> {
             FieldType::Time => plain(json!("2026-11-18T04:30:00Z")),
             FieldType::Identifier => plain(json!("mailto:ada@example.test")),
             FieldType::Duration => plain(json!(90)),
-            FieldType::Resource(_) | FieldType::Union(_) => plain(json!(format!("r{mark}"))),
+            FieldType::Resource(_) => plain(json!(format!("r{mark}"))),
+            FieldType::Union(cases) => {
+                // A union's value names which of its types it is: an id on its own does not say.
+                let id = format!("r{mark}");
+                let kind = cases.iter().find_map(|case| match case {
+                    FieldType::Resource(kind) => Some(kind.as_str()),
+                    _ => None,
+                });
+                match kind.and_then(type_key_of_kind) {
+                    Some(ty) => Some((json!({ "ty": ty, "id": id }), Want::Plain(json!(id)))),
+                    None => plain(json!(id)),
+                }
+            }
             FieldType::RichText => {
                 // As a read answers a stored rich text: its paragraphs a list in their order,
                 // each with its id, its kind, its words and its attributes. The ids here do
@@ -682,6 +694,14 @@ impl Walk<'_> {
             }
         }
     }
+}
+
+/// The runtime's name for the type of a tilolang package's resource kind (`tl.<app>.<Type>`):
+/// `app#Type`, as a union's encoded reference spells it.
+fn type_key_of_kind(kind: &str) -> Option<String> {
+    let rest = kind.strip_prefix("tl.")?;
+    let (app, _) = rest.rsplit_once('.')?;
+    Some(format!("{app}#{}", catalogue::kind_type_name(kind)))
 }
 
 /// A value that is no list, map, case or resource, as the JSON a filled one is compared with.

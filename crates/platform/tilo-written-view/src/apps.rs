@@ -194,7 +194,11 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
         if let Some(inner) = wrapped(ty, list) {
             let items = items(json).into_iter().map(|(id, item)| {
                 let mut item = normal(meta, inner, &item);
-                if let (Some(id), Json::Object(fields)) = (id, &mut item) {
+                // An actor is no record under an id: its reading is the actor itself, and an id
+                // written into it would keep it from reading as one.
+                if inner.trim() != "Actor"
+                    && let (Some(id), Json::Object(fields)) = (id, &mut item)
+                {
                     fields.entry("id").or_insert(Json::String(id));
                 }
                 item
