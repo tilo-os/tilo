@@ -14,13 +14,21 @@
 //
 // BUNDLE_DIR is build-tilolang-web.sh's output (a release build: a debug one is several times
 // slower). Every interaction past a frame (25 ms from input to its paint, with a margin for a headless
-// browser's own scheduling) or with a task over 50 ms is said. `--budget` fails when the numbers
+// browser's own scheduling) or with a task over 50 ms is said.
+//
+// The times are the page's own: the CPU time its main thread spent (Chromium's trace counts each
+// task's thread time) from each input to the paint after it, in each task, and from the start to
+// the first frame. A machine whose
+// other work keeps the page waiting for a core stretches the clock on the wall, not these, so a
+// loaded builder measures what an idle one does, and only more work from the page fails.
+// `wallP50`/`wallMax` keep the times on the wall beside them. `--budget` fails when the numbers
 // are past those pinned in tilolang-perf.pinned.json, which `--pin` writes from the measurement
 // with a margin for noise; they are pinned on the builder (a cargo drop-in's `exec`, CHROME=chromium-browser),
 // whose idle cores measure steadier than a shared laptop. `--attempts N` measures up to N times
 // and passes on the first within them. `--profile DIR` keeps a CPU profile of the start and of
 // each interaction there, as `<interaction>.cpuprofile` (DevTools opens it). `--cpu N` slows the
-// page's CPU N times (Chromium's throttling), and the pinned times with it.
+// page's CPU N times (Chromium's throttling, which holds the page back, so it shows in the times on
+// the wall and not in the CPU times the budget reads), and the pinned times with it.
 import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {launch, serve, sleep} from '../chrome.mjs';
@@ -43,9 +51,9 @@ const PLACES = ['Basics', 'Controls', 'Feedback', 'Backlog', 'Release board', 'D
   'Places', 'Shell parts', 'Charts and views'];
 
 // In the page, before its scripts: each input's time to the end of the rendering update after
-// it, the long tasks, and the presenter's frames as they come.
+// it, and the presenter's frames as they come.
 const CLOCK = `(() => {
-  const perf = window.__perf = {inputs: [], long: []};
+  const perf = window.__perf = {inputs: []};
   const raf = requestAnimationFrame.bind(window);
   const tasks = new MessageChannel();
   const after = [];
@@ -59,10 +67,74 @@ const CLOCK = `(() => {
       raf(() => afterTask(now => { entry.painted = now; }));
     }, {capture: true, passive: true});
   }
-  new PerformanceObserver(list => {
-    for (const entry of list.getEntries()) perf.long.push([Math.round(entry.startTime), Math.round(entry.duration)]);
-  }).observe({type: 'longtask', buffered: true});
 })()`;
+
+// The renderer's tasks, traced: each top-level task on a thread with its time on the wall and
+// the CPU time the thread spent in it, and the marks that place the page's clock on the trace's.
+const TRACE_CATEGORIES = ['toplevel', 'devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink.user_timing'];
+const SYNC_MARK = 'tilo-perf:sync';
+// Chromium's name for a top-level task in its trace.
+const TASK_EVENT = 'RunTask';
+
+// `act` returns the name of a mark the page made and its time in the page's clock, which place
+// the page's clock on the trace's.
+async function traced(browser, tab, act) {
+  const events = [];
+  const off = browser.on(message => {
+    if (message.method === 'Tracing.dataCollected') events.push(...message.params.value);
+  });
+  await tab.send('Tracing.start', {transferMode: 'ReportEvents', traceConfig: {includedCategories: TRACE_CATEGORIES}});
+  let anchor;
+  try {
+    anchor = await act();
+  } finally {
+    const done = new Promise(resolve => {
+      const stop = browser.on(message => { if (message.method === 'Tracing.tracingComplete') { stop(); resolve(); } });
+    });
+    await tab.send('Tracing.end');
+    await done;
+    off();
+  }
+  return mainThreadTasks(events, anchor);
+}
+
+// The page's clock at a mark the trace also holds, made now.
+const synced = async tab => [SYNC_MARK, await tab.evaluate(`performance.mark(${JSON.stringify(SYNC_MARK)}).startTime`)];
+
+// The page's main thread's tasks, `[start, end, cpu]` in the page's clock (ms), from a trace.
+// Chromium leaves the thread time off a few tasks of a few microseconds, which count their wall
+// time; a trace with none at all (a platform that keeps none) counts the wall time throughout.
+function mainThreadTasks(events, [anchor, at]) {
+  const names = new Map();
+  for (const event of events) {
+    if (event.ph === 'M' && event.name === 'thread_name') names.set(`${event.pid}:${event.tid}`, event.args?.name);
+  }
+  // The tab's renderer's main thread: the one that made the mark.
+  const mark = events.find(event => event.name === anchor);
+  const main = mark && `${mark.pid}:${mark.tid}`;
+  if (!mark || !/CrRendererMain/.test(names.get(main) ?? '')) return {tasks: [], threadTime: false};
+  const offset = mark.ts / 1000 - at;
+  let threadTime = false;
+  const tasks = [];
+  for (const event of events) {
+    if (event.ph !== 'X' || event.name !== TASK_EVENT || `${event.pid}:${event.tid}` !== main) continue;
+    if (event.tdur !== undefined) threadTime = true;
+    const start = event.ts / 1000 - offset;
+    tasks.push([start, start + event.dur / 1000, (event.tdur ?? event.dur) / 1000]);
+  }
+  return {tasks, threadTime};
+}
+
+// The main thread's CPU time between `from` and `to`, in the page's clock: each task's share of
+// its own CPU time, by how much of it falls between them.
+function cpuBetween(tasks, from, to) {
+  let spent = 0;
+  for (const [start, end, cpu] of tasks) {
+    const within = Math.min(end, to) - Math.max(start, from);
+    if (within > 0) spent += end > start ? cpu * within / (end - start) : 0;
+  }
+  return spent;
+}
 
 // The smallest element of the mount that reads `name`.
 const NAMED = name => `(() => {
@@ -159,9 +231,14 @@ async function measure() {
       },
     };
     await profiler.start();
-    await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=all&render=dom&theme=light`);
-    await tab.waitFor('window.renderMarks?.presented?.length > 0', {timeout: 120000});
-    await settle();
+    // The start traced, placed on the page's clock by the runtime's own mark of its first frame.
+    const FIRST_FRAME = 'tilo:first-frame';
+    const start = await traced(browser, tab, async () => {
+      await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=all&render=dom&theme=light`);
+      await tab.waitFor('window.renderMarks?.presented?.length > 0', {timeout: 120000});
+      await settle();
+      return [FIRST_FRAME, await tab.evaluate(`performance.getEntriesByName(${JSON.stringify(FIRST_FRAME)})[0]?.startTime ?? -1`)];
+    });
     await profiler.stop('startup');
     result.startup = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
       const m = window.renderMarks;
@@ -170,27 +247,33 @@ async function measure() {
       const bytes = resources.reduce((sum, r) => sum + (r.encodedBodySize || 0), 0);
       return {firstFrameMs: Math.round(m.presented[0]), firstContentfulPaintMs: Math.round(paint ?? -1),
         settledFrames: (m.domFrames ?? []).length, elements: window.__tiloDom?.stats?.elements,
-        transferredKiB: Math.round(bytes / 1024), longTasks: window.__perf.long.slice(),
+        transferredKiB: Math.round(bytes / 1024),
         // The runtime's own startup timeline (its \`tilo:\` marks), so a slow phase names itself.
         marks: Object.fromEntries(performance.getEntriesByType('mark').filter(m => m.name.startsWith('tilo:'))
           .map(m => [m.name.slice(5), Math.round(m.startTime)])),
         largest: resources.sort((a, b) => b.encodedBodySize - a.encodedBodySize).slice(0, 6)
           .map(r => [r.name.split('/').slice(-2).join('/'), Math.round(r.encodedBodySize / 1024), Math.round(r.responseEnd)])};
     })())`));
+    // What the start cost the page's main thread up to its first frame.
+    result.startup.firstFrameCpuMs = Math.round(cpuBetween(start.tasks, -Infinity, result.startup.firstFrameMs));
+    result.startup.threadTime = start.threadTime;
 
     const step = async (name, act) => {
       await settle();
       const before = await metrics();
       const startFrame = await frames();
-      await tab.evaluate('window.__perf.inputs = []; window.__perf.long = []; true');
+      await tab.evaluate('window.__perf.inputs = []; true');
       await profiler.start();
-      await act();
-      await settle();
+      const trace = await traced(browser, tab, async () => {
+        const anchor = await synced(tab);
+        await act();
+        await settle();
+        return anchor;
+      });
       await profiler.stop(name);
       const after = await metrics();
       const page = JSON.parse(await tab.evaluate(`JSON.stringify({
-        inputs: window.__perf.inputs.filter(i => i.painted !== null).map(i => i.painted - i.at),
-        long: window.__perf.long,
+        inputs: window.__perf.inputs.filter(i => i.painted !== null).map(i => [i.at, i.painted]),
         frames: (window.renderMarks.domFrames ?? []).slice(${startFrame}),
         prior: (window.renderMarks.domFrames ?? [])[${startFrame - 1}] ?? [0, 0],
         elements: window.__tiloDom?.stats?.elements,
@@ -200,11 +283,18 @@ async function measure() {
       const sum = index => (page.frames.at(-1)?.[index] ?? page.prior[index]) - page.prior[index];
       const most = index => round(Math.max(0, ...page.frames.map(frame => frame[index] ?? 0)));
       const delta = key => round((after[key] ?? 0) - (before[key] ?? 0));
+      // What each input cost the page, and what it waited on the wall.
+      const spent = page.inputs.map(([from, to]) => cpuBetween(trace.tasks, from, to));
+      const waited = page.inputs.map(([from, to]) => to - from);
       result.interactions[name] = {
         inputs: page.inputs.length,
-        p50: pct(page.inputs, 0.5),
-        max: round(Math.max(0, ...page.inputs)),
-        longTasks: page.long,
+        p50: pct(spent, 0.5),
+        max: round(Math.max(0, ...spent)),
+        wallP50: pct(waited, 0.5),
+        wallMax: round(Math.max(0, ...waited)),
+        threadTime: trace.threadTime,
+        longTasks: trace.tasks.filter(([, , cpu]) => cpu > LONG_TASK_MS)
+          .map(([start, , cpu]) => [Math.round(start), Math.round(cpu)]),
         frames: page.frames.length,
         // The slowest frame's parts: wasm's layout and encoding, and the presenter's elements.
         layoutMs: most(3), encodeMs: most(4), presentMs: most(2),
@@ -222,11 +312,16 @@ async function measure() {
       await mouse('mousePressed', point.x, point.y, {button: 'left', clickCount: 1});
       await mouse('mouseReleased', point.x, point.y, {button: 'left', clickCount: 1});
     };
+    // The next input waits a 60 Hz frame, and for the page's frame after the last one: a page
+    // the machine keeps waiting gets each input in a frame of its own, as an idle one does, so
+    // what the inputs make does not hang on how many of them a loaded machine lands in one frame.
+    const nextInput = () => Promise.all([sleep(16),
+      tab.evaluate('new Promise(done => requestAnimationFrame(() => setTimeout(done, 0)))')]);
     // A pointer moved at 60 Hz from `from` to `to`.
     const sweep = async (from, to, moves, extra) => {
       for (let i = 0; i <= moves; i++) {
         await mouse('mouseMoved', from.x + (to.x - from.x) * i / moves, from.y + (to.y - from.y) * i / moves, extra);
-        await sleep(16);
+        await nextInput();
       }
     };
 
@@ -274,7 +369,7 @@ async function measure() {
           await step(`scroll ${place}`, async () => {
             for (let i = 0; i < 30; i++) {
               await mouse('mouseWheel', scroller.x, scroller.y, {deltaX: 0, deltaY: i < 15 ? 100 : -100});
-              await sleep(16);
+              await nextInput();
             }
           });
         }
@@ -309,7 +404,7 @@ async function measure() {
       for (let i = 0; i <= 40; i++) {
         const width = WIDTH - Math.round(400 * Math.sin(Math.PI * i / 40));
         await tab.send('Emulation.setDeviceMetricsOverride', {width, height: HEIGHT, deviceScaleFactor: 1, mobile: false});
-        await sleep(16);
+        await nextInput();
       }
     });
     result.log = tab.log.filter(line => /^(EXC|ERROR)|panic/i.test(line)).slice(0, 12);
@@ -353,7 +448,7 @@ const PINNED = new URL('./tilolang-perf.pinned.json', import.meta.url);
 const longestOf = step => Math.max(0, ...(step.longTasks ?? []).map(([, duration]) => duration));
 function pin(result) {
   const widen = (n, by, plus) => Math.ceil(n * by + plus);
-  const pinned = {startup: {firstFrameMs: widen(result.startup.firstFrameMs, 2, 0), transferredKiB: widen(result.startup.transferredKiB, 1.05, 0)}, interactions: {}};
+  const pinned = {startup: {firstFrameMs: widen(result.startup.firstFrameCpuMs, 2, 0), transferredKiB: widen(result.startup.transferredKiB, 1.05, 0)}, interactions: {}};
   for (const [name, step] of Object.entries(result.interactions)) {
     if (step.missing) continue;
     pinned.interactions[name] = {frames: widen(step.frames, 1.25, 2), created: widen(step.created, 1.1, 4),
@@ -363,7 +458,7 @@ function pin(result) {
 }
 function regressions(result, pinned) {
   const said = [];
-  if (result.startup.firstFrameMs > pinned.startup.firstFrameMs * cpu) said.push(`startup: first frame at ${result.startup.firstFrameMs} ms`);
+  if (result.startup.firstFrameCpuMs > pinned.startup.firstFrameMs * cpu) said.push(`startup: ${result.startup.firstFrameCpuMs} ms of work to the first frame, pinned at ${pinned.startup.firstFrameMs * cpu}`);
   if (result.startup.transferredKiB > pinned.startup.transferredKiB) said.push(`startup: ${result.startup.transferredKiB} KiB loaded`);
   for (const [name, limit] of Object.entries(pinned.interactions)) {
     const step = result.interactions[name];
@@ -389,17 +484,20 @@ if (out) {
   mkdirSync(out, {recursive: true});
   writeFileSync(join(out, 'perf.json'), JSON.stringify(result, null, 2));
 }
-console.log(`startup: first frame ${result.startup.firstFrameMs} ms, first paint ${result.startup.firstContentfulPaintMs} ms, `
+console.log(`startup: first frame ${result.startup.firstFrameMs} ms (${result.startup.firstFrameCpuMs} ms of the page's work), first paint ${result.startup.firstContentfulPaintMs} ms, `
   + `${result.startup.transferredKiB} KiB, ${result.startup.elements} elements; largest (KiB, loaded at ms): `
   + result.startup.largest.map(([name, kib, at]) => `${name} ${kib} @${at}`).join(', '));
 console.log(`startup marks (ms): ${Object.entries(result.startup.marks ?? {}).map(([name, at]) => `${name} ${at}`).join(', ')}`);
-const columns = ['inputs', 'p50', 'max', 'frames', 'layoutMs', 'encodeMs', 'presentMs', 'writes', 'created', 'styleRecalcs', 'layouts', 'scriptMs', 'elements', 'kib'];
+const columns = ['inputs', 'p50', 'max', 'wallP50', 'wallMax', 'frames', 'layoutMs', 'encodeMs', 'presentMs', 'writes', 'created', 'styleRecalcs', 'layouts', 'scriptMs', 'elements', 'kib'];
 console.log(['interaction'.padEnd(24), ...columns.map(c => c.padStart(9)), '  long tasks'].join(''));
 for (const [name, step] of Object.entries(result.interactions)) {
   console.log([name.padEnd(24), ...columns.map(c => String(step[c] ?? '-').padStart(9)),
     `  ${(step.longTasks ?? []).map(([, d]) => d).join(',')}`].join(''));
 }
 for (const line of result.log ?? []) console.log(line);
+if (!result.startup.threadTime || Object.values(result.interactions).some(step => step.threadTime === false)) {
+  console.log('this browser traced no thread time: the times are on the wall, and a loaded machine stretches them');
+}
 for (const line of overFrame(result)) console.log(`over a frame: ${line}`);
 if (missed.length) {
   console.error(`failed:\n  ${missed.join('\n  ')}`);
