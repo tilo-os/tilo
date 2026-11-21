@@ -384,6 +384,14 @@ impl Shared {
         }
     }
 
+    /// The pages account sign-ins asked for: each opened in a window of its own, and closed when
+    /// its sign-in ends.
+    pub(crate) fn follow_sign_in_pages(&self) {
+        if let (Some(accounts), Some(launch)) = (self.table.accounts(), &self.launch) {
+            accounts.follow(launch);
+        }
+    }
+
     /// The windows this device left open: ask for the next one once the one before it came, each
     /// into the tab it was in.
     pub(crate) fn follow_restore(&self) {

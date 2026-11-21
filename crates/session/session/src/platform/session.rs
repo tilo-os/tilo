@@ -2682,12 +2682,7 @@ impl Session {
             {
                 chooser.follow(&**launch);
             }
-            // The pages account sign-ins asked for, opened for them and closed when they end.
-            if let (Some(accounts), Some(launch)) =
-                (self.shared.table.accounts(), &self.shared.launch)
-            {
-                accounts.follow(launch);
-            }
+            self.shared.follow_sign_in_pages();
             // The windows this device left open, one at a time, each into the
             // tab it was in.
             self.shared.follow_restore();
