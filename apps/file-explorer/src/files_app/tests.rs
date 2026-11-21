@@ -261,7 +261,7 @@ mod open_with_tests {
                 rows[0],
                 (
                     Some(ui::icons::Icon::File),
-                    Some("System".into()),
+                    None,
                     Some("app:org.gnome.Evince.desktop".into())
                 )
             );
@@ -284,6 +284,36 @@ mod open_with_tests {
             w.state().selection.select_only(0);
             w.state().selection.toggle(1);
             assert_eq!(w.state().open_with_subject(), None, "one file at a time");
+        }
+
+        phase open_with_says_where_an_app_came_from_only_beside_one_of_its_name;
+        {
+            let w = pdf_widget();
+            let details = |w: &FileExplorerWidget| -> Vec<Option<String>> {
+                let (rows, _) = w.state().open_with_rows();
+                rows.iter()
+                    .filter_map(|row| match row {
+                        MenuItem::Action { detail, .. } => Some(detail.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            assert!(
+                details(&w).iter().all(Option::is_none),
+                "two apps of two names: {:?}",
+                details(&w)
+            );
+            let mut same = pdf_apps();
+            same[1].name = "evince ".into();
+            same[1].source = Some(runtime_portal::tools::AppKind::Tilo);
+            session_api::listing(same);
+            w.state().invalidate_open_with();
+            let told = details(&w);
+            assert!(
+                told.iter().take(2).all(Option::is_some),
+                "two apps of one name say where each came from: {told:?}"
+            );
+            assert_ne!(told[0], told[1], "and the two read apart");
         }
 
         phase a_type_no_app_opens_says_so_and_opens_nothing;

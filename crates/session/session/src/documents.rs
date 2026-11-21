@@ -143,8 +143,8 @@ pub(crate) fn app_of(launch: &Launch) -> Option<&str> {
 }
 
 /// The apps that open a document, as Files' "Open with" rows read them, the one it opens with today
-/// first: what each is called, the glyph its app rows wear, and — where two apps that open the same
-/// document go by one name — where this device got it, so the two rows never read alike.
+/// first: what each is called, the glyph its app rows wear, and where this device got it, which
+/// tells two rows of one name apart.
 pub(crate) fn candidates(launches: &[Launch], lists: &AppLists) -> Vec<DocumentApp> {
     let mut rows: Vec<DocumentApp> = Vec::with_capacity(launches.len());
     for launch in launches {
@@ -158,15 +158,7 @@ pub(crate) fn candidates(launches: &[Launch], lists: &AppLists) -> Vec<DocumentA
         }
         rows.push(candidate(app, lists));
     }
-    let names: Vec<String> = rows.iter().map(|row| named(&row.name)).collect();
-    for (index, (row, own)) in rows.iter_mut().zip(&names).enumerate() {
-        let shared = names
-            .iter()
-            .enumerate()
-            .any(|(other, name)| other != index && name == own && !name.is_empty());
-        if shared {
-            row.source = source_of(&row.id, lists);
-        }
+    for (index, row) in rows.iter_mut().enumerate() {
         row.is_default = index == 0;
     }
     rows
@@ -229,11 +221,6 @@ fn source_of(app: &str, lists: &AppLists) -> Option<AppKind> {
         .then_some(AppKind::Tilo)
 }
 
-/// A name as two rows are told apart by it, whatever case their entry writes.
-fn named(name: &str) -> String {
-    name.trim().to_lowercase()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,8 +270,8 @@ mod tests {
         }
     }
 
-    /// A host candidate is named by its entry, wears its category's glyph, and — where a Tilo app
-    /// goes by the same name — says where the machine got it.
+    /// A host candidate is named by its entry, wears its category's glyph, and says where the
+    /// machine got it.
     #[test]
     fn a_host_candidate_is_named_by_its_entry() {
         let rows = candidates(&[host("org.gnome.TextEditor")], &lists());
@@ -292,7 +279,11 @@ mod tests {
         assert_eq!(rows[0].name, "Editor", "not its desktop id");
         assert_eq!(rows[0].icon.as_deref(), Some("box"), "a utility's glyph");
         assert!(rows[0].is_default, "the app it opens with today");
-        assert_eq!(rows[0].source, None, "one app alone needs no place said");
+        assert_eq!(
+            rows[0].source,
+            Some(AppKind::Flatpak),
+            "where the machine got it, which a window handing a file over reads"
+        );
 
         let both = candidates(
             &[

@@ -98,7 +98,13 @@ impl FilesState {
             {
                 item = item.with_image(image);
             }
-            if let Some(source) = app.source {
+            // Where the machine got an app tells two rows of one name apart; an app alone needs
+            // no place said.
+            let named = |name: &str| name.trim().to_lowercase();
+            let shared = candidates
+                .iter()
+                .any(|other| other.id != app.id && named(&other.name) == named(&app.name));
+            if shared && let Some(source) = app.source {
                 item = item.with_detail(crate::applications::kind_label(source));
             }
             items.push(item);
