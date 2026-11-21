@@ -234,7 +234,7 @@ mod tests {
                 active_switched: true,
                 ..Default::default()
             }
-            .describe()
+            .describe(&ui::history_source::AuthorDirectory::new())
             .expect("workspace switch is activity")
             .0;
             assert_eq!(summary, "Switched workspace");

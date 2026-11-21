@@ -149,6 +149,7 @@ history-group-targets = { $action } { $things }
 history-group-targets-mixed = Changed { $things }
 history-group-targets-two = { $first } and { $second }
 history-group-targets-many = { $count } items
+history-fold-more = { $first }, { $second } and { $rest } more
 history-group-named-by = named by { $name }
 history-span-minutes = { $count } min
 history-span-hours = { $count } h

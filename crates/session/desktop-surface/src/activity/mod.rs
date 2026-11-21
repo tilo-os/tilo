@@ -21,6 +21,29 @@ pub use pane::{
     WorkspaceScope, is_document_write, is_personal, is_read, refused_to_agent,
 };
 
+/// What the signed values a workspace's governance keeps say: its membership operations and its
+/// device rows, which only the workspace's engine reads and verifies. The host that keeps the
+/// workspace hands one to its history ([`ActivityTree::governance_reader`]), so those changes are
+/// named by what they did.
+pub trait GovernanceReader {
+    /// What the membership operation stored as `op` does, when it proves its writer.
+    fn membership(&self, op: &[u8]) -> Option<MembershipWrite>;
+    /// The name the device row stored as `row` gives its device, when it is one.
+    fn device_label(&self, row: &[u8]) -> Option<String>;
+}
+
+/// What one membership operation of a workspace does, as its history words it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MembershipWrite {
+    /// Changes to who is in the workspace and what they may do, in the order they were made.
+    Changes(Vec<tilo_action_policy::Change>),
+    /// `person` (as the workspace names its members) came in through an invitation.
+    Admitted { person: String },
+    /// Which parts of the workspace's governance another change wrote: a record of that change,
+    /// which its own row names, and nothing anyone did.
+    Recorded,
+}
+
 /// A causal document paired with its admitted desktop projection. Implementors retain native
 /// mutation/persistence authority; the default snapshot is read-only.
 pub trait ActivityTree: Clone + Deref<Target = Layout> + DerefMut {
@@ -42,6 +65,10 @@ pub trait ActivityTree: Clone + Deref<Target = Layout> + DerefMut {
     /// The workspace's own document — its governance, and the layout it keeps at its root — where
     /// the document [`Self::document`] reads is another record of the same workspace.
     fn governance_document(&self) -> Option<&AutoCommit> {
+        None
+    }
+    /// What reads the signed values the workspace's governance keeps, where the host has one.
+    fn governance_reader(&self) -> Option<std::rc::Rc<dyn GovernanceReader>> {
         None
     }
     /// The workspace whose layout the document holds, where it holds one workspace's: every change
@@ -68,6 +95,8 @@ pub struct ActivitySnapshot {
     /// The workspace's own document, where this document is one of its records: what it governs —
     /// who owns it, who it is shared with, what it grants — is read from there.
     governance: Option<AutoCommit>,
+    /// What reads the signed values in [`Self::governance`].
+    reader: Option<std::rc::Rc<dyn GovernanceReader>>,
     /// The workspace whose layout the document holds, where it holds one workspace's.
     owning: Option<tilo_desktop_model::WorkspaceId>,
     /// What takes a change the model wrote back to the layout it came from: a host that keeps the
@@ -97,6 +126,7 @@ impl ActivitySnapshot {
             workspace: Some(workspace),
             shape: Shape::Devices,
             governance: None,
+            reader: None,
             owning: None,
             commit: None,
         };
@@ -118,6 +148,7 @@ impl ActivitySnapshot {
             workspace: None,
             shape: Shape::Devices,
             governance: None,
+            reader: None,
             owning: None,
             commit: None,
         };
@@ -139,6 +170,7 @@ impl ActivitySnapshot {
             workspace: None,
             shape: Shape::Layout,
             governance: None,
+            reader: None,
             owning: Some(workspace_id),
             commit: None,
         };
@@ -162,6 +194,13 @@ impl ActivitySnapshot {
         self.governance = Some(document);
         self
     }
+
+    /// Read the signed values the workspace's governance keeps with `reader`.
+    #[must_use]
+    pub fn reading_governance(mut self, reader: std::rc::Rc<dyn GovernanceReader>) -> Self {
+        self.reader = Some(reader);
+        self
+    }
 }
 impl Deref for ActivitySnapshot {
     type Target = Layout;
@@ -183,6 +222,9 @@ impl ActivityTree for ActivitySnapshot {
     }
     fn governance_document(&self) -> Option<&AutoCommit> {
         self.governance.as_ref()
+    }
+    fn governance_reader(&self) -> Option<std::rc::Rc<dyn GovernanceReader>> {
+        self.reader.clone()
     }
     fn document_workspace(&self) -> Option<WorkspaceId> {
         self.owning

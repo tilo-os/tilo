@@ -356,6 +356,17 @@ impl WorkspaceActivityPane {
             .filter(|entry| filter.matches(entry))
             .filter(|entry| window.is_none_or(|window| self.in_window(entry, window)))
             .collect::<Vec<_>>();
+        // A run of changes the timeline folds into one row is listed once, as that row: its newest
+        // change, in the row's words.
+        let folds = self.timeline.folds();
+        let visible = visible
+            .into_iter()
+            .filter(|entry| {
+                folds
+                    .get(&entry.id)
+                    .is_none_or(|(newest, _)| *newest == entry.id)
+            })
+            .collect::<Vec<_>>();
         // A window's own history names nothing of the workspace's beyond its resources: no other
         // app's lens, no group or person none of its changes are in.
         let in_view = |group: &str| {
@@ -377,7 +388,11 @@ impl WorkspaceActivityPane {
                 .take(query.page())
                 .map(|entry| {
                     let refused = refused.get(&hex(&entry.id)).map(Vec::as_slice);
-                    self.wire_entry(entry, groups.get(&entry.id), refused)
+                    let mut wire = self.wire_entry(entry, groups.get(&entry.id), refused);
+                    if let Some((_, folded)) = folds.get(&entry.id) {
+                        wire.summary.clone_from(folded);
+                    }
+                    wire
                 })
                 .collect(),
             groups: self

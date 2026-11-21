@@ -243,6 +243,33 @@ activity-event-revoked-capabilities = { $count ->
        *[other] Revoked { $count } capabilities
     }
 activity-event-membership = Changed who is in the workspace
+activity-event-member-added = Added { $name } as { $role ->
+        [viewer] a viewer
+        [commenter] a commenter
+        [editor] an editor
+        [moderator] a moderator
+       *[owner] an owner
+    }
+activity-event-member-joined = Added { $name } through an invitation
+activity-event-member-removed = Removed { $name } from the workspace
+activity-event-member-role = Made { $name } { $role ->
+        [viewer] a viewer
+        [commenter] a commenter
+        [editor] an editor
+        [moderator] a moderator
+       *[owner] an owner
+    }
+activity-event-members-added = Added { $names } to the workspace
+activity-event-member-unknown = a member
+activity-event-device-added = Added the device “{ $name }”
+activity-event-device-added-unnamed = Added a device
+activity-event-devices-added = Added { $count } { $count ->
+        [one] device
+       *[other] devices
+    }
+activity-fold-added = Added
+activity-fold-added-devices = Added the devices
+activity-fold-device = “{ $name }”
 activity-event-created = Created the workspace
 activity-event-created-named = Created the workspace “{ $name }”
 activity-event-updated = Updated the workspace

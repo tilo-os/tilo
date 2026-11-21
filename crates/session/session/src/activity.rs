@@ -31,6 +31,29 @@ use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
 use tilo_lock::MutexRecover as _;
 
 use crate::activity_provider::ActivityWire;
+
+/// The workspace engine's reading of the signed values a workspace's governance keeps, for its
+/// history: what each membership operation did, and what each device row names its device.
+pub struct GovernanceValues;
+
+impl tilo_desktop_surface::activity::GovernanceReader for GovernanceValues {
+    fn membership(&self, op: &[u8]) -> Option<tilo_desktop_surface::activity::MembershipWrite> {
+        use tilo_desktop_surface::activity::MembershipWrite;
+        use tilo_peer_state::members::{MembershipOpCommand, SignedMembershipOp};
+        let (_, op) = SignedMembershipOp::verified_stored(op).ok()?;
+        Some(match &op.command {
+            MembershipOpCommand::Project { changes } => MembershipWrite::Changes(changes.clone()),
+            MembershipOpCommand::Admit { person, .. } => MembershipWrite::Admitted {
+                person: hex::encode(person),
+            },
+            MembershipOpCommand::Governance { .. } => MembershipWrite::Recorded,
+        })
+    }
+
+    fn device_label(&self, row: &[u8]) -> Option<String> {
+        tilo_peer_state::governance::device_row_label(row)
+    }
+}
 use crate::device_state::DeviceState;
 use crate::platform::Store;
 use crate::platform::apps::Apps;
@@ -1750,7 +1773,8 @@ mod tests {
             let kept = self.0.borrow().get(&workspace_id)?.clone();
             Some(
                 ActivitySnapshot::of_layout(tree.clone(), workspace_id, kept.layout)
-                    .governing(kept.governance),
+                    .governing(kept.governance)
+                    .reading_governance(Rc::new(GovernanceValues)),
             )
         }
 

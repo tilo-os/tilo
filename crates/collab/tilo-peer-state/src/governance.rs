@@ -19,6 +19,15 @@ use crate::state::{GovernedIdentity, RedemptionReceipt};
 /// second redemption of the same invitation.
 pub const MAX_RETAINED_IDENTITY_ADMISSIONS: usize = 8;
 
+/// The name a device row of a workspace's governance (an entry of its `peer_identities_v1`) gives
+/// its device, when the bytes are one: what a history of the workspace calls the device it added.
+#[must_use]
+pub fn device_row_label(row: &[u8]) -> Option<String> {
+    GovernedIdentity::decode(row)
+        .ok()
+        .map(|identity| identity.device_cert.device_label)
+}
+
 /// Keep the latest [`MAX_RETAINED_IDENTITY_ADMISSIONS`] receipts, in order.
 fn retain_latest_admissions(admissions: &mut Vec<RedemptionReceipt>) {
     let excess = admissions

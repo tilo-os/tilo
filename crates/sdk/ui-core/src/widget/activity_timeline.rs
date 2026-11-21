@@ -1367,6 +1367,32 @@ impl ActivityTimeline {
         Some(idx)
     }
 
+    /// Each change of a run that reads as one row ([`HistoryGroup::fold`]), with the run's newest
+    /// change and what the row says: a reader listing the changes lists the run once, as the
+    /// timeline draws it.
+    pub fn folds(&self) -> HashMap<HistoryEntryId, (HistoryEntryId, String)> {
+        let mut folds = HashMap::new();
+        let mut groups = Vec::new();
+        for group in &self.groups {
+            group.walk(&mut groups);
+        }
+        for group in groups {
+            let Some(title) = group.fold(&self.entries) else {
+                continue;
+            };
+            let Some(members) = self.entries.get(group.start..group.end) else {
+                continue;
+            };
+            let Some(newest) = members.last().map(|entry| entry.id) else {
+                continue;
+            };
+            for entry in members {
+                folds.insert(entry.id, (newest, title.clone()));
+            }
+        }
+        folds
+    }
+
     /// `true` = newest at top (default).
     pub fn set_newest_first(&mut self, newest_first: bool) {
         if self.newest_first != newest_first {
@@ -1858,7 +1884,8 @@ impl ActivityTimeline {
 
         let expanded = if self.expanded.contains(&g.key) {
             true
-        } else if self.collapsed.contains(&g.key) {
+        } else if self.collapsed.contains(&g.key) || g.fold(&self.entries).is_some() {
+            // A run that folds reads as its one row until it is opened.
             false
         } else {
             // Both conditions are about the *whole* list, not this band.

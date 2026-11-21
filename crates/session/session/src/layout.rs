@@ -2877,7 +2877,9 @@ impl crate::activity::History for LayoutHistory {
             self.layouts.layout(workspace_id).unwrap_or_default(),
         );
         Some(match self.layouts.governance(workspace_id) {
-            Some(document) => snapshot.governing(document),
+            Some(document) => snapshot
+                .governing(document)
+                .reading_governance(std::rc::Rc::new(crate::activity::GovernanceValues)),
             None => snapshot,
         })
     }

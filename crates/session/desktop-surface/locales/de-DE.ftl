@@ -275,6 +275,33 @@ activity-event-revoked-capabilities = { $count ->
        *[other] { $count } Berechtigungen entzogen
     }
 activity-event-membership = Mitglieder des Arbeitsbereichs geändert
+activity-event-member-added = { $name } als { $role ->
+        [viewer] Betrachter
+        [commenter] Kommentierende Person
+        [editor] Bearbeiter
+        [moderator] Moderator
+       *[owner] Eigentümer
+    } hinzugefügt
+activity-event-member-joined = { $name } über eine Einladung hinzugefügt
+activity-event-member-removed = { $name } aus dem Arbeitsbereich entfernt
+activity-event-member-role = { $name } zu { $role ->
+        [viewer] Betrachter
+        [commenter] Kommentierender Person
+        [editor] Bearbeiter
+        [moderator] Moderator
+       *[owner] Eigentümer
+    } gemacht
+activity-event-members-added = { $names } zum Arbeitsbereich hinzugefügt
+activity-event-member-unknown = ein Mitglied
+activity-event-device-added = Gerät „{ $name }“ hinzugefügt
+activity-event-device-added-unnamed = Ein Gerät hinzugefügt
+activity-event-devices-added = { $count } { $count ->
+        [one] Gerät
+       *[other] Geräte
+    } hinzugefügt
+activity-fold-added = Hinzugefügt:
+activity-fold-added-devices = Geräte hinzugefügt:
+activity-fold-device = „{ $name }“
 activity-event-created = Arbeitsbereich erstellt
 activity-event-created-named = Arbeitsbereich „{ $name }“ erstellt
 activity-event-updated = Arbeitsbereich aktualisiert

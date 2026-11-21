@@ -535,8 +535,8 @@ pub use widget::history::{
     hue_to_rgb,
 };
 pub use widget::history_group::{
-    GroupNameRequest, GroupingConfig, HistoryGroup, MAX_GROUP_DEPTH, NamedRange, OpFamily,
-    group_entries,
+    FOLD_ACTION_FACET, FOLD_ITEM_FACET, GroupNameRequest, GroupingConfig, HistoryGroup,
+    MAX_GROUP_DEPTH, NamedRange, OpFamily, group_entries,
 };
 pub use widget::name_field::{NameField, NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`

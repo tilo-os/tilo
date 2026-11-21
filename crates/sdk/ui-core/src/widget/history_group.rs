@@ -23,6 +23,22 @@ pub const DEFAULT_MAX_GROUP: usize = 200;
 
 pub const MAX_GROUP_DEPTH: usize = 2;
 
+/// The facet a change names what it did by, when changes that did it one after another read as
+/// one row: "Added" for a member added. Its value is the verb a folded row starts with.
+pub const FOLD_ACTION_FACET: &str = "tilo.history.fold";
+/// The facet naming what a foldable change did it to ("Ada"): a folded row lists each once.
+pub const FOLD_ITEM_FACET: &str = "tilo.history.fold-item";
+
+fn facet<'a>(entry: &'a HistoryEntry, key: &str) -> Option<&'a str> {
+    entry
+        .context
+        .as_ref()?
+        .facets
+        .iter()
+        .find(|facet| facet.key == key)
+        .map(|facet| facet.value.as_str())
+}
+
 /// A user's name over a run of history, as stored in the document.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NamedRange {
@@ -142,6 +158,55 @@ impl HistoryGroup {
         self.name.is_none() && self.len() == 1 && self.children.is_empty()
     }
 
+    /// What the band reads as when it folds into one row: a run of one author's changes, of one
+    /// kind, that each did the same ([`FOLD_ACTION_FACET`]) to something ([`FOLD_ITEM_FACET`]):
+    /// "Added Ada and Claude Code", or the sentence they each said when they all said one. `None`
+    /// for any other band.
+    pub fn fold(&self, entries: &[HistoryEntry]) -> Option<String> {
+        if self.name.is_some() || self.work.is_some() || !self.children.is_empty() || self.len() < 2
+        {
+            return None;
+        }
+        let members = entries.get(self.start..self.end)?;
+        let first = members.first()?;
+        let action = facet(first, FOLD_ACTION_FACET)?;
+        let mut items: Vec<&str> = Vec::new();
+        for entry in members {
+            if entry.entry_kind != first.entry_kind
+                || facet(entry, FOLD_ACTION_FACET) != Some(action)
+            {
+                return None;
+            }
+            let item = facet(entry, FOLD_ITEM_FACET)?;
+            if !items.contains(&item) {
+                items.push(item);
+            }
+        }
+        if members.iter().all(|entry| entry.summary == first.summary) {
+            return Some(first.summary.clone());
+        }
+        let things = match items.as_slice() {
+            [one] => (*one).to_owned(),
+            [first, second] => widget_format(
+                "history-group-targets-two",
+                &[("first", (*first).into()), ("second", (*second).into())],
+            ),
+            [first, second, rest @ ..] => widget_format(
+                "history-fold-more",
+                &[
+                    ("first", (*first).into()),
+                    ("second", (*second).into()),
+                    ("rest", rest.len().into()),
+                ],
+            ),
+            [] => return None,
+        };
+        Some(widget_format(
+            "history-group-targets",
+            &[("action", action.into()), ("things", things.as_str().into())],
+        ))
+    }
+
     /// The line a reader scans: the user's name, or a derived description of
     /// what the range contains.
     ///
@@ -156,6 +221,9 @@ impl HistoryGroup {
                 .get(self.start)
                 .map(|e| e.summary.clone())
                 .unwrap_or_default();
+        }
+        if let Some(title) = self.fold(entries) {
+            return title;
         }
         if let Some(title) = self.targets_title(entries) {
             return title;
@@ -556,6 +624,9 @@ fn derived_groups(
         let i = lo.saturating_add(offset).saturating_add(1);
         let author_changed = author_key(prev) != author_key(cur);
         let family_changed = OpFamily::of(prev.entry_kind) != OpFamily::of(cur.entry_kind);
+        // A run of changes that each did the same to something reads as one row of its own
+        // ([`HistoryGroup::fold`]), never as part of a band of other work.
+        let fold_changed = facet(prev, FOLD_ACTION_FACET) != facet(cur, FOLD_ACTION_FACET);
         let timed =
             prev.timestamp != SystemTime::UNIX_EPOCH && cur.timestamp != SystemTime::UNIX_EPOCH;
         let gap = cur
@@ -564,7 +635,7 @@ fn derived_groups(
             .unwrap_or_default();
         let idle = timed && gap > cfg.idle_gap;
         let full = i.saturating_sub(start) >= cfg.max_changes;
-        if author_changed || family_changed || idle || full {
+        if author_changed || family_changed || fold_changed || idle || full {
             if let Some(g) = finish_group(entries, start, i, depth, None, Vec::new()) {
                 out.push(g);
             }

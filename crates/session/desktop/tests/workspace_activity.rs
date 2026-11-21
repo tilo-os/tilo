@@ -363,6 +363,122 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase workspace_activity_names_setup_by_what_it_did_and_folds_it;
+    // A workspace being set up by its devices: each action's receipt, what a device holds of it,
+    // where a device that keeps it answers, the operation recording which rows a change wrote,
+    // a device added (its row written twice) and two people added. Listing the bookkeeping, naming
+    // a change by "Updated the workspace", or listing the device or the people once per change must
+    // fail this regression.
+    {
+        use automerge::{ObjType, ScalarValue, transaction::CommitOptions};
+        use std::rc::Rc;
+        use tilo_desktop::activity::{GovernanceReader, MembershipWrite};
+
+        /// The workspace engine's reading of the values below, which this test writes in the
+        /// clear: an operation's bytes are "recorded" or the person it adds.
+        struct Engine;
+        impl GovernanceReader for Engine {
+            fn membership(&self, op: &[u8]) -> Option<MembershipWrite> {
+                let op = std::str::from_utf8(op).ok()?;
+                Some(match op.strip_prefix("add:") {
+                    Some(person) => MembershipWrite::Changes(vec![
+                        tilo_action_policy::Change::AddMember {
+                            person: person.to_owned(),
+                            role: tilo_action_policy::Role::Editor,
+                        },
+                    ]),
+                    None => MembershipWrite::Recorded,
+                })
+            }
+            fn device_label(&self, row: &[u8]) -> Option<String> {
+                std::str::from_utf8(row).ok().map(str::to_owned)
+            }
+        }
+
+        let workspace = Workspace::new(WorkspaceId::from_u128(4), "Garden");
+        let mut governance = AutoCommit::new();
+        let mut at = 1_800_000_000;
+        let mut commit = |doc: &mut AutoCommit| {
+            doc.commit_with(CommitOptions::default().with_time(at));
+            at += 1;
+        };
+        governance
+            .put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
+            .unwrap();
+        let maps = [
+            "effect_receipts_v1",
+            "held_copies_v1",
+            "keeping_devices_v1",
+            "peers",
+            "peer_identities_v1",
+        ]
+        .map(|key| governance.put_object(ROOT, key, ObjType::Map).unwrap());
+        let [receipts, copies, keeping, peers, identities] = &maps;
+        commit(&mut governance);
+        let op = |doc: &mut AutoCommit, id: &str, says: &str| {
+            doc.put(
+                ROOT,
+                format!("members_v3/{id}"),
+                ScalarValue::Bytes(says.as_bytes().to_vec()),
+            )
+            .unwrap();
+        };
+        governance.put(keeping, "d1", "{}").unwrap();
+        commit(&mut governance);
+        op(&mut governance, "01", "recorded");
+        commit(&mut governance);
+        governance.put(copies, "d1", "{}").unwrap();
+        commit(&mut governance);
+        for written in ["02", "03"] {
+            governance.put(peers, "d2", "").unwrap();
+            governance
+                .put(identities, "d2", ScalarValue::Bytes(b"Laptop".to_vec()))
+                .unwrap();
+            commit(&mut governance);
+            op(&mut governance, written, "recorded");
+            commit(&mut governance);
+        }
+        for person in ["ad", "cc"] {
+            op(&mut governance, person, &format!("add:{}", person.repeat(32)));
+            commit(&mut governance);
+        }
+        governance.put(receipts, "d2/1", "{}").unwrap();
+        commit(&mut governance);
+
+        let mut tree = tilo_desktop::activity::ActivitySnapshot::of_layout(
+            Layout {
+                active: workspace.id(),
+                workspaces: vec![workspace.clone()],
+                ..Default::default()
+            },
+            workspace.id(),
+            AutoCommit::new(),
+        )
+        .governing(governance)
+        .reading_governance(Rc::new(Engine));
+        let mut pane = WorkspaceActivityPane::new();
+        for (person, name) in [("ad", "Ada"), ("cc", "Claude Code")] {
+            pane.authors_mut().register(
+                &person.repeat(32),
+                ui::widget::HistoryAuthor::new(name, 120.0, person),
+            );
+        }
+        pane.begin_view(tree.active);
+        pane.refresh(&mut tree);
+        let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+        let summaries = feed
+            .entries
+            .iter()
+            .map(|entry| entry.summary.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summaries,
+            ["Added Ada and Claude Code", "Added the device “Laptop”"],
+            "setup named by what it did, each run of it once, newest first"
+        );
+        pane.finish_view(tree.active);
+    }
+
     phase workspace_activity_unsettled_refresh_retains_only_current_admission_rows;
     {
         use tilo_desktop::activity::*;

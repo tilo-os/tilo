@@ -1587,11 +1587,16 @@ impl WorkspaceActivityPane {
             .source
             .entries_since(tree.document_mut(), &mut self.history_log);
         self.last_rows = self.history_log.rows_revision();
+        let reader = tree.governance_reader();
         let mut tags = describe_workspace_changes(
             tree.document_mut(),
             &self.history_log,
             &mut entries,
             &mut self.workspace_changes,
+            &Readers {
+                governance: reader.as_deref(),
+                authors: self.source.authors(),
+            },
         );
         // The document holding one workspace's layout is that workspace's: every change of it is
         // the workspace's, whichever part of the record it wrote.
@@ -1743,11 +1748,16 @@ impl WorkspaceActivityPane {
         let mut rows = self
             .source
             .entries_since(&mut document, &mut self.governance_log);
+        let reader = tree.governance_reader();
         let row_tags = describe_workspace_changes(
             &mut document,
             &self.governance_log,
             &mut rows,
             &mut self.workspace_changes,
+            &Readers {
+                governance: reader.as_deref(),
+                authors: self.source.authors(),
+            },
         );
         self.governance_rows = rows.iter().map(|row| row.id).collect();
         let workspace = Some(tree.active);
@@ -2519,18 +2529,26 @@ pub(super) struct WorkspaceChange {
 }
 
 impl WorkspaceChange {
-    fn read(doc: &mut automerge::AutoCommit, deps: &[ChangeHash], hash: ChangeHash) -> Self {
+    fn read(
+        doc: &mut automerge::AutoCommit,
+        deps: &[ChangeHash],
+        hash: ChangeHash,
+        reader: Option<&dyn super::GovernanceReader>,
+    ) -> Self {
         #[cfg(test)]
         WORKSPACE_CHANGE_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
         let patches = doc.diff(deps, &[hash]);
         let mut counts = PatchCounts::default();
         for patch in &patches {
-            counts.record(patch);
+            counts.record(patch, reader);
         }
+        // A change that only recorded which parts of the governance another change wrote is that
+        // change's bookkeeping.
+        let recorded = counts.recorded.clone();
         Self {
             workspace: workspace_touched(doc, &patches, hash),
+            bookkeeping: is_workspace_bookkeeping(&patches, &|key| recorded.iter().any(|held| held == key)),
             counts,
-            bookkeeping: is_workspace_bookkeeping(&patches),
         }
     }
 }
@@ -2549,11 +2567,19 @@ thread_local! {
 /// diffed. Each entry's hash and dependencies come from `log`, the history
 /// log `entries` were read through, so the workspace's changes are not listed
 /// again.
+/// What reads a workspace change's patches into words: the host's reader of the signed values its
+/// governance keeps, and who the people its changes name are.
+struct Readers<'a> {
+    governance: Option<&'a dyn super::GovernanceReader>,
+    authors: &'a ui::history_source::AuthorDirectory,
+}
+
 fn describe_workspace_changes(
     doc: &mut automerge::AutoCommit,
     log: &ui::history_source::HistoryLog,
     entries: &mut [HistoryEntry],
     known: &mut HashMap<ChangeHash, WorkspaceChange>,
+    readers: &Readers<'_>,
 ) -> Vec<Option<WorkspaceId>> {
     let mut tags: Vec<Option<WorkspaceId>> = vec![None; entries.len()];
     for (entry, tag) in entries.iter_mut().zip(&mut tags) {
@@ -2563,9 +2589,9 @@ fn describe_workspace_changes(
         // `deps -> [hash]` isolates exactly that change.
         let change = known
             .entry(hash)
-            .or_insert_with(|| WorkspaceChange::read(doc, deps, hash));
+            .or_insert_with(|| WorkspaceChange::read(doc, deps, hash, readers.governance));
         *tag = change.workspace;
-        if let Some((summary, entry_kind)) = change.counts.describe() {
+        if let Some((summary, entry_kind)) = change.counts.describe(readers.authors) {
             // A change that says what was done keeps its own words; one that only says the layout
             // changed is read from its patches, which say which window opened or whose name
             // changed.
@@ -2577,6 +2603,19 @@ fn describe_workspace_changes(
                 entry.summary = summary;
             }
             entry.entry_kind = entry_kind;
+            // Changes that each did the same to someone, one after another, read as one row:
+            // "Added Ada and Claude Code".
+            if let Some((action, item)) = change.counts.fold(readers.authors) {
+                let mut context = entry.context.take().unwrap_or_default();
+                context.facets.retain(|facet| {
+                    facet.key != ui::FOLD_ACTION_FACET && facet.key != ui::FOLD_ITEM_FACET
+                });
+                context.facets.extend([
+                    ui::tilo_actions::ActionFacet::new(ui::FOLD_ACTION_FACET, action),
+                    ui::tilo_actions::ActionFacet::new(ui::FOLD_ITEM_FACET, item),
+                ]);
+                entry.context = Some(context);
+            }
             if let Some(tag) = change.counts.feed_kind().feed_tag() {
                 let mut context = entry.context.take().unwrap_or_default();
                 if !context
@@ -2614,22 +2653,35 @@ fn describe_workspace_changes(
 
 /// The workspace keys a desktop writes to keep its projection consistent (the id counter, the
 /// record index, schedule claims, and in older workspaces who owned each id namespace and a kept
-/// strip's marker): state about the workspace, not something anyone did in it.
+/// strip's marker), and those its devices write to keep it: the receipt of each action done in it
+/// (the action is its own row), what each device holds of it, where each device that keeps it
+/// answers, and the invitation parts its receipts share. State about the workspace, not something
+/// anyone did in it.
 const WORKSPACE_BOOKKEEPING_KEYS: &[&str] = &[
     tilo_desktop_model::projection::WORKSPACE_DESKTOP_COUNTER_KEY,
     "contents_owners_v1",
     tilo_desktop_model::projection::WORKSPACE_RECORDS_KEY,
     tilo_desktop_model::projection::WORKSPACE_SCHEDULE_CLAIMS_KEY,
     "retained_empty_v1",
+    tilo_desktop_model::projection::WORKSPACE_EFFECT_RECEIPTS_KEY,
+    "held_copies_v1",
+    "keeping_devices_v1",
+    "invitation_parts_v1",
 ];
 
 /// Whether a change only wrote the workspace's bookkeeping: its own state keys, or the record's
 /// copy of its fields — a name, an owner, a grant — which is state about the workspace, not
 /// something anyone did in it.
-fn is_workspace_bookkeeping(patches: &[automerge::Patch]) -> bool {
+fn is_workspace_bookkeeping(patches: &[automerge::Patch], recorded: &dyn Fn(&str) -> bool) -> bool {
     !patches.is_empty()
         && patches.iter().all(|patch| {
             if in_workspace_copy(patch) {
+                return true;
+            }
+            if patch.path.is_empty()
+                && let automerge::PatchAction::PutMap { key, .. } = &patch.action
+                && recorded(key)
+            {
                 return true;
             }
             let leaf = match &patch.action {
@@ -2718,8 +2770,16 @@ fn workspace_touched(
 struct PatchCounts {
     grants: Vec<String>,
     revokes: usize,
-    /// Signed changes to who is in the workspace, their roles and its grants.
+    /// Signed changes to who is in the workspace, their roles and its grants, that no reader could
+    /// say more of.
     membership: usize,
+    /// What the signed membership changes did, person by person, as the host read them.
+    members: Vec<MemberStep>,
+    /// The keys of operations that only recorded which parts of the governance another change
+    /// wrote.
+    recorded: Vec<String>,
+    /// The devices whose rows the change wrote, each by its name where the host read one.
+    devices: Vec<Option<String>>,
     names: Vec<String>,
     owner_set: bool,
     workspace_set: bool,
@@ -2738,7 +2798,7 @@ struct PatchCounts {
 }
 
 impl PatchCounts {
-    fn record(&mut self, p: &automerge::Patch) {
+    fn record(&mut self, p: &automerge::Patch, reader: Option<&dyn super::GovernanceReader>) {
         // The record keeps a copy of each workspace's own fields — its name,
         // its workspace, its policy and the grants in it — under
         // `workspaces/<id>/workspace`, written once by whichever device first
@@ -2748,24 +2808,10 @@ impl PatchCounts {
             return;
         }
         let container = path_tail(p);
+        if self.record_governance(p, &container, reader) {
+            return;
+        }
         match (&p.action, container.as_str()) {
-            (automerge::PatchAction::PutMap { value, .. }, "sandbox") => {
-                self.grants.push(
-                    describe_sandbox(&value.0).unwrap_or_else(|| t("activity-capability-unknown")),
-                );
-            }
-            (automerge::PatchAction::DeleteMap { .. }, "sandbox") => {
-                self.revokes = self.revokes.saturating_add(1);
-            }
-            // Who is in the workspace, their roles and its grants: each change
-            // a signed operation under its own root key.
-            (automerge::PatchAction::PutMap { key, .. }, "")
-                if key
-                    .strip_prefix(tilo_desktop_model::projection::WORKSPACE_MEMBERS_KEY)
-                    .is_some_and(|rest| rest.starts_with('/')) =>
-            {
-                self.membership = self.membership.saturating_add(1);
-            }
             // A workspace's layout: a window is an entry of its `windows` , and a group closes with
             // its last window. (Older workspaces kept each window under its group's `tabs` .)
             (automerge::PatchAction::PutMap { value, .. }, "windows" | "tabs")
@@ -2848,6 +2894,68 @@ impl PatchCounts {
         }
     }
 
+    /// What the patch `p`, landing in `container`, did to the workspace's governance: the grants
+    /// its apps' sandboxes hold, who is in it, the devices it knows. Whether it was one of those.
+    fn record_governance(
+        &mut self,
+        p: &automerge::Patch,
+        container: &str,
+        reader: Option<&dyn super::GovernanceReader>,
+    ) -> bool {
+        match (&p.action, container) {
+            (automerge::PatchAction::PutMap { value, .. }, "sandbox") => {
+                self.grants.push(
+                    describe_sandbox(&value.0).unwrap_or_else(|| t("activity-capability-unknown")),
+                );
+            }
+            (automerge::PatchAction::DeleteMap { .. }, "sandbox") => {
+                self.revokes = self.revokes.saturating_add(1);
+            }
+            // Who is in the workspace, their roles and its grants: each change
+            // a signed operation under its own root key.
+            (automerge::PatchAction::PutMap { key, value, .. }, "")
+                if key
+                    .strip_prefix(tilo_desktop_model::projection::WORKSPACE_MEMBERS_KEY)
+                    .is_some_and(|rest| rest.starts_with('/')) =>
+            {
+                self.record_membership(key, &value.0, reader);
+            }
+            // A device's row: its certificate, and what admitted it.
+            (automerge::PatchAction::PutMap { value, .. }, "peer_identities_v1") => {
+                self.devices.push(
+                    reader
+                        .zip(scalar_bytes(&value.0))
+                        .and_then(|(reader, row)| reader.device_label(row))
+                        .filter(|label| !label.trim().is_empty()),
+                );
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The signed membership operation stored under `key`, as the host reads it.
+    fn record_membership(
+        &mut self,
+        key: &str,
+        value: &Value<'_>,
+        reader: Option<&dyn super::GovernanceReader>,
+    ) {
+        match reader
+            .zip(scalar_bytes(value))
+            .and_then(|(reader, op)| reader.membership(op))
+        {
+            Some(super::MembershipWrite::Recorded) => self.recorded.push(key.to_owned()),
+            Some(super::MembershipWrite::Admitted { person }) => {
+                self.members.push(MemberStep::Admitted { person });
+            }
+            Some(super::MembershipWrite::Changes(changes)) => {
+                self.members.extend(changes.into_iter().map(MemberStep::of));
+            }
+            None => self.membership = self.membership.saturating_add(1),
+        }
+    }
+
     /// Groups the change took out of strips and did not put back: a group closes with its last
     /// window, so each is a window closed. A group moved is taken out and put back, and is no
     /// close.
@@ -2861,10 +2969,82 @@ impl PatchCounts {
         self.tabs_removed.saturating_add(self.closed_groups())
     }
 
+    /// Who and what the change brought into the workspace or out of it: its people, else the
+    /// devices whose rows it wrote.
+    fn describe_people(&self, authors: &ui::history_source::AuthorDirectory) -> Option<String> {
+        if let Some(said) = self.describe_members(authors) {
+            return Some(said);
+        }
+        if self.membership > 0 {
+            return Some(t("activity-event-membership"));
+        }
+        match self.devices.as_slice() {
+            [] => None,
+            [Some(name)] => Some(t_args(
+                "activity-event-device-added",
+                &[("name", name.into())],
+            )),
+            [None] => Some(t("activity-event-device-added-unnamed")),
+            many => Some(counted("activity-event-devices-added", many.len())),
+        }
+    }
+
+    /// What the change did to who is in the workspace, naming each person: who it added and as
+    /// what, who it removed, whose role it changed. `None` when it wrote no membership change the
+    /// host read.
+    fn describe_members(&self, authors: &ui::history_source::AuthorDirectory) -> Option<String> {
+        let named: Vec<&MemberStep> = self
+            .members
+            .iter()
+            .filter(|step| !matches!(step, MemberStep::Other))
+            .collect();
+        match named.as_slice() {
+            [] if self.members.is_empty() => None,
+            [] => Some(t("activity-event-membership")),
+            [one] => Some(one.describe(authors)),
+            many if many.iter().all(|step| step.added().is_some()) => {
+                let people: Vec<String> = many
+                    .iter()
+                    .filter_map(|step| step.added())
+                    .map(|person| member_name(authors, person))
+                    .collect();
+                Some(t_args(
+                    "activity-event-members-added",
+                    &[("names", join_titles(&people).into())],
+                ))
+            }
+            _ => Some(t("activity-event-membership")),
+        }
+    }
+
+    /// What the change did and to whom, when changes like it one after another read as one row
+    /// ([`ui::FOLD_ACTION_FACET`]): someone added, or a device.
+    fn fold(&self, authors: &ui::history_source::AuthorDirectory) -> Option<(String, String)> {
+        if let [step] = self.members.as_slice()
+            && self.membership == 0
+            && let Some(person) = step.added()
+        {
+            return Some((t("activity-fold-added"), member_name(authors, person)));
+        }
+        if self.members.is_empty()
+            && self.membership == 0
+            && let [Some(device)] = self.devices.as_slice()
+        {
+            return Some((
+                t("activity-fold-added-devices"),
+                t_args("activity-fold-device", &[("name", device.into())]),
+            ));
+        }
+        None
+    }
+
     /// The highest-priority signal wins — governance beats structural noise, and a whole-list write
     /// (the first `seed_doc_from_cache` ) is recognised before the per-field cases, or a flush that
     /// granted nothing reads as "granted 4 capabilities".
-    fn describe(&self) -> Option<(String, EntryKind)> {
+    fn describe(
+        &self,
+        authors: &ui::history_source::AuthorDirectory,
+    ) -> Option<(String, EntryKind)> {
         if self.workspaces_removed > 0 && self.workspaces_added == 0 {
             return Some((
                 counted("activity-event-removed-workspaces", self.workspaces_removed),
@@ -2918,8 +3098,8 @@ impl PatchCounts {
                 EntryKind::Access,
             ));
         }
-        if self.membership > 0 {
-            return Some((t("activity-event-membership"), EntryKind::Access));
+        if let Some(said) = self.describe_people(authors) {
+            return Some((said, EntryKind::Access));
         }
         if self.owner_set {
             return Some((t("activity-event-owner"), EntryKind::Access));
@@ -2972,6 +3152,109 @@ impl PatchCounts {
     }
 }
 
+/// One person's membership change, as a signed operation wrote it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MemberStep {
+    Added {
+        person: String,
+        role: tilo_action_policy::Role,
+    },
+    Admitted {
+        person: String,
+    },
+    Removed {
+        person: String,
+    },
+    Role {
+        person: String,
+        role: tilo_action_policy::Role,
+    },
+    /// Anything else the workspace's authority took: a ban, a grant, a role defined.
+    Other,
+}
+
+impl MemberStep {
+    fn of(change: tilo_action_policy::Change) -> Self {
+        use tilo_action_policy::Change;
+        match change {
+            Change::AddMember { person, role } => Self::Added { person, role },
+            Change::RemoveMember { person } => Self::Removed { person },
+            Change::SetRole { person, role } => Self::Role { person, role },
+            _ => Self::Other,
+        }
+    }
+
+    /// Who the step brought into the workspace, when it brought someone in.
+    fn added(&self) -> Option<&str> {
+        match self {
+            Self::Added { person, .. } | Self::Admitted { person } => Some(person),
+            _ => None,
+        }
+    }
+
+    fn describe(&self, authors: &ui::history_source::AuthorDirectory) -> String {
+        let name = |person: &str| member_name(authors, person);
+        match self {
+            Self::Added { person, role } => t_args(
+                "activity-event-member-added",
+                &[
+                    ("name", name(person).into()),
+                    ("role", role_key(*role).into()),
+                ],
+            ),
+            Self::Admitted { person } => t_args(
+                "activity-event-member-joined",
+                &[("name", name(person).into())],
+            ),
+            Self::Removed { person } => t_args(
+                "activity-event-member-removed",
+                &[("name", name(person).into())],
+            ),
+            Self::Role { person, role } => t_args(
+                "activity-event-member-role",
+                &[
+                    ("name", name(person).into()),
+                    ("role", role_key(*role).into()),
+                ],
+            ),
+            Self::Other => t("activity-event-membership"),
+        }
+    }
+}
+
+/// How the workspace names `person` (as a membership change names them), or "a member" for
+/// someone it does not know.
+fn member_name(authors: &ui::history_source::AuthorDirectory, person: &str) -> String {
+    let name = authors.resolve(person).name;
+    if name.trim().is_empty() || name == ui::history_source::UNKNOWN_AUTHOR_NAME {
+        t("activity-event-member-unknown")
+    } else {
+        name
+    }
+}
+
+/// The selector a sentence naming `role` reads it by.
+fn role_key(role: tilo_action_policy::Role) -> &'static str {
+    use tilo_action_policy::Role;
+    match role {
+        Role::Viewer => "viewer",
+        Role::Commenter => "commenter",
+        Role::Editor => "editor",
+        Role::Moderator => "moderator",
+        Role::Owner => "owner",
+    }
+}
+
+fn scalar_bytes<'a>(v: &'a Value<'_>) -> Option<&'a [u8]> {
+    match v {
+        Value::Scalar(s) => match s.as_ref() {
+            ScalarValue::Bytes(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        },
+        Value::Object(_) => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceEventKind {
     Change,
@@ -3002,7 +3285,12 @@ impl PatchCounts {
         if self.workspace_set && self.owner_set {
             return WorkspaceEventKind::Setup;
         }
-        if !self.grants.is_empty() || self.revokes > 0 || self.membership > 0 {
+        if !self.grants.is_empty()
+            || self.revokes > 0
+            || self.membership > 0
+            || !self.members.is_empty()
+            || !self.devices.is_empty()
+        {
             return WorkspaceEventKind::Change;
         }
         if self.owner_set || self.workspace_set {
