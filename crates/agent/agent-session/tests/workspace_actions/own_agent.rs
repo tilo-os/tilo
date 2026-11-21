@@ -171,7 +171,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         &session,
         &anyone,
         CatalogueQuery {
-            provider: Some(record_provider(&tasks)),
+            provider: Some(resource_provider(&tasks)),
             max_results: 500,
             ..CatalogueQuery::default()
         },
@@ -255,7 +255,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
 
     // Removing a book asks first: the agent's own word does not do, and the
     // person, asked on their laptop, allows it.
-    let books_provider = record_provider(&books);
+    let books_provider = resource_provider(&books);
     let remove = || {
         request(
             &books_provider,

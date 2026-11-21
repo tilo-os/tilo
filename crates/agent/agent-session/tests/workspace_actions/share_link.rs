@@ -5,7 +5,7 @@ use super::resource_support::{
     admit_person, on_messages, open_admitted_peer, part_route, published_message,
 };
 use super::{
-    ActionAddress, DeviceCapabilities, DocumentRoute, InvokeArgument, Seed, enrol, record_provider,
+    ActionAddress, DeviceCapabilities, DocumentRoute, InvokeArgument, Seed, enrol, resource_provider,
     request, start_browser,
 };
 use tilo_actions::remote::ReceiptStatus;
@@ -81,7 +81,7 @@ async fn the_server_mints_a_message_link_with_its_range() {
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
     let receipt = publisher
         .invoke(request(
-            &record_provider(&route),
+            &resource_provider(&route),
             ActionAddress::new(id.clone(), "share-link"),
             InvokeArgument::Json(
                 serde_json::json!({"start": 6, "end": 7, "unit": "chars"})

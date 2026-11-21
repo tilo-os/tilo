@@ -10,7 +10,7 @@
 //! nothing loading.
 
 use super::super::{Browser, CatalogueQuery, DeviceCapabilities, Duration, Path, Replica, Seed};
-use super::super::{enrol, record_provider, start_browser};
+use super::super::{enrol, resource_provider, start_browser};
 use chat::projection::ChatProjection as _;
 use tilo_agent_session::ReplicaActor;
 use tilo_peer_state::join::Role;
@@ -213,7 +213,7 @@ pub async fn run(bundle: &str) {
 
     // The head is in the workspace's catalogue before the reader comes.
     let head_part = chat::parts::part(2);
-    let provider = record_provider(&part_route(&workspace.workspace, &head_part));
+    let provider = resource_provider(&part_route(&workspace.workspace, &head_part));
     let (message, message_kind) = published_message(&source, &last);
     let query = CatalogueQuery {
         provider: Some(provider.clone()),
@@ -276,7 +276,7 @@ pub async fn run(bundle: &str) {
     let channel_kind = find(&source.resources(), &channel_id)
         .map(|resource| resource.kind.clone())
         .expect("the chat publishes its channel");
-    let provider = record_provider(&route);
+    let provider = resource_provider(&route);
 
     let reader_root = hex::encode(reader.cert.user_public_key);
     let decoy = "ab".repeat(32);

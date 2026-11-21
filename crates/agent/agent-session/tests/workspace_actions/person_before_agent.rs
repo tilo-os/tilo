@@ -49,7 +49,7 @@ fn agent_creates(
     let request = InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: record_provider(route),
+            provider: resource_provider(route),
             address: ActionAddress {
                 resource: issues.to_owned(),
                 action: "create-many".to_owned(),
@@ -145,7 +145,7 @@ async fn a_persons_requests_go_before_an_agents_bulk_import() {
 
     // What the person does: opens the tracker (its listing) and files one issue.
     let listing = || CatalogueQuery {
-        provider: Some(record_provider(&route)),
+        provider: Some(resource_provider(&route)),
         max_results: 64,
         ..CatalogueQuery::default()
     };

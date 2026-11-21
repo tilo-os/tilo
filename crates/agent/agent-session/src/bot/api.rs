@@ -42,7 +42,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::host_steps::{self, Asked, AskedFor, HostStepError, HostSteps, Keeps, StepCause};
 use super::item_json::OutboxRow;
-use crate::member::actions::{api_status, record_provider, resource_of};
+use crate::member::actions::{api_status, resource_provider, resource_of};
 use tilo_lock::MutexRecover as _;
 
 /// What the API needs of the bot's session and replicas.
@@ -274,7 +274,7 @@ impl<P: ApiMember> BotApi<P> {
         let mut rows = Vec::new();
         let mut providers = Vec::new();
         for (route, offered) in member.offered() {
-            let provider = record_provider(&route);
+            let provider = resource_provider(&route);
             if query
                 .provider
                 .as_ref()

@@ -159,7 +159,7 @@ async fn a_workspaces_agents_are_found_and_made_through_its_server_with_no_page_
     // of Assistant is open on any device, and nobody ever made an agent.
     let assistant_doc = browser.create(AGENTS_OWNER);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let provider = record_provider(&assistant_doc);
+    let provider = resource_provider(&assistant_doc);
 
     let membership = Membership::of(
         &hosted,

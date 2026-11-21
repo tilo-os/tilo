@@ -7,7 +7,7 @@ use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 use super::{
     ActionCallError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
     DEFAULT_DOCUMENTS, DocumentRoute, Worker, WorkspaceState, catalogue_keys, is_part,
-    provider_workspace, record_provider, resource_of,
+    provider_workspace, resource_provider, resource_of,
 };
 use tilo_server_protocol::WorkspaceId;
 
@@ -104,7 +104,7 @@ impl Worker {
             page.providers = routes
                 .iter()
                 .map(|route| CatalogueProvider {
-                    provider: record_provider(route),
+                    provider: resource_provider(route),
                     app_id: route.app_id.clone(),
                     workspace: cluster_id.clone(),
                     document_id: route.document.clone(),
@@ -149,7 +149,7 @@ impl Worker {
         // Whose conversations decide what is listed of them ([`super::direct`]).
         let person = bounded.map_or_else(|| self.member.clone(), |who| who.person.clone());
         for route in wanted {
-            let provider = record_provider(route);
+            let provider = resource_provider(route);
             let withheld = self.kept_from(&person, route, state);
             match self.listed(workspace_id, bounded, route, state) {
                 Ok(descriptors) => {

@@ -594,7 +594,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     // person is listed it, offered to each caller alike by both routes.
     let mut every = BTreeMap::new();
     for route in &records {
-        let provider = record_provider(route);
+        let provider = resource_provider(route);
         // Everything any of them is listed, beside what the host's own
         // person is: an agent is offered the record's views too.
         let mut all = listed(&actions, workspace, &owner, &provider);
@@ -725,7 +725,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 &InvokeRequest {
                     context: Some(claimed_run()),
                     ..request(
-                        &record_provider(route),
+                        &resource_provider(route),
                         descriptor.address.clone(),
                         json(arguments.clone()),
                     )

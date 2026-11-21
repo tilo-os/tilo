@@ -1,6 +1,6 @@
 use super::{
     Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Seed, enrol,
-    record_provider, start_browser,
+    resource_provider, start_browser,
 };
 use tilo_agent_session::ReplicaActor;
 use tilo_session_client::{Cmd, Outbox};
@@ -214,7 +214,7 @@ pub async fn run() {
     };
     let part = chat::parts::part(0);
     let messages_route = part_route(&workspace.workspace, &part);
-    let provider = record_provider(&messages_route);
+    let provider = resource_provider(&messages_route);
     let attached = serde_json::json!({
         "app": messages_route.app_id,
         "record": messages_route.document,

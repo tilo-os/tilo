@@ -64,7 +64,7 @@ pub use control::{
     GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
-pub use member::actions::{RESOURCE_PROVIDER, record_provider};
+pub use member::actions::{RESOURCE_PROVIDER, resource_provider};
 pub use member::{AgentMember, MemberConfig, Next, Pumped};
 pub use model::{ApiKey, CLOUD_MODEL, MakeTurns, ModelChoice};
 pub use worker::{ConfinedReplica, PageAction};

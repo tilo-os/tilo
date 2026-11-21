@@ -9,7 +9,7 @@
 
 use super::{
     CatalogueQuery, CatalogueRow, DocumentRoute, Worker, WorkspaceState, bounded, direct, named,
-    record_provider,
+    resource_provider,
 };
 use tilo_actions::remote::{Caller, CataloguePage};
 use tilo_actions::remote::{rows_weight, truncate_resources, truncate_rows};
@@ -65,12 +65,12 @@ impl Worker {
                 .is_some_and(|most| resource_count(rows) > most)
         };
         for route in routes {
-            // A record's worker reads its rows off this thread: the page waits for it there
+            // A document's worker reads its rows off this thread: the page waits for it there
             // and is assembled when this request is applied again.
             if self.call_waits.held() || rows_weight(&rows) >= wanted || resources_full(&rows) {
                 break;
             }
-            let provider = record_provider(route);
+            let provider = resource_provider(route);
             let row = |descriptor| {
                 CatalogueRow::for_action(provider.clone(), route.app_id.clone(), descriptor)
             };

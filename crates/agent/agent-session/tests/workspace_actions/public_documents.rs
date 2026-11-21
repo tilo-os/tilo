@@ -154,7 +154,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         };
         crate::support::written(&member.peer, &part, &mutation).await;
     }
-    let provider = record_provider(&route);
+    let provider = resource_provider(&route);
 
     // The host's own action service never had the note: its session was sent
     // the workspace's governance and desktop, and nothing else until asked.
@@ -248,7 +248,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         cluster_id: workspace.clone(),
         document: ui::resource::DocumentId::minted().as_str().to_owned(),
     };
-    let refused = catalogue(&mut member, &record_provider(&missing)).await;
+    let refused = catalogue(&mut member, &resource_provider(&missing)).await;
     assert!(
         matches!(
             refused,
@@ -365,7 +365,7 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
         cluster_id: workspace.clone(),
         document: String::new(),
     };
-    let chat_provider = record_provider(&chat);
+    let chat_provider = resource_provider(&chat);
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let page = member
@@ -481,7 +481,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     };
     assert_eq!(
         output.value.as_ref().map(|value| value["provider"].clone()),
-        Some(serde_json::json!(record_provider(&chat))),
+        Some(serde_json::json!(resource_provider(&chat))),
         "the open names the workspace's own chat: {output:?}"
     );
 
@@ -498,7 +498,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     arguments.insert("text".into(), serde_json::json!("hello from the agent"));
     let posted = member
         .invoke_settled(request(
-            &record_provider(&chat),
+            &resource_provider(&chat),
             ActionAddress::new(
                 ui::resource::chain_resource_id(&chat::parts::chain()),
                 "post",

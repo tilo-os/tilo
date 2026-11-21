@@ -5,7 +5,7 @@ use super::*;
 
 /// The Discord connector's workspace record, by its record provider.
 fn guild(workspace: &str) -> String {
-    record_provider(&DocumentRoute {
+    resource_provider(&DocumentRoute {
         app_id: "so.tilo.discord".into(),
         cluster_id: workspace.into(),
         document: String::new(),

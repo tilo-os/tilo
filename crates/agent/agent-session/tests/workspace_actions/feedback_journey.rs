@@ -77,7 +77,7 @@ fn approved(route: &DocumentRoute) -> Submission {
             "0123456789abcdef0123456789abcdef".into(),
             Destination {
                 workspace: route.cluster_id.clone(),
-                provider: record_provider(route),
+                provider: resource_provider(route),
                 channel: "feedback".into(),
             },
         )
@@ -160,7 +160,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     assert_eq!(receipt.destination, submission.destination);
     let page = browser
         .catalogue(CatalogueQuery {
-            provider: Some(record_provider(&route)),
+            provider: Some(resource_provider(&route)),
             target: Some(read_address.clone()),
             max_results: 200,
             ..Default::default()

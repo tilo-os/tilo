@@ -502,9 +502,9 @@ impl Worker {
         self.registered_read(workspace, caller, &route, request, revision, arguments)
     }
 
-    /// The registered read `request` asks of the record at `route` in `workspace`, mounted in
-    /// a worker this request has not prepared it in: what it answered, or `None` for a record
-    /// that offers no such read. The mount is a worker process replaying the record's retained
+    /// The registered read `request` asks of the document at `route` in `workspace`, mounted in
+    /// a worker this request has not prepared it in: what it answered, or `None` for a document
+    /// that offers no such read. The mount is a worker process replaying the document's retained
     /// history, so the call goes on off this thread once it outlasts one, and this request
     /// takes its answer when it is applied again.
     fn registered_read(
@@ -632,7 +632,7 @@ impl Worker {
                 if self.held_or_owed(workspace_id, &route)? {
                     return Ok(ActionOutput {
                         value: Some(serde_json::json!({
-                            "provider": record_provider(&route),
+                            "provider": resource_provider(&route),
                             "record": route.document,
                         })),
                         resources: Vec::new(),
@@ -696,7 +696,7 @@ impl Worker {
         }
         Ok(ActionOutput {
             value: Some(serde_json::json!({
-                "provider": record_provider(&route),
+                "provider": resource_provider(&route),
                 "record": route.document,
             })),
             resources: Vec::new(),

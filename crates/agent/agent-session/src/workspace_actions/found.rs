@@ -44,7 +44,7 @@ use super::bounded::Bounded;
 use super::search_access::{Readable, Reader};
 use super::{
     ActionCallError, ActionKind, Answer, Caller, CatalogueQuery, CatalogueRow, DocumentRoute,
-    Needs, TreePath, Worker, WorkspaceId, record_provider,
+    Needs, TreePath, Worker, WorkspaceId, resource_provider,
 };
 use super::{Job, WorkspaceActions};
 use crate::workspace_documents::Reading;
@@ -589,7 +589,7 @@ impl Worker {
             open: entry.action.as_ref().map(|action| action.action.clone()),
             arguments: serde_json::Map::new(),
             app: Some(route.app_id.clone()),
-            provider: Some(record_provider(route)),
+            provider: Some(resource_provider(route)),
             when: entry.when,
         })
     }
@@ -648,7 +648,7 @@ impl Worker {
         route: &DocumentRoute,
     ) -> Option<Vec<CatalogueRow>> {
         let query = CatalogueQuery {
-            provider: Some(record_provider(route)),
+            provider: Some(resource_provider(route)),
             max_results: NAMING_ROWS,
             ..CatalogueQuery::default()
         };
@@ -707,7 +707,7 @@ impl Worker {
         listed: &mut Listed,
     ) -> Option<Found> {
         let id = entry.resource.as_str();
-        let provider = record_provider(route);
+        let provider = resource_provider(route);
         // What the document lists from its top, one read kept for every hit in it until a write
         // lands: a listing mounts the document and reads it out, and a search that named twenty
         // hits in one notebook paid for the notebook twenty times.
@@ -916,7 +916,7 @@ impl Worker {
             open: None,
             arguments: serde_json::Map::new(),
             app: Some(route.app_id.clone()),
-            provider: Some(record_provider(route)),
+            provider: Some(resource_provider(route)),
             when: None,
         })
     }

@@ -11,7 +11,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 pub use tilo_actions::remote::RESOURCE_PROVIDER;
 
 #[must_use]
-pub fn record_provider(route: &DocumentRoute) -> String {
+pub fn resource_provider(route: &DocumentRoute) -> String {
     format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.document)
 }
 

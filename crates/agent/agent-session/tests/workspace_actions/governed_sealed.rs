@@ -21,7 +21,7 @@ use tilo_peer_state::join::Role;
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
-    Browser, DeviceCapabilities, DocumentRoute, SHEETS, enrol, record_provider, request,
+    Browser, DeviceCapabilities, DocumentRoute, SHEETS, enrol, resource_provider, request,
     sheet_named, sheet_names, start,
 };
 use tilo_server_protocol::WorkspaceId;
@@ -154,7 +154,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         written.iter().all(|sealed| *sealed),
         "the record is sealed on its own channel: {written:?}"
     );
-    let provider = record_provider(&route);
+    let provider = resource_provider(&route);
     let new_sheet = page
         .catalogue(CatalogueQuery {
             provider: Some(provider.clone()),

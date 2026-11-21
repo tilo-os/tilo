@@ -330,7 +330,7 @@ async fn indexed(
 /// Undo `invocation` in the record `route` names, through the history `undo` the
 /// record publishes, as the activity's undo asks it.
 async fn undo_invocation(page: &mut Browser, route: &DocumentRoute, invocation: &str) {
-    let provider = tilo_agent_session::record_provider(route);
+    let provider = tilo_agent_session::resource_provider(route);
     let rows = page
         .catalogue(CatalogueQuery {
             provider: Some(provider.clone()),

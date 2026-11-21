@@ -96,7 +96,7 @@ async fn a_listing_after_a_write_is_served_while_the_index_reads() {
         document: tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS),
     };
     let listing = || CatalogueQuery {
-        provider: Some(record_provider(&tracker)),
+        provider: Some(resource_provider(&tracker)),
         max_results: 128,
         ..CatalogueQuery::default()
     };

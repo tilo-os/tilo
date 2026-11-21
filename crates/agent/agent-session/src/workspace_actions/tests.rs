@@ -359,7 +359,7 @@ fn a_provider_names_a_record_only_in_the_record_form() {
         );
     }
     let named = route(WORKSPACE, "so.tilo.sheets", "uuid:6f1c");
-    let provider = super::record_provider(&named);
+    let provider = super::resource_provider(&named);
     assert_eq!(provider, "record:so.tilo.sheets:uuid:6f1c");
     assert_eq!(super::resource_of(&provider, WORKSPACE), Some(named));
     assert_eq!(

@@ -300,7 +300,7 @@ use tilo_actions::{
     ConfirmationPolicy,
     remote::{ActionCallError, Confirmation, ReceiptStatus, RemoteActionMessage},
 };
-use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
+use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed, resource_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::ServerAddress;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -404,7 +404,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         assert_eq!(changed, part);
         browser.peer.write(route.clone(), &mutation).unwrap();
     }
-    let provider = record_provider(&route);
+    let provider = resource_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
         &workspace.workspace,
         &MemberId::person("ada"),
@@ -884,7 +884,7 @@ async fn after_a_marker(
     // A save still landing is answered accepted; it is followed until it ends, as a page does.
     let receipt = browser
         .invoke_settled(request(
-            &record_provider(record),
+            &resource_provider(record),
             new_sheet.clone(),
             sheet_named(marker),
         ))
@@ -942,7 +942,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let host_key = host.cert.device_public_key;
     let themes = browser.create("so.tilo.themes");
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let provider = record_provider(&themes);
+    let provider = resource_provider(&themes);
     let page = browser
         .catalogue(CatalogueQuery {
             provider: Some(provider.clone()),
@@ -1038,8 +1038,8 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let sheets = browser.create(SHEETS);
     let books = browser.create(EBOOK);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let sheets_provider = record_provider(&sheets);
-    let books_provider = record_provider(&books);
+    let sheets_provider = resource_provider(&sheets);
+    let books_provider = resource_provider(&books);
 
     // 1. The catalogue: every record of the workspace is a provider, and with no
     // provider named the recent records' actions are listed with the workspace's
@@ -1252,7 +1252,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
 
     let sheets = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let provider = record_provider(&sheets);
+    let provider = resource_provider(&sheets);
     let new_sheet = browser
         .catalogue(CatalogueQuery {
             provider: Some(provider.clone()),

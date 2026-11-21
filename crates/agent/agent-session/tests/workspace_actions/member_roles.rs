@@ -459,7 +459,7 @@ fn note_titles(browser: &mut Browser, notes: &DocumentRoute) -> Vec<String> {
 /// Wait until the host's own person's note `marker` reached `browser`, then
 /// the titles it holds: everything the host committed before it has too.
 async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str) -> Vec<String> {
-    let provider = record_provider(notes);
+    let provider = resource_provider(notes);
     let made = browser
         .invoke_settled(request(
             &provider,
@@ -500,9 +500,9 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     let books = browser.create(EBOOK);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let (notes_provider, tasks_provider, books_provider) = (
-        record_provider(&notes),
-        record_provider(&tasks),
-        record_provider(&books),
+        resource_provider(&notes),
+        resource_provider(&tasks),
+        resource_provider(&books),
     );
     // The host's own person files an issue for members to comment on: in
     // the parts the tracker keeps its issues in, published as one chain.
@@ -1076,7 +1076,7 @@ async fn the_first_write_into_an_empty_chain_is_taken() {
     let mut browser = Browser::open(&site, &browser_device, &server).await;
     let tasks = browser.create(TASKS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let tasks_provider = record_provider(&tasks);
+    let tasks_provider = resource_provider(&tasks);
     let issues = ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
         "issues",
         &ui::resource::DocumentId::workspace_default(),

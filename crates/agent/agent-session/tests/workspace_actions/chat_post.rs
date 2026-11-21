@@ -16,7 +16,7 @@
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     ActionAddress, ActionCallError, Browser, DeviceCapabilities, DocumentRoute, InvokeArgument,
-    ReceiptStatus, enrol, record_provider, start,
+    ReceiptStatus, enrol, resource_provider, start,
 };
 use std::time::{Duration, Instant};
 use tilo_actions::MemberId;
@@ -182,7 +182,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
         cluster_id: workspace.workspace.clone(),
         document: String::new(),
     };
-    let provider = record_provider(&chat);
+    let provider = resource_provider(&chat);
     let messages = ActionAddress::new(
         ui::resource::chain_resource_id(&chat::parts::chain()),
         "post",

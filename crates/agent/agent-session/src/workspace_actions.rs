@@ -125,7 +125,7 @@ use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::member::actions::{Outcome, api_outcome, record_provider, resource_of};
+use crate::member::actions::{Outcome, api_outcome, resource_provider, resource_of};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::{Reads, WorkspaceDocuments};
 use catch_up::caught_up_with_own;

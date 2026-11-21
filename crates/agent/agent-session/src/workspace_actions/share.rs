@@ -9,7 +9,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
 use super::resource_of;
-use super::{Outcome, Worker, WorkspaceState, record_provider};
+use super::{Outcome, Worker, WorkspaceState, resource_provider};
 
 impl Worker {
     /// `share-link` on a document this server keeps headless. An app's root
@@ -72,7 +72,7 @@ impl Worker {
             found
         } else {
             let query = CatalogueQuery {
-                provider: Some(record_provider(route)),
+                provider: Some(resource_provider(route)),
                 view_resource: Some(wanted),
                 ..CatalogueQuery::default()
             };
@@ -111,7 +111,7 @@ impl Worker {
         // A part of a chain opens with the record it is held beside: the
         // link's page mounts that record, whose window holds the part and
         // offers its items at the address asked for here.
-        locator.provider = record_provider(&opened);
+        locator.provider = resource_provider(&opened);
         let url = ui::framework::host_link(&request, &opened.app_id, &opened.document, &locator)
             .map_err(failed)?;
         Ok(ActionOutput {
@@ -206,7 +206,7 @@ impl Worker {
         };
         Some(Ok((
             views,
-            link.view_locator(&policy.workspace, &record_provider(route)),
+            link.view_locator(&policy.workspace, &resource_provider(route)),
         )))
     }
 
@@ -265,7 +265,7 @@ impl Worker {
             .view_read_policy(workspace_id, caller, &route.app_id, &route.document)
             .ok_or_else(refused)?;
         let locator = link
-            .view_locator(&policy.workspace, &record_provider(route))
+            .view_locator(&policy.workspace, &resource_provider(route))
             .ok_or_else(|| failed("This workspace's host serves no web page".into()))?;
         let url = ui::framework::host_link(request, &route.app_id, &route.document, &locator)
             .map_err(failed)?;

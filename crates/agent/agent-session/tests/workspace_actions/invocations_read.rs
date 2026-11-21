@@ -317,9 +317,9 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
     let books = browser.create(EBOOK);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let (notes_provider, tasks_provider, books_provider) = (
-        record_provider(&notes),
-        record_provider(&tasks),
-        record_provider(&books),
+        resource_provider(&notes),
+        resource_provider(&tasks),
+        resource_provider(&books),
     );
 
     let reading = Arc::new(Reading {
@@ -570,7 +570,7 @@ async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let notes = browser.create(NOTES);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let notes_provider = record_provider(&notes);
+    let notes_provider = resource_provider(&notes);
     let reading = Arc::new(Reading {
         member: HostDevice {
             endpoint: tilo_agent_session::HostEndpoint::iroh(

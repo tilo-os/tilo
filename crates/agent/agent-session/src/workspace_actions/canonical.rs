@@ -78,7 +78,7 @@ impl CanonicalReads {
             }
         }
         self.kept.remove(route);
-        // A read the host has not prepared yet is mounted in a worker, the record's whole
+        // A read the service has not prepared yet is mounted in a worker, the document's whole
         // retained history replayed into it: it goes on off this thread once the call outlasts
         // one, and this request takes its answer when it is applied again.
         let prepared = {

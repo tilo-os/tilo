@@ -22,7 +22,7 @@ use tilo_content_types::{Landing, Takes};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
-use super::{Outcome, Worker, WorkspaceState, record_provider};
+use super::{Outcome, Worker, WorkspaceState, resource_provider};
 
 /// The most of a text file a note takes: a note is words, not an archive.
 const MAX_NOTE_BYTES: u64 = 8 * 1024 * 1024;
@@ -282,7 +282,7 @@ impl Worker {
     pub(super) fn opened_answer(route: &DocumentRoute) -> ActionOutput {
         ActionOutput {
             value: Some(json!({
-                "provider": record_provider(route),
+                "provider": resource_provider(route),
                 "record": route.document,
             })),
             resources: Vec::new(),

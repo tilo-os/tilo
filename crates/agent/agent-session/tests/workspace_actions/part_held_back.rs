@@ -172,7 +172,7 @@ async fn held_back_beside(held_back: impl FnOnce(&str) -> HeldBack, list_issues:
             .query(
                 &person,
                 CatalogueQuery {
-                    provider: Some(record_provider(&notes)),
+                    provider: Some(resource_provider(&notes)),
                     max_results: 16,
                     ..CatalogueQuery::default()
                 },
@@ -202,7 +202,7 @@ async fn held_back_beside(held_back: impl FnOnce(&str) -> HeldBack, list_issues:
                 .query(
                     &person,
                     CatalogueQuery {
-                        provider: Some(record_provider(&route)),
+                        provider: Some(resource_provider(&route)),
                         max_results: 16,
                         ..CatalogueQuery::default()
                     },

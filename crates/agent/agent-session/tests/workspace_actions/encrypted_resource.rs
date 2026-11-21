@@ -2,7 +2,7 @@ use super::resource_support::{
     admit_person, on_messages, open_admitted_peer, part_route, published_message,
 };
 use super::{
-    CatalogueQuery, DeviceCapabilities, DocumentRoute, Seed, enrol, record_provider, start,
+    CatalogueQuery, DeviceCapabilities, DocumentRoute, Seed, enrol, resource_provider, start,
 };
 use tilo_actions::remote::ViewResourceQuery;
 use tilo_agent_session::ReplicaActor;
@@ -106,7 +106,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     );
     // The message's own record, the part, is read cold the same way.
     let query = CatalogueQuery {
-        provider: Some(record_provider(&part_route)),
+        provider: Some(resource_provider(&part_route)),
         view_resource: Some(ViewResourceQuery {
             id: id.clone(),
             kind,

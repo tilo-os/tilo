@@ -3,14 +3,14 @@
 //!
 //! One thread serves the requests of many workspaces, one after another. A request that waited
 //! on that thread for an app's worker to answer (a large import, an app's long effect, a worker
-//! that hangs, a big record's view or listing) held every other workspace of the thread behind
+//! that hangs, a big document's view or listing) held every other workspace of the thread behind
 //! it, for as long as the worker took. The call now goes on in a thread of its own once it has
 //! taken longer than [`CALL_GRACE`], and the request waits beside the thread, as a write waiting
 //! for its part does ([`super::part_wait`]): applied again once the worker answered, it takes
 //! that answer and goes on as it would have.
 //!
 //! That holds for every call the thread makes of a worker: an invocation
-//! ([`ConfinedReplica::invoke_handed`]), a view or a listing of a record
+//! ([`ConfinedReplica::invoke_handed`]), a view or a listing of a document
 //! ([`Worker::hand`]). A request held that way is one call into a worker that goes on, and it
 //! is applied again to take the answer of the call it handed off, never to make the call again.
 //!
@@ -45,7 +45,7 @@ const CALL_GRACE: Duration = Duration::from_millis(20);
 /// caller never hears it.
 const RUNNING: &str = "app_call_running";
 
-/// What a call run off the thread answers, as the request that asked for it takes it when it is
+/// What a call made off the thread answers, as the request that asked for it takes it when it is
 /// applied again.
 type Answer = Box<dyn std::any::Any + Send>;
 
@@ -63,7 +63,7 @@ struct HandedCall {
     /// How the request waited for parts so far.
     tried: Option<Tried>,
     /// The step of the request that asked the call, and where its answer comes once it has:
-    /// `None` for an invocation's own slot ([`ConfinedReplica::invoke_handed`]).
+    /// `None` for an invocation, which the worker answers itself ([`ConfinedReplica::invoke_handed`]).
     answer: Option<(u32, mpsc::Receiver<Answer>)>,
 }
 
@@ -227,8 +227,8 @@ impl<'a> Handing<'a> {
         // thread always did.
         let ask = Arc::new(std::sync::Mutex::new(Some(ask)));
         let asking = Arc::clone(&ask);
-        // In the worker this thread leases in: a call that opens a slot in a worker of its own
-        // would start one, which costs more than the call it makes.
+        // In the worker this thread leases in: a call that opens a worker of its own would start
+        // one, which costs more than the call it makes.
         let affinity = crate::worker::affinity();
         let spawned = std::thread::Builder::new()
             .name("app-call".into())
@@ -382,7 +382,7 @@ impl Worker {
         let mut going: Vec<Call> = Vec::new();
         for call in std::mem::take(&mut running.calls) {
             match call.answer.as_ref().map(mpsc::Receiver::try_recv) {
-                // An invocation takes its answer from the app's own slot, and a thread that
+                // An invocation takes its answer from the app's worker, and a thread that
                 // ended without one leaves the request to ask again when it is applied again.
                 None | Some(Err(mpsc::TryRecvError::Disconnected)) => answered.push((call, None)),
                 Some(Ok(answer)) => answered.push((call, Some(answer))),

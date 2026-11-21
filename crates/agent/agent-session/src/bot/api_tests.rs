@@ -166,7 +166,7 @@ fn request(app: &str, record: &str, action: &str) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: record_provider(&route(app, record)),
+            provider: resource_provider(&route(app, record)),
             address: ActionAddress::new("r", action),
         },
         argument: InvokeArgument::Json(Map::from_iter([("text".into(), json!("hi"))])),

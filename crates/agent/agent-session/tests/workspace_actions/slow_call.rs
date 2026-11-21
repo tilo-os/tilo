@@ -43,7 +43,7 @@ async fn listed(
         .query(
             person,
             CatalogueQuery {
-                provider: Some(record_provider(notes)),
+                provider: Some(resource_provider(notes)),
                 max_results: 16,
                 ..CatalogueQuery::default()
             },
