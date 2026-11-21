@@ -29,10 +29,8 @@
 //! Each footprint is also printed as a `PERF <name>: <x> MiB (SLO <= <y> MiB)`
 //! line, the KPI the performance record keeps (`tools/perf/kpi-budgets.toml`).
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing,
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 

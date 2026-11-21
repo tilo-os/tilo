@@ -3,13 +3,6 @@
 //! A binary of its own: the packages register their schemas in a table shared by the whole
 //! process, and this one loads Notes with a note's body kept as rich text, so it must not share
 //! a process with the tests loading Notes as the shipped app has it.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "a failed unwrap or index in a test is its assertion"
-)]
 
 #![allow(
     clippy::unwrap_used,
