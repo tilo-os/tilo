@@ -307,18 +307,47 @@ try {
     else if (!seen.elements) problems.push(`${app}: shows nothing`);
   }
 
+  // The system's search, as the workspace answers it: the page keeps no index
+  // of its own, so a word finds what the person's records hold and a row opens
+  // the page that shows it.
+  await openPage('search', 'search');
+  const searching = await look('14-search');
+  if (searching.refused) problems.push(`search: refused (${searching.refused})`);
+  if (!searching.headings.includes('Apps')) problems.push(`the search page offers no apps (${JSON.stringify(searching.headings)})`);
+  const searchField = `document.querySelector('#tilo-page .tilo-search-field')`;
+  if (await until(`document.activeElement === ${searchField}`, 15_000) === null) problems.push('the search field did not take the caret');
+  await type('Groceries');
+  const found = await until(
+    `[...document.querySelectorAll('#tilo-page .tilo-search-row')].some(a => (a.innerText || '').includes('Groceries'))`,
+    30_000,
+  );
+  const foundRows = await tab.evaluate(
+    `[...document.querySelectorAll('#tilo-page .tilo-search-row')].map(a => ({text: (a.innerText || '').replace(/\\s+/g, ' ').trim(), href: a.getAttribute('href')})).slice(0, 10)`,
+  );
+  step('14-search found', {ms: found, rows: foundRows});
+  if (found === null) problems.push('searching for a note the workspace holds found nothing');
+  await look('15-search-found');
+  await press(
+    `[...document.querySelectorAll('#tilo-page .tilo-search-row')].find(a => (a.innerText || '').includes('Groceries')) ?? null`,
+    'the note search found',
+  );
+  if (await until(`location.pathname.includes('/notes') && ${title}?.value === 'Groceries for the week'`, 30_000) === null) {
+    problems.push('a search row did not open the note it found');
+  }
+  await look('16-search-opened');
+
   // The appearance the person's browser asks for: a page follows it, as a
   // window follows the system it runs on.
   await openPage('light appearance');
   await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: 'light'}]});
   await sleep(900);
-  await look('14-light');
+  await look('17-light');
   await tab.send('Emulation.setEmulatedMedia', {features: []});
 
   const context = await browser.context();
   await arrive({context, label: 'second'});
   await openPage('second profile');
-  await look('10-second-profile');
+  await look('18-second-profile');
 } catch (error) {
   report.error = String(error?.stack ?? error).slice(0, 4000);
   problems.push(report.error);

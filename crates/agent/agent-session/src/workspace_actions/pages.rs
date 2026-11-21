@@ -12,8 +12,16 @@ use super::{
     ActionCallError, Caller, DocumentRoute, HashMap, Job, Needs, Worker, WorkspaceActions,
     WorkspaceId, bounded, catch_up, pending,
 };
-use tilo_actions::remote::{Completer, Pending};
-use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
+use tilo_actions::remote::{CatalogueQuery, Completer, FOUND_FILE, Pending, Within};
+use tilo_server_protocol::page::{
+    OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
+};
+
+/// The app name a page address carries for the workspace's search
+/// (`/w/<workspace>/search/<words>`): not an app of the catalogue but the
+/// system's own search over what the workspace holds, which the server asks
+/// and renders like a page.
+const SEARCH_APP: &str = "search";
 
 /// Whether `error` says the record is not ready yet, as a replica taking its
 /// parts in does.
@@ -74,6 +82,14 @@ pub(super) enum HeldPage {
     /// The workspace's front page: the apps a member opens here. Nothing is
     /// acted on it and it never changes.
     Home { workspace_id: WorkspaceId },
+    /// The workspace's search: what its apps, their actions and their records
+    /// hold for what the person typed. The caller is kept: each keystroke is
+    /// a question asked as them, answered with what they may read.
+    Search {
+        workspace_id: WorkspaceId,
+        caller: Caller,
+        needle: String,
+    },
 }
 
 /// The pages the service holds, by number.
@@ -91,6 +107,7 @@ impl Pages {
             PageJob::Open { caller, .. } => Some(&**caller),
             PageJob::Act { page, .. } | PageJob::Close { page, .. } => match self.held.get(page) {
                 Some(HeldPage::App { who, .. }) => Some(&who.caller),
+                Some(HeldPage::Search { caller, .. }) => Some(caller),
                 Some(HeldPage::Home { .. }) | None => None,
             },
         }
@@ -218,12 +235,18 @@ impl Worker {
             act: true,
         };
         match job {
-            PageJob::Open { address, .. } => self
-                .page_app(&address.app)
-                .map_or(super::keys::Keys::Joined, |app| document(app.app_id(), "")),
+            PageJob::Open { address, .. } => {
+                if address.is_home() || address.app == SEARCH_APP {
+                    return super::keys::Keys::Joined;
+                }
+                self.page_app(&address.app)
+                    .map_or(super::keys::Keys::Joined, |app| document(app.app_id(), ""))
+            }
             PageJob::Act { page, .. } => match self.pages.held.get(page) {
                 Some(HeldPage::App { route, .. }) => document(&route.app_id, &route.document),
-                Some(HeldPage::Home { .. }) | None => super::keys::Keys::Joined,
+                Some(HeldPage::Home { .. } | HeldPage::Search { .. }) | None => {
+                    super::keys::Keys::Joined
+                }
             },
             PageJob::Close { .. } => super::keys::Keys::Joined,
         }
@@ -252,6 +275,9 @@ impl Worker {
         }
         if address.is_home() {
             return self.open_home(workspace_id);
+        }
+        if address.app == SEARCH_APP {
+            return self.open_search(workspace_id, caller, address.show.as_deref().unwrap_or_default());
         }
         let app = self.page_app(&address.app).ok_or(PageRefusal::NoSuchApp)?;
         // A page shows an app's own document of the workspace; an app that
@@ -350,6 +376,13 @@ impl Worker {
             "<div class=\"tilo-view tilo-home\" data-p=\"0\">\
              <h1 class=\"tilo-home-title\">Tilo</h1>",
         );
+        // Search is the system's, over what the workspace holds: the front
+        // page is its way in, and the field there is a link to its own page.
+        let _ = write!(
+            body,
+            "<a class=\"tilo-home-search\" href=\"/w/{workspace_id}/{SEARCH_APP}\" \
+             aria-label=\"Search the workspace\">Search apps, actions and records</a>"
+        );
         let _ = write!(
             body,
             "<section class=\"tilo-people\" aria-label=\"People\"><h2 class=\"tilo-people-count\">{here} here</h2><ul class=\"tilo-people-list\">"
@@ -426,6 +459,187 @@ impl Worker {
         })
     }
 
+    /// The workspace's search page: a field and what the system's search
+    /// answers for what it holds. The page keeps no index of its own — the
+    /// catalogue lists the apps and the actions of the workspace's records,
+    /// and the workspace's search finds what their text says — so every
+    /// answer is one the caller may read, decided where every other search
+    /// and listing is.
+    fn open_search(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        needle: &str,
+    ) -> Result<OpenedPage, PageRefusal> {
+        let state = self
+            .refresh(workspace_id, Needs::Workspace)
+            .map_err(refused)?;
+        state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
+        let results = self.search_results(workspace_id, caller, needle);
+        self.pages.next = self.pages.next.wrapping_add(1);
+        let page = self.pages.next;
+        self.pages.held.insert(
+            page,
+            HeldPage::Search {
+                workspace_id,
+                caller: caller.clone(),
+                needle: needle.to_owned(),
+            },
+        );
+        Ok(OpenedPage {
+            page,
+            title: "Search".to_owned(),
+            css: ui::composition::page::theme_css(&ui::Theme::default())
+                + ui::composition::page::PAGE_CSS
+                + HOME_CSS
+                + SEARCH_CSS,
+            body: search_body(needle, &results),
+        })
+    }
+
+    /// What the workspace's search answers `needle` with, as the page shows
+    /// it: the apps it names, the actions its records offer, and the records
+    /// whose text holds it. Each is a link to the page that shows it.
+    fn search_results(&mut self, workspace_id: WorkspaceId, caller: &Caller, needle: &str) -> String {
+        let typed = needle.trim();
+        let query = typed.to_lowercase();
+        // The apps stand first and always: with nothing typed the page is the
+        // way in to all of them.
+        let mut apps: Vec<(String, String)> = self
+            .catalogue
+            .iter()
+            .filter(|app| app.keeps_workspace_resource())
+            .filter(|app| {
+                query.is_empty()
+                    || app.title().to_lowercase().contains(&query)
+                    || app.app_id().to_lowercase().contains(&query)
+            })
+            .map(|app| (app.title().to_owned(), page_app_name(app.app_id()).to_owned()))
+            .collect();
+        apps.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let mut out = String::new();
+        if !apps.is_empty() {
+            out.push_str("<section class=\"tilo-search-group\" aria-label=\"Apps\"><h2>Apps</h2><ul>");
+            for (title, name) in apps {
+                let _ = write!(
+                    out,
+                    "<li><a class=\"tilo-search-row\" href=\"/w/{workspace_id}/{name}\">\
+                     <span class=\"tilo-search-row-label\">{}</span></a></li>",
+                    escape(&title)
+                );
+            }
+            out.push_str("</ul></section>");
+        }
+        if typed.is_empty() {
+            return out;
+        }
+        // What the workspace holds, by the words in it: the records the
+        // search finds, and the actions their catalogue offers. A result both
+        // of them name is one row.
+        let mut rows: Vec<(String, String, String)> = Vec::new();
+        match self.search(workspace_id, caller, (typed, &Within::default())) {
+            Ok(found) => {
+                for found in found.into_iter().filter(|found| found.kind != FOUND_FILE) {
+                    let Some(app) = found.app.as_deref() else {
+                        continue;
+                    };
+                    let Some(app) = self.page_app(app) else { continue };
+                    if !app.keeps_workspace_resource() {
+                        continue;
+                    }
+                    let href = format!(
+                        "/w/{workspace_id}/{}/{sub}",
+                        page_app_name(app.app_id()),
+                        sub = encode_part(&found.resource),
+                    );
+                    push_row(&mut rows, (found.label, app.title().to_owned(), href));
+                }
+            }
+            Err(_) => out.push_str(
+                "<p class=\"tilo-search-note\">The workspace's records could not be searched here.</p>",
+            ),
+        }
+        let asked = CatalogueQuery {
+            needle: typed.to_owned(),
+            max_results: 40,
+            ..CatalogueQuery::default()
+        };
+        match self.catalogue_page(workspace_id, caller, &asked) {
+            Ok(page) => {
+                for row in page.rows {
+                    // A row is an action on a resource; the resource is what
+                    // the page shows, so the row opens it.
+                    let Some(action) = row.action else { continue };
+                    let Some(app) = self.page_app(&row.app_id) else { continue };
+                    if !app.keeps_workspace_resource() {
+                        continue;
+                    }
+                    let href = format!(
+                        "/w/{workspace_id}/{}/{sub}",
+                        page_app_name(app.app_id()),
+                        sub = encode_part(&row.resource.id),
+                    );
+                    push_row(&mut rows, (action.action_label, row.resource.label, href));
+                }
+            }
+            Err(_) => out.push_str(
+                "<p class=\"tilo-search-note\">The workspace's actions could not be searched here.</p>",
+            ),
+        }
+        if !rows.is_empty() {
+            out.push_str("<section class=\"tilo-search-group\" aria-label=\"Actions and records\"><h2>Actions and records</h2><ul>");
+            for (label, secondary, href) in rows {
+                let _ = write!(
+                    out,
+                    "<li><a class=\"tilo-search-row\" href=\"{href}\">\
+                     <span class=\"tilo-search-row-label\">{label}</span>\
+                     <span class=\"tilo-search-row-kind\">{secondary}</span></a></li>",
+                    label = escape(&label),
+                    secondary = escape(&secondary),
+                );
+            }
+            out.push_str("</ul></section>");
+        } else if out.contains("could not be searched") {
+            // What failed says so above; what merely found nothing says that.
+        } else {
+            out.push_str(
+                "<p class=\"tilo-search-note\">Nothing here matches. Press Enter on a page to search everywhere from there.</p>",
+            );
+        }
+        out
+    }
+
+    /// Act on the search page `page`: the field's text is the question, and
+    /// its answer is the results, which are the one thing that changes.
+    fn act_on_search(
+        &mut self,
+        page: u64,
+        (workspace_id, caller, needle): (WorkspaceId, Caller, String),
+        act: Option<(u32, Option<String>, PageAction)>,
+    ) -> Result<Vec<PagePatch>, PageRefusal> {
+        let typed = match act {
+            Some((_, _, PageAction::Value(text))) => text,
+            // The rows are links the browser follows; nothing else on the
+            // page acts, so a pass over it answers what changed elsewhere,
+            // which is nothing.
+            Some(_) | None => needle,
+        };
+        let state = self
+            .refresh(workspace_id, Needs::Workspace)
+            .map_err(refused)?;
+        state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
+        let results = self.search_results(workspace_id, &caller, &typed);
+        if let Some(HeldPage::Search { needle, .. }) = self.pages.held.get_mut(&page) {
+            *needle = typed;
+        }
+        Ok(vec![PagePatch {
+            id: SEARCH_RESULTS,
+            html: format!(
+                "<div class=\"tilo-search-results\" data-p=\"{SEARCH_RESULTS}\">{results}</div>"
+            ),
+        }])
+    }
+
     /// Act on `page` as its person did, or answer what changed on it: what the page shows now.
     /// `None` while its record or the chains it reads are still on their way: the act is held
     /// off the thread ([`Worker::await_part`]) and applied once they arrive.
@@ -435,7 +649,7 @@ impl Worker {
         act: Option<(u32, Option<String>, PageAction)>,
     ) -> Option<Result<Vec<PagePatch>, PageRefusal>> {
         // What the page holds, taken by value so the workspace is read next.
-        let (home, app) = match self.pages.held.get(&page) {
+        let (home, app, search) = match self.pages.held.get(&page) {
             Some(HeldPage::App {
                 workspace_id,
                 who,
@@ -443,13 +657,28 @@ impl Worker {
             }) => (
                 None,
                 Some((*workspace_id, bounded::Bounded::clone(who), route.clone())),
+                None,
             ),
-            Some(HeldPage::Home { workspace_id }) => (Some(*workspace_id), None),
+            Some(HeldPage::Home { workspace_id }) => (Some(*workspace_id), None, None),
+            Some(HeldPage::Search {
+                workspace_id,
+                caller,
+                needle,
+            }) => (
+                None,
+                None,
+                Some((*workspace_id, caller.clone(), needle.clone())),
+            ),
             None => {
                 tracing::warn!(page, "a page's act found no page held here");
                 return Some(Err(unavailable("the page was closed")));
             }
         };
+        // What the person typed in the search field is the question; its
+        // answer is what the page shows next.
+        if let Some(search) = search {
+            return Some(self.act_on_search(page, search, act));
+        }
         // The workspace's front page holds no document and nothing acts on
         // it: a pass over it answers that nothing changed. It is read again
         // first, so a workspace no longer readable here is refused.
@@ -579,12 +808,57 @@ impl Worker {
     }
 }
 
+/// The element number the search results stand at: what a field's keystroke
+/// patches in place, under the field the person keeps typing in.
+const SEARCH_RESULTS: u32 = 2;
+
+/// The most result rows one search page shows: the field is for finding a
+/// thing, not for reading the workspace whole.
+const MOST_ROWS: usize = 40;
+
+/// An app's page name: the last part of its id (`notes` for `so.tilo.notes`).
+fn page_app_name(app_id: &str) -> &str {
+    app_id
+        .rsplit_once('.')
+        .map_or(app_id, |(_, last)| last)
+}
+
+/// `row` added to `rows` unless a row already says the same thing of the same
+/// resource, and not past [`MOST_ROWS`]: what a search finds and what its
+/// catalogue lists may name one resource.
+fn push_row(rows: &mut Vec<(String, String, String)>, (label, secondary, href): (String, String, String)) {
+    if rows.len() >= MOST_ROWS || rows.iter().any(|(_, _, kept)| *kept == href) {
+        return;
+    }
+    rows.push((label, secondary, href));
+}
+
+/// The search page `needle` reached with and the results it answers with: a
+/// field where the person keeps typing, over what the workspace's search
+/// found.
+fn search_body(needle: &str, results: &str) -> String {
+    format!(
+        "<div class=\"tilo-view tilo-search\" data-p=\"0\" data-focus=\"1\">\
+         <div class=\"tilo-search-bar\">\
+         <input class=\"tilo-search-field\" type=\"search\" data-a=\"value\" data-t=\"search\" \
+         data-p=\"1\" value=\"{needle}\" placeholder=\"Search apps, actions and records\" \
+         aria-label=\"Search\"></div>\
+         <div class=\"tilo-search-results\" data-p=\"{SEARCH_RESULTS}\">{results}</div></div>",
+        needle = escape(needle)
+    )
+}
+
 /// The workspace's front page: its apps as tiles, on the theme's own ground.
 /// It is the page's own stylesheet, after the app pages' (`PAGE_CSS`).
 const HOME_CSS: &str = "\
 .tilo-home{height:100%;overflow-y:auto;display:flex;flex-direction:column;gap:20px;\
 padding:clamp(24px,6vh,56px) clamp(20px,6vw,64px);background:var(--tilo-ground);}\
 .tilo-home-title{margin:0;font-size:18px;font-weight:600;}\
+.tilo-home-search{display:block;box-sizing:border-box;max-width:880px;padding:12px 16px;\
+border-radius:12px;background:var(--tilo-raised);color:var(--tilo-text-dim);\
+text-decoration:none;font-size:16px;}\
+.tilo-home-search:hover{color:var(--tilo-text);}\
+.tilo-home-search:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
 .tilo-home-apps{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));\
 gap:8px;margin:0;padding:0;list-style:none;max-width:880px;}\
 .tilo-home-app{display:flex;flex-direction:column;align-items:center;gap:10px;padding:18px 10px;\
@@ -636,6 +910,27 @@ fn initial_tile(title: &str) -> String {
     )
 }
 
+/// The search page's own ground: the field on the front page's ground, over
+/// the rows it finds.
+const SEARCH_CSS: &str = "\
+.tilo-search{height:100%;overflow-y:auto;display:flex;flex-direction:column;gap:20px;\
+padding:clamp(24px,6vh,56px) clamp(20px,6vw,64px);background:var(--tilo-ground);}\
+.tilo-search-bar{max-width:880px;}\
+.tilo-search-field{width:100%;box-sizing:border-box;padding:12px 16px;border:0;outline:none;\
+border-radius:12px;background:var(--tilo-raised);color:var(--tilo-text);font:inherit;font-size:16px;}\
+.tilo-search-field:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
+.tilo-search-results{display:flex;flex-direction:column;gap:20px;max-width:880px;}\
+.tilo-search-group{display:flex;flex-direction:column;gap:6px;}\
+.tilo-search-group h2{margin:0;font-size:13px;font-weight:600;color:var(--tilo-text-dim);}\
+.tilo-search-group ul{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none;}\
+.tilo-search-row{display:flex;align-items:baseline;gap:10px;padding:8px 10px;border-radius:8px;\
+color:var(--tilo-text);text-decoration:none;font-size:14px;}\
+.tilo-search-row:hover{background:var(--tilo-hover);}\
+.tilo-search-row:active{background:var(--tilo-press);}\
+.tilo-search-row:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
+.tilo-search-row-label{font-weight:500;}\
+.tilo-search-row-kind{margin-left:auto;font-size:12px;color:var(--tilo-text-tertiary);}\
+.tilo-search-note{margin:0;font-size:14px;color:var(--tilo-text-dim);}";
 /// `text` as HTML shows it.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

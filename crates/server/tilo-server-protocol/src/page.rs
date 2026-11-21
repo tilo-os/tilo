@@ -61,6 +61,22 @@ impl PageAddress {
     }
 }
 
+/// `text` as an address's third part names it: every byte but an unreserved
+/// one percent-encoded, so what it says survives as [`PageAddress::parse`]
+/// reads it back.
+#[must_use]
+pub fn encode_part(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            let _ = std::fmt::Write::write_fmt(&mut out, format_args!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 /// `part` with its `%XX` escapes decoded; `None` when they do not decode to
 /// text.
 fn decode_part(part: &str) -> Option<String> {
@@ -215,6 +231,25 @@ mod tests {
         assert_eq!(PageAddress::parse("/w/../notes"), None);
         assert_eq!(PageAddress::parse("/w/a b/notes"), None);
         assert_eq!(PageAddress::parse("/x/ws/notes"), None);
+    }
+
+    #[test]
+    fn what_a_page_names_its_third_part_reads_back_as_written() {
+        for text in [
+            "notes:page:ab:cd",
+            "a note with spaces",
+            "chain/field/item",
+            "ümlaut and %",
+            "",
+        ] {
+            let path = format!("/w/ws/notes/{}", encode_part(text));
+            assert_eq!(
+                PageAddress::parse(&path).and_then(|address| address.show),
+                (!text.is_empty()).then(|| text.to_owned()),
+                "{path}"
+            );
+        }
+        assert_eq!(encode_part("a/b c"), "a%2Fb%20c");
     }
 
     #[test]
