@@ -92,6 +92,11 @@ pub(super) struct LayoutRuntime {
     /// How many times the taffy tree was rebuilt: a host comparing two
     /// frames' widgets needs to know they are still the same ones.
     pub(super) rebuilds: u64,
+    /// The [`Self::rebuilds`] and [`Self::remounts`] the last frame drew.
+    /// A rebuild between one frame and the next (a state tick's, a sync's)
+    /// leaves the tree new and the pixels old, and no widget reports it: a
+    /// frame that sees them moved repaints the whole window.
+    pub(super) drawn: (u64, u64),
     /// Whether every rebuild requested since the last one was a change the
     /// widgets describe ([`crate::widget::StructureChange::Described`]).
     /// Anything else that asks for a rebuild goes through
@@ -144,6 +149,7 @@ impl LayoutRuntime {
             part_bar_inset: 0.0,
             content_origin: vello::kurbo::Point::ORIGIN,
             rebuilds: 0,
+            drawn: (0, 0),
             rebuild_described: true,
             frame_rebuilds_described: false,
             #[cfg(test)]

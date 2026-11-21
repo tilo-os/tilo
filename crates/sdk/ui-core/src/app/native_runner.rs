@@ -2683,8 +2683,15 @@ impl AppHandler {
                 && app.layout.last_layout_logical == layout_before.1
                 && (app.layout.rebuilds == layout_before.0 || app.layout.frame_rebuilds_described)
         });
-        full_redraw_required |= repaint_why.note("rebuilt", structure_rebuilt)
-            | repaint_why.note("moved", geometry_changed && moved_from.is_none());
+        // A tree rebuilt since the last frame — this frame's rebuild, or one
+        // a state tick between frames made — is painted new where no widget's
+        // damage reaches; a theme made again paints every pixel in colours no
+        // widget reports.
+        let rebuilt_since_frame = app.rebuilt_since_frame();
+        full_redraw_required |= repaint_why
+            .note("rebuilt", structure_rebuilt | rebuilt_since_frame)
+            | repaint_why.note("moved", geometry_changed && moved_from.is_none())
+            | repaint_why.note("theme", app.theme_changed());
         if geometry_changed {
             // A rebuild marks it in `rebuild_structure`; a moved control
             // under a still pointer has not seen it either.

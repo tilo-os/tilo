@@ -1171,6 +1171,9 @@ impl App {
             return true;
         };
         let rebuilds = (self.layout.rebuilds, self.layout.remounts);
+        // A tree built between this frame and the last one (a state tick's, a
+        // sync's) is painted new where no widget's damage reaches.
+        let rebuilt_since_frame = self.rebuilt_since_frame();
         #[cfg(test)]
         let layout_probe = crate::profiling::frame_probe::span("frame.layout");
         let laid_out = run_layout_pass(
@@ -1223,10 +1226,15 @@ impl App {
             None if recomposed => None,
             None => Some(Vec::new()),
         };
+        // A theme made again since the last frame paints every pixel of the
+        // tree in new colours, and no widget's damage describes that.
+        let themed = self.theme_changed();
         let full = [
             (replaced, "another component"),
             (resource_changed, "another record"),
             (structure_rebuilt && !described, "a rebuilt tree"),
+            (rebuilt_since_frame && !structure_rebuilt, "a rebuilt tree"),
+            (themed, "a new theme"),
             (moved.is_none(), "moved geometry"),
             (self.debug_mode, "debug outlines"),
             (self.actions.action_palette.is_some(), "the action palette"),

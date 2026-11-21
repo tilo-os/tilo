@@ -355,6 +355,8 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         presence_ctx,
         permission_ctx,
         painted_permissions: crate::permissions::shared_revision(),
+        theme_epoch: 0,
+        frame_theme_epoch: 0,
         presence,
         accessibility,
         window,

@@ -526,6 +526,13 @@ pub struct App {
     /// follows permissions that can change with nothing in the tree marking it, so a frame draws again
     /// from cleared drawings after it moves.
     painted_permissions: u64,
+    /// How many times the theme this window draws with was made again
+    /// ([`Self::rebuild_theme`]), and the epoch the last frame drew with.
+    /// A theme changes the colour of every pixel the tree paints, which no
+    /// widget's damage describes: a frame that sees the epoch move repaints
+    /// the whole surface, whatever the tree reports.
+    theme_epoch: u64,
+    frame_theme_epoch: u64,
 
     presence: PresenceRuntime,
 
@@ -1254,6 +1261,44 @@ impl App {
         self.painted_permissions != crate::permissions::shared_revision()
     }
 
+    /// Whether the theme changed since the last frame drew with it: the frame
+    /// that asks repaints its whole surface, because the theme decides the
+    /// colour of every pixel the tree paints and no widget reports that in its
+    /// damage.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(
+            dead_code,
+            reason = "read by the native draw and by hosted surfaces, which this feature set leaves out"
+        )
+    )]
+    pub(crate) fn theme_changed(&self) -> bool {
+        self.frame_theme_epoch != self.theme_epoch
+    }
+
+    /// Whether the tree was rebuilt or remounted since the last frame drew it:
+    /// the frame that asks repaints its whole surface, because a build between
+    /// frames (a state tick's, a sync's) leaves every pixel as the tree before
+    /// it painted it and no widget reports that.
+    #[cfg_attr(
+        not(feature = "native"),
+        allow(
+            dead_code,
+            reason = "read by the native draw and by hosted surfaces, which this feature set leaves out"
+        )
+    )]
+    pub(crate) fn rebuilt_since_frame(&self) -> bool {
+        self.layout.drawn != (self.layout.rebuilds, self.layout.remounts)
+    }
+
+    /// A frame drew the tree as it stands: what came after the last one is
+    /// painted, and a rebuild or a theme made again after this frame repaints
+    /// whole on its own account.
+    pub(crate) fn note_frame_drawn(&mut self) {
+        self.frame_theme_epoch = self.theme_epoch;
+        self.layout.drawn = (self.layout.rebuilds, self.layout.remounts);
+    }
+
     pub fn enter_wake_scope(&self) -> crate::wake::WakeScopeGuard {
         self.wake_scope.as_ref().map_or_else(
             crate::wake::WakeScope::enter_detached,
@@ -1312,6 +1357,7 @@ impl App {
     }
 
     fn rebuild_theme(&mut self) {
+        self.theme_epoch = self.theme_epoch.wrapping_add(1);
         self.theme = match self.palette_source {
             PaletteSource::Host => {
                 self.text_renderer

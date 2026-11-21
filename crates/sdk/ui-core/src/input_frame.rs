@@ -116,7 +116,7 @@ pub(crate) enum Repaint<'a> {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RepaintWhy(u32);
 
-const REASONS: [&str; 13] = [
+const REASONS: [&str; 14] = [
     "structure",
     "record",
     "rebuilt",
@@ -129,6 +129,7 @@ const REASONS: [&str; 13] = [
     "layer",
     "moves",
     "marks",
+    "theme",
     "other",
 ];
 

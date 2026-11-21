@@ -636,6 +636,9 @@ fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOn
     if let Some(history) = &mut app.history {
         history.paint_presented();
     }
+    // The tree as this frame drew it: a rebuild or a theme made again after
+    // now repaints whole on its own account.
+    app.note_frame_drawn();
     publish_accessibility(app);
     app.finish_history_return_frame();
 }
