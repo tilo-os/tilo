@@ -1705,10 +1705,12 @@ impl AttachedView {
             sync.merge(&self.records, &checkout, mutation.clone())?
         };
         // What the workspace holds of it is here now: nothing founds another. A document the
-        // view keeps for its workspace opened here is an arrival too: its declaration waited
-        // for it, and the record is not opened through the store's own open-arrived path.
-        self.awaited.borrow_mut().remove(document);
-        if from_workspace || opened {
+        // view awaited for its workspace opened here is an arrival too: its declaration waited
+        // for it, and the record is not opened through the store's own open-arrived path. A
+        // chain's part opened here was awaited by nothing, and laying the view out for it would
+        // build the tree for every part a replica takes in.
+        let was_awaited = self.awaited.borrow_mut().remove(document);
+        if from_workspace || (opened && was_awaited) {
             // The window that asked its workspace for it opens it at its next frame, as it
             // does one the workspace delivered: what it waited for arrived.
             self.records.note_kept();
