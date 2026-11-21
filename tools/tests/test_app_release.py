@@ -86,11 +86,17 @@ class AppReleaseTests(unittest.TestCase):
             self.assertIsNone(app_release.app_from_tag("apps-v1.2.3", CATALOG))
         with self.subTest(phase='default collection is the complete publication boundary'):
             catalog = app_release.app_catalog(ROOT)
+            # The default collection publishes every native app. A tilolang package joins a
+            # collection by name, in the change that retires the native app it replaces: the
+            # catalog refuses two apps that claim one id, so a collection naming both cannot
+            # be planned.
             self.assertEqual(
                 app_release.resolve_collection(
                     "default", catalog, app_release.config(ROOT / "dist/apps/app-collections.toml")
                 ),
-                sorted(catalog),
+                sorted(
+                    name for name, app in catalog.items() if app["kind"] == "native"
+                ),
             )
         with self.subTest(phase='a promotion selects affected apps and publishes default collection'):
             workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
