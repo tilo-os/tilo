@@ -140,7 +140,10 @@ if (( dev )); then
          --build-arg "TILO_BASE_DIGEST=$base_digest"
          --build-arg "TILO_BASE_CREATED=$base_created"
          --build-arg "TILO_BUILDER_IMAGE=$builder"
-         --build-arg "TILO_VM_UNITS=${vm_units[*]}")
+         --build-arg "TILO_VM_UNITS=${vm_units[*]}"
+         # The programs it carries were linked without LTO (host-binaries-dev), which the
+         # sealing stage's label says; a publication is refused such an image.
+         --build-arg "TILO_RUST_LTO=off")
 fi
 bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$out" "${args[@]}"
 printf '%s\n' "$rpms_source" > "$out/rpms-source"
