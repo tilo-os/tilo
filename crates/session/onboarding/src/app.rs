@@ -254,6 +254,7 @@ fn scenario(name: &str) -> Page {
             screen: Screen::Nearby,
             nearby: match name {
                 "nearby-code" => Nearby {
+                    from_link: false,
                     active: true,
                     status: Some(crate::t("onboarding-nearby-code")),
                     code: Some("482913".to_owned()),

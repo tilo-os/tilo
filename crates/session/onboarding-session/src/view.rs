@@ -68,6 +68,7 @@ enum AfterJournal {
     /// The change records a step already taken.
     Nothing,
     StartNearby,
+    StartPairingLink,
     /// A nearby join reached the hand-off.
     EnterReadyAfterJoin,
     /// The backup step reached the hand-off.
@@ -93,6 +94,7 @@ struct JournalWrite {
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_EXISTING: &str = "onboarding.existing";
+pub const KEY_CHOOSE_PAIRING_LINK: &str = "onboarding.existing.pairing-link.submit";
 pub const KEY_CHOOSE_NEARBY: &str = "onboarding.existing.nearby";
 pub const KEY_CHOOSE_RESTORE: &str = "onboarding.existing.restore";
 pub const KEY_CHOOSE_RECOVERY_KEY: &str = "onboarding.existing.recovery-key";
@@ -481,6 +483,7 @@ pub struct OnboardingView {
     key_answers: [Arc<Mutex<String>>; 3],
     connect_source_selected: bool,
     connect_passphrase: Arc<Mutex<String>>,
+    pairing_link: Arc<Mutex<String>>,
     /// The backup file to restore from, as typed or chosen.
     connect_path: ui::LocalState<String>,
     backup_passphrase: Arc<Mutex<String>>,
@@ -488,6 +491,7 @@ pub struct OnboardingView {
     identity_dir: Option<PathBuf>,
     session: SessionPaths,
     nearby: Option<crate::nearby::NearbyPairing>,
+    nearby_from_link: bool,
     nearby_status: Option<String>,
     /// Why the last pairing attempt ended without joining. The nearby
     /// screen titles its error with this cause; `error` holds its message.
@@ -800,12 +804,14 @@ impl OnboardingView {
             key_answers: std::array::from_fn(|_| Arc::new(Mutex::new(String::new()))),
             connect_source_selected: false,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
+            pairing_link: Arc::new(Mutex::new(String::new())),
             connect_path: ui::LocalState::new(String::new()),
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
             session: SessionPaths::default(),
             nearby: None,
+            nearby_from_link: false,
             nearby_status: None,
             nearby_failure: None,
             nearby_code: None,
@@ -1116,7 +1122,7 @@ impl OnboardingView {
                     revision,
                 });
             }
-            Err(error) => self.journal_failed(change, &error.to_string()),
+            Err(error) => self.journal_failed(change, then, &error.to_string()),
         }
     }
 
@@ -1129,7 +1135,10 @@ impl OnboardingView {
         self.journal_store.as_mut()
     }
 
-    fn journal_failed(&mut self, change: JournalChange, error: &str) {
+    fn journal_failed(&mut self, change: JournalChange, then: AfterJournal, error: &str) {
+        if then == AfterJournal::StartPairingLink {
+            clear_secret(&self.pairing_link);
+        }
         let key = match change {
             JournalChange::Store(_) => "onboarding-progress-save-failed",
             JournalChange::Clear => "onboarding-progress-clear-failed",
@@ -1159,7 +1168,7 @@ impl OnboardingView {
                     self.progress_error = None;
                     self.after_journal(write.then);
                 }
-                Err(error) => self.journal_failed(write.change, &error),
+                Err(error) => self.journal_failed(write.change, write.then, &error),
             }
             self.invalidation.structure();
         }
@@ -1172,6 +1181,11 @@ impl OnboardingView {
             AfterJournal::StartNearby => {
                 if self.flow.screen() == Screen::Nearby && self.nearby.is_none() {
                     self.start_nearby_pairing();
+                }
+            }
+            AfterJournal::StartPairingLink => {
+                if self.flow.screen() == Screen::Nearby && self.nearby.is_none() {
+                    self.start_link_pairing();
                 }
             }
             AfterJournal::EnterReadyAfterJoin => {
@@ -1333,23 +1347,77 @@ impl OnboardingView {
             copy.clear();
         }
         clear_secret(&self.connect_passphrase);
+        clear_secret(&self.pairing_link);
         clear_secret(&self.recovery_words);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
     }
 
+    fn submit_pairing_link(&mut self) {
+        let valid = self.pairing_link.lock().is_ok_and(|mut buffer| {
+            if tilo_enrollment::local_link::is_link(&buffer) {
+                return true;
+            }
+            buffer.zeroize();
+            false
+        });
+        if !valid {
+            self.error = Some(t("onboarding-pairing-link-invalid"));
+            self.invalidation.structure();
+            return;
+        }
+        self.enter_pairing(true);
+        self.journal_then(
+            JournalChange::Store(PersistedStage::AcquiringIdentity),
+            AfterJournal::StartPairingLink,
+        );
+    }
+
+    fn enter_pairing(&mut self, from_link: bool) {
+        self.error = None;
+        self.nearby_from_link = from_link;
+        self.nearby_failure = None;
+        self.nearby_status = None;
+        self.nearby_code = None;
+        self.flow.choose_nearby();
+    }
+
+    fn start_link_pairing(&mut self) {
+        let link = self
+            .pairing_link
+            .lock()
+            .ok()
+            .map(|mut buffer| Zeroizing::new(std::mem::take(&mut *buffer)));
+        if let Some(link) = link.filter(|link| !link.is_empty()) {
+            self.start_pairing(Some(link.trim()));
+        }
+    }
+
     fn start_nearby_pairing(&mut self) {
+        self.start_pairing(None);
+    }
+
+    fn start_pairing(&mut self, link: Option<&str>) {
         if let (Some(identity_dir), Some(status_path), Some(system)) = (
             &self.identity_dir,
             &self.nearby_status_path,
             &self.session.identity,
         ) {
-            match crate::nearby::NearbyPairing::start(
-                &system.root,
-                identity_dir,
-                status_path,
-                &self.session.device_label,
-            ) {
+            let result = match link {
+                Some(link) => crate::nearby::NearbyPairing::start_link(
+                    &system.root,
+                    identity_dir,
+                    status_path,
+                    link,
+                ),
+                None => crate::nearby::NearbyPairing::start(
+                    &system.root,
+                    identity_dir,
+                    status_path,
+                    &self.session.device_label,
+                ),
+            };
+            match result {
                 Ok(pairing) => {
                     self.nearby = Some(pairing);
                     self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-waiting"));
@@ -1895,6 +1963,7 @@ impl Drop for OnboardingView {
         self.app.close_api();
         self.nearby = None;
         clear_secret(&self.connect_passphrase);
+        clear_secret(&self.pairing_link);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
     }
@@ -1937,7 +2006,13 @@ impl Widget for OnboardingView {
         let tour_before = self.tour_page;
         let ready_before = self.identity_ready_page;
         let codec_page_before = self.codec_page;
-        self.synced_at = Instant::now();
+        // A verification pass replays the tree's sync without taking new
+        // inputs. Journal writes and requester progress can arrive after the
+        // frame made its decision, so leave them for the next actual frame.
+        let proving = ui::component_inputs::is_proving();
+        if !proving {
+            self.synced_at = Instant::now();
+        }
         self.refresh_codec_state();
 
         // What the person asked through the setup app, before interpreting
@@ -2025,7 +2100,9 @@ impl Widget for OnboardingView {
         // Steps whose journal changes have reached the disk since the last
         // frame, and identity work that has reported, before this frame's
         // actions.
-        self.settle_journal();
+        if !proving {
+            self.settle_journal();
+        }
         self.settle_identity_work();
 
         // The file the person chose in the app's chooser.
@@ -2063,11 +2140,15 @@ impl Widget for OnboardingView {
             && self.flow.screen() == Screen::Existing
             && self.identity_idle();
         if start_nearby {
-            self.error = None;
-            self.nearby_failure = None;
-            self.nearby_status = None;
-            self.nearby_code = None;
-            self.flow.choose_nearby();
+            clear_secret(&self.pairing_link);
+            self.enter_pairing(false);
+        }
+        if self.take_journaled(KEY_CHOOSE_PAIRING_LINK)
+            && self.flow.screen() == Screen::Existing
+            && self.identity_idle()
+            && !self.recovery_only
+        {
+            self.submit_pairing_link();
         }
 
         if self.pressed.take(KEY_CONNECT_BROWSE)
@@ -2078,7 +2159,7 @@ impl Widget for OnboardingView {
             self.invalidation.focus();
         }
 
-        if self.pressed.take(KEY_CONNECT_NEARBY) {
+        if self.pressed.take(KEY_CONNECT_NEARBY) && !self.nearby_from_link {
             start_nearby = true;
         }
         if start_nearby && !self.journal_idle() {
@@ -2093,18 +2174,26 @@ impl Widget for OnboardingView {
 
         if self.pressed.take(KEY_CONNECT_CANCEL) {
             self.nearby = None;
+            clear_secret(&self.pairing_link);
             if let Some(path) = &self.nearby_status_path {
                 let _ = std::fs::remove_file(path);
             }
-            self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-cancelled"));
+            self.nearby_status = Some(t(if self.nearby_from_link {
+                "onboarding-pairing-link-cancelled"
+            } else {
+                "onboarding-nearby-cancelled"
+            }));
             self.nearby_code = None;
             self.invalidation.structure();
         }
 
-        let nearby = self
-            .nearby
-            .as_mut()
-            .map(|pairing| pairing.poll(Instant::now()));
+        let nearby = if proving {
+            None
+        } else {
+            self.nearby
+                .as_mut()
+                .map(|pairing| pairing.poll(Instant::now()))
+        };
         match nearby {
             None | Some(crate::nearby::NearbyEvent::Idle) => {}
             Some(crate::nearby::NearbyEvent::Code(code)) => {
@@ -2209,6 +2298,8 @@ impl Widget for OnboardingView {
         if self.pressed.take(KEY_BACK) && self.identity_idle() {
             self.error = None;
             clear_secret(&self.connect_passphrase);
+            clear_secret(&self.pairing_link);
+            self.nearby_from_link = false;
             self.nearby = None;
             self.nearby_failure = None;
             self.nearby_status = None;
@@ -3043,6 +3134,29 @@ mod tests {
             })
         }));
         (v, calls)
+    }
+
+    #[test]
+    fn the_existing_identity_action_hands_off_a_private_pairing_link() {
+        let (mut view, _) = view();
+        assert!(act(&mut view, &OnboardingEffect::choose("existing")));
+        assert!(act(&mut view, &OnboardingEffect::choose("pairing-link")));
+        assert_eq!(view.flow.screen(), Screen::Existing);
+        assert!(view.error.is_some(), "empty input is refused");
+
+        // The secret field writes its local buffer directly. The public
+        // submit action carries only the choice.
+        let link = "tilo://pair-device?token=fixture";
+        *view.pairing_link.lock().unwrap() = link.to_owned();
+        assert!(act(&mut view, &OnboardingEffect::choose("pairing-link")));
+        assert_eq!(view.flow.screen(), Screen::Nearby);
+        assert!(view.page().nearby.from_link);
+        assert!(view.pairing_link.lock().unwrap().is_empty());
+        assert!(!format!("{:?}", view.page()).contains(link));
+
+        assert!(act(&mut view, &OnboardingEffect::Back));
+        assert_eq!(view.flow.screen(), Screen::Existing);
+        assert!(!view.page().nearby.from_link);
     }
 
     #[test]
@@ -4062,6 +4176,12 @@ mod tests {
             calls.load(Ordering::SeqCst),
             0,
             "not on the frame it was asked"
+        );
+        flush_journal(&view);
+        ui::component_inputs::proving(|| view.sync(&document, &automerge::ROOT));
+        assert!(
+            !view.journal_idle(),
+            "a frame proof leaves the result for the next frame"
         );
         sync_journaled(&mut view, &document);
         assert_eq!(calls.load(Ordering::SeqCst), 1);

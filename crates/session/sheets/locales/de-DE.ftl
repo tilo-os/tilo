@@ -794,7 +794,7 @@ pair-device-lasting = { $minutes ->
    *[other] Gilt einmal, für die nächsten { $minutes } Minuten.
 }
 pair-device-in-tilo = Auf einem Computer mit Tilo fügst du den Link in „Arbeitsbereich beitreten“ ein.
-pair-device-local-link = Speichere den Link auf dem neuen Gerät in einer privaten Datei. Öffne sie mit tilo-session --pair-device-link-file und vergleiche vor der Bestätigung die Codes.
+pair-device-local-link = Wähle auf dem neuen Tilo-Gerät „Meine vorhandene Tilo-Identität verwenden“ und füge den Link ein. Vergleiche vor der Bestätigung die Codes.
 pair-device-nearby = Dein neues Gerät erreicht diesen Computer nicht von unterwegs, deshalb gibt es keinen Link. Füge es stattdessen in der Nähe hinzu: Wähle auf dem neuen Gerät „Meine vorhandene Tilo-Identität verwenden“. Wähle dann in den Einstellungen unter „Deine Geräte“ „Gerät hinzufügen“ und prüfe, dass beide denselben Code zeigen.
 pair-device-no-workspace = Öffne zuerst einen Arbeitsbereich: Der Link öffnet ihn auf deinem neuen Gerät.
 pair-device-not-yours = Dieser Computer ist nicht als du angemeldet und kann daher kein neues Gerät aufnehmen.
@@ -802,7 +802,6 @@ pair-device-no-link = Der Link ließ sich nicht erstellen. Schließe dies und ve
 pair-device-waiting-title = Geräte warten auf den Beitritt
 pair-device-waiting-nothing = Kein Gerät wartet. Ein Gerät, das von einem deiner Geräte eingerichtet wurde, wartet auf deine Zustimmung, wenn es beitreten möchte.
 pair-device-waiting-approve = Bestätigen
-pair-device-waiting-approve-code = Gerät mit Code { $code } bestätigen
 pair-device-waiting-decline = Ablehnen
 pair-device-link-field = Die Verknüpfung des Geräts
 pair-device-link-use = Dieses Gerät zulassen

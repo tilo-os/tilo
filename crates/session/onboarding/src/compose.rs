@@ -556,7 +556,7 @@ impl Ceremony {
                         &t("onboarding-cancel"),
                         OnboardingEffect::Cancel,
                     )));
-                } else {
+                } else if !self.page.nearby.from_link {
                     actions.push(Box::new(
                         self.button(
                             "onboarding.connect.nearby.button",
@@ -952,9 +952,27 @@ impl Ceremony {
                 ));
             }
         } else {
+            let label = t("onboarding-pairing-link-field");
             body = body
                 .push(heading(&t("onboarding-existing-title"), theme))
-                .push(paragraph(&t("onboarding-existing-body"), theme));
+                .push(paragraph(&t("onboarding-existing-body"), theme))
+                .push(Box::new(Section::new(vec![
+                    labelled_secret_field(
+                        "onboarding.existing.pairing-link",
+                        &label,
+                        &self.secrets.pairing_link,
+                        &label,
+                        "",
+                    ),
+                    Box::new(
+                        self.button(
+                            "onboarding.existing.pairing-link.button",
+                            &t("onboarding-pairing-link-submit"),
+                            OnboardingEffect::choose("pairing-link"),
+                        )
+                        .role(ui::widget::ButtonRole::Primary),
+                    ),
+                ])));
         }
         if let Some(error) = &self.page.error {
             body = body.push(spaced_banner(
@@ -984,16 +1002,34 @@ impl Ceremony {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing.s4)
-            .push(heading(&t("onboarding-nearby-title"), theme))
-            .push(paragraph(&t("onboarding-nearby-body"), theme));
+            .push(heading(
+                &t(if self.page.nearby.from_link {
+                    "onboarding-pairing-link-title"
+                } else {
+                    "onboarding-nearby-title"
+                }),
+                theme,
+            ));
+        if self.page.nearby.from_link {
+            if self.page.nearby.active {
+                body = body.push(paragraph(&t("onboarding-pairing-link-wait"), theme));
+            }
+        } else {
+            body = body.push(paragraph(&t("onboarding-nearby-body"), theme));
+        }
         if let Some(error) = &self.page.error {
             // The banner's title is what went wrong; a screen reader speaks
             // it first, so it names the cause rather than only the outcome.
-            let banner = match &self.page.nearby.failure {
-                Some((title, message)) => {
-                    Banner::error(title.clone()).with_message(message.clone())
+            let banner = if self.page.nearby.from_link {
+                Banner::error(t("onboarding-nearby-failed-title"))
+                    .with_message(t("onboarding-pairing-link-try-again"))
+            } else {
+                match &self.page.nearby.failure {
+                    Some((title, message)) => {
+                        Banner::error(title.clone()).with_message(message.clone())
+                    }
+                    None => Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
                 }
-                None => Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
             };
             body = body.push(spaced_banner(banner, theme));
         }
@@ -1036,10 +1072,10 @@ impl Ceremony {
                 status.push(Box::new(text))
             };
         }
-        Box::new(
-            body.push(Box::new(Section::new(vec![Box::new(steps)])))
-                .push(Box::new(status)),
-        )
+        if !self.page.nearby.from_link {
+            body = body.push(Box::new(Section::new(vec![Box::new(steps)])));
+        }
+        Box::new(body.push(Box::new(status)))
     }
 
     /// Restore the identity from an encrypted backup file.

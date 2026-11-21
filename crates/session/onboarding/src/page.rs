@@ -144,6 +144,8 @@ impl KeyCopy {
 /// Where a nearby device's pairing stands.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Nearby {
+    /// Pairing started from a device link.
+    pub from_link: bool,
     /// Pairing runs.
     pub active: bool,
     pub status: Option<String>,

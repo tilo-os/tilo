@@ -1152,6 +1152,23 @@ fn asked_of_shell(
         Op::ProvisionTestIdentity => provision_test_identity(),
         Op::ListTargets => json!({"targets": listed_targets(session)}),
         Op::ClickNamed => return Some(clicked_named(request, session)),
+        Op::Type if request.get("clipboard").and_then(Json::as_bool) == Some(true) => {
+            let Some(text) = request.get("text").and_then(Json::as_str) else {
+                return Some(refusal("parse_error", "`type` takes `text`"));
+            };
+            // Set an ephemeral offer so the harness can exercise the actual
+            // Paste shortcut without leaving a copy in clipboard history.
+            if session.clipboard.copy_for_person(
+                compositor,
+                tilo_compositor::clipboard_history::TEXT_MIME,
+                text.as_bytes().to_vec(),
+                Some(Duration::from_secs(5)),
+            ) {
+                json!({"ok": {}})
+            } else {
+                refusal("input_failed", "could not set the clipboard")
+            }
+        }
         Op::SearchRows => {
             let (query, rows) = session.handle.search_rows();
             let rows: Vec<Json> = rows

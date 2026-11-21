@@ -18,6 +18,7 @@ pub const CHOICES: &[&str] = &[
     "create",
     "existing",
     "nearby",
+    "pairing-link",
     "recovery-key",
     "backup-file",
     "write-down-recovery-key",

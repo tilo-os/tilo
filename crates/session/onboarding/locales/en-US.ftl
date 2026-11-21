@@ -85,6 +85,14 @@ onboarding-connect-passphrase = Backup passphrase
 onboarding-connect-passphrase-placeholder = Passphrase (leave empty for legacy JSON)
 onboarding-picker-import-title = Choose a Tilo identity
 onboarding-picker-import-filter = Tilo identity
+onboarding-pairing-link-field = Device pairing link
+onboarding-pairing-link-submit = Use pairing link
+onboarding-pairing-link-title = Add this device
+onboarding-pairing-link-wait = Keep this screen open while you approve on your other device.
+onboarding-pairing-link-invalid = Paste the device pairing link from your other device.
+onboarding-pairing-link-cancelled = Pairing cancelled.
+onboarding-pairing-link-try-again = Go back to paste a pairing link.
+
 onboarding-nearby-title = Connect a nearby device
 onboarding-nearby-body = This computer is waiting for your other device to approve it. Keep both devices close together.
 onboarding-nearby-step-open = On your other device, open Settings and go to Sync between devices.

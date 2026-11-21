@@ -277,7 +277,7 @@ class ScriptedSession:
                     raise Failed(f"a live session answers on {self.control_socket}")
         if self.log is not None:
             self.log.parent.mkdir(parents=True, exist_ok=True)
-            self._log_file = self.log.open("ab")
+            self._log_file = self.log.open("a", encoding="utf-8")
             print(f"==> starting {self.binary} headless (profile {self.profile})",
                   file=self._log_file, flush=True)
         else:

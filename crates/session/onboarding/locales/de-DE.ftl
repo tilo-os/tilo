@@ -85,6 +85,14 @@ onboarding-connect-passphrase = Passphrase der Sicherung
 onboarding-connect-passphrase-placeholder = Passphrase (bei älterer JSON leer lassen)
 onboarding-picker-import-title = Eine Tilo-Identität auswählen
 onboarding-picker-import-filter = Tilo-Identität
+onboarding-pairing-link-field = Link zum Koppeln
+onboarding-pairing-link-submit = Link verwenden
+onboarding-pairing-link-title = Dieses Gerät hinzufügen
+onboarding-pairing-link-wait = Lass diesen Bildschirm geöffnet, während du auf deinem anderen Gerät bestätigst.
+onboarding-pairing-link-invalid = Füge den Kopplungslink von deinem anderen Gerät ein.
+onboarding-pairing-link-cancelled = Kopplung abgebrochen.
+onboarding-pairing-link-try-again = Geh zurück, um einen Kopplungslink einzufügen.
+
 onboarding-nearby-title = Mit einem Gerät in der Nähe verbinden
 onboarding-nearby-body = Dieser Rechner wartet darauf, dass dein anderes Gerät ihn freigibt. Halte beide Geräte nah beieinander.
 onboarding-nearby-step-open = Öffne auf deinem anderen Gerät die Einstellungen und dort „Abgleich zwischen Geräten“.

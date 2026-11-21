@@ -266,17 +266,12 @@ fn waiting(device: &AddDevice, typed: &LocalState<String>, ask: &Ask) -> Element
             what = what.secondary(&machine.hardware);
         }
         what = what.tertiary(&machine.code);
-        let approval = crate::t_args(
-            "pair-device-waiting-approve-code",
-            &[("code", machine.code.clone().into())],
-        );
         rows.push(Box::new(
             Row::new()
                 .with_rhythm(Rhythm::Tight)
                 .push(Box::new(what))
                 .push(Box::new(
                     Button::new("pair-device-approve", &device.approve)
-                        .with_accessible_name(&approval)
                         .role(ButtonRole::Primary)
                         .on_view(move || {
                             approving(PairDeviceEffect::Approve {

@@ -28,6 +28,8 @@ pub struct Secrets {
     /// The passphrase of a backup being restored, and the prepared setup's
     /// password.
     pub connect_passphrase: SecretBuffer,
+    /// The one-use link pasted into first-use setup.
+    pub pairing_link: SecretBuffer,
     /// A new backup's passphrase and its confirmation.
     pub backup_passphrase: SecretBuffer,
     pub backup_confirmation: SecretBuffer,

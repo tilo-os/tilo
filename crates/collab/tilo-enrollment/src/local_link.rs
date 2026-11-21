@@ -13,6 +13,9 @@ use crate::approval::ApprovalIdentity;
 use crate::request::{JoinOptions, JoinedDevice, PairingProgress, install_answer, prepare_join};
 use crate::transport::{ALPN, RequestExchange, address_of, dial_of, endpoint_for, parse_relay};
 
+/// Maximum size of the private input supplied to a pairing requester.
+pub const MAX_LINK_BYTES: usize = 4096;
+
 const PREFIX: &str = "tilo://pair-device?token=";
 const LIFETIME_NS: u64 = 600_000_000_000;
 const MAX_ADDRESSES: usize = 8;
@@ -74,6 +77,14 @@ impl Issuer {
     }
 }
 
+/// Whether the text is a bounded device pairing link. Its token is verified
+/// by the requester before it creates a device key or opens a connection.
+#[must_use]
+pub fn is_link(text: &str) -> bool {
+    let text = text.trim();
+    text.len() <= MAX_LINK_BYTES && text.starts_with(PREFIX)
+}
+
 /// Redeem a personal-device link using the native enrollment exchange and
 /// install only after the approving device confirms the certificate.
 ///
@@ -88,7 +99,7 @@ pub fn redeem(
     let mut parts = link
         .trim()
         .strip_prefix(PREFIX)
-        .filter(|text| text.len() <= 4096)
+        .filter(|_| is_link(link))
         .context("expected a Tilo device pairing link")?
         .split('&');
     let token = parts.next().context("the link has no enrollment token")?;

@@ -15,7 +15,9 @@
 //! The status file is read by a watcher thread when the identity directory
 //! changes, never by the compositor's loop, which only takes the reads in.
 
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
+use std::os::fd::OwnedFd;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -392,17 +394,70 @@ impl NearbyPairing {
         Self::spawn(command, identity_dir, status_path, PROCESS_BOUND)
     }
 
+    /// Start link pairing with the running session's executable. Only the
+    /// private stdin stream carries the link.
+    ///
+    /// # Errors
+    ///
+    /// The lease, private stream or requester could not be started.
+    pub fn start_link(
+        identity_root: &Path,
+        identity_dir: &Path,
+        status_path: &Path,
+        link: &str,
+    ) -> Result<Self, NearbyFailure> {
+        fn not_started(error: std::io::Error) -> NearbyFailure {
+            NearbyFailure {
+                cause: NearbyCause::NotStarted,
+                detail: Some(error.to_string()),
+            }
+        }
+
+        let lease =
+            tilo_server_protocol::ProcessLease::capture(std::process::id()).map_err(not_started)?;
+        let (reader, mut writer) = UnixStream::pair().map_err(not_started)?;
+        // The input is bounded and written before the child starts. Keep the
+        // compositor loop nonblocking even if the socket cannot hold it.
+        writer.set_nonblocking(true).map_err(not_started)?;
+        writer.write_all(link.as_bytes()).map_err(not_started)?;
+        drop(writer);
+        let mut command = Command::new(std::env::current_exe().map_err(not_started)?);
+        command
+            .arg("--pair-device-link-stdin")
+            .arg(lease.pid().to_string())
+            .arg(lease.start_time().to_string())
+            .arg(status_path)
+            .env("TILO_IDENTITY_ROOT", identity_root);
+        Self::spawn_with_input(
+            command,
+            identity_dir,
+            status_path,
+            PROCESS_BOUND,
+            Stdio::from(OwnedFd::from(reader)),
+        )
+    }
+
     pub fn spawn(
+        command: Command,
+        identity_dir: &Path,
+        status_path: &Path,
+        bound: Duration,
+    ) -> Result<Self, NearbyFailure> {
+        Self::spawn_with_input(command, identity_dir, status_path, bound, Stdio::null())
+    }
+
+    fn spawn_with_input(
         mut command: Command,
         identity_dir: &Path,
         status_path: &Path,
         bound: Duration,
+        input: Stdio,
     ) -> Result<Self, NearbyFailure> {
         let _ = std::fs::remove_file(status_path);
         let watcher = StatusWatcher::start(status_path.to_path_buf(), identity_dir.to_path_buf())
             .ok_or_else(|| NearbyFailure::new(NearbyCause::NotStarted))?;
         let child = bounded_command::own_process_tree(&mut command)
-            .stdin(Stdio::null())
+            .stdin(input)
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             // The helper and anything it starts share one revocable

@@ -794,7 +794,7 @@ pair-device-lasting = { $minutes ->
    *[other] Works once, for the next { $minutes } minutes.
 }
 pair-device-in-tilo = On a computer with Tilo, paste the link into Join a workspace.
-pair-device-local-link = On the new device, put this link in a private file. Run tilo-session --pair-device-link-file with that file, then compare the codes before approving.
+pair-device-local-link = On the new Tilo device, choose Use my existing Tilo identity and paste this link. Compare the codes before approving.
 pair-device-nearby = Your new device can't reach this computer from elsewhere, so there is no link to show. Add it nearby instead: on the new device, choose Use my existing Tilo identity. Then, in Settings under Your devices, choose Add device and check both show the same code.
 pair-device-no-workspace = Open a workspace first: the link opens it on your new device.
 pair-device-not-yours = This computer isn't signed in as you, so it can't let a new device in.
@@ -802,7 +802,6 @@ pair-device-no-link = The link could not be made. Close this and try again.
 pair-device-waiting-title = Machines waiting to join
 pair-device-waiting-nothing = No machine is waiting. A machine set up from one of your devices waits for your approval when it asks to join.
 pair-device-waiting-approve = Approve
-pair-device-waiting-approve-code = Approve device with code { $code }
 pair-device-waiting-decline = Decline
 pair-device-link-field = The machine's link
 pair-device-link-use = Let this machine in
