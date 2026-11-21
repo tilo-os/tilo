@@ -94,6 +94,8 @@ mod newcomer_channels;
 mod node_workspace;
 #[path = "on_demand_records.rs"]
 mod on_demand_records;
+#[path = "one_write_path.rs"]
+mod one_write_path;
 #[path = "outbox_replay.rs"]
 mod outbox_replay;
 #[path = "own_record_open.rs"]

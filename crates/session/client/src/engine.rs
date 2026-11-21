@@ -46,6 +46,7 @@ use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
 
 mod replica_documents;
+mod writes;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
@@ -221,8 +222,6 @@ pub struct Engine {
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
-    /// This device's own writes its replica has not taken in yet ([`HeldWrites`]).
-    held: HeldWrites,
     /// Keys of workspaces whose group this device takes no part in, handed to it by their host
     /// ([`Self::hand_keys`]): a sealed record they open reads with them.
     handed: Arc<std::sync::Mutex<RouteKeys>>,
@@ -476,20 +475,6 @@ const KEPT_DOCUMENTS: usize = 64;
 /// opened between reads take together; in memory they take several times as much.
 const KEPT_BYTES: usize = 8 * 1024 * 1024;
 
-/// The writes this device made that its replica has not taken in yet, by record, as document
-/// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for workspace
-/// held. The session that writes them keeps them here, and its readers read them over the
-/// replica ([`Engine::read_resource`]); nobody else sees them until they land.
-#[derive(Clone, Default)]
-pub struct HeldWrites(Arc<std::sync::Mutex<BTreeMap<DocumentRoute, Vec<Vec<u8>>>>>);
-
-impl HeldWrites {
-    /// The held writes, to read or change.
-    pub fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<DocumentRoute, Vec<Vec<u8>>>> {
-        self.0.lock_recover()
-    }
-}
-
 /// What a read of one of a workspace's records found ([`Engine::read_resource`]).
 pub enum ResourceReading {
     /// The record as the workspace holds it, sealed writes opened with the record's channel keys.
@@ -706,7 +691,6 @@ impl Engine {
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed,
             group_keys: std::sync::Mutex::default(),
-            held: HeldWrites::default(),
             kept: std::sync::Mutex::default(),
             service_root: None,
             founders,
@@ -858,21 +842,7 @@ impl Engine {
         ))
     }
 
-    /// This device's own writes to the record its replica has not taken in yet.
-    fn own_writes(&self, workspace: &str, app: &str, record: &str) -> Option<Vec<Vec<u8>>> {
-        let route = DocumentRoute {
-            app_id: app.to_owned(),
-            cluster_id: workspace.to_owned(),
-            document: record.to_owned(),
-        };
-        self.held
-            .lock()
-            .get(&route)
-            .filter(|frames| !frames.is_empty())
-            .cloned()
-    }
-
-    /// What this device's replica holds of the record, its own held writes left out.
+    /// What this device's replica holds of the record.
     fn read_replica(
         &self,
         workspace: &str,
@@ -1696,11 +1666,6 @@ impl Engine {
     /// admits: the peer network's side of them, `None` when this session runs no channel service.
     pub fn link(&self) -> Option<Arc<workspace_keys::KeyLink>> {
         self.link.lock_recover().clone()
-    }
-
-    /// This device's own writes its replica has not taken in yet.
-    pub fn held_writes(&self) -> &HeldWrites {
-        &self.held
     }
 
     /// Read `workspace`'s records with `keys` from now on: the workspace's host handed them to this

@@ -272,8 +272,9 @@ impl StatePeer {
         self.admit_new_local_document_read_by((app, document), None, envelope, now)
     }
 
-    /// Admit a local store write with the reader set bound to its route.
-    pub(crate) fn admit_new_local_document_read_by(
+    /// Admit a local store write with the reader set bound to its route: what a holder writes
+    /// through when it keeps a document for some of a workspace's members alone.
+    pub fn admit_new_local_document_read_by(
         &mut self,
         (app, document): (&str, &str),
         readers: Option<&str>,

@@ -1,0 +1,233 @@
+//! One device's write to one of its workspace's documents: drafted as that device, sealed under
+//! the document's channel keys, signed, and admitted into its own replica.
+//!
+//! Every holder of a device's documents — a workspace service's copy, a page's replica and a
+//! session's engine — writes through here, so a write is drafted, sealed and signed in one
+//! place whatever holds the replica. What a session does with it afterwards is publish it as it
+//! was signed ([`super::NativeWorkspaceOwner::commit_admitted`]), never draft it again.
+
+use std::sync::Arc;
+
+use collab_types::signer::DeviceSigner;
+use collab_types::{ContentRetention, DocumentMutation, document_artifact_id};
+use tilo_action_policy::MemberAccess;
+use web_time::SystemTime;
+
+use crate::owner::{AppWrite, WriteRefusal};
+use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
+use crate::workspace_documents::DocumentWrite;
+use crate::replica::Replica;
+use crate::{NotAdmitted, SealCheckpoint, StatePeer};
+
+/// A device's write to one document, as it is drafted: `changes` to `app`'s `document`, the
+/// whole document when `snapshot` (a founding or a checkpoint), a change of it otherwise, kept
+/// for `readers` where only some members read it, sealed under `sealed` (the keys of the
+/// document's group) where the workspace seals its documents, as made at `now`.
+#[derive(Clone, Copy)]
+pub struct LocalWrite<'a> {
+    /// The app whose document it is.
+    pub app: &'a str,
+    /// The document, as its app names it.
+    pub document: &'a str,
+    /// The reader set of a resource store's document, where it is one.
+    pub readers: Option<&'a str>,
+    /// The document whole, or only what changed of it.
+    pub changes: &'a [u8],
+    /// The write founds the document: the workspace must hold nothing of it yet.
+    pub founding: bool,
+    /// `changes` is the whole document — a founding, or a checkpoint of one the workspace holds
+    /// already — rather than a change of it.
+    pub snapshot: bool,
+    /// The keys that seal it, where the workspace seals its documents.
+    pub sealed: Option<&'a key_group::ContentKeys>,
+    /// When the device makes it.
+    pub now: SystemTime,
+}
+
+impl LocalWrite<'_> {
+    /// The same write, owned: what a write kept for a later turn holds.
+    fn owned(self, workspace: &str) -> OwnedWrite {
+        OwnedWrite {
+            workspace: workspace.to_owned(),
+            app: self.app.to_owned(),
+            document: self.document.to_owned(),
+            readers: self.readers.map(str::to_owned),
+            changes: self.changes.to_vec(),
+            founding: self.founding,
+            snapshot: self.snapshot,
+            sealed: self.sealed.cloned(),
+            now: self.now,
+        }
+    }
+}
+
+/// [`LocalWrite`], owned: a write handed to [`admit_local_write`], which answers once the device
+/// signed and its replica admitted it.
+struct OwnedWrite {
+    workspace: String,
+    app: String,
+    document: String,
+    readers: Option<String>,
+    changes: Vec<u8>,
+    founding: bool,
+    snapshot: bool,
+    sealed: Option<key_group::ContentKeys>,
+    now: SystemTime,
+}
+
+impl OwnedWrite {
+    fn borrowed(&self) -> LocalWrite<'_> {
+        LocalWrite {
+            app: &self.app,
+            document: &self.document,
+            readers: self.readers.as_deref(),
+            changes: &self.changes,
+            founding: self.founding,
+            snapshot: self.snapshot,
+            sealed: self.sealed.as_ref(),
+            now: self.now,
+        }
+    }
+}
+
+/// The `write` as `device` makes it to `workspace`: the request to commit, and the author's
+/// access in the workspace. Nothing is signed or admitted here.
+///
+/// # Errors
+///
+/// The device may not write it, or a founding write finds the document held already.
+pub fn draft_local_write(
+    peer: &StatePeer,
+    workspace: &str,
+    device: &[u8; 32],
+    write: LocalWrite<'_>,
+) -> Result<(OwnerCommitRequest, MemberAccess), WriteRefusal> {
+    let LocalWrite {
+        app,
+        document,
+        readers,
+        changes,
+        founding,
+        snapshot,
+        sealed,
+        now,
+    } = write;
+    if founding && peer.holds_document(app, document) {
+        return Err(WriteRefusal::Refused(format!(
+            "{document} of {app} is in the workspace already"
+        )));
+    }
+    // A change needs the record it changes: drafted before the record is here, it would be
+    // refused and let go, and the next change, which builds on it, would be taken once the record
+    // landed: the record would hold a change whose base no device ever sends. It waits for its
+    // record as it waits for its keys. A checkpoint is the whole record, so it needs none.
+    if !snapshot && !peer.holds_document(app, document) {
+        return Err(WriteRefusal::Waiting(
+            crate::admission::MissingPrerequisite::CausalDependencies,
+        ));
+    }
+    let author = peer
+        .permissions(*device, now)
+        .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+    let artifact = document_artifact_id(app, workspace, document);
+    let frame = if snapshot {
+        DocumentMutation::Snapshot(changes.to_vec())
+    } else {
+        DocumentMutation::Incremental(changes.to_vec())
+    }
+    .encode()
+    .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+    let mut seal = sealed.map(|keys| {
+        move |plaintext: &[u8]| {
+            keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
+                .map_err(|error| error.to_string())
+        }
+    });
+    let envelope = peer
+        .draft_write(
+            (app, document),
+            readers,
+            &frame,
+            seal.as_mut().map(|seal| seal as &mut SealCheckpoint<'_>),
+            *device,
+            0,
+            now,
+        )
+        .map_err(WriteRefusal::Refused)?;
+    let own = peer.own_write(app, document, device);
+    Ok((
+        OwnerCommitRequest {
+            workspace: workspace.to_owned(),
+            operation: CommitOperation::Document {
+                app: app.to_owned(),
+                document: document.to_owned(),
+                envelope: Box::new(envelope),
+                own,
+                readers: readers.map(str::to_owned),
+            },
+        },
+        author,
+    ))
+}
+
+/// Draft `write` against `replica` as it stands, sign it as `device` by `signer`, and admit it
+/// into `replica` as that device's own write: the write a device holds, ready to be published as
+/// it was signed.
+///
+/// The write is drafted against the replica as it stands and signed outside its lock: a page's
+/// signer answers through a promise, and no link admits in between the draft and the admission.
+pub fn admit_local_write(
+    replica: Replica,
+    device: [u8; 32],
+    signer: Arc<dyn DeviceSigner>,
+    workspace: &str,
+    write: LocalWrite<'_>,
+) -> DocumentWrite {
+    let write = write.owned(workspace);
+    Box::pin(async move {
+        let drafted = replica.read(StatePeer::clone);
+        let (mut request, author) = draft_local_write(&drafted, &write.workspace, &device, write.borrowed())?;
+        let CommitOperation::Document { envelope, own, .. } = &mut request.operation else {
+            return Err(WriteRefusal::Refused(
+                "a local write is a document write".to_owned(),
+            ));
+        };
+        let bytes = envelope
+            .signing_bytes()
+            .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
+        // The write is drafted against the replica as it stands and signed outside its lock: a
+        // page's signer answers through a promise, and no link admits in between the draft and
+        // the admission.
+        drop(drafted);
+        let signature = signer
+            .sign(bytes)
+            .await
+            .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
+        envelope.signature = collab_types::Signature(signature);
+        let (envelope, own) = ((**envelope).clone(), own.clone());
+        replica
+            .write(|peer| {
+                peer.admit_new_local_document_read_by(
+                    (&write.app, &write.document),
+                    write.readers.as_deref(),
+                    envelope.clone(),
+                    write.now,
+                )
+            })
+            .map_err(|refused| match refused {
+                NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
+                NotAdmitted::Refused(reason) => WriteRefusal::Refused(reason),
+                NotAdmitted::ChangeRefused(change) => WriteRefusal::ChangeRefused(change),
+            })?;
+        Ok(AppWrite {
+            peer: neighbour_wire::peer_handle(&device),
+            app_id: write.app,
+            cluster_id: write.workspace,
+            document_id: write.document,
+            author,
+            replayed: false,
+            envelope,
+            own,
+        })
+    })
+}

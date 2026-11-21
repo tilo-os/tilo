@@ -13,27 +13,6 @@ use crate::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitReques
 /// A write as the owner committed it, with its receipt.
 pub type Committed = (OwnerCommitRequest, OwnerCommitReceipt);
 
-/// How many of `frames`, one document's writes in order, one [`NativeWorkspaceOwner::write`] takes:
-/// no more than a quarter of what the document's sealed history holds. A write compacts a history
-/// that used three quarters of its bound first, so these always fit, and a batch of more writes
-/// than the history holds goes in several turns instead of never. At least one.
-#[must_use]
-pub fn writes_in_one_turn(frames: &[Vec<u8>]) -> usize {
-    /// What sealing adds to a frame, generously: its envelope, nonce and tag.
-    const SEALED_OVERHEAD: usize = 1024;
-    let mut bytes = 0usize;
-    frames
-        .iter()
-        .take(crate::state::MAX_SEALED_OPS / 4)
-        .take_while(|frame| {
-            bytes = bytes.saturating_add(frame.len().saturating_add(SEALED_OVERHEAD));
-            bytes <= crate::state::MAX_SEALED_BYTES / 4
-        })
-        .count()
-        .max(1)
-        .min(frames.len())
-}
-
 /// Why the owner committed none of a device's writes ([`NativeWorkspaceOwner::write`]).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WriteRefusal {

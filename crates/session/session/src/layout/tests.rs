@@ -447,8 +447,10 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
         workspace: &str,
         app: &str,
         document: &str,
+        readers: Option<&str>,
         changes: &[u8],
         founding: bool,
+        snapshot: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> tilo_peer_state::workspace_documents::DocumentWrite {
         let hold = Arc::clone(&self.hold);
@@ -460,6 +462,7 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
             changes.to_vec(),
             sealed.cloned(),
         );
+        let readers = readers.map(str::to_owned);
         Box::pin(async move {
             std::future::poll_fn(move |context| {
                 if hold.held() {
@@ -479,8 +482,10 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
                     &workspace,
                     &app,
                     &document,
+                    readers.as_deref(),
                     &changes,
                     founding,
+                    snapshot,
                     sealed.as_ref(),
                 )
                 .await

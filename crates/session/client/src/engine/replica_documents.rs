@@ -80,102 +80,7 @@ impl Engine {
         holding: Holding<'_>,
         maximum: usize,
     ) -> Result<ResourceReading, String> {
-        let Some(held) = self.own_writes(workspace, app, record) else {
-            return self.read_replica(workspace, (app, record), holding, maximum);
-        };
-        let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let own = self.identity.device_cert.device_public_key;
-        self.owner.with_current(id, |view| {
-            view.peer().check_document_read(
-                Admission::of(view, own).reader(own),
-                app,
-                record,
-                tilo_clock::wall(),
-            )
-        })?;
-        if let Some(reading) =
-            self.read_own_since(workspace, (app, record), holding, maximum, &held)?
-        {
-            return Ok(reading);
-        }
-        // This device's own writes the replica has not taken in yet read over what it holds.
-        let base = match self.read_replica(workspace, (app, record), Holding::default(), maximum) {
-            Ok(ResourceReading::Captured { bytes, .. }) => Some(bytes),
-            _ => None,
-        };
-        let author = self.identity.device_cert.device_public_key;
-        let tilo_peer_state::document_frame::OwnRead {
-            bytes,
-            heads,
-            revision,
-        } = tilo_peer_state::document_frame::with_own_writes(base.as_deref(), author, &held)?;
-        if holding.revision == Some(revision) {
-            return Ok(ResourceReading::Unchanged(revision));
-        }
-        Ok(ResourceReading::Captured {
-            revision,
-            heads,
-            bytes,
-        })
-    }
-
-    /// [`Self::read_resource`] of a record this device wrote to and its replica has not taken in yet
-    /// (`held`), for a reader `holding` heads of an earlier read: what the replica changed since what
-    /// the reader holds of it, then those of the writes the reader lacks, so a record that
-    /// changes while this device's writes wait is never read whole. `None` where only a whole read
-    /// answers: the reader holds no heads, or one the replica and the writes do not, or a write
-    /// carries the record whole.
-    fn read_own_since(
-        &self,
-        workspace: &str,
-        route: (&str, &str),
-        holding: Holding<'_>,
-        maximum: usize,
-        held: &[Vec<u8>],
-    ) -> Result<Option<ResourceReading>, String> {
-        if holding.heads.is_empty() {
-            return Ok(None);
-        }
-        let author = self.identity.device_cert.device_public_key;
-        let Ok(Some(own)) = tilo_peer_state::document_frame::own_changes(author, held) else {
-            return Ok(None);
-        };
-        let mut failed = None;
-        let read = tilo_peer_state::document_frame::read_after_own(holding.heads, &own, |base| {
-            let replica = self.read_replica(
-                workspace,
-                route,
-                Holding {
-                    revision: Some(tilo_peer_state::owner::revision_of_heads(base)),
-                    heads: base,
-                },
-                maximum,
-            );
-            match replica {
-                Ok(ResourceReading::Changes { bytes, heads, .. }) => Some((bytes, heads)),
-                Ok(ResourceReading::Unchanged(_)) => Some((Vec::new(), base.to_vec())),
-                Ok(ResourceReading::Captured { .. } | ResourceReading::Pending) => None,
-                Err(error) => {
-                    failed = Some(error);
-                    None
-                }
-            }
-        });
-        if let Some(error) = failed {
-            return Err(error);
-        }
-        let Some((bytes, heads)) = read.filter(|(bytes, _)| bytes.len() <= maximum) else {
-            return Ok(None);
-        };
-        let revision = tilo_peer_state::owner::revision_of_heads(&heads);
-        if bytes.is_empty() && heads.as_slice() == holding.heads {
-            return Ok(Some(ResourceReading::Unchanged(revision)));
-        }
-        Ok(Some(ResourceReading::Changes {
-            revision,
-            heads,
-            bytes,
-        }))
+        self.read_replica(workspace, (app, record), holding, maximum)
     }
 
     /// A digest of what this device's replica admitted of `workspace`'s `app`'s `document`, sealed
@@ -269,24 +174,11 @@ impl Engine {
     /// The workspace is not held here, or its documents cannot be listed now.
     pub fn documents(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let held: Vec<_> = self
-            .held
-            .lock()
-            .keys()
-            .filter(|route| route.cluster_id == workspace)
-            .map(|route| (route.app_id.clone(), route.document.clone()))
-            .collect();
         let own = self.identity.device_cert.device_public_key;
         let now = tilo_clock::wall();
         self.owner.with_current(id, |view| {
             let reader = Admission::of(view, own).reader(own);
             let mut documents = view.peer().records();
-            // Local writes become visible before their replica admits them.
-            for document_id in &held {
-                if !documents.contains(document_id) {
-                    documents.push(document_id.clone());
-                }
-            }
             documents.retain(|(app, document_id)| {
                 view.peer()
                     .check_document_read(reader, app, document_id, now)

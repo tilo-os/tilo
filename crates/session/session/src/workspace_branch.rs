@@ -186,7 +186,9 @@ async fn found(
             &workspace.to_string(),
             app,
             document,
+            None,
             changes,
+            true,
             true,
             sealed.as_ref(),
         )
@@ -1534,7 +1536,9 @@ mod tests {
             _: &str,
             _: &str,
             _: &str,
+            _: Option<&str>,
             _: &[u8],
+            _: bool,
             _: bool,
             _: Option<&key_group::ContentKeys>,
         ) -> tilo_peer_state::workspace_documents::DocumentWrite {
@@ -1650,7 +1654,9 @@ mod tests {
                     &workspace.to_string(),
                     app,
                     record,
+                    None,
                     &doc.save_after(&[]),
+                    true,
                     true,
                     Some(&keys),
                 ))

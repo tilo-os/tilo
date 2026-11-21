@@ -121,15 +121,26 @@ pub type DocumentWrite =
 pub trait DeviceWrites: collab_types::signer::MaybeSendSync + 'static {
     /// Write `changes` to `app`'s `document` of `workspace`: the document's founding write when
     /// `founding` (the whole document, which the workspace must not hold yet), a change of it
-    /// otherwise, sealed under `sealed` (the keys of the document's group) where the workspace
-    /// seals its documents.
+    /// otherwise; the whole document when `snapshot` (a founding, or a checkpoint of one the
+    /// workspace holds already), its changes otherwise; kept for `readers` where only some members
+    /// read it, sealed under `sealed` (the keys of the document's group) where the workspace seals
+    /// its documents.
+    ///
+    /// Answers the write as this device's apps take a member's: the signed op its holder admitted,
+    /// and the author's access in the workspace.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one write names the record, its readers, its changes and how it carries them"
+    )]
     fn write(
         &self,
         workspace: &str,
         app: &str,
         document: &str,
+        readers: Option<&str>,
         changes: &[u8],
         founding: bool,
+        snapshot: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> DocumentWrite;
 }

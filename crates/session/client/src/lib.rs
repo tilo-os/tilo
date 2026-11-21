@@ -55,7 +55,7 @@ pub use arrivals::Arrivals;
 pub use client::{Client, Presence};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use link::{
-    Entry, Events, Failure, FailureKind, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,
+    Entry, Events, Failure, FailureKind, Held, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,
     PeerStatus, Reports, TransportPhase,
 };
 pub use membership_check::{MemoryPeerStore, PeerEntry, PeerStore};

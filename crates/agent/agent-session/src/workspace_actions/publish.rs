@@ -523,7 +523,11 @@ impl Worker {
         if !self.workspaces.contains_key(&workspace_id) {
             return Err("the workspace was not joined".into());
         }
-        let founding = matches!(mutation, DocumentMutation::Snapshot(_));
+        // The whole record, or only what changed of it; and whether it is this write that founds
+        // it. A page's first write after a reload is the record whole over one the workspace
+        // holds already: a checkpoint, not a founding.
+        let snapshot = matches!(mutation, DocumentMutation::Snapshot(_));
+        let founding = snapshot && self.shared.reads().is_none_or(|reads| !reads.holds(route));
         let link = self.shared.link.get().cloned();
         let sealed = match &link {
             _ if is_roster => None,
@@ -576,8 +580,10 @@ impl Worker {
                 &route.cluster_id,
                 &route.app_id,
                 &route.document,
+                None,
                 &changes,
                 founding,
+                snapshot,
                 sealed.as_ref(),
             );
             self.own_device

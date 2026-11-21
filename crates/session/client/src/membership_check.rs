@@ -256,12 +256,29 @@ struct KeySnapshot {
 struct SavedKeys {
     peers: BTreeMap<WorkspaceId, Vec<u8>>,
     /// Writes held until their route's keys arrive.
+    held: Vec<(DocumentRoute, collab_types::DocumentMutation)>,
+}
+
+/// Channel state as "tilo.browser-keys.v8" kept it, when held writes were raw document frames:
+/// the peers and reader scopes are read, and each app writes again what it wrote then.
+#[derive(Deserialize)]
+struct KeySnapshotBeforeTypedWrites {
+    keys: SavedKeysBeforeTypedWrites,
+    scopes: BTreeMap<WorkspaceId, String>,
+}
+
+#[derive(Deserialize)]
+struct SavedKeysBeforeTypedWrites {
+    peers: BTreeMap<WorkspaceId, Vec<u8>>,
+    /// Raw frames of an earlier build's held writes: what an app wrote then is written again by
+    /// its app now, so they are read and let go.
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
 /// Tags stored channel state of this format: state of an earlier format does not open, and the
 /// device asks for its channels again.
-const SAVED_KEYS_TAG: &[u8] = b"tilo.browser-keys.v8";
+const SAVED_KEYS_TAG: &[u8] = b"tilo.browser-keys.v9";
+const SAVED_KEYS_FRAMES: &[u8] = b"tilo.browser-keys.v8";
 const SAVED_KEYS_WITHOUT_SCOPES: &[u8] = b"tilo.browser-channels.v7";
 
 impl StoredKeys {
@@ -272,6 +289,17 @@ impl StoredKeys {
             .and_then(|bytes| {
                 if let Some(current) = bytes.strip_prefix(SAVED_KEYS_TAG) {
                     return postcard::from_bytes(current).ok();
+                }
+                if let Some(frames) = bytes.strip_prefix(SAVED_KEYS_FRAMES) {
+                    let older: KeySnapshotBeforeTypedWrites = postcard::from_bytes(frames).ok()?;
+                    let _ = older.keys.held.len();
+                    return Some(KeySnapshot {
+                        keys: SavedKeys {
+                            peers: older.keys.peers,
+                            held: Vec::new(),
+                        },
+                        scopes: older.scopes,
+                    });
                 }
                 let keys =
                     postcard::from_bytes(bytes.strip_prefix(SAVED_KEYS_WITHOUT_SCOPES)?).ok()?;
@@ -288,12 +316,12 @@ impl StoredKeys {
     }
 
     /// The writes held for their keys when the state was kept.
-    pub(crate) fn held(&self) -> Vec<(DocumentRoute, Vec<Vec<u8>>)> {
+    pub(crate) fn held(&self) -> Vec<(DocumentRoute, collab_types::DocumentMutation)> {
         self.0.saved.lock_recover().keys.held.clone()
     }
 
     /// Keep `held` as the writes waiting for their keys.
-    pub(crate) fn hold(&self, held: Vec<(DocumentRoute, Vec<Vec<u8>>)>) {
+    pub(crate) fn hold(&self, held: Vec<(DocumentRoute, collab_types::DocumentMutation)>) {
         self.change(|saved| saved.keys.held = held);
     }
 
@@ -656,7 +684,10 @@ mod tests {
             document: "note".into(),
         };
         let workspace = WorkspaceId::new();
-        let held = vec![(route, vec![b"before the reload".to_vec()])];
+        let held = vec![(
+            route,
+            collab_types::DocumentMutation::Incremental(b"before the reload".to_vec()),
+        )];
         let scope = neighbour_wire::KeyScope::Document {
             workspace,
             app: "so.tilo.notes".into(),

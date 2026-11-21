@@ -392,7 +392,9 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
         .own_write(
             &workspace,
             (DESKTOP_APP, DESKTOP_DOCUMENT),
+            None,
             &layout.save(),
+            true,
             true,
             Some(&sealed),
         )
@@ -407,7 +409,9 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
         .own_write(
             &workspace,
             (DESKTOP_APP, DESKTOP_DOCUMENT),
+            None,
             &layout.save_after(&heads),
+            false,
             false,
             Some(&sealed),
         )

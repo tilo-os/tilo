@@ -800,11 +800,7 @@ impl Sync {
     /// has not taken in: a read then lays them over the whole record, and all it can bring is
     /// another device's change, which waits a moment.
     fn holding(&self, chunk: TreeChunk) -> bool {
-        self.link
-            .engine()
-            .held_writes()
-            .lock()
-            .contains_key(&route(self.workspace, chunk))
+        self.link.holding(&route(self.workspace, chunk))
     }
 
     /// Merge what each opened record holds that this namespace has not merged yet, and open

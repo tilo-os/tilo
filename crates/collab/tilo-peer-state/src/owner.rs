@@ -15,6 +15,7 @@ mod backlog;
 mod behind;
 mod certified;
 mod document_read;
+mod draft;
 mod effect_history;
 mod effect_receipt;
 #[cfg(not(target_arch = "wasm32"))]
@@ -47,6 +48,7 @@ pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use document_read::{
     CommittedDocument, DocumentChanges, DocumentRead, History, Holding, revision_of_heads,
 };
+pub use draft::{LocalWrite, admit_local_write, draft_local_write};
 #[cfg(not(target_arch = "wasm32"))]
 pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 #[cfg(not(target_arch = "wasm32"))]
@@ -59,7 +61,7 @@ pub use publication::{
 pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
 };
-pub use write::{Committed, WriteRefusal, writes_in_one_turn};
+pub use write::{Committed, WriteRefusal};
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};

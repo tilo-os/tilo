@@ -643,16 +643,17 @@ impl GovernedWorkspace {
         } else {
             write.change.raw_bytes().to_vec()
         };
-        let (mut request, _) = crate::documents::draft(
+        let (mut request, _) = tilo_peer_state::owner::draft_local_write(
             peer,
             self.workspace(),
             &device.device(),
-            crate::documents::Write {
+            tilo_peer_state::owner::LocalWrite {
                 app,
                 document: &write.doc,
                 readers: named,
                 changes: &bytes,
                 founding,
+                snapshot: founding,
                 sealed: Some(&keys),
                 now: tilo_clock::wall(),
             },

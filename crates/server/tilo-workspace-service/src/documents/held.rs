@@ -13,8 +13,7 @@
 use std::sync::Arc;
 
 use collab_types::signer::DeviceSigner;
-use tilo_peer_state::owner::{AppWrite, WriteRefusal};
-use tilo_peer_state::owner_commit::CommitOperation;
+use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::replica::Replica;
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentWrite,
@@ -227,76 +226,42 @@ impl DeviceWrites for HeldDocuments {
         workspace: &str,
         app: &str,
         document: &str,
+        readers: Option<&str>,
         changes: &[u8],
         founding: bool,
+        snapshot: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> DocumentWrite {
-        let replica = self.replica.clone();
-        let signer = self.signer.clone();
-        let device = self.device;
-        let mine = self.holds_workspace(workspace);
-        let (workspace, app, document) =
-            (workspace.to_owned(), app.to_owned(), document.to_owned());
-        let changes = changes.to_vec();
-        let sealed = sealed.cloned();
-        Box::pin(async move {
-            if !mine {
-                return Err(WriteRefusal::Refused(
-                    "this device holds no such workspace".to_owned(),
-                ));
-            }
-            let Some(signer) = signer else {
-                return Err(WriteRefusal::Refused(
+        let Some(signer) = self.signer.clone() else {
+            return Box::pin(async {
+                Err(WriteRefusal::Refused(
                     "this holder has no device key to sign its writes".to_owned(),
-                ));
-            };
-            let now = tilo_clock::wall();
-            // The write is drafted against the replica as it stands, signed, and admitted as this
-            // device's: the guard is never held across the signer's answer.
-            let snapshot = replica.read(StatePeer::clone);
-            let (mut request, author) = super::draft(
-                &snapshot,
-                &workspace,
-                &device,
-                super::Write {
-                    app: &app,
-                    document: &document,
-                    readers: None,
-                    changes: &changes,
-                    founding,
-                    sealed: sealed.as_ref(),
-                    now,
-                },
-            )?;
-            let CommitOperation::Document { envelope, own, .. } = &mut request.operation else {
-                return Err(WriteRefusal::Refused(
-                    "a local write is a document write".to_owned(),
-                ));
-            };
-            let bytes = envelope
-                .signing_bytes()
-                .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-            let signature = signer
-                .sign(bytes)
-                .await
-                .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-            envelope.signature = collab_types::Signature(signature);
-            let (envelope, own) = ((**envelope).clone(), own.clone());
-            drop(snapshot);
-            replica
-                .write(|peer| peer.admit_new_local_document(&app, &document, envelope.clone(), now))
-                .map_err(|refused| WriteRefusal::Refused(refused.to_string()))?;
-            Ok(AppWrite {
-                peer: neighbour_wire::peer_handle(&device),
-                app_id: app,
-                cluster_id: workspace,
-                document_id: document,
-                author,
-                replayed: false,
-                envelope,
-                own,
-            })
-        })
+                ))
+            });
+        };
+        if !self.holds_workspace(workspace) {
+            return Box::pin(async {
+                Err(WriteRefusal::Refused(
+                    "this device holds no such workspace".to_owned(),
+                ))
+            });
+        }
+        tilo_peer_state::owner::admit_local_write(
+            self.replica.clone(),
+            self.device,
+            signer,
+            workspace,
+            tilo_peer_state::owner::LocalWrite {
+                app,
+                document,
+                readers,
+                changes,
+                founding,
+                snapshot,
+                sealed,
+                now: tilo_clock::wall(),
+            },
+        )
     }
 }
 
@@ -406,6 +371,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one holder's reads, its own write and a checkpoint of it, read top to bottom"
+    )]
     fn a_holder_holds_reads_takes_in_and_writes_a_workspaces_documents() {
         let now = now();
         let root = SigningKey::from_bytes(&[1; 32]);
@@ -491,7 +460,9 @@ mod tests {
             WORKSPACE,
             DESKTOP_APP,
             DESKTOP_DOCUMENT,
+            None,
             &change,
+            false,
             false,
             None,
         ));
@@ -511,6 +482,43 @@ mod tests {
             panic!("a document this device holds reads whole");
         };
         assert_eq!(front(&bytes).as_deref(), Some("Mine"));
+
+        // The record whole over one the workspace holds already is a checkpoint, not a founding:
+        // a page's first write after a reload sends it, and it is taken.
+        let current = holder
+            .replica()
+            .read(|peer| peer.document(DESKTOP_APP, DESKTOP_DOCUMENT))
+            .expect("the holder keeps the record");
+        let mut checkpointed = AutoCommit::load(&current).expect("the record opens");
+        checkpointed.set_actor(automerge::ActorId::from(
+            SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes().to_vec(),
+        ));
+        checkpointed
+            .put(ROOT, "front", "Checkpoint")
+            .expect("the layout's front");
+        checkpointed.commit();
+        let written = futures::executor::block_on(holder.write(
+            WORKSPACE,
+            DESKTOP_APP,
+            DESKTOP_DOCUMENT,
+            None,
+            &checkpointed.save(),
+            false,
+            true,
+            None,
+        ));
+        assert!(
+            written.is_ok(),
+            "a checkpoint of a record the workspace holds is taken: {}",
+            written.err().map(|refused| refused.to_string()).unwrap_or_default()
+        );
+        let DocumentRead::Whole { bytes, .. } = holder
+            .read(WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT, None)
+            .expect("the layout reads")
+        else {
+            panic!("a document this device holds reads whole");
+        };
+        assert_eq!(front(&bytes).as_deref(), Some("Checkpoint"));
         assert!(!holder.durable().expect("the replica encodes").is_empty());
     }
 }

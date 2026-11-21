@@ -637,7 +637,9 @@ impl Inner {
                         &writing_key.0,
                         &writing_key.1,
                         &writing_key.2,
+                        None,
                         &changes,
+                        founding,
                         founding,
                         sealed.as_ref(),
                     )
@@ -727,9 +729,14 @@ impl Inner {
                     }
                 };
                 drop(replicas);
-                let (changes, founding) = match next.mutation {
-                    DocumentMutation::Snapshot(bytes) => (bytes, true),
-                    DocumentMutation::Incremental(bytes) => (bytes, false),
+                let (changes, snapshot, founding) = match next.mutation {
+                    DocumentMutation::Snapshot(bytes) => {
+                        // The record whole is a founding only where the workspace holds nothing
+                        // of it yet: over one it holds, it is a checkpoint.
+                        let founding = !self.holds_resource(&key);
+                        (bytes, true, founding)
+                    }
+                    DocumentMutation::Incremental(bytes) => (bytes, false, false),
                 };
                 // Seal under the keys selected for this record.
                 let sealed = match engine.resource_write_keys(room, (&app, &record)) {
@@ -751,8 +758,10 @@ impl Inner {
                             &writing_key.0,
                             &writing_key.1,
                             &writing_key.2,
+                            None,
                             &changes,
                             founding,
+                            snapshot,
                             sealed.as_ref(),
                         )
                         .await

@@ -539,22 +539,68 @@ pub struct Link {
     outbox: Arc<dyn Outbox + Send + Sync>,
     /// This device's replicas of its workspaces, and what reads their records.
     engine: Arc<Engine>,
+    /// This device's writes its session has not drafted and admitted yet: held until the
+    /// session's holder can write them ([`crate::Cmd::Write`]).
+    held: Held,
     reports: Arc<Reports>,
 }
 
+/// The writes this device made that its session has not drafted and admitted yet, by record: a
+/// write waits here for its record's keys, or for the record it changes, and is read by no one
+/// until the session's holder admits it. Whoever reports on a record counts them: a folder is not
+/// said durable while one is here, and a read does not treat a record this device wrote as one it
+/// has not.
+#[derive(Clone, Default)]
+pub struct Held(
+    Arc<std::sync::Mutex<std::collections::BTreeMap<DocumentRoute, Vec<collab_types::DocumentMutation>>>>,
+);
+
+impl Held {
+    /// The held writes, to read or change.
+    pub fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        std::collections::BTreeMap<DocumentRoute, Vec<collab_types::DocumentMutation>>,
+    > {
+        self.0.lock_recover()
+    }
+
+    /// Whether this device holds any write of `route`.
+    #[must_use]
+    pub fn contains(&self, route: &DocumentRoute) -> bool {
+        self.lock().contains_key(route)
+    }
+}
+
 impl Link {
-    /// A link through `outbox`, whose transport keeps `engine` and reports on `reports`.
+    /// A link through `outbox`, whose transport keeps `engine` and reports on `reports`, holding
+    /// what `held` names until the session drafts and admits it.
     #[must_use]
     pub fn new(
         outbox: Arc<dyn Outbox + Send + Sync>,
         engine: Arc<Engine>,
+        held: Held,
         reports: Arc<Reports>,
     ) -> Self {
         Self {
             outbox,
             engine,
+            held,
             reports,
         }
+    }
+
+    /// This device's writes its session has not drafted and admitted yet.
+    #[must_use]
+    pub fn held(&self) -> &Held {
+        &self.held
+    }
+
+    /// Whether this device holds a write of `route` its session has not drafted and admitted yet.
+    #[must_use]
+    pub fn holding(&self, route: &DocumentRoute) -> bool {
+        self.held.contains(route)
     }
 
     /// Where this link says what it says, for a task that must be `Send` where the link is not
@@ -811,16 +857,22 @@ impl Outbox for Link {
         {
             self.engine.hand_keys(workspace, keys.clone());
         }
-        // Held before the session, which reads held writes under this lock, can look: read from
-        // now on, and said to the session as the route alone.
-        if let Cmd::Write(route, frames) = command {
-            let mut held = self.engine.held_writes().lock();
-            self.outbox.send(Cmd::Write(route.clone(), Vec::new()))?;
-            held.entry(route).or_default().extend(frames);
-            drop(held);
-            return Ok(());
-        }
         self.outbox.send(command)
+    }
+
+    /// Hold `mutation` before the session, which drafts and admits held writes, can look: whoever
+    /// reports on the record counts this device's write from now, not once the session got to it.
+    fn write(
+        &self,
+        route: DocumentRoute,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<(), String> {
+        self.held
+            .lock()
+            .entry(route.clone())
+            .or_default()
+            .push(mutation.clone());
+        Ok(self.outbox.send(Cmd::Write(route))?)
     }
 }
 

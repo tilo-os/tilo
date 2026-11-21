@@ -15,9 +15,10 @@ use super::Workspaces;
 impl Workspaces {
     /// Write `changes` to `app`'s `document` of `workspace` as this device's own: the document's
     /// founding write when `founding` (the whole document, which the workspace must not hold
-    /// yet), a change of it otherwise, sealed under `sealed` where its documents are sealed.
-    /// Answers the write as this device's apps take a member's: their copies of the document follow
-    /// it only once it is handed to them.
+    /// yet), a change of it otherwise; the whole document when `snapshot` (a founding or a
+    /// checkpoint of one the workspace holds), sealed under `sealed` where its documents are
+    /// sealed. Answers the write as this device's apps take a member's: their copies of the
+    /// document follow it only once it is handed to them.
     ///
     /// # Errors
     /// The workspace is not held here, a founding write finds the document held already, or the
@@ -27,8 +28,10 @@ impl Workspaces {
         &self,
         workspace: &str,
         (app, document): (&str, &str),
+        readers: Option<&str>,
         changes: &[u8],
         founding: bool,
+        snapshot: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> Result<AppWrite, WriteRefusal> {
         let device = self.signing_device();
@@ -40,16 +43,17 @@ impl Workspaces {
         let drafting = crate::timing::start();
         let (mut request, author) = {
             let governed = state.lock().await;
-            crate::documents::draft(
+            tilo_peer_state::owner::draft_local_write(
                 &governed.peer(),
                 governed.workspace(),
                 &device.device(),
-                crate::documents::Write {
+                tilo_peer_state::owner::LocalWrite {
                     app,
                     document,
-                    readers: None,
+                    readers,
                     changes,
                     founding,
+                    snapshot,
                     sealed,
                     now,
                 },
@@ -174,7 +178,9 @@ mod tests {
             .own_write(
                 &workspace,
                 (DESKTOP_APP, DESKTOP_DOCUMENT),
+                None,
                 &document.save(),
+                true,
                 true,
                 Some(&sealed),
             )
@@ -194,7 +200,9 @@ mod tests {
             .own_write(
                 &workspace,
                 (DESKTOP_APP, DESKTOP_DOCUMENT),
+                None,
                 &document.save_after(&heads),
+                false,
                 false,
                 Some(&sealed),
             )
@@ -210,7 +218,9 @@ mod tests {
             .own_write(
                 &workspace,
                 (DESKTOP_APP, DESKTOP_DOCUMENT),
+                None,
                 &document.save(),
+                true,
                 true,
                 Some(&sealed),
             )

@@ -126,19 +126,20 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
         self.send(Cmd::PublishSigned(route, Box::new(op)))
     }
 
-    /// Write `mutation` to `route`: split into signed frames, committed in order.
+    /// Write `mutation` to `route` as this device's own: the session's holder drafts, seals and
+    /// signs it ([`tilo_peer_state::workspace_documents::DeviceWrites::write`]) and publishes it
+    /// as it was signed ([`Outbox::publish_signed`]). A write that cannot be drafted yet — its
+    /// record's keys are not here, or the record it changes is not — waits for them.
     ///
     /// # Errors
-    /// The mutation does not encode, or the transport is gone.
+    /// The transport is gone.
     fn write(
         &self,
         route: DocumentRoute,
         mutation: &collab_types::DocumentMutation,
     ) -> Result<(), String> {
-        let frames = mutation
-            .encode_frames()
-            .map_err(|error| error.to_string())?;
-        Ok(self.send(Cmd::Write(route, frames))?)
+        let _ = (route, mutation);
+        Err("this transport carries no write of this device's".to_owned())
     }
 
     /// Take part in workspace `workspace` (its UUID) of this device's person, named `name`, once the
@@ -479,9 +480,11 @@ pub enum Cmd {
     OpenDocumentAt(Topic, DocumentRoute),
     /// Take part in a route's encrypted channel: ask its members for access.
     OpenRoute(DocumentRoute),
-    /// Commit the frames of one write to a route, in order ([`Outbox::write`]). A
-    /// [`crate::Link`] holds them in its engine, readable at once, and says the route alone.
-    Write(DocumentRoute, Vec<Vec<u8>>),
+    /// Write one mutation of `route` as this device's own ([`Outbox::write`]): the session drafts
+    /// it through the device's holder, and publishes it as the signed op its replica admitted. A
+    /// [`crate::Link`] holds the mutation in its engine, readable at once, and says the route
+    /// alone.
+    Write(DocumentRoute),
     /// Publish `op`, a write of this device its holder signed and its replica admitted already
     /// ([`Outbox::publish_signed`]): ownership carries it as it is, once, and sends it.
     PublishSigned(DocumentRoute, Box<collab_types::SignedOp>),

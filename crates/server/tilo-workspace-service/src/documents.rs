@@ -3,10 +3,11 @@
 //!
 //! A workspace service holds a workspace beside its store, and a page holds one
 //! over its own storage; both read a record, decide whether it reads now, list
-//! what there is and draft a write as their device. The algorithms are here,
-//! once, over the replica ([`tilo_peer_state::StatePeer`]) and the device's
-//! channel keys ([`device_keys::DeviceKeys`]); a holder answers only where its
-//! replica and keys are.
+//! what there is, and write a record as their device. The reads are here, once,
+//! over the replica ([`tilo_peer_state::StatePeer`]) and the device's channel
+//! keys ([`device_keys::DeviceKeys`]); the write is the one all holders share
+//! ([`tilo_peer_state::owner::admit_local_write`]); a holder answers only where
+//! its replica and keys are.
 
 pub mod device_keys;
 pub mod held;
@@ -18,9 +19,6 @@ pub use held::HeldDocuments;
 use std::sync::Arc;
 
 use automerge::ReadDoc as _;
-use collab_types::{ContentRetention, DocumentMutation, document_artifact_id};
-use tilo_peer_state::owner::WriteRefusal;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_peer_state::{KeptDocument, PeerDocumentReadError, StatePeer};
 
@@ -310,92 +308,6 @@ pub(crate) fn own_records(
 /// Whether `peer` holds anything of `app`'s `resource`, committed or sealed alike.
 pub(crate) fn holds(peer: &StatePeer, app: &str, resource: &str) -> bool {
     peer.holds_document(app, resource)
-}
-
-/// A device's write to one document: `changes` to `app`'s `document`, the whole document when
-/// `founding` it, a change of it otherwise, kept for `readers` where only some members read it,
-/// sealed under `sealed` (the keys of the document's group) where the workspace seals its
-/// documents, as made at `now`.
-#[derive(Clone, Copy)]
-pub(crate) struct Write<'a> {
-    pub(crate) app: &'a str,
-    pub(crate) document: &'a str,
-    pub(crate) readers: Option<&'a str>,
-    pub(crate) changes: &'a [u8],
-    pub(crate) founding: bool,
-    pub(crate) sealed: Option<&'a key_group::ContentKeys>,
-    pub(crate) now: SystemTime,
-}
-
-/// The `write` as `device` makes it to `workspace`. Answers the request to commit and the
-/// author's access in the workspace.
-///
-/// # Errors
-///
-/// The device may not write it, or a founding write finds the document held already.
-pub(crate) fn draft(
-    peer: &StatePeer,
-    workspace: &str,
-    device: &[u8; 32],
-    write: Write<'_>,
-) -> Result<(OwnerCommitRequest, tilo_action_policy::MemberAccess), WriteRefusal> {
-    let Write {
-        app,
-        document,
-        readers,
-        changes,
-        founding,
-        sealed,
-        now,
-    } = write;
-    if founding && peer.document(app, document).is_some() {
-        return Err(WriteRefusal::Refused(format!(
-            "{document} of {app} is in the workspace already"
-        )));
-    }
-    let author = peer
-        .permissions(*device, now)
-        .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
-    let artifact = document_artifact_id(app, workspace, document);
-    let frame = if founding {
-        DocumentMutation::Snapshot(changes.to_vec())
-    } else {
-        DocumentMutation::Incremental(changes.to_vec())
-    }
-    .encode()
-    .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
-    let mut seal = sealed.map(|keys| {
-        move |plaintext: &[u8]| {
-            keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
-                .map_err(|error| error.to_string())
-        }
-    });
-    let envelope = peer
-        .draft_write(
-            (app, document),
-            readers,
-            &frame,
-            seal.as_mut()
-                .map(|seal| seal as &mut tilo_peer_state::SealCheckpoint<'_>),
-            *device,
-            0,
-            now,
-        )
-        .map_err(WriteRefusal::Refused)?;
-    let own = peer.own_write(app, document, device);
-    Ok((
-        OwnerCommitRequest {
-            workspace: workspace.to_owned(),
-            operation: CommitOperation::Document {
-                app: app.to_owned(),
-                document: document.to_owned(),
-                envelope: Box::new(envelope),
-                own,
-                readers: readers.map(str::to_owned),
-            },
-        },
-        author,
-    ))
 }
 
 /// What [`read`] answers from a document it opened.

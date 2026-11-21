@@ -1,8 +1,10 @@
 //! What this session writes: its ownership of a device's writes.
 //!
-//! A write a page publishes is committed to this device's replica sealed with
-//! its record's keys ([`Task::commit_held`]); never in the clear, so frames
-//! wait for the keys. The replica's ownership is what this session owes its
+//! A write a page publishes is drafted, sealed and signed by this device
+//! ([`tilo_peer_state::workspace_documents::DeviceWrites::write`]) once its
+//! record's keys are here ([`Task::commit_held`]), then published as it was
+//! signed ([`Task::publish_request`]); never in the clear, so writes wait for
+//! the keys. The replica's ownership is what this session owes its
 //! host: it is sent as commits ([`Task::send_ownership`]) and retired as the
 //! host answers them ([`Task::retire_answered`]), and a barrier completes once
 //! everything held when it was asked is answered.
@@ -68,7 +70,7 @@ fn written_to(entry: &OwnershipEntry) -> Option<DocumentRoute> {
 /// whose refusals it hears.
 pub(super) type Owed = (BTreeSet<[u8; 32]>, Option<String>, Completion, Scope, Hears);
 
-/// A barrier called while frames were held: the routes they are held on, where its outcome goes,
+/// A barrier called while writes were held: the routes they are held on, where its outcome goes,
 /// what it answers for, and whose refusals it hears.
 pub(super) type Held = (BTreeSet<DocumentRoute>, Completion, Scope, Hears);
 
@@ -98,7 +100,7 @@ impl Task {
     /// the writes wait for this device's keys.
     pub(super) fn publish(&mut self, route: &DocumentRoute) {
         if route.workspace_id().is_err() {
-            self.engine.held_writes().lock().remove(route);
+            self.held.lock().remove(route);
             self.fail(
                 "protocol-rejected",
                 "A document names an invalid workspace.",
@@ -116,19 +118,18 @@ impl Task {
         }
     }
 
-    /// Commit the writes held for their route's keys, once they may: every held write of a route
-    /// whose keys this device holds, in one owner turn per route; held, so read, until committed.
-    /// Writes the record cannot take yet stay held, durably, for the next time this device
-    /// writes; only writes the workspace refuses for good are let go, and a barrier waiting on
-    /// them completes with the refusal: a write let go is never answered as saved.
+    /// Draft and publish the writes held for their route's keys, once they may: every held write
+    /// of a route whose keys this device holds, taken in turn. Writes the record cannot take yet
+    /// stay held, durably, for the next time this device writes; only writes the workspace refuses
+    /// for good are let go, and a barrier waiting on them completes with the refusal: a write let
+    /// go is never answered as saved.
     pub(super) async fn commit_held(&mut self) {
         self.commit_signed_waiting();
         if !std::mem::take(&mut self.outbound_due) {
             return;
         }
         let ready: Vec<DocumentRoute> = self
-            .engine
-            .held_writes()
+            .held
             .lock()
             .keys()
             .filter(|route| self.keys_of(route).is_some())
@@ -138,41 +139,36 @@ impl Task {
         // Whether what is held changed: what did not change is not kept again.
         let mut drained = false;
         for route in ready {
-            // As many at a time as the document's history holds: a batch larger than that would
-            // never fit, and its writes would wait for good.
             loop {
-                let held = self.engine.held_writes().lock().get(&route).cloned();
-                let Some(mut frames) = held else {
+                let Some(mutation) = self
+                    .held
+                    .lock()
+                    .get(&route)
+                    .and_then(|writes| writes.first())
+                    .cloned()
+                else {
                     break;
                 };
-                let mut taken = tilo_peer_state::owner::writes_in_one_turn(&frames);
-                frames.truncate(taken);
-                match self.commit_frames(&route, frames).await {
+                match self.commit_held_write(&route, &mutation).await {
+                    // Still waiting for its record or its keys: it stays first in line.
                     None => break,
-                    Some(Ok(())) => {}
+                    Some(Ok(())) => {
+                        self.drop_held(&route, 1);
+                        drained = true;
+                    }
                     // Refused for good: what was written after it goes with it.
                     Some(Err(reason)) => {
                         refused.insert(route.clone(), reason);
-                        taken = usize::MAX;
-                    }
-                }
-                {
-                    let mut held = self.engine.held_writes().lock();
-                    if let Some(frames) = held.get_mut(&route) {
-                        frames.drain(..taken.min(frames.len()));
-                        if frames.is_empty() {
-                            held.remove(&route);
+                        let held = self.held.lock().remove(&route);
+                        if held.is_some_and(|held| !held.is_empty()) {
+                            drained = true;
                         }
-                        drained = true;
+                        break;
                     }
-                    drop(held);
-                }
-                if refused.contains_key(&route) {
-                    break;
                 }
             }
         }
-        if drained && self.engine.held_writes().lock().is_empty() {
+        if drained && self.held.lock().is_empty() {
             self.reports.change(|status| {
                 status.failures.retain(|failure| {
                     failure.kind != FailureKind::Session || !HELD_CODES.contains(&failure.code)
@@ -181,12 +177,24 @@ impl Task {
         }
         {
             // What holds nothing any more waits for nothing.
-            let held = self.engine.held_writes().lock();
+            let held = self.held.lock();
             self.held_since.retain(|route, _| held.contains_key(route));
             self.kept_why.retain(|route, _| held.contains_key(route));
         }
         self.persist_keys(drained);
         self.release_barriers(&refused);
+    }
+
+    /// Take `count` writes of `route` out of what this session holds of it, and let the route go
+    /// once nothing waits on it.
+    fn drop_held(&self, route: &DocumentRoute, count: usize) {
+        let mut held = self.held.lock();
+        if let Some(writes) = held.get_mut(route) {
+            writes.drain(..count.min(writes.len()));
+            if writes.is_empty() {
+                held.remove(route);
+            }
+        }
     }
 
     /// Publish `op`, a write of this device that its holder signed and this replica admitted
@@ -244,13 +252,13 @@ impl Task {
     }
 
     /// Take `request` into this device's ownership: the op as it was signed, once, answered for
-    /// by the host as any write of this device's is.
+    /// by the host as any write of this device's is. Answers whether ownership took it now.
     fn publish_request(
         &mut self,
         route: &DocumentRoute,
         workspace: tilo_desktop_model::WorkspaceId,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) {
+    ) -> bool {
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
         match self
             .replicas
@@ -259,11 +267,12 @@ impl Task {
         {
             Ok(committed) => {
                 if committed.is_empty() {
-                    return;
+                    return false;
                 }
                 self.owes(route);
                 self.landed(route, Some(self.config.cert.device_public_key));
                 self.count_ownership();
+                true
             }
             // What it waits for is still coming: its record here, or a signature.
             Err(refusals @ (WriteRefusal::Waiting(_) | WriteRefusal::Unsigned(_))) => {
@@ -273,114 +282,94 @@ impl Task {
                     .entry(route.clone())
                     .or_default()
                     .push(request);
+                false
             }
             Err(refusal) => {
                 tracing::warn!(app = %route.app_id, record = %route.document, %refusal,
                     "the workspace refused a write of this device for good");
                 self.fail("write-refused", refusal.to_string());
+                false
             }
         }
     }
 
-    /// Seal, sign and commit `frames` of `route` into this device's ownership, in one owner turn.
-    /// Answers `None` while they stay held, and once it is done with them, whether they were
-    /// committed or refused for good, and why. Writes its record cannot take yet (its keys went
-    /// away, its history is full, or the signer did not sign) stay held. What this device writes, its readers read at once, and ownership keeps however long
-    /// its host is away.
+    /// Draft, seal, sign and admit `mutation` of `route` through this device's holder, then
+    /// publish the signed op it answered ([`Self::publish_request`]). Answers `None` while the
+    /// write waits for its record's keys or for the record it changes, so it stays held; a write
+    /// the workspace refuses for good is answered with why, and is never kept.
+    ///
     /// A change needs the record it changes. The keys of a record this device opened can come
     /// before the record does, and a change drafted then would be refused and let go, while the
-    /// next change, which builds on it, is taken once the record is here: the record would
-    /// hold a change whose base no device ever sends, and every reader is refused it as
-    /// incomplete. The writes wait for the record as they wait for its keys, and go as it
-    /// lands ([`Self::landed`]); a write that founds the record needs none.
-    fn waits_for_its_document(
-        &self,
-        workspace: tilo_desktop_model::WorkspaceId,
-        route: &DocumentRoute,
-        frames: &[Vec<u8>],
-    ) -> bool {
-        let changes_first = frames.first().is_some_and(|frame| {
-            collab_types::ContentRetention::of_frame(frame) == collab_types::ContentRetention::Delta
-        });
-        changes_first
-            && self.replicas.owner().with_current(workspace, |view| {
-                Ok(view.peer().holds_document(&route.app_id, &route.document))
-            }) == Ok(false)
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one route's frames sealed, signed and committed, read top to bottom, with what a \
-                  refusal of them says"
-    )]
-    pub(super) async fn commit_frames(
+    /// next change, which builds on it, is taken once the record is here: the record would hold a
+    /// change whose base no device ever sends, and every reader is refused it as incomplete. The
+    /// write waits for the record as it waits for its keys, and goes as it lands
+    /// ([`Self::landed`]); a write that founds the record needs none.
+    async fn commit_held_write(
         &mut self,
         route: &DocumentRoute,
-        frames: Vec<Vec<u8>>,
+        mutation: &collab_types::DocumentMutation,
     ) -> Option<Result<(), String>> {
-        let owner = self.replicas.owner();
+        let keys = self.keys_of(route)?;
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
             const INVALID: &str = "A document names an invalid workspace.";
             self.fail("protocol-rejected", INVALID);
             return Some(Err(INVALID.to_owned()));
         };
-        let keys = self.keys_of(route)?;
-        if self.waits_for_its_document(workspace, route, &frames) {
-            return None;
-        }
-        let artifact = route.artifact();
-        let author = self.signer.device_public_key();
-        let now = crate::clock::system_time(tilo_clock::unix_now_ns());
-        let written = (route.app_id.as_str(), route.document.as_str());
-        // Drafted in the owner's turn, signed by this device's ownership outside it.
-        let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
-            frames
-                .iter()
-                .zip(0..)
-                .map(|(frame, drafted)| {
-                    let mut seal = |plaintext: &[u8]| {
-                        keys.seal_content(
-                            artifact,
-                            collab_types::ContentRetention::of_frame(plaintext),
-                            plaintext,
-                        )
-                        .map_err(|error| error.to_string())
-                    };
-                    let op = view.peer().draft_write(
-                        written,
-                        None,
-                        frame,
-                        Some(&mut seal),
-                        author,
-                        drafted,
-                        now,
-                    )?;
-                    Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                        workspace: route.cluster_id.clone(),
-                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                            app: route.app_id.clone(),
-                            document: route.document.clone(),
-                            envelope: Box::new(op),
-                            own: view.peer().own_write(written.0, written.1, &author),
-                            readers: None,
-                        },
-                    })
-                })
-                .collect()
+        let snapshot = matches!(mutation, collab_types::DocumentMutation::Snapshot(_));
+        let changes = match mutation {
+            collab_types::DocumentMutation::Snapshot(bytes)
+            | collab_types::DocumentMutation::Incremental(bytes) => bytes,
         };
-        let committed = match owner
-            .write(workspace, draft, self.signer.as_ref(), now)
-            .await
-        {
-            Ok(committed) => committed,
-            Err(refusal @ WriteRefusal::HistoryFull { .. }) => {
-                tracing::warn!(%refusal, "writes wait for their record's history to be compacted");
+        // A founding write claims the workspace holds nothing of the record. A page's first
+        // write after a reload is the record whole over one the workspace holds already: a
+        // checkpoint, not a founding.
+        let founding = snapshot && self.holds_none_of(route);
+        let written = self
+            .engine
+            .document_writes()
+            .write(
+                &route.cluster_id,
+                &route.app_id,
+                &route.document,
+                None,
+                changes,
+                founding,
+                snapshot,
+                Some(&keys),
+            )
+            .await;
+        match written {
+            Ok(receipt) => {
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    workspace: route.cluster_id.clone(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                        app: route.app_id.clone(),
+                        document: route.document.clone(),
+                        envelope: Box::new(receipt.envelope),
+                        own: receipt.own,
+                        readers: None,
+                    },
+                };
+                let entry = tilo_peer_state::owner::outgoing_bytes(&request)
+                    .ok()
+                    .map(|bytes| tilo_server_protocol::compaction::entry_id(&bytes));
+                if self.publish_request(route, workspace, request)
+                    && let Some(entry) = entry
+                {
+                    // What this device publishes, its own replica holds.
+                    self.note_delivered(route, &[entry]);
+                }
+                Some(Ok(()))
+            }
+            Err(WriteRefusal::HistoryFull { .. }) => {
+                tracing::warn!(app = %route.app_id, record = %route.document,
+                    "writes wait for their record's history to be compacted");
                 self.keep_for(route, Waits::History);
                 self.fail(
                     RECORD_FULL,
                     "This record is too large to share your latest changes. They are kept on this device.",
                 );
-                return None;
+                None
             }
             Err(WriteRefusal::Unsigned(error)) => {
                 tracing::warn!(%error, "writes wait for this device to sign them");
@@ -389,19 +378,19 @@ impl Task {
                     SIGNING_FAILED,
                     "This device could not sign your latest changes. They are kept on this device.",
                 );
-                return None;
+                None
             }
             Err(WriteRefusal::Waiting(prerequisite)) => {
                 self.keep_for(route, Waits::Prerequisite(prerequisite.to_string()));
                 tracing::debug!(app = %route.app_id, record = %route.document, %prerequisite,
                     "writes wait for what the workspace has not admitted here yet");
-                return None;
+                None
             }
             Err(WriteRefusal::Refused(error)) => {
                 tracing::warn!(app = %route.app_id, record = %route.document, %error,
                     "the workspace refused a write of this device for good");
                 self.fail("write-refused", error.clone());
-                return Some(Err(error));
+                Some(Err(error))
             }
             // The workspace's rules refused the change here, before it went. Its author reads it
             // where a server's refusal of a change is read: the same typed refusal of the same
@@ -415,23 +404,9 @@ impl Task {
                     refusal: refused.refusal.clone(),
                 });
                 self.fail("write-refused", refused.reason.clone());
-                return Some(Err(refused.to_string()));
+                Some(Err(refused.to_string()))
             }
-        };
-        if committed.is_empty() {
-            return Some(Ok(()));
         }
-        self.owes(route);
-        self.landed(route, Some(self.config.cert.device_public_key));
-        let ids: Vec<[u8; 32]> = committed
-            .iter()
-            .filter_map(|(request, _)| tilo_peer_state::owner::outgoing_bytes(request).ok())
-            .map(|bytes| tilo_server_protocol::compaction::entry_id(&bytes))
-            .collect();
-        // What this device publishes, its own replica holds.
-        self.note_delivered(route, &ids);
-        self.count_ownership();
-        Some(Ok(()))
     }
 
     /// `workspace`'s writes in this device's ownership: id, bytes, channel and retention.
@@ -565,8 +540,7 @@ impl Task {
     /// that `heard` names alone, or of any it answers for when it names none.
     pub(super) fn barrier(&mut self, done: Completion, scope: Scope, heard: Hears) {
         let held: BTreeSet<DocumentRoute> = self
-            .engine
-            .held_writes()
+            .held
             .lock()
             .keys()
             .filter(|route| scope.covers(route))
@@ -676,16 +650,14 @@ impl Task {
     /// The documents of `scope`'s workspaces that hold writes of this device not committed to
     /// its replica yet, each with whether the first of them is a change.
     fn held_in(&self, scope: Option<&BTreeSet<WorkspaceId>>) -> Vec<(DocumentRoute, bool)> {
-        self.engine
-            .held_writes()
+        self.held
             .lock()
             .iter()
             .filter(|(route, _)| within(scope, route))
-            .map(|(route, frames)| {
-                let changes = frames.first().is_some_and(|frame| {
-                    collab_types::ContentRetention::of_frame(frame)
-                        == collab_types::ContentRetention::Delta
-                });
+            .map(|(route, writes)| {
+                let changes = writes
+                    .first()
+                    .is_some_and(|write| matches!(write, collab_types::DocumentMutation::Incremental(_)));
                 (route.clone(), changes)
             })
             .collect()
@@ -814,7 +786,7 @@ impl Task {
                 let _ = barrier.1.send(Err(why));
             }
         }
-        let held = self.engine.held_writes().lock().clone();
+        let held = self.held.lock().clone();
         let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
             .into_iter()
             .partition(|(routes, ..)| routes.iter().any(|route| held.contains_key(route)));

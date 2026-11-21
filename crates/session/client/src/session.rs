@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::{
-    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureKind, Link, Outbox, PageShown,
+    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureKind, Held, Link, Outbox, PageShown,
     PeerStatus, Reports, TransportPhase, content::Kept,
 };
 use std::time::Duration;
@@ -326,11 +326,18 @@ fn session_task(
     });
     let engine = session_engine(&config, &signer, &replicas);
     engine.keys().set(Some(workspace_keys.clone()));
-    engine.held_writes().lock().extend(key_state.held());
+    let held = Held::default();
+    {
+        let mut waiting = held.lock();
+        for (route, mutation) in key_state.held() {
+            waiting.entry(route).or_default().push(mutation);
+        }
+    }
     #[cfg(feature = "toolkit")]
     crate::surfaces::decide_with_kept_surfaces();
     let task = Task {
         engine: Arc::clone(&engine),
+        held: held.clone(),
         replicas,
         commands: commands.downgrade(),
         config,
@@ -394,7 +401,7 @@ fn session_task(
         admitted_here: BTreeSet::new(),
     };
     // The link's own queue is there before the session says anything.
-    let link = Link::new(Arc::new(Commands(commands)), engine, reports);
+    let link = Link::new(Arc::new(Commands(commands)), engine, held, reports);
     (task, link, receiver)
 }
 
@@ -524,6 +531,9 @@ struct Task {
     surface_wants: neighbour_wire::content::ContentWants<()>,
     /// Live frames waiting for their record's keys.
     held_live: crate::held_live::HeldLive,
+    /// This device's writes its session has not drafted and admitted yet, shared with its links:
+    /// each waits here for its record's keys, or for the record it changes, and readers count it.
+    held: Held,
     /// Writes were published, or the host answered writes held, since held writes were
     /// last committed: what waits may commit ([`Self::commit_held`]).
     outbound_due: bool,
@@ -1729,8 +1739,8 @@ impl Task {
                 self.opened_routes.insert(route);
                 asked
             }
-            // Its frames are held already ([`crate::Link`]).
-            Command::Client(Cmd::Write(route, _)) => {
+            // Its mutation is held already ([`crate::Link`]): draft and publish what waits.
+            Command::Client(Cmd::Write(route)) => {
                 self.publish(&route);
                 true
             }
@@ -2303,11 +2313,12 @@ impl Task {
     fn persist_keys(&self, held_changed: bool) {
         if held_changed {
             self.key_state.hold(
-                self.engine
-                    .held_writes()
+                self.held
                     .lock()
                     .iter()
-                    .map(|(route, frames)| (route.clone(), frames.clone()))
+                    .flat_map(|(route, writes)| {
+                        writes.iter().map(|write| (route.clone(), write.clone()))
+                    })
                     .collect(),
             );
         }
@@ -2343,7 +2354,7 @@ impl Task {
                 if self.behind.contains_key(&route) {
                     self.replays.insert(route.clone());
                 }
-                self.outbound_due |= self.engine.held_writes().lock().contains_key(&route);
+                self.outbound_due |= self.held.lock().contains_key(&route);
             }
             self.commit_held().await;
             if self.new_keys.is_empty() {

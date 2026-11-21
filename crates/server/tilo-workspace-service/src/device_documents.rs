@@ -179,14 +179,17 @@ impl DeviceWrites for ServiceWrites {
         workspace: &str,
         app: &str,
         document: &str,
+        readers: Option<&str>,
         changes: &[u8],
         founding: bool,
+        snapshot: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> DocumentWrite {
         let workspaces = self.0.copies();
         let workspace = workspace.to_owned();
         let app = app.to_owned();
         let document = document.to_owned();
+        let readers = readers.map(str::to_owned);
         let changes = changes.to_vec();
         let sealed = sealed.cloned();
         Box::pin(async move {
@@ -199,8 +202,10 @@ impl DeviceWrites for ServiceWrites {
                 .own_write(
                     &workspace,
                     (&app, &document),
+                    readers.as_deref(),
                     &changes,
                     founding,
+                    snapshot,
                     sealed.as_ref(),
                 )
                 .await

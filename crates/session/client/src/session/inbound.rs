@@ -35,7 +35,7 @@ impl Task {
     /// ([`Self::follow_governance`]).
     pub(super) fn landed(&mut self, route: &DocumentRoute, author: Option<[u8; 32]>) {
         // This device's writes that waited for the record to change go now.
-        self.outbound_due |= self.engine.held_writes().lock().contains_key(route);
+        self.outbound_due |= self.held.lock().contains_key(route);
         if !self.reads_as_member(route) {
             self.unadmitted.insert(route.clone(), author);
             return;
@@ -368,7 +368,7 @@ impl Task {
         // key group unopened: opening it here asks the members for the keys
         // the writes it holds wait on.
         let unopened: Vec<DocumentRoute> =
-            self.engine.held_writes().lock().keys().cloned().collect();
+            self.held.lock().keys().cloned().collect();
         for route in unopened {
             self.open_channel(&route);
         }
