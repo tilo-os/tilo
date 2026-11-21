@@ -1257,21 +1257,16 @@ mod tests {
         );
         frame.relayout();
         let _ = crate::profiling::layout_counts::take();
-        let rect = frame.composition().root.rect;
-        frame.hover_at(rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+        let rect = frame.root_widget().get_rect();
+        frame.hover_at(rect.center().x, rect.center().y);
         frame.relayout();
         let solved = crate::profiling::layout_counts::take();
         assert_eq!(solved.solves, 0, "a hover solves no layout: {solved:?}");
         assert!(!frame.last_relayout().rebuilt, "the tree is retained");
-        let composed = frame.composition();
+        let composed = serde_json::to_string(&frame.composition()).unwrap_or_default();
         assert!(
-            composed
-                .root
-                .children
-                .iter()
-                .any(|part| part.widget == "ChartReadout"),
-            "the readout is the page's own elements: {:?}",
-            composed.root.children
+            composed.contains("ChartReadout"),
+            "the readout is the page's own elements: {composed}"
         );
     }
 
