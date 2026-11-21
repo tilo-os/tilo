@@ -89,6 +89,47 @@ fn declared_order(text: &str) -> Vec<String> {
 ///
 /// Anything else in the directory is a refusal: the boot unit fails rather
 /// than skipping a layer a packer meant to apply.
+/// Take one file of the components directory into what it names: a `<component>.tar` into
+/// `archives`, a `<component>.json` into `provenances`, and nothing else.
+fn take_entry(
+    entry: &std::fs::DirEntry,
+    archives: &mut BTreeMap<String, PathBuf>,
+    provenances: &mut BTreeSet<String>,
+) -> Result<(), CliError> {
+    let name = entry.file_name().to_string_lossy().into_owned();
+    if !entry
+        .file_type()
+        .map_err(CliError::io(format!("inspect {}", entry.path().display())))?
+        .is_file()
+    {
+        return Err(invalid(format!(
+            "{} is not a file; only <component>.tar and <component>.json belong here",
+            entry.path().display()
+        )));
+    }
+    if let Some(component) = name.strip_suffix(".tar") {
+        if component.is_empty()
+            || archives
+                .insert(component.to_owned(), entry.path())
+                .is_some()
+        {
+            return Err(invalid(format!("duplicate or empty layer name {name}")));
+        }
+    } else if let Some(component) = name.strip_suffix(".json") {
+        if component.is_empty() || !provenances.insert(component.to_owned()) {
+            return Err(invalid(format!(
+                "duplicate or empty provenance name {name}"
+            )));
+        }
+    } else {
+        return Err(invalid(format!(
+            "{} is neither <component>.tar nor <component>.json",
+            entry.path().display()
+        )));
+    }
+    Ok(())
+}
+
 pub fn entries(dir: &Path, manifest_path: &Path) -> Result<Vec<Entry>, CliError> {
     let text = std::fs::read_to_string(manifest_path)
         .map_err(CliError::io(format!("read {}", manifest_path.display())))?;
@@ -105,37 +146,7 @@ pub fn entries(dir: &Path, manifest_path: &Path) -> Result<Vec<Entry>, CliError>
         std::fs::read_dir(dir).map_err(CliError::io(format!("list {}", dir.display())))?;
     for entry in listing {
         let entry = entry.map_err(CliError::io(format!("list {}", dir.display())))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !entry
-            .file_type()
-            .map_err(CliError::io(format!("inspect {}", entry.path().display())))?
-            .is_file()
-        {
-            return Err(invalid(format!(
-                "{} is not a file; only <component>.tar and <component>.json belong here",
-                entry.path().display()
-            )));
-        }
-        if let Some(component) = name.strip_suffix(".tar") {
-            if component.is_empty()
-                || archives
-                    .insert(component.to_owned(), entry.path())
-                    .is_some()
-            {
-                return Err(invalid(format!("duplicate or empty layer name {name}")));
-            }
-        } else if let Some(component) = name.strip_suffix(".json") {
-            if component.is_empty() || !provenances.insert(component.to_owned()) {
-                return Err(invalid(format!(
-                    "duplicate or empty provenance name {name}"
-                )));
-            }
-        } else {
-            return Err(invalid(format!(
-                "{} is neither <component>.tar nor <component>.json",
-                entry.path().display()
-            )));
-        }
+        take_entry(&entry, &mut archives, &mut provenances)?;
     }
     for component in archives.keys() {
         if !provenances.contains(component) {

@@ -136,8 +136,7 @@ fn a_scaffolded_manifest_carries_the_offers_its_code_publishes() {
         let mut offer = serde_json::Map::new();
         offer.insert("resource".into(), "so.tilo.notes".into());
         let (action, label) = match template {
-            Template::Starter => ("clear", "Clear"),
-            Template::Document => ("clear", "Clear"),
+            Template::Starter | Template::Document => ("clear", "Clear"),
             Template::Collection => ("add", "Add"),
             Template::Graph => ("create", "Create"),
         };

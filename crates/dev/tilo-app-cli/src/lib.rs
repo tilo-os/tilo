@@ -9769,8 +9769,12 @@ fn scaffold_offers(spec: &AppSpec) -> String {
     const HEADER: &str = "# What the app offers a person while it is closed: written by `tilo-app surface` from\n\
                           # what its code publishes. Invoking one opens the app and invokes it there.\n";
     let (action, label, extra) = match spec.template {
-        Template::Starter => ("clear", "Clear", ""),
-        Template::Document => ("clear", "Clear", "confirm = true\n"),
+        // The document's clear is destructive, so a closed app asks before it.
+        Template::Starter | Template::Document => {
+            let asks_first = spec.template == Template::Document;
+            ("clear", "Clear", if asks_first { "confirm = true\n" } else { "" })
+        }
+        // The collection's add takes the one line a person writes for it.
         Template::Collection => ("add", "Add", "asks = \"title\"\n"),
         Template::Graph => ("create", "Create", ""),
     };
