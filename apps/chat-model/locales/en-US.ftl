@@ -66,3 +66,10 @@ chat-workspace-submit-feedback = Submit feedback
 chat-workspace-triage = Triage feedback
 
 chat-drafts-import-previous = Restore an earlier channel draft
+
+chat-skills = Workspace Skills
+chat-skills-write-skill = Write a skill down
+chat-skills-correct-skill = Correct a skill
+chat-skills-keep-example = Keep an example
+chat-skills-drop-example = Take an example out
+chat-skills-forget-skill = Forget a skill

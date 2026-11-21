@@ -26,6 +26,10 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
         app: "so.tilo.chat",
         kind: "tilo.workspace.emoji",
     },
+    WorkspaceDocument {
+        app: "so.tilo.chat",
+        kind: "chat.skills",
+    },
     // The workspace's agents: their names, colours, keepers and models,
     // which the workspace settings sheet, the apps and their devices all
     // read (`tilo-workspace-agent`).

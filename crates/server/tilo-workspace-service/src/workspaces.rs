@@ -113,8 +113,6 @@ mod person_models;
 pub use person_models::OpenAiSignIn;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_settings;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod person_skills;
 // The inboxes such a host watches for its people, with no window open.
 #[cfg(not(target_arch = "wasm32"))]
 mod mail_watch;

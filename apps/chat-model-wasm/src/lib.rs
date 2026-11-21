@@ -9,4 +9,9 @@
 //! an agent keeps of a conversation. Each person's drafts are their own, written
 //! on their own devices, so no other holder applies them.
 
-tilo_model_guest::model!("chat", chat_model::Chat, chat_model::ChatDrafts);
+tilo_model_guest::model!(
+    "chat",
+    chat_model::Chat,
+    chat_model::ChatDrafts,
+    chat_model::skills::Skills,
+);

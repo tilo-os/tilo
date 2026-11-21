@@ -246,6 +246,11 @@ chat-keep-summary = Hat eine Zusammenfassung der Unterhaltung festgehalten
 chat-record-work = Hat festgehalten, was es tut
 chat-submit-feedback = Hat Rückmeldung in #{ $item } abgegeben
 chat-triage = Hat Rückmeldungen gesichtet
+chat-write-skill = Hat die Fähigkeit { $name } hinzugefügt
+chat-correct-skill = Hat die Fähigkeit { $item } korrigiert
+chat-keep-example = Hat ein Beispiel für { $item } festgehalten
+chat-drop-example = Hat ein Beispiel aus { $item } entfernt
+chat-forget-skill = Hat die Fähigkeit { $item } entfernt
 chat-chat-categories = { $op ->
     [insert] Hat eine Kategorie hinzugefügt
     [remove] Hat eine Kategorie entfernt

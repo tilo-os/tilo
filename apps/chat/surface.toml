@@ -1423,3 +1423,90 @@ fields = [
   { name = "added_at", type = "int" },
 ]
 
+[[resources]]
+kind = "chat.skills"
+label = "Workspace Skills"
+version = 1
+fields = [
+  { path = "skills", type = { collection = { named = "Skill" } }, readonly = true, stored = "collection" },
+  { path = "skills.*.name", type = "text", label = true },
+  { path = "skills.*.work", type = "text" },
+  { path = "skills.*.how", type = "text" },
+  { path = "skills.*.form", type = "text" },
+  { path = "skills.*.model", type = { option = "text" } },
+  { path = "skills.*.examples", type = { list = { named = "Example" } } },
+  { path = "skills.*.at", type = "int" },
+  { path = "skills.*.by", type = { option = "text" } },
+]
+
+[[resources.verbs]]
+id = "write-skill"
+kind = "undoable"
+params = [
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "work", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "how", type = "text", required = true, schema = { type = "string" } },
+  { name = "form", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "correct-skill"
+kind = "undoable"
+params = [
+  { name = "skill", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "work", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "how", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "form", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "keep-example"
+kind = "undoable"
+params = [
+  { name = "skill", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
+  { name = "accepted", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "note", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "drop-example"
+kind = "undoable"
+params = [
+  { name = "skill", type = "text", required = true, schema = { type = "string" } },
+  { name = "example", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "forget-skill"
+kind = "undoable"
+params = [
+  { name = "skill", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Example"
+fields = [
+  { name = "id", type = "text" },
+  { name = "accepted", type = "bool" },
+  { name = "text", type = "text" },
+  { name = "note", type = "text" },
+  { name = "at", type = "int" },
+]
+
+[[resources.types]]
+name = "Skill"
+fields = [
+  { name = "name", type = "text" },
+  { name = "work", type = "text" },
+  { name = "how", type = "text" },
+  { name = "form", type = "text" },
+  { name = "model", type = { option = "text" } },
+  { name = "examples", type = { list = { named = "Example" } } },
+  { name = "at", type = "int" },
+  { name = "by", type = { option = "text" } },
+]
+

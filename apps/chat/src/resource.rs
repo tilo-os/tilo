@@ -101,6 +101,7 @@ impl ResourceApp for ChatShell {
         // The workspace's emoji is Chat's: every app of the workspace opens it,
         // and its changes are decided against Chat's surface.
         resources.shared_workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
+        resources.shared_workspace::<crate::skills::Skills>();
     }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {

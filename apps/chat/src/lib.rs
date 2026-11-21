@@ -105,6 +105,7 @@ pub mod views;
 mod window_bar;
 
 pub use app::{ChatApp, ChatWindow};
+pub use chat_model::skills;
 
 impl ChatApp {
     /// Bind a mount-local model capability supplied by the host.

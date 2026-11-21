@@ -25,7 +25,7 @@ aarch64 = "aarch64"
 optional = ["open-uri", "clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "gpu"]
 
 [resources]
-kinds = ["chat.direct", "chat.direct-messages", "chat.drafts", "chat.learned", "chat.messages", "chat.workspace", "tilo.moderation", "tilo.rich-text", "tilo.workspace.emoji", "tilo.chain-unsent"]
+kinds = ["chat.direct", "chat.direct-messages", "chat.drafts", "chat.learned", "chat.messages", "chat.skills", "chat.workspace", "tilo.moderation", "tilo.rich-text", "tilo.workspace.emoji", "tilo.chain-unsent"]
 
 # What the app's window shows while its code is on its way to a browser
 # (ui::widget::SkeletonShape): "page" fills the window with the lines a page

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@bb777416a468ceaf";
+export const SURFACE = "so.tilo.chat@5c2ceb637ad914d9";
 
 export interface Category {
   name: string;
@@ -505,6 +505,25 @@ export interface Emoji {
   added_at: number;
 }
 
+export interface Example {
+  id: string;
+  accepted: boolean;
+  text: string;
+  note: string;
+  at: number;
+}
+
+export interface Skill {
+  name: string;
+  work: string;
+  how: string;
+  form: string;
+  model: string | null;
+  examples: Example[];
+  at: number;
+  by: string | null;
+}
+
 /** The arguments of `begin-chat`. */
 export interface BeginChatArgs {
 }
@@ -864,6 +883,44 @@ export interface RemoveEmojiArgs {
 /** The arguments of `remove-any-emoji`. */
 export interface RemoveAnyEmojiArgs {
   name: string;
+}
+
+/** The arguments of `write-skill`. */
+export interface WriteSkillArgs {
+  name: string;
+  work: string;
+  how: string;
+  form?: string;
+  model?: string;
+}
+
+/** The arguments of `correct-skill`. */
+export interface CorrectSkillArgs {
+  skill: string;
+  name?: string;
+  work?: string;
+  how?: string;
+  form?: string;
+  model?: string;
+}
+
+/** The arguments of `keep-example`. */
+export interface KeepExampleArgs {
+  skill: string;
+  text: string;
+  accepted: boolean;
+  note?: string;
+}
+
+/** The arguments of `drop-example`. */
+export interface DropExampleArgs {
+  skill: string;
+  example: string;
+}
+
+/** The arguments of `forget-skill`. */
+export interface ForgetSkillArgs {
+  skill: string;
 }
 
 /** Chat — `chat.workspace`. */
@@ -1297,5 +1354,57 @@ export const WORKSPACEEMOJI_ACTIONS = ["addEmoji", "addEmojiMany", "removeEmoji"
 /** The `tilo.workspace.emoji` kind at `path`. */
 export function workspaceEmoji(ws: tilo.Workspace, path: string): WorkspaceEmoji {
   return resourceProxy(ws, path, SURFACE, WORKSPACEEMOJI_ACTIONS) as unknown as WorkspaceEmoji;
+}
+
+/** Workspace Skills — `chat.skills`. */
+export interface Skills extends tilo.Resource {
+  readonly skills: Array<tilo.Entry<Skill>>;
+  writeSkill(args: {
+    name: string;
+    work: string;
+    how: string;
+    form?: string;
+    model?: string;
+  }): Promise<void>;
+  /** Runs `write-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  writeSkillMany(items: WriteSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+  correctSkill(args: {
+    skill: string;
+    name?: string;
+    work?: string;
+    how?: string;
+    form?: string;
+    model?: string;
+  }): Promise<void>;
+  /** Runs `correct-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  correctSkillMany(items: CorrectSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+  keepExample(args: {
+    skill: string;
+    text: string;
+    accepted: boolean;
+    note?: string;
+  }): Promise<void>;
+  /** Runs `keep-example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keepExampleMany(items: KeepExampleArgs[]): Promise<tilo.ActionAnswer[]>;
+  dropExample(args: {
+    skill: string;
+    example: string;
+  }): Promise<void>;
+  /** Runs `drop-example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  dropExampleMany(items: DropExampleArgs[]): Promise<tilo.ActionAnswer[]>;
+  forgetSkill(args: {
+    skill: string;
+  }): Promise<void>;
+  /** Runs `forget-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  forgetSkillMany(items: ForgetSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Skills` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SKILLS_ACTIONS = ["writeSkill", "writeSkillMany", "correctSkill", "correctSkillMany", "keepExample", "keepExampleMany", "dropExample", "dropExampleMany", "forgetSkill", "forgetSkillMany"] as const;
+
+/** The `chat.skills` kind at `path`. */
+export function skills(ws: tilo.Workspace, path: string): Skills {
+  return resourceProxy(ws, path, SURFACE, SKILLS_ACTIONS) as unknown as Skills;
 }
 

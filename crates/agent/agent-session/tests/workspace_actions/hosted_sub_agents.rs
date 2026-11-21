@@ -1420,8 +1420,7 @@ mod teams;
 #[path = "hosted_reply_goes_on.rs"]
 mod reply_goes_on;
 
-/// Skills on the server: written and corrected from a turn, told to the turn they fit, and
-/// what gives a sub-agent its model.
+/// The workspace’s shared Skills actions.
 #[path = "hosted_skills.rs"]
 mod skills;
 

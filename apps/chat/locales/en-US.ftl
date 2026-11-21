@@ -247,6 +247,11 @@ chat-keep-summary = Kept a summary of the conversation
 chat-record-work = Recorded what it is doing
 chat-submit-feedback = Filed feedback in #{ $item }
 chat-triage = Triaged feedback
+chat-write-skill = Added the skill { $name }
+chat-correct-skill = Corrected the skill { $item }
+chat-keep-example = Kept an example for { $item }
+chat-drop-example = Removed an example from { $item }
+chat-forget-skill = Removed the skill { $item }
 chat-chat-categories = { $op ->
     [insert] Added a category
     [remove] Removed a category

@@ -92,10 +92,13 @@ __all__ = [
     "Work",
     "WorkUpdate",
     "Emoji",
+    "Example",
+    "Skill",
     "Workspace",
     "Messages",
     "Drafts",
     "WorkspaceEmoji",
+    "Skills",
     "BeginChatArgs",
     "CreateCategoryArgs",
     "CreateChannelArgs",
@@ -149,6 +152,11 @@ __all__ = [
     "AddEmojiArgs",
     "RemoveEmojiArgs",
     "RemoveAnyEmojiArgs",
+    "WriteSkillArgs",
+    "CorrectSkillArgs",
+    "KeepExampleArgs",
+    "DropExampleArgs",
+    "ForgetSkillArgs",
 ]
 
 class Category(TypedDict):
@@ -567,6 +575,23 @@ class Emoji(TypedDict):
     added_by: str
     added_at: int
 
+class Example(TypedDict):
+    id: str
+    accepted: bool
+    text: str
+    note: str
+    at: int
+
+class Skill(TypedDict):
+    name: str
+    work: str
+    how: str
+    form: str
+    model: str | None
+    examples: list[Example]
+    at: int
+    by: str | None
+
 BeginChatArgs = TypedDict("BeginChatArgs", {
 })
 """The arguments of `begin-chat`."""
@@ -928,9 +953,47 @@ RemoveAnyEmojiArgs = TypedDict("RemoveAnyEmojiArgs", {
 })
 """The arguments of `remove-any-emoji`."""
 
+WriteSkillArgs = TypedDict("WriteSkillArgs", {
+    "name": "str",
+    "work": "str",
+    "how": "str",
+    "form": NotRequired["str | None"],
+    "model": NotRequired["str | None"],
+})
+"""The arguments of `write-skill`."""
+
+CorrectSkillArgs = TypedDict("CorrectSkillArgs", {
+    "skill": "str",
+    "name": NotRequired["str | None"],
+    "work": NotRequired["str | None"],
+    "how": NotRequired["str | None"],
+    "form": NotRequired["str | None"],
+    "model": NotRequired["str | None"],
+})
+"""The arguments of `correct-skill`."""
+
+KeepExampleArgs = TypedDict("KeepExampleArgs", {
+    "skill": "str",
+    "text": "str",
+    "accepted": "bool",
+    "note": NotRequired["str | None"],
+})
+"""The arguments of `keep-example`."""
+
+DropExampleArgs = TypedDict("DropExampleArgs", {
+    "skill": "str",
+    "example": "str",
+})
+"""The arguments of `drop-example`."""
+
+ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
+    "skill": "str",
+})
+"""The arguments of `forget-skill`."""
+
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@bb777416a468ceaf"
+    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1268,7 +1331,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@bb777416a468ceaf"
+    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1745,7 +1808,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@bb777416a468ceaf"
+    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
     drafts: dict[str, str]
     @property
     def imported(self) -> list[str]:
@@ -1780,7 +1843,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@bb777416a468ceaf"
+    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1814,5 +1877,109 @@ class WorkspaceEmoji(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"add_emoji", "add_emoji_many", "remove_emoji", "remove_emoji_many", "remove_any_emoji", "remove_any_emoji_many"})
+
+
+class Skills(Resource):
+    """Workspace Skills — `chat.skills`."""
+    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
+    @property
+    def skills(self) -> list[Entry[Skill]]:
+        """Read only."""
+        return self.fields["skills"]
+
+    def write_skill(self,
+        *,
+        name: str,
+        work: str,
+        how: str,
+        form: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["name"] = name
+        args["work"] = work
+        args["how"] = how
+        if form is not None:
+            args["form"] = form
+        if model is not None:
+            args["model"] = model
+        return self.action("write-skill", **args)
+
+    def write_skill_many(self, items: list[WriteSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `write-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("write-skill", items)
+
+    def correct_skill(self,
+        *,
+        skill: str,
+        name: str | None = None,
+        work: str | None = None,
+        how: str | None = None,
+        form: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["skill"] = skill
+        if name is not None:
+            args["name"] = name
+        if work is not None:
+            args["work"] = work
+        if how is not None:
+            args["how"] = how
+        if form is not None:
+            args["form"] = form
+        if model is not None:
+            args["model"] = model
+        return self.action("correct-skill", **args)
+
+    def correct_skill_many(self, items: list[CorrectSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `correct-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("correct-skill", items)
+
+    def keep_example(self,
+        *,
+        skill: str,
+        text: str,
+        accepted: bool,
+        note: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["skill"] = skill
+        args["text"] = text
+        args["accepted"] = accepted
+        if note is not None:
+            args["note"] = note
+        return self.action("keep-example", **args)
+
+    def keep_example_many(self, items: list[KeepExampleArgs]) -> list[dict[str, Any]]:
+        """Runs `keep-example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep-example", items)
+
+    def drop_example(self,
+        *,
+        skill: str,
+        example: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("drop-example", skill=skill, example=example)
+
+    def drop_example_many(self, items: list[DropExampleArgs]) -> list[dict[str, Any]]:
+        """Runs `drop-example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("drop-example", items)
+
+    def forget_skill(self, *, skill: str) -> None:
+        """Runs the app's action."""
+        return self.action("forget-skill", skill=skill)
+
+    def forget_skill_many(self, items: list[ForgetSkillArgs]) -> list[dict[str, Any]]:
+        """Runs `forget-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("forget-skill", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"write_skill", "write_skill_many", "correct_skill", "correct_skill_many", "keep_example", "keep_example_many", "drop_example", "drop_example_many", "forget_skill", "forget_skill_many"})
 
 

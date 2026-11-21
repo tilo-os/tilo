@@ -12522,6 +12522,138 @@
         ],
         "description": ""
       },
+      "chat.skills.write-skill.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "work": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "how": {
+            "type": "string"
+          },
+          "form": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "work",
+          "how"
+        ],
+        "description": ""
+      },
+      "chat.skills.correct-skill.Arguments": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "work": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "how": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "form": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "skill"
+        ],
+        "description": ""
+      },
+      "chat.skills.keep-example.Arguments": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "accepted": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "skill",
+          "text",
+          "accepted"
+        ],
+        "description": ""
+      },
+      "chat.skills.drop-example.Arguments": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string"
+          },
+          "example": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "skill",
+          "example"
+        ],
+        "description": ""
+      },
+      "chat.skills.forget-skill.Arguments": {
+        "type": "object",
+        "properties": {
+          "skill": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "skill"
+        ],
+        "description": ""
+      },
       "chip_design.project.import-report.Arguments": {
         "type": "object",
         "properties": {
@@ -33357,6 +33489,36 @@
       "resource": "tilo.workspace.emoji",
       "action": "remove-any-emoji",
       "arguments": "#/components/schemas/tilo.workspace.emoji.remove-any-emoji.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.skills",
+      "action": "write-skill",
+      "arguments": "#/components/schemas/chat.skills.write-skill.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.skills",
+      "action": "correct-skill",
+      "arguments": "#/components/schemas/chat.skills.correct-skill.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.skills",
+      "action": "keep-example",
+      "arguments": "#/components/schemas/chat.skills.keep-example.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.skills",
+      "action": "drop-example",
+      "arguments": "#/components/schemas/chat.skills.drop-example.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.skills",
+      "action": "forget-skill",
+      "arguments": "#/components/schemas/chat.skills.forget-skill.Arguments"
     },
     {
       "app": "so.tilo.chip-design",

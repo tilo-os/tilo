@@ -66,3 +66,10 @@ chat-workspace-submit-feedback = Feedback senden
 chat-workspace-triage = Feedback sichten
 
 chat-drafts-import-previous = Früheren Kanalentwurf wiederherstellen
+
+chat-skills = Fähigkeiten im Arbeitsbereich
+chat-skills-write-skill = Fähigkeit festhalten
+chat-skills-correct-skill = Fähigkeit korrigieren
+chat-skills-keep-example = Beispiel festhalten
+chat-skills-drop-example = Beispiel herausnehmen
+chat-skills-forget-skill = Fähigkeit vergessen

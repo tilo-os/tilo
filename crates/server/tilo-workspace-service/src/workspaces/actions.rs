@@ -1445,9 +1445,7 @@ impl Workspaces {
             // What the agents on this server learned about the person: theirs to read
             // and to change, and no agent's. A turn keeps a fact through its own tools.
             #[cfg(not(target_arch = "wasm32"))]
-            // The same holds for the person's skills, how kinds of work are done for
-            // them: a turn changes them through a provider of its own.
-            (LEARNED | SKILLS, _) => self.person_kept(workspace_id, caller, certificate, request),
+            (LEARNED, _) => self.person_learned_invoke(workspace_id, caller, certificate, request),
             (server_account::PROVIDER, _)
                 if request.target == server_account::target(server_account::ACCOUNT) =>
             {
@@ -2784,12 +2782,8 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
 /// ([`super::person_learned`]).
 pub(super) const LEARNED: &str = "tilo.learned";
 
-/// The provider of the skills this server keeps for the person who asks
-/// ([`super::person_skills`]).
-pub(super) const SKILLS: &str = "tilo.skills";
-
 /// The providers a server that governs workspaces answers itself.
-const PROVIDERS: [&str; 12] = [
+const PROVIDERS: [&str; 11] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -2807,8 +2801,6 @@ const PROVIDERS: [&str; 12] = [
     person_connections::PROVIDER,
     // What the agents on this server learned about the person.
     LEARNED,
-    // How kinds of work are done for the person: their skills.
-    SKILLS,
     // The formats and the zone the person reads dates in.
     person_formats::PROVIDER,
 ];
@@ -2992,8 +2984,6 @@ mod openai_sign_in_tests;
 mod person_learned_tests;
 #[cfg(test)]
 mod person_model_tests;
-#[cfg(test)]
-mod person_skills_tests;
 #[cfg(test)]
 mod share_tests;
 #[cfg(test)]

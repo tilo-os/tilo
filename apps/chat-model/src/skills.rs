@@ -1,24 +1,5 @@
-//! How kinds of work are done for one person: their skills, written down by their agents and
-//! by themselves, kept as the person's own resource.
-//!
-//! A skill says what kind of work it is for, how that work is done here, the form its result
-//! takes, results the person accepted and rejected as examples, and, where the person wants
-//! one, the model the work is done with. An agent writes one down after it did a kind of work
-//! and was corrected, and whenever its person says "from now on, do it like this"; "more like
-//! this" and "less like this" on a result keep that result as an example of the skill that
-//! made it. So a kind of work nobody built anything for is done the person's way the next
-//! time, by a turn that never saw the first.
-//!
-//! The resource is the skills' one home. It is changed only through its verbs (`write-skill`,
-//! `correct-skill`, `keep-example`, `drop-example`, `forget-skill`), by the person or by an
-//! agent acting for them, and each skill says who wrote it last and when. It is the person's
-//! own: whoever keeps it answers the person and the person's own agents, and nobody else.
-//!
-//! A skill names work and how to do it. It decides nothing about what an agent may do: the
-//! resources the work touches carry the permissions, and a skill never widens them.
-
-use std::collections::BTreeSet;
-use std::fmt::Write as _;
+//! The skills a workspace keeps for its members and their agents.
+//! The workspace's ordinary document grants govern what each caller reads and changes.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::items::item_resource_id;
@@ -29,7 +10,7 @@ use tilo_resource::{
 /// The resource's kind.
 pub const KIND: &str = "chat.skills";
 
-/// The most skills one person keeps.
+/// The most skills a workspace keeps.
 pub const MAX_SKILLS: usize = 200;
 
 /// The longest a skill's name is, in characters.
@@ -53,17 +34,6 @@ pub const MAX_EXAMPLE: usize = 1024;
 /// The most a person's words about an example hold, in bytes.
 pub const MAX_NOTE: usize = 200;
 
-/// How many words of five letters or more a job shares with a skill before the skill is
-/// taken to fit it ([`Skill::fits`]).
-const FIT_WORDS: usize = 2;
-
-/// The shortest word that counts when a job is held against a skill, and how many of its
-/// letters are compared.
-const FIT_LETTERS: usize = 5;
-
-/// The most of one example an agent is told, in bytes.
-const EXAMPLE_TOLD: usize = 600;
-
 /// A result the person accepted or rejected, kept as an example of its skill.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Example {
@@ -79,7 +49,7 @@ pub struct Example {
     pub at: i64,
 }
 
-/// How one kind of work is done for the person.
+/// How one kind of work is done in the workspace.
 #[derive(Model, Default, Clone, Debug, PartialEq, Eq)]
 pub struct Skill {
     /// What it is called, in a few words: what an agent names it by.
@@ -102,69 +72,7 @@ pub struct Skill {
     pub by: Option<String>,
 }
 
-impl Skill {
-    /// Whether this skill fits `job`, by its words: the job names the skill, or shares
-    /// [`FIT_WORDS`] words of [`FIT_LETTERS`] letters or more with what the skill is called
-    /// and what it is for. A first sieve by words, not by meaning: whoever tells an agent its
-    /// skills names the others too, so the agent reads one this sieve let through wrongly, or
-    /// missed, for itself.
-    #[must_use]
-    pub fn fits(&self, job: &str) -> bool {
-        let name = self.name.trim().to_lowercase();
-        if !name.is_empty() && job.to_lowercase().contains(&name) {
-            return true;
-        }
-        let own = words(&format!("{} {}", self.name, self.work));
-        own.intersection(&words(job)).count() >= FIT_WORDS
-    }
-
-    /// The skill as an agent is told it, in at most `most` bytes: what it is called and for,
-    /// how the work is done, the form of the result, then the newest examples the person
-    /// accepted and rejected, as many as fit.
-    #[must_use]
-    pub fn told(&self, most: usize) -> String {
-        let mut told = format!(
-            "Skill: {}\nFor: {}\nHow it is done here:\n{}",
-            self.name.trim(),
-            self.work.trim(),
-            self.how.trim()
-        );
-        if !self.form.trim().is_empty() {
-            let _ = write!(told, "\nThe form of the result:\n{}", self.form.trim());
-        }
-        for (accepted, heading) in [
-            (true, "\nResults this person accepted (more like these):"),
-            (false, "\nResults this person rejected (less like these):"),
-        ] {
-            let mut headed = false;
-            for example in self
-                .examples
-                .iter()
-                .rev()
-                .filter(|example| example.accepted == accepted)
-            {
-                let mut line = format!("\n- {}", cut(example.text.trim(), EXAMPLE_TOLD));
-                if !example.note.trim().is_empty() {
-                    let _ = write!(line, " (they said: {})", example.note.trim());
-                }
-                let head = if headed { "" } else { heading };
-                let longer = told
-                    .len()
-                    .saturating_add(head.len())
-                    .saturating_add(line.len());
-                if longer > most {
-                    break;
-                }
-                told.push_str(head);
-                told.push_str(&line);
-                headed = true;
-            }
-        }
-        cut(&told, most).to_owned()
-    }
-}
-
-/// How kinds of work are done for one person, oldest skill first.
+/// How kinds of work are done in the workspace, oldest skill first.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 #[model(check = Skills::valid)]
 pub struct Skills {
@@ -175,27 +83,6 @@ pub struct Skills {
 }
 
 impl Skills {
-    /// The skill `named` names: by its id, or by what it is called, whatever the case.
-    #[must_use]
-    pub fn named(&self, named: &str) -> Option<(Id, &Skill)> {
-        let named = named.trim();
-        self.skills
-            .iter()
-            .find(|(id, _)| id.as_str() == named)
-            .map(|(id, skill)| (id.clone(), skill))
-            .or_else(|| self.named_by_name(named))
-    }
-
-    /// The skill with this name, even when it spells the id of another skill.
-    /// An action that writes by name uses this to find the item it will update.
-    #[must_use]
-    pub fn named_by_name(&self, name: &str) -> Option<(Id, &Skill)> {
-        self.skills
-            .iter()
-            .find(|(_, skill)| same_name(&skill.name, name))
-            .map(|(id, skill)| (id.clone(), skill))
-    }
-
     /// What search finds in the resource: each skill by what it is called and what it is for,
     /// opening it at its item.
     #[must_use]
@@ -216,7 +103,7 @@ impl Skills {
     /// What the resource holds: each skill with what it is for, how it is done, the form of
     /// its result, its examples, its model and who changed it last. It answers through
     /// [`fields`](tilo_resource::read::fields), so a caller with no window open reads it like
-    /// any resource, and only the person it belongs to is such a caller.
+    /// any resource, and workspace read access decides who can call it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -225,9 +112,6 @@ impl Skills {
     }
 
     fn valid(&self) -> Result<(), Refusal> {
-        if self.skills.len() > MAX_SKILLS {
-            return Err(too_many());
-        }
         for (_, skill) in self.skills.iter() {
             check_name(&skill.name)?;
             check_line(&skill.work, MAX_WORK, "what a skill is for")?;
@@ -236,12 +120,7 @@ impl Skills {
                 check_text(&skill.form, MAX_FORM, "the form of a skill's result")?;
             }
             if let Some(model) = &skill.model {
-                crate::check_model(model)?;
-            }
-            if skill.examples.len() > MAX_EXAMPLES {
-                return Err(Refusal::new(format!(
-                    "a skill keeps at most {MAX_EXAMPLES} examples"
-                )));
+                check_model(model)?;
             }
             for example in &skill.examples {
                 check_text(&example.text, MAX_EXAMPLE, "an example")?;
@@ -269,10 +148,8 @@ impl Skills {
 impl Skills {
     /// Write a skill down.
     ///
-    /// How a kind of work is done for this person: what it is called, the kind of work it is
-    /// for, how that work is done here, and where it has one the form of the result and the
-    /// model the work is done with. A skill of that name is written again, not twice: what
-    /// it says is replaced and its examples stay.
+    /// Add a skill to this workspace. Use Correct skill on the existing item when the
+    /// workspace already has a skill of that name.
     #[action]
     pub fn write_skill(
         &mut self,
@@ -294,18 +171,21 @@ impl Skills {
             None | Some("") => String::new(),
             Some(form) => clean_text(form, MAX_FORM, "the form of a skill's result")?,
         };
-        let model = crate::chosen_model(model)?;
-        let known = self.named_by_name(&name).map(|(id, _)| id);
-        let id = if let Some(id) = known {
-            id
-        } else {
-            if self.skills.len() >= MAX_SKILLS {
-                return Err(too_many());
-            }
-            let id = cx.id();
-            self.skills.push(id.clone(), Skill::default());
-            id
-        };
+        let model = chosen_model(model)?;
+        if self
+            .skills
+            .iter()
+            .any(|(_, skill)| same_name(&skill.name, &name))
+        {
+            return Err(Refusal::new(format!(
+                "there is already a skill called {name:?}"
+            )));
+        }
+        if self.skills.len() >= MAX_SKILLS {
+            return Err(too_many());
+        }
+        let id = cx.id();
+        self.skills.push(id.clone(), Skill::default());
         let skill = self.skills.get_mut(&id).ok_or_else(|| no_such(&id))?;
         skill.name = name;
         skill.work = work;
@@ -366,7 +246,7 @@ impl Skills {
         };
         let model = match model {
             None => None,
-            Some(model) => Some(crate::chosen_model(Some(model))?),
+            Some(model) => Some(chosen_model(Some(model))?),
         };
         let found = self.skills.get_mut(skill).ok_or_else(|| no_such(skill))?;
         if let Some(name) = name {
@@ -477,26 +357,28 @@ fn same_name(one: &str, other: &str) -> bool {
     one.trim().to_lowercase() == other.trim().to_lowercase()
 }
 
-/// The words of `text` that count when a job is held against a skill: each word of
-/// [`FIT_LETTERS`] letters or more, by its first [`FIT_LETTERS`] in lower case, so a word
-/// fits in its other forms too (analysis and analyse, report and reporting).
-fn words(text: &str) -> BTreeSet<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| word.chars().count() >= FIT_LETTERS)
-        .map(|word| word.to_lowercase().chars().take(FIT_LETTERS).collect())
-        .collect()
+fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {
+    let Some(model) = model.map(|model| model.trim().to_owned()) else {
+        return Ok(None);
+    };
+    if model.is_empty() {
+        return Ok(None);
+    }
+    check_model(&model)?;
+    Ok(Some(model))
 }
 
-/// `text`, to at most `most` bytes, ended between two characters.
-fn cut(text: &str, most: usize) -> &str {
-    if text.len() <= most {
-        return text;
+fn check_model(model: &str) -> Result<(), Refusal> {
+    if model.len() > 200 {
+        return Err(Refusal::new("a model's key is at most 200 characters"));
     }
-    let mut end = most;
-    while end > 0 && !text.is_char_boundary(end) {
-        end = end.saturating_sub(1);
+    let Some((profile, name)) = model.split_once('/') else {
+        return Err(Refusal::new("a model is named as provider/model"));
+    };
+    if profile.is_empty() || name.is_empty() {
+        return Err(Refusal::new("a model is named as provider/model"));
     }
-    text.get(..end).unwrap_or_default()
+    Ok(())
 }
 
 fn no_such(skill: &Id) -> Refusal {
@@ -661,24 +543,14 @@ mod tests {
                 by: Some(ASSISTANT.into()),
             }
         );
-        // Written again under its name, whatever the case, it is the skill it was.
-        agent.set_now_ms(2_000);
-        agent
-            .apply(write("weekly REPORT", "Say what moved first.", None, None))
-            .unwrap();
-        let again = kept(&agent);
-        assert_eq!(again.len(), 1);
-        assert_eq!(again[0].0, *id);
-        assert_eq!(
-            (
-                again[0].1.how.as_str(),
-                again[0].1.form.as_str(),
-                &again[0].1.model
-            ),
-            ("Say what moved first.", "", &None)
+        // The collection's create action cannot overwrite an existing item by name.
+        assert!(
+            agent
+                .apply(write("weekly REPORT", "Say what moved first.", None, None))
+                .is_err()
         );
-        // The person corrects it themselves: only what they name changes, and it says they did.
-        person.sync_with(&mut agent).unwrap();
+        assert_eq!(kept(&agent), written);
+
         person.set_now_ms(3_000);
         person
             .apply(Skills::CORRECT_SKILL.with(skills::CorrectSkill {
@@ -688,7 +560,7 @@ mod tests {
             }))
             .unwrap();
         let corrected = kept(&person);
-        assert_eq!(corrected[0].1.name, "weekly REPORT");
+        assert_eq!(corrected[0].1.name, "Weekly report");
         assert_eq!(corrected[0].1.how, "Say what moved first, in numbers.");
         assert_eq!(
             corrected[0].1.model.as_deref(),
@@ -848,75 +720,47 @@ mod tests {
                 .apply(example(report, &"e".repeat(MAX_EXAMPLE + 1), true, None))
                 .is_err()
         );
-        for n in 2..MAX_SKILLS {
+        for n in 2..MAX_SKILLS - 1 {
             resource
                 .apply(write(&format!("Skill {n}"), "Do it.", None, None))
                 .unwrap();
         }
+        // Two devices may each add a locally valid skill before seeing the other's.
+        let mut other = resource.fork().as_author("bo");
+        resource
+            .apply(write("First offline skill", "Do it.", None, None))
+            .unwrap();
+        other
+            .apply(write("Second offline skill", "Do it.", None, None))
+            .unwrap();
+        resource.sync_with(&mut other).unwrap();
+        assert_eq!(kept(&resource).len(), MAX_SKILLS + 1);
         let refused = resource
             .apply(write("One more", "Do it.", None, None))
             .unwrap_err();
         assert!(refused.to_string().contains("forget one"), "{refused}");
-        // A skill kept already is still written again at the limit.
+        // The merged list can still be edited and brought back below the limit.
         resource
-            .apply(write("Skill 7", "Do it better.", None, None))
+            .apply(Skills::CORRECT_SKILL.with(skills::CorrectSkill {
+                how: Some("Do it better.".into()),
+                ..correct(report)
+            }))
+            .unwrap();
+        resource
+            .apply(Skills::FORGET_SKILL.with(skills::ForgetSkill {
+                skill: brief.clone(),
+            }))
             .unwrap();
         assert_eq!(kept(&resource).len(), MAX_SKILLS);
     }
 
-    /// A skill is named by its id or by what it is called, fits a job by its words, and is
-    /// told to an agent whole within what it is given: what it says first, then the newest
-    /// examples that fit.
     #[test]
-    fn a_skill_is_named_fits_a_job_by_its_words_and_is_told_within_bounds() {
+    fn a_skill_is_searchable_and_reads_as_typed_data() {
         let mut resource = Replica::<Skills>::new().as_author(ADA);
-        resource.set_now_ms(1_700_000_000_000);
         resource
-            .apply(write(
-                "Weekly report",
-                "Say what moved first.",
-                Some("Three short paragraphs"),
-                None,
-            ))
+            .apply(write("Weekly report", "Say what moved first.", None, None))
             .unwrap();
         let state = resource.state().unwrap();
-        let (id, skill) = state.named("weekly report").expect("named by its name");
-        assert_eq!(state.named(id.as_str()).map(|(id, _)| id), Some(id.clone()));
-        assert!(state.named("Monthly report").is_none());
-        // The job names it, or shares two longer words with what it is for; one shared word,
-        // or short ones, do not make it fit.
-        assert!(skill.fits("Please write the WEEKLY REPORT for the board"));
-        assert!(skill.fits("a request came in: answering it is due"));
-        assert!(skill.fits("Reporting the weekly numbers"));
-        assert!(!skill.fits("Plan the offsite for the team"));
-        assert!(!skill.fits("a report on the fire drill"));
-        resource
-            .apply(example(
-                &id,
-                "Revenue rose 4 %.",
-                true,
-                Some("Exactly this"),
-            ))
-            .unwrap();
-        resource
-            .apply(example(&id, "Many things happened.", false, None))
-            .unwrap();
-        let state = resource.state().unwrap();
-        let (_, skill) = state.named("Weekly report").unwrap();
-        let told = skill.told(8 * 1024);
-        assert_eq!(
-            told,
-            "Skill: Weekly report\nFor: Answering a request that asks for a weekly report\n\
-             How it is done here:\nSay what moved first.\nThe form of the result:\n\
-             Three short paragraphs\nResults this person accepted (more like these):\n\
-             - Revenue rose 4 %. (they said: Exactly this)\n\
-             Results this person rejected (less like these):\n- Many things happened."
-        );
-        // Given less, it says what it says and leaves examples out whole, never half of one.
-        let short = skill.told(told.len() - 1);
-        assert!(short.ends_with("(they said: Exactly this)"), "{short}");
-        assert!(skill.told(40).len() <= 40);
-        // What the resource holds reads back as it was written, by its fields.
         let read = Skills::from_json(&state.to_json()).expect("the resource reads");
         assert_eq!(read, state);
         let content = state.read_document(None).unwrap();
