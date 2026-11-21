@@ -39,11 +39,17 @@ action mark(item: Todo) {
     file(item, title: "marked")
 }
 
+action unfile(item: Todo) {
+    applies item.archived "Nothing is filed"
+    item.archived = false
+}
+
 view item(item: Todo) {
     stack {
         button(check(item)) as tick
         button(check(item, done: false)) as clear
         button(file(item, title: "from the view")) as file_it
+        button("Finish", on: check(item, done: true).then(unfile(item))) as finish
     }
 }
 "#;
@@ -210,6 +216,21 @@ view item(item: Todo) {
                 Value::Bool(false),
                 "flipped from what it was"
             );
+        }
+
+        phase a_follow_up_that_does_not_apply_is_passed_over;
+        {
+            // A press whose follow-up does not apply where it stands does what it can: the item
+            // is checked, and unfiling an item that is not filed is not offered, so not run.
+            let w = World::new();
+            let v =
+                w.rt.open_view(&me(), &w.app.view("item"), vec![Value::resource(&w.item)])
+                    .unwrap();
+            let finish = w.app.anchor("item", "finish");
+            let out = v.press(&finish).unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(w.done(), Value::Bool(true));
+            assert!(w.recorded("unfile").is_empty(), "the follow-up did not run");
         }
 
         phase a_called_action_defaults_on_the_state_its_call_sees;

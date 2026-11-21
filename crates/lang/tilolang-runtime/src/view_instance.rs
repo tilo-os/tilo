@@ -685,6 +685,9 @@ impl ViewInstance {
                     return Err(RuntimeError::BadArgs("a malformed `then`".into()));
                 };
                 match self.run_in(first, gesture)? {
+                    InvokeOutcome::Done(_) if !self.applies_here(next) => {
+                        Ok(InvokeOutcome::Done(Value::Unit))
+                    }
                     InvokeOutcome::Done(_) => self.run_in(next, gesture),
                     other => Ok(other),
                 }
@@ -693,6 +696,21 @@ impl ViewInstance {
             SAVE_ACTION => self.platform_save(aref),
             _ => self.core.invoke_direct_in(&self.live.viewer, aref, gesture),
         }
+    }
+
+    /// Whether the follow-up `next` of a `then` applies to what it acts on, as its `applies`
+    /// conditions say. One that does not is passed over: `applies` says the action is not
+    /// offered where it stands (a place chosen closes a search only while one shows), not that
+    /// the gesture went wrong, which `require` says and which still fails the press.
+    fn applies_here(&self, next: &ActionRef) -> bool {
+        let Some(Value::Ref(target)) = next.args.first() else {
+            return true;
+        };
+        !matches!(
+            self.core
+                .applies_reading(&next.action, target, &self.live.viewer),
+            Ok((Some(_), _))
+        )
     }
 
     /// `file.choose(a, accept)`: ask the person for a file and run `a` with it, as the argument
