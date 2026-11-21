@@ -4,6 +4,9 @@
 //! placed on it and held as a member, as a person's made workspace is — with the workspaces' keys
 //! made by the test, since a test session opens no key service of its own.
 
+// A fixture only tests compile: the loop it waits on is a test's own.
+#![cfg(all(test, target_os = "linux"))]
+
 use std::sync::Arc;
 
 use tilo_desktop_model::WorkspaceId;
