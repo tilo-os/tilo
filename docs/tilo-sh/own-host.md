@@ -1,21 +1,18 @@
-# Your own host
+# Self-hosting a workspace host
 
-A [host](hosts.md) is a computer that keeps workspaces. tilo.sh is ours. The same thing runs on a machine
-you control, and the SDKs, the command and your agents reach it the same way — only the address changes.
+A [host](hosts.md) keeps workspaces online. `tilo.sh` is our hosted service, and the same server
+stack works on hardware you control — only the endpoint URL changes.
 
-## Point at it
+## Pointing clients at your host
 
-Three places name the host, and they agree:
-
-| | How |
+| Client | Configuration |
 | :--- | :--- |
-| The SDKs | `TILO_API_URL` in the environment, or `Tilo(url="…")` / `new Tilo({ url: "…" })` |
-| The command | `--api`, or `TILO_API_URL` |
-| An agent's MCP client | the URL you add: `<host>/mcp`, or `<host>/w/<workspace>/mcp` for one workspace |
+| **SDKs** | `TILO_API_URL` environment variable, or `Tilo(url="…")` / `new Tilo({ url: "…" })` |
+| **CLI** | `--api` flag or `TILO_API_URL` |
+| **MCP agents** | `<host>/mcp` (all workspaces) or `<host>/w/<workspace>/mcp` (single workspace) |
 
-A key belongs to its person, not to one host: it is the grant they approved, and it reaches their
-workspaces wherever those are held. An API server in front of your host accepts the same key as one in
-front of ours, and a key still works when the server that made it stops answering.
+API keys are tied to your identity rather than a single server, so the same key works against any
+host storing your workspaces.
 
 ## Run one from the Tilo repository
 

@@ -1,40 +1,35 @@
 # Approvals
 
-Some things should not happen because a key said so. Tilo separates actions that only change the
-workspace's own records from actions that reach outside it, and the second kind can ask a person first.
-Submitting a form to a government site, sending a mail: the call waits, the person decides, and what they
-allow runs once.
+Tilo distinguishes actions that stay inside a workspace from actions with external side effects.
+Actions that leave the workspace — such as submitting a web form, sending an email, or creating a
+new API key — pause until a person approves them on their own device.
 
-## What asks, and what does not
+## Which actions require approval
 
-| Action | Asks? |
+| Action | Requires approval? |
 | :--- | :--- |
-| A read: listing, reading a record, exporting a file | no |
-| A change to a record: an edit, a paragraph, a note | no |
-| Making a workspace, minting a key | no: the key already reaches what it is making |
-| Asking for a key to be *created* | yes: a new grant of authority is the person's to give |
-| A page action in Browser: navigate, fill in, select, click, read back | no, with the key's page scope |
-| A command in the workspace's Linux machine (`terminal#run`) | yes, unless the person let that workspace run commands unattended and the key reaches that workspace alone |
-| Letting a workspace run commands unattended | yes: only the person turns it on |
-| Something leaving: a submission, a form the page posts, a download it starts, a mail | yes, always |
+| Read operations (listing, reading resources, exporting files) | No |
+| In-workspace mutations (editing a note, updating a task) | No |
+| Creating a workspace or minting a narrower key | No (covered by the parent key's scope) |
+| Creating a new top-level API key | Yes |
+| Browser page actions (navigate, fill fields, select, click, read) | No, if the key includes browser page scope |
+| Shell commands in the workspace VM (`terminal#run`) | Yes, unless unattended commands are enabled on that workspace and the key is scoped to it |
+| Enabling unattended commands on a workspace | Yes |
+| External side effects (form submissions, uploads, passwords, sending mail) | Yes, always |
 
-## How a call waits
+## Pending approval lifecycle
 
-A call that needs a person answers **pending**, not failed: it has not run, and it answers the invocation it
-waits under and what the person is being asked. Both SDKs raise that as `AskPending`, carrying the question
-and the invocation.
+When an action requires approval, the API returns a **pending** status rather than an error, along
+with an invocation ID and approval URL. Both SDKs raise `AskPending`.
 
-Nothing has happened yet. The invocation answers its question as it stands, and the same action asked again
-under
-the same idempotency key puts the question to the person again rather than running it twice. When they
-allow it, the invocation answers `ok`. When they refuse, it answers `failed`, and nothing ran.
+Nothing executes while the invocation is pending. Retrying the same request with the same
+idempotency key returns the existing pending invocation rather than duplicating it. Once approved,
+the invocation completes with `ok`; if denied, it completes with `failed` and nothing executes.
 
-A person answers on their own device: their Tilo asks them, with what the action would do.
+## Example: requesting an API key
 
-## Asking for a key
-
-Asking for a key is the clearest case, because the answer is the key itself. Nothing is made yet: the call
-raises `AskPending` with a link to show the person, and waiting on it is the key once they approve it.
+Requesting a new API key raises `AskPending` with an approval link. Calling `wait()` blocks until
+the person approves or denies it:
 
 ```python example=ask-for-key
 from tilo import AskPending, Tilo

@@ -1,52 +1,53 @@
 # Quickstart
 
-Five minutes: sign in, make a workspace, connect your agent, and make your first call from Python or
-TypeScript. Everything below works on the same workspace, from every way in.
+Create a workspace, connect an agent, and invoke your first action from Python or TypeScript.
+The web app, CLI, MCP server, and SDKs all operate on the same workspace.
 
-## 1. Sign in and make a workspace
+## 1. Sign in and create a workspace
 
 Open [tilo.sh](https://tilo.sh) and sign in. In the workspace overview, choose **New workspace** and
-name it `First steps`. You are in it now: a workspace with its apps, and nothing else of anyone's.
+name it `First steps`.
 
 > [!NOTE]
-> A workspace can also be made without touching the page: `tilo workspace create "First
-> steps"`, or `tilo.workspaces.create("First steps")` from either SDK. The page, the command and the
-> SDKs make the same workspace. Once one is set up the way you like, branch it rather than start
-> again: `tilo workspace branch "First steps" "Second try"` ([branch a workspace](workspaces.md#branch-a-workspace)).
+> You can also create a workspace from the CLI (`tilo workspace create "First steps"`) or SDK
+> (`tilo.workspaces.create("First steps")`). Once a workspace is set up the way you want, branch it
+> instead of starting over: `tilo workspace branch "First steps" "Second try"`
+> ([branch a workspace](workspaces.md#branch-a-workspace)).
 
 ## 2. Connect your agent
 
-Give your agent the MCP address. In Claude Code, one line:
+Add the Tilo MCP server to your agent. In Claude Code:
 
 ```sh
 claude mcp add --transport http tilo https://mcp.tilo.sh
 ```
 
-The first time the agent uses it, it registers itself, and your Tilo asks you once: this agent, these
-workspaces, until this date. Approve it, and the agent can list your workspaces and work in them.
+On the first call, the agent registers itself and Tilo prompts you once to approve the agent, its
+workspace scope, and its expiration date.
 
-That address reaches every workspace of yours. To point an agent at one workspace, use its own address
-instead: `https://mcp.tilo.sh/w/<workspace>/mcp`.
+`https://mcp.tilo.sh` grants access to all of your workspaces. To scope an agent to a single
+workspace, use `https://mcp.tilo.sh/w/<workspace>/mcp` instead.
 
-## 3. Get a key for your code
+## 3. Create an API key for your code
 
-Your code needs a key, not a browser. Ask for one:
+Scripts and backends authenticate with an API key instead of a browser session:
 
 ```sh
-curl -fsSL https://tilo.sh | sh   # the `tilo` command, into ~/.local/bin
-tilo keys create "My backend"
+curl -fsSL https://tilo.sh | sh   # installs the `tilo` CLI into ~/.local/bin
+tilo keys create "My script"
 ```
 
-It prints a link. Open it, allow the key in your Tilo, and the command prints the key once:
+The command prints an approval link. Open it, approve the key in Tilo, and the CLI prints the key
+once:
 
 ```text
 Approved. Your key (shown once):
 export TILO_API_KEY=tilo_sk_…
 ```
 
-Keep it in your secret store. A key that reaches all your workspaces works until you revoke it
-(`tilo keys revoke <grant>`), so a backend does not break on a date. You can also make keys, and revoke
-them, on [your grants page](https://mcp.tilo.sh/grants).
+Store it in your secret manager. Account-wide keys remain valid until revoked
+(`tilo keys revoke <grant>`). You can also create and revoke keys on
+[your grants page](https://mcp.tilo.sh/grants).
 
 ## 4. Make your first call
 

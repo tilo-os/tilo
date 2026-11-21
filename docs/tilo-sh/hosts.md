@@ -1,24 +1,21 @@
 # Hosts
 
-A **host** is a computer that keeps workspaces. Ours is the one at tilo.sh. Yours can be a machine you run. To
-you they are the same thing: a workspace lives on a host, and your keys, your code and your agents reach
-it there.
+A **host** is a server that keeps workspaces online. `tilo.sh` is our hosted service, or you can
+deploy your own server. Both expose the same API to your keys, SDKs, CLI, and agents.
 
-## What a host keeps
+## What a host provides
 
-A workspace's records, its files and its history live on its host, so they are there when no device of
-yours is awake. Members' devices hold a copy and sync changes; the host is what makes a workspace
-reachable at three in the morning and from a machine that has never seen it.
+A host keeps a copy of your workspace's documents, files, and history online so they remain
+reachable even when your laptop or desktop is asleep. Your devices sync directly with it and with
+each other.
 
-A host decides what it offers besides that. Ours runs each workspace's own Linux machine: a Browser that
-opens web pages in it, a Terminal that runs commands in it, and Linux apps that open there. Your
-workspace's machine is nobody else's, and it sleeps when nothing uses it ([the hosted
-Browser](hosted-browser.md)).
+A host can also provide compute for each workspace: a dedicated Linux environment with a Browser,
+Terminal, and Linux apps that sleeps automatically when idle ([Hosted Browser](hosted-browser.md)).
 
-## One host or several
+## Multiple hosts
 
-A person can have workspaces on more than one host. Listing them says which host each is on, and a
-workspace you make is one of your own, on the host that keeps your others:
+You can keep workspaces across more than one host. Listing workspaces shows which host stores each
+one and your role in it:
 
 ```python example=workspaces-and-hosts
 from tilo import Tilo

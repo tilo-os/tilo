@@ -1,70 +1,68 @@
 # Identities and keys
 
-Every change in a workspace has an author. Tilo answers who with one of three things: a person, a device
-of theirs, or an agent acting for them. A **key** is what lets a program, or an agent, act as one of them.
+Every change in a workspace is attributed to an author: a person, one of their devices, or an agent
+acting on their behalf. An **API key** lets a script, backend, or agent authenticate with a scoped
+grant.
 
 ## People and devices
 
-A person's Tilo is an identity: a root key, and one device key for each device that holds a copy of it —
-a laptop, a phone, a browser tab. Signing in on a new device needs one device that is already the person,
-which approves the new one. That is also what approves a key: the person's own device signs it, so no
-browser has to be in the loop when the key is used later.
+Each person has one root identity and a certified device key per device (laptop, phone, browser).
+Adding a new device requires approval from an existing device. API keys work the same way: your
+device signs the grant once, so scripts and agents do not need a browser in the loop later.
 
 ## Agents
 
-An agent is the person's agent, not a separate account. It acts as them, is held to an editor's role at
-most, and governs, invites or administers nothing. Its calls show up under its own name, in its own
-colour, in each record's history and in who-is-here.
+An agent acts on behalf of a person rather than as a separate account. It is capped at the editor
+role (it cannot administer the workspace or invite members), and its actions appear under its own
+name and color in history and live presence.
 
-An agent gets access in one of two ways. An MCP client registers itself at
-`https://mcp.tilo.sh` and the person approves it once in Tilo; that grant reaches every workspace of
-theirs, or one workspace when the agent was pointed at `https://mcp.tilo.sh/w/<workspace>/mcp`, and it
-expires within 90 days. A **key** is the same grant for code that has no browser: your backend, a script,
-a job.
+Agents authenticate in one of two ways:
+
+- **MCP:** Register at `https://mcp.tilo.sh` (all workspaces) or
+  `https://mcp.tilo.sh/w/<workspace>/mcp` (single workspace). Approve once in Tilo; MCP grants
+  expire within 90 days.
+- **API key:** Use a static `tilo_sk_` token for headless scripts, CI, or background agents.
 
 ## Keys
 
-A key is a token that starts `tilo_sk_`. It is shown once, when it is made, and the host keeps only a
-digest of it; the prefix is there so a secret scanner finds one committed by mistake.
+An API key starts with `tilo_sk_`. It is displayed once on creation, and the server stores only its
+hash. The prefix allows secret scanners to detect accidental commits.
 
-What a key reaches is decided when it is made:
+Choose a scope when creating a key:
 
-| The key | Reaches | Lasts |
+| Scope | Permissions | Default lifetime |
 | :--- | :--- | :--- |
-| **All your workspaces** | list and make workspaces, mint keys, and act in any of them | until you revoke it, unless you set an expiry |
-| **One workspace** | that workspace and nothing else, with no account calls | about three months at most |
+| **All workspaces** | List and create workspaces, mint scoped keys, and invoke actions in any workspace | Valid until revoked (optional expiry) |
+| **Single workspace** | Actions in that workspace only; no account-level calls | Up to 90 days |
 
-A key for all your workspaces is what a backend holds: it runs unattended, so it does not break on a
-date. What bounds it is revocation, which ends everything it minted, and the record of when it was last
-used and which device of yours approved it.
+An account-wide key is intended for long-lived scripts or services and stays valid until you revoke
+it. A single-workspace key isolates an agent or integration to one workspace — it cannot list your
+other workspaces, create new ones, or mint additional keys.
 
-A key for one workspace is what you hand a customer's agent. It cannot list your workspaces, make one, or
-mint another key, and every action it takes is attributed to it.
+### Minting, expiration, and revocation
 
-### Narrowing, expiring, revoking
-
-A key that reaches all your workspaces can **mint** keys that reach one workspace each. Minting asks
-nobody: the parent already reaches that workspace, and the minted key reaches strictly less. A minted key
-expires no later than the key that minted it, and revoking the parent ends every key minted from it.
+An account-wide key can **mint** narrower single-workspace keys without prompting for interactive
+approval, since the parent key already has access to that workspace. A minted key cannot outlive
+its parent, and revoking the parent revokes every child key minted from it.
 
 ```sh
-tilo keys mint -w jane-doe --name "Jane Doe's agent"   # its MCP URL and token
+tilo keys mint -w project-alpha --name "Alpha agent"   # prints MCP URL and token
 ```
 
-Revoking is one call, or one click on [your grants page](https://mcp.tilo.sh/grants). It also ends the
-key's open sessions: the agent's next call fails with `KeyRevoked`, which says when it was revoked
+Revoke any key via the CLI or on [your grants page](https://mcp.tilo.sh/grants). Revocation
+terminates active sessions immediately; subsequent requests fail with `KeyRevoked`
 ([errors](errors.md)).
 
 ### The page scope
 
-A key can carry the authority to operate the pages a workspace's Browser holds. It is on unless you say
-no: the key navigates, fills in, selects and clicks without asking the person each time, and a key minted
-from it keeps its answer. It is not a licence to leave the page: a submission, a file to upload and a
-password still ask the person, whatever the key says ([approvals](approvals.md#the-hosted-browser)). Turn
-it off and every page action asks:
+By default, a key can drive pages inside a workspace's Browser (navigate, fill fields, select,
+click, read back), and keys minted from it inherit that setting. Actions that leave the page —
+submitting a form, uploading a file, or entering a password — always require interactive approval
+regardless of scope ([approvals](approvals.md#the-hosted-browser)). To require approval for every
+browser page action, pass `--no-browser-pages`:
 
 ```sh
-tilo keys create "Cautious backend" -w jane-doe --no-browser-pages
+tilo keys create "Read-only agent" -w project-alpha --no-browser-pages
 ```
 
 ## A key in practice

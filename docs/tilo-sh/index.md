@@ -1,49 +1,47 @@
-# Tilo docs
+# Tilo Documentation
 
 Tilo gives you shared workspaces for your devices, the people you work with, and your AI agents.
-Every workspace has its own apps, files, permissions, and history. Open it in the browser at
-[tilo.sh](https://tilo.sh), on Tilo OS, or drive it from code and MCP.
+Every workspace has its own apps, files, permissions, and history. You can open it in the browser
+at [tilo.sh](https://tilo.sh), on Tilo OS, or drive it from code and MCP.
 
-Start with the [quickstart](quickstart.md) to make a workspace, connect an agent, and invoke your
+Start with the [quickstart](quickstart.md) to create a workspace, connect an agent, and invoke your
 first action.
 
-## What you get
+## Core capabilities
 
-- **Isolated workspaces:** Each workspace has its own members, apps, files, and permissions. Nothing
-  leaks across workspaces unless you explicitly share it.
-- **Real apps, live in one place:** Notes, Writer, PDF Viewer, Browser, Terminal, Mail, and any
-  [tilolang](https://tilolang.dev) app or custom view work identically on Tilo OS and in the
-  browser at [tilo.sh](https://tilo.sh).
-- **One typed interface for people, scripts, and agents:** Every app exposes typed resources and
-  named actions. A click, a CLI command, a Python or TypeScript SDK call, and an agent MCP call all
-  invoke the exact same action ([resources and actions](resources-and-actions.md)).
-- **Full history and per-author undo:** Every change tracks who made it and which invocation it
-  belonged to, and any step or whole invocation can be undone
-  ([invocations and history](invocations-and-history.md)).
-- **Approvals where it matters:** Actions that leave the workspace, such as submitting a web form,
-  pause for a person to approve before proceeding ([approvals](approvals.md)).
+- **Isolated workspaces:** Each workspace has its own members, apps, files, and permissions. Data
+  never crosses between workspaces unless you share it.
+- **Same apps on desktop and web:** Notes, Writer, PDF Viewer, Browser, Terminal, Mail, and any
+  [tilolang](https://tilolang.dev) app or view work identically on Tilo OS and in the browser at
+  [tilo.sh](https://tilo.sh).
+- **One typed action API:** Every app exposes typed resources and named actions. UI clicks, CLI
+  commands, Python/TypeScript SDK calls, and agent MCP calls all invoke the same actions
+  ([resources and actions](resources-and-actions.md)).
+- **History and per-author undo:** Every change tracks its author and invocation, and any step or
+  invocation can be undone ([invocations and history](invocations-and-history.md)).
+- **Approvals:** Actions that leave the workspace, such as submitting a web form, pause until a
+  person approves them ([approvals](approvals.md)).
 
-## Three ways in
+## Interfaces
 
-| Who | What they use | Where it goes |
+| Client | Protocol / tool | Endpoint |
 | :--- | :--- | :--- |
-| Agents | MCP, one line in your agent's config | `https://mcp.tilo.sh` for all your workspaces, `https://mcp.tilo.sh/w/<workspace>/mcp` for one |
-| Your code | Python & TypeScript SDKs, the `tilo` CLI, or tilolang | the same addresses, with typed answers |
-| People | Tilo in the browser at [tilo.sh](https://tilo.sh), or Tilo OS | the workspace's apps, live |
+| **AI agents** | MCP | `https://mcp.tilo.sh` (all workspaces) or `https://mcp.tilo.sh/w/<workspace>/mcp` (single workspace) |
+| **Scripts & backends** | Python & TypeScript SDKs, `tilo` CLI, or tilolang | Same workspace & resource paths, with typed responses |
+| **People** | Web client at [tilo.sh](https://tilo.sh) or Tilo OS | Live interactive apps |
 
-All three reach the same resources through the same actions, under the same permissions. Agents
-never use a separate path, and scripts never maintain a second API.
+All three clients call the same actions under the same permission checks.
 
-## Scoped keys
+## API keys and scoping
 
-You approve a key once in Tilo and choose what it reaches: all of your workspaces, or one specific
-workspace. Keys can expire, be revoked at any time, or mint narrower keys; revoking a parent key
-revokes every key minted from it ([identities and keys](identities.md#keys)).
+You approve an API key once in Tilo and scope it either to all of your workspaces or to a single
+workspace. Keys support expiration, immediate revocation, and minting narrower child keys; revoking
+a parent key revokes every child key minted from it ([identities and keys](identities.md#keys)).
 
-## Where to start
+## Next steps
 
-- **[Quickstart](quickstart.md):** sign in, make a workspace, connect your agent, and make your
-  first call.
-- **[Workspaces](workspaces.md):** roles, inviting people and agents, and branching workspaces.
-- **[The hosted Browser](hosted-browser.md):** an agent fills a web form while a person approves
-  the submission.
+- **[Quickstart](quickstart.md):** sign in, create a workspace, connect an agent, and make your
+  first SDK call.
+- **[Workspaces](workspaces.md):** roles, invites, labels, and branching.
+- **[Hosted Browser](hosted-browser.md):** agents and people sharing a browser tab with human
+  approvals.
