@@ -963,14 +963,14 @@ async fn outside_a_turn(
     .unwrap()
 }
 
-/// A team is answered to a turn of the agent's keeper and to nobody else. A turn another
-/// member starts on the agent is answered exactly what it is answered for something that does
-/// not exist, and starts nothing. Outside any turn, the keeper themselves and their agent are
+/// A team is answered to a turn of the agent, whichever member asked it. A turn another member
+/// starts on the agent reads the team, and what the list of the workspace's agents refuses it
+/// is refused in the list's words: it starts nothing. Outside any turn, the keeper themselves and their agent are
 /// answered what an unknown provider is. And what its keeper bounds the agent to holds
 /// through the turn's own tools: bounded off the workspace's agents it starts none and keeps
 /// what the bound leaves it, and with the bound taken off it starts one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_team_is_answered_to_a_turn_of_the_agents_keeper_alone() {
+async fn a_team_is_answered_to_any_members_turn_of_the_agent() {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let ada = themselves(&root, &browser, &workspace);
     let thread = direct(&person, SCOUT);
@@ -979,8 +979,7 @@ async fn a_team_is_answered_to_a_turn_of_the_agents_keeper_alone() {
     let agents = worked(&workspaces, &actions, plans.model(&asked));
     let start = json!({"name": "Find the deck", "job": "Find the Q3 board deck in Files."});
 
-    // Another member writes to the agent: its turn acts for them, and is no turn of its
-    // keeper's.
+    // Another member writes to the agent: its turn acts for them.
     let (bo, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
     let bo_device = enrol(&bo, "bo-browser", DeviceCapabilities::member());
     admit(&workspaces, &workspace, &bo_device).await;
@@ -1008,17 +1007,14 @@ async fn a_team_is_answered_to_a_turn_of_the_agents_keeper_alone() {
     reply_of(&workspaces, &workspace, &from_him, SCOUT).await;
     let said = plans.answers(MAIN);
     assert_eq!(said.len(), 4, "{said:?}");
-    assert!(
-        said.iter().all(|(_, failed)| *failed),
-        "a turn another member started is taken nothing: {said:?}"
+    assert!(said[0].1, "the list refuses his start: {said:?}");
+    assert_ne!(
+        said[0].0,
+        said[1].0.replace("sub-agentz", "sub-agents"),
+        "his start is refused in the list's words, not as what does not exist"
     );
-    for (team, unknown) in [(&said[0].0, &said[1].0), (&said[2].0, &said[3].0)] {
-        assert_eq!(
-            *team,
-            unknown.replace("sub-agentz", "sub-agents"),
-            "it is answered what it is answered for what does not exist"
-        );
-    }
+    assert!(said[1].1 && said[3].1, "what does not exist is nothing: {said:?}");
+    assert!(!said[2].1, "his turn reads the agent's team: {said:?}");
     assert!(
         sub_agents(&workspaces, &workspace, &person)
             .await
