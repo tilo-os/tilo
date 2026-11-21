@@ -479,6 +479,75 @@ tilo_test_env::scenario! {
         pane.finish_view(tree.active);
     }
 
+    phase workspace_activity_folds_the_windows_a_person_opened_one_after_another;
+    // A person opening one window after another reads as one row naming each window, still
+    // nobody's news; a change between the opens ends the run. A row per window opened, or a
+    // folded row that names only the first two, must fail this regression.
+    {
+        use automerge::{ObjType, transaction::CommitOptions};
+        let workspace = Workspace::new(WorkspaceId::from_u128(5), "Planning");
+        let mut doc = AutoCommit::new();
+        let mut at = 1_800_000_000;
+        let mut stamp = |doc: &mut AutoCommit| {
+            doc.commit_with(CommitOptions::default().with_time(at));
+            at += 1;
+        };
+        doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
+            .unwrap();
+        let contents = doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
+        let strip = doc
+            .put_object(&contents, "0001000000000001", ObjType::Map)
+            .unwrap();
+        doc.put(&strip, "order", 0_u64).unwrap();
+        let groups = doc.put_object(&strip, "groups", ObjType::Map).unwrap();
+        stamp(&mut doc);
+        let open = |doc: &mut AutoCommit, at: u64, titles: &[&str]| {
+            let group = doc
+                .put_object(&groups, format!("00020000000000{at:02}"), ObjType::Map)
+                .unwrap();
+            doc.put(&group, "order", at).unwrap();
+            let tabs = doc.put_object(&group, "tabs", ObjType::Map).unwrap();
+            for (n, title) in titles.iter().enumerate() {
+                let tab = doc
+                    .put_object(&tabs, format!("00030000000000{at:02}{n}"), ObjType::Map)
+                    .unwrap();
+                doc.put(&tab, "title", *title).unwrap();
+                doc.put(&tab, "order", 0_u64).unwrap();
+            }
+        };
+        open(&mut doc, 1, &["Files"]);
+        stamp(&mut doc);
+        doc.put(ROOT, "name", "Spring planning").unwrap();
+        stamp(&mut doc);
+        for (n, titles) in [&["Tasks"][..], &["Notes"], &["#chat", "Activity"], &["Chat"]]
+            .into_iter()
+            .enumerate()
+        {
+            open(&mut doc, 2 + u64::try_from(n).unwrap(), titles);
+            stamp(&mut doc);
+        }
+        let mut tree = desktop(workspace, doc);
+        let mut pane = WorkspaceActivityPane::new();
+        pane.begin_view(tree.active);
+        pane.refresh(&mut tree);
+        let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+        let summaries = feed
+            .entries
+            .iter()
+            .map(|entry| entry.summary.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summaries,
+            [
+                "Opened Tasks, Notes, #chat, Activity and Chat",
+                "Named the workspace “Spring planning”",
+                "Opened Files",
+            ],
+            "one person's opens one after another are one row naming the windows as they opened, rows newest first"
+        );
+        pane.finish_view(tree.active);
+    }
+
     phase workspace_activity_names_where_a_change_happened_as_a_person_knows_it;
     // A change in an app's own collection (its messages, its folder) is placed in the app, by the
     // app's name; one in a record of its own (a channel) is placed in that record. Showing the

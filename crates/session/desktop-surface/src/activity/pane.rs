@@ -2457,15 +2457,19 @@ fn describe_workspace_changes(
             entry.entry_kind = entry_kind;
             // Changes that each did the same to someone, one after another, read as one row:
             // "Added Ada and Claude Code".
-            if let Some((action, item)) = change.counts.fold(readers.authors) {
+            if let Some((action, items)) = change.counts.fold(readers.authors) {
                 let mut context = entry.context.take().unwrap_or_default();
                 context.facets.retain(|facet| {
                     facet.key != ui::FOLD_ACTION_FACET && facet.key != ui::FOLD_ITEM_FACET
                 });
-                context.facets.extend([
-                    ui::tilo_actions::ActionFacet::new(ui::FOLD_ACTION_FACET, action),
-                    ui::tilo_actions::ActionFacet::new(ui::FOLD_ITEM_FACET, item),
-                ]);
+                context
+                    .facets
+                    .push(ui::tilo_actions::ActionFacet::new(ui::FOLD_ACTION_FACET, action));
+                context.facets.extend(
+                    items
+                        .into_iter()
+                        .map(|item| ui::tilo_actions::ActionFacet::new(ui::FOLD_ITEM_FACET, item)),
+                );
                 entry.context = Some(context);
             }
             if let Some(tag) = change.counts.feed_kind().feed_tag() {
@@ -2870,13 +2874,16 @@ impl PatchCounts {
     }
 
     /// What the change did and to whom, when changes like it one after another read as one row
-    /// ([`ui::FOLD_ACTION_FACET`]): someone added, or a device.
-    fn fold(&self, authors: &ui::history_source::AuthorDirectory) -> Option<(String, String)> {
+    /// ([`ui::FOLD_ACTION_FACET`]): someone added, a device, or the windows a person opened.
+    fn fold(
+        &self,
+        authors: &ui::history_source::AuthorDirectory,
+    ) -> Option<(String, Vec<String>)> {
         if let [step] = self.members.as_slice()
             && self.membership == 0
             && let Some(person) = step.added()
         {
-            return Some((t("activity-fold-added"), member_name(authors, person)));
+            return Some((t("activity-fold-added"), vec![member_name(authors, person)]));
         }
         if self.members.is_empty()
             && self.membership == 0
@@ -2884,8 +2891,18 @@ impl PatchCounts {
         {
             return Some((
                 t("activity-fold-added-devices"),
-                t_args("activity-fold-device", &[("name", device.into())]),
+                vec![t_args("activity-fold-device", &[("name", device.into())])],
             ));
+        }
+        // Only a change that reads as the windows it opened, and nothing more.
+        if !self.tab_titles.is_empty()
+            && self.describe(authors).map(|(said, _)| said)
+                == Some(t_args(
+                    "activity-event-opened",
+                    &[("titles", join_titles(&self.tab_titles).into())],
+                ))
+        {
+            return Some((t("activity-fold-opened"), self.tab_titles.clone()));
         }
         None
     }

@@ -301,6 +301,7 @@ activity-event-devices-added = { $count } { $count ->
     } hinzugefügt
 activity-fold-added = Hinzugefügt:
 activity-fold-added-devices = Geräte hinzugefügt:
+activity-fold-opened = Geöffnet:
 activity-fold-device = „{ $name }“
 activity-event-created = Arbeitsbereich erstellt
 activity-event-created-named = Arbeitsbereich „{ $name }“ erstellt

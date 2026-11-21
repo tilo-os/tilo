@@ -269,6 +269,7 @@ activity-event-devices-added = Added { $count } { $count ->
     }
 activity-fold-added = Added
 activity-fold-added-devices = Added the devices
+activity-fold-opened = Opened
 activity-fold-device = “{ $name }”
 activity-event-created = Created the workspace
 activity-event-created-named = Created the workspace “{ $name }”

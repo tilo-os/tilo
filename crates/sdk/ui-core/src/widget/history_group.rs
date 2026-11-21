@@ -26,8 +26,11 @@ pub const MAX_GROUP_DEPTH: usize = 2;
 /// The facet a change names what it did by, when changes that did it one after another read as
 /// one row: "Added" for a member added. Its value is the verb a folded row starts with.
 pub const FOLD_ACTION_FACET: &str = "tilo.history.fold";
-/// The facet naming what a foldable change did it to ("Ada"): a folded row lists each once.
+/// The facet naming what a foldable change did it to ("Ada"), once per thing when it did it to
+/// several: a folded row lists each once.
 pub const FOLD_ITEM_FACET: &str = "tilo.history.fold-item";
+/// The most things a folded row names each of; past it, the first two and how many more.
+const FOLD_NAMES_ALL: usize = 5;
 
 fn facet<'a>(entry: &'a HistoryEntry, key: &str) -> Option<&'a str> {
     entry
@@ -177,9 +180,19 @@ impl HistoryGroup {
             {
                 return None;
             }
-            let item = facet(entry, FOLD_ITEM_FACET)?;
-            if !items.contains(&item) {
-                items.push(item);
+            let mut named = entry
+                .context
+                .as_ref()?
+                .facets
+                .iter()
+                .filter(|facet| facet.key == FOLD_ITEM_FACET)
+                .map(|facet| facet.value.as_str())
+                .peekable();
+            named.peek()?;
+            for item in named {
+                if !items.contains(&item) {
+                    items.push(item);
+                }
             }
         }
         if members.iter().all(|entry| entry.summary == first.summary) {
@@ -187,9 +200,13 @@ impl HistoryGroup {
         }
         let things = match items.as_slice() {
             [one] => (*one).to_owned(),
-            [first, second] => widget_format(
+            // A few are each named: "Files, Tasks, Notes and Chat".
+            [before @ .., last] if items.len() <= FOLD_NAMES_ALL => widget_format(
                 "history-group-targets-two",
-                &[("first", (*first).into()), ("second", (*second).into())],
+                &[
+                    ("first", before.join(", ").into()),
+                    ("second", (*last).into()),
+                ],
             ),
             [first, second, rest @ ..] => widget_format(
                 "history-fold-more",
