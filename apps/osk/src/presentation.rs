@@ -241,7 +241,10 @@ pub(crate) fn preview_rect(key_rect: Rect, bounds: Rect) -> Rect {
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 impl KeyboardPresentation<'_> {
-    #[allow(clippy::too_many_lines, reason = "paints the keyboard in its normal order, which layering depends on")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "paints the keyboard in its normal order, which layering depends on"
+    )]
     pub fn draw(
         &self,
         scene: &mut Scene,

@@ -635,7 +635,10 @@ impl ListRowFace<'_> {
             usize::from(avatar.is_some()) + usize::from(count.is_some()) + usize::from(marks > 0.0);
         let has_meta = self.meta.is_some() || !self.meta_spans.is_empty();
         let items = tail_items + usize::from(has_meta);
-        #[allow(clippy::cast_precision_loss, reason = "a card shows at most a dozen facts")]
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a card shows at most a dozen facts"
+        )]
         let gaps = items.saturating_sub(1) as f64 * m.tag_gap;
         let meta = self.meta_width(m, text, (right - geo.text_x - tail - gaps).max(0.0));
         let mut x = geo.text_x;

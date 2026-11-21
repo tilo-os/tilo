@@ -57,7 +57,10 @@ impl Weaker<'_> {
             Self::Lower { weakest } => number(weakest, -1.0),
             Self::Order(order) => {
                 let at = order.iter().position(|known| *known == value);
-                #[allow(clippy::cast_precision_loss, reason = "the position among a short list of known values")]
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "the position among a short list of known values"
+                )]
                 Some(at.map_or(f64::INFINITY, |at| at as f64))
             }
         }

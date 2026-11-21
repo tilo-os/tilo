@@ -397,7 +397,10 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one named scenario walked through in order")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one named scenario walked through in order"
+    )]
     fn native_private_ownership_lists_and_resolves_only_current_enabled_person() {
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();

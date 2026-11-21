@@ -495,7 +495,10 @@ impl Photos {
         (style, [canvas, status])
     }
 
-    #[allow(clippy::unwrap_used, reason = "every node the widget lays out was built in this tree")]
+    #[allow(
+        clippy::unwrap_used,
+        reason = "every node the widget lays out was built in this tree"
+    )]
     pub(super) fn apply_layout(
         &mut self,
         empty: Option<&mut EmptyState>,

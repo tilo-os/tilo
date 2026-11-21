@@ -226,7 +226,10 @@ pub fn companion(name: &str) -> Option<(&str, Companion)> {
 }
 
 /// A typed value a component takes.
-#[allow(clippy::struct_excessive_bools, reason = "each flag is a separate part of the schema, set by its author")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate part of the schema, set by its author"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Prop {

@@ -365,7 +365,10 @@ fn draw_header(
     clippy::cast_possible_truncation,
     reason = "widths are bounded by the display; f32 is the shaping precision"
 )]
-#[allow(clippy::too_many_lines, reason = "paints one card's rows in reading order, sharing its geometry")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "paints one card's rows in reading order, sharing its geometry"
+)]
 pub(super) fn paint_team_card(
     scene: &mut Scene,
     transform: Affine,
@@ -758,7 +761,10 @@ pub(super) fn paint_monitor_glance(
 
 /// The system monitor's open card: compact, load and memory as two large readouts; otherwise one
 /// row per reading the machine offers, each with a quiet meter, roomier when large.
-#[allow(clippy::too_many_lines, reason = "paints one card's readouts in reading order, sharing its geometry")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "paints one card's readouts in reading order, sharing its geometry"
+)]
 pub(super) fn paint_monitor_card(
     scene: &mut Scene,
     transform: Affine,

@@ -683,7 +683,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one filesystem scenario walked phase by phase")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one filesystem scenario walked phase by phase"
+    )]
     fn a_share_is_served_beneath_its_root_only() {
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("secret"), b"host only").unwrap();

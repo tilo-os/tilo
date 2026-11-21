@@ -86,7 +86,10 @@ fn missing(error: &zbus::Error) -> bool {
     )
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "`map_err` hands it the error by value")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands it the error by value"
+)]
 fn failed(error: zbus::Error) -> NotifyError {
     NotifyError::Failed(error.to_string())
 }

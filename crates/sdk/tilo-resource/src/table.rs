@@ -3021,7 +3021,10 @@ fn jsons(table: &ModelTable) -> Result<&'static JsonDesc, ModelError> {
 }
 
 /// An error of serde as a model error.
-#[allow(clippy::needless_pass_by_value, reason = "`map_err` hands it the error by value")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands it the error by value"
+)]
 fn serde_invalid(error: serde_json::Error) -> ModelError {
     ModelError::invalid(error.to_string())
 }

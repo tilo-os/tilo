@@ -144,7 +144,10 @@ impl Sources {
             }
             self.laid = Some((key.finalize(), painted.into()));
         }
-        #[allow(clippy::expect_used, reason = "the branch above sets `laid` when it is absent")]
+        #[allow(
+            clippy::expect_used,
+            reason = "the branch above sets `laid` when it is absent"
+        )]
         let (key, painted) = self.laid.as_ref().expect("marks laid");
         (*key, Arc::clone(painted))
     }

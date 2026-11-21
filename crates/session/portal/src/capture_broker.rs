@@ -38,7 +38,10 @@ pub enum CaptureKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::struct_field_names, reason = "app, workspace, session and target are each an identity, not copies of one")]
+#[allow(
+    clippy::struct_field_names,
+    reason = "app, workspace, session and target are each an identity, not copies of one"
+)]
 pub struct CaptureSessionBinding {
     app_id: String,
     workspace_id: String,

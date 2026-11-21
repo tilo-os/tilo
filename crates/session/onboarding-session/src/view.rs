@@ -2862,7 +2862,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one named scenario walked through in order")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one named scenario walked through in order"
+    )]
     fn composite_cleanup_retry_is_visible_semantic_and_retains_rw_fence() {
         use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
         use std::os::unix::fs::PermissionsExt;
@@ -4984,7 +4987,10 @@ mod tests {
         view
     }
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one named scenario walked through in order")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one named scenario walked through in order"
+    )]
     fn identity_ready_does_not_complete_visible_first_use() {
         const CHILD: &str = "TILO_ONBOARDING_CONTINUATION_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {

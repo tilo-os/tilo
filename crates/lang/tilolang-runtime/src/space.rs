@@ -125,7 +125,10 @@ impl Space {
     }
 }
 
-#[allow(clippy::cast_precision_loss, reason = "every caller passes a space class index, 0 to 3")]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "every caller passes a space class index, 0 to 3"
+)]
 fn int_as_f64(v: i64) -> f64 {
     v as f64
 }

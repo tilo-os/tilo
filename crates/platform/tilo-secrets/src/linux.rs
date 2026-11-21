@@ -121,12 +121,18 @@ fn call_reopening<T>(
     })
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "`map_err` hands it the error by value")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands it the error by value"
+)]
 fn unavailable(error: zbus::Error) -> SecretError {
     SecretError::Unavailable(error.to_string())
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "`map_err` hands it the error by value")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` hands it the error by value"
+)]
 fn failed(error: zbus::Error) -> SecretError {
     if let zbus::Error::MethodError(name, _, _) = &error
         && name.as_str() == "org.freedesktop.Secret.Error.IsLocked"

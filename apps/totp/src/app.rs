@@ -301,7 +301,10 @@ impl Store {
     }
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "the widget's dirty markers and motion preference are set independently")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the widget's dirty markers and motion preference are set independently"
+)]
 pub struct AuthenticatorApp {
     store: Shared,
     list: AccountList,

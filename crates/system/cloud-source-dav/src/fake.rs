@@ -70,7 +70,10 @@ struct Node {
     versions: Vec<Version>,
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "each switch makes the fake server behave differently")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each switch makes the fake server behave differently"
+)]
 struct State {
     nextcloud: bool,
     sync: bool,

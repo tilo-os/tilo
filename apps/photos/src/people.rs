@@ -517,7 +517,10 @@ mod tests {
     const A: &str = "photos.photo:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "photos.photo:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    #[allow(clippy::too_many_lines, reason = "several named cases of one scenario share its setup")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "several named cases of one scenario share its setup"
+    )]
     #[test]
     fn verified_local_recognition_is_opt_in_converges_and_survives_restart() {
         let mut people = PeopleController::new();

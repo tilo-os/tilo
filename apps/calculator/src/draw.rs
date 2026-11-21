@@ -32,7 +32,10 @@ pub fn text_block(
             .clamp_to_lines_style(text, ui::num::f32_of_f64(rect.width()), max_lines, style);
     let line_h = f64::from(style.line_height_px());
     for (index, line) in lines.iter().enumerate() {
-        #[allow(clippy::cast_precision_loss, reason = "`max_lines` bounds the line count")]
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "`max_lines` bounds the line count"
+        )]
         let top = rect.y0 + line_h * index as f64;
         let band = Rect::new(rect.x0, top, rect.x1, top + line_h);
         text_in(ctx, band, line, style, color, align);
