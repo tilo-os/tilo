@@ -185,11 +185,13 @@ class BuilderCandidates(unittest.TestCase):
         [x86_64] = [s for s in tests['matrix']['set'] if s['when'] == {'arch': 'x86_64'}]
         self.assertEqual(x86_64['on'], ['dispatch', 'idle'])
         # Every signature and publication waits for the candidate's Chromium; a release
-        # (dispatched on its tag) also for its browser regressions, a dev one where they ran.
+        # (a release tag's push) also for its browser regressions, a dev one where they ran.
         for name in ('sign-ci-builder', 'sign-dev-ci-builder', 'publish-ci-builder'):
             self.assertIn(smoke_check, checks[name]['needs'], name)
         self.assertIn(tests_check, checks['sign-ci-builder']['needs'])
-        self.assertEqual(checks['sign-ci-builder']['on'], ['dispatch'])
+        # The release key's token is issued to release tags alone, so the release
+        # signature applies there; a dispatch of main publishes the development one.
+        self.assertEqual(checks['sign-ci-builder']['on'], ['tag:v*'])
         for name in ('sign-dev-ci-builder', 'publish-ci-builder'):
             self.assertIn(tests_check, checks[name]['optional_needs'], name)
             self.assertNotIn(tests_check, checks[name]['needs'], name)
