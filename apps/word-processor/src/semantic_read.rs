@@ -155,18 +155,7 @@ fn read_source(
         }
         json_len(cursor, 1024).map_err(|_| ReadError::InvalidCursor)?;
     }
-    let blocks = source
-        .object(root, tilo_doc::schema::KEY_BLOCKS, ObjType::Map)?
-        .ok_or(ReadError::Malformed)?;
-    for key in [
-        tilo_doc::schema::KEY_STYLES,
-        tilo_doc::schema::KEY_PRESERVED,
-        tilo_doc::schema::KEY_META,
-    ] {
-        source
-            .object(root, key, ObjType::Map)?
-            .ok_or(ReadError::Malformed)?;
-    }
+    let blocks = source.body_blocks(root)?;
     let capacity = limits.items + 1;
     let mut candidates: Vec<Candidate> = Vec::with_capacity(capacity);
     let mut cursor_found = cursor.is_none();
@@ -174,7 +163,7 @@ fn read_source(
         let Some(block) = value.object(ObjType::Map) else {
             return Ok(ControlFlow::Continue(()));
         };
-        source.bytes(&block, tilo_doc::schema::BLOCK_ORDER, |order| {
+        source.block_order(&block, |order| {
             if order.len() > 256 || key.len() > 256 {
                 return Err(ReadError::Limit);
             }
@@ -224,15 +213,11 @@ fn read_source(
             .filter(|c| c.block == candidate.id && !c.finished)
             .map(|c| c.position)
             .unwrap_or_default();
-        let text_object = source.object(
-            &candidate.object,
-            tilo_doc::schema::BLOCK_TEXT,
-            ObjType::Text,
-        )?;
+        let text_object = source.block_text(&candidate.object)?;
         let previous = page.next.take();
         page.segments.push(Segment {
             block: candidate.id.clone(),
-            kind: source.string(&candidate.object, tilo_doc::schema::BLOCK_KIND, 64)?,
+            kind: source.block_kind(&candidate.object, 64)?,
             text: String::new(),
             complete: false,
             shape: shape(source, &candidate.object)?,

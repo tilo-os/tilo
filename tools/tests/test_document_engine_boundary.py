@@ -14,7 +14,7 @@ SPEC.loader.exec_module(boundary)
 
 
 class DocumentEngineBoundaryTests(unittest.TestCase):
-    def fixture(self, files: dict[str, str], baseline: str = "") -> tuple[Path, Path]:
+    def fixture(self, files: dict[str, str]) -> Path:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -22,12 +22,10 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
-        baseline_path = root / "baseline.toml"
-        baseline_path.write_text(baseline, encoding="utf-8")
-        return root, baseline_path
+        return root
 
     def test_apps_using_the_document_api_pass(self):
-        root, baseline = self.fixture(
+        root = self.fixture(
             {
                 "apps/editor/src/lib.rs": (
                     "fn bold(dm: &mut tilo_doc::DocMut) {\n"
@@ -36,10 +34,10 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
                 ),
             }
         )
-        self.assertEqual(boundary.audit(root, baseline), [])
+        self.assertEqual(boundary.audit(root), [])
 
     def test_rich_text_primitives_outside_the_engine_fail(self):
-        root, baseline = self.fixture(
+        root = self.fixture(
             {
                 "apps/editor/src/lib.rs": (
                     "use automerge::marks::{ExpandMark, Mark};\n"
@@ -47,12 +45,12 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
                 ),
             }
         )
-        violations = boundary.audit(root, baseline)
+        violations = boundary.audit(root)
         self.assertEqual(len(violations), 1)
         self.assertIn("rich_text_engine", violations[0].reason)
 
     def test_reaching_into_the_document_schema_fails(self):
-        root, baseline = self.fixture(
+        root = self.fixture(
             {
                 "apps/editor/src/lib.rs": (
                     "fn f(doc: &automerge::AutoCommit, block: &automerge::ObjId) {\n"
@@ -62,11 +60,11 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
                 "apps/other/src/lib.rs": "use tilo_doc::schema::{KEY_HEADER, MARK_BOLD};\n",
             }
         )
-        reasons = sorted(v.path for v in boundary.audit(root, baseline))
+        reasons = sorted(v.path for v in boundary.audit(root))
         self.assertEqual(reasons, ["apps/editor/src/lib.rs", "apps/other/src/lib.rs"])
 
     def test_engine_owners_tests_and_comments_are_exempt(self):
-        root, baseline = self.fixture(
+        root = self.fixture(
             {
                 "crates/doc/tilo-doc/src/model.rs": "use automerge::marks::ExpandMark;\n",
                 "crates/sdk/ui-core/src/text.rs": "use automerge::marks::Mark;\n",
@@ -79,19 +77,7 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
                 ),
             }
         )
-        self.assertEqual(boundary.audit(root, baseline), [])
-
-    def test_the_baseline_is_a_ratchet(self):
-        files = {"apps/notes/src/doc.rs": "use automerge::marks::{ExpandMark, Mark};\n"}
-        allowed = '[ratchets.rich_text_engine]\n"apps/notes/src/doc.rs" = 2\n'
-        root, baseline = self.fixture(files, allowed)
-        self.assertEqual(boundary.audit(root, baseline), [])
-        tighter = '[ratchets.rich_text_engine]\n"apps/notes/src/doc.rs" = 1\n'
-        root, baseline = self.fixture(files, tighter)
-        self.assertIn("baseline allows 1", boundary.audit(root, baseline)[0].reason)
-        looser = '[ratchets.rich_text_engine]\n"apps/notes/src/doc.rs" = 3\n'
-        root, baseline = self.fixture(files, looser)
-        self.assertIn("lower the entry", boundary.audit(root, baseline)[0].reason)
+        self.assertEqual(boundary.audit(root), [])
 
 
 if __name__ == "__main__":

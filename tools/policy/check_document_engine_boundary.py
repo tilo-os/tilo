@@ -17,16 +17,14 @@ therefore reserved to the crates that own a CRDT engine:
   Outside tilo-doc they only serve to read or write tilo-doc's CRDT by hand.
 
 Test modules and test files are exempt: tests may build a malformed document on
-purpose. Existing production uses are listed in
-``document_engine_baseline.toml`` as a ratchet: a count may only go down (and
-the table must follow it down), and a file not listed may not start.
+purpose. There is no baseline: any production use outside the crates that own
+an engine fails.
 """
 
 from __future__ import annotations
 
 import re
 import sys
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,7 +33,6 @@ from rust_source import is_test_file, production_source  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path(__file__).with_name("document_engine_baseline.toml")
 
 # Crates that own a CRDT engine or the document layer itself.
 ENGINE_OWNERS = (
@@ -105,40 +102,16 @@ def count_uses(root: Path) -> dict[str, dict[str, int]]:
     return counts
 
 
-def load_baseline(path: Path) -> dict[str, dict[str, int]]:
-    data = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    ratchets = data.get("ratchets", {})
-    return {rule: dict(ratchets.get(rule, {})) for rule in RULES}
-
-
-def audit(root: Path = ROOT, baseline_path: Path = BASELINE) -> list[Violation]:
+def audit(root: Path = ROOT) -> list[Violation]:
     counts = count_uses(root)
-    baseline = load_baseline(baseline_path)
-    violations: list[Violation] = []
-    for rule in RULES:
-        allowed = baseline[rule]
-        actual = counts[rule]
-        for path, found in sorted(actual.items()):
-            limit = allowed.get(path, 0)
-            if found > limit:
-                violations.append(
-                    Violation(
-                        path,
-                        f"{rule}: {found} use(s), baseline allows {limit}; "
-                        "go through the tilo-doc document API instead",
-                    )
-                )
-        for path, limit in sorted(allowed.items()):
-            found = actual.get(path, 0)
-            if found < limit:
-                violations.append(
-                    Violation(
-                        path,
-                        f"{rule}: baseline allows {limit} but only {found} remain; "
-                        f"lower the entry in {baseline_path.name}",
-                    )
-                )
-    return violations
+    return [
+        Violation(
+            path,
+            f"{rule}: {found} use(s); go through the tilo-doc document API instead",
+        )
+        for rule in RULES
+        for path, found in sorted(counts[rule].items())
+    ]
 
 
 def main() -> int:

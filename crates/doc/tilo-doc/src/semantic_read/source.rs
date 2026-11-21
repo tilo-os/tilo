@@ -132,6 +132,46 @@ impl<'a> Source<'a> {
     pub fn block_attrs(&self, block: &ObjId) -> Result<Option<ObjId>, ReadError> {
         self.object(block, crate::schema::BLOCK_ATTRS, ObjType::Map)
     }
+    /// The body's block map, once the containers every body carries are checked.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Malformed`] when the blocks, styles, preserved parts or
+    /// metadata are missing or of the wrong kind.
+    pub fn body_blocks(&self, body: &ObjId) -> Result<ObjId, ReadError> {
+        let blocks = self
+            .object(body, crate::schema::KEY_BLOCKS, ObjType::Map)?
+            .ok_or(ReadError::Malformed)?;
+        for key in [
+            crate::schema::KEY_STYLES,
+            crate::schema::KEY_PRESERVED,
+            crate::schema::KEY_META,
+        ] {
+            self.object(body, key, ObjType::Map)?
+                .ok_or(ReadError::Malformed)?;
+        }
+        Ok(blocks)
+    }
+    /// Visit the sort key of `block`, if it has one.
+    pub fn block_order(
+        &self,
+        block: &ObjId,
+        visitor: impl FnMut(&[u8]) -> Result<(), ReadError>,
+    ) -> Result<(), ReadError> {
+        self.bytes(block, crate::schema::BLOCK_ORDER, visitor)
+    }
+    /// The text object of `block`, for a text block.
+    pub fn block_text(&self, block: &ObjId) -> Result<Option<ObjId>, ReadError> {
+        self.object(block, crate::schema::BLOCK_TEXT, ObjType::Text)
+    }
+    /// The kind of `block` (paragraph, heading, list item, …), empty when it has none.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Limit`] when the kind exceeds `maximum` bytes.
+    pub fn block_kind(&self, block: &ObjId, maximum: usize) -> Result<String, ReadError> {
+        self.string(block, crate::schema::BLOCK_KIND, maximum)
+    }
     /// The winning string under `key`, empty when it is absent or not a string;
     /// [`ReadError::Limit`] when it exceeds `maximum` bytes.
     pub fn string(&self, object: &ObjId, key: &str, maximum: usize) -> Result<String, ReadError> {
