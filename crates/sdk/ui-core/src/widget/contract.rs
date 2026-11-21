@@ -856,6 +856,14 @@ pub trait Widget {
         false
     }
 
+    /// Whether, given less room than it needs, this widget keeps its words whole — wrapping
+    /// between them rather than breaking one — or says less instead: a control that elides fits
+    /// any width, while a run of text does not. A row lays a part that keeps its words out at no
+    /// less than the room its longest word needs, and moves it down a line rather than break it.
+    fn keeps_its_words(&self) -> bool {
+        false
+    }
+
     /// Where a band stands in its column, set by the column after each layout: what it leaves when
     /// dropped, so the column a rebuild makes can draw it leaving.
     fn note_placement(&mut self, _placement: Placement) {}

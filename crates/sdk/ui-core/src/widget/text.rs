@@ -1174,6 +1174,13 @@ impl Widget for Text {
         "Text"
     }
 
+    /// Words that wrap keep their words whole: given less room than its longest word, a wrapping
+    /// text breaks that word inside itself, so a row must give it the room. A text that elides
+    /// says less instead and fits any width.
+    fn keeps_its_words(&self) -> bool {
+        !self.truncates()
+    }
+
     fn test_id(&self) -> Option<&str> {
         self.test_id.as_deref()
     }

@@ -218,7 +218,11 @@ impl SectionHeader {
         children.push(Box::new(
             Text::new(&self.title)
                 .with_role(self.level.role())
-                .with_heading_level(self.level.heading_level()),
+                .with_heading_level(self.level.heading_level())
+                // A header is one band, one line high: a title longer than the band says less,
+                // with an ellipsis, rather than wrapping and breaking a word inside it.
+                .with_lines(Some(1))
+                .with_truncate(true),
         ));
         if let Some(count) = self.count {
             children.push(Box::new(CountPill {
