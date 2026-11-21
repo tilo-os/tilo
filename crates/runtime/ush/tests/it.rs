@@ -21,6 +21,3 @@ pub mod helper_runtime;
 
 #[path = "shell.rs"]
 pub mod shell;
-
-#[path = "workspace_shell_boot.rs"]
-pub mod workspace_shell_boot;
