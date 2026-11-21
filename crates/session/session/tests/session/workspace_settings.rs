@@ -100,36 +100,12 @@ fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
     app.settle();
 }
 
-/// Choose what the control `name` says at `choice` , as a screen reader does: the choice is one
-/// segment of the control.
-fn choose(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str, choice: &str) {
-    let nodes = app.harness().a11y_nodes();
-    let group = app
-        .harness()
-        .a11y_node_named(name)
-        .unwrap_or_else(|| panic!("no control says {name:?}"));
-    let children: Vec<tilo_app::accesskit::NodeId> = nodes
-        .iter()
-        .find(|(id, _)| *id == group)
-        .map(|(_, node)| node.children().to_vec())
-        .unwrap_or_default();
-    let segment = nodes
-        .iter()
-        .find_map(|(id, node)| {
-            (children.contains(id) && node.label() == Some(choice)).then_some(*id)
-        })
-        .unwrap_or_else(|| {
-            let under: Vec<Option<&str>> = nodes
-                .iter()
-                .filter(|(id, _)| children.contains(id))
-                .map(|(_, node)| node.label())
-                .collect();
-            panic!("{name:?} offers no {choice:?}; it offers {under:?}");
-        });
-    app.harness()
-        .perform_a11y_action(segment, &ui::a11y::Action::Activate)
-        .unwrap_or_else(|error| panic!("choose {choice:?} of {name:?}: {error}"));
-    app.settle();
+/// Choose what `app`'s line for `kind` says at `segment` , as a screen reader does: the choice is
+/// one segment of the line, addressed by the app the line answers for. The line's control is named
+/// by its scope rather than the words over it, since two installed apps can share a name (the Rust
+/// Notes and the tilolang Notes are both "Notes") and the words would name either.
+fn choose(app: &mut HeadlessApp<WorkspaceSettingsApp>, scope: &str, kind: &str, segment: usize) {
+    press(app, &format!("ws-agent-answer-{scope}-{kind}:segment:{segment}"));
 }
 
 /// Show `tab` in the sheet, as pressing its tab does, and let the session answer with the tab it
@@ -786,7 +762,8 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         review.note,
         "In apps, outside effects ask you first or are denied; in your own account you may allow them."
     );
-    choose(&mut app, "Notes Changes", "Ask first");
+    // Notes' changes answer Ask first, the second segment of its line (Allow, Ask first, Deny).
+    choose(&mut app, "app:so.tilo.notes", "change", 1);
     settle(&mut session, &mut app);
     assert_eq!(
         changes_answer(&session, "so.tilo.notes"),
